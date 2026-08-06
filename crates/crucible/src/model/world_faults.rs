@@ -187,17 +187,47 @@ impl WorldFaultTopology {
             artifact.validate()?;
         }
         for artifact in &self.network_policy_artifacts {
-            let NetworkPolicyArtifactKind::ContactPlan { intervals } = &artifact.artifact else {
-                continue;
-            };
-            for interval in intervals {
-                require(
-                    self.network_policy_artifact(&interval.capacity_profile)
-                        .is_some_and(|capacity| {
-                            capacity.artifact.class() == NetworkPolicyArtifactClass::ServiceCurve
-                        }),
-                    "network contact capacity profile",
-                )?;
+            match &artifact.artifact {
+                NetworkPolicyArtifactKind::ContactPlan { intervals } => {
+                    for interval in intervals {
+                        require(
+                            self.network_policy_artifact(&interval.capacity_profile)
+                                .is_some_and(|capacity| {
+                                    capacity.artifact.class()
+                                        == NetworkPolicyArtifactClass::ServiceCurve
+                                }),
+                            "network contact capacity profile",
+                        )?;
+                    }
+                }
+                NetworkPolicyArtifactKind::MediumAccess(policy) => {
+                    if let Some(key) = &policy.arbitration_key {
+                        require(
+                            self.network_policy_artifact(key).is_some_and(|key| {
+                                key.artifact.class() == NetworkPolicyArtifactClass::PacketKey
+                            }),
+                            "network medium arbitration key",
+                        )?;
+                    }
+                    if let Some(transform) = policy
+                        .contention
+                        .as_ref()
+                        .and_then(|contention| contention.undetected_transform.as_ref())
+                    {
+                        require(
+                            self.network_policy_artifact(transform)
+                                .is_some_and(|transform| {
+                                    matches!(
+                                        &transform.artifact,
+                                        NetworkPolicyArtifactKind::ByteTemplate { bytes }
+                                            if !bytes.is_empty()
+                                    )
+                                }),
+                            "network medium undetected transform",
+                        )?;
+                    }
+                }
+                _ => {}
             }
         }
         canonicalize_by_id(&mut self.mobile_endpoints, WorldMobileEndpoint::id)?;
@@ -335,6 +365,13 @@ impl WorldFaultTopology {
             )?;
             require(!medium.resources.is_empty(), "network medium resources")?;
             hard_count(&medium.resources, "network medium resources", 16_384)?;
+            require(
+                self.network_policy_artifacts.iter().any(|artifact| {
+                    artifact.id.as_str() == medium.access_policy.as_str()
+                        && artifact.artifact.class() == NetworkPolicyArtifactClass::MediumAccess
+                }),
+                "network medium access policy",
+            )?;
         }
         for forwarder in &self.network_forwarders {
             require_all(

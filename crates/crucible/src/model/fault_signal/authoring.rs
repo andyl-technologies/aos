@@ -2981,6 +2981,13 @@ pub(crate) enum FaultSignalAuthoringError {
         /// Actual class, or none when the declaration is absent.
         actual: Option<&'static str>,
     },
+    /// A shared-medium binding disagrees with its World medium contract.
+    InvalidNetworkMediumContract {
+        /// Binding containing the shared-medium effect.
+        binding: String,
+        /// Stable diagnostic for the mismatched contract component.
+        field: &'static str,
+    },
     /// A network service effect was not bound to its exact physical input schema.
     InvalidNetworkServiceInputs {
         /// Binding containing the service mapping.
@@ -3097,6 +3104,10 @@ impl fmt::Display for FaultSignalAuthoringError {
                 formatter,
                 "binding `{binding}` field `{field}` references network policy `{reference}` with class {}, expected {expected}",
                 actual.unwrap_or("absent")
+            ),
+            Self::InvalidNetworkMediumContract { binding, field } => write!(
+                formatter,
+                "binding `{binding}` disagrees with its World shared-medium `{field}` contract"
             ),
             Self::InvalidNetworkServiceInputs {
                 binding,

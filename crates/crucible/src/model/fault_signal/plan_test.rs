@@ -1,13 +1,14 @@
 use super::*;
 use crate::model::{
     Icount, LinkDef, MAX_REPRODUCTION_SCENARIO_BLOB_BYTES, MAX_SCENARIO_BINARY_BLOB_BYTES,
-    NetworkPolicyArtifactKind, NetworkPolicyIntegerPoint, NetworkPolicyIntegerTable,
-    NetworkPolicyInterpolation, NetworkPolicyOutsideRange, NodeId, Plan, ReadyPoint,
-    ScenarioBinaryReader, ScenarioBinaryWriter, VmArchitecture, WhiteBoxPolicy, World,
+    NetworkPolicyArbitration, NetworkPolicyArtifactKind, NetworkPolicyCollision,
+    NetworkPolicyContention, NetworkPolicyIntegerPoint, NetworkPolicyIntegerTable,
+    NetworkPolicyInterpolation, NetworkPolicyMediumAccess, NetworkPolicyOutsideRange, NodeId, Plan,
+    ReadyPoint, ScenarioBinaryReader, ScenarioBinaryWriter, VmArchitecture, WhiteBoxPolicy, World,
     WorldFaultDomain, WorldFaultTargetRef, WorldFaultTopology, WorldMobileEndpoint,
-    WorldNetworkForwarder, WorldNetworkForwarderKind, WorldNetworkInterface, WorldNetworkPath,
-    WorldNetworkPathHop, WorldNetworkPolicyArtifact, WorldNetworkQueue,
-    WorldNetworkQueueDiscipline, WorldNetworkQueueOverflow, WorldNetworkSegment,
+    WorldNetworkForwarder, WorldNetworkForwarderKind, WorldNetworkInterface, WorldNetworkMedium,
+    WorldNetworkMediumKind, WorldNetworkPath, WorldNetworkPathHop, WorldNetworkPolicyArtifact,
+    WorldNetworkQueue, WorldNetworkQueueDiscipline, WorldNetworkQueueOverflow, WorldNetworkSegment,
     WorldNetworkSegmentKind, WorldNetworkTechnology, WorldNode, WorldNodeArchitecture,
 };
 
@@ -93,6 +94,108 @@ fn network_effect_policy_references_are_typed_and_world_owned() {
         .unwrap_or_else(|error| panic!("policy test topology: {error}"));
     plan.validate_for_world(&world)
         .unwrap_or_else(|error| panic!("typed policy reference should validate: {error}"));
+}
+
+#[test]
+fn shared_medium_binding_matches_world_policy_channels_and_participants() {
+    let program = program(true);
+    let policy_id = object_id("radio-access-policy");
+    let medium_id = object_id("campus-radio");
+    let channel_id = object_id("channel-one");
+    let mut topology = test_world().fault_topology().clone();
+    topology.network_segments[0].medium = Some(signal_id(medium_id.as_str()));
+    topology.network_media.push(WorldNetworkMedium {
+        id: signal_id(medium_id.as_str()),
+        kind: WorldNetworkMediumKind::FreeSpaceRf,
+        resources: vec![signal_id(channel_id.as_str())],
+        access_policy: signal_id(policy_id.as_str()),
+        fault_domains: Vec::new(),
+    });
+    topology
+        .network_policy_artifacts
+        .push(WorldNetworkPolicyArtifact {
+            id: policy_id.clone(),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::MediumAccess(NetworkPolicyMediumAccess {
+                arbitration: NetworkPolicyArbitration::Contention,
+                arbitration_key: None,
+                fixed_slot_nanos: None,
+                contention: Some(NetworkPolicyContention {
+                    collision: NetworkPolicyCollision::DropAll,
+                    capture_threshold_millionths: None,
+                    undetected_transform: None,
+                    backoff_slot_nanos: PositiveU64::new("backoff", 100)
+                        .unwrap_or_else(|error| panic!("test backoff: {error}")),
+                    maximum_backoff_exponent: 8,
+                    maximum_retries: 4,
+                }),
+                duty_cycle_numerator: PositiveU64::new("duty", 1)
+                    .unwrap_or_else(|error| panic!("test duty numerator: {error}")),
+                duty_cycle_denominator: PositiveU64::new("duty", 1)
+                    .unwrap_or_else(|error| panic!("test duty denominator: {error}")),
+            }),
+        });
+    let world = World::from_nodes_and_links(test_world().vm_nodes().to_vec(), vec![test_link()])
+        .unwrap_or_else(|error| panic!("shared-medium base world: {error}"))
+        .with_fault_topology(topology)
+        .unwrap_or_else(|error| panic!("shared-medium topology: {error}"));
+    let make_binding = |participants: Vec<FaultObjectId>| {
+        let target = ResolvedTargetSet::new(
+            vec![ResolvedFaultTarget::NetworkMedium {
+                medium: medium_id.clone(),
+                resource: channel_id.clone(),
+            }],
+            false,
+        )
+        .unwrap_or_else(|error| panic!("shared-medium target: {error}"));
+        let effect = EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Persistent,
+            EffectSpecification::Network(NetworkEffectSpecification::SharedMedium {
+                resources: ObjectIdSet::new(participants)
+                    .unwrap_or_else(|error| panic!("shared-medium participants: {error}")),
+                policy: policy_id.clone(),
+                transmit_power_femtowatts: PositiveU64::new("power", 1)
+                    .unwrap_or_else(|error| panic!("shared-medium power: {error}")),
+            }),
+        )
+        .unwrap_or_else(|error| panic!("shared-medium effect: {error}"));
+        FaultBinding::new(
+            object_id("shared-medium-binding"),
+            program.exported_outputs().to_vec(),
+            BindingSampling::AtBoundary,
+            BindingMapping::ActiveWhenTrue { invert: false },
+            TargetSelector::Exact(target),
+            [FaultPhase::Queue].into_iter().collect(),
+            effect,
+            None,
+            BindingSearchPolicy::Fixed,
+            BindingObservabilityPolicy::default(),
+            &program,
+        )
+        .unwrap_or_else(|error| panic!("shared-medium binding: {error}"))
+    };
+    let valid = FaultSignalPlan::new(
+        vec![program.clone()],
+        vec![make_binding(vec![object_id("left"), object_id("right")])],
+    )
+    .unwrap_or_else(|error| panic!("shared-medium plan: {error}"));
+    valid
+        .validate_for_world(&world)
+        .unwrap_or_else(|error| panic!("matching shared-medium contract: {error}"));
+
+    let invalid = FaultSignalPlan::new(
+        vec![program.clone()],
+        vec![make_binding(vec![object_id("left")])],
+    )
+    .unwrap_or_else(|error| panic!("mismatched shared-medium plan: {error}"));
+    assert!(matches!(
+        invalid.validate_for_world(&world),
+        Err(FaultSignalAuthoringError::InvalidNetworkMediumContract {
+            field: "participants",
+            ..
+        })
+    ));
 }
 
 #[test]

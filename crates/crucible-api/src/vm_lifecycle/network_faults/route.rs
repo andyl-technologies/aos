@@ -654,6 +654,28 @@ fn apply_network_frame_actions(
                 )?;
                 state_machine_wakeup = earliest_wakeup(state_machine_wakeup, release);
             }
+            NetworkEffectSpecification::SharedMedium {
+                resources,
+                policy,
+                transmit_power_femtowatts,
+            } => {
+                let service_rate = effects.serialization_rate_cap_bps().or(base_rate_bps);
+                let release = apply_network_shared_medium(
+                    payload,
+                    effects,
+                    state,
+                    pending_outputs,
+                    topology,
+                    action,
+                    opportunity,
+                    scenario_seed,
+                    resources,
+                    policy,
+                    transmit_power_femtowatts.get(),
+                    service_rate,
+                )?;
+                deferred_until = latest_wakeup(deferred_until, release);
+            }
             NetworkEffectSpecification::ForwardingMutation { selector, mutation } => {
                 apply_network_forwarding_mutation(
                     payload,
@@ -1014,6 +1036,17 @@ fn network_packet_key(
     key: &FaultObjectId,
     action: &ResolvedBindingAction,
 ) -> Result<ContentHash, SchedulerError> {
+    Ok(ContentHash::from_bytes(&network_packet_key_bytes(
+        payload, topology, key, action,
+    )?))
+}
+
+fn network_packet_key_bytes(
+    payload: &[u8],
+    topology: &crucible::model::WorldFaultTopology,
+    key: &FaultObjectId,
+    action: &ResolvedBindingAction,
+) -> Result<Vec<u8>, SchedulerError> {
     let declaration = topology.network_policy_artifact(key).ok_or_else(|| {
         network_effect_application_error(action, "network packet key disappeared")
     })?;
@@ -1038,7 +1071,512 @@ fn network_packet_key(
         material.extend_from_slice(&range.length().to_be_bytes());
         material.extend_from_slice(bytes);
     }
-    Ok(ContentHash::from_bytes(&material))
+    Ok(material)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_network_shared_medium(
+    payload: &mut [u8],
+    effects: &mut crucible::ResolvedNetworkFrameEffects,
+    state: &mut NetworkEffectRuntimeState,
+    pending_outputs: &mut [crucible::BackendNetworkOutput],
+    topology: &crucible::model::WorldFaultTopology,
+    action: &ResolvedBindingAction,
+    opportunity: &FaultOpportunity,
+    scenario_seed: ContentHash,
+    resources: &crucible::model::ObjectIdSet,
+    policy_id: &FaultObjectId,
+    transmit_power_femtowatts: u64,
+    service_rate_bps: Option<u64>,
+) -> Result<Option<u64>, SchedulerError> {
+    let owner = NetworkEffectStateKey::from_action(action);
+    if action.kind == BindingActionKind::RemovePersistent {
+        state.shared_media.remove(&owner);
+        return Ok(None);
+    }
+    let declaration = topology.network_policy_artifact(policy_id).ok_or_else(|| {
+        network_effect_application_error(action, "shared-medium policy disappeared")
+    })?;
+    let crucible::model::NetworkPolicyArtifactKind::MediumAccess(policy) = &declaration.artifact
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "shared-medium policy changed type after admission",
+        ));
+    };
+    let policy = policy.clone();
+    let OpportunityPayload::NetworkFrame { producer, .. } = opportunity.payload() else {
+        return Err(network_effect_application_error(
+            action,
+            "shared-medium effect received a non-frame opportunity",
+        ));
+    };
+    if resources.as_slice().binary_search(producer).is_err() {
+        return Err(network_effect_application_error(
+            action,
+            "frame producer is absent from the shared-medium resource set",
+        ));
+    }
+    let now = opportunity.coordinate().virtual_nanos;
+    state.shared_media.retain(|_key, medium| {
+        medium
+            .reservations
+            .retain(|reservation| reservation.finish_nanos > now);
+        !medium.reservations.is_empty()
+    });
+    let active_reservations = state
+        .shared_media
+        .values()
+        .try_fold(0_usize, |total, medium| {
+            total.checked_add(medium.reservations.len())
+        })
+        .ok_or_else(|| {
+            network_effect_application_error(action, "shared-medium reservation count overflowed")
+        })?;
+    if active_reservations == HARD_PENDING_NETWORK_FRAMES {
+        return Err(network_effect_application_error(
+            action,
+            "shared-medium reservations reached the global hard bound",
+        ));
+    }
+    let rate_bps = service_rate_bps.filter(|rate| *rate > 0).ok_or_else(|| {
+        network_effect_application_error(
+            action,
+            "shared-medium service has neither a link rate nor a resolved rate cap",
+        )
+    })?;
+    let payload_bits = u64::try_from(payload.len())
+        .ok()
+        .and_then(|bytes| bytes.checked_mul(8))
+        .ok_or_else(|| network_effect_application_error(action, "medium frame size overflowed"))?;
+    let duration_nanos = ceil_ratio_u128(
+        u128::from(payload_bits)
+            .checked_mul(1_000_000_000)
+            .and_then(|value| value.checked_mul(u128::from(policy.duty_cycle_denominator.get())))
+            .ok_or_else(|| {
+                network_effect_application_error(action, "medium airtime demand overflowed")
+            })?,
+        u128::from(rate_bps)
+            .checked_mul(u128::from(policy.duty_cycle_numerator.get()))
+            .ok_or_else(|| {
+                network_effect_application_error(action, "medium airtime rate overflowed")
+            })?,
+    )
+    .and_then(|duration| u64::try_from(duration.max(1)).ok())
+    .ok_or_else(|| network_effect_application_error(action, "medium airtime exceeds u64"))?;
+    let arbitration_key = match policy.arbitration_key.as_ref() {
+        Some(key) => network_packet_key_bytes(payload, topology, key, action)?,
+        None => Vec::new(),
+    };
+    let undetected_transform = match policy
+        .contention
+        .as_ref()
+        .and_then(|contention| contention.undetected_transform.as_ref())
+    {
+        Some(transform) => Some(network_byte_template(topology, transform, action)?.to_vec()),
+        None => None,
+    };
+    let configured_resources = resources.as_slice().to_vec();
+    let reset = state
+        .shared_media
+        .get(&owner)
+        .is_none_or(|medium| medium.transition_sequence != action.transition_sequence);
+    if reset {
+        state.shared_media.insert(
+            owner.clone(),
+            NetworkMediumState {
+                resources: configured_resources.clone(),
+                policy: policy_id.clone(),
+                transition_sequence: action.transition_sequence,
+                service_cursor_nanos: now,
+                reservations: Vec::new(),
+            },
+        );
+    }
+    let medium = state.shared_media.get_mut(&owner).ok_or_else(|| {
+        network_effect_application_error(action, "shared-medium state insertion failed")
+    })?;
+    if medium.resources != configured_resources || medium.policy != *policy_id {
+        return Err(network_effect_application_error(
+            action,
+            "shared-medium configuration changed without a new transition sequence",
+        ));
+    }
+    let mut reservation = NetworkMediumReservation {
+        opportunity: opportunity.id(),
+        producer: producer.clone(),
+        arbitration_key,
+        arrival_nanos: now,
+        start_nanos: now,
+        finish_nanos: now,
+        duration_nanos,
+        transmit_power_femtowatts,
+        terminal_collision_applied: false,
+    };
+    use crucible::model::{NetworkPolicyArbitration, NetworkPolicyCollision};
+    let release = match policy.arbitration {
+        NetworkPolicyArbitration::Fifo
+        | NetworkPolicyArbitration::StrictPriority
+        | NetworkPolicyArbitration::CanDominantBit => {
+            medium.reservations.push(reservation);
+            let current = medium.reservations.len() - 1;
+            let mut candidates = medium
+                .reservations
+                .iter()
+                .enumerate()
+                .filter_map(|(index, candidate)| (candidate.start_nanos >= now).then_some(index))
+                .collect::<Vec<_>>();
+            if matches!(
+                policy.arbitration,
+                NetworkPolicyArbitration::StrictPriority | NetworkPolicyArbitration::CanDominantBit
+            ) {
+                candidates.sort_by(|left, right| {
+                    medium.reservations[*left]
+                        .arbitration_key
+                        .cmp(&medium.reservations[*right].arbitration_key)
+                        .then_with(|| {
+                            medium.reservations[*left]
+                                .opportunity
+                                .cmp(&medium.reservations[*right].opportunity)
+                        })
+                });
+            }
+            let mut cursor = medium
+                .reservations
+                .iter()
+                .filter(|candidate| candidate.start_nanos < now)
+                .map(|candidate| candidate.finish_nanos)
+                .max()
+                .unwrap_or(now)
+                .max(now);
+            for index in candidates {
+                let candidate = &mut medium.reservations[index];
+                candidate.start_nanos = cursor;
+                candidate.finish_nanos =
+                    cursor
+                        .checked_add(candidate.duration_nanos)
+                        .ok_or_else(|| {
+                            network_effect_application_error(action, "medium service overflowed")
+                        })?;
+                cursor = candidate.finish_nanos;
+                if index != current {
+                    reschedule_medium_output(
+                        pending_outputs,
+                        candidate.opportunity,
+                        candidate.finish_nanos,
+                        action,
+                    )?;
+                }
+            }
+            medium.service_cursor_nanos = cursor;
+            medium.reservations[current].finish_nanos
+        }
+        NetworkPolicyArbitration::FixedSlots => {
+            let slot_nanos = policy.fixed_slot_nanos.ok_or_else(|| {
+                network_effect_application_error(action, "fixed-slot policy omitted slot width")
+            })?;
+            if duration_nanos > slot_nanos.get() {
+                return Err(network_effect_application_error(
+                    action,
+                    "frame airtime exceeds its fixed medium slot",
+                ));
+            }
+            let resource_index =
+                resources
+                    .as_slice()
+                    .binary_search(producer)
+                    .map_err(|_error| {
+                        network_effect_application_error(action, "fixed-slot producer disappeared")
+                    })?;
+            let resource_count = u64::try_from(resources.as_slice().len()).map_err(|_error| {
+                network_effect_application_error(action, "medium resource count exceeds u64")
+            })?;
+            let index = u64::try_from(resource_index).map_err(|_error| {
+                network_effect_application_error(action, "medium resource index exceeds u64")
+            })?;
+            let cycle = slot_nanos
+                .get()
+                .checked_mul(resource_count)
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "fixed-slot cycle overflowed")
+                })?;
+            let phase = slot_nanos.get().checked_mul(index).ok_or_else(|| {
+                network_effect_application_error(action, "fixed-slot phase overflowed")
+            })?;
+            let mut start = (now / cycle)
+                .checked_mul(cycle)
+                .and_then(|cycle_start| cycle_start.checked_add(phase))
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "fixed-slot coordinate overflowed")
+                })?;
+            if start < now {
+                start = start.checked_add(cycle).ok_or_else(|| {
+                    network_effect_application_error(action, "fixed-slot advance overflowed")
+                })?;
+            }
+            while medium.reservations.iter().any(|existing| {
+                existing.producer == *producer
+                    && intervals_overlap(
+                        start,
+                        start.saturating_add(duration_nanos),
+                        existing.start_nanos,
+                        existing.finish_nanos,
+                    )
+            }) {
+                start = start.checked_add(cycle).ok_or_else(|| {
+                    network_effect_application_error(action, "fixed-slot retry overflowed")
+                })?;
+            }
+            reservation.start_nanos = start;
+            reservation.finish_nanos = start.checked_add(duration_nanos).ok_or_else(|| {
+                network_effect_application_error(action, "fixed-slot finish overflowed")
+            })?;
+            let finish = reservation.finish_nanos;
+            medium.service_cursor_nanos = medium.service_cursor_nanos.max(finish);
+            medium.reservations.push(reservation);
+            finish
+        }
+        NetworkPolicyArbitration::Contention => {
+            let contention = policy.contention.as_ref().ok_or_else(|| {
+                network_effect_application_error(action, "contention policy is absent")
+            })?;
+            let mut attempt = 0_u16;
+            let (start, overlaps) = loop {
+                let exponent = u32::from(
+                    attempt.min(u16::from(contention.maximum_backoff_exponent)),
+                );
+                let maximum_slot = (1_u64 << exponent).saturating_sub(1);
+                let slot = uniform_inclusive(
+                    network_effect_draw(
+                        scenario_seed,
+                        opportunity,
+                        action,
+                        "medium-backoff",
+                        u64::from(attempt),
+                    ),
+                    maximum_slot,
+                );
+                let start = slot
+                    .checked_mul(contention.backoff_slot_nanos.get())
+                    .and_then(|delay| now.checked_add(delay))
+                    .ok_or_else(|| {
+                        network_effect_application_error(action, "medium backoff overflowed")
+                    })?;
+                let finish = start.checked_add(duration_nanos).ok_or_else(|| {
+                    network_effect_application_error(action, "medium contention overflowed")
+                })?;
+                let overlaps = medium
+                    .reservations
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, existing)| {
+                        intervals_overlap(
+                            start,
+                            finish,
+                            existing.start_nanos,
+                            existing.finish_nanos,
+                        )
+                        .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                if overlaps.is_empty() || attempt == contention.maximum_retries {
+                    break (start, overlaps);
+                }
+                attempt = attempt.checked_add(1).ok_or_else(|| {
+                    network_effect_application_error(action, "medium retry count overflowed")
+                })?;
+            };
+            reservation.start_nanos = start;
+            reservation.finish_nanos = start.checked_add(duration_nanos).ok_or_else(|| {
+                network_effect_application_error(action, "medium contention finish overflowed")
+            })?;
+            if !overlaps.is_empty() {
+                reservation.terminal_collision_applied = true;
+                match contention.collision {
+                    NetworkPolicyCollision::DropAll => {
+                        effects.mark_drop();
+                        for index in overlaps {
+                            drop_medium_output(
+                                pending_outputs,
+                                &mut medium.reservations[index],
+                                action,
+                            )?;
+                        }
+                    }
+                    NetworkPolicyCollision::Capture => {
+                        apply_medium_capture(
+                            effects,
+                            pending_outputs,
+                            &mut medium.reservations,
+                            &overlaps,
+                            &reservation,
+                            contention
+                                .capture_threshold_millionths
+                                .ok_or_else(|| {
+                                    network_effect_application_error(
+                                        action,
+                                        "capture collision omitted its threshold",
+                                    )
+                                })?
+                                .get(),
+                            action,
+                        )?;
+                    }
+                    NetworkPolicyCollision::UndetectedTransform => {
+                        let transform = undetected_transform.as_deref().ok_or_else(|| {
+                            network_effect_application_error(
+                                action,
+                                "undetected collision omitted its transform",
+                            )
+                        })?;
+                        xor_repeated(payload, transform);
+                        for index in overlaps {
+                            transform_medium_output(
+                                pending_outputs,
+                                &mut medium.reservations[index],
+                                transform,
+                                action,
+                            )?;
+                        }
+                    }
+                }
+            }
+            let finish = reservation.finish_nanos;
+            medium.service_cursor_nanos = medium.service_cursor_nanos.max(finish);
+            medium.reservations.push(reservation);
+            finish
+        }
+    };
+    effects.mark_serialization_accounted();
+    Ok(Some(release))
+}
+
+fn intervals_overlap(left_start: u64, left_end: u64, right_start: u64, right_end: u64) -> bool {
+    left_start < right_end && right_start < left_end
+}
+
+fn reschedule_medium_output(
+    pending_outputs: &mut [crucible::BackendNetworkOutput],
+    opportunity: ContentHash,
+    finish_nanos: u64,
+    action: &ResolvedBindingAction,
+) -> Result<(), SchedulerError> {
+    let output = pending_medium_output(pending_outputs, opportunity, action)?;
+    let release = output
+        .fault_continuation
+        .cursor()
+        .not_before_nanos()
+        .max(finish_nanos);
+    output
+        .fault_continuation
+        .cursor_mut()
+        .reschedule_queue_until(opportunity, release)
+        .map_err(|error| {
+            network_effect_application_error(
+                action,
+                &format!("reschedule shared-medium contender: {error}"),
+            )
+        })
+}
+
+fn drop_medium_output(
+    pending_outputs: &mut [crucible::BackendNetworkOutput],
+    reservation: &mut NetworkMediumReservation,
+    action: &ResolvedBindingAction,
+) -> Result<(), SchedulerError> {
+    let output = pending_medium_output(pending_outputs, reservation.opportunity, action)?;
+    let mut effects = output.fault_continuation.resolved_frame_effects().clone();
+    effects.mark_drop();
+    output
+        .fault_continuation
+        .set_resolved_frame_effects(effects);
+    reservation.terminal_collision_applied = true;
+    Ok(())
+}
+
+fn transform_medium_output(
+    pending_outputs: &mut [crucible::BackendNetworkOutput],
+    reservation: &mut NetworkMediumReservation,
+    transform: &[u8],
+    action: &ResolvedBindingAction,
+) -> Result<(), SchedulerError> {
+    if reservation.terminal_collision_applied {
+        return Ok(());
+    }
+    let output = pending_medium_output(pending_outputs, reservation.opportunity, action)?;
+    xor_repeated(&mut output.payload, transform);
+    reservation.terminal_collision_applied = true;
+    Ok(())
+}
+
+fn pending_medium_output<'a>(
+    pending_outputs: &'a mut [crucible::BackendNetworkOutput],
+    opportunity: ContentHash,
+    action: &ResolvedBindingAction,
+) -> Result<&'a mut crucible::BackendNetworkOutput, SchedulerError> {
+    pending_outputs
+        .iter_mut()
+        .find(|output| output.fault_continuation.cursor().queue_opportunity() == Some(opportunity))
+        .ok_or_else(|| {
+            network_effect_application_error(
+                action,
+                "shared-medium reservation has no matching pending frame",
+            )
+        })
+}
+
+fn xor_repeated(payload: &mut [u8], transform: &[u8]) {
+    for (index, byte) in payload.iter_mut().enumerate() {
+        *byte ^= transform[index % transform.len()];
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_medium_capture(
+    current_effects: &mut crucible::ResolvedNetworkFrameEffects,
+    pending_outputs: &mut [crucible::BackendNetworkOutput],
+    reservations: &mut [NetworkMediumReservation],
+    overlaps: &[usize],
+    current: &NetworkMediumReservation,
+    threshold_millionths: u64,
+    action: &ResolvedBindingAction,
+) -> Result<(), SchedulerError> {
+    let mut contenders = overlaps
+        .iter()
+        .map(|index| {
+            (
+                Some(*index),
+                reservations[*index].transmit_power_femtowatts,
+                reservations[*index].opportunity,
+            )
+        })
+        .chain(std::iter::once((
+            None,
+            current.transmit_power_femtowatts,
+            current.opportunity,
+        )))
+        .collect::<Vec<_>>();
+    contenders.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.2.cmp(&right.2)));
+    let winner = contenders[0];
+    let runner_up = contenders[1];
+    let captures = u128::from(winner.1)
+        .checked_mul(1_000_000)
+        .is_some_and(|power| power >= u128::from(runner_up.1) * u128::from(threshold_millionths));
+    for (index, _power, _opportunity) in contenders {
+        if captures && index == winner.0 {
+            if let Some(index) = index {
+                reservations[index].terminal_collision_applied = true;
+            }
+            continue;
+        }
+        match index {
+            Some(index) => {
+                drop_medium_output(pending_outputs, &mut reservations[index], action)?;
+            }
+            None => current_effects.mark_drop(),
+        }
+    }
+    Ok(())
 }
 
 fn network_state_machine_initial(
@@ -3060,6 +3598,12 @@ fn apply_network_frame_action(
                 }
             }
         }
+        NetworkEffectSpecification::SharedMedium { .. } => {
+            return Err(network_effect_application_error(
+                action,
+                "shared-medium effect bypassed its joint state executor",
+            ));
+        }
         NetworkEffectSpecification::Flap { .. }
         | NetworkEffectSpecification::NegotiatedMode { .. }
         | NetworkEffectSpecification::PropagationDelay { .. }
@@ -3075,7 +3619,6 @@ fn apply_network_frame_action(
         | NetworkEffectSpecification::ControlPlaneService { .. }
         | NetworkEffectSpecification::FirewallDisposition { .. }
         | NetworkEffectSpecification::ConnectionState { .. }
-        | NetworkEffectSpecification::SharedMedium { .. }
         | NetworkEffectSpecification::Association { .. }
         | NetworkEffectSpecification::ControlResultTransform { .. }
         | NetworkEffectSpecification::CustodyQueue { .. } => {
@@ -3820,6 +4363,460 @@ mod tests {
             .unwrap_or_else(|error| panic!("test network effect: {error}")),
         );
         action
+    }
+
+    fn medium_action(
+        resources: crucible::model::ObjectIdSet,
+        policy: FaultObjectId,
+        power: u64,
+    ) -> ResolvedBindingAction {
+        let mut action = action();
+        action.target = ResolvedFaultTarget::NetworkMedium {
+            medium: id("test-medium"),
+            resource: id("test-channel"),
+        };
+        action.effect = Arc::new(
+            EffectRequest::new(
+                EFFECT_SEMANTIC_VERSION,
+                EffectLifetime::Persistent,
+                EffectSpecification::Network(NetworkEffectSpecification::SharedMedium {
+                    resources,
+                    policy,
+                    transmit_power_femtowatts: positive(power),
+                }),
+            )
+            .unwrap_or_else(|error| panic!("test shared-medium effect: {error}")),
+        );
+        action
+    }
+
+    fn medium_opportunity(producer: &str, sequence: u64, payload: &[u8]) -> FaultOpportunity {
+        FaultOpportunity::new(
+            ResolvedFaultTarget::NetworkMedium {
+                medium: id("test-medium"),
+                resource: id("test-channel"),
+            },
+            crucible::model::FaultOperation::NetworkTraverse,
+            FaultPhase::Queue,
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            sequence,
+            Some(crucible::model::FaultDirection::AToB),
+            OpportunityPayload::NetworkFrame {
+                producer: id(producer),
+                destination: id("receiver"),
+                producer_sequence: sequence,
+                protocol_expansion_path: Vec::new(),
+                generated_response_depth: 0,
+                generated_response_cause: None,
+                forwarding_mutation_path: Vec::new(),
+                length_bytes: u64::try_from(payload.len())
+                    .unwrap_or_else(|error| panic!("test payload length: {error}")),
+                payload_digest: ContentHash::from_bytes(payload),
+            },
+        )
+        .unwrap_or_else(|error| panic!("test medium opportunity: {error}"))
+    }
+
+    fn medium_topology(
+        policy_id: FaultObjectId,
+        policy: crucible::model::NetworkPolicyMediumAccess,
+        additional: Vec<crucible::model::WorldNetworkPolicyArtifact>,
+    ) -> crucible::model::WorldFaultTopology {
+        let mut topology = crucible::model::WorldFaultTopology::default();
+        topology
+            .network_policy_artifacts
+            .push(crucible::model::WorldNetworkPolicyArtifact {
+                id: policy_id,
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::MediumAccess(policy),
+            });
+        topology.network_policy_artifacts.extend(additional);
+        topology
+            .network_policy_artifacts
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        topology
+    }
+
+    fn medium_policy(
+        arbitration: crucible::model::NetworkPolicyArbitration,
+        collision: crucible::model::NetworkPolicyCollision,
+    ) -> crucible::model::NetworkPolicyMediumAccess {
+        crucible::model::NetworkPolicyMediumAccess {
+            arbitration,
+            arbitration_key: None,
+            fixed_slot_nanos: None,
+            contention: (arbitration == crucible::model::NetworkPolicyArbitration::Contention)
+                .then_some(crucible::model::NetworkPolicyContention {
+                    collision,
+                    capture_threshold_millionths: (collision
+                        == crucible::model::NetworkPolicyCollision::Capture)
+                        .then_some(positive(1_000_000)),
+                    undetected_transform: None,
+                    backoff_slot_nanos: positive(100),
+                    maximum_backoff_exponent: 8,
+                    maximum_retries: 0,
+                }),
+            duty_cycle_numerator: positive(1),
+            duty_cycle_denominator: positive(1),
+        }
+    }
+
+    fn pending_medium_frame(
+        opportunity: &FaultOpportunity,
+        release: u64,
+        effects: crucible::ResolvedNetworkFrameEffects,
+        payload: Vec<u8>,
+    ) -> crucible::BackendNetworkOutput {
+        let OpportunityPayload::NetworkFrame {
+            producer,
+            destination,
+            producer_sequence,
+            ..
+        } = opportunity.payload()
+        else {
+            panic!("test medium opportunity must carry a frame");
+        };
+        let mut continuation = crucible::BackendNetworkFaultContinuation::default();
+        continuation
+            .cursor_mut()
+            .defer_until(release, opportunity.id());
+        continuation.set_resolved_frame_effects(effects);
+        crucible::BackendNetworkOutput {
+            source: crucible::NodeId {
+                name: producer.as_str().to_owned(),
+            },
+            destination: crucible::NodeId {
+                name: destination.as_str().to_owned(),
+            },
+            emit_icount: crucible::Icount { retired: 0 },
+            sequence: *producer_sequence,
+            payload,
+            route: None,
+            fault_continuation: continuation,
+        }
+    }
+
+    #[test]
+    fn shared_medium_serial_arbitration_reschedules_by_declared_order() {
+        let resources = crucible::model::ObjectIdSet::new(vec![id("sender-a"), id("sender-b")])
+            .unwrap_or_else(|error| panic!("test medium resources: {error}"));
+        for arbitration in [
+            crucible::model::NetworkPolicyArbitration::Fifo,
+            crucible::model::NetworkPolicyArbitration::StrictPriority,
+            crucible::model::NetworkPolicyArbitration::CanDominantBit,
+        ] {
+            let policy_id = id("serial-medium-policy");
+            let key_id = id("medium-arbitration-key");
+            let mut policy = medium_policy(
+                arbitration,
+                crucible::model::NetworkPolicyCollision::DropAll,
+            );
+            let additional = if arbitration == crucible::model::NetworkPolicyArbitration::Fifo {
+                Vec::new()
+            } else {
+                policy.arbitration_key = Some(key_id.clone());
+                vec![crucible::model::WorldNetworkPolicyArtifact {
+                    id: key_id,
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::PacketKey {
+                        ranges: vec![
+                            crucible::model::ByteRange::new(0, 1)
+                                .unwrap_or_else(|error| panic!("test packet key: {error}")),
+                        ],
+                    },
+                }]
+            };
+            let topology = medium_topology(policy_id.clone(), policy, additional);
+            let action = medium_action(resources.clone(), policy_id, 1);
+            let first_opportunity = medium_opportunity("sender-a", 1, &[0xff]);
+            let mut first_payload = vec![0xff];
+            let mut first_effects = crucible::ResolvedNetworkFrameEffects::default();
+            let mut state = NetworkEffectRuntimeState::default();
+            let first_release = apply_network_shared_medium(
+                &mut first_payload,
+                &mut first_effects,
+                &mut state,
+                &mut [],
+                &topology,
+                &action,
+                &first_opportunity,
+                ContentHash::from_bytes(b"serial-medium"),
+                &resources,
+                &id("serial-medium-policy"),
+                1,
+                Some(1_000_000_000),
+            )
+            .unwrap_or_else(|error| panic!("first serial contender: {error}"))
+            .unwrap_or_else(|| panic!("first serial contender must defer"));
+            assert_eq!(first_release, 8);
+            let mut pending = vec![pending_medium_frame(
+                &first_opportunity,
+                first_release,
+                first_effects,
+                first_payload,
+            )];
+            let second_opportunity = medium_opportunity("sender-b", 2, &[0x00]);
+            let mut second_payload = vec![0x00];
+            let mut second_effects = crucible::ResolvedNetworkFrameEffects::default();
+            let second_release = apply_network_shared_medium(
+                &mut second_payload,
+                &mut second_effects,
+                &mut state,
+                &mut pending,
+                &topology,
+                &action,
+                &second_opportunity,
+                ContentHash::from_bytes(b"serial-medium"),
+                &resources,
+                &id("serial-medium-policy"),
+                1,
+                Some(1_000_000_000),
+            )
+            .unwrap_or_else(|error| panic!("second serial contender: {error}"))
+            .unwrap_or_else(|| panic!("second serial contender must defer"));
+            if arbitration == crucible::model::NetworkPolicyArbitration::Fifo {
+                assert_eq!(second_release, 16);
+                assert_eq!(pending[0].fault_continuation.cursor().not_before_nanos(), 8);
+            } else {
+                assert_eq!(second_release, 8);
+                assert_eq!(
+                    pending[0].fault_continuation.cursor().not_before_nanos(),
+                    16
+                );
+            }
+            assert!(second_effects.serialization_is_accounted());
+        }
+    }
+
+    #[test]
+    fn shared_medium_fixed_slots_follow_canonical_resource_order() {
+        let resources = crucible::model::ObjectIdSet::new(vec![id("sender-b"), id("sender-a")])
+            .unwrap_or_else(|error| panic!("test medium resources: {error}"));
+        let policy_id = id("fixed-medium-policy");
+        let mut policy = medium_policy(
+            crucible::model::NetworkPolicyArbitration::FixedSlots,
+            crucible::model::NetworkPolicyCollision::DropAll,
+        );
+        policy.fixed_slot_nanos = Some(positive(10));
+        let topology = medium_topology(policy_id.clone(), policy, Vec::new());
+        let action = medium_action(resources.clone(), policy_id.clone(), 1);
+        let mut state = NetworkEffectRuntimeState::default();
+        let mut pending = Vec::new();
+        let mut releases = Vec::new();
+        for (producer, sequence) in [("sender-a", 1), ("sender-b", 2)] {
+            let opportunity = medium_opportunity(producer, sequence, &[0]);
+            let mut payload = vec![0];
+            let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+            releases.push(
+                apply_network_shared_medium(
+                    &mut payload,
+                    &mut effects,
+                    &mut state,
+                    &mut pending,
+                    &topology,
+                    &action,
+                    &opportunity,
+                    ContentHash::from_bytes(b"fixed-medium"),
+                    &resources,
+                    &policy_id,
+                    1,
+                    Some(1_000_000_000),
+                )
+                .unwrap_or_else(|error| panic!("fixed-slot contender: {error}"))
+                .unwrap_or_else(|| panic!("fixed-slot contender must defer")),
+            );
+        }
+        assert_eq!(releases, vec![8, 18]);
+    }
+
+    #[test]
+    fn shared_medium_contention_retries_and_terminal_outcomes_are_exact() {
+        let resources = crucible::model::ObjectIdSet::new(vec![id("sender-a"), id("sender-b")])
+            .unwrap_or_else(|error| panic!("test medium resources: {error}"));
+        let scenario_seed = ContentHash::from_bytes(b"contention-medium");
+        let policy_id = id("contention-medium-policy");
+        let mut retry_policy = medium_policy(
+            crucible::model::NetworkPolicyArbitration::Contention,
+            crucible::model::NetworkPolicyCollision::DropAll,
+        );
+        retry_policy
+            .contention
+            .as_mut()
+            .unwrap_or_else(|| panic!("test contention policy must exist"))
+            .maximum_retries = 1;
+        let topology = medium_topology(policy_id.clone(), retry_policy, Vec::new());
+        let action = medium_action(resources.clone(), policy_id.clone(), 1);
+        let first_opportunity = medium_opportunity("sender-a", 1, &[1]);
+        let mut first_payload = vec![1];
+        let mut first_effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut state = NetworkEffectRuntimeState::default();
+        let first_release = apply_network_shared_medium(
+            &mut first_payload,
+            &mut first_effects,
+            &mut state,
+            &mut [],
+            &topology,
+            &action,
+            &first_opportunity,
+            scenario_seed,
+            &resources,
+            &policy_id,
+            1,
+            Some(1_000_000_000),
+        )
+        .unwrap_or_else(|error| panic!("first contention frame: {error}"))
+        .unwrap_or_else(|| panic!("first contention frame must defer"));
+        let mut pending = vec![pending_medium_frame(
+            &first_opportunity,
+            first_release,
+            first_effects,
+            first_payload,
+        )];
+        let (second_opportunity, expected_slot) = (2_u64..=256)
+            .find_map(|sequence| {
+                let opportunity = medium_opportunity("sender-b", sequence, &[2]);
+                let slot = uniform_inclusive(
+                    network_effect_draw(scenario_seed, &opportunity, &action, "medium-backoff", 1),
+                    1,
+                );
+                (slot == 1).then_some((opportunity, slot))
+            })
+            .unwrap_or_else(|| panic!("test must find a nonzero keyed backoff"));
+        let mut second_payload = vec![2];
+        let mut second_effects = crucible::ResolvedNetworkFrameEffects::default();
+        let second_release = apply_network_shared_medium(
+            &mut second_payload,
+            &mut second_effects,
+            &mut state,
+            &mut pending,
+            &topology,
+            &action,
+            &second_opportunity,
+            scenario_seed,
+            &resources,
+            &policy_id,
+            1,
+            Some(1_000_000_000),
+        )
+        .unwrap_or_else(|error| panic!("retried contention frame: {error}"))
+        .unwrap_or_else(|| panic!("retried contention frame must defer"));
+        assert_eq!(expected_slot, 1);
+        assert_eq!(second_release, 108);
+        assert!(!second_effects.is_dropped());
+        assert!(
+            !pending[0]
+                .fault_continuation
+                .resolved_frame_effects()
+                .is_dropped()
+        );
+
+        for collision in [
+            crucible::model::NetworkPolicyCollision::DropAll,
+            crucible::model::NetworkPolicyCollision::Capture,
+            crucible::model::NetworkPolicyCollision::UndetectedTransform,
+        ] {
+            let policy_id = id("terminal-medium-policy");
+            let transform_id = id("collision-transform");
+            let mut policy = medium_policy(
+                crucible::model::NetworkPolicyArbitration::Contention,
+                collision,
+            );
+            if let Some(contention) = policy.contention.as_mut() {
+                contention.capture_threshold_millionths = (collision
+                    == crucible::model::NetworkPolicyCollision::Capture)
+                    .then_some(positive(1_500_000));
+            }
+            let additional =
+                if collision == crucible::model::NetworkPolicyCollision::UndetectedTransform {
+                    policy
+                        .contention
+                        .as_mut()
+                        .unwrap_or_else(|| panic!("test contention policy must exist"))
+                        .undetected_transform = Some(transform_id.clone());
+                    vec![crucible::model::WorldNetworkPolicyArtifact {
+                        id: transform_id,
+                        semantic_version: 1,
+                        artifact: crucible::model::NetworkPolicyArtifactKind::ByteTemplate {
+                            bytes: vec![0xff],
+                        },
+                    }]
+                } else {
+                    Vec::new()
+                };
+            let topology = medium_topology(policy_id.clone(), policy, additional);
+            let action = medium_action(resources.clone(), policy_id.clone(), 2);
+            let first_opportunity = medium_opportunity("sender-a", 1, &[0x0f]);
+            let mut first_payload = vec![0x0f];
+            let mut first_effects = crucible::ResolvedNetworkFrameEffects::default();
+            let mut state = NetworkEffectRuntimeState::default();
+            let release = apply_network_shared_medium(
+                &mut first_payload,
+                &mut first_effects,
+                &mut state,
+                &mut [],
+                &topology,
+                &action,
+                &first_opportunity,
+                scenario_seed,
+                &resources,
+                &policy_id,
+                1,
+                Some(1_000_000_000),
+            )
+            .unwrap_or_else(|error| panic!("terminal first frame: {error}"))
+            .unwrap_or_else(|| panic!("terminal first frame must defer"));
+            let mut pending = vec![pending_medium_frame(
+                &first_opportunity,
+                release,
+                first_effects,
+                first_payload,
+            )];
+            let second_opportunity = medium_opportunity("sender-b", 2, &[0xf0]);
+            let mut second_payload = vec![0xf0];
+            let mut second_effects = crucible::ResolvedNetworkFrameEffects::default();
+            apply_network_shared_medium(
+                &mut second_payload,
+                &mut second_effects,
+                &mut state,
+                &mut pending,
+                &topology,
+                &action,
+                &second_opportunity,
+                scenario_seed,
+                &resources,
+                &policy_id,
+                2,
+                Some(1_000_000_000),
+            )
+            .unwrap_or_else(|error| panic!("terminal second frame: {error}"));
+            match collision {
+                crucible::model::NetworkPolicyCollision::DropAll => {
+                    assert!(second_effects.is_dropped());
+                    assert!(
+                        pending[0]
+                            .fault_continuation
+                            .resolved_frame_effects()
+                            .is_dropped()
+                    );
+                }
+                crucible::model::NetworkPolicyCollision::Capture => {
+                    assert!(!second_effects.is_dropped());
+                    assert!(
+                        pending[0]
+                            .fault_continuation
+                            .resolved_frame_effects()
+                            .is_dropped()
+                    );
+                }
+                crucible::model::NetworkPolicyCollision::UndetectedTransform => {
+                    assert_eq!(second_payload, vec![0x0f]);
+                    assert_eq!(pending[0].payload, vec![0xf0]);
+                }
+            }
+        }
     }
 
     fn ethernet_ipv4_frame(data: &[u8], flags_offset: u16) -> Vec<u8> {

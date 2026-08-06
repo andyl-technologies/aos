@@ -104,6 +104,7 @@ fn validate_network_adapter_checkpoint(
         || checkpoint.effect_state.burst_states.len() > 65_536
         || checkpoint.effect_state.state_machines.len() > 65_536
         || checkpoint.effect_state.connection_tables.len() > 65_536
+        || checkpoint.effect_state.shared_media.len() > 65_536
         || checkpoint.effect_state.backpressure.len() > 65_536
     {
         return Err(SchedulerError::BoundaryViolation {
@@ -169,6 +170,71 @@ fn validate_network_adapter_checkpoint(
         return Err(SchedulerError::BoundaryViolation {
             message: String::from("network state-machine checkpoint is invalid"),
         });
+    }
+    let medium_key_bytes = checkpoint
+        .effect_state
+        .shared_media
+        .values()
+        .flat_map(|medium| &medium.reservations)
+        .try_fold(0_usize, |total, reservation| {
+            total.checked_add(reservation.arbitration_key.len())
+        })
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network medium checkpoint key bytes overflowed"),
+        })?;
+    let medium_reservations = checkpoint
+        .effect_state
+        .shared_media
+        .values()
+        .try_fold(0_usize, |total, medium| {
+            total.checked_add(medium.reservations.len())
+        })
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network medium checkpoint reservation count overflowed"),
+        })?;
+    if medium_key_bytes > HARD_PENDING_NETWORK_BYTES
+        || medium_reservations > HARD_PENDING_NETWORK_FRAMES
+        || checkpoint
+            .effect_state
+            .shared_media
+            .iter()
+            .any(|(key, medium)| {
+                key.effect != crucible::model::EffectKind::NetworkSharedMedium
+                    || medium.resources.is_empty()
+                    || medium.resources.len() > 65_536
+                    || medium.policy.as_str().is_empty()
+                    || medium.reservations.len() > HARD_PENDING_NETWORK_FRAMES
+                    || medium.resources.windows(2).any(|pair| pair[0] >= pair[1])
+                    || medium.reservations.iter().any(|reservation| {
+                        reservation.producer.as_str().is_empty()
+                            || reservation.arbitration_key.len() > HARD_PENDING_NETWORK_BYTES
+                            || reservation.arrival_nanos > reservation.start_nanos
+                            || reservation.start_nanos >= reservation.finish_nanos
+                            || reservation.duration_nanos
+                                != reservation.finish_nanos - reservation.start_nanos
+                            || reservation.transmit_power_femtowatts == 0
+                    })
+            })
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("network shared-medium checkpoint exceeds hard bounds"),
+        });
+    }
+    for medium in checkpoint.effect_state.shared_media.values() {
+        let mut opportunities = BTreeSet::new();
+        if medium.reservations.iter().any(|reservation| {
+            medium
+                .resources
+                .binary_search(&reservation.producer)
+                .is_err()
+                || !opportunities.insert(reservation.opportunity)
+        }) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network shared-medium checkpoint has an unknown producer or repeated reservation",
+                ),
+            });
+        }
     }
     for (target, queue) in &checkpoint.effect_state.queues {
         if queue.reservations.len() > HARD_PENDING_NETWORK_FRAMES
@@ -359,6 +425,28 @@ struct NetworkConnectionEntry {
     last_used_nanos: u64,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct NetworkMediumReservation {
+    opportunity: ContentHash,
+    producer: FaultObjectId,
+    arbitration_key: Vec<u8>,
+    arrival_nanos: u64,
+    start_nanos: u64,
+    finish_nanos: u64,
+    duration_nanos: u64,
+    transmit_power_femtowatts: u64,
+    terminal_collision_applied: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct NetworkMediumState {
+    resources: Vec<FaultObjectId>,
+    policy: FaultObjectId,
+    transition_sequence: u64,
+    service_cursor_nanos: u64,
+    reservations: Vec<NetworkMediumReservation>,
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct NetworkEffectRuntimeState {
     token_buckets: BTreeMap<NetworkEffectStateKey, NetworkTokenBucketState>,
@@ -367,6 +455,7 @@ struct NetworkEffectRuntimeState {
     state_machines: BTreeMap<NetworkEffectStateKey, NetworkStateMachineRuntime>,
     connection_tables:
         BTreeMap<NetworkEffectStateKey, BTreeMap<ContentHash, NetworkConnectionEntry>>,
+    shared_media: BTreeMap<NetworkEffectStateKey, NetworkMediumState>,
     backpressure: BTreeMap<NetworkEffectStateKey, NetworkPauseState>,
     boundary: boundary::BoundaryNetworkState,
 }
@@ -409,6 +498,7 @@ fn stage_network_restore(
             }
         })?;
     validate_network_adapter_checkpoint(&adapter)?;
+    validate_medium_pending_links(&adapter.effect_state, &pending_outputs)?;
     let mut staged_scheduler = scheduler.clone();
     staged_scheduler.restore_network_checkpoint(&scheduler_state)?;
     let actual = network_state_digest_from_parts(
@@ -433,6 +523,47 @@ fn stage_network_restore(
         adapter,
         identity,
     })
+}
+
+fn validate_medium_pending_links(
+    state: &NetworkEffectRuntimeState,
+    pending_outputs: &[crucible::BackendNetworkOutput],
+) -> Result<(), SchedulerError> {
+    let pending = pending_outputs
+        .iter()
+        .filter_map(|output| output.fault_continuation.cursor().queue_opportunity())
+        .collect::<BTreeSet<_>>();
+    if state
+        .shared_media
+        .values()
+        .flat_map(|medium| &medium.reservations)
+        .any(|reservation| !pending.contains(&reservation.opportunity))
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "network shared-medium checkpoint reservation has no pending frame",
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn checkpoint_network_effect_state(
+    state: &NetworkEffectRuntimeState,
+    pending_outputs: &[crucible::BackendNetworkOutput],
+) -> NetworkEffectRuntimeState {
+    let pending = pending_outputs
+        .iter()
+        .filter_map(|output| output.fault_continuation.cursor().queue_opportunity())
+        .collect::<BTreeSet<_>>();
+    let mut checkpoint = state.clone();
+    checkpoint.shared_media.retain(|_key, medium| {
+        medium
+            .reservations
+            .retain(|reservation| pending.contains(&reservation.opportunity));
+        !medium.reservations.is_empty()
+    });
+    checkpoint
 }
 
 fn network_state_digest_from_parts(
@@ -553,12 +684,19 @@ impl ProductionFaultNetworkInterceptor {
         pending_outputs: &[crucible::BackendNetworkOutput],
         backend: &mut ProductionNodeSet,
     ) -> Result<ProductionFaultRuntimeCheckpoint, SchedulerError> {
-        let network_state = self.network_state_digest(scheduler, pending_outputs)?;
+        let effect_state = checkpoint_network_effect_state(&self.effect_state, pending_outputs);
+        let network_state = network_state_digest_from_parts(
+            scheduler,
+            pending_outputs,
+            self.coordinate,
+            self.coordinate_sequence,
+            &effect_state,
+        )?;
         let adapter_state = serde_json::to_vec(&NetworkAdapterCheckpoint {
             semantic_version: FAULT_RUNTIME_STATE_VERSION,
             coordinate: self.coordinate,
             coordinate_sequence: self.coordinate_sequence,
-            effect_state: self.effect_state.clone(),
+            effect_state,
         })
         .map_err(|error| SchedulerError::BoundaryViolation {
             message: format!("encode production network adapter checkpoint: {error}"),
@@ -574,20 +712,6 @@ impl ProductionFaultNetworkInterceptor {
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: format!("capture production fault continuation: {error}"),
             })
-    }
-
-    fn network_state_digest(
-        &self,
-        scheduler: &SingleScheduler,
-        pending_outputs: &[crucible::BackendNetworkOutput],
-    ) -> Result<ContentHash, SchedulerError> {
-        network_state_digest_from_parts(
-            scheduler,
-            pending_outputs,
-            self.coordinate,
-            self.coordinate_sequence,
-            &self.effect_state,
-        )
     }
 
     /// Evaluates one ordered scheduler boundary through the owned continuation.
@@ -1270,6 +1394,29 @@ fn append_network_effect_state(
             append_network_state_machine(material, &entry.machine)?;
             material.extend_from_slice(&entry.created_by.bytes);
             material.extend_from_slice(&entry.last_used_nanos.to_be_bytes());
+        }
+    }
+    append_evidence_count(material, state.shared_media.len())?;
+    for (key, medium) in &state.shared_media {
+        append_network_effect_state_key(material, key)?;
+        append_evidence_count(material, medium.resources.len())?;
+        for resource in &medium.resources {
+            append_evidence_bytes(material, resource.as_str().as_bytes())?;
+        }
+        append_evidence_bytes(material, medium.policy.as_str().as_bytes())?;
+        material.extend_from_slice(&medium.transition_sequence.to_be_bytes());
+        material.extend_from_slice(&medium.service_cursor_nanos.to_be_bytes());
+        append_evidence_count(material, medium.reservations.len())?;
+        for reservation in &medium.reservations {
+            material.extend_from_slice(&reservation.opportunity.bytes);
+            append_evidence_bytes(material, reservation.producer.as_str().as_bytes())?;
+            append_evidence_bytes(material, &reservation.arbitration_key)?;
+            material.extend_from_slice(&reservation.arrival_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.start_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.finish_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.duration_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.transmit_power_femtowatts.to_be_bytes());
+            material.push(u8::from(reservation.terminal_collision_applied));
         }
     }
     append_evidence_count(material, state.backpressure.len())?;
@@ -2116,5 +2263,83 @@ mod tests {
             .unwrap_or_else(|| panic!("first forwarding mutation must fit"));
         assert_ne!(baseline, evidence(&rerouted));
         assert_ne!(evidence(&response), evidence(&rerouted));
+    }
+
+    #[test]
+    fn shared_medium_checkpoint_joins_pending_frames_and_hashes_every_reservation_field() {
+        let opportunity = ContentHash::from_bytes(b"medium-reservation");
+        let target = ResolvedFaultTarget::NetworkMedium {
+            medium: object_id("radio-medium"),
+            resource: object_id("radio-channel"),
+        };
+        let key = NetworkEffectStateKey {
+            binding: object_id("medium-binding"),
+            target,
+            effect: crucible::model::EffectKind::NetworkSharedMedium,
+        };
+        let reservation = NetworkMediumReservation {
+            opportunity,
+            producer: object_id("left"),
+            arbitration_key: vec![0, 1],
+            arrival_nanos: 10,
+            start_nanos: 20,
+            finish_nanos: 30,
+            duration_nanos: 10,
+            transmit_power_femtowatts: 40,
+            terminal_collision_applied: false,
+        };
+        let mut state = NetworkEffectRuntimeState::default();
+        state.shared_media.insert(
+            key,
+            NetworkMediumState {
+                resources: vec![object_id("left"), object_id("right")],
+                policy: object_id("radio-access"),
+                transition_sequence: 1,
+                service_cursor_nanos: 30,
+                reservations: vec![reservation],
+            },
+        );
+        let mut continuation = crucible::BackendNetworkFaultContinuation::default();
+        continuation.cursor_mut().defer_until(30, opportunity);
+        let pending = vec![BackendNetworkOutput {
+            source: crucible::NodeId {
+                name: String::from("left"),
+            },
+            destination: crucible::NodeId {
+                name: String::from("right"),
+            },
+            emit_icount: Icount { retired: 0 },
+            sequence: 1,
+            payload: vec![0],
+            route: None,
+            fault_continuation: continuation,
+        }];
+        let retained = checkpoint_network_effect_state(&state, &pending);
+        validate_medium_pending_links(&retained, &pending)
+            .unwrap_or_else(|error| panic!("joined medium checkpoint: {error}"));
+        assert_eq!(retained.shared_media.len(), 1);
+        assert!(
+            checkpoint_network_effect_state(&state, &[])
+                .shared_media
+                .is_empty()
+        );
+        assert!(validate_medium_pending_links(&state, &[]).is_err());
+
+        let evidence = |state: &NetworkEffectRuntimeState| {
+            let mut material = Vec::new();
+            append_network_effect_state(&mut material, state)
+                .unwrap_or_else(|error| panic!("medium state evidence: {error}"));
+            ContentHash::from_bytes(&material)
+        };
+        let baseline = evidence(&retained);
+        let mut changed = retained;
+        changed
+            .shared_media
+            .values_mut()
+            .next()
+            .unwrap_or_else(|| panic!("retained medium state must exist"))
+            .reservations[0]
+            .transmit_power_femtowatts = 41;
+        assert_ne!(baseline, evidence(&changed));
     }
 }
