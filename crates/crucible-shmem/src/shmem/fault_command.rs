@@ -13,20 +13,22 @@ use thiserror::Error;
 /// Fault command ABI major version.
 pub const FAULT_COMMAND_ABI_MAJOR: u16 = 1;
 /// Fault command ABI minor version.
-pub const FAULT_COMMAND_ABI_MINOR: u16 = 0;
+pub const FAULT_COMMAND_ABI_MINOR: u16 = 1;
 /// Exact semantic version implemented by every initial command kind.
 pub const FAULT_COMMAND_SEMANTIC_VERSION: u32 = 1;
 /// Default maximum encoded command or result payload bytes.
 ///
-/// This is the exact envelope for a default 1 MiB replacement mutation: the
-/// fixed memory payload header, one mask byte, and one replacement byte per
-/// selected guest byte.
-pub const DEFAULT_FAULT_PAYLOAD_BYTES: u32 = 2_097_256;
+/// This is the exact envelope for 64 replacement actions whose cumulative
+/// selected bytes reach the default 1 MiB ceiling: two bytes of mask/value
+/// data per selected byte, every action header and record, and the batch
+/// header.
+pub const DEFAULT_FAULT_PAYLOAD_BYTES: u32 = 2_106_448;
 /// Hard maximum command or result payload bytes.
 ///
-/// This admits the 16 MiB memory-mutation ceiling with one mask byte and one
-/// replacement byte per changed byte plus the fixed version-1 header.
-pub const HARD_FAULT_PAYLOAD_BYTES: u32 = 33_554_536;
+/// This admits 64 replacement actions whose cumulative selected bytes reach
+/// the 16 MiB hard ceiling, including every action header and record plus the
+/// batch header.
+pub const HARD_FAULT_PAYLOAD_BYTES: u32 = 33_563_728;
 /// Default bytes reserved for each per-node command or result payload arena.
 pub const DEFAULT_FAULT_PAYLOAD_ARENA_BYTES: u32 = DEFAULT_FAULT_PAYLOAD_BYTES;
 /// Hard ceiling for each per-node command or result payload arena.
@@ -342,8 +344,10 @@ const _: () = assert!(FAULT_PAYLOAD_ARENA_WRITE_CURSOR_OFFSET == 64);
 
 /// No optional command behavior is selected.
 pub const FAULT_COMMAND_FLAG_NONE: u16 = 0;
+/// Resolves and authenticates a mutation without making guest-visible changes.
+pub const FAULT_COMMAND_FLAG_PREPARE_ONLY: u16 = 1 << 0;
 /// The only bit mask accepted for command flags in ABI v1.
-pub const FAULT_COMMAND_FLAGS_V1_MASK: u16 = FAULT_COMMAND_FLAG_NONE;
+pub const FAULT_COMMAND_FLAGS_V1_MASK: u16 = FAULT_COMMAND_FLAG_PREPARE_ONLY;
 
 /// Closed capability scope shared by the host, plugin, and QEMU dispatcher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -563,6 +567,8 @@ pub enum FaultResultStatus {
     DuplicateSequence = 12,
     /// The command or result payload failed digest authentication.
     AuthenticationFailed = 13,
+    /// Preconditions were resolved at a frozen boundary without mutation.
+    Prepared = 14,
 }
 
 impl FaultResultStatus {
@@ -581,6 +587,7 @@ impl FaultResultStatus {
             11 => Ok(Self::MalformedCommand),
             12 => Ok(Self::DuplicateSequence),
             13 => Ok(Self::AuthenticationFailed),
+            14 => Ok(Self::Prepared),
             _ => Err(FaultAbiError::UnknownResultStatus(value)),
         }
     }
@@ -713,7 +720,7 @@ impl FaultCommandHeaderV1 {
 
     fn validate(&self) -> Result<(), FaultAbiError> {
         if self.abi_major != FAULT_COMMAND_ABI_MAJOR
-            || self.abi_minor > FAULT_COMMAND_ABI_MINOR
+            || self.abi_minor != FAULT_COMMAND_ABI_MINOR
             || self.semantic_version != FAULT_COMMAND_SEMANTIC_VERSION
         {
             return Err(FaultAbiError::Version);
@@ -849,7 +856,7 @@ impl FaultResultHeaderV1 {
             return Err(FaultAbiError::ReservedNonzero);
         }
         if value.abi_major != FAULT_COMMAND_ABI_MAJOR
-            || value.abi_minor > FAULT_COMMAND_ABI_MINOR
+            || value.abi_minor != FAULT_COMMAND_ABI_MINOR
             || value.semantic_version != FAULT_COMMAND_SEMANTIC_VERSION
         {
             return Err(FaultAbiError::Version);
@@ -2249,6 +2256,10 @@ pub(crate) fn emit_fault_command_c_header(out: &mut String) {
 
     for (name, value) in [
         (
+            "CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY",
+            FAULT_COMMAND_FLAG_PREPARE_ONLY,
+        ),
+        (
             "CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY",
             FaultBoundaryPhase::NodeBoundary as u16,
         ),
@@ -2328,6 +2339,10 @@ pub(crate) fn emit_fault_command_c_header(out: &mut String) {
             "CRUCIBLE_FAULT_STATUS_AUTHENTICATION_FAILED",
             FaultResultStatus::AuthenticationFailed as u16,
         ),
+        (
+            "CRUCIBLE_FAULT_STATUS_PREPARED",
+            FaultResultStatus::Prepared as u16,
+        ),
     ] {
         let _ = writeln!(out, "#define {name} {value}");
     }
@@ -2379,6 +2394,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_payload_arena_header, write
 "#,
     );
     crate::fault_memory::emit_memory_fault_c_header(out);
+    crate::fault_memory_batch::emit_memory_batch_c_header(out);
     crate::fault_memory_evidence::emit_memory_evidence_c_header(out);
 }
 
@@ -2436,6 +2452,12 @@ mod tests {
             FaultCommandHeaderV1::decode(&nonzero_reserved, &arena),
             Err(FaultAbiError::ReservedNonzero)
         );
+        let mut obsolete_minor = value;
+        obsolete_minor.abi_minor = FAULT_COMMAND_ABI_MINOR - 1;
+        assert_eq!(
+            FaultCommandHeaderV1::decode(&obsolete_minor.encode(), &arena),
+            Err(FaultAbiError::Version)
+        );
     }
 
     #[test]
@@ -2466,11 +2488,24 @@ mod tests {
         assert_eq!(decoded, value);
         assert_eq!(selected, payload);
 
-        let mut rejected = value;
+        let mut rejected = value.clone();
         rejected.status = FaultResultStatus::InvalidTarget;
         assert_eq!(
             FaultResultHeaderV1::decode(&rejected.encode(), payload),
             Err(FaultAbiError::ResultInvariant)
+        );
+
+        let mut prepared = value;
+        prepared.status = FaultResultStatus::Prepared;
+        prepared.applied_icount = 0;
+        prepared.after_hash = prepared.before_hash;
+        let decoded = FaultResultHeaderV1::decode(&prepared.encode(), payload)
+            .unwrap_or_else(|error| panic!("decode prepared result: {error}"));
+        assert_eq!(decoded.0, prepared);
+        prepared.abi_minor = FAULT_COMMAND_ABI_MINOR - 1;
+        assert_eq!(
+            FaultResultHeaderV1::decode(&prepared.encode(), payload),
+            Err(FaultAbiError::Version)
         );
     }
 

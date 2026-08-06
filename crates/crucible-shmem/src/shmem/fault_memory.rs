@@ -49,8 +49,8 @@ pub const HARD_MEMORY_MUTATION_BYTES: u32 = 16_777_216;
 pub const MEMORY_MUTATION_NO_VCPU: u32 = u32::MAX;
 
 const _: () = assert!(
-    HARD_FAULT_PAYLOAD_BYTES as usize
-        == MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES + 2 * HARD_MEMORY_MUTATION_BYTES as usize
+    MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES + 2 * HARD_MEMORY_MUTATION_BYTES as usize
+        <= HARD_FAULT_PAYLOAD_BYTES as usize
 );
 
 /// Address space selected by one memory mutation.
@@ -139,7 +139,31 @@ impl MemoryMutationPayloadV1 {
     /// Returns [`MemoryMutationPayloadError`] when the address-space context,
     /// lengths, transform body, reserved digest, or address range is invalid.
     pub fn encode(&self) -> Result<Vec<u8>, MemoryMutationPayloadError> {
-        self.validate()?;
+        self.encode_with_context(false)
+    }
+
+    /// Encodes a non-mutating preparation request.
+    ///
+    /// A GVA preparation request may omit the translation digest because its
+    /// purpose is to resolve that digest at an exact frozen boundary. All other
+    /// payload invariants are identical to [`Self::encode`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryMutationPayloadError`] for invalid lengths, transform
+    /// bytes, address context, or address overflow.
+    pub fn encode_preparation(&self) -> Result<Vec<u8>, MemoryMutationPayloadError> {
+        if self.expected_translation_sha256 != [0; 32] {
+            return Err(MemoryMutationPayloadError::AddressContext);
+        }
+        self.encode_with_context(true)
+    }
+
+    fn encode_with_context(
+        &self,
+        allow_unresolved_translation: bool,
+    ) -> Result<Vec<u8>, MemoryMutationPayloadError> {
+        self.validate(allow_unresolved_translation)?;
         let length =
             u32::try_from(self.mask.len()).map_err(|_source| MemoryMutationPayloadError::Length)?;
         let values_len = u32::try_from(self.values.len())
@@ -176,6 +200,24 @@ impl MemoryMutationPayloadV1 {
     /// Returns [`MemoryMutationPayloadError`] for bad framing, unknown tags,
     /// nonzero reserved bytes, inconsistent lengths, or invalid context.
     pub fn decode(bytes: &[u8]) -> Result<Self, MemoryMutationPayloadError> {
+        Self::decode_with_context(bytes, false)
+    }
+
+    /// Decodes a canonical non-mutating preparation action.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryMutationPayloadError`] for bad framing, unknown tags,
+    /// nonzero reserved or translation-digest bytes, inconsistent lengths, or
+    /// invalid address context.
+    pub fn decode_preparation(bytes: &[u8]) -> Result<Self, MemoryMutationPayloadError> {
+        Self::decode_with_context(bytes, true)
+    }
+
+    fn decode_with_context(
+        bytes: &[u8],
+        allow_unresolved_translation: bool,
+    ) -> Result<Self, MemoryMutationPayloadError> {
         if bytes.len() < MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES
             || bytes[..8] != MEMORY_MUTATION_PAYLOAD_MAGIC_V1
         {
@@ -228,11 +270,14 @@ impl MemoryMutationPayloadV1 {
             values: bytes[value_start..].to_vec(),
             expected_translation_sha256,
         };
-        payload.validate()?;
+        payload.validate(allow_unresolved_translation)?;
         Ok(payload)
     }
 
-    fn validate(&self) -> Result<(), MemoryMutationPayloadError> {
+    fn validate(
+        &self,
+        allow_unresolved_translation: bool,
+    ) -> Result<(), MemoryMutationPayloadError> {
         if self.mask.is_empty() || self.mask.len() > HARD_MEMORY_MUTATION_BYTES as usize {
             return Err(MemoryMutationPayloadError::Length);
         }
@@ -259,7 +304,10 @@ impl MemoryMutationPayloadV1 {
             }
             MemoryMutationAddressSpace::GuestVirtual
                 if self.vcpu_index == MEMORY_MUTATION_NO_VCPU
-                    || self.expected_translation_sha256 == [0; 32] =>
+                    || (allow_unresolved_translation
+                        && self.expected_translation_sha256 != [0; 32])
+                    || (!allow_unresolved_translation
+                        && self.expected_translation_sha256 == [0; 32]) =>
             {
                 Err(MemoryMutationPayloadError::AddressContext)
             }
@@ -453,6 +501,37 @@ mod tests {
     }
 
     #[test]
+    fn gva_preparation_may_resolve_translation_before_commit() {
+        let unresolved = MemoryMutationPayloadV1 {
+            address_space: MemoryMutationAddressSpace::GuestVirtual,
+            transform: MemoryMutationTransformKind::BitFlip,
+            atomicity: MemoryMutationAtomicity::AllOrNothing,
+            vcpu_index: 1,
+            address: 0x4000,
+            mask: vec![1],
+            values: Vec::new(),
+            expected_translation_sha256: [0; 32],
+        };
+        assert_eq!(
+            unresolved.encode(),
+            Err(MemoryMutationPayloadError::AddressContext)
+        );
+        let preparation = unresolved
+            .encode_preparation()
+            .unwrap_or_else(|error| panic!("encode preparation: {error}"));
+        assert_eq!(
+            MemoryMutationPayloadV1::decode(&preparation),
+            Err(MemoryMutationPayloadError::AddressContext)
+        );
+        let mut populated = unresolved;
+        populated.expected_translation_sha256 = [7; 32];
+        assert_eq!(
+            populated.encode_preparation(),
+            Err(MemoryMutationPayloadError::AddressContext)
+        );
+    }
+
+    #[test]
     fn memory_mutation_payload_bounds_match_the_transport_envelope() {
         let maximum = MemoryMutationPayloadV1 {
             address_space: MemoryMutationAddressSpace::GuestPhysical,
@@ -467,7 +546,12 @@ mod tests {
         let encoded = maximum
             .encode()
             .unwrap_or_else(|error| panic!("encode maximum mutation: {error}"));
-        assert_eq!(encoded.len(), HARD_FAULT_PAYLOAD_BYTES as usize);
+        assert_eq!(
+            encoded.len(),
+            MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES
+                + 2 * HARD_MEMORY_MUTATION_BYTES as usize
+        );
+        assert!(encoded.len() <= HARD_FAULT_PAYLOAD_BYTES as usize);
 
         let mut above = maximum;
         above.mask.push(0xff);

@@ -239,14 +239,16 @@ pub enum ResolvedFaultTarget {
         /// Positive selected bit count.
         bit_count: u16,
     },
-    /// One range resolved to guest physical memory.
+    /// One guest physical or virtual memory range.
     MemoryRange {
         /// Node identity.
         node: FaultObjectId,
         /// Declared address-space identity.
         address_space: FaultObjectId,
-        /// Resolved guest physical address.
-        guest_physical_address: u64,
+        /// First address in the declared guest address space.
+        guest_address: u64,
+        /// Stable vCPU translation context for a virtual address.
+        vcpu: Option<u32>,
         /// Positive range length.
         length_bytes: u64,
     },
@@ -334,10 +336,21 @@ impl ResolvedFaultTarget {
                 ..
             }
             | Self::MemoryRange {
-                guest_physical_address: start_byte,
+                guest_address: start_byte,
                 length_bytes,
                 ..
             } if *length_bytes == 0 || start_byte.checked_add(*length_bytes).is_none() => {
+                return Err(FaultContractError::InvalidTarget { kind: self.kind() });
+            }
+            Self::MemoryRange {
+                address_space,
+                vcpu,
+                ..
+            } if !matches!(
+                (address_space.as_str(), vcpu),
+                ("gpa", None) | ("gva", Some(_))
+            ) =>
+            {
                 return Err(FaultContractError::InvalidTarget { kind: self.kind() });
             }
             Self::Register {
@@ -426,11 +439,13 @@ impl ResolvedFaultTarget {
             Self::MemoryRange {
                 node,
                 address_space,
-                guest_physical_address,
+                guest_address,
+                vcpu,
                 length_bytes,
             } => {
                 push_ids(material, &[node, address_space]);
-                push_u64(material, *guest_physical_address);
+                push_u64(material, *guest_address);
+                push_u64(material, vcpu.map_or(u64::MAX, u64::from));
                 push_u64(material, *length_bytes);
             }
             Self::Interrupt {

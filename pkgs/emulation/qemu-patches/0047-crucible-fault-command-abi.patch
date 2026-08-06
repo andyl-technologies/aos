@@ -219,10 +219,10 @@ index d8fde5e..0689e65 100644
   *
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
-index 0000000..eed2026
+index 0000000..dd80672
 --- /dev/null
 +++ b/plugins/crucible-fault.c
-@@ -0,0 +1,580 @@
+@@ -0,0 +1,595 @@
 +/*
 + * Crucible deterministic fault command registry and dispatcher
 + *
@@ -474,8 +474,10 @@ index 0000000..eed2026
 +        return -ENOSPC;
 +    }
 +    if (command->abi_major != CRUCIBLE_FAULT_COMMAND_ABI_MAJOR ||
-+        command->abi_minor > CRUCIBLE_FAULT_COMMAND_ABI_MINOR ||
-+        command->command_flags != 0 || command->command_sequence == 0 ||
++        command->abi_minor != CRUCIBLE_FAULT_COMMAND_ABI_MINOR ||
++        command->command_flags &
++            ~CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY ||
++        command->command_sequence == 0 ||
 +        command->target_icount > command->authorization_ceiling_icount ||
 +        command->phase < CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY ||
 +        command->phase > CRUCIBLE_FAULT_PHASE_DEVICE ||
@@ -497,6 +499,14 @@ index 0000000..eed2026
 +    if (!handler) {
 +        status = crucible_fault_reject_submit(
 +            command, CRUCIBLE_FAULT_STATUS_UNSUPPORTED_CAPABILITY);
++        g_mutex_unlock(&crucible_fault_lock);
++        return status;
++    }
++    if ((command->command_flags &
++         CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) &&
++        command->command_kind != CRUCIBLE_FAULT_COMMAND_MEMORY_MUTATION) {
++        status = crucible_fault_reject_submit(
++            command, CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND);
 +        g_mutex_unlock(&crucible_fault_lock);
 +        return status;
 +    }
@@ -624,6 +634,11 @@ index 0000000..eed2026
 +                if (result.status == 0) {
 +                    result.status = CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR;
 +                }
++            } else if (pending->command.command_flags &
++                       CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) {
++                result.status = CRUCIBLE_FAULT_STATUS_PREPARED;
++                memcpy(result.after_hash, result.before_hash,
++                       sizeof(result.after_hash));
 +            } else {
 +                pending->handler->commit(
 +                    &pending->command, pending->payload,

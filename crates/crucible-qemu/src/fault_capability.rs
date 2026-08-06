@@ -46,7 +46,7 @@ impl QemuFaultCapabilityRequirement {
                 b"qemu.memory.mutate.aarch64.v1",
             ),
         };
-        let schema = b"crucible.memory-mutation-payload.v1";
+        let schema = b"crucible.memory-mutation-batch-payload.v1";
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"crucible.qemu-fault-capability.v1\0");
         hasher.update(name);

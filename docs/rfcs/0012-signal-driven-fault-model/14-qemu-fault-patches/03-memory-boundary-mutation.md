@@ -19,9 +19,20 @@ mutation, or debugger writes.
 
 Required fields: address space (`gpa` or `gva`), vCPU/address-space context for
 GVA, address, length, transform (`bit_flip` or `replace`), byte mask or
-replacement bytes, atomicity (`all_or_nothing`), expected before digest, and
-expected translation digest for GVA. Length is positive and bounded by the
+replacement bytes, and atomicity (`all_or_nothing`). A committing command also
+requires the expected before digest and, for GVA, the expected translation
+digest. Length is positive and bounded by the
 [resource contract](../13-resource-and-performance-bounds.md).
+
+The host obtains those digests with the same payload and the closed
+`prepare_only` command flag. QEMU resolves the complete target and returns
+`prepared` plus authenticated before-state, translation, mapping, and proposed
+after-state evidence without changing guest state. While every vCPU and device
+remains frozen at the same boundary, the host submits the committing command
+with the returned digests. Preparation and commit use distinct monotone command
+sequences. Any icount movement, evidence mismatch, or failed second command is
+fatal or an unchanged-state rejection according to the transaction contract;
+the host never guesses a digest or weakens locked replay.
 
 Bit numbering is little-endian within each addressed byte: bit zero is the least
 significant bit. Byte order is increasing guest address. Replace mask selects
@@ -93,6 +104,12 @@ boundary. This makes the write-protected-page rejection, exact single- and
 cross-page translation, and stale-translation rejection tests exercise each
 architecture's live page tables rather than a fixed firmware instruction-count
 guess.
+
+For every successful mutation, the live plugin consumes `prepared` from the
+safe-boundary completion callback and submits the authorized commit before the
+dispatcher returns. Preparation and commit must report the same retired-
+instruction coordinate and identical nested evidence; a one-instruction gap is
+an explicit test failure.
 
 Both architecture matrices mutate an already translated instruction and require
 the guest to publish the new instruction result; an evidence bit alone cannot

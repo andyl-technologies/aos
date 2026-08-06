@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "3ca6711d94d92d4ac9c174647a18617abc3bd9bfc99d9c4ec567ce5d9925df5c";
+  patchBranchBundleSha256 = "fad46e74c7dd4b548065bb8cdd858f21260a80ff3c3bdc278ce9b8641814288e";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "cfb7fd5b1b51c58615a961a97da7cd3720ace93a";
+  patchBranchHeadCommit = "9ba24a083be276e6e57e05ea4607919c25d22d96";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -432,8 +432,8 @@ let
     }
     {
       file = "0047-crucible-fault-command-abi.patch";
-      branchCommit = "cbdb406743bfc281bbcb8e7ea9a18366e19a59e1";
-      branchTree = "df04f6464a152789d4811989245a32b4f71739ff";
+      branchCommit = "50e6f644974987c0b926df6dfcac148d0a0794df";
+      branchTree = "c446512cd34c28e171f01ba6fffa49f8c10186d2";
       catalogName = "crucible-fault-command-abi";
       class = "F";
       enforces = "FAULT-ABI,FAULT-CAP,FAULT-ORDER";
@@ -441,21 +441,21 @@ let
     }
     {
       file = "0048-crucible-fault-safe-boundary.patch";
-      branchCommit = "5b5ab2fd26671762ee3bb342b34f1a745d52ef0e";
-      branchTree = "fedacbdaf836839b37d534599d40ba9ce137b714";
+      branchCommit = "111e8a4886393305a4a0af56ceac16d9fadf812c";
+      branchTree = "354df0348900b961d194255993bffb508f0a7d9a";
       catalogName = "crucible-fault-safe-boundary";
       class = "D";
       enforces = "FAULT-BOUNDARY,FAULT-AUTH,DET-1";
-      capability = "exact node-icount fault boundary with authorization-ceiling enforcement";
+      capability = "exact node-icount fault boundary with authorization-ceiling enforcement and same-boundary prepare/commit completion";
     }
     {
       file = "0049-crucible-memory-boundary-mutate.patch";
-      branchCommit = "cfb7fd5b1b51c58615a961a97da7cd3720ace93a";
-      branchTree = "a610f8629b3d4e458eeea906c19e10e82237bd1f";
+      branchCommit = "9ba24a083be276e6e57e05ea4607919c25d22d96";
+      branchTree = "9c6a1a62248c140c0258a006078e0a4417d4111a";
       catalogName = "crucible-memory-boundary-mutate";
       class = "F";
       enforces = "QFP-MEM-1,QFP-MEM-2,FAULT-ORDER";
-      capability = "atomic GPA/GVA mutation with translation, RAM-map, dirty-page, and TB evidence";
+      capability = "atomic ordered GPA/GVA mutation batches with translation, RAM-map, dirty-page, and TB evidence";
     }
   ];
   catalogOnlyCapabilities = [

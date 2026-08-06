@@ -111,12 +111,15 @@ hash in their envelope before decoding.
 Statuses are `applied`, `not_applicable`, `precondition_mismatch`,
 `invalid_target`, `invalid_phase`, `unsupported_capability`, `past_boundary`,
 `resource_limit`, `guest_rejected`, `internal_error`, `malformed_command`,
-`duplicate_sequence`, and `authentication_failed`. A result echoes the raw
-command-kind tag so even an unknown kind receives a canonical rejection; an
-`applied` result must name a registered kind. Any status except `applied` is a
-loud run outcome unless the effect contract explicitly expects `not_applicable`
-as an opportunity result. Every rejected result has `applied_icount = 0` and
-`after_hash == before_hash`.
+`duplicate_sequence`, `authentication_failed`, and `prepared`. The only version
+1 command flag is `prepare_only`; handlers that do not explicitly implement it
+reject it as malformed. A result echoes the raw command-kind tag so even an
+unknown kind receives a canonical rejection; an
+`applied` result must name a registered kind. `prepared` is the successful,
+non-mutating result of an explicitly requested prepare-only command. Any other
+status except `applied` is a loud run outcome unless the effect contract
+explicitly expects `not_applicable` as an opportunity result. Every
+non-mutating result has `applied_icount = 0` and `after_hash == before_hash`.
 
 The host reserves a command slot, writes payload, publishes with release order,
 and rings the existing eventfd. The plugin acquires, validates, and arms it. QEMU

@@ -44,6 +44,7 @@ mod block_realization_gate;
 mod coverage;
 mod crash_detection;
 mod determinism_boundary;
+mod fault_action_sink;
 mod fault_capability;
 mod gdbstub_proxy;
 #[cfg(target_os = "linux")]
@@ -107,6 +108,7 @@ pub use determinism_boundary::{
     REQUIRED_QEMU_FINGERPRINT_COMPONENTS, REQUIRED_QEMU_FINGERPRINT_EVENT_BOUNDARIES,
     qemu_entropy_elimination_microtests, validate_qemu_determinism_boundary,
 };
+pub use fault_action_sink::QemuFaultActionSink;
 pub use fault_capability::QemuFaultCapabilityRequirement;
 pub use gdbstub_proxy::{
     QemuGdbstubBreakpointPolicy, QemuGdbstubProxy, QemuGdbstubProxyError, QemuGdbstubProxyListener,

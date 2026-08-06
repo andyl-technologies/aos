@@ -208,6 +208,8 @@ mod delivery_errors;
 mod fault_command;
 #[path = "shmem/fault_memory.rs"]
 mod fault_memory;
+#[path = "shmem/fault_memory_batch.rs"]
+mod fault_memory_batch;
 #[path = "shmem/fault_memory_evidence.rs"]
 mod fault_memory_evidence;
 #[path = "shmem/fingerprint_sample.rs"]
@@ -224,6 +226,7 @@ mod ring_whitebox_marker;
 pub use delivery_errors::*;
 pub use fault_command::*;
 pub use fault_memory::*;
+pub use fault_memory_batch::*;
 pub use fault_memory_evidence::*;
 pub use fingerprint_sample::*;
 pub use frame_node::*;

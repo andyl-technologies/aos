@@ -2421,7 +2421,8 @@ fn resolve_authored_target(
         "memory_range" => {
             let node: FaultObjectId = take_typed(&mut value, "node")?;
             let address_space: FaultObjectId = take_typed(&mut value, "address_space")?;
-            let guest_physical_address: u64 = take_typed(&mut value, "guest_physical_address")?;
+            let guest_address: u64 = take_typed(&mut value, "guest_address")?;
+            let vcpu: Option<u32> = take_optional_typed(&mut value, "vcpu")?;
             let length_bytes: u64 = take_typed(&mut value, "length_bytes")?;
             ensure_empty(&value, "memory range selector")?;
             let capabilities = world
@@ -2435,7 +2436,7 @@ fn resolve_authored_target(
                 .iter()
                 .find(|candidate| candidate.id.as_str() == address_space.as_str())
                 .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
-            let end = guest_physical_address
+            let end = guest_address
                 .checked_add(length_bytes)
                 .filter(|_| length_bytes > 0)
                 .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
@@ -2443,13 +2444,24 @@ fn resolve_authored_target(
                 .start_address
                 .checked_add(space.length_bytes)
                 .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
-            if guest_physical_address < space.start_address || end > space_end {
+            let vm = world
+                .vm_nodes()
+                .iter()
+                .find(|candidate| candidate.id.name == node.as_str())
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            let context_valid = match address_space.as_str() {
+                "gpa" => vcpu.is_none(),
+                "gva" => vcpu.is_some_and(|index| index < u32::from(vm.smp_vcpus)),
+                _ => false,
+            };
+            if !context_valid || guest_address < space.start_address || end > space_end {
                 return Err(FaultSignalAuthoringError::InvalidSelector);
             }
             Ok(vec![ResolvedFaultTarget::MemoryRange {
                 node,
                 address_space,
-                guest_physical_address,
+                guest_address,
+                vcpu,
                 length_bytes,
             }])
         }

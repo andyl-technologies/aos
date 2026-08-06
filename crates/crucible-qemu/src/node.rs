@@ -505,6 +505,7 @@ pub struct QemuNode {
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
     console_observation: Option<QemuConsoleObservation>,
     fault_capabilities: Vec<FaultCapabilityRowV1>,
+    next_fault_command_sequence: u64,
 }
 
 impl QemuNode {
@@ -534,6 +535,9 @@ impl QemuNode {
             pending_network_outputs: Vec::new(),
             console_observation: None,
             fault_capabilities: Vec::new(),
+            // Sequence 1 is consumed by the mandatory setup-time capability
+            // query before a live node can be constructed.
+            next_fault_command_sequence: 2,
         }
     }
 
@@ -551,6 +555,20 @@ impl QemuNode {
     #[must_use]
     pub fn fault_capabilities(&self) -> &[FaultCapabilityRowV1] {
         &self.fault_capabilities
+    }
+
+    /// Reserves the next strictly increasing host command sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the per-process sequence space is
+    /// exhausted. A reserved value is never reused, including after rejection.
+    pub fn reserve_fault_command_sequence(&mut self) -> Result<u64, QemuNodeError> {
+        let sequence = self.next_fault_command_sequence;
+        self.next_fault_command_sequence = sequence.checked_add(1).ok_or_else(|| {
+            QemuNodeError::fault_command("fault command sequence space is exhausted")
+        })?;
+        Ok(sequence)
     }
 
     /// Publishes one fault command through this node's mapped data plane.
@@ -1833,6 +1851,17 @@ mod tests {
             node.lifecycle_state(),
             QemuNodeLifecycleState::ShutdownRequested
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn live_fault_sequences_continue_after_capability_admission() -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+
+        assert_eq!(node.reserve_fault_command_sequence()?, 2);
+        assert_eq!(node.reserve_fault_command_sequence()?, 3);
 
         Ok(())
     }

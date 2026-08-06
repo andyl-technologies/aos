@@ -90,11 +90,99 @@ index 4ba3752..926623a 100644
 +                                         int64_t budget);
  
  #endif
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 0689e65..2bcd09c 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -164,6 +164,17 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,
+                                           uint64_t icount,
+                                           void *userdata);
+ 
++/**
++ * typedef qemu_plugin_crucible_fault_completion_cb_t - fault result callback
++ * @userdata: opaque pointer supplied when the callback was registered
++ *
++ * The callback runs after a fault result has been published and after the
++ * fault transport lock has been released, while QEMU is still stopped at the
++ * dispatch boundary.  It may poll the result and submit a follow-up command
++ * for that same boundary.
++ */
++typedef void (*qemu_plugin_crucible_fault_completion_cb_t)(void *userdata);
++
+ /**
+  * typedef qemu_plugin_vcpu_idle_resume_cb_t - sim idle/resume callback
+  * @vcpu_index: the vCPU index entering or leaving the all-idle boundary
+@@ -1920,6 +1931,19 @@ int qemu_plugin_crucible_fault_poll(
+     struct qemu_plugin_crucible_fault_result *result,
+     uint8_t *payload, size_t payload_capacity, size_t *payload_length);
+ 
++/**
++ * qemu_plugin_register_crucible_fault_completion_cb() - register completion
++ * @cb: callback invoked after each boundary-dispatched result, or NULL to clear
++ * @userdata: opaque pointer supplied to @cb
++ *
++ * Registering a callback lets a GPL-side controller complete a prepare/commit
++ * transaction without allowing the guest to retire another instruction.  A
++ * callback may poll and submit, but must not recursively dispatch boundaries.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_crucible_fault_completion_cb(
++    qemu_plugin_crucible_fault_completion_cb_t cb, void *userdata);
++
+ /**
+  * qemu_plugin_scoreboard_new() - alloc a new scoreboard
+  *
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index eed2026..21443b6 100644
+index dd80672..17a0eb3 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
-@@ -396,7 +396,8 @@ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
+@@ -31,6 +31,9 @@ typedef struct CrucibleCompletedFault {
+ } CrucibleCompletedFault;
+ 
+ static GMutex crucible_fault_lock;
++static qemu_plugin_crucible_fault_completion_cb_t
++    crucible_fault_completion_cb;
++static void *crucible_fault_completion_userdata;
+ static GPtrArray *crucible_fault_handlers;
+ static QTAILQ_HEAD(, CruciblePendingFault) crucible_pending_faults =
+     QTAILQ_HEAD_INITIALIZER(crucible_pending_faults);
+@@ -376,21 +379,26 @@ int qemu_plugin_crucible_fault_cancel(uint64_t command_sequence)
+ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
+                                            uint64_t observed_icount)
+ {
+-    CruciblePendingFault *pending;
+-    CruciblePendingFault *next;
+-
+-    g_mutex_lock(&crucible_fault_lock);
+-    QTAILQ_FOREACH_SAFE(pending, &crucible_pending_faults, link, next) {
++    for (;;) {
++        CruciblePendingFault *pending = NULL;
+         struct qemu_plugin_crucible_fault_result result;
+-        GByteArray *result_payload = g_byte_array_new();
++        GByteArray *result_payload;
+         int status;
+ 
+-        if (pending->command.phase != phase ||
+-            pending->command.target_icount > observed_icount) {
+-            continue;
++        g_mutex_lock(&crucible_fault_lock);
++        QTAILQ_FOREACH(pending, &crucible_pending_faults, link) {
++            if (pending->command.phase == phase &&
++                pending->command.target_icount <= observed_icount) {
++                break;
++            }
++        }
++        if (!pending) {
++            g_mutex_unlock(&crucible_fault_lock);
++            return;
+         }
+         QTAILQ_REMOVE(&crucible_pending_faults, pending, link);
+         crucible_pending_count--;
++        result_payload = g_byte_array_new();
+         memset(&result, 0, sizeof(result));
+         result.command_kind = pending->command.command_kind;
+         result.phase = phase;
+@@ -406,7 +414,8 @@ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
                  &pending->command, pending->payload, pending->payload_len,
                  pending->handler_state, &result, result_payload);
              if (status != 0) {
@@ -103,8 +191,32 @@ index eed2026..21443b6 100644
 +                    result.status == CRUCIBLE_FAULT_STATUS_APPLIED) {
                      result.status = CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR;
                  }
-             } else {
-@@ -443,19 +444,42 @@ bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount)
+             } else if (pending->command.command_flags &
+@@ -438,7 +447,23 @@ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
+         }
+         g_clear_pointer(&pending->payload, g_free);
+         g_free(pending);
++        qemu_plugin_crucible_fault_completion_cb_t completion =
++            crucible_fault_completion_cb;
++        void *completion_userdata = crucible_fault_completion_userdata;
++
++        g_mutex_unlock(&crucible_fault_lock);
++        if (completion) {
++            completion(completion_userdata);
++        }
+     }
++}
++
++void qemu_plugin_register_crucible_fault_completion_cb(
++    qemu_plugin_crucible_fault_completion_cb_t cb, void *userdata)
++{
++    g_mutex_lock(&crucible_fault_lock);
++    crucible_fault_completion_userdata = userdata;
++    crucible_fault_completion_cb = cb;
+     g_mutex_unlock(&crucible_fault_lock);
+ }
+ 
+@@ -458,19 +483,42 @@ bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount)
      return found;
  }
  
