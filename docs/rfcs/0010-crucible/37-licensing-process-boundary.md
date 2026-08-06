@@ -3,7 +3,7 @@
 This file specifies the architectural boundary that keeps the Crucible host and
 QEMU independently licensed without sacrificing the shared-memory fast path. It
 is an engineering contract, not a conclusion about any particular legal case.
-The repository-wide license map is [`LICENSING.md`](../../../LICENSING.md).
+The repository-wide [license map](../../legal/licensing.md) is authoritative.
 
 Requirement IDs in this file use the prefix `BOUND`. Every requirement is
 guarded by `gate:license-boundary`, an **Always** gate owned by

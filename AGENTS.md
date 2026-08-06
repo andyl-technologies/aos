@@ -29,7 +29,8 @@ and the
 ## Crucible/QEMU license boundary
 
 These invariants are mandatory for maintainers and automated agents. The
-normative policy is [`LICENSING.md`](LICENSING.md) and RFC-0010
+normative policy is
+[`docs/legal/licensing.md`](docs/legal/licensing.md) and RFC-0010
 [`37-licensing-process-boundary.md`](docs/rfcs/0010-crucible/37-licensing-process-boundary.md).
 
 - The Apache-licensed Crucible host and GPL-side QEMU/plugin MUST remain
@@ -207,9 +208,10 @@ crates/target/debug/aos <subcommand>
 
 ## Rust code style
 
-The `aos` CLI (`crates/`) is Rust. Write idiomatic Rust to the standard of the
-Rust stdlib and the largest, best-documented projects in the ecosystem (e.g.
-Tokio).
+These rules apply to every Rust crate under `crates/`. Write idiomatic Rust to
+the standard of the Rust standard library and the largest, best-documented
+projects in the ecosystem (for example, Tokio). The repository-wide coding
+standard is in [`docs/code-style.md`](docs/code-style.md).
 
 - **Treat all code as user-facing porcelain.** Document items with rustdoc that
   would look great on docs.rs and abide by all Rust documentation conventions —
@@ -219,6 +221,18 @@ Tokio).
 - **Never use `.unwrap()` or `.expect()` in production code.** Use proper error
   handling — propagate with `?`, return `Result`, and model errors with proper
   types. (Tests and examples may use them where a panic is the intended signal.)
+- **Use size as a design signal.** Reconsider a module's responsibilities as a
+  hand-written file approaches 1,000 lines. Files beyond roughly 1,500 lines
+  deserve a clear cohesion argument. Judge co-located `#[cfg(test)]` modules
+  separately from their implementation. Functions have no hard line limit;
+  review long functions for mixed abstraction levels and hidden operations.
+- **Make code readable in semantic paragraphs.** `rustfmt` is the mechanical
+  baseline, not the readability bar. Separate validation, transformation,
+  effects, and result construction with names, helpers, and intentional blank
+  lines.
+- **Comment reasoning, not syntax.** Document invariants, protocol and ordering
+  rules, fail-closed behavior, security decisions, and surprising tradeoffs.
+  Do not use a comment-density quota or pad obvious code.
 
 ### Rust documentation standard
 
@@ -256,6 +270,33 @@ The concrete bar for "docs.rs quality" in this workspace:
   rename, or reformat code in a docs pass. If a doc claim contradicts the
   code, fix the doc to match observed behavior and flag the discrepancy in
   the PR rather than changing the code.
+
+## Nix code style
+
+Nix source follows [`docs/code-style.md`](docs/code-style.md), including the
+repository's Dendritic module organization. In addition to the hermetic build
+and package rules above:
+
+- Under `modules/`, organize auto-discovered top-level modules by feature and
+  keep each feature's options, configuration, and checks together. System
+  variants compose features; `_`-prefixed paths hold deliberately imported
+  implementation details. `callPackage`-style expressions under `pkgs/` remain
+  the deliberate non-module exception.
+- Reconsider a hand-written file's responsibilities around 1,000 lines and
+  expect a clear cohesion argument beyond roughly 1,500 lines.
+- Treat embedded shell blocks around 150 lines as a prompt to consider named
+  phase scripts, helper builders, or focused check derivations without
+  weakening hermeticity.
+- Make dependencies visible in function argument sets and use named
+  intermediate values instead of broad `with` scopes or deeply nested
+  anonymous expressions.
+- Use intentional blank lines to separate inputs, policy, derived values,
+  phases, and outputs. Alejandra formatting is necessary but not sufficient.
+- Comment non-obvious bootstrap, sandbox, dependency, platform, protocol, and
+  closure decisions. Comments explain why; names and structure explain what.
+
+Existing difficult code is context, not precedent. Feature work should leave
+the local design no worse and improve it where that is safe and proportionate.
 
 ## Testing
 

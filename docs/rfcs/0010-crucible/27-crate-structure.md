@@ -526,7 +526,7 @@ unsafe_op_in_unsafe_fn = "deny"   # UNSAFE crates re-affirm; SAFE crates forbid
 [workspace.package]
 edition = "2021"
 # Individual packages declare Apache-2.0, MIT OR Apache-2.0, or GPL-2.0-only
-# according to LICENSING.md and file 37.
+# according to docs/legal/licensing.md and file 37.
 ```
 
 `crucible-qemu-plugin` builds a `cdylib`; most crates build `lib`s.
