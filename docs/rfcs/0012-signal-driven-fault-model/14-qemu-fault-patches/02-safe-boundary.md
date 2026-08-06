@@ -65,6 +65,16 @@ reordering without permitting duplicate or old sequence reuse. Same-boundary
 commands order by phase, numeric registered command kind, binding hash,
 opportunity hash, then command sequence.
 
+After publishing a boundary-dispatched result, QEMU releases the fault
+transport lock and invokes the optional GPL-side completion callback before it
+allows guest execution to resume. The callback may consume the result and
+submit an authorized follow-up command. Dispatch then drains that newly due
+command at the unchanged boundary. This is the live conformance path for a
+two-command prepare/commit transaction; it is not a host callback or a shared
+memory function pointer. The ordinary Crucible host performs the same exchange
+through the versioned command/result rings while the scheduler ceiling remains
+pinned to the current boundary.
+
 ## Result evidence
 
 The result includes armed/reached/applied icounts, phase, vCPU/RR cursor,
@@ -89,10 +99,13 @@ the save barrier.
    verify distinct statuses.
 4. Queue many same-boundary commands in permuted host order and verify canonical
    application order.
-5. Save before armed, after armed, and after applied states; patch 0059's later
+5. Consume a preparation result through the GPL-side completion callback,
+   submit its authorized commit, and prove both results carry the same icount
+   and byte-for-byte identical handler evidence.
+6. Save before armed, after armed, and after applied states; patch 0059's later
    aggregate test must resume identically.
-6. Revert this patch and prove exact-boundary probe gate fails.
-7. Prove non-sim QEMU matches the unpatched corpus.
+7. Revert this patch and prove exact-boundary probe gate fails.
+8. Prove non-sim QEMU matches the unpatched corpus.
 
 ## Licensing checklist
 

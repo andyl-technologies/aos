@@ -820,6 +820,7 @@ fn result_status(value: u16) -> Result<FaultResultStatus, FaultCommandBridgeErro
         11 => Ok(FaultResultStatus::MalformedCommand),
         12 => Ok(FaultResultStatus::DuplicateSequence),
         13 => Ok(FaultResultStatus::AuthenticationFailed),
+        14 => Ok(FaultResultStatus::Prepared),
         _ => Err(FaultCommandBridgeError::QemuStatus { value }),
     }
 }
@@ -970,6 +971,19 @@ mod tests {
         FAULT_COMMAND_FLAG_NONE, FAULT_COMMAND_SEMANTIC_VERSION, dequeue_fault_result,
         enqueue_fault_command,
     };
+
+    #[test]
+    fn bridge_accepts_every_canonical_qemu_result_status() {
+        for value in 1_u16..=14 {
+            let status = result_status(value)
+                .unwrap_or_else(|error| panic!("canonical status {value} was rejected: {error}"));
+            assert_eq!(status as u16, value);
+        }
+        assert!(matches!(
+            result_status(15),
+            Err(FaultCommandBridgeError::QemuStatus { value: 15 })
+        ));
+    }
 
     #[test]
     fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {

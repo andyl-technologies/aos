@@ -282,6 +282,24 @@ impl HexBytes {
     pub const fn decoded_len(&self) -> usize {
         self.0.len() / 2
     }
+
+    /// Decodes the already-validated canonical hexadecimal bytes.
+    #[must_use]
+    pub fn decode(&self) -> Vec<u8> {
+        self.0
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| (hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]))
+            .collect()
+    }
+}
+
+const fn hex_nibble(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        _ => 0,
+    }
 }
 
 impl<'de> serde::Deserialize<'de> for HexBytes {

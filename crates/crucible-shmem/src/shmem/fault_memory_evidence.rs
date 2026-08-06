@@ -12,8 +12,8 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::{
-    MemoryMutationAddressSpace, MemoryMutationPayloadError, MemoryMutationTransformKind,
-    HARD_FAULT_PAYLOAD_BYTES,
+    HARD_FAULT_PAYLOAD_BYTES, MemoryMutationAddressSpace, MemoryMutationPayloadError,
+    MemoryMutationTransformKind,
 };
 
 /// Fixed encoded size of one canonical translation record.
@@ -719,6 +719,27 @@ pub const MEMORY_MUTATION_EVIDENCE_FLAGS_V1_MASK: u16 = (1 << 2) - 1;
 /// SHA-256 domain prefix for the exact post-mutation boundary fingerprint.
 pub const MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V1: &[u8] =
     b"crucible.memory-boundary-fingerprint.v1\0";
+/// SHA-256 domain prefix for a prepared memory mutation authorization.
+pub const MEMORY_MUTATION_PRECONDITION_SHA256_DOMAIN_V1: &[u8] =
+    b"crucible.memory-mutation-precondition.v1\0";
+
+/// Binds a commit to the bytes, transform result, translations, and RAM map
+/// observed by an earlier non-mutating preparation at a frozen boundary.
+#[must_use]
+pub fn memory_mutation_precondition_sha256(
+    before_sha256: [u8; 32],
+    after_sha256: [u8; 32],
+    translation_sha256: [u8; 32],
+    mapping_generation_sha256: [u8; 32],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(MEMORY_MUTATION_PRECONDITION_SHA256_DOMAIN_V1);
+    hasher.update(before_sha256);
+    hasher.update(after_sha256);
+    hasher.update(translation_sha256);
+    hasher.update(mapping_generation_sha256);
+    hasher.finalize().into()
+}
 
 /// Complete, independently verifiable evidence for one memory mutation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -766,6 +787,20 @@ pub struct MemoryMutationEvidenceV1 {
 }
 
 impl MemoryMutationEvidenceV1 {
+    /// Returns the canonical translation digest, or zero for GPA evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryMutationEvidenceError`] when a translation record is
+    /// malformed or the record count cannot be represented canonically.
+    pub fn translation_sha256(&self) -> Result<[u8; 32], MemoryMutationEvidenceError> {
+        if self.translations.is_empty() {
+            Ok([0; 32])
+        } else {
+            memory_translation_sha256(self.vcpu_index, &self.translations)
+        }
+    }
+
     /// Encodes canonical memory-mutation evidence.
     ///
     /// # Errors
@@ -816,11 +851,7 @@ impl MemoryMutationEvidenceV1 {
         if self.invalidated_start.is_some() {
             flags |= MEMORY_MUTATION_EVIDENCE_FLAG_TB_INVALIDATED;
         }
-        let translation_sha = if self.translations.is_empty() {
-            [0; 32]
-        } else {
-            memory_translation_sha256(self.vcpu_index, &self.translations)?
-        };
+        let translation_sha = self.translation_sha256()?;
         let mut bytes = vec![0; MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES];
         bytes[0..8].copy_from_slice(&MEMORY_MUTATION_EVIDENCE_MAGIC_V1);
         put_u16(&mut bytes, 8, MEMORY_MUTATION_EVIDENCE_VERSION_V1);
@@ -1564,6 +1595,8 @@ pub(crate) fn emit_memory_evidence_c_header(out: &mut String) {
     out.push_str("#define CRUCIBLE_MEMORY_DIRTY_SHA256_DOMAIN_V1_BYTES 31\n");
     out.push_str("#define CRUCIBLE_MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V1 \"crucible.memory-boundary-fingerprint.v1\\0\"\n");
     out.push_str("#define CRUCIBLE_MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V1_BYTES 40\n");
+    out.push_str("#define CRUCIBLE_MEMORY_MUTATION_PRECONDITION_SHA256_DOMAIN_V1 \"crucible.memory-mutation-precondition.v1\\0\"\n");
+    out.push_str("#define CRUCIBLE_MEMORY_MUTATION_PRECONDITION_SHA256_DOMAIN_V1_BYTES 41\n");
     out.push_str("#define CRUCIBLE_MEMORY_MUTATION_EVIDENCE_MAGIC_V1 \"CRUCMER1\"\n");
     for (name, value) in values {
         let _ = writeln!(out, "#define {name} {value}");
@@ -1611,6 +1644,27 @@ fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_precondition_binds_every_boundary_digest() {
+        let baseline = memory_mutation_precondition_sha256([1; 32], [2; 32], [3; 32], [4; 32]);
+        assert_ne!(
+            baseline,
+            memory_mutation_precondition_sha256([9; 32], [2; 32], [3; 32], [4; 32])
+        );
+        assert_ne!(
+            baseline,
+            memory_mutation_precondition_sha256([1; 32], [9; 32], [3; 32], [4; 32])
+        );
+        assert_ne!(
+            baseline,
+            memory_mutation_precondition_sha256([1; 32], [2; 32], [9; 32], [4; 32])
+        );
+        assert_ne!(
+            baseline,
+            memory_mutation_precondition_sha256([1; 32], [2; 32], [3; 32], [9; 32])
+        );
+    }
 
     #[test]
     fn translation_digest_and_evidence_round_trip() {

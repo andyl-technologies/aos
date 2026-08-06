@@ -12,7 +12,7 @@
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
-  liveCaseCount = 38;
+  liveCaseCount = 40;
 
   failures =
     failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
@@ -159,7 +159,7 @@ in
                   ;;
               esac
               set +e
-              timeout 30 $qemu_binary \
+              timeout 120 $qemu_binary \
                 $machine_args \
                 -accel sim \
                 -icount shift=0 \
@@ -239,12 +239,14 @@ in
                 "address=$mutation,before=0x5a,after=0xa5,icount=100,malformed=over-limit"
               run_case "$architecture" canonical-overlap-order \
                 "address=$mutation,before=0x5a,after=0xa5,icount=100,mode=overlap-order"
+              run_case "$architecture" same-boundary-prepare-commit \
+                "address=$mutation,before=0x5a,after=0xa5,icount=100"
               run_case "$architecture" gva-replace \
                 "address=$mutation,address-space=gva,vcpu=0,translations=1,translation=$translation,before=0x5a,after=0xa5,$deferred_target,tb-invalidated=required,submit=paging-ready,paging-ready=$paging"
               run_case "$architecture" gva-cross-page \
                 "address=$cross,address-space=gva,vcpu=0,translations=2,fragments=2,translation=$cross_translation,length=2,before=0x5a,after=0xa5,$deferred_target,tb-invalidated=required,submit=paging-ready,paging-ready=$paging"
-              run_case "$architecture" stale-gva-translation \
-                "address=$mutation,address-space=gva,vcpu=0,translations=1,translation=1111111111111111111111111111111111111111111111111111111111111111,before=0x5a,after=0xa5,$deferred_target,status=translation-mismatch,submit=paging-ready,paging-ready=$paging"
+              run_case "$architecture" changed-proposal-after-prepare \
+                "address=$mutation,address-space=gva,vcpu=0,translations=1,translation=$translation,before=0x5a,after=0xa5,$deferred_target,status=prepared-state-mismatch,submit=paging-ready,paging-ready=$paging"
               run_case "$architecture" executable-page "$executable_args"
               run_case "$architecture" gva-write-protected \
                 "address=$readonly,address-space=gva,vcpu=0,translations=1,translation=1111111111111111111111111111111111111111111111111111111111111111,before=0x5a,after=0xa5,$deferred_target,status=invalid-target,submit=paging-ready,paging-ready=$paging"

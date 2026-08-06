@@ -152,6 +152,18 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
+    /// Reserves one strictly increasing fault-command sequence for `node`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or its sequence space
+    /// is exhausted.
+    pub fn reserve_fault_command_sequence(&mut self, node: &NodeId) -> Result<u64, BackendError> {
+        self.node_mut(node)?
+            .reserve_fault_command_sequence()
+            .map_err(BackendError::from)
+    }
+
     fn node_mut(&mut self, node: &NodeId) -> Result<&mut QemuNode, BackendError> {
         self.nodes
             .get_mut(node)
