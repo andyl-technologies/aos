@@ -1138,6 +1138,30 @@ is restore-plus-replay; the only place the operator can break determinism is by
 mutating state — and that is possible only after an explicit `fork-debug` creates a
 clearly-marked branch rather than touching the canonical run.
 
+### 36.11 Agent-oriented manual acceptance
+
+The debugger is also an operator tool for automated agents, not merely a set of
+model and package gates. Manual acceptance therefore runs outside Nix checks and
+starts from a purposefully failing scenario with a pinned seed and finite budget.
+The operator MUST retain the failure artifact, use the CLI to inspect the failure
+coordinate and available reverse boundary, attach to a live daemon session when
+executed time travel or persistent GDB inspection is required, and state a
+diagnosis from the assertion, event history, and observed VM state. The exercise
+MUST distinguish an intentionally inverted scenario assertion from a guest crash.
+
+The repository's agent exercise pairs a healthy HTTP workload with an
+`Always(Crashed)` assertion. Success means the operator identifies that assertion
+as the first faulty assumption and reports the exact commands and evidence used.
+It does not mean changing the scenario until it passes. A second agent SHOULD use
+the documented CLI without editing the implementation and report ambiguous output,
+incorrect exit behavior, missing discovery, or operations that only emit a plan as
+usability defects. Accepted defects feed back into the CLI and user documentation.
+
+This exercise does not close T-DBG-9 through T-DBG-14. In particular, a local
+artifact `debug-plan` is not proof that time travel executed, and guest
+exec/PTY/SSH admission is not proof of introspection while the shipped fixture
+does not activate the guest agent on a non-canonical fork.
+
 ## Implementation checklist
 
 > The checklist task text below is authoritative for this topic; phase ordering lives in
