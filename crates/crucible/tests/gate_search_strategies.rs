@@ -8,22 +8,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 
 use crucible::{
-    AssertionDef, AssertionId, ChoiceTag, CodePoint, Configuration, ContentHash,
-    ControlFaultAction, ControlFaultDecision, Decision, EngineError, EventLogOffset, Fault,
-    FaultDecision, FaultId, FaultSlowdownFactorBasisPoints, FaultTag, FindingDiscoveryPath,
-    FrontierChild, FrontierReductionReport, GenesisCheckpoint, GuestAssertionDetail,
-    GuestAssertionKind, GuestAssertionMarker, Icount, MarkerId, MaterializationPolicy,
-    MaterializationTrigger, MemPlace, MemoryCmp, MemoryWidth, NodeFault, NodeId, NodeTemplate,
-    ObservableEvent, OverrideDecision, Plan, Predicate, Properties, Property,
-    ReachabilityExpectation, ReachableDisposition, ReadyPoint, RecordedAssertionLog,
-    ResolvedCodePoint, ResolvedMemPlace, RngDecision, RngStreamId, RuntimeState, ScenarioDefForm,
-    Schedule, SchedulerEvaluationBoundaryKind, SchedulerQuiescence, SchedulerQuiescenceBlocker,
-    SchedulerState, SchedulingPoint, SearchBudget, SearchExpansion, SearchFailureOracle,
-    SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchRetainedLogAssertionEvidence,
-    SearchRetainedLogPredicateResolutions, SearchScheduleNamedPredicateKey,
-    SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, TemporalGraph, TemporalGraphRuntime,
-    TemporalGraphSearch, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode,
-    bake, try_step,
+    AssertionDef, AssertionId, ChoiceTag, CodePoint, Configuration, ContentHash, Decision,
+    EngineError, EventLogOffset, FaultDecision, FaultId, FindingDiscoveryPath, FrontierChild,
+    FrontierReductionReport, GenesisCheckpoint, GuestAssertionDetail, GuestAssertionKind,
+    GuestAssertionMarker, Icount, MarkerId, MaterializationPolicy, MaterializationTrigger,
+    MemPlace, MemoryCmp, MemoryWidth, NodeId, NodeTemplate, ObservableEvent, OverrideDecision,
+    Plan, Predicate, Properties, Property, ReachabilityExpectation, ReachableDisposition,
+    ReadyPoint, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace, RngDecision,
+    RngStreamId, RuntimeState, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
+    SchedulerQuiescence, SchedulerQuiescenceBlocker, SchedulerState, SchedulingPoint, SearchBudget,
+    SearchExpansion, SearchFailureOracle, SearchFrontierChoices, SearchReplayOracleSamplingConfig,
+    SearchRetainedLogAssertionEvidence, SearchRetainedLogPredicateResolutions,
+    SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, SearchStrategy, Seed,
+    TemporalGraph, TemporalGraphRuntime, TemporalGraphSearch, TemporalGraphSearchRun, VirtualTime,
+    WhiteBoxPolicy, World, WorldNode, bake, try_step,
 };
 
 #[test]
@@ -262,23 +260,6 @@ fn gate_search_strategies_report_discovered_failures_deterministically()
 #[test]
 fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Result<(), Box<dyn Error>>
 {
-    let tag = FaultTag::from_name("forbidden-control-fault");
-    let scenario = assertion_lowering_scenario(Property::Always {
-        predicate: Predicate::not(Predicate::fault_active(tag.clone())),
-    })?;
-    let root = Configuration {
-        def: scenario.scenario_def(),
-        schedule: Schedule::from_decisions([control_fault_inject_decision(tag)]),
-    };
-    let run = empty_search_run_for_root(&root);
-
-    let oracle = SearchFailureOracle::from_search_assertion_violations(&scenario, &root, &run)?;
-    let fingerprint = oracle
-        .failure_for(root.id())
-        .ok_or("prefix-safe assertion violation should become a search failure")?;
-
-    assert_ne!(fingerprint, ContentHash::default());
-
     let liveness_scenario = assertion_lowering_scenario(Property::Sometimes {
         predicate: Predicate::named("never-satisfied-by-black-box-oracle"),
     })?;
@@ -361,10 +342,7 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
     })?;
     let timed_safety_root = Configuration {
         def: timed_safety_scenario.scenario_def(),
-        schedule: Schedule::from_decisions([control_fault_inject_decision_at(
-            FaultTag::from_name("late-control-fault"),
-            time(100),
-        )]),
+        schedule: Schedule::from_decisions([timed_fault_decision("late-boundary", time(100))]),
     };
     let timed_safety_run = empty_search_run_for_root(&timed_safety_root);
     let timed_safety_oracle = SearchFailureOracle::from_search_assertion_violations(
@@ -1351,9 +1329,7 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
 
     let guest_marker_scenario = assertion_lowering_scenario_with_world(
         Property::Always {
-            predicate: Predicate::not(Predicate::fault_active(FaultTag::from_name(
-                "guest-marker-host-guard",
-            ))),
+            predicate: Predicate::not(Predicate::at(time(u64::MAX))),
         },
         single_node_world_with_white_box(
             "retained-log-guest-assertion-lowering",
@@ -1977,22 +1953,13 @@ fn search_run_for_root_decision(
     Ok((child, run))
 }
 
-fn control_fault_inject_decision(tag: FaultTag) -> Decision {
-    control_fault_inject_decision_at(tag, time(0))
-}
-
-fn control_fault_inject_decision_at(tag: FaultTag, at: VirtualTime) -> Decision {
-    Decision::ControlFault(ControlFaultDecision {
+fn timed_fault_decision(name: &str, at: VirtualTime) -> Decision {
+    Decision::FaultFires(FaultDecision {
         at,
-        sequence: 0,
-        action: ControlFaultAction::Inject {
-            tag,
-            fault: Fault::Node(NodeFault::Slow {
-                node: node_id("search-node"),
-                factor: FaultSlowdownFactorBasisPoints::from_basis_points(12_000)
-                    .unwrap_or_else(|error| panic!("valid slowdown factor: {error}")),
-            }),
+        fault: FaultId {
+            name: name.to_owned(),
         },
+        fired: true,
     })
 }
 

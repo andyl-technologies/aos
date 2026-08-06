@@ -6,9 +6,8 @@
 
 use crucible::{
     Action, AssertionDef, AssertionId, AssertionPhase, Condition, ContentHash, EngineError,
-    EventGraph, EventId, FaultTag, Icount, LinkDef, LogLevel, MembershipFault, NodeId,
-    NodeLifecycle, PartitionDirection, Plan, Properties, Property, ReadyPoint, RegexProgram,
-    ScenarioDefForm, Seed, SimDuration, World, WorldNode,
+    EventGraph, EventId, Icount, LinkDef, LogLevel, NodeId, NodeLifecycle, Plan, Properties,
+    Property, ReadyPoint, RegexProgram, ScenarioDefForm, Seed, SimDuration, World, WorldNode,
 };
 
 fn node(name: &str) -> NodeId {
@@ -19,12 +18,6 @@ fn node(name: &str) -> NodeId {
 
 fn event(name: &str) -> EventId {
     EventId::from_name(name)
-}
-
-fn tag(name: &str) -> FaultTag {
-    FaultTag {
-        name: name.to_string(),
-    }
 }
 
 fn timer(name: &str) -> crucible::TimerId {
@@ -89,20 +82,12 @@ fn graph(world: &World) -> EventGraph {
     EventGraph::builder()
         .event("bootstrap")
         .action(Action::group(vec![
-            Action::inject_fault(
-                tag("split"),
-                MembershipFault::Partition {
-                    endpoint_a: node("db-0"),
-                    endpoint_b: node("db-1"),
-                    direction: PartitionDirection::Bidirectional,
-                },
-            ),
-            Action::arm_timer(timer("heal-after"), SimDuration { nanos: 30 }),
-            Action::log(LogLevel::Info, "split armed"),
+            Action::arm_timer(timer("recovery-after"), SimDuration { nanos: 30 }),
+            Action::log(LogLevel::Info, "recovery timer armed"),
         ]))
-        .event("heal")
-        .when(Condition::timer(timer("heal-after")))
-        .action(Action::heal_fault(tag("split")))
+        .event("timer-observed")
+        .when(Condition::timer(timer("recovery-after")))
+        .action(Action::log(LogLevel::Info, "recovery timer observed"))
         .event("pass-when-safe")
         .when(Condition::all_of(vec![
             Condition::assertion_state(assertion("cluster-safe"), AssertionPhase::Satisfied),
@@ -148,12 +133,11 @@ fn event_graph_plan_round_trips_through_toml_and_binary() {
     )
     .expect("graph plan should validate");
 
-    assert!(plan.entries().is_empty());
-    assert_eq!(plan.event_graph(), Some(&graph));
+    assert_eq!(plan.event_graph(), &graph);
     assert_eq!(
         plan.content_hash(),
         ContentHash::from_canonical_material(
-            "crucible.model.plan.v3",
+            "crucible.model.plan.v4",
             &String::from_utf8(plan.canonical_bytes())
                 .expect("plan canonical bytes should be UTF-8"),
         )
@@ -162,7 +146,7 @@ fn event_graph_plan_round_trips_through_toml_and_binary() {
     let toml = plan
         .to_canonical_toml()
         .expect("graph plan TOML should serialize");
-    assert!(toml.contains("kind = \"event_graph\""));
+    assert!(toml.contains("fault_signal_semantic_version = 1"));
     assert!(toml.contains("[[event]]"));
     assert!(!toml.contains("[[entry]]"));
 
@@ -199,7 +183,7 @@ fn graph_plan_lowering_keeps_assertion_state_triggers_valid() {
         .lower_to_event_graph_for_world(&world)
         .expect("graph-native lowering should preserve assertion-state triggers");
 
-    assert_eq!(lowered.event_graph(), plan.event_graph().unwrap());
+    assert_eq!(lowered.event_graph(), plan.event_graph());
     assert_eq!(lowered.content_hash(), plan.content_hash());
     assert_eq!(lowered.canonical_bytes(), plan.canonical_bytes().as_slice());
 }
@@ -225,7 +209,7 @@ fn graph_plan_is_the_scenario_plan_component() {
         .to_canonical_toml()
         .expect("scenario TOML should serialize");
     assert!(scenario_toml.contains("[[plan.event]]"));
-    assert!(scenario_toml.contains("kind = \"event_graph\""));
+    assert!(scenario_toml.contains("fault_signal_semantic_version = 1"));
     let parsed_toml =
         ScenarioDefForm::from_canonical_toml(&scenario_toml).expect("scenario TOML should parse");
     assert_eq!(parsed_toml, form);

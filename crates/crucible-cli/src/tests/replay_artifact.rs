@@ -1478,7 +1478,7 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
 
     let corrupt_family = store.put(
         valid_fuzz_family_toml()
-            .replace("crucible.scenario-family.v1", "wrong.schema")
+            .replace("crucible.scenario-family.v2", "wrong.schema")
             .as_bytes(),
     )?;
     let corrupt_reference = format_content_hash_ref(corrupt_family);
@@ -1657,14 +1657,6 @@ pub(super) fn cli_run_workflow_interactive_pauses_at_genesis_and_accepts_session
     assert!(
         plan.accepted_interactive_commands
             .contains(&SessionCommandKind::StepQuantum)
-    );
-    assert!(
-        plan.accepted_interactive_commands
-            .contains(&SessionCommandKind::InjectFault)
-    );
-    assert!(
-        plan.accepted_interactive_commands
-            .contains(&SessionCommandKind::HealFault)
     );
     assert!(
         plan.accepted_interactive_commands
@@ -2029,17 +2021,15 @@ pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production
 
 #[test]
 pub(super) fn cli_run_workflow_parses_interactive_session_commands() -> Result<(), Box<dyn Error>> {
-    let commands = parse_interactive_session_commands(
-        "\n# comment\nquery\nstep\ninject-fault\nheal\nsave\nfork\nstop\n",
-    )?;
+    let commands =
+        parse_interactive_session_commands("\n# comment\nquery\nstep\ninject\nsave\nfork\nstop\n")?;
 
     assert_eq!(
         commands,
         vec![
             SessionCommandKind::Query,
             SessionCommandKind::StepQuantum,
-            SessionCommandKind::InjectFault,
-            SessionCommandKind::HealFault,
+            SessionCommandKind::Inject,
             SessionCommandKind::CreateSavepoint,
             SessionCommandKind::Fork,
             SessionCommandKind::Stop,

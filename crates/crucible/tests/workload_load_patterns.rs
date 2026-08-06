@@ -5,10 +5,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    Action, EngineError, Fault, GuestWorkloadBinary, GuestWorkloadLoadPatternFixture,
-    GuestWorkloadPattern, GuestWorkloadSpikeMode, GuestWorkloadTimeSource, Icount, MembershipFault,
-    NetworkFault, NodeFault, NodeTemplate, Plan, Predicate, Properties, ScenarioBuilder,
-    ScenarioDefForm, Seed, WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED,
+    EngineError, GuestWorkloadBinary, GuestWorkloadLoadPatternFixture, GuestWorkloadPattern,
+    GuestWorkloadSpikeMode, GuestWorkloadTimeSource, Icount, NodeTemplate, Plan, Properties,
+    ScenarioBuilder, ScenarioDefForm, Seed, WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED,
     WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES, WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX,
     WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER, WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER,
     WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER, WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME,
@@ -121,72 +120,6 @@ fn spike_fixture_can_be_guest_virtual_time_rate() -> Result<(), EngineError> {
 }
 
 #[test]
-fn spike_fixture_can_be_planned_start_node_burst() -> Result<(), EngineError> {
-    let fixture = GuestWorkloadLoadPatternFixture::spike_start_node_burst()?;
-    assert_eq!(fixture.pattern(), GuestWorkloadPattern::Spike);
-    assert_eq!(
-        fixture.spike_mode(),
-        Some(GuestWorkloadSpikeMode::StartNodeBurst)
-    );
-    assert_eq!(
-        fixture.time_source(),
-        Some(GuestWorkloadTimeSource::VirtualTime)
-    );
-    assert_eq!(fixture.world().vm_nodes().len(), 2);
-    assert!(
-        fixture
-            .world()
-            .vm_nodes()
-            .iter()
-            .all(|node| node.guest_workload_pattern() == Some(GuestWorkloadPattern::Spike))
-    );
-    assert!(fixture.world().vm_nodes().iter().all(|node| {
-        node.guest_workload_time_source() == Some(GuestWorkloadTimeSource::VirtualTime)
-    }));
-
-    let graph = fixture
-        .plan()
-        .event_graph()
-        .expect("StartNode burst fixture should use an event graph plan");
-    assert_eq!(graph.events().len(), 2);
-    let hold = graph
-        .events()
-        .iter()
-        .find(|event| event.id.name == "hold-burst-at-genesis")
-        .expect("burst fixture should hold the burst node inactive at genesis");
-    assert!(hold.trigger.is_none());
-    assert!(matches!(
-        &hold.action,
-        Action::InjectFault {
-            fault: MembershipFault::NotYetJoined { node },
-            ..
-        } if node.name == "client-burst"
-    ));
-
-    let event = graph
-        .events()
-        .iter()
-        .find(|event| event.id.name == "start-burst-at-vt")
-        .expect("burst fixture should schedule a virtual-time start event");
-    assert!(matches!(
-        event.trigger.as_ref(),
-        Some(Predicate::At { at }) if at.ticks == 50
-    ));
-    let Action::Group(actions) = &event.action else {
-        panic!("start-burst event should heal the hold and start the node");
-    };
-    assert!(actions.iter().any(|action| matches!(
-        action,
-        Action::HealFault { tag } if tag.name == "burst-not-yet-joined"
-    )));
-    assert!(actions.iter().any(|action| matches!(
-        action,
-        Action::StartNode { node } if node.name == "client-burst"
-    )));
-    Ok(())
-}
-
-#[test]
 fn cardinality_growth_fixture_is_guest_key_policy() -> Result<(), EngineError> {
     let fixture = GuestWorkloadLoadPatternFixture::cardinality_growth()?;
     assert_eq!(fixture.pattern(), GuestWorkloadPattern::CardinalityGrowth);
@@ -208,47 +141,6 @@ fn cardinality_growth_fixture_is_guest_key_policy() -> Result<(), EngineError> {
     assert!(node.cmdline.contains("initial_keys=8"));
     assert!(node.cmdline.contains("key_growth_per_sec=4"));
     assert!(node.cmdline.contains("key_cap=1024"));
-    Ok(())
-}
-
-#[test]
-fn correlated_failure_fixture_is_an_event_graph_campaign() -> Result<(), EngineError> {
-    let fixture = GuestWorkloadLoadPatternFixture::correlated_failure_campaign()?;
-    assert_eq!(fixture.pattern(), GuestWorkloadPattern::CorrelatedFailure);
-    assert_eq!(fixture.world().vm_nodes().len(), 2);
-    assert_eq!(fixture.world().links().len(), 1);
-    let graph = fixture
-        .plan()
-        .event_graph()
-        .expect("correlated-failure fixture should use an event graph");
-    assert_eq!(graph.events().len(), 5);
-    assert!(graph.events().iter().any(|event| matches!(
-        &event.action,
-        Action::InjectFault {
-            fault: MembershipFault::Taxonomy {
-                fault: Fault::Network(NetworkFault::Partition { .. })
-            },
-            ..
-        }
-    )));
-    assert!(graph.events().iter().any(|event| matches!(
-        &event.action,
-        Action::InjectFault {
-            fault: MembershipFault::Taxonomy {
-                fault: Fault::Network(NetworkFault::Loss { .. })
-            },
-            ..
-        }
-    )));
-    assert!(graph.events().iter().any(|event| matches!(
-        &event.action,
-        Action::InjectFault {
-            fault: MembershipFault::Taxonomy {
-                fault: Fault::Node(NodeFault::Crash { .. })
-            },
-            ..
-        }
-    )));
     Ok(())
 }
 
@@ -450,8 +342,7 @@ fn assert_fixture_reproduces(
 }
 
 fn assert_empty_plan(plan: &Plan) {
-    assert!(plan.entries().is_empty());
-    assert!(plan.event_graph().is_none());
+    assert!(plan.event_graph().events().is_empty());
 }
 
 fn only_node(nodes: &[crucible::WorldNode]) -> &crucible::WorldNode {

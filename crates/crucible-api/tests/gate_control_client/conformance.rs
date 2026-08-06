@@ -202,23 +202,6 @@ where
         .unwrap_or_else(|error| panic!("{backend}: Send Fork should succeed: {error}"));
     record_accepted_command(&mut report, &fork, Some(LiveStateKind::Paused));
 
-    for (command_id, command_kind) in [
-        (11, SessionCommandKind::InjectFault),
-        (12, SessionCommandKind::HealFault),
-    ] {
-        let response = client
-            .send_command(SendRequest::new(
-                session,
-                command_id,
-                representative_command(command_kind),
-            ))
-            .await
-            .unwrap_or_else(|error| {
-                panic!("{backend}: Send {command_kind:?} should succeed: {error}")
-            });
-        record_accepted_command(&mut report, &response, None);
-    }
-
     let reproduction = client
         .get_reproduction(GetReproductionRequest::new(session).with_expected_epoch(session.epoch))
         .await
@@ -234,8 +217,6 @@ where
         SessionCommandKind::RemoveBreakpoint,
         SessionCommandKind::CreateSavepoint,
         SessionCommandKind::Fork,
-        SessionCommandKind::InjectFault,
-        SessionCommandKind::HealFault,
     ] {
         assert!(
             report.reproduction_commands.contains(&required),
@@ -563,8 +544,8 @@ where
 
     let mut mutating_results = Vec::new();
     for (command_id, command_kind) in [
-        (10, SessionCommandKind::InjectFault),
-        (11, SessionCommandKind::HealFault),
+        (10, SessionCommandKind::SetBreakpoint),
+        (11, SessionCommandKind::CreateSavepoint),
     ] {
         if traffic.is_noisy() {
             assert_read_only_traffic_is_schedule_neutral(
@@ -794,20 +775,20 @@ pub(super) async fn drive_rpc_arrival_permutation_projection(
             panic!("arrival-order read-before-mutate GetReproduction should succeed: {error}")
         });
     assert!(read_before.commands.is_empty());
-    let inject = client
+    let first_mutation = client
         .clone()
         .send_command(
             SendRequest::new(
                 session,
                 10,
-                representative_command(SessionCommandKind::InjectFault),
+                representative_command(SessionCommandKind::SetBreakpoint),
             )
             .with_expected_epoch(session.epoch),
         )
         .await;
     assert_eq!(
-        inject
-            .unwrap_or_else(|error| panic!("arrival-order InjectFault should succeed: {error}"))
+        first_mutation
+            .unwrap_or_else(|error| panic!("arrival-order mutation should succeed: {error}"))
             .result
             .status,
         CommandResultStatus::Accepted,
@@ -845,13 +826,13 @@ pub(super) async fn drive_rpc_arrival_permutation_projection(
     );
     let _ = server.take_arrivals().await;
 
-    let heal = client
+    let second_mutation = client
         .clone()
         .send_command(
             SendRequest::new(
                 session,
                 11,
-                representative_command(SessionCommandKind::HealFault),
+                representative_command(SessionCommandKind::CreateSavepoint),
             )
             .with_expected_epoch(session.epoch),
         )
@@ -886,7 +867,8 @@ pub(super) async fn drive_rpc_arrival_permutation_projection(
         ),
     );
     assert_eq!(
-        heal.unwrap_or_else(|error| panic!("arrival-order HealFault should succeed: {error}"))
+        second_mutation
+            .unwrap_or_else(|error| panic!("arrival-order mutation should succeed: {error}"))
             .result
             .status,
         CommandResultStatus::Accepted,
@@ -936,13 +918,13 @@ pub(super) async fn drive_rpc_arrival_permutation_projection(
         mutating_results: vec![
             ApiMutatingCommandResult {
                 command_id: 10,
-                command: SessionCommandKind::InjectFault,
+                command: SessionCommandKind::SetBreakpoint,
                 status: CommandResultStatus::Accepted,
                 state_update: None,
             },
             ApiMutatingCommandResult {
                 command_id: 11,
-                command: SessionCommandKind::HealFault,
+                command: SessionCommandKind::CreateSavepoint,
                 status: CommandResultStatus::Accepted,
                 state_update: None,
             },
@@ -1247,34 +1229,6 @@ pub(super) fn assert_reproduction_pause_record(
     assert_eq!(record.at_sequence, at_sequence);
     assert_eq!(record.result, ReproductionCommandResult::Accepted);
     assert_eq!(record.observational_order, record.sequence);
-}
-
-pub(super) fn assert_fault_reproduction_records(records: &[ReproductionCommandRecord]) {
-    let [inject, heal] = records else {
-        panic!("expected inject/heal reproduction pair, got {records:?}");
-    };
-    assert_eq!(inject.payload.command, SessionCommandKind::InjectFault);
-    assert!(
-        inject
-            .payload
-            .command_payload
-            .contains("payload=inject-fault")
-    );
-    assert!(inject.payload.command_payload.contains("fault-material="));
-    assert!(matches!(
-        &inject.payload.scheduler_control,
-        Some(material)
-            if material.contains("control=inject-fault")
-                && material.contains("fault-material=")
-    ));
-    assert_eq!(heal.payload.command, SessionCommandKind::HealFault);
-    assert!(heal.payload.command_payload.contains("payload=heal-fault"));
-    assert_eq!(
-        heal.payload.scheduler_control,
-        Some(String::from(
-            "control=heal-fault\ntag=6c6966656379636c652d6d6f64656c\n"
-        )),
-    );
 }
 
 pub(super) async fn recv_rpc_control_event(

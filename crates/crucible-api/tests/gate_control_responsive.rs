@@ -454,9 +454,7 @@ impl SimDoubleQuantumLoop {
                 SchedulerControlOperationKind::Pause
                 | SchedulerControlOperationKind::Resume
                 | SchedulerControlOperationKind::Step
-                | SchedulerControlOperationKind::Fork
-                | SchedulerControlOperationKind::InjectFault { .. }
-                | SchedulerControlOperationKind::HealFault { .. } => {
+                | SchedulerControlOperationKind::Fork => {
                     let now = SimulationBackend::now(&self.backend);
                     SimulationBackend::apply(&mut self.backend, &BackendEffect::Noop, now)?;
                 }
