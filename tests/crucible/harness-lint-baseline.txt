@@ -37,7 +37,8 @@ confinement	crates/crucible-cli/src/cli/dispatch/support.rs	host nondeterminism 
 confinement	crates/crucible-cli/src/cli/dispatch/support.rs	host nondeterminism reaching State	Backend		2
 confinement	crates/crucible-cli/src/cli/dispatch/support.rs	host nondeterminism reaching State	Configuration		1
 confinement	crates/crucible-cli/src/cli/control/streaming_events.rs	host nondeterminism reaches API/session route	Configuration		1
-confinement	crates/crucible-cli/src/cli/control/streaming_events.rs	host nondeterminism reaches API/session route	crucible_api		5
+confinement	crates/crucible-cli/src/cli/control/streaming_events.rs	host nondeterminism reaches API/session route	crucible_api		7
+confinement	crates/crucible-cli/src/cli/control/streaming_events.rs	host nondeterminism reaches API/session route	crucible_session		1
 confinement	crates/crucible-cli/src/cli/control/streaming_events.rs	host nondeterminism reaching State	Configuration		1
 confinement	crates/crucible-cli/src/cli/exploration/search.rs	host nondeterminism reaches API/session route	Configuration		3
 confinement	crates/crucible-cli/src/cli/exploration/search.rs	host nondeterminism reaches API/session route	Decision		8
@@ -221,6 +222,8 @@ confinement	crates/crucible-cli/src/cli/run_save/qemu_live.rs	host nondeterminis
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live.rs	host nondeterminism reaching State	Decision		5
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live.rs	host nondeterminism reaching State	ScenarioDef		1
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live.rs	host nondeterminism reaching State	Schedule		4
+confinement	crates/crucible-cli/src/cli/run_save/qemu_live/probe.rs	host nondeterminism reaches API/session route	Configuration		1
+confinement	crates/crucible-cli/src/cli/run_save/qemu_live/probe.rs	host nondeterminism reaching State	Configuration		1
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live/search.rs	host nondeterminism reaches API/session route	crucible_api		1
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live/search.rs	host nondeterminism reaches API/session route	crucible_session		7
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live/search/failure.rs	host nondeterminism reaches API/session route	crucible_session		7
