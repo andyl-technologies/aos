@@ -1,12 +1,14 @@
 use super::*;
 use crate::model::{
-    Icount, LinkDef, MAX_REPRODUCTION_SCENARIO_BLOB_BYTES, MAX_SCENARIO_BINARY_BLOB_BYTES, NodeId,
-    Plan, ReadyPoint, ScenarioBinaryReader, ScenarioBinaryWriter, VmArchitecture, WhiteBoxPolicy,
-    World, WorldFaultDomain, WorldFaultTargetRef, WorldFaultTopology, WorldMobileEndpoint,
+    Icount, LinkDef, MAX_REPRODUCTION_SCENARIO_BLOB_BYTES, MAX_SCENARIO_BINARY_BLOB_BYTES,
+    NetworkPolicyArtifactKind, NetworkPolicyIntegerPoint, NetworkPolicyIntegerTable,
+    NetworkPolicyInterpolation, NetworkPolicyOutsideRange, NodeId, Plan, ReadyPoint,
+    ScenarioBinaryReader, ScenarioBinaryWriter, VmArchitecture, WhiteBoxPolicy, World,
+    WorldFaultDomain, WorldFaultTargetRef, WorldFaultTopology, WorldMobileEndpoint,
     WorldNetworkForwarder, WorldNetworkForwarderKind, WorldNetworkInterface, WorldNetworkPath,
-    WorldNetworkPathHop, WorldNetworkQueue, WorldNetworkQueueDiscipline, WorldNetworkQueueOverflow,
-    WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology, WorldNode,
-    WorldNodeArchitecture,
+    WorldNetworkPathHop, WorldNetworkPolicyArtifact, WorldNetworkQueue,
+    WorldNetworkQueueDiscipline, WorldNetworkQueueOverflow, WorldNetworkSegment,
+    WorldNetworkSegmentKind, WorldNetworkTechnology, WorldNode, WorldNodeArchitecture,
 };
 
 fn test_link() -> LinkDef {
@@ -19,6 +21,78 @@ fn test_link() -> LinkDef {
         },
     )
     .unwrap_or_else(|error| panic!("test link: {error}"))
+}
+
+#[test]
+fn network_effect_policy_references_are_typed_and_world_owned() {
+    let program = program(true);
+    let target = ResolvedTargetSet::new(
+        vec![ResolvedFaultTarget::NetworkSegment {
+            segment: test_segment_id(),
+            direction: FaultDirection::AToB,
+        }],
+        false,
+    )
+    .unwrap_or_else(|error| panic!("policy test target: {error}"));
+    let effect = EffectRequest::new(
+        EFFECT_SEMANTIC_VERSION,
+        EffectLifetime::Persistent,
+        EffectSpecification::Network(NetworkEffectSpecification::ProfileDelta {
+            latency_nanos: None,
+            rate_cap_bps: None,
+            loss_hazard: Some(object_id("loss-table")),
+            corruption_hazard: None,
+            technology_metrics: None,
+        }),
+    )
+    .unwrap_or_else(|error| panic!("policy test effect: {error}"));
+    let binding = FaultBinding::new(
+        object_id("policy-binding"),
+        program.exported_outputs().to_vec(),
+        BindingSampling::AtBoundary,
+        BindingMapping::ActiveWhenTrue { invert: false },
+        TargetSelector::Exact(target),
+        [FaultPhase::Resolve].into_iter().collect(),
+        effect,
+        None,
+        BindingSearchPolicy::Fixed,
+        BindingObservabilityPolicy {
+            samples: SampleObservation::ChangesAndEffects,
+            record_inactive_opportunities: false,
+            retain_mapped_values: true,
+        },
+        &program,
+    )
+    .unwrap_or_else(|error| panic!("policy test binding: {error}"));
+    let plan = Plan::empty().with_fault_signals(
+        FaultSignalPlan::new(vec![program], vec![binding])
+            .unwrap_or_else(|error| panic!("policy test plan: {error}")),
+    );
+    let world = test_world();
+    assert!(plan.validate_for_world(&world).is_err());
+
+    let mut topology = world.fault_topology().clone();
+    topology
+        .network_policy_artifacts
+        .push(WorldNetworkPolicyArtifact {
+            id: object_id("loss-table"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::IntegerLookup(NetworkPolicyIntegerTable {
+                input_unit: object_id("load"),
+                output_unit: object_id("probability-millionths"),
+                interpolation: NetworkPolicyInterpolation::Step,
+                outside: NetworkPolicyOutsideRange::Clamp,
+                points: vec![NetworkPolicyIntegerPoint {
+                    input: 0,
+                    output: 10_000,
+                }],
+            }),
+        });
+    let world = world
+        .with_fault_topology(topology)
+        .unwrap_or_else(|error| panic!("policy test topology: {error}"));
+    plan.validate_for_world(&world)
+        .unwrap_or_else(|error| panic!("typed policy reference should validate: {error}"));
 }
 
 fn test_segment_id() -> FaultObjectId {

@@ -140,6 +140,8 @@ pub(super) struct WorldToml {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) network_contact_plan: Vec<WorldNetworkContactPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) network_policy_artifact: Vec<WorldNetworkPolicyArtifact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) mobile_endpoint: Vec<WorldMobileEndpoint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) storage_device: Vec<WorldStorageFaultDevice>,
@@ -695,6 +697,7 @@ pub(super) fn world_to_toml(world: &World) -> WorldToml {
         network_path: fault_topology.network_paths.clone(),
         network_attachment: fault_topology.network_attachments.clone(),
         network_contact_plan: fault_topology.network_contact_plans.clone(),
+        network_policy_artifact: fault_topology.network_policy_artifacts.clone(),
         mobile_endpoint: fault_topology.mobile_endpoints.clone(),
         storage_device: fault_topology.storage_devices.clone(),
         storage_controller: fault_topology.storage_controllers.clone(),
@@ -714,6 +717,7 @@ pub(super) fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
         network_paths: toml.network_path,
         network_attachments: toml.network_attachment,
         network_contact_plans: toml.network_contact_plan,
+        network_policy_artifacts: toml.network_policy_artifact,
         mobile_endpoints: toml.mobile_endpoint,
         storage_devices: toml.storage_device,
         storage_controllers: toml.storage_controller,

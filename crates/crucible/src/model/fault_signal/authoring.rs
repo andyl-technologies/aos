@@ -2968,6 +2968,19 @@ pub(crate) enum FaultSignalAuthoringError {
         /// Largest fixed icount shift used by a World VM.
         icount_shift: u8,
     },
+    /// A network effect refers to an absent or wrong-typed policy declaration.
+    InvalidNetworkPolicyReference {
+        /// Binding containing the reference.
+        binding: String,
+        /// Rejected policy identity.
+        reference: String,
+        /// Effect parameter containing the reference.
+        field: &'static str,
+        /// Accepted policy class or classes.
+        expected: String,
+        /// Actual class, or none when the declaration is absent.
+        actual: Option<&'static str>,
+    },
     /// A telemetry or coordinate adapter is outside the executable registry.
     UnsupportedAdapter(String),
     /// A telemetry field is absent from the selected adapter registry.
@@ -3062,6 +3075,17 @@ impl fmt::Display for FaultSignalAuthoringError {
             } => write!(
                 formatter,
                 "binding `{binding}` interval {nanos}ns is not representable at World icount shift {icount_shift}"
+            ),
+            Self::InvalidNetworkPolicyReference {
+                binding,
+                reference,
+                field,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "binding `{binding}` field `{field}` references network policy `{reference}` with class {}, expected {expected}",
+                actual.unwrap_or("absent")
             ),
             Self::UnsupportedAdapter(adapter) => {
                 write!(
