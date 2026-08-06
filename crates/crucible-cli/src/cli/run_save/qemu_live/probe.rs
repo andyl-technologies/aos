@@ -76,6 +76,16 @@ pub(crate) fn run_local_qemu_debug_workflow_with_probe(
             format!("checkpoint:{}", format_content_hash_ref(*hash))
         }
     };
+    let requested_operation = match &plan.verb {
+        DebugInteractiveVerbPlan::AttachGdb => "attach-gdb",
+        DebugInteractiveVerbPlan::ForkDebug => "fork-debug",
+        DebugInteractiveVerbPlan::Goto(_) => "goto",
+        DebugInteractiveVerbPlan::ReverseStep { .. } => "reverse-step",
+        DebugInteractiveVerbPlan::ReverseContinue { .. } => "reverse-continue",
+        DebugInteractiveVerbPlan::Exec { .. } => "exec",
+        DebugInteractiveVerbPlan::Pty { .. } => "pty",
+        DebugInteractiveVerbPlan::Ssh => "ssh",
+    };
     Ok(vec![
         format!(
             "qemu-live\toperation=debug-admission\tqemu_build_id={}\tplugin_abi={}\ticount={}\tfingerprint={}",
@@ -85,7 +95,7 @@ pub(crate) fn run_local_qemu_debug_workflow_with_probe(
             evidence.execution_fingerprint
         ),
         format!(
-            "debug-plan\ttarget={target}\tcoordinate={coordinate}\tnode={}\tgdb_listen={}\tread_only={}\tallow_mutate={}\tdelegated_session_commands={}\traw_gdb_single_step=false",
+            "debug-plan\texecution=planned-only\trequested_operation={requested_operation}\ttarget={target}\tcoordinate={coordinate}\tnode={}\tgdb_listen={}\tread_only={}\tallow_mutate={}\tdelegated_session_commands={}\traw_gdb_single_step=false",
             plan.node.as_deref().unwrap_or("first-vm"),
             plan.gdb_listen,
             plan.read_only,
