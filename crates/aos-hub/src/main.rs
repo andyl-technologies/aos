@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use aos_hub_core::fetch::SurfaceProvider as _;
+use aos_hub_core::service::RouteReservationKeyring as _;
 use clap::{Args, Parser, Subcommand};
 
 use aos_hub::db::{Database, RegistryRecord};
@@ -376,6 +377,13 @@ async fn main() -> Result<()> {
             cloudflare_api_token,
         } => {
             let root = resolve_root(cli.root, dev)?;
+            let listener = tokio::net::TcpListener::bind(&listen)
+                .await
+                .with_context(|| format!("binding {listen}"))?;
+            let listen_addr = listener
+                .local_addr()
+                .context("reading bound listen address")?;
+            let external_url = external_url.unwrap_or_else(|| format!("http://{listen_addr}"));
             let db = Arc::new(Database::open(&root.join("hub.db")).await?);
             let default_storage_root = root.join("storage");
             std::fs::create_dir_all(&default_storage_root).with_context(|| {
@@ -391,45 +399,6 @@ async fn main() -> Result<()> {
                 .await?;
             let image_snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
             image_snapshots.load_tracked(&db).await?;
-            // Optional one-shot demo seed: populate an empty instance so the
-            // server comes up with something to browse. seed_dev is idempotent
-            // (it no-ops when the demo org already exists), so leaving --seed on
-            // across restarts is safe.
-            if seed {
-                match aos_hub::seed::seed_dev_with_snapshots(
-                    &db,
-                    &root,
-                    Arc::clone(&image_snapshots),
-                )
-                .await
-                {
-                    Ok(aos_hub::seed::SeedOutcome::Seeded(report)) => report.print(),
-                    Ok(aos_hub::seed::SeedOutcome::AlreadySeeded) => {
-                        tracing::info!("seed skipped: demo data already present");
-                    }
-                    Err(err) => {
-                        tracing::warn!(error = %format!("{err:#}"), "dev seed failed");
-                    }
-                }
-            }
-            let external_url = external_url.unwrap_or_else(|| format!("http://{listen}"));
-            let mut app_state = AppState::new(db, external_url).await;
-            app_state.image_snapshots = Some(image_snapshots);
-            if let Some(snapshots) = app_state.image_snapshots.clone() {
-                let snapshot_db = Arc::clone(&app_state.db);
-                tokio::spawn(async move {
-                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
-                    loop {
-                        tick.tick().await;
-                        if let Err(error) = snapshots.collect(&snapshot_db, 100).await {
-                            tracing::warn!(
-                                error = %format!("{error:#}"),
-                                "image snapshot collection failed"
-                            );
-                        }
-                    }
-                });
-            }
             let route_reservation_keys_path = route_reservation_keys_file
                 .context("HUB_ROUTE_RESERVATION_KEYS_FILE is required for route management")?;
             let route_reservation_keys = String::from_utf8(
@@ -450,9 +419,53 @@ async fn main() -> Result<()> {
                 .context("invalid native route reservation keyring")?,
             );
             route_reservation_keyring
-                .validate_referenced_versions(&app_state.db)
+                .validate_referenced_versions(&db)
                 .await
                 .context("route reservation keyring cannot open this database")?;
+            let seed_reservation_keys = route_reservation_keyring.snapshot()?;
+            // Optional one-shot demo seed: populate an empty instance so the
+            // server comes up with something to browse. seed_dev is idempotent
+            // (it no-ops when the demo org already exists), so leaving --seed on
+            // across restarts is safe.
+            if seed {
+                match aos_hub::seed::seed_dev_with_snapshots(
+                    &db,
+                    &root,
+                    Arc::clone(&image_snapshots),
+                    &aos_hub::seed::SeedRouteConfig {
+                        listen_addr,
+                        external_url: &external_url,
+                        reservation_keys: &seed_reservation_keys,
+                    },
+                )
+                .await
+                {
+                    Ok(aos_hub::seed::SeedOutcome::Seeded(report)) => report.print(),
+                    Ok(aos_hub::seed::SeedOutcome::AlreadySeeded) => {
+                        tracing::info!("seed skipped: demo data already present");
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %format!("{err:#}"), "dev seed failed");
+                    }
+                }
+            }
+            let mut app_state = AppState::new(db, external_url).await;
+            app_state.image_snapshots = Some(image_snapshots);
+            if let Some(snapshots) = app_state.image_snapshots.clone() {
+                let snapshot_db = Arc::clone(&app_state.db);
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = snapshots.collect(&snapshot_db, 100).await {
+                            tracing::warn!(
+                                error = %format!("{error:#}"),
+                                "image snapshot collection failed"
+                            );
+                        }
+                    }
+                });
+            }
             app_state.route_reservation_keyring = Some(route_reservation_keyring);
             if let Some(path) = delivery_attestation_key_file {
                 let key = aos_hub::auth::seal::read_secret_file(&path).with_context(|| {
@@ -721,9 +734,6 @@ async fn main() -> Result<()> {
                 state.http.clone(),
                 Arc::clone(&state.secret_versions),
             ));
-            let listener = tokio::net::TcpListener::bind(&listen)
-                .await
-                .with_context(|| format!("binding {listen}"))?;
             tracing::info!(%listen, root = %root.display(), "aos-hub serving");
             // `into_make_service_with_connect_info` injects the TCP peer
             // address as `ConnectInfo<SocketAddr>` so the rate limiter keys on
@@ -1327,6 +1337,23 @@ fn resolve_root(root: Option<PathBuf>, dev: bool) -> Result<PathBuf> {
     };
     std::fs::create_dir_all(&root)
         .with_context(|| format!("creating hub root {}", root.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        let metadata = std::fs::symlink_metadata(&root)
+            .with_context(|| format!("inspecting hub root {}", root.display()))?;
+        anyhow::ensure!(
+            metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+            "hub root must be a directory, not a link"
+        );
+        anyhow::ensure!(
+            metadata.uid() == rustix::process::geteuid().as_raw(),
+            "hub root must be owned by the effective user"
+        );
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("securing hub root {}", root.display()))?;
+    }
     Ok(root)
 }
 

@@ -42,17 +42,23 @@
 //! early with [`SeedOutcome::AlreadySeeded`] rather than duplicating rows, so
 //! `serve --dev --seed` is safe to leave on across restarts.
 
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use ed25519_dalek::SigningKey;
+use sha2::{Digest as _, Sha256};
 
-use crate::db::{Database, GrantResource, NewSurfacePlacementSpec, SignupPolicy, SurfaceTarget};
+use crate::db::{
+    Database, DeliveryEndpointHostInput, DeliveryEndpointRevisionSpec, DeliveryRouteSpec,
+    GrantResource, NewSurfacePlacementSpec, SignupPolicy, SurfaceTarget,
+};
 use crate::domain::{Permission, Principal, Role, Scope};
 use crate::fetch::LocalFsFetch;
 use crate::surface::object::{encode_loose, encode_tree, hash_object, ObjectKind, Oid, TreeEntry};
 use crate::surface::sshsig;
+use aos_hub_core::service::RouteReservationKey;
 
 /// The demo user's email address.
 pub const DEMO_EMAIL: &str = "demo@example.com";
@@ -68,6 +74,16 @@ pub const DEMO_REGISTRY: &str = "cdn";
 
 /// The private image-registry name used by the authenticated dev fixture.
 pub const DEMO_PRIVATE_REGISTRY: &str = "private-images";
+
+/// Runtime-owned network identity and reservation keys for seeded routes.
+pub struct SeedRouteConfig<'a> {
+    /// Bound native listener represented by the seeded Hub endpoint.
+    pub listen_addr: SocketAddr,
+    /// Externally reachable origin used to render immutable consumer URLs.
+    pub external_url: &'a str,
+    /// Active and retained URL-reservation keys configured for this deployment.
+    pub reservation_keys: &'a [RouteReservationKey],
+}
 
 /// The demo release semver and channel.
 const DEMO_SEMVER: &str = "1.0.0";
@@ -135,7 +151,11 @@ impl SeedReport {
 /// Returns an error on any database failure, if the surface cannot be written
 /// under `root`, or if the post-seed index fails (which would mean the
 /// generated surface did not verify — a bug, surfaced loudly).
-pub async fn seed_dev(db: &Database, root: &Path) -> Result<SeedOutcome> {
+pub async fn seed_dev(
+    db: &Database,
+    root: &Path,
+    route: &SeedRouteConfig<'_>,
+) -> Result<SeedOutcome> {
     let storage_root = root.join("storage");
     std::fs::create_dir_all(&storage_root)
         .with_context(|| format!("creating development storage {}", storage_root.display()))?;
@@ -145,7 +165,7 @@ pub async fn seed_dev(db: &Database, root: &Path) -> Result<SeedOutcome> {
     db.ensure_instance_default_binding("local_fs", Some(storage_root), None)
         .await?;
     let snapshots = crate::image_snapshot::ImageSnapshotStore::open(root)?;
-    seed_dev_with_snapshots(db, root, snapshots).await
+    seed_dev_with_snapshots(db, root, snapshots, route).await
 }
 
 /// Seeds a development instance using the runtime's retained image store.
@@ -157,6 +177,7 @@ pub async fn seed_dev_with_snapshots(
     db: &Database,
     _root: &Path,
     image_snapshots: Arc<crate::image_snapshot::ImageSnapshotStore>,
+    route: &SeedRouteConfig<'_>,
 ) -> Result<SeedOutcome> {
     // Idempotency gate: a prior run leaves the `demo` org behind.
     if db.org_by_slug(DEMO_ORG).await?.is_some() {
@@ -283,6 +304,18 @@ pub async fn seed_dev_with_snapshots(
     )
     .await
     .context("indexing private seeded registry")?;
+    seed_hub_delivery_routes(
+        db,
+        org_id,
+        &org_scope,
+        registry_id,
+        public_placement_id,
+        private_registry_id,
+        private_placement_id,
+        route,
+    )
+    .await
+    .context("configuring seeded delivery topology")?;
     if let Some(fixture) = &producer_fixture {
         anyhow::ensure!(
             db.list_system_images(registry_id).await?.is_empty()
@@ -444,6 +477,245 @@ async fn seed_placement_and_index(
     )
     .await?;
     Ok((registry, placement.id))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn seed_hub_delivery_routes(
+    db: &Database,
+    org_id: i64,
+    org_scope: &str,
+    public_registry_id: i64,
+    public_placement_id: i64,
+    private_registry_id: i64,
+    private_placement_id: i64,
+    config: &SeedRouteConfig<'_>,
+) -> Result<()> {
+    const ENDPOINT_ID: &str = "seed-hub";
+    let boundary = GrantResource::NetworkBoundary {
+        id: "instance:public",
+    };
+    if !db
+        .list_consumer_scope_grants(boundary)
+        .await?
+        .iter()
+        .any(|grant| grant.consumer_scope_key == org_scope && grant.state == "active")
+    {
+        db.grant_consumer_scope(
+            boundary,
+            org_scope,
+            "explicit",
+            "seed",
+            "seed-hub-boundary-grant",
+        )
+        .await?;
+    }
+
+    let (host, port) = match config.listen_addr {
+        SocketAddr::V4(address) => (
+            DeliveryEndpointHostInput::Ipv4(address.ip().octets()),
+            address.port(),
+        ),
+        SocketAddr::V6(address) => (
+            DeliveryEndpointHostInput::Ipv6(address.ip().octets()),
+            address.port(),
+        ),
+    };
+    let scheme = url::Url::parse(config.external_url)
+        .context("parsing seeded external URL")?
+        .scheme()
+        .to_string();
+    anyhow::ensure!(
+        matches!(scheme.as_str(), "http" | "https"),
+        "seeded external URL must use HTTP or HTTPS"
+    );
+    db.create_delivery_endpoint(
+        ENDPOINT_ID,
+        org_scope,
+        Some(org_id),
+        &scheme,
+        &host,
+        port,
+        "instance:public",
+        &DeliveryEndpointRevisionSpec {
+            boundary_revision: 1,
+            ingress_kind: "hub".to_string(),
+            listener_configuration: format!("native:{}", config.listen_addr),
+            tls_configuration: if scheme == "https" {
+                "{\"termination\":\"external\"}".to_string()
+            } else {
+                "{}".to_string()
+            },
+            probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"seed-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
+        },
+        (scheme == "http").then_some(1),
+        "seed",
+        "seed-hub-endpoint",
+    )
+    .await?;
+    db.reconcile_delivery_endpoint(
+        ENDPOINT_ID,
+        1,
+        1,
+        "healthy",
+        true,
+        scheme == "https",
+        None,
+        1,
+    )
+    .await?;
+
+    for (registry_id, placement_id, name, visibility) in [
+        (
+            public_registry_id,
+            public_placement_id,
+            DEMO_REGISTRY,
+            "public",
+        ),
+        (
+            private_registry_id,
+            private_placement_id,
+            DEMO_PRIVATE_REGISTRY,
+            "private",
+        ),
+    ] {
+        seed_hub_delivery_route(
+            db,
+            org_scope,
+            registry_id,
+            placement_id,
+            name,
+            visibility,
+            config,
+            ENDPOINT_ID,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn seed_hub_delivery_route(
+    db: &Database,
+    org_scope: &str,
+    registry_id: i64,
+    placement_id: i64,
+    registry_name: &str,
+    visibility: &str,
+    config: &SeedRouteConfig<'_>,
+    endpoint_id: &str,
+) -> Result<()> {
+    let base_path = format!("/{DEMO_ORG}/{registry_name}");
+    let canonical_url = format!("{}{}", config.external_url.trim_end_matches('/'), base_path);
+    let endpoint = db
+        .delivery_endpoint(endpoint_id)
+        .await?
+        .context("seeded delivery endpoint disappeared")?;
+    let endpoint_digest = hex::decode(&endpoint.endpoint_identity_digest)
+        .context("decoding seeded endpoint identity digest")?;
+    let active = config
+        .reservation_keys
+        .iter()
+        .find(|key| key.active)
+        .context("seed route configuration has no active reservation key")?;
+    anyhow::ensure!(
+        config
+            .reservation_keys
+            .iter()
+            .filter(|key| key.active)
+            .count()
+            == 1,
+        "seed route configuration must have exactly one active reservation key"
+    );
+    let mut candidates = Vec::with_capacity(config.reservation_keys.len());
+    for key in config.reservation_keys {
+        candidates.push((
+            key.version,
+            Database::route_reservation_digest(
+                &key.secret,
+                &endpoint_digest,
+                &base_path,
+                &canonical_url,
+            )?
+            .to_vec(),
+        ));
+    }
+    let reservation_digest = candidates
+        .iter()
+        .find_map(|(version, digest)| (*version == active.version).then_some(digest.as_slice()))
+        .context("active reservation digest was not computed")?;
+    let access_policy_json = "{}".to_string();
+    let access_policy_digest = hex::encode(Sha256::digest(access_policy_json.as_bytes()));
+    let route_id = format!("seed-{registry_name}");
+    let route = db
+        .create_delivery_route(
+            &route_id,
+            SurfaceTarget::Registry(registry_id),
+            &DeliveryRouteSpec {
+                consumer_scope_key: org_scope.to_string(),
+                endpoint_id: endpoint_id.to_string(),
+                endpoint_generation: 1,
+                endpoint_ingress_kind: "hub".to_string(),
+                base_path,
+                mode: "hub_proxy".to_string(),
+                access_policy_kind: if visibility == "public" {
+                    "public".to_string()
+                } else {
+                    "hub_auth".to_string()
+                },
+                access_policy_json,
+                access_policy_digest: access_policy_digest.clone(),
+                access_boundary_id: None,
+                access_boundary_revision: None,
+                external_provider_kind: None,
+                external_provider_resource_id: None,
+                external_provider_revision: None,
+                storage_gateway_id: None,
+                gateway_generation: None,
+                target_storage_binding_id: None,
+                gateway_client_base_path: None,
+                target_placement_prefix: None,
+                placement_id: Some(placement_id),
+                placement_policy_revision_id: None,
+                serves_git: true,
+                serves_cache: false,
+                serves_web: true,
+                enabled: true,
+            },
+            &canonical_url,
+            active.version,
+            reservation_digest,
+            &candidates,
+            None,
+            "seed",
+        )
+        .await?;
+    db.reconcile_delivery_route(
+        &route_id,
+        route
+            .configuration_generation
+            .context("seeded route has no selected generation")?,
+        route
+            .configuration_digest
+            .as_deref()
+            .context("seeded route has no configuration digest")?,
+        &access_policy_digest,
+        "healthy",
+        "verified",
+        None,
+        None,
+        1,
+    )
+    .await?;
+    for audience in ["git", "web"] {
+        db.set_canonical_route(
+            SurfaceTarget::Registry(registry_id),
+            audience,
+            &route_id,
+            None,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// A package to seed: name, description, version, and one platform's store
