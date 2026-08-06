@@ -29,6 +29,13 @@ running the browser login:
 The token must be able to deploy Workers and manage R2 and KV resources in the
 account. A custom domain also requires access to its DNS zone.
 
+The Worker needs a separate scoped token at runtime to observe route-control
+state. Set it before the first install even when Wrangler uses browser login:
+
+```sh
+export HUB_CLOUDFLARE_API_TOKEN='scoped-runtime-token'
+```
+
 For a first deployment with a custom domain:
 
 ```sh
@@ -86,7 +93,10 @@ An ordinary redeploy without secret flags preserves the deployed values. Do
 not pass newly generated values to routine updates.
 
 Provider credentials should come from `CLOUDFLARE_API_TOKEN` or `worker login`;
-do not put an API token on the command line. Feed the root password over stdin.
+do not put an API token on the command line. The Worker also requires its own
+scoped `HUB_CLOUDFLARE_API_TOKEN` described above. Later deploys preserve the
+stored runtime token when the variable is omitted. Feed the root password over
+stdin.
 
 ## Update the deployment
 

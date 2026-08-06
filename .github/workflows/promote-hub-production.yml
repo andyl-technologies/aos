@@ -147,6 +147,7 @@ jobs:
             --external-url https://aos.andyl.org \
             --deployment-id "${{ steps.staging.outputs.sha }}" \
             --rate-limit-namespace-base 1000 \
+            --disable-delivery-attestation \
             --route-reservation-keys-file "$keyring" \
             "${domain_args[@]}"
 

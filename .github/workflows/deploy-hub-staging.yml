@@ -83,6 +83,7 @@ jobs:
             --external-url https://aos.staging.andyl.org \
             --deployment-id "$GITHUB_SHA" \
             --rate-limit-namespace-base 2000 \
+            --disable-delivery-attestation \
             --route-reservation-keys-file "$keyring"
 
       - name: Probe the hosted staging deployment

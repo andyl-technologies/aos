@@ -176,6 +176,7 @@ impl RateLimitNamespaces {
 }
 
 /// The fully-resolved inputs for rendering a deployment `wrangler.toml`.
+#[derive(Clone)]
 pub struct DeployConfig {
     /// The Worker name (`name` in `wrangler.toml`).
     pub name: String,
@@ -772,6 +773,8 @@ pub struct Secrets {
     pub email_api_token: Option<String>,
     /// `HUB_DELIVERY_ATTESTATION_KEY` — HMAC key shared with a trusted ingress.
     pub delivery_attestation_key: Option<String>,
+    /// Removes an already-deployed delivery-attestation key when true.
+    pub disable_delivery_attestation: bool,
     /// `HUB_DOMAIN_PROBE_SIGNER_MANIFEST` — Worker terminator signer manifest.
     pub domain_probe_signer_manifest: Option<String>,
     /// `HUB_ROUTE_RESERVATION_KEYRING` — active and retained route HMAC keys.
@@ -786,6 +789,10 @@ impl Secrets {
     /// Returns an error for an explicitly empty secret or a malformed domain
     /// probe or route-reservation manifest.
     pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.delivery_attestation_key.is_none() || !self.disable_delivery_attestation,
+            "delivery attestation cannot be configured and disabled together"
+        );
         for (name, value) in [
             ("HUB_JWT_SECRET", self.jwt_secret.as_deref()),
             ("HUB_SEAL_KEY", self.seal_key.as_deref()),
@@ -832,6 +839,15 @@ pub struct Applied {
     pub minted_jwt_secret: Option<String>,
     /// A freshly minted `HUB_SEAL_KEY`, or `None` if supplied or preserved.
     pub minted_seal_key: Option<String>,
+}
+
+/// Declares whether the target Worker is new or already deployed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeployMode {
+    /// Creates an initial Worker version before applying its first secret set.
+    Install,
+    /// Requires an existing Worker and applies secrets before replacing its code.
+    Update,
 }
 
 /// Provisions the R2 bucket and KV namespace, then resolves their
@@ -928,6 +944,9 @@ pub async fn provision(
 /// Returns an error if the dist files cannot be copied or the config cannot be
 /// written.
 async fn stage_deploy(assets: &Assets, cfg: &DeployConfig, dir: &Path) -> Result<PathBuf> {
+    tokio::fs::create_dir_all(dir)
+        .await
+        .with_context(|| format!("creating deploy staging directory {}", dir.display()))?;
     for f in ["shim.mjs", "index.wasm"] {
         tokio::fs::copy(assets.dist_dir.join(f), dir.join(f))
             .await
@@ -983,12 +1002,14 @@ async fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
 /// Deploys the staged dist and applies the runtime secrets.
 ///
 /// Stages the dist + generated config into a private temporary directory (cleaned
-/// up on return). Order matters: `wrangler deploy` creates the Worker (and bakes
-/// `[vars]`), then `wrangler secret put` attaches the secrets to the live Worker.
+/// up on return). A first install creates an initial version before attaching
+/// secrets; an update lists and applies its requested secret changes before
+/// replacing the deployed code. Optional-router updates require the old and new
+/// router replicas to accept the challenged overlap key during this sequence.
 ///
-/// Secret application is **idempotent across redeploys**: after deploying, the
-/// Worker's existing secrets are listed and any already-present `HUB_JWT_SECRET`
-/// / `HUB_SEAL_KEY` is preserved rather than re-minted. Rotating `HUB_SEAL_KEY`
+/// Secret application is **idempotent across redeploys**: the Worker's existing
+/// secrets are listed and any already-present `HUB_JWT_SECRET` / `HUB_SEAL_KEY`
+/// is preserved rather than re-minted. Rotating `HUB_SEAL_KEY`
 /// would orphan at-rest sealed data and rotating `HUB_JWT_SECRET` would
 /// invalidate every active session, so a fresh value is minted only on a first
 /// deploy where the secret is absent (or when the operator passes one explicitly
@@ -998,7 +1019,12 @@ async fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
 ///
 /// Returns an error if the temp dir, staging, the deploy, the secret listing, or
 /// any `secret put` fails.
-pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> Result<Applied> {
+pub async fn deploy(
+    assets: &Assets,
+    cfg: &DeployConfig,
+    secrets: &Secrets,
+    mode: DeployMode,
+) -> Result<Applied> {
     secrets.validate()?;
     anyhow::ensure!(
         cfg.egress_gateway_url.is_some() == secrets.egress_gateway_key.is_some(),
@@ -1016,26 +1042,38 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
         .context("creating a temporary deploy directory")?;
     let work_dir = work.path();
     let config = stage_deploy(assets, cfg, work_dir).await?;
-    run_wrangler(assets, &deploy_args(&config), None, Some(work_dir)).await?;
 
-    let listed = run_wrangler(assets, &secret_list_args(&config), None, None).await?;
+    // A new router-backed Worker first receives a direct-Fetch bootstrap version
+    // so its complete secret set exists before the URL is selected. An update
+    // keeps the existing transport active while staging a challenged overlap key;
+    // operators keep both router key ids accepted until cutover completes.
+    let secret_config = if mode == DeployMode::Install && cfg.egress_gateway_url.is_some() {
+        let mut direct = cfg.clone();
+        direct.egress_gateway_url = None;
+        let bootstrap_dir = work_dir.join("direct-bootstrap");
+        let bootstrap_config = stage_deploy(assets, &direct, &bootstrap_dir).await?;
+        run_wrangler(
+            assets,
+            &deploy_args(&bootstrap_config),
+            None,
+            Some(&bootstrap_dir),
+        )
+        .await?;
+        bootstrap_config
+    } else if mode == DeployMode::Install {
+        run_wrangler(assets, &deploy_args(&config), None, Some(work_dir)).await?;
+        config.clone()
+    } else {
+        config.clone()
+    };
+
+    let listed = run_wrangler(assets, &secret_list_args(&secret_config), None, None).await?;
     let existing = parse_secret_names(&listed)?;
 
-    // Secrets survive `wrangler deploy` when omitted from configuration. Remove
-    // the pre-cutover gateway name unconditionally, and remove the current
-    // router key when this deployment has selected Worker-direct transport.
-    for obsolete in [
-        Some("HUB_EGRESS_SHARED_KEY"),
-        cfg.egress_gateway_url
-            .is_none()
-            .then_some("HUB_EGRESS_GATEWAY_KEY"),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if existing.iter().any(|name| name == obsolete) {
-            delete_secret(assets, obsolete, &config).await?;
-        }
+    // Secrets survive `wrangler deploy` when omitted from configuration. The
+    // pre-cutover name is never consumed by either transport.
+    if existing.iter().any(|name| name == "HUB_EGRESS_SHARED_KEY") {
+        delete_secret(assets, "HUB_EGRESS_SHARED_KEY", &secret_config).await?;
     }
 
     let minted_jwt_secret = apply_secret(
@@ -1043,7 +1081,7 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
         "HUB_JWT_SECRET",
         secrets.jwt_secret.as_deref(),
         &existing,
-        &config,
+        &secret_config,
     )
     .await?;
     let minted_seal_key = apply_secret(
@@ -1051,17 +1089,19 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
         "HUB_SEAL_KEY",
         secrets.seal_key.as_deref(),
         &existing,
-        &config,
+        &secret_config,
     )
     .await?;
     if let Some(key) = &secrets.egress_gateway_key {
-        // The authenticated challenge above is deliberately before both deploy
-        // and secret rotation. Reaching this write proves the router already
-        // serves the same key.
-        put_secret(assets, "HUB_EGRESS_GATEWAY_KEY", key, &config).await?;
+        // The authenticated challenge above is deliberately before both
+        // deployment and secret rotation. On update, the currently selected
+        // router must accept this overlap key until the URL cutover completes.
+        put_secret(assets, "HUB_EGRESS_GATEWAY_KEY", key, &secret_config).await?;
     }
     match secrets.cloudflare_api_token.as_deref() {
-        Some(token) => put_secret(assets, "HUB_CLOUDFLARE_API_TOKEN", token, &config).await?,
+        Some(token) => {
+            put_secret(assets, "HUB_CLOUDFLARE_API_TOKEN", token, &secret_config).await?
+        }
         None if existing
             .iter()
             .any(|name| name == "HUB_CLOUDFLARE_API_TOKEN") => {}
@@ -1070,10 +1110,16 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
         ),
     }
     if let Some(tok) = &secrets.email_api_token {
-        put_secret(assets, "HUB_EMAIL_API_TOKEN", tok, &config).await?;
+        put_secret(assets, "HUB_EMAIL_API_TOKEN", tok, &secret_config).await?;
     }
     if let Some(key) = &secrets.delivery_attestation_key {
-        put_secret(assets, "HUB_DELIVERY_ATTESTATION_KEY", key, &config).await?;
+        put_secret(assets, "HUB_DELIVERY_ATTESTATION_KEY", key, &secret_config).await?;
+    } else if secrets.disable_delivery_attestation
+        && existing
+            .iter()
+            .any(|name| name == "HUB_DELIVERY_ATTESTATION_KEY")
+    {
+        delete_secret(assets, "HUB_DELIVERY_ATTESTATION_KEY", &secret_config).await?;
     }
     match &secrets.domain_probe_signer_manifest {
         Some(manifest) => {
@@ -1088,7 +1134,7 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
                 assets,
                 "HUB_DOMAIN_PROBE_SIGNER_MANIFEST",
                 manifest,
-                &config,
+                &secret_config,
             )
             .await?;
         }
@@ -1098,7 +1144,13 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
         {
             // An empty manifest keeps the responder explicitly unready until
             // exact endpoint-generation material is deployed.
-            put_secret(assets, "HUB_DOMAIN_PROBE_SIGNER_MANIFEST", "[]", &config).await?;
+            put_secret(
+                assets,
+                "HUB_DOMAIN_PROBE_SIGNER_MANIFEST",
+                "[]",
+                &secret_config,
+            )
+            .await?;
         }
         None => {}
     }
@@ -1110,7 +1162,7 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
                 assets,
                 "HUB_ROUTE_RESERVATION_KEYRING",
                 manifest,
-                &config,
+                &secret_config,
             )
             .await?;
         }
@@ -1120,6 +1172,20 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
         None => bail!(
             "HUB_ROUTE_RESERVATION_KEYRING is required on first deploy; pass --route-reservation-keys-file"
         ),
+    }
+
+    if mode == DeployMode::Update || cfg.egress_gateway_url.is_some() {
+        // Updates publish only after every requested secret mutation succeeds.
+        // A first router install likewise selects its URL only after the key.
+        run_wrangler(assets, &deploy_args(&config), None, Some(work_dir)).await?;
+    }
+
+    if cfg.egress_gateway_url.is_none()
+        && existing.iter().any(|name| name == "HUB_EGRESS_GATEWAY_KEY")
+    {
+        // Direct Fetch is active before the unused router credential is removed,
+        // so a failed cleanup cannot make the Worker unavailable.
+        delete_secret(assets, "HUB_EGRESS_GATEWAY_KEY", &config).await?;
     }
 
     Ok(Applied {
@@ -1573,6 +1639,7 @@ mod tests {
             cloudflare_api_token: Some("cloudflare".into()),
             email_api_token: None,
             delivery_attestation_key: Some("attestation".into()),
+            disable_delivery_attestation: false,
             domain_probe_signer_manifest: None,
             route_reservation_keyring: None,
         };
@@ -1595,8 +1662,59 @@ mod tests {
         assert!(secrets.validate().is_err());
 
         let mut secrets = valid();
+        secrets.disable_delivery_attestation = true;
+        assert!(secrets.validate().is_err());
+
+        let mut secrets = valid();
         secrets.route_reservation_keyring = Some("not-json".into());
         assert!(secrets.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn deploy_staging_creates_a_nested_bootstrap_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let dist = root.path().join("dist");
+        tokio::fs::create_dir_all(&dist).await.unwrap();
+        tokio::fs::write(dist.join("shim.mjs"), b"export default {}")
+            .await
+            .unwrap();
+        tokio::fs::write(dist.join("index.wasm"), b"wasm")
+            .await
+            .unwrap();
+        let assets = Assets {
+            dist_dir: dist,
+            assets_dir: None,
+            wrangler: vec!["wrangler".into()],
+        };
+        let cfg = DeployConfig {
+            name: "aos-hub".into(),
+            bucket: "aos-hub-surfaces".into(),
+            kv_id: "kv-id".into(),
+            rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
+            egress_gateway_url: None,
+            external_url: "https://aos.example.com".into(),
+            deployment_id: None,
+            email_relay_url: None,
+            email_from: None,
+            custom_domains: vec![],
+            serve_assets: false,
+            observability: true,
+            head_sampling_rate: 1.0,
+            logpush: false,
+        };
+        let nested = root.path().join("deploy/direct-bootstrap");
+        let config = stage_deploy(&assets, &cfg, &nested).await.unwrap();
+
+        assert_eq!(config, nested.join("wrangler.toml"));
+        assert_eq!(
+            tokio::fs::read(nested.join("shim.mjs")).await.unwrap(),
+            b"export default {}"
+        );
+        assert_eq!(
+            tokio::fs::read(nested.join("index.wasm")).await.unwrap(),
+            b"wasm"
+        );
+        assert!(tokio::fs::read_to_string(config).await.is_ok());
     }
 
     #[test]
