@@ -342,15 +342,16 @@ fn admit_host_effect_parameters(plan: &FaultSignalPlan) -> Result<(), Production
         else {
             continue;
         };
-        if binding.phases().len() != 1
-            || !binding
-                .phases()
-                .contains(&crucible::model::FaultPhase::Admit)
-        {
+        if binding.phases().iter().any(|phase| {
+            !matches!(
+                phase,
+                crucible::model::FaultPhase::Admit | crucible::model::FaultPhase::Resolve
+            )
+        }) {
             return Err(
                 ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
                     binding: binding.id().clone(),
-                    parameter: "network.availability currently requires the admit phase",
+                    parameter: "network.availability requires admit and/or resolve phases",
                 },
             );
         }
@@ -364,8 +365,6 @@ fn admit_host_effect_parameters(plan: &FaultSignalPlan) -> Result<(), Production
                     target.kind(),
                     crucible::model::FaultTargetKind::NetworkQueue
                         | crucible::model::FaultTargetKind::NetworkPath
-                        | crucible::model::FaultTargetKind::NetworkAttachment
-                        | crucible::model::FaultTargetKind::NetworkContact
                 )
             })
         {
@@ -373,6 +372,29 @@ fn admit_host_effect_parameters(plan: &FaultSignalPlan) -> Result<(), Production
                 ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
                     binding: binding.id().clone(),
                     parameter: "network.availability target lacks an exact admitted route stage",
+                },
+            );
+        }
+        if binding
+            .phases()
+            .contains(&crucible::model::FaultPhase::Admit)
+            && binding
+                .selector()
+                .resolved()
+                .targets()
+                .iter()
+                .any(|target| {
+                    matches!(
+                        target.kind(),
+                        crucible::model::FaultTargetKind::NetworkAttachment
+                            | crucible::model::FaultTargetKind::NetworkContact
+                    )
+                })
+        {
+            return Err(
+                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
+                    binding: binding.id().clone(),
+                    parameter: "network attachment/contact availability requires resolve phase",
                 },
             );
         }
