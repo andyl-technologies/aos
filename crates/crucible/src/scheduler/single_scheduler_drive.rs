@@ -1837,12 +1837,7 @@ impl SingleScheduler {
                     .world_network_links
                     .values()
                     .find(|runtime| &runtime.scheduler_node == event.key.producer())
-                    .map(|runtime| {
-                        runtime
-                            .legacy_id
-                            .clone()
-                            .unwrap_or_else(|| runtime.canonical_id.clone())
-                    })
+                    .map(|runtime| runtime.canonical_id.clone())
             {
                 // The resolved happening retains the link's exact delivery
                 // time. Its black-box observation becomes visible at this
