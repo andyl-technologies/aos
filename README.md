@@ -1,7 +1,7 @@
 # `AOS // ANDYL OS`
 
 [![Status: early preview](https://img.shields.io/badge/status-early%20preview-orange)](#project-status)
-[![License: multi-license](https://img.shields.io/badge/license-multi--license-blue)](LICENSING.md)
+[![License: multi-license](https://img.shields.io/badge/license-multi--license-blue)](docs/legal/licensing.md)
 
 AOS is an immutable Linux distribution for headless servers and edge systems. Its bootstrap toolchain, userspace, packages, system images, and tests are built from source in this repository without nixpkgs dependencies.
 
@@ -63,8 +63,12 @@ the first stable release. Public installation images, a production
 external-signing workflow, durable kernel updates, and complete runtime
 `host.nix` activation are not available yet.
 
+## License
+
 Original AOS code is generally licensed under the
 [Apache License 2.0](LICENSE). The repository and its distributions also contain
 separately licensed components, including QEMU and its Crucible integration.
-See the authoritative [license map](LICENSING.md) and complete license texts in
-[`LICENSES/`](LICENSES/).
+GitHub's Apache-2.0 label describes that default; it does not describe every
+component in this multi-license repository. The
+[licensing guide](docs/legal/README.md) points to the authoritative component
+map, contribution agreement, and complete license texts.
