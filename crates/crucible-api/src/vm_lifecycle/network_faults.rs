@@ -28,6 +28,16 @@ fn stage_pending_network_output(
     pending: &mut Vec<crucible::BackendNetworkOutput>,
     output: crucible::BackendNetworkOutput,
 ) -> Result<(), SchedulerError> {
+    if output.fault_continuation.protocol_expansion_path().len()
+        > crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "network protocol-expansion depth exceeds hard bound {}",
+                crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+            ),
+        });
+    }
     if pending.len() == HARD_PENDING_NETWORK_FRAMES {
         return Err(SchedulerError::BoundaryViolation {
             message: format!(
@@ -57,6 +67,17 @@ fn validate_pending_network_outputs(
         return Err(SchedulerError::BoundaryViolation {
             message: format!(
                 "restored pending network frame count exceeds hard bound {HARD_PENDING_NETWORK_FRAMES}"
+            ),
+        });
+    }
+    if pending.iter().any(|output| {
+        output.fault_continuation.protocol_expansion_path().len()
+            > crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+    }) {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "restored network protocol-expansion depth exceeds hard bound {}",
+                crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
             ),
         });
     }
@@ -995,6 +1016,13 @@ fn append_backend_output_evidence(
         append_evidence_bytes(material, preserved.target.canonical_material().as_bytes())?;
         append_evidence_bytes(material, preserved.phase.as_str().as_bytes())?;
         material.extend_from_slice(&preserved.transition_sequence.to_be_bytes());
+    }
+    append_evidence_count(
+        material,
+        output.fault_continuation.protocol_expansion_path().len(),
+    )?;
+    for ordinal in output.fault_continuation.protocol_expansion_path() {
+        material.extend_from_slice(&ordinal.to_be_bytes());
     }
     let cursor = output.fault_continuation.cursor();
     append_evidence_count(material, cursor.completed_phases().len())?;

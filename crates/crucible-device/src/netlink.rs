@@ -6,6 +6,8 @@
 //! - [`fault`]: the effective fault table ([`LinkFaults`]) and the pure,
 //!   integer-only fault transforms — bandwidth serialization, jitter/reorder
 //!   shifts, Bernoulli [`Probability`], and payload corruption ([IO-20]).
+//! - [`ipv4`]: the bounded Ethernet/IPv4 parser and exact fragmentation and
+//!   later-hop re-fragmentation encoder.
 //! - [`link`]: the [`NetLink`] sub-node — the directed `A -> B` edge that
 //!   schedules each [`Frame`] over the
 //!   [`SLOT_NET_ROUTER`](crucible_shmem::SLOT_NET_ROUTER) slot, enforces the
@@ -42,12 +44,14 @@
 //! default-hasher iteration appears on any delivery path ([IO-24]).
 
 pub mod fault;
+pub mod ipv4;
 pub mod link;
 
 pub use fault::{
     LinkCorruptionStrategy, LinkFaults, Probability, corrupt_payload, jitter_shift_ns,
     reorder_shift_ns, serialization_delay_ns,
 };
+pub use ipv4::{Ipv4FragmentationError, Ipv4FragmentationOutcome, fragment_ethernet_ipv4};
 pub use link::{
     Delivery, Frame, FrameDraws, LINK_SLOT, LinkSnapshot, NetLink, PastDeliveryPolicy,
     ResolveOutcome, ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffectsError,

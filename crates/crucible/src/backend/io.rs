@@ -217,6 +217,17 @@ mod tests {
         assert_eq!(cursor.completed_phases().len(), 1);
         assert!(cursor.route_path_version().is_none());
     }
+
+    #[test]
+    fn protocol_expansion_path_orders_nested_child_frames() {
+        let mut first = BackendNetworkFaultContinuation::default();
+        first.append_protocol_expansion_ordinal(0);
+        first.append_protocol_expansion_ordinal(7);
+        let mut second = BackendNetworkFaultContinuation::default();
+        second.append_protocol_expansion_ordinal(1);
+        assert!(first < second);
+        assert_eq!(first.protocol_expansion_path(), &[0, 7]);
+    }
 }
 
 /// Fault-policy continuation retained with one scheduler-queued frame.
@@ -226,6 +237,8 @@ pub struct BackendNetworkFaultContinuation {
     preserved_availability: Vec<BackendNetworkPreservedAvailability>,
     /// Exact signal-adapter outcomes resolved before link scheduling.
     resolved_frame_effects: crucible_device::ResolvedNetworkFrameEffects,
+    /// Nested protocol-expansion ordinals from the guest frame to this child.
+    protocol_expansion_path: Vec<u16>,
     /// Resumable ordered route/phase position.
     cursor: BackendNetworkFaultCursor,
 }
@@ -288,6 +301,17 @@ impl BackendNetworkFaultContinuation {
     #[must_use]
     pub const fn resolved_frame_effects(&self) -> &crucible_device::ResolvedNetworkFrameEffects {
         &self.resolved_frame_effects
+    }
+
+    /// Appends one protocol-expansion ordinal to this child frame's identity.
+    pub fn append_protocol_expansion_ordinal(&mut self, ordinal: u16) {
+        self.protocol_expansion_path.push(ordinal);
+    }
+
+    /// Returns the nested protocol-expansion path in parent-to-child order.
+    #[must_use]
+    pub fn protocol_expansion_path(&self) -> &[u16] {
+        &self.protocol_expansion_path
     }
 
     /// Returns the resumable ordered route/phase position.

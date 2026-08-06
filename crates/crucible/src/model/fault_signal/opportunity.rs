@@ -792,6 +792,9 @@ pub struct FaultCoordinate {
     pub retired_instructions: Option<u64>,
 }
 
+/// Maximum nested scheduler-owned protocol expansions for one network frame.
+pub const HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH: usize = 256;
+
 /// Bounded immutable metadata needed to distinguish and validate an operation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -807,6 +810,8 @@ pub enum OpportunityPayload {
         destination: FaultObjectId,
         /// Producer-owned monotonically recorded frame sequence.
         producer_sequence: u64,
+        /// Nested scheduler-owned protocol-expansion ordinals.
+        protocol_expansion_path: Vec<u16>,
         /// Frame length in bytes.
         length_bytes: u64,
         /// Digest of immutable frame bytes or normalized fields.
@@ -860,6 +865,12 @@ pub enum OpportunityPayload {
 impl OpportunityPayload {
     fn validate(&self) -> Result<(), FaultContractError> {
         match self {
+            Self::NetworkFrame {
+                protocol_expansion_path,
+                ..
+            } if protocol_expansion_path.len() > HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH => {
+                return Err(FaultContractError::InvalidPayload);
+            }
             Self::StorageRequest {
                 start_byte,
                 length_bytes,
@@ -885,6 +896,7 @@ impl OpportunityPayload {
                 producer,
                 destination,
                 producer_sequence,
+                protocol_expansion_path,
                 length_bytes,
                 payload_digest,
             } => {
@@ -892,6 +904,13 @@ impl OpportunityPayload {
                 push_text(material, producer.as_str());
                 push_text(material, destination.as_str());
                 push_u64(material, *producer_sequence);
+                push_u64(
+                    material,
+                    u64::try_from(protocol_expansion_path.len()).unwrap_or(u64::MAX),
+                );
+                for ordinal in protocol_expansion_path {
+                    push_u64(material, u64::from(*ordinal));
+                }
                 push_u64(material, *length_bytes);
                 push_text(material, &payload_digest.to_hex());
             }
@@ -1338,7 +1357,7 @@ mod tests {
             segment: id("uplink"),
             direction: FaultDirection::AToB,
         };
-        let build = |sequence, phase| {
+        let build = |sequence, phase, protocol_expansion_path| {
             FaultOpportunity::new(
                 target.clone(),
                 FaultOperation::NetworkTraverse,
@@ -1353,18 +1372,21 @@ mod tests {
                     producer: id("sender"),
                     destination: id("receiver"),
                     producer_sequence: 7,
+                    protocol_expansion_path,
                     length_bytes: 1_500,
                     payload_digest: ContentHash::from_bytes(b"frame"),
                 },
             )
         };
-        let first = opportunity(build(1, FaultPhase::Resolve));
-        let equal = opportunity(build(1, FaultPhase::Resolve));
-        let next = opportunity(build(2, FaultPhase::Resolve));
-        let delivered = opportunity(build(1, FaultPhase::Deliver));
+        let first = opportunity(build(1, FaultPhase::Resolve, Vec::new()));
+        let equal = opportunity(build(1, FaultPhase::Resolve, Vec::new()));
+        let next = opportunity(build(2, FaultPhase::Resolve, Vec::new()));
+        let delivered = opportunity(build(1, FaultPhase::Deliver, Vec::new()));
+        let fragment = opportunity(build(1, FaultPhase::Resolve, vec![0]));
         assert_eq!(first.id(), equal.id());
         assert_ne!(first.id(), next.id());
         assert_ne!(first.id(), delivered.id());
+        assert_ne!(first.id(), fragment.id());
     }
 
     #[test]

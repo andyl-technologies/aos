@@ -238,6 +238,7 @@ impl QuantumLoop for SingleScheduler {
                 left.sequence,
                 &left.destination,
                 &left.route,
+                &left.fault_continuation,
                 &left.payload,
             )
                 .cmp(&(
@@ -246,6 +247,7 @@ impl QuantumLoop for SingleScheduler {
                     right.sequence,
                     &right.destination,
                     &right.route,
+                    &right.fault_continuation,
                     &right.payload,
                 ))
         });

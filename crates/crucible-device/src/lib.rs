@@ -100,9 +100,9 @@ pub use harness::{
 };
 pub use inflight::{InflightQueue, PendingResponse};
 pub use netlink::{
-    Delivery, Frame, FrameDraws, LINK_SLOT, LinkCorruptionStrategy, LinkFaults, LinkSnapshot,
-    NetLink, PastDeliveryPolicy, ResolveOutcome, ResolvedNetworkFrameEffects,
-    ResolvedNetworkFrameEffectsError,
+    Delivery, Frame, FrameDraws, Ipv4FragmentationError, Ipv4FragmentationOutcome, LINK_SLOT,
+    LinkCorruptionStrategy, LinkFaults, LinkSnapshot, NetLink, PastDeliveryPolicy, ResolveOutcome,
+    ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffectsError, fragment_ethernet_ipv4,
 };
 pub use ninep::{
     FsTree, FsTreeDecodeError, NinepDevice, NinepLatency, NinepServer, NinepServerSnapshot,
