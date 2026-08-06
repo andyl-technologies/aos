@@ -44,7 +44,7 @@ if [ ! -s "$event_log" ]; then
 fi
 /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rm -rf -- "$output_dir"
 /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rm -f -- "$quote_json" "$quote_json_tmp"
-/nix/store/iclrfmjn54cxl4ji6pdfgdmbx3c151mg-aos-0.1.0/bin/apm --json attest quote --nonce-file "$nonce_file" --output-dir "$output_dir" > "$quote_json_tmp"
+/nix/store/y860ysgpqjmgsg1zsdb651kwd7v6dnwv-aos-0.1.0/bin/apm --json attest quote --nonce-file "$nonce_file" --output-dir "$output_dir" > "$quote_json_tmp"
 /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mv -f -- "$quote_json_tmp" "$quote_json"
 <<aos-job-script-end>>
 RuntimeDirectory=aos-attest

@@ -14,7 +14,7 @@ ExecStart=<<aos-job-script>>
 set -e
 
 set +e
-/nix/store/iclrfmjn54cxl4ji6pdfgdmbx3c151mg-aos-0.1.0/bin/apm __activate-config \
+/nix/store/y860ysgpqjmgsg1zsdb651kwd7v6dnwv-aos-0.1.0/bin/apm __activate-config \
   --manifest /run/aos/manifest.json \
   --graph /run/aos/graph.json \
   --module-abi 1 
