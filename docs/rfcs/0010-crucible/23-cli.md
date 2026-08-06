@@ -1477,22 +1477,35 @@ branch on the verdict without parsing output:
 - [x] **T-CLI-21** Complete production artifact replay through fresh QEMU
   processes for every local-QEMU artifact producer (`run`, `verify`, `search`,
   `fuzz`, and `fork`). — satisfies [CLI-22]; spec §12.
-  - The v3 artifact contract embeds one compact scenario, one typed model
-    reproduction and replay-state proof, one canonical live replay recipe, one
-    exact QEMU event stream, and one all-node execution-fingerprint stream.
-    Branch recipes record prefix-override or reseed coordinates; search records
-    typed fault/network choice indices; ordered acknowledged controls are part
-    of the replay comparison.
+  - The v3 artifact embeds one compact scenario, one typed model reproduction
+    and replay-state proof, a v2 live-QEMU recipe, exact QEMU event bytes, and
+    typed fingerprint evidence. `run`, `verify`, and `fuzz` retain the full
+    execution-fingerprint stream; `search` and `fork` retain the terminal
+    all-node snapshot and declare that narrower scope in the recipe.
+  - Fork recipes distinguish an unchanged resume from reseed and contiguous
+    prefix-override branches. The retained base owns every pre-branch decision;
+    only strictly increasing post-branch fault/network choice indices may be
+    forced during child execution. Search recipes also retain the exploration
+    run-ceiling and quantum-budget values that bounded the finding.
+  - Interactive artifact capture fails closed. A command name without its
+    exact acknowledged decision/frontier coordinate is not a replay recipe.
+    Non-interactive startup and initial controls are separate ordered,
+    closed-set recipe fields; all resulting acknowledgements are compared with
+    the fresh session.
   - The CLI rejects v2 in production and has no model-only fallback. It first
     runs the pure reduction preflight, then launches the pinned packaged
     QEMU/plugin pair and compares the terminal status/outcome/configuration,
-    frontier/quanta/budget tuple, canonical event bytes, fingerprint bytes, and
-    applicable control sequence.
+    frontier/quanta/budget tuple, canonical event bytes, and declared-scope
+    fingerprint bytes.
   - Ordinary replay and `--check` execute one fresh QEMU session;
     `--to <savepoint>` performs the same live replay before typed-prefix and
     replay-oracle target validation, including self-contained terminal hashes;
     `--bisect <other-artifact>` live-replays both sides before locating evidence
     divergence.
-  - Completed by `checks.crucible.phase5.cliReplayCheck`, including a real
-    two-VM packaged-QEMU timeout producer followed by ordinary, `--check`,
-    `--to`, and both-sided `--bisect` replay.
+  - Completed by `checks.crucible.phase5.cliReplayCheck`. Its contract matrix
+    admits exactly `run`, `verify`, `search`, `fuzz`, and `fork`, exercises the
+    search/fork scope and lifecycle rules plus unchanged-fork resume, and rejects
+    unknown producers, duplicate/pre-branch choices, incompatible scope,
+    missing fork recipes, and unknown controls. The process half creates a
+    real two-VM packaged-QEMU timeout artifact and proves ordinary, `--check`,
+    `--to`, and both-sided `--bisect` live replay.

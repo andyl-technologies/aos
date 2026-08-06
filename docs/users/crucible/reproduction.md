@@ -67,7 +67,10 @@ Replay validates the artifact schema and requires an exact producer/consumer
 build-identity match. Current production artifacts use the v3 schema; v2
 artifacts are rejected instead of falling back to model-only replay. A v3 QEMU
 artifact contains the compact scenario, typed schedule, pure model proof, live
-replay recipe, canonical QEMU event bytes, and all-node execution fingerprints:
+replay recipe, canonical QEMU event bytes, and typed execution-fingerprint
+evidence. Run, verify, and fuzz artifacts retain the full sample stream. Search
+and fork artifacts retain a declared terminal snapshot containing exactly one
+sample for every VM node:
 
 ```sh
 ./result/bin/crucible replay .crucible/repro-failed-<digest>.crucible
@@ -75,9 +78,14 @@ replay recipe, canonical QEMU event bytes, and all-node execution fingerprints:
 
 Replay first executes the required pure `reduce(ScenarioDef, Schedule)`
 preflight. It then launches fresh guest VMs through the packaged QEMU/plugin
-backend, reapplies recorded branch, fault, network, and control inputs, and
+backend, reapplies recorded branch, fault, and network inputs, executes the
+recorded non-interactive startup and initial controls, and
 requires the terminal tuple, event stream, and fingerprint stream to match the
 producer byte-for-byte. There is no production model-only success path.
+
+Interactive failure-artifact capture is not supported yet. Crucible rejects it
+instead of recording command names without the exact decision/frontier timing
+needed to replay them.
 
 Compare the artifact's canonical log with a retained log file:
 
@@ -181,7 +189,10 @@ keys and values are interpreted by the decision being replaced; inspect the
 recorded schedule before constructing them.
 
 Fork writes a child `.crucible` artifact below `--artifact-dir`. It is currently
-a local workflow; remote daemon fork is not implemented.
+a local workflow; remote daemon fork is not implemented. An unchanged fork
+records an explicit resume recipe from the retained base. Reseeded and override
+forks record their branch coordinates, and replay forces only decisions owned by
+the post-branch suffix.
 
 ## Artifact portability
 

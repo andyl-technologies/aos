@@ -27,6 +27,8 @@ pub(crate) struct LiveQemuReplayContract {
     pub(crate) branch: LiveQemuReplayBranch,
     pub(crate) fault_choice_indices: Vec<u64>,
     pub(crate) network_choice_indices: Vec<u64>,
+    pub(crate) startup_controls: Vec<LiveQemuReplayControl>,
+    pub(crate) initial_controls: Vec<LiveQemuReplayControl>,
     pub(crate) controls: Vec<LiveQemuReplayControl>,
 }
 
@@ -160,6 +162,8 @@ impl LiveQemuReplayContract {
         for index in &self.network_choice_indices {
             artifact_line(&mut text, &["choice", "network", &index.to_string()]);
         }
+        encode_controls(&mut text, "startup-control", &self.startup_controls);
+        encode_controls(&mut text, "initial-control", &self.initial_controls);
         for control in &self.controls {
             artifact_line(
                 &mut text,
@@ -182,6 +186,8 @@ impl LiveQemuReplayContract {
         let mut branch = None;
         let mut fault_choice_indices = Vec::new();
         let mut network_choice_indices = Vec::new();
+        let mut startup_controls = Vec::new();
+        let mut initial_controls = Vec::new();
         let mut controls = Vec::new();
         for (line_index, line) in text.lines().enumerate() {
             let fields = parse_artifact_fields(line)?;
@@ -274,12 +280,17 @@ impl LiveQemuReplayContract {
                         }
                     }
                 }
-                "control" => {
+                "startup-control" | "initial-control" | "control" => {
                     require_field_count(line_index, tag, &fields, 3)?;
-                    controls.push(LiveQemuReplayControl {
+                    let control = LiveQemuReplayControl {
                         sequence: parse_u64(line_index, tag, &fields[1])?,
                         command: fields[2].clone(),
-                    });
+                    };
+                    match tag {
+                        "startup-control" => startup_controls.push(control),
+                        "initial-control" => initial_controls.push(control),
+                        _ => controls.push(control),
+                    }
                 }
                 other => {
                     return Err(artifact_line_error(
@@ -294,14 +305,6 @@ impl LiveQemuReplayContract {
             return Err(artifact_error(
                 "unsupported live-QEMU replay contract schema",
             ));
-        }
-        for (expected, control) in controls.iter().enumerate() {
-            if control.sequence != expected as u64 {
-                return Err(artifact_error(format!(
-                    "live-QEMU replay control sequence out of order: expected {expected}, got {}",
-                    control.sequence
-                )));
-            }
         }
         let (
             terminal_condition,
@@ -348,6 +351,8 @@ impl LiveQemuReplayContract {
                 .ok_or_else(|| artifact_error("live-QEMU replay contract has no branch"))?,
             fault_choice_indices,
             network_choice_indices,
+            startup_controls,
+            initial_controls,
             controls,
         };
         contract.validate_semantics()?;
@@ -417,13 +422,75 @@ impl LiveQemuReplayContract {
                 "search replay contracts require explicit lifecycle ceilings",
             ));
         }
-        if !self.controls.is_empty() {
-            return Err(artifact_error(
-                "live-QEMU replay contracts do not yet support interactive control recipes",
-            ));
-        }
+        validate_controls("startup", &self.startup_controls, |command| {
+            matches!(command, "start" | "continue" | "step-quantum")
+        })?;
+        validate_controls("initial", &self.initial_controls, |command| {
+            command == "query"
+        })?;
+        validate_controls("acknowledged", &self.controls, known_control_command)?;
         Ok(())
     }
+}
+
+fn encode_controls(text: &mut String, tag: &str, controls: &[LiveQemuReplayControl]) {
+    for control in controls {
+        artifact_line(
+            text,
+            &[tag, &control.sequence.to_string(), &control.command],
+        );
+    }
+}
+
+fn validate_controls(
+    label: &str,
+    controls: &[LiveQemuReplayControl],
+    admitted: impl Fn(&str) -> bool,
+) -> Result<(), CliError> {
+    for (index, control) in controls.iter().enumerate() {
+        if control.sequence != index as u64 {
+            return Err(artifact_error(format!(
+                "live-QEMU replay {label} control sequences must be contiguous from zero"
+            )));
+        }
+        if !admitted(&control.command) {
+            return Err(artifact_error(format!(
+                "live-QEMU replay contract has unsupported {label} control command `{}`",
+                control.command
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn known_control_command(command: &str) -> bool {
+    matches!(
+        command,
+        "start"
+            | "continue"
+            | "pause"
+            | "step-quantum"
+            | "step-event"
+            | "step-assertion"
+            | "step-timer"
+            | "step-duration"
+            | "inject"
+            | "inject-fault"
+            | "heal-fault"
+            | "set-breakpoint"
+            | "remove-breakpoint"
+            | "create-savepoint"
+            | "fork"
+            | "query"
+            | "stop"
+            | "exhaust-budget"
+            | "snapshot"
+            | "attach-gdb"
+            | "debug-goto"
+            | "debug-reverse-step"
+            | "debug-reverse-continue"
+            | "debug-fork-non-canonical"
+    )
 }
 
 fn parse_branch(
@@ -528,8 +595,51 @@ mod tests {
             },
             fault_choice_indices: vec![4],
             network_choice_indices: vec![5],
-            controls: Vec::new(),
+            startup_controls: vec![
+                LiveQemuReplayControl {
+                    sequence: 0,
+                    command: String::from("start"),
+                },
+                LiveQemuReplayControl {
+                    sequence: 1,
+                    command: String::from("continue"),
+                },
+            ],
+            initial_controls: vec![LiveQemuReplayControl {
+                sequence: 0,
+                command: String::from("query"),
+            }],
+            controls: vec![
+                LiveQemuReplayControl {
+                    sequence: 0,
+                    command: String::from("start"),
+                },
+                LiveQemuReplayControl {
+                    sequence: 1,
+                    command: String::from("continue"),
+                },
+            ],
         }
+    }
+
+    fn producer_contract(producer: &str) -> LiveQemuReplayContract {
+        let mut contract = fork_contract();
+        contract.producer = producer.to_string();
+        match producer {
+            "search" => {
+                contract.branch = LiveQemuReplayBranch::None;
+                contract.fault_choice_indices = vec![1, 4];
+                contract.network_choice_indices = vec![2, 5];
+            }
+            "fork" => {}
+            _ => {
+                contract.branch = LiveQemuReplayBranch::None;
+                contract.fingerprint_scope = LiveQemuFingerprintScope::FullExecution;
+                contract.fault_choice_indices = vec![1, 4];
+                contract.network_choice_indices = vec![2, 5];
+            }
+        }
+        contract
     }
 
     #[test]
@@ -537,6 +647,32 @@ mod tests {
         let contract = fork_contract();
         let encoded = contract.encode();
         assert_eq!(LiveQemuReplayContract::decode(&encoded)?, contract);
+        Ok(())
+    }
+
+    #[test]
+    fn live_qemu_replay_contract_accepts_every_closed_producer() -> Result<(), CliError> {
+        for producer in ["run", "verify", "search", "fuzz", "fork"] {
+            let contract = producer_contract(producer);
+            assert_eq!(
+                LiveQemuReplayContract::decode(&contract.encode())?,
+                contract
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn live_qemu_replay_contract_round_trips_unmodified_fork_resume() -> Result<(), CliError> {
+        let mut contract = fork_contract();
+        contract.branch = LiveQemuReplayBranch::Resume {
+            base_decisions: 3,
+            frontier_ticks: 11,
+        };
+        assert_eq!(
+            LiveQemuReplayContract::decode(&contract.encode())?,
+            contract
+        );
         Ok(())
     }
 
@@ -559,6 +695,24 @@ mod tests {
     }
 
     #[test]
+    fn live_qemu_replay_contract_rejects_pre_branch_choices() {
+        let mut contract = fork_contract();
+        contract.fault_choice_indices = vec![2, 4];
+        let error = LiveQemuReplayContract::decode(&contract.encode())
+            .expect_err("pre-branch choices must remain owned by the retained base");
+        assert!(error.to_string().contains("post-branch suffix"));
+    }
+
+    #[test]
+    fn live_qemu_replay_contract_rejects_incompatible_fingerprint_scope() {
+        let mut contract = producer_contract("search");
+        contract.fingerprint_scope = LiveQemuFingerprintScope::FullExecution;
+        let error = LiveQemuReplayContract::decode(&contract.encode())
+            .expect_err("search artifacts must declare their terminal snapshot scope");
+        assert!(error.to_string().contains("fingerprint scope"));
+    }
+
+    #[test]
     fn live_qemu_replay_contract_rejects_missing_fork_branch() {
         let mut contract = fork_contract();
         contract.branch = LiveQemuReplayBranch::None;
@@ -568,14 +722,33 @@ mod tests {
     }
 
     #[test]
-    fn live_qemu_replay_contract_rejects_control_recipes() {
+    fn live_qemu_replay_contract_rejects_unknown_control_commands() {
         let mut contract = fork_contract();
-        contract.controls.push(LiveQemuReplayControl {
-            sequence: 0,
-            command: String::from("continue"),
-        });
+        contract.controls[0].command = String::from("unknown");
         let error = LiveQemuReplayContract::decode(&contract.encode())
-            .expect_err("unsupported control recipes must fail closed");
-        assert!(error.to_string().contains("interactive control recipes"));
+            .expect_err("unknown control commands must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported acknowledged control command")
+        );
+    }
+
+    #[test]
+    fn live_qemu_replay_contract_rejects_unsupported_startup_controls() {
+        let mut contract = fork_contract();
+        contract.startup_controls[0].command = String::from("pause");
+        let error = LiveQemuReplayContract::decode(&contract.encode())
+            .expect_err("payload-free startup recipes must remain closed");
+        assert!(error.to_string().contains("unsupported startup control"));
+    }
+
+    #[test]
+    fn live_qemu_replay_contract_rejects_noncontiguous_initial_controls() {
+        let mut contract = fork_contract();
+        contract.initial_controls[0].sequence = 1;
+        let error = LiveQemuReplayContract::decode(&contract.encode())
+            .expect_err("initial controls must preserve their exact order");
+        assert!(error.to_string().contains("contiguous from zero"));
     }
 }
