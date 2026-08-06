@@ -22632,8 +22632,7 @@ impl RpcService {
         auth: ReadAuthorization<'_>,
         registry: &RegistryRecord,
         path: &str,
-        range_header: Option<&str>,
-        image_method: crate::image_http::ImageMethod,
+        image_request: crate::image_http::ImageHttpRequest<'_>,
     ) -> Result<RegistryServeOutcome, RpcError> {
         let signed_image_path = path.starts_with("images/");
         if !signed_image_path && !keymap::is_machine_path(path) {
@@ -22651,9 +22650,12 @@ impl RpcService {
         self.require_registry_stream_read(auth, &registry).await?;
         if signed_image_path {
             return self
-                .serve_signed_image_object(&registry, path, range_header, image_method)
+                .serve_signed_image_object(&registry, path, image_request)
                 .await;
         }
+        let range_header = image_request
+            .range
+            .and_then(|value| std::str::from_utf8(value).ok());
         let requested = parse_byte_range(range_header);
         let mirror = self
             .db
@@ -22690,8 +22692,7 @@ impl RpcService {
         &self,
         registry: &RegistryRecord,
         path: &str,
-        range_header: Option<&str>,
-        method: crate::image_http::ImageMethod,
+        request: crate::image_http::ImageHttpRequest<'_>,
     ) -> Result<RegistryServeOutcome, RpcError> {
         use crate::db::IndexedSystemImageObject;
         use crate::image_http::{plan_image_response, ImageAccess, ImageHttpMetadata};
@@ -22723,8 +22724,8 @@ impl RpcService {
         } else {
             ImageAccess::Private
         };
-        let plan = plan_image_response(&metadata, method, access, range_header)
-            .map_err(|error| RpcError::invalid(format!("invalid image range: {error:#}")))?;
+        let plan = plan_image_response(&metadata, access, request)
+            .map_err(|error| RpcError::invalid(format!("invalid image request: {error:#}")))?;
         let status = StatusCode::from_u16(plan.status).map_err(RpcError::internal)?;
         let mut response = axum::response::Response::builder().status(status);
         for (name, value) in &plan.headers {
@@ -31261,9 +31262,25 @@ mod cache_upload_tests {
         (service, registry, object_key, calls)
     }
 
+    fn image_http_request(
+        method: crate::delivery_http::DeliveryMethod,
+        range: Option<&[u8]>,
+    ) -> crate::image_http::ImageHttpRequest<'_> {
+        crate::image_http::ImageHttpRequest {
+            method,
+            range,
+            if_match: None,
+            if_unmodified_since: None,
+            if_none_match: None,
+            if_modified_since: None,
+            if_range: None,
+            now: crate::delivery_http::HttpTimestamp::from_unix_seconds(1_700_000_000).unwrap(),
+        }
+    }
+
     #[tokio::test]
     async fn image_head_unsatisfied_range_and_auth_gate_never_fetch_storage_bytes() {
-        use crate::image_http::ImageMethod;
+        use crate::delivery_http::DeliveryMethod;
         use crate::service::{ReadAuthorization, RegistryServeOutcome};
         use axum::http::StatusCode;
 
@@ -31273,8 +31290,7 @@ mod cache_upload_tests {
                 ReadAuthorization::AuthorizationHeader(None),
                 &registry,
                 &object_key,
-                None,
-                ImageMethod::Head,
+                image_http_request(DeliveryMethod::Head, Some(b"bytes=0-1")),
             )
             .await
             .unwrap();
@@ -31282,6 +31298,9 @@ mod cache_upload_tests {
             panic!("signed image HEAD must return metadata response");
         };
         assert_eq!(head.status(), StatusCode::OK);
+        assert!(!head
+            .headers()
+            .contains_key(axum::http::header::CONTENT_RANGE));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
         let unsatisfied = service
@@ -31289,8 +31308,7 @@ mod cache_upload_tests {
                 ReadAuthorization::AuthorizationHeader(None),
                 &registry,
                 &object_key,
-                Some("bytes=9999-"),
-                ImageMethod::Get,
+                image_http_request(DeliveryMethod::Get, Some(b"bytes=9999-")),
             )
             .await
             .unwrap();
@@ -31306,8 +31324,7 @@ mod cache_upload_tests {
                 ReadAuthorization::AuthorizationHeader(None),
                 &registry,
                 &object_key,
-                None,
-                ImageMethod::Get,
+                image_http_request(DeliveryMethod::Get, None),
             )
             .await
             .is_err());

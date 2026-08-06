@@ -1406,6 +1406,23 @@ fn evaluate_request(
     }
 }
 
+/// Evaluates one verified representation with the shared conditional/range kernel.
+///
+/// This entry point is for protocol-specific delivery surfaces, such as signed
+/// disk images, that already proved exact publication eligibility separately
+/// and therefore do not need a full [`DeliveryObjectContext`]. It preserves
+/// the same precondition precedence, `HEAD` behavior, and range resolution as
+/// ordinary delivery routes.
+#[must_use]
+pub fn evaluate_verified_representation(
+    method: DeliveryMethod,
+    preconditions: &RequestPreconditions,
+    range: Option<SingleByteRange>,
+    representation: &VerifiedRepresentation,
+) -> RequestDecision {
+    evaluate_request(method, preconditions, range, Some(representation))
+}
+
 impl DeliveryObjectContext {
     /// Evaluates a request while retaining this exact object context.
     #[must_use]

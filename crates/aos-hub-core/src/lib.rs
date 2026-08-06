@@ -27,6 +27,8 @@
 //! - [`delivery`] — raw request-path normalization, reserved namespace
 //!   classification, deterministic route matching, capability classification,
 //!   and versioned partition selection shared by both serving runtimes.
+//! - [`delivery_http`] — transport-neutral HTTP preconditions, ranges,
+//!   validators, and response metadata shared by native and Worker delivery.
 //! - [`delivery_endpoint`] — typed inbound HTTP(S) endpoint identities,
 //!   canonical authority validation, and stable network-realm-aware digests.
 //! - [`url_guard`] — the pure SSRF guards (global-IP predicate, network-origin
@@ -74,6 +76,7 @@ pub mod db;
 pub mod delivery;
 pub mod delivery_attestation;
 pub mod delivery_endpoint;
+pub mod delivery_http;
 pub mod dialect;
 pub mod directory;
 pub mod domain;

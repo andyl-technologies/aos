@@ -214,12 +214,53 @@
         || (await rawHead.arrayBuffer()).byteLength !== 0) {
       throw new Error(`public raw HEAD contract failed: ''${rawHead.status}`);
     }
+    const rawHeadRange = await fetch(rawUrl, {
+      method: "HEAD",
+      headers: { range: "bytes=4-11" },
+    });
+    if (rawHeadRange.status !== 200
+        || rawHeadRange.headers.has("content-range")
+        || Number(rawHeadRange.headers.get("content-length")) !== rawBytes.length) {
+      throw new Error(`public raw HEAD-with-Range contract failed: ''${rawHeadRange.status}`);
+    }
+    const rawEtag = rawDownload.headers.get("etag");
+    if (rawEtag === null) {
+      throw new Error("public raw response omitted ETag");
+    }
+    const notModified = await fetch(rawUrl, {
+      headers: { "if-none-match": rawEtag },
+    });
+    if (notModified.status !== 304
+        || (await notModified.arrayBuffer()).byteLength !== 0) {
+      throw new Error(`public raw If-None-Match contract failed: ''${notModified.status}`);
+    }
+    const preconditionFailed = await fetch(rawUrl, {
+      headers: { "if-match": '"different"' },
+    });
+    if (preconditionFailed.status !== 412
+        || (await preconditionFailed.arrayBuffer()).byteLength !== 0) {
+      throw new Error(`public raw If-Match contract failed: ''${preconditionFailed.status}`);
+    }
     const rawRange = await fetch(rawUrl, { headers: { range: "bytes=4-11" } });
     const ranged = new Uint8Array(await rawRange.arrayBuffer());
     if (rawRange.status !== 206
         || rawRange.headers.get("content-range") !== `bytes 4-11/''${rawBytes.length}`
         || !ranged.every((byte, index) => byte === rawBytes[index + 4])) {
       throw new Error(`public raw range contract failed: ''${rawRange.status}`);
+    }
+    const matchingIfRange = await fetch(rawUrl, {
+      headers: { range: "bytes=4-11", "if-range": rawEtag },
+    });
+    if (matchingIfRange.status !== 206
+        || matchingIfRange.headers.get("content-range") !== `bytes 4-11/''${rawBytes.length}`) {
+      throw new Error(`public raw matching If-Range failed: ''${matchingIfRange.status}`);
+    }
+    const staleIfRange = await fetch(rawUrl, {
+      headers: { range: "bytes=4-11", "if-range": '"different"' },
+    });
+    if (staleIfRange.status !== 200
+        || (await staleIfRange.arrayBuffer()).byteLength !== rawBytes.length) {
+      throw new Error(`public raw stale If-Range failed: ''${staleIfRange.status}`);
     }
     const unsatisfiedStart = rawBytes.length;
     const unsatisfied = await fetch(rawUrl, {
@@ -482,7 +523,14 @@ in
           export PATH="${nix}/bin:${aos}/bin:${coreutils}/bin:${grep}/bin:$PATH"
           work="\$(mktemp -d)"
           WPID=""
-          trap 'if test -n "\$WPID"; then kill "\$WPID" 2>/dev/null || true; fi; rm -rf "\$work"' EXIT
+          cleanup() {
+            if test -n "\$WPID"; then
+              kill -KILL "\$WPID" 2>/dev/null || true
+              wait "\$WPID" 2>/dev/null || true
+            fi
+            rm -rf "\$work"
+          }
+          trap cleanup EXIT
           cp ${dist}/shim.mjs ${dist}/index.wasm "\$work/"
           cp ${workerCapnp} "\$work/worker.capnp"
           cp ${driver} "\$work/driver.mjs"

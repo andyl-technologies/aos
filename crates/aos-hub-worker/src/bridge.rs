@@ -106,6 +106,7 @@ pub async fn to_axum(mut req: Request) -> Result<http::Request<Body>> {
 /// [`worker::Response`] cannot be built. Stream failures are forwarded as body
 /// errors after the response begins.
 pub async fn to_worker(resp: http::Response<Body>) -> Result<Response> {
+    use axum::body::HttpBody as _;
     use futures_util::TryStreamExt as _;
 
     let (parts, body) = resp.into_parts();
@@ -116,6 +117,18 @@ pub async fn to_worker(resp: http::Response<Body>) -> Result<Response> {
             .to_str()
             .map_err(|err| worker::Error::RustError(format!("non-ASCII response header: {err}")))?;
         headers.append(name.as_str(), value)?;
+    }
+
+    // Preserve an actually bodyless response as the Workers runtime's native
+    // empty-body variant. Representing HEAD, 304, or 412 as a readable stream
+    // with no chunks can leave workerd waiting for stream completion before it
+    // commits the response headers, which in turn deadlocks the next request on
+    // the same Durable Object. Axum marks `Body::empty()` as end-of-stream, so
+    // this branch does not buffer or otherwise affect streamed representations.
+    if body.is_end_stream() {
+        return Ok(Response::empty()?
+            .with_status(parts.status.as_u16())
+            .with_headers(headers));
     }
 
     // Stream the router's response body straight through to the Workers runtime
