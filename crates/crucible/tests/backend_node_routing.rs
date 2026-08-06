@@ -414,7 +414,7 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
     let link = adapter
         .loop_impl()
         .world_network_link(
-            &LinkId::from_name("vm-a--vm-b"),
+            &LinkId::for_endpoints(&source, &destination),
             NetworkLinkDirection::EndpointAToEndpointB,
         )
         .unwrap_or_else(|| panic!("scheduler-owned directed link should remain attached"));
@@ -533,7 +533,14 @@ fn live_world_network_frontier_replays_selected_loss_before_delivery_mutation() 
         let delivery_count = loop_impl
             .loop_impl()
             .world_network_link(
-                &LinkId::from_name("vm-a--vm-b"),
+                &LinkId::for_endpoints(
+                    &NodeId {
+                        name: String::from("vm-a"),
+                    },
+                    &NodeId {
+                        name: String::from("vm-b"),
+                    },
+                ),
                 NetworkLinkDirection::EndpointAToEndpointB,
             )
             .map(crucible_device::NetLink::inflight_len)

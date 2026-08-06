@@ -983,7 +983,7 @@ fn partition_recovery_properties(world: &World) -> Result<Properties, EngineErro
                 id: AssertionId::from_name("converges-after-heal"),
                 message: String::from("replicas must reconcile after the healed partition"),
                 property: Property::Eventually {
-                    trigger: Predicate::timer(partition_heal_timer()),
+                    trigger: Predicate::node_state(node("db-0"), NodeLifecycle::Started),
                     property: Predicate::assertion_state(
                         AssertionId::from_name("replicas-reconciled"),
                         AssertionPhase::Satisfied,

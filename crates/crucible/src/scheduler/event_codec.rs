@@ -1445,18 +1445,7 @@ pub(super) fn trigger_log_level_label(level: LogLevel) -> &'static str {
 }
 
 pub(super) fn scheduler_link_id_for_nodes(left: &NodeId, right: &NodeId) -> LinkId {
-    let (endpoint_a, endpoint_b) = if left <= right {
-        (left, right)
-    } else {
-        (right, left)
-    };
-    LinkId::from_name(format!(
-        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
-        endpoint_a.name.len(),
-        endpoint_a.name,
-        endpoint_b.name.len(),
-        endpoint_b.name
-    ))
+    LinkId::for_endpoints(left, right)
 }
 
 pub(super) fn instantiate_world_network_links(

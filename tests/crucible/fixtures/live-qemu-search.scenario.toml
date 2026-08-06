@@ -1,12 +1,12 @@
-schema = "crucible.scenario.v2"
+schema = "crucible.scenario.v4"
 
 [scenario]
-id = "blake3:c843aa4be945967b2d34da3a666ea9463df8233cb8d246495f64fa900648f16e"
+id = "blake3:d3d05da0af1bd19fa86a70e1d601a37b8dd1d4746b1db17c3aead718a43305a7"
 seed = "0x2a00000000000000000000000000000000000000000000000000000000000000"
-app_random_draw_cap = "18446744073709551615"
+app_random_draw_cap = "u64:18446744073709551615"
 
 [world]
-id = "blake3:0d6a656e6d80743cab1964d5b767f1a742aab7e15a452d4a03a9b89a96a0db02"
+id = "blake3:4e42c45417c8edb24283d474f309993a69d927a6c8c376a3702583436ec10048"
 
 [[world.node]]
 id = "client"
@@ -48,7 +48,7 @@ jitter_nanos = 0
 loss_millionths = 250000
 
 [plan]
-id = "blake3:8e30b4fe1fa826394d806c4adc7a41efc9c47948364c85adcfcbc56d5aaf36d8"
+id = "blake3:72a6f59476d874c71c15bdba0e2190a1d01edfbe786d0ecd9b2abc5d5d5dde46"
 fault_model = "signal_bindings_v1"
 fault_signal_semantic_version = 1
 
