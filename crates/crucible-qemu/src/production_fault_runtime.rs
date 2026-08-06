@@ -366,6 +366,102 @@ fn hex_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crucible::model::{
+        BindingMapping, BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy,
+        EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest, EffectSpecification,
+        EvaluatedSignal, FaultBinding, FaultDirection, FaultPhase, InverseCdfTable,
+        NetworkAvailabilityState, NetworkEffectSpecification, NetworkInFlightPolicy,
+        ResolvedFaultTarget, ResolvedTargetSet, SampleObservation, SignalChoiceContext,
+        SignalCoordinate, SignalDomain, SignalEvaluationError, SignalId, SignalNode,
+        SignalNodeKind, SignalResourceLimits, SignalShape, SignalSourceSpecification, SignalUnit,
+        SignalValue, SignalValueType, TargetSelector,
+    };
+
+    struct NoArtifacts;
+
+    impl SignalArtifactProvider for NoArtifacts {
+        fn inverse_cdf_table(
+            &self,
+            content: &ContentHash,
+        ) -> Result<InverseCdfTable, SignalEvaluationError> {
+            Err(SignalEvaluationError::ArtifactContentMismatch(*content))
+        }
+
+        fn evaluate_artifact_source(
+            &self,
+            node: &SignalNode,
+            _source: &SignalSourceSpecification,
+            _coordinate: &SignalCoordinate,
+            _same_coordinate_sequence: u64,
+            _choice: &SignalChoiceContext,
+            _inputs: &[EvaluatedSignal],
+        ) -> Result<EvaluatedSignal, SignalEvaluationError> {
+            Err(SignalEvaluationError::ArtifactSourceRequired(
+                node.id.clone(),
+            ))
+        }
+    }
+
+    fn object_id(value: &str) -> FaultObjectId {
+        FaultObjectId::parse(value)
+            .unwrap_or_else(|error| panic!("test object ID should be valid: {error}"))
+    }
+
+    fn signal_id(value: &str) -> SignalId {
+        SignalId::parse(value)
+            .unwrap_or_else(|error| panic!("test signal ID should be valid: {error}"))
+    }
+
+    fn availability_plan(target: &ResolvedFaultTarget) -> FaultSignalPlan {
+        let output = signal_id("network-down");
+        let program = crucible::model::SignalProgram::new(
+            vec![SignalNode {
+                id: output.clone(),
+                domain: SignalDomain::VirtualTime,
+                output: SignalShape::new(SignalValueType::Bool, SignalUnit::Dimensionless, 0)
+                    .unwrap_or_else(|error| panic!("test signal shape should be valid: {error}")),
+                inputs: Vec::new(),
+                kind: SignalNodeKind::Constant {
+                    value: SignalValue::Bool(true),
+                },
+            }],
+            vec![output],
+            SignalResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("test signal program should be valid: {error}"));
+        let targets = ResolvedTargetSet::new(vec![target.clone()], false)
+            .unwrap_or_else(|error| panic!("test target set should be valid: {error}"));
+        let effect = EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Persistent,
+            EffectSpecification::Network(NetworkEffectSpecification::Availability {
+                state: NetworkAvailabilityState::Down,
+                queued_policy: NetworkInFlightPolicy::Drop,
+                in_flight_policy: NetworkInFlightPolicy::Drop,
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test effect should be valid: {error}"));
+        let binding = FaultBinding::new(
+            object_id("network-down-binding"),
+            program.exported_outputs().to_vec(),
+            BindingSampling::AtBoundary,
+            BindingMapping::ActiveWhenTrue { invert: false },
+            TargetSelector::Exact(targets),
+            [FaultPhase::Admit].into_iter().collect(),
+            effect,
+            None,
+            BindingSearchPolicy::Fixed,
+            BindingObservabilityPolicy {
+                samples: SampleObservation::ChangesAndEffects,
+                record_inactive_opportunities: false,
+                retain_mapped_values: true,
+            },
+            &program,
+        )
+        .unwrap_or_else(|error| panic!("test binding should be valid: {error}"));
+        FaultSignalPlan::new(vec![program], vec![binding])
+            .unwrap_or_else(|error| panic!("test plan should be valid: {error}"))
+    }
 
     #[test]
     fn production_host_manifest_does_not_advertise_unimplemented_effects() {
@@ -383,5 +479,60 @@ mod tests {
         let storage = host_production_manifest("storage-host", &[])
             .unwrap_or_else(|error| panic!("empty storage manifest should build: {error}"));
         assert!(storage.capabilities.is_empty());
+    }
+
+    #[test]
+    fn production_availability_survives_checkpoint_restore() {
+        let target = ResolvedFaultTarget::NetworkSegment {
+            segment: object_id("segment-left-right"),
+            direction: FaultDirection::AToB,
+        };
+        let plan = availability_plan(&target);
+        let artifacts: Arc<dyn SignalArtifactProvider> = Arc::new(NoArtifacts);
+        let mut nodes = QemuNodeSet::new();
+        let seed = ContentHash::from_bytes(b"production-availability-test");
+        let coordinate = FaultCoordinate {
+            virtual_nanos: 17,
+            retired_instructions: None,
+        };
+        let mut runtime = ProductionFaultRuntime::new(
+            plan.clone(),
+            Some(Arc::clone(&artifacts)),
+            SignalBoundarySnapshot::default(),
+            seed,
+            &nodes,
+        )
+        .unwrap_or_else(|error| panic!("production plan should be admitted: {error}"));
+
+        let evaluation = runtime
+            .evaluate_boundary(coordinate, 0, &mut nodes)
+            .unwrap_or_else(|error| panic!("availability boundary should execute: {error}"));
+        assert_eq!(evaluation.actions.len(), 1);
+        let action = runtime
+            .host_state()
+            .matching(&target, FaultPhase::Admit)
+            .next()
+            .unwrap_or_else(|| panic!("availability action should be committed"));
+        assert!(matches!(
+            action.effect.specification(),
+            EffectSpecification::Network(NetworkEffectSpecification::Availability {
+                state: NetworkAvailabilityState::Down,
+                ..
+            })
+        ));
+
+        let checkpoint = runtime
+            .checkpoint(&mut nodes)
+            .unwrap_or_else(|error| panic!("production checkpoint should succeed: {error}"));
+        let restored =
+            ProductionFaultRuntime::restore(plan, Some(artifacts), seed, checkpoint, &mut nodes)
+                .unwrap_or_else(|error| panic!("production checkpoint should restore: {error}"));
+        assert_eq!(
+            restored
+                .host_state()
+                .matching(&target, FaultPhase::Admit)
+                .count(),
+            1
+        );
     }
 }
