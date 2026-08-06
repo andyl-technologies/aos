@@ -55,7 +55,7 @@ fi
 # manifest guards make the attempted switch a no-op.
 /nix/store/y860ysgpqjmgsg1zsdb651kwd7v6dnwv-aos-0.1.0/bin/apm __eval \
   --host-nix /run/aos-eval/host.nix \
-  --base-lib "/nix/store/x4xq0cg3smhwaq4a11a33ryw9crphskq-aos-base-lib-server-2" \
+  --base-lib "/nix/store/qabz000w78vcsqmzkg97qhsrp75813d6-aos-base-lib-server-2" \
   --module-abi "$module_abi" \
   --out "/run/aos/manifest.json" \
   --eval-root /run/aos-eval \
@@ -69,7 +69,7 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ReadOnlyPaths=-/run/aos-metadata/host.nix
-ReadOnlyPaths=/nix/store/x4xq0cg3smhwaq4a11a33ryw9crphskq-aos-base-lib-server-2
+ReadOnlyPaths=/nix/store/qabz000w78vcsqmzkg97qhsrp75813d6-aos-base-lib-server-2
 ReadWritePaths=/nix
 ReadWritePaths=/run/aos
 ReadWritePaths=/run/aos-eval
