@@ -217,23 +217,58 @@ fn replay_live_qemu_evidence(
             "v3 reproduction artifacts replay only through the packaged QEMU backend",
         ));
     }
+    let terminal_node_count = scenario.world().vm_nodes().len();
+    let scenario_nodes = scenario
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.name.clone())
+        .collect::<std::collections::BTreeSet<_>>();
     let (_run_plan, report) =
         run_live_qemu_artifact_replay(backend, scenario, model.schedule(), &contract)?;
     let replay_events = canonical_verify_log_stream_bytes(&[], &report.streamed_event_frames);
-    let mut replay_samples = run_fingerprint_samples(&report);
-    if matches!(contract.producer.as_str(), "search" | "fork") {
-        let expected_samples = artifact.fingerprints.len();
-        if replay_samples.len() < expected_samples {
-            return Err(CliError::ReplayCheck(format!(
-                "live QEMU replay produced {} fingerprint samples, expected at least {expected_samples}",
-                replay_samples.len()
-            )));
+    let replay_samples = match contract.fingerprint_scope {
+        LiveQemuFingerprintScope::FullExecution => run_fingerprint_samples(&report),
+        LiveQemuFingerprintScope::TerminalAllNodes => {
+            let expected_samples = artifact.fingerprints.len();
+            if expected_samples != terminal_node_count {
+                return Err(artifact_error(format!(
+                    "terminal fingerprint scope contains {expected_samples} samples for {terminal_node_count} VM nodes"
+                )));
+            }
+            let artifact_nodes = artifact
+                .fingerprints
+                .iter()
+                .map(|sample| sample.node.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            if artifact_nodes != scenario_nodes {
+                return Err(artifact_error(format!(
+                    "terminal fingerprint scope nodes {artifact_nodes:?} did not match scenario VM nodes {scenario_nodes:?}"
+                )));
+            }
+            let mut samples = run_fingerprint_samples(&report);
+            if samples.len() < expected_samples {
+                return Err(CliError::ReplayCheck(format!(
+                    "live QEMU replay produced {} fingerprint samples, expected a terminal all-node snapshot of {expected_samples}",
+                    samples.len()
+                )));
+            }
+            let mut terminal = samples.split_off(samples.len() - expected_samples);
+            let terminal_nodes = terminal
+                .iter()
+                .map(|sample| sample.node.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            if terminal_nodes != scenario_nodes {
+                return Err(CliError::ReplayCheck(format!(
+                    "live QEMU replay terminal fingerprint nodes {terminal_nodes:?} did not match scenario VM nodes {scenario_nodes:?}"
+                )));
+            }
+            for (index, sample) in terminal.iter_mut().enumerate() {
+                sample.index = index as u64;
+            }
+            terminal
         }
-        replay_samples = replay_samples.split_off(replay_samples.len() - expected_samples);
-        for (index, sample) in replay_samples.iter_mut().enumerate() {
-            sample.index = index as u64;
-        }
-    }
+    };
     let replay_fingerprints = verify_fingerprint_stream_bytes(&replay_samples);
     validate_live_qemu_terminal(&contract, model.schedule(), &report)?;
     if replay_events != expected_events {

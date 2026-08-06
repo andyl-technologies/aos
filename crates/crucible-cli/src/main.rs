@@ -66,7 +66,7 @@ const MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str =
     "application/vnd.crucible.model-reproduction+binary";
 const MODEL_REPLAY_STATE_MEDIA_TYPE: &str = "application/vnd.crucible.model-replay-state+text";
 const LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE: &str =
-    "application/vnd.crucible.live-qemu-replay-contract.v1+text";
+    "application/vnd.crucible.live-qemu-replay-contract.v2+text";
 const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-event-stream.v1+bytes";
 const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =

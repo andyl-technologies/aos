@@ -6,7 +6,7 @@
 
 use super::*;
 
-const LIVE_QEMU_REPLAY_CONTRACT_SCHEMA: &str = "crucible.live-qemu-replay-contract.v1";
+const LIVE_QEMU_REPLAY_CONTRACT_SCHEMA: &str = "crucible.live-qemu-replay-contract.v2";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LiveQemuReplayContract {
@@ -20,7 +20,10 @@ pub(crate) struct LiveQemuReplayContract {
     pub(crate) budget_timed_out: bool,
     pub(crate) max_virtual_time_ticks: Option<u64>,
     pub(crate) max_quanta: Option<u64>,
+    pub(crate) run_ceiling_icount: Option<u64>,
+    pub(crate) lifecycle_quantum_budget: Option<u64>,
     pub(crate) coverage: bool,
+    pub(crate) fingerprint_scope: LiveQemuFingerprintScope,
     pub(crate) branch: LiveQemuReplayBranch,
     pub(crate) fault_choice_indices: Vec<u64>,
     pub(crate) network_choice_indices: Vec<u64>,
@@ -30,6 +33,10 @@ pub(crate) struct LiveQemuReplayContract {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LiveQemuReplayBranch {
     None,
+    Resume {
+        base_decisions: u64,
+        frontier_ticks: u64,
+    },
     Reseed {
         base_decisions: u64,
         frontier_ticks: u64,
@@ -43,11 +50,15 @@ pub(crate) enum LiveQemuReplayBranch {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LiveQemuFingerprintScope {
+    FullExecution,
+    TerminalAllNodes,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LiveQemuReplayControl {
     pub(crate) sequence: u64,
-    pub(crate) configuration_decisions: u64,
-    pub(crate) frontier_ticks: u64,
     pub(crate) command: String,
 }
 
@@ -78,10 +89,40 @@ impl LiveQemuReplayContract {
                 bool_label(self.coverage),
             ],
         );
+        artifact_line(
+            &mut text,
+            &[
+                "lifecycle",
+                &optional_u64_label(self.run_ceiling_icount),
+                &optional_u64_label(self.lifecycle_quantum_budget),
+            ],
+        );
+        artifact_line(
+            &mut text,
+            &[
+                "fingerprints",
+                match self.fingerprint_scope {
+                    LiveQemuFingerprintScope::FullExecution => "full-execution",
+                    LiveQemuFingerprintScope::TerminalAllNodes => "terminal-all-nodes",
+                },
+            ],
+        );
         match self.branch {
             LiveQemuReplayBranch::None => {
                 artifact_line(&mut text, &["branch", "none"]);
             }
+            LiveQemuReplayBranch::Resume {
+                base_decisions,
+                frontier_ticks,
+            } => artifact_line(
+                &mut text,
+                &[
+                    "branch",
+                    "resume",
+                    &base_decisions.to_string(),
+                    &frontier_ticks.to_string(),
+                ],
+            ),
             LiveQemuReplayBranch::Reseed {
                 base_decisions,
                 frontier_ticks,
@@ -122,13 +163,7 @@ impl LiveQemuReplayContract {
         for control in &self.controls {
             artifact_line(
                 &mut text,
-                &[
-                    "control",
-                    &control.sequence.to_string(),
-                    &control.configuration_decisions.to_string(),
-                    &control.frontier_ticks.to_string(),
-                    &control.command,
-                ],
+                &["control", &control.sequence.to_string(), &control.command],
             );
         }
         text.into_bytes()
@@ -142,6 +177,8 @@ impl LiveQemuReplayContract {
         let mut producer = None;
         let mut terminal = None;
         let mut bounds = None;
+        let mut lifecycle = None;
+        let mut fingerprint_scope = None;
         let mut branch = None;
         let mut fault_choice_indices = Vec::new();
         let mut network_choice_indices = Vec::new();
@@ -191,6 +228,33 @@ impl LiveQemuReplayContract {
                         ),
                     )?;
                 }
+                "lifecycle" => {
+                    require_field_count(line_index, tag, &fields, 3)?;
+                    set_once(
+                        &mut lifecycle,
+                        line_index,
+                        tag,
+                        (
+                            parse_optional_u64(line_index, tag, &fields[1])?,
+                            parse_optional_u64(line_index, tag, &fields[2])?,
+                        ),
+                    )?;
+                }
+                "fingerprints" => {
+                    require_field_count(line_index, tag, &fields, 2)?;
+                    let parsed = match fields[1].as_str() {
+                        "full-execution" => LiveQemuFingerprintScope::FullExecution,
+                        "terminal-all-nodes" => LiveQemuFingerprintScope::TerminalAllNodes,
+                        other => {
+                            return Err(artifact_line_error(
+                                line_index,
+                                tag,
+                                &format!("unknown fingerprint scope `{other}`"),
+                            ));
+                        }
+                    };
+                    set_once(&mut fingerprint_scope, line_index, tag, parsed)?;
+                }
                 "branch" => {
                     let parsed = parse_branch(line_index, tag, &fields)?;
                     set_once(&mut branch, line_index, tag, parsed)?;
@@ -211,12 +275,10 @@ impl LiveQemuReplayContract {
                     }
                 }
                 "control" => {
-                    require_field_count(line_index, tag, &fields, 5)?;
+                    require_field_count(line_index, tag, &fields, 3)?;
                     controls.push(LiveQemuReplayControl {
                         sequence: parse_u64(line_index, tag, &fields[1])?,
-                        configuration_decisions: parse_u64(line_index, tag, &fields[2])?,
-                        frontier_ticks: parse_u64(line_index, tag, &fields[3])?,
-                        command: fields[4].clone(),
+                        command: fields[2].clone(),
                     });
                 }
                 other => {
@@ -253,9 +315,20 @@ impl LiveQemuReplayContract {
             .ok_or_else(|| artifact_error("live-QEMU replay contract has no terminal target"))?;
         let (max_virtual_time_ticks, max_quanta, coverage) =
             bounds.ok_or_else(|| artifact_error("live-QEMU replay contract has no bounds"))?;
+        let (run_ceiling_icount, lifecycle_quantum_budget) = lifecycle
+            .ok_or_else(|| artifact_error("live-QEMU replay contract has no lifecycle limits"))?;
+        let producer =
+            producer.ok_or_else(|| artifact_error("live-QEMU replay contract has no producer"))?;
+        if !matches!(
+            producer.as_str(),
+            "run" | "verify" | "search" | "fuzz" | "fork"
+        ) {
+            return Err(artifact_error(format!(
+                "live-QEMU replay contract has unsupported producer `{producer}`"
+            )));
+        }
         let contract = Self {
-            producer: producer
-                .ok_or_else(|| artifact_error("live-QEMU replay contract has no producer"))?,
+            producer,
             terminal_condition,
             terminal_status,
             terminal_outcome,
@@ -265,19 +338,91 @@ impl LiveQemuReplayContract {
             budget_timed_out,
             max_virtual_time_ticks,
             max_quanta,
+            run_ceiling_icount,
+            lifecycle_quantum_budget,
             coverage,
+            fingerprint_scope: fingerprint_scope.ok_or_else(|| {
+                artifact_error("live-QEMU replay contract has no fingerprint scope")
+            })?,
             branch: branch
                 .ok_or_else(|| artifact_error("live-QEMU replay contract has no branch"))?,
             fault_choice_indices,
             network_choice_indices,
             controls,
         };
+        contract.validate_semantics()?;
         if contract.encode() != bytes {
             return Err(artifact_error(
                 "non-canonical live-QEMU replay contract encoding",
             ));
         }
         Ok(contract)
+    }
+
+    fn validate_semantics(&self) -> Result<(), CliError> {
+        for (label, indices) in [
+            ("fault", self.fault_choice_indices.as_slice()),
+            ("network", self.network_choice_indices.as_slice()),
+        ] {
+            if indices.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(artifact_error(format!(
+                    "live-QEMU replay {label} choice indices must be unique and increasing"
+                )));
+            }
+        }
+        let fork_branch = !matches!(self.branch, LiveQemuReplayBranch::None);
+        if (self.producer == "fork") != fork_branch {
+            return Err(artifact_error(
+                "live-QEMU replay branch recipes are required only for fork artifacts",
+            ));
+        }
+        let branch_start = match &self.branch {
+            LiveQemuReplayBranch::None => 0,
+            LiveQemuReplayBranch::Resume { base_decisions, .. }
+            | LiveQemuReplayBranch::Reseed { base_decisions, .. }
+            | LiveQemuReplayBranch::PrefixOverrides { base_decisions, .. } => *base_decisions,
+        };
+        if self
+            .fault_choice_indices
+            .iter()
+            .chain(&self.network_choice_indices)
+            .any(|index| *index < branch_start)
+        {
+            return Err(artifact_error(
+                "fork replay choices must belong to the post-branch suffix",
+            ));
+        }
+        if let LiveQemuReplayBranch::PrefixOverrides {
+            base_decisions,
+            decision_start,
+            decision_end,
+            ..
+        } = &self.branch
+            && (decision_start != base_decisions || decision_end < decision_start)
+        {
+            return Err(artifact_error(
+                "fork prefix-override coordinates are not a contiguous branch suffix",
+            ));
+        }
+        let terminal_scope = self.fingerprint_scope == LiveQemuFingerprintScope::TerminalAllNodes;
+        if matches!(self.producer.as_str(), "search" | "fork") != terminal_scope {
+            return Err(artifact_error(
+                "live-QEMU replay fingerprint scope is incompatible with its producer",
+            ));
+        }
+        if self.producer == "search"
+            && (self.run_ceiling_icount.is_none() || self.lifecycle_quantum_budget.is_none())
+        {
+            return Err(artifact_error(
+                "search replay contracts require explicit lifecycle ceilings",
+            ));
+        }
+        if !self.controls.is_empty() {
+            return Err(artifact_error(
+                "live-QEMU replay contracts do not yet support interactive control recipes",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -290,6 +435,13 @@ fn parse_branch(
         Some("none") => {
             require_field_count(line_index, tag, fields, 2)?;
             Ok(LiveQemuReplayBranch::None)
+        }
+        Some("resume") => {
+            require_field_count(line_index, tag, fields, 4)?;
+            Ok(LiveQemuReplayBranch::Resume {
+                base_decisions: parse_u64(line_index, tag, &fields[2])?,
+                frontier_ticks: parse_u64(line_index, tag, &fields[3])?,
+            })
         }
         Some("reseed") => {
             require_field_count(line_index, tag, fields, 5)?;
@@ -353,9 +505,8 @@ fn parse_optional_u64(line_index: usize, tag: &str, value: &str) -> Result<Optio
 mod tests {
     use super::*;
 
-    #[test]
-    fn live_qemu_replay_contract_round_trips_canonically() -> Result<(), CliError> {
-        let contract = LiveQemuReplayContract {
+    fn fork_contract() -> LiveQemuReplayContract {
+        LiveQemuReplayContract {
             producer: String::from("fork"),
             terminal_condition: String::from("quiescence"),
             terminal_status: String::from("failed"),
@@ -366,7 +517,10 @@ mod tests {
             budget_timed_out: false,
             max_virtual_time_ticks: None,
             max_quanta: Some(8),
+            run_ceiling_icount: Some(12),
+            lifecycle_quantum_budget: Some(16),
             coverage: true,
+            fingerprint_scope: LiveQemuFingerprintScope::TerminalAllNodes,
             branch: LiveQemuReplayBranch::Reseed {
                 base_decisions: 3,
                 frontier_ticks: 11,
@@ -374,15 +528,54 @@ mod tests {
             },
             fault_choice_indices: vec![4],
             network_choice_indices: vec![5],
-            controls: vec![LiveQemuReplayControl {
-                sequence: 0,
-                configuration_decisions: 3,
-                frontier_ticks: 11,
-                command: String::from("continue"),
-            }],
-        };
+            controls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn live_qemu_replay_contract_round_trips_canonically() -> Result<(), CliError> {
+        let contract = fork_contract();
         let encoded = contract.encode();
         assert_eq!(LiveQemuReplayContract::decode(&encoded)?, contract);
         Ok(())
+    }
+
+    #[test]
+    fn live_qemu_replay_contract_rejects_unsupported_producer() {
+        let mut contract = fork_contract();
+        contract.producer = String::from("unknown");
+        let error = LiveQemuReplayContract::decode(&contract.encode())
+            .expect_err("unsupported producer must fail closed");
+        assert!(error.to_string().contains("unsupported producer"));
+    }
+
+    #[test]
+    fn live_qemu_replay_contract_rejects_duplicate_choice_indices() {
+        let mut contract = fork_contract();
+        contract.fault_choice_indices = vec![4, 4];
+        let error = LiveQemuReplayContract::decode(&contract.encode())
+            .expect_err("duplicate choice indices must fail closed");
+        assert!(error.to_string().contains("unique and increasing"));
+    }
+
+    #[test]
+    fn live_qemu_replay_contract_rejects_missing_fork_branch() {
+        let mut contract = fork_contract();
+        contract.branch = LiveQemuReplayBranch::None;
+        let error = LiveQemuReplayContract::decode(&contract.encode())
+            .expect_err("fork without a retained base must fail closed");
+        assert!(error.to_string().contains("branch recipes"));
+    }
+
+    #[test]
+    fn live_qemu_replay_contract_rejects_control_recipes() {
+        let mut contract = fork_contract();
+        contract.controls.push(LiveQemuReplayControl {
+            sequence: 0,
+            command: String::from("continue"),
+        });
+        let error = LiveQemuReplayContract::decode(&contract.encode())
+            .expect_err("unsupported control recipes must fail closed");
+        assert!(error.to_string().contains("interactive control recipes"));
     }
 }
