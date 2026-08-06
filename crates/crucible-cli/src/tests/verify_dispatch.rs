@@ -414,7 +414,7 @@ pub(super) fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Resul
             .stdout
             .iter()
             .filter(|line| line.starts_with("verify-run\t"))
-            .all(|line| line.contains("\tfingerprint=") && line.contains("\tsamples=2"))
+            .all(|line| line.contains("\tfingerprint=") && line.contains("\tsamples=4"))
     );
     assert!(
         outcome
@@ -1398,6 +1398,165 @@ pub(super) fn cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline()
     );
     assert!(stored_signed_report.result.signature_self_check.is_clean());
 
+    Ok(())
+}
+
+#[test]
+pub(super) fn signed_findings_v3_round_trips_timeout_evidence_and_skips_minimization()
+-> Result<(), Box<dyn Error>> {
+    let temp = tempfile::tempdir()?;
+    let store_root = temp.path().join("store");
+    let artifact_dir = temp.path().join("artifacts");
+    let form = search_frontier_scenario_form()?;
+    let configuration = crucible::Configuration::genesis(form.scenario_def());
+    let fingerprint = crucible::ContentHash::from_bytes(b"timeout-v3-finding");
+    let finding = crucible::FindingReproductionArtifact::capture(
+        crucible::FindingDiscoveryPath::CoverageGuidedFuzzing,
+        fingerprint,
+        &form,
+        &configuration,
+    )?;
+    let store = crucible::LocalDagStore::new(store_root.clone());
+    assert_eq!(finding.store_artifact(&store)?, finding.artifact.id());
+    let timeout = crucible_model::FailureTimeoutRecord::new(
+        crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
+        Some(64),
+        64,
+        crucible::VirtualTime { ticks: 9 },
+        None,
+        None,
+        finding.artifact.id(),
+    );
+    let retained_frame =
+        canonical_streaming_event_frame_bytes(&crucible_api::StreamingEventFrame {
+            generation: 0,
+            cursor: crucible_api::EventLogCursor::new(0),
+            next_cursor: crucible_api::EventLogCursor::new(1),
+            event: crucible_api::OpenSetEventEnvelope {
+                sequence: 0,
+                at: crucible_api::OpenSetEventTime {
+                    virtual_time_ticks: 4,
+                    icount_retired: 8,
+                    icount_node: None,
+                },
+                source: crucible_api::OpenSetEventSource::Engine,
+                level: crucible::EventLevel::Info,
+                observational: true,
+                payload: crucible_api::OpenSetPayload::new(
+                    "crucible.event.coverage",
+                    BTreeMap::new(),
+                ),
+            },
+        });
+    let evidence = triage_timeout_evidence(
+        finding,
+        timeout,
+        crucible::ContentHash::from_bytes(b"timeout-v3-coverage"),
+        vec![retained_frame.clone()],
+    )?;
+    let second_form = crucible::ScenarioDefForm::from_components(
+        form.world(),
+        form.plan(),
+        form.properties(),
+        crucible::Seed::from_u64(7),
+    )?;
+    let second_configuration = crucible::Configuration::genesis(second_form.scenario_def());
+    let second_finding = crucible::FindingReproductionArtifact::capture(
+        crucible::FindingDiscoveryPath::StateSpaceSearch,
+        crucible::ContentHash::from_bytes(b"second-timeout-v3-finding"),
+        &second_form,
+        &second_configuration,
+    )?;
+    let second_timeout = crucible_model::FailureTimeoutRecord::new(
+        crucible_model::FailureTimeoutBudgetKind::VirtualTime,
+        Some(9),
+        12,
+        crucible::VirtualTime { ticks: 9 },
+        None,
+        None,
+        second_finding.artifact.id(),
+    );
+    let second_evidence = triage_timeout_evidence(
+        second_finding,
+        second_timeout,
+        crucible::ContentHash::from_bytes(b"second-timeout-v3-coverage"),
+        Vec::new(),
+    )?;
+    assert_eq!(
+        failure_findings_ledger_v3_bytes(&[evidence.clone(), second_evidence.clone()])?,
+        failure_findings_ledger_v3_bytes(&[second_evidence, evidence.clone()])?,
+        "v3 ledgers must canonicalize finding-set order"
+    );
+    assert_eq!(
+        failure_findings_ledger_v3_bytes(&[evidence.clone(), evidence.clone()])?,
+        failure_findings_ledger_v3_bytes(std::slice::from_ref(&evidence))?,
+        "v3 ledgers must deduplicate identical artifact evidence"
+    );
+    let (ledger_path, _, ledger_bytes) =
+        write_failure_findings_ledger_v3(&artifact_dir, None, std::slice::from_ref(&evidence))?;
+    let ledger_text = String::from_utf8(ledger_bytes)?;
+    let frame_hex = ledger_hex(&retained_frame);
+    let mut changed_frame_hex = frame_hex.clone();
+    changed_frame_hex.replace_range(
+        ..1,
+        if changed_frame_hex.starts_with('0') {
+            "1"
+        } else {
+            "0"
+        },
+    );
+    let changed_frame = ledger_text.replacen(&frame_hex, &changed_frame_hex, 1);
+    assert!(parse_failure_findings_ledger_bytes(&store, changed_frame.as_bytes()).is_err());
+
+    let changed_coverage = ledger_text.replacen(
+        &crucible::ContentHash::from_bytes(b"timeout-v3-coverage").to_hex(),
+        &crucible::ContentHash::from_bytes(b"tampered-timeout-v3-coverage").to_hex(),
+        1,
+    );
+    assert!(parse_failure_findings_ledger_bytes(&store, changed_coverage.as_bytes()).is_err());
+    let non_canonical = ledger_text.replace(
+        "finding.0.event_frame_count=1\n",
+        "finding.0.event_frame_count=1\nfinding.0.unknown=field\n",
+    );
+    assert!(parse_failure_findings_ledger_bytes(&store, non_canonical.as_bytes()).is_err());
+
+    let cli = Cli::parse_from([
+        "crucible",
+        "--store",
+        store_root.to_str().unwrap_or("."),
+        "--artifact-dir",
+        artifact_dir.to_str().unwrap_or("."),
+        "triage",
+        ledger_path.to_str().unwrap_or("."),
+        "--minimize",
+        "representative",
+        "--recompute-signatures",
+    ]);
+    let Commands::Triage(args) = &cli.command else {
+        return Err(std::io::Error::other("expected triage command").into());
+    };
+    let report = run_triage_invocation(&cli, args)?;
+
+    assert_eq!(report.ledger.signed_findings().len(), 1);
+    assert_eq!(
+        report.ledger.signed_findings()[0].signature.failure_kind,
+        crucible::FailureKind::Timeout
+    );
+    assert_eq!(
+        report.result.minimization.runs[0].disposition,
+        crucible_model::FailureMinimizationDisposition::NotApplicableTimeout
+    );
+    assert!(
+        report.result.minimization.runs[0]
+            .minimization
+            .attempts
+            .is_empty()
+    );
+    assert!(
+        report.result.report_set.reports[0]
+            .canonical_material()
+            .contains("failure.kind=timeout")
+    );
     Ok(())
 }
 

@@ -1231,54 +1231,62 @@ pub(super) async fn query_execution_fingerprint(
     acknowledged_commands: &mut Vec<SessionCommandKind>,
     execution_fingerprints: &mut Vec<crucible::FingerprintSample>,
 ) -> Result<(), CliError> {
-    let Some(node) = run_plan
+    let mut nodes = run_plan
         .scenario
         .scenario_form()
         .world()
         .vm_nodes()
-        .first()
+        .iter()
         .map(|node| node.id.clone())
-    else {
+        .collect::<Vec<_>>();
+    nodes.sort_by(|left, right| left.name.cmp(&right.name));
+    if nodes.is_empty() {
         return Err(backend_error(
             "verify requires at least one scenario node for execution fingerprint sampling",
         ));
-    };
-    let response = control
-        .send_command(
-            *command_id,
-            SessionCommand::Query {
-                kind: QueryKind::ExecutionFingerprint { node: node.clone() },
-                reply: CommandReply::discard(),
-            },
-        )
-        .await
-        .map_err(control_client_error)?;
-    *command_id = command_id.saturating_add(1);
-    match response.result.status {
-        CommandResultStatus::Accepted => {
-            acknowledged_commands.push(SessionCommandKind::Query);
+    }
+    for node in nodes {
+        let response = control
+            .send_command(
+                *command_id,
+                SessionCommand::Query {
+                    kind: QueryKind::ExecutionFingerprint { node: node.clone() },
+                    reply: CommandReply::discard(),
+                },
+            )
+            .await
+            .map_err(control_client_error)?;
+        *command_id = command_id.saturating_add(1);
+        match response.result.status {
+            CommandResultStatus::Accepted => {
+                acknowledged_commands.push(SessionCommandKind::Query);
+            }
+            CommandResultStatus::Rejected { reason } => {
+                return Err(backend_error(format!(
+                    "execution fingerprint query for node `{}` was rejected: {reason:?}",
+                    node.name
+                )));
+            }
         }
-        CommandResultStatus::Rejected { reason } => {
-            return Err(backend_error(format!(
-                "execution fingerprint query for node `{}` was rejected: {reason:?}",
-                node.name
-            )));
+        match response.query_result {
+            Some(QueryResult::ExecutionFingerprint(sample)) => {
+                execution_fingerprints.push(sample);
+            }
+            Some(other) => {
+                return Err(backend_error(format!(
+                    "execution fingerprint query for node `{}` returned unexpected payload: {other:?}",
+                    node.name
+                )));
+            }
+            None => {
+                return Err(backend_error(format!(
+                    "execution fingerprint query for node `{}` returned no payload",
+                    node.name
+                )));
+            }
         }
     }
-    match response.query_result {
-        Some(QueryResult::ExecutionFingerprint(sample)) => {
-            execution_fingerprints.push(sample);
-            Ok(())
-        }
-        Some(other) => Err(backend_error(format!(
-            "execution fingerprint query for node `{}` returned unexpected payload: {other:?}",
-            node.name
-        ))),
-        None => Err(backend_error(format!(
-            "execution fingerprint query for node `{}` returned no payload",
-            node.name
-        ))),
-    }
+    Ok(())
 }
 
 pub(super) async fn observe_next_state_update(
