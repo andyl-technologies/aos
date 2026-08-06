@@ -58,6 +58,7 @@ use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use crucible_device::block::ResolvedBlockFaultDirective;
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, DeviceError, IoCore, Request,
 };
@@ -203,6 +204,28 @@ impl QemuLiveBlockIoServicer {
         })
     }
 
+    /// Installs the fully resolved directive for the currently pinned request.
+    ///
+    /// The owner must resolve the directive from the exact request returned by
+    /// [`Self::pin_next_request_completion`] and install it before calling
+    /// [`Self::service`]. Installation is transactional and cannot dequeue the
+    /// shared-memory request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] when the directive is
+    /// malformed, duplicated, exceeds a hard state bound, or requests a live
+    /// transport capability that is not yet bound.
+    pub fn install_storage_fault_directive(
+        &mut self,
+        request_id: u32,
+        directive: ResolvedBlockFaultDirective,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.device
+            .install_storage_fault_directive(request_id, directive)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
     /// Pins the head request's completion coordinate without COMPUTE or dequeue.
     ///
     /// The method observes at most the SPSC head, computes its completion icount
@@ -242,9 +265,8 @@ impl QemuLiveBlockIoServicer {
         let observed = request
             .map(|frame| {
                 let payload = frame.payload().map_err(DeviceError::from)?;
-                let request_id = BlockRequest::decode(payload)
-                    .map(|decoded| decoded.request_id)
-                    .unwrap_or(0);
+                let decoded = BlockRequest::decode(payload).ok();
+                let request_id = decoded.as_ref().map_or(0, |request| request.request_id);
                 let request = Request::new(frame.delivery_icount, request_id, payload.to_vec());
                 let completion_icount = device
                     .core()
@@ -258,6 +280,8 @@ impl QemuLiveBlockIoServicer {
                 Ok(QemuLiveBlockIoObservedRequest {
                     request_icount: frame.delivery_icount,
                     completion_icount,
+                    request: decoded,
+                    wire_digest: *blake3::hash(payload).as_bytes(),
                 })
             })
             .transpose()
@@ -267,7 +291,7 @@ impl QemuLiveBlockIoServicer {
             .core()
             .next_exact_local_event()
             .into_iter()
-            .chain(observed.map(|request| request.completion_icount))
+            .chain(observed.as_ref().map(|request| request.completion_icount))
             .min();
         node_slot.store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
         Ok(QemuLiveBlockIoHostWorkPin {
@@ -335,16 +359,20 @@ pub struct QemuLiveBlockIoServiceStep {
 }
 
 /// A request observed before its device-side host work is dispatched.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLiveBlockIoObservedRequest {
     /// Icount carried by the request at observation time.
     pub request_icount: u64,
     /// Completion icount computed and pinned before host dispatch.
     pub completion_icount: u64,
+    /// Exact decoded request, absent only for a malformed guest frame.
+    pub request: Option<BlockRequest>,
+    /// BLAKE3 digest of the complete immutable request wire bytes.
+    pub wire_digest: [u8; 32],
 }
 
 /// The pinned state returned before one block host-work dispatch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLiveBlockIoHostWorkPin {
     /// Newly observed head request, when the inbound ring was nonempty.
     pub observed: Option<QemuLiveBlockIoObservedRequest>,

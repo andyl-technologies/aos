@@ -22,6 +22,8 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crucible_device::block::ResolvedBlockFaultDirective;
+
 use super::block_io_servicer::{
     QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,
     QemuLiveBlockIoServicerError,
@@ -159,7 +161,7 @@ impl QemuLiveBlockHostWorkPool {
             WorkerReply::Pinned(result) => {
                 let pin =
                     result.map_err(|source| QemuLiveBlockHostWorkPoolError::Servicer { source })?;
-                self.pinned = Some(pin);
+                self.pinned = Some(pin.clone());
                 Ok(pin)
             }
             WorkerReply::Serviced(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
@@ -184,9 +186,33 @@ impl QemuLiveBlockHostWorkPool {
         guest_icount: u64,
         delay: QemuDeviceHostWorkDelay,
     ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
+        self.dispatch_with_storage_fault(guest_icount, delay, None)
+    }
+
+    /// Dispatches one pass with an exact directive resolved from the prior pin.
+    ///
+    /// The optional pair must name the request returned by
+    /// [`Self::pin_next_request_completion`]. The worker installs it before
+    /// dequeuing the shared-memory head, so installation failure leaves the
+    /// request available for exact retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::dispatch`].
+    pub fn dispatch_with_storage_fault(
+        &mut self,
+        guest_icount: u64,
+        delay: QemuDeviceHostWorkDelay,
+        directive: Option<(u32, ResolvedBlockFaultDirective)>,
+    ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
         if self.work_in_flight {
             return Err(QemuLiveBlockHostWorkPoolError::WorkAlreadyInFlight);
         }
+        let pin = self
+            .pinned
+            .as_ref()
+            .ok_or(QemuLiveBlockHostWorkPoolError::DispatchWithoutPin)?;
+        validate_pinned_directive(pin, directive.as_ref())?;
         let pin = self
             .pinned
             .take()
@@ -195,6 +221,7 @@ impl QemuLiveBlockHostWorkPool {
             .send(WorkerCommand::Service {
                 guest_icount,
                 delay,
+                directive,
             })
             .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
         self.work_in_flight = true;
@@ -245,6 +272,35 @@ impl QemuLiveBlockHostWorkPool {
     }
 }
 
+fn validate_pinned_directive(
+    pin: &QemuLiveBlockIoHostWorkPin,
+    directive: Option<&(u32, ResolvedBlockFaultDirective)>,
+) -> Result<(), QemuLiveBlockHostWorkPoolError> {
+    let Some((request_id, directive)) = directive else {
+        return Ok(());
+    };
+    let observed = pin
+        .observed
+        .as_ref()
+        .ok_or(QemuLiveBlockHostWorkPoolError::DirectiveWithoutRequest)?;
+    let request = observed
+        .request
+        .as_ref()
+        .ok_or(QemuLiveBlockHostWorkPoolError::MalformedPinnedRequest)?;
+    if request.request_id != *request_id
+        || directive.operation != request.op
+        || directive.offset != request.offset
+        || directive.count != request.count
+        || directive.request_digest != observed.wire_digest
+    {
+        return Err(QemuLiveBlockHostWorkPoolError::DirectivePinMismatch {
+            pinned_request_id: request.request_id,
+            directive_request_id: *request_id,
+        });
+    }
+    Ok(())
+}
+
 impl Drop for QemuLiveBlockHostWorkPool {
     fn drop(&mut self) {
         let _ = self.commands.send(WorkerCommand::Shutdown);
@@ -259,6 +315,7 @@ enum WorkerCommand {
     Service {
         guest_icount: u64,
         delay: QemuDeviceHostWorkDelay,
+        directive: Option<(u32, ResolvedBlockFaultDirective)>,
     },
     Shutdown,
 }
@@ -279,9 +336,15 @@ fn worker_loop(
             WorkerCommand::Service {
                 guest_icount,
                 delay,
+                directive,
             } => {
                 delay.apply();
-                WorkerReply::Serviced(servicer.service(guest_icount))
+                let result = directive
+                    .map_or(Ok(()), |(request_id, directive)| {
+                        servicer.install_storage_fault_directive(request_id, directive)
+                    })
+                    .and_then(|()| servicer.service(guest_icount));
+                WorkerReply::Serviced(result)
             }
             WorkerCommand::Shutdown => break,
         };
@@ -321,10 +384,74 @@ pub enum QemuLiveBlockHostWorkPoolError {
     /// COMPUTE was dispatched without first pinning the request coordinate.
     #[error("block host work dispatch requires a preceding completion pin")]
     DispatchWithoutPin,
+    /// A directive was supplied while the pinned ring head was empty.
+    #[error("a storage fault directive requires a pinned block request")]
+    DirectiveWithoutRequest,
+    /// The pinned frame could not be decoded as a block request.
+    #[error("a storage fault directive cannot target a malformed pinned block request")]
+    MalformedPinnedRequest,
+    /// The directive identity or geometry differs from the exact pinned request.
+    #[error(
+        "storage fault directive request {directive_request_id} does not match pinned request {pinned_request_id}"
+    )]
+    DirectivePinMismatch {
+        /// Request ID decoded from the pinned frame.
+        pinned_request_id: u32,
+        /// Request ID supplied with the directive.
+        directive_request_id: u32,
+    },
     /// The worker returned a reply for a different command phase.
     #[error("block host worker protocol violation: expected {expected}")]
     Protocol {
         /// Reply phase the owner expected.
         expected: &'static str,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use crucible_device::block::BlockRequest;
+
+    use super::*;
+
+    fn pin(request: BlockRequest) -> QemuLiveBlockIoHostWorkPin {
+        let wire = request
+            .encode()
+            .unwrap_or_else(|error| panic!("test request should encode: {error}"));
+        QemuLiveBlockIoHostWorkPin {
+            observed: Some(
+                super::super::block_io_servicer::QemuLiveBlockIoObservedRequest {
+                    request_icount: 10,
+                    completion_icount: 20,
+                    request: Some(request),
+                    wire_digest: *blake3::hash(&wire).as_bytes(),
+                },
+            ),
+            next_completion_icount: Some(20),
+        }
+    }
+
+    #[test]
+    fn exact_directive_matches_pinned_request() {
+        let request = BlockRequest::read(7, 512, 512);
+        let directive = ResolvedBlockFaultDirective::fault_free(&request, 4096);
+        validate_pinned_directive(&pin(request), Some(&(7, directive)))
+            .unwrap_or_else(|error| panic!("exact directive should match: {error}"));
+    }
+
+    #[test]
+    fn mismatched_directive_is_rejected_before_dispatch() {
+        let request = BlockRequest::read(7, 512, 512);
+        let other = BlockRequest::read(8, 512, 512);
+        let directive = ResolvedBlockFaultDirective::fault_free(&other, 4096);
+        let error = validate_pinned_directive(&pin(request), Some(&(8, directive)))
+            .expect_err("request alias must fail closed");
+        assert!(matches!(
+            error,
+            QemuLiveBlockHostWorkPoolError::DirectivePinMismatch {
+                pinned_request_id: 7,
+                directive_request_id: 8,
+            }
+        ));
+    }
 }
