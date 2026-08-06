@@ -215,6 +215,10 @@ mod entry {
     const HUB_ROUTE_PUBLICATION_PUBLIC_KEY: &str = "HUB_ROUTE_PUBLICATION_PUBLIC_KEY";
     /// The Wrangler `[vars]` entry holding the hub's externally-reachable URL.
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
+    /// Immutable source/build identity used to attest the active deployment.
+    const HUB_DEPLOYMENT_ID: &str = "HUB_DEPLOYMENT_ID";
+    /// Non-cacheable endpoint exposing [`HUB_DEPLOYMENT_ID`].
+    const DEPLOYMENT_ID_PATH: &str = "/.well-known/aos-deployment";
     /// Required `[vars]` entry naming the deployment's default R2 bucket.
     const HUB_DEFAULT_BUCKET: &str = "HUB_DEFAULT_BUCKET";
     /// Optional `[vars]` entry: the email-relay endpoint magic links are
@@ -714,6 +718,31 @@ mod entry {
         // Route the shared core's `tracing` events to the console so handler
         // errors land in Workers Logs (idempotent; see `crate::tracinglog`).
         crate::tracinglog::init();
+
+        if req.url()?.path() == DEPLOYMENT_ID_PATH {
+            if !matches!(req.method(), Method::Get | Method::Head) {
+                return Response::error("method not allowed", 405);
+            }
+            let deployment_id = env
+                .var(HUB_DEPLOYMENT_ID)
+                .map_err(|_| {
+                    worker::Error::RustError(format!(
+                        "{HUB_DEPLOYMENT_ID} is required for deployment verification"
+                    ))
+                })?
+                .to_string();
+            let headers = worker::Headers::new();
+            headers.set("cache-control", "no-store, max-age=0")?;
+            headers.set("content-type", "text/plain; charset=utf-8")?;
+            headers.set("x-aos-deployment-id", &deployment_id)?;
+            headers.set("x-content-type-options", "nosniff")?;
+            let response = if req.method() == Method::Head {
+                Response::empty()?
+            } else {
+                Response::ok(deployment_id)?
+            };
+            return Ok(response.with_headers(headers));
+        }
 
         // The request's own `scheme://host`, the fallback canonical URL when
         // The **`HubDb` colocated-SQLite Durable Object is the only system of

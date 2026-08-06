@@ -137,6 +137,44 @@ fn non_empty_env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
+/// Three account-unique Cloudflare rate-limit namespace identifiers.
+///
+/// Cloudflare shares counters between bindings that reuse a namespace ID, even
+/// when those bindings belong to different Workers. Keeping these identifiers
+/// in the deployment configuration prevents staging and production installs
+/// from influencing each other's request budgets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RateLimitNamespaces {
+    burst5: String,
+    burst10: String,
+    browse120: String,
+}
+
+impl RateLimitNamespaces {
+    /// Derives the three namespace IDs immediately above `base`.
+    ///
+    /// A base of `1000` preserves the original production IDs `1001` through
+    /// `1003`; staging can use another account-unique range such as `2000`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `base` is zero or does not leave room for all
+    /// three positive 32-bit namespace identifiers.
+    pub fn from_base(base: u32) -> Result<Self> {
+        anyhow::ensure!(base > 0, "rate-limit namespace base must be positive");
+        let id = |offset| {
+            base.checked_add(offset)
+                .map(|value| value.to_string())
+                .context("rate-limit namespace base is too large")
+        };
+        Ok(Self {
+            burst5: id(1)?,
+            burst10: id(2)?,
+            browse120: id(3)?,
+        })
+    }
+}
+
 /// The fully-resolved inputs for rendering a deployment `wrangler.toml`.
 pub struct DeployConfig {
     /// The Worker name (`name` in `wrangler.toml`).
@@ -145,6 +183,8 @@ pub struct DeployConfig {
     pub bucket: String,
     /// The provisioned KV namespace id.
     pub kv_id: String,
+    /// Account-unique rate-limit namespaces for this Worker installation.
+    pub rate_limit_namespaces: RateLimitNamespaces,
     /// Exact HTTPS endpoint of the repository-owned native egress gateway.
     pub hardened_egress_url: String,
     /// The required canonical public origin baked into `HUB_EXTERNAL_URL`.
@@ -154,6 +194,8 @@ pub struct DeployConfig {
     /// relying-party ID, browse links). The `worker` CLI leaves it empty by
     /// default and relies on the request-origin fallback.
     pub external_url: String,
+    /// Immutable source/build identity exposed by the deployed Worker.
+    pub deployment_id: Option<String>,
     /// The magic-link email relay endpoint (`HUB_EMAIL_API_URL` `[vars]`).
     pub email_relay_url: Option<String>,
     /// The verified sender address for Cloudflare Email Service. When `Some`, the
@@ -223,6 +265,12 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
         "HUB_EXTERNAL_URL = {}\n",
         toml_string(&cfg.external_url)
     ));
+    if let Some(deployment_id) = &cfg.deployment_id {
+        vars.push_str(&format!(
+            "HUB_DEPLOYMENT_ID = {}\n",
+            toml_string(deployment_id)
+        ));
+    }
     // Surface the default R2 bucket name so the console's instance-settings page
     // can show where unbound registries/caches push (the R2 binding itself is
     // opaque to the Worker runtime).
@@ -334,21 +382,21 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          \n\
          [[ratelimits]]\n\
          name = \"RL_BURST5\"\n\
-         namespace_id = \"1001\"\n\
+         namespace_id = {rate_burst5}\n\
          [ratelimits.simple]\n\
          limit = 5\n\
          period = 60\n\
          \n\
          [[ratelimits]]\n\
          name = \"RL_BURST10\"\n\
-         namespace_id = \"1002\"\n\
+         namespace_id = {rate_burst10}\n\
          [ratelimits.simple]\n\
          limit = 10\n\
          period = 60\n\
          \n\
          [[ratelimits]]\n\
          name = \"RL_BROWSE120\"\n\
-         namespace_id = \"1003\"\n\
+         namespace_id = {rate_browse120}\n\
          [ratelimits.simple]\n\
          limit = 120\n\
          period = 60\n\
@@ -363,6 +411,9 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
         bucket = toml_string(&cfg.bucket),
         kvb = KV_BINDING,
         kvid = toml_string(&cfg.kv_id),
+        rate_burst5 = toml_string(&cfg.rate_limit_namespaces.burst5),
+        rate_burst10 = toml_string(&cfg.rate_limit_namespaces.burst10),
+        rate_browse120 = toml_string(&cfg.rate_limit_namespaces.browse120),
         cron = INDEXER_CRON,
         observability = observability,
     )
@@ -715,6 +766,51 @@ pub struct Secrets {
     pub route_reservation_keyring: Option<String>,
 }
 
+impl Secrets {
+    /// Validates every supplied Worker secret before any provider mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an explicitly empty secret or a malformed domain
+    /// probe or route-reservation manifest.
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.egress_shared_key.is_empty(),
+            "HUB_EGRESS_SHARED_KEY must not be empty"
+        );
+        for (name, value) in [
+            ("HUB_JWT_SECRET", self.jwt_secret.as_deref()),
+            ("HUB_SEAL_KEY", self.seal_key.as_deref()),
+            (
+                "HUB_CLOUDFLARE_API_TOKEN",
+                self.cloudflare_api_token.as_deref(),
+            ),
+            ("HUB_EMAIL_API_TOKEN", self.email_api_token.as_deref()),
+            (
+                "HUB_DELIVERY_ATTESTATION_KEY",
+                self.delivery_attestation_key.as_deref(),
+            ),
+        ] {
+            anyhow::ensure!(
+                value.is_none_or(|secret| !secret.is_empty()),
+                "{name} must not be empty when supplied"
+            );
+        }
+        if let Some(manifest) = &self.domain_probe_signer_manifest {
+            aos_hub_core::topology_probe::ManifestDomainProbeTerminatorProvider::from_json(
+                manifest,
+                "worker_secret",
+            )
+            .context("invalid Worker domain-probe signer manifest")?;
+        }
+        if let Some(keyring) = &self.route_reservation_keyring {
+            aos_hub_core::service::ConfiguredRouteReservationKeyring::from_json(keyring)
+                .context("invalid Worker route reservation keyring")?;
+        }
+        Ok(())
+    }
+}
+
 /// The outcome of a deploy: the secrets *freshly minted* this run, so the
 /// operator can record values that are otherwise unrecoverable.
 ///
@@ -747,8 +843,10 @@ pub async fn provision(
     kv_title: &str,
     hardened_egress_url: &str,
     external_url: &str,
+    deployment_id: Option<&str>,
     email_relay_url: Option<&str>,
     custom_domains: &[String],
+    rate_limit_namespaces: RateLimitNamespaces,
 ) -> Result<DeployConfig> {
     let egress = url::Url::parse(hardened_egress_url).context("hardened egress URL is invalid")?;
     if egress.scheme() != "https"
@@ -770,6 +868,16 @@ pub async fn provision(
     {
         bail!("external URL must be an exact HTTPS origin");
     }
+    if let Some(deployment_id) = deployment_id {
+        anyhow::ensure!(
+            !deployment_id.is_empty()
+                && deployment_id.len() <= 128
+                && deployment_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')),
+            "deployment ID must be 1-128 ASCII letters, digits, '.', '_', or '-'"
+        );
+    }
     // The system of record is the `HubDb` Durable Object's colocated SQLite
     // (declared by the `wrangler.toml`
     // `new_sqlite_classes` migration, created on first deploy).
@@ -783,8 +891,10 @@ pub async fn provision(
         name: name.to_string(),
         bucket: bucket.to_string(),
         kv_id,
+        rate_limit_namespaces,
         hardened_egress_url: hardened_egress_url.to_string(),
         external_url: external_url.to_string(),
+        deployment_id: deployment_id.map(str::to_string),
         email_relay_url: email_relay_url.map(str::to_string),
         // The `worker` CLI overrides this from its `--email-from` flag before
         // staging the config; Email Service is off until a sender is set.
@@ -878,6 +988,7 @@ async fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
 /// Returns an error if the temp dir, staging, the deploy, the secret listing, or
 /// any `secret put` fails.
 pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> Result<Applied> {
+    secrets.validate()?;
     authenticate_gateway_contract(&cfg.hardened_egress_url, &secrets.egress_shared_key).await?;
     let work = tempfile::Builder::new()
         .prefix("aos-hub-deploy")
@@ -1203,8 +1314,10 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
+            rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             hardened_egress_url: "https://egress.example.com/v1/fetch".into(),
             external_url: "https://aos.example.com".into(),
+            deployment_id: Some("0123456789abcdef".into()),
             email_relay_url: None,
             email_from: None,
             custom_domains: vec!["aos.example.com".into()],
@@ -1222,6 +1335,10 @@ mod tests {
             parsed["vars"]["HUB_EXTERNAL_URL"].as_str(),
             Some("https://aos.example.com")
         );
+        assert_eq!(
+            parsed["vars"]["HUB_DEPLOYMENT_ID"].as_str(),
+            Some("0123456789abcdef")
+        );
         // Root bootstrap is CLI-driven now; the worker no longer reads it.
         assert!(parsed["vars"].get("HUB_ROOT_EMAIL").is_none());
         // The custom domain is bound via a custom_domain route.
@@ -1235,6 +1352,18 @@ mod tests {
         // Emitting it every deploy reverts any dashboard toggle to smart.
         assert_eq!(parsed["placement"]["mode"].as_str(), Some("off"));
         assert_eq!(parsed["kv_namespaces"][0]["id"].as_str(), Some("kv-id"));
+        assert_eq!(
+            parsed["ratelimits"][0]["namespace_id"].as_str(),
+            Some("1001")
+        );
+        assert_eq!(
+            parsed["ratelimits"][1]["namespace_id"].as_str(),
+            Some("1002")
+        );
+        assert_eq!(
+            parsed["ratelimits"][2]["namespace_id"].as_str(),
+            Some("1003")
+        );
         assert_eq!(
             parsed["vars"]["HUB_HARDENED_EGRESS_URL"].as_str(),
             Some("https://egress.example.com/v1/fetch")
@@ -1260,8 +1389,10 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
+            rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             hardened_egress_url: "https://egress.example.com/v1/fetch".into(),
             external_url: "https://aos.example.com".into(),
+            deployment_id: None,
             email_relay_url: None,
             email_from: None,
             custom_domains: vec![],
@@ -1282,8 +1413,10 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
+            rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             hardened_egress_url: "https://egress.example.com/v1/fetch".into(),
             external_url: "https://aos.example.com".into(),
+            deployment_id: None,
             email_relay_url: None,
             email_from: None,
             custom_domains: vec![],
@@ -1305,8 +1438,10 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
+            rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             hardened_egress_url: "https://egress.example.com/v1/fetch".into(),
             external_url: "https://aos.example.com".into(),
+            deployment_id: None,
             email_relay_url: None,
             email_from: Some("noreply@example.com".into()),
             custom_domains: vec![],
@@ -1338,6 +1473,59 @@ mod tests {
     #[test]
     fn toml_string_escapes_quotes_and_backslashes() {
         assert_eq!(toml_string(r#"a"b\c"#), r#""a\"b\\c""#);
+    }
+
+    #[test]
+    fn rate_limit_namespace_ranges_are_isolated_and_bounded() {
+        assert_eq!(
+            RateLimitNamespaces::from_base(1000).unwrap(),
+            RateLimitNamespaces {
+                burst5: "1001".into(),
+                burst10: "1002".into(),
+                browse120: "1003".into(),
+            }
+        );
+        assert_eq!(
+            RateLimitNamespaces::from_base(2000).unwrap(),
+            RateLimitNamespaces {
+                burst5: "2001".into(),
+                burst10: "2002".into(),
+                browse120: "2003".into(),
+            }
+        );
+        assert!(RateLimitNamespaces::from_base(0).is_err());
+        assert!(RateLimitNamespaces::from_base(u32::MAX - 2).is_err());
+    }
+
+    #[test]
+    fn deployment_secrets_reject_empty_or_malformed_values_before_worker_mutation() {
+        let valid = || Secrets {
+            jwt_secret: Some("jwt".into()),
+            seal_key: Some("seal".into()),
+            egress_shared_key: "key-id:key".into(),
+            cloudflare_api_token: Some("cloudflare".into()),
+            email_api_token: None,
+            delivery_attestation_key: Some("attestation".into()),
+            domain_probe_signer_manifest: None,
+            route_reservation_keyring: None,
+        };
+        assert!(valid().validate().is_ok());
+
+        let mut secrets = valid();
+        secrets.jwt_secret = Some(String::new());
+        assert!(secrets.validate().is_err());
+
+        let mut secrets = valid();
+        secrets.cloudflare_api_token = Some(String::new());
+        assert!(secrets.validate().is_err());
+
+        let mut secrets = valid();
+        secrets.delivery_attestation_key = Some(String::new());
+        assert!(secrets.validate().is_err());
+
+        let mut secrets = valid();
+        secrets.route_reservation_keyring = Some("not-json".into());
+        assert!(secrets.validate().is_err());
     }
 
     #[test]

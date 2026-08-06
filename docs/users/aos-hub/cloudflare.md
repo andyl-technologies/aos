@@ -64,6 +64,11 @@ The default R2 bucket is `<name>-surfaces`; the default KV title is
 `<name>-sessions`. Override them with `--bucket` and `--kv-title` when names
 must fit an existing account convention.
 
+Rate-limit namespace IDs are account-wide. The installer reserves three
+consecutive IDs above `--rate-limit-namespace-base`; its default base of `1000`
+preserves production IDs `1001` through `1003`. Every independent installation
+in the same account must use another non-overlapping base.
+
 ## Record and protect secrets
 
 The first deployment mints `HUB_JWT_SECRET` and `HUB_SEAL_KEY` when you do not
@@ -94,6 +99,12 @@ Omitting `--domain` during a routine redeploy preserves the existing domain
 bindings. When you do provide `--domain`, repeat it for every domain that the
 installer should manage; the supplied list becomes the complete managed set.
 The `workers.dev` address remains enabled.
+
+Pass `--deployment-id` with an immutable source or build identifier when an
+external deployment controller needs to verify rollout. The Worker exposes the
+value at `/.well-known/aos-deployment` with `Cache-Control: no-store`; a
+controller should reject redirects and compare the response exactly before
+declaring the deployment healthy.
 
 Worker state is administered through the web console and API. Local
 `aos-hub --root ...` commands do not open the Durable Object database.
