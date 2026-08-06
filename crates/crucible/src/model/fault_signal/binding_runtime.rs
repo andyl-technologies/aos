@@ -21,7 +21,10 @@ pub const HARD_ACTIONS_PER_BOUNDARY: usize = 262_144;
 pub const HARD_RETAINED_SAMPLE_BYTES: usize = 256 * 1024 * 1024;
 
 /// One mutation requested of the owning production adapter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum BindingActionKind {
     /// Installs or replaces one persistent contribution.
     UpsertPersistent,
@@ -32,7 +35,8 @@ pub enum BindingActionKind {
 }
 
 /// Canonical identity of the transition that produced an adapter action.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum BindingActionCause {
     /// A scheduled signal mapping transition.
     Signal,
@@ -50,7 +54,8 @@ pub enum BindingActionCause {
 }
 
 /// Fully resolved adapter input produced by one binding evaluation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResolvedBindingAction {
     /// Requested adapter mutation.
     pub kind: BindingActionKind,
@@ -1728,12 +1733,39 @@ fn binding_due(
 }
 
 fn opportunity_matches(binding: &FaultBinding, opportunity: Option<&FaultOpportunity>) -> bool {
+    if !control_opportunity_matches(binding.effect(), opportunity) {
+        return false;
+    }
     match (binding.opportunity_filter(), opportunity) {
         (Some(filter), Some(opportunity)) => filter.matches(opportunity),
         (Some(_), None) => false,
         (None, Some(_)) => false,
         (None, None) => true,
     }
+}
+
+fn control_opportunity_matches(
+    effect: &EffectRequest,
+    opportunity: Option<&FaultOpportunity>,
+) -> bool {
+    let control_transform = match effect.specification() {
+        EffectSpecification::Network(NetworkEffectSpecification::ControlResultTransform {
+            technology,
+            operations,
+            ..
+        }) => Some((technology, operations)),
+        _ => None,
+    };
+    let control_payload_matches = match opportunity.map(FaultOpportunity::payload) {
+        Some(OpportunityPayload::NetworkControl { technology, .. }) => control_transform
+            .is_some_and(|(expected_technology, operations)| {
+                expected_technology == technology
+                    && opportunity.is_some_and(|value| operations.contains(value.operation()))
+            }),
+        Some(_) => control_transform.is_none(),
+        None => true,
+    };
+    control_payload_matches
 }
 
 fn binding_phases(binding: &FaultBinding) -> Vec<FaultPhase> {

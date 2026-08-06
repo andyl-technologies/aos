@@ -352,6 +352,14 @@ transition policy. `network.contact` therefore references the interval set,
 range-to-delay lookup, and admitted beam and gateway sets directly; it does not
 accept a second state-machine artifact with ambiguous event names.
 
+An `overflow` policy artifact has `disposition`, optional `timeout_nanos`, and
+optional `typed_error`. `timeout_nanos` is required only for `timeout`;
+`typed_error` is required only for `typed_error` and MUST reference a
+`control_result` artifact. A `control_result` is a closed `schema` ID plus
+bounded canonical bytes. There is no untyped extension map or legacy error
+string. Control-service and transform schema meanings are defined completely in
+§8.3.8.
+
 `network.detected_frame_error(receiver_action=retry)` requires a positive retry
 delay, retry limit, positive actual-attempt count no greater than that limit,
 and a final success boolean. An exhausted result is valid only when actual
@@ -423,3 +431,11 @@ in schema order and arrays in canonical or semantic order as appropriate.
   no `flatten`, catch-all enum, or ignored table is allowed in fault schema code.
 - **[SCHEMA-6]** Schema additions require registry, reference, codec, golden,
   bounds, capability, and replay updates in the same change.
+
+## 9.10 Network adapter checkpoint encoding
+
+Network adapter checkpoint semantic version 2 encodes every map with a
+non-string key as an array of key/value entry pairs in strict key order. Nested
+connection tables apply the same rule at both levels. Restore rejects duplicate
+or noncanonical entry order; version 1 checkpoints are not accepted through a
+compatibility or legacy decoding path.

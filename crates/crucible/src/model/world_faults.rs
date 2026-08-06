@@ -227,6 +227,18 @@ impl WorldFaultTopology {
                         )?;
                     }
                 }
+                NetworkPolicyArtifactKind::Overflow {
+                    typed_error: Some(typed_error),
+                    ..
+                } => {
+                    require(
+                        self.network_policy_artifact(typed_error)
+                            .is_some_and(|result| {
+                                result.artifact.class() == NetworkPolicyArtifactClass::ControlResult
+                            }),
+                        "network overflow typed error",
+                    )?;
+                }
                 _ => {}
             }
         }
@@ -559,7 +571,7 @@ impl WorldFaultTopology {
                 "network attachment semantic version",
             )?;
             require(
-                !attachment.technology.as_str().is_empty(),
+                FaultObjectId::parse(attachment.technology.as_str().to_owned()).is_ok(),
                 "network attachment technology",
             )?;
         }

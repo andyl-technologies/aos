@@ -2532,7 +2532,7 @@ fn reschedule_network_queue(
     Ok(finish)
 }
 
-fn network_service_finish(
+pub(super) fn network_service_finish(
     start_nanos: u64,
     payload_bits: u64,
     base_rate_bps: Option<u64>,
@@ -4355,12 +4355,24 @@ mod tests {
         specification: NetworkEffectSpecification,
     ) -> ResolvedBindingAction {
         let mut action = action();
-        action.kind = BindingActionKind::Apply;
-        action.phase = FaultPhase::Resolve;
+        let descriptor = specification.kind().descriptor();
+        let lifetime = if descriptor.lifetimes.contains(&EffectLifetime::Opportunity) {
+            EffectLifetime::Opportunity
+        } else if descriptor.lifetimes.contains(&EffectLifetime::Impulse) {
+            EffectLifetime::Impulse
+        } else {
+            descriptor.lifetimes[0]
+        };
+        action.kind = if lifetime == EffectLifetime::Persistent {
+            BindingActionKind::UpsertPersistent
+        } else {
+            BindingActionKind::Apply
+        };
+        action.phase = descriptor.phases[0];
         action.effect = Arc::new(
             EffectRequest::new(
                 EFFECT_SEMANTIC_VERSION,
-                EffectLifetime::Opportunity,
+                lifetime,
                 EffectSpecification::Network(specification),
             )
             .unwrap_or_else(|error| panic!("test network effect: {error}")),
@@ -4986,6 +4998,9 @@ mod tests {
                 },
             },
         ];
+        topology
+            .network_policy_artifacts
+            .sort_by(|left, right| left.id.cmp(&right.id));
         let firewall =
             action_with_network_effect(NetworkEffectSpecification::FirewallDisposition {
                 action: crucible::model::NetworkFirewallAction::Drop,
@@ -5403,6 +5418,9 @@ mod tests {
                     bytes: vec![0xff],
                 },
             });
+        topology
+            .network_policy_artifacts
+            .sort_by(|left, right| left.id.cmp(&right.id));
         let transfer = topology
             .network_policy_artifacts
             .iter_mut()

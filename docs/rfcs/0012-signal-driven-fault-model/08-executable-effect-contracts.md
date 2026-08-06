@@ -113,13 +113,13 @@ the effect record.
 | `network.forwarder_lifecycle` | impulse/state; boundary | `transition = restart/reset/power_loss`, `downtime_nanos`, queue/table policies | severity | `network.forwarder-lifecycle.v1`; state and lost/preserved data |
 | `network.forwarding_mutation` | impulse/persistent; resolve | `kind = wrong_port/flood/blackhole/loop/stale_age`, selector and replacement | ordered-transform by rule identity | `network.forwarding-mutation.v1`; lookup inputs, before/after entries, chosen hop |
 | `network.route_transition` | state-machine; boundary/resolve | old/new route IDs, convergence events, in-flight policy | state-machine | `network.route-transition.v1`; paths, cause, convergence and traffic treatment |
-| `network.control_plane_service` | persistent state; queue/resolve | service curve, queue bound, drop/timeout policy | minimum service and shared queue | `network.control-plane.v1`; queued events and applied transitions |
+| `network.control_plane_service` | persistent state; boundary | service curve, queue bound, overflow policy, positive work bits per control event | minimum service and shared queue | `network.control-plane.v1`; queued events, overflow results, service releases, and applied transitions |
 | `network.firewall_disposition` | opportunity/state; admit | `action = accept/reject/drop`, response artifact iff reject, packet-selector rule, exhaustive state machine and event | most restrictive unless explicit ordered chain | `network.firewall.v1`; selector result, rule trace, state transition and response ID |
 | `network.connection_state` | state-machine; resolve | `kind = nat/conntrack/load_balancer/tunnel/dns`, table bound, packet-key artifact, exhaustive state machine/event, overflow policy | one machine per extracted flow; bounded table policy | domain capability; key digest, entry before/after, eviction/overflow and state timer |
 | `network.shared_medium` | persistent state; admit/queue/resolve | canonical `resources`, one `medium_access` policy, positive transmit power; the policy declares arbitration, conditional packet key, slot width, or complete contention record, and a duty-cycle ratio | one conflict-free policy per binding target; signals combine as inputs | `network.shared-medium.v1`; resource set, policy/transition identity, contenders, keyed attempts, airtime allocation, collision/capture/transform, and service |
 | `network.rf_channel` | persistent/opportunity; resolve | carrier/bandwidth, power, noise, gain, attenuation, fading inputs, and SINR profiles with rate/loss/corruption/retry contracts | power/interference sum in exact linear unit then transfer lookup | `network.rf-channel.v1`; sampled geometry/field/power, per-attempt draws, retries and resulting profile/outcome |
 | `network.association` | state-machine; boundary | one self-contained association policy; the target supplies technology and the exact candidate set | one machine per attachment; inputs combine before selection | `network.association.v1`; candidates, timers, old/new attachment and traffic policy |
-| `network.control_result_transform` | opportunity; resolve/deliver | technology, operation, kind `drop/stale/bias/replace/error`, typed result fields | ordered-transform or severity for errors | technology capability; request/result schema and before/after evidence |
+| `network.control_result_transform` | opportunity; resolve | technology, operation, kind `drop/stale/bias/replace/error`; typed result artifact iff bias/replace/error | ordered-transform; a terminal drop, stale result, or error suppresses the transition | `network.control-result-transform.v1`; request/result schema and before/after evidence |
 | `network.contact` | state-machine; boundary/resolve | contact-plan intervals with acquisition/teardown, range-delay lookup, beam/gateway IDs | contact availability AND other outages | `network.contact.v1`; contact interval, range, selected beam/gateway |
 | `network.custody_queue` | persistent state; queue | capacity, expiry, custody policy, route/contact plan | one bounded queue policy | `network.custody.v1`; bundle identity, custody transitions, drops and next contact |
 
@@ -429,6 +429,71 @@ meaning of address discontinuity.
 Checkpoint and replay identity include phase, selected and pending candidates,
 residence and completion coordinates, next scan, mapped scores, policy flags,
 and transition sequence. Timer arithmetic is checked; overflow fails closed.
+
+### 8.3.8 Control-plane service and typed results
+
+`network.control_plane_service` is a boundary-phase persistent contribution on
+a forwarder, path, attachment, or contact target. Route transitions,
+association/handoff updates, contact acquisition, and forwarder lifecycle
+changes on that exact target are control events. If no service contribution is
+active they execute directly. If one or more are active, every event enters one
+shared target queue and consumes each contributor's positive
+`event_work_bits`. Each contributor integrates its referenced piecewise service
+curve independently from its own service cursor; the event release is the
+latest contributor finish. Thus simultaneous services compose as the minimum
+available service without duplicating the event.
+
+The active contributor set and its computed release are committed when the
+event is admitted. A later service contribution update or removal governs later
+arrivals and does not revoke or retroactively reschedule already committed
+control work. This mirrors an accepted control request whose completion has
+already been scheduled, and makes contribution-removal behavior explicit.
+
+The effective queue bound is the smallest active bound. Contributors MUST
+agree on the complete overflow policy. At the bound, `drop_newest` rejects the
+arrival, `drop_oldest` rejects the oldest queued event and admits the arrival,
+`typed_error` rejects the arrival with the overflow artifact's required typed
+control result, and `timeout` rejects the arrival at its exact required timeout
+coordinate. All four outcomes append authenticated rejection observations.
+Queue entries, contribution curves and cursors, event sequences and release
+coordinates, timeout waiters, overflow counters, request actions, and result
+contracts are checkpointed and bounded. Completed releases and expired timeout
+waiters are removed before arrivals at the same coordinate inspect capacity.
+An authored queue bound MUST NOT exceed 262,144 entries, and the live aggregate
+of contributors, accepted events, and timeout waiters is subject to that same
+hard checkpoint-restorable ceiling.
+
+A released event creates an actual `network_control` opportunity containing
+technology, operation, service-owned event sequence, request digest, successful
+result schema, and successful result digest. Only then may
+`network.control_result_transform` run. The transform's technology and operation
+set MUST match the target contract:
+
+| Target | Technology | Operations | Replacement schema |
+| --- | --- | --- | --- |
+| path | `network-routing-v1` | `network_route` | `network-route-id-v1` |
+| attachment | the World attachment technology | `network_associate`, `network_handoff` | `network-association-inputs-i64-v1` |
+| forwarder | `network-forwarder-v1` | `network_change` | `network-forwarder-state-v1` |
+| contact | `network-contact-v1` | `network_acquire`, `network_teardown` | `network-contact-plan-v1` |
+
+`drop` suppresses the result; `stale` retains the prior state and suppresses the
+new transition; `error` requires `network-control-error-v1` and suppresses the
+transition; `bias` is attachment-only and requires exactly one signed big-endian
+`i64` in `network-score-bias-i64-v1`, checked-added to every mapped integer
+score input; `replace` requires the target-specific schema above. Route and
+contact replacements are canonical UTF-8 World object IDs, attachment
+replacement is one or one-per-candidate packed big-endian `i64`, and forwarder
+replacement is one byte (`1=restart`, `2=reset`, `3=power_loss`). Invalid
+widths, domains, object references, arithmetic, mixed technologies, or result
+schemas fail closed before state mutation. Multiple transforms apply in
+canonical binding order. A `network_control` payload is eligible only for a
+control-result transform whose technology and operation both match; other
+resolve effects cannot observe it, and the binding opportunity-filter operation
+set MUST exactly equal the transform operation set. Result digests hash the
+canonical bytes named by the result schema. Bias and association replacement
+also recompute the resolved mapping digest before the transformed action can
+execute. A contact-plan replacement must remain within the original effect's
+declared beam and gateway sets.
 
 ## 8.4 Storage and 9p effect registry
 

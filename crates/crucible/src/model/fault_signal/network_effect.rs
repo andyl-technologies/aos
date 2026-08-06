@@ -11,6 +11,8 @@ use super::{
     ProbabilityMillionths,
 };
 
+const HARD_CONTROL_PLANE_ENTRIES: u32 = 262_144;
+
 /// Availability visible in one or both network directions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -638,6 +640,8 @@ pub enum NetworkEffectSpecification {
         queue_bound: BoundedCount,
         /// Drop or timeout policy identity.
         overflow_policy: FaultObjectId,
+        /// Positive canonical service demand consumed by each control event.
+        event_work_bits: PositiveU64,
     },
     /// Firewall disposition and state transition.
     FirewallDisposition {
@@ -704,8 +708,8 @@ pub enum NetworkEffectSpecification {
         operations: OperationSet,
         /// Transform kind.
         kind: NetworkControlResultKind,
-        /// Registered typed transform fields.
-        result: FaultObjectId,
+        /// Registered typed transform fields, required only by bias, replacement, or error.
+        result: Option<FaultObjectId>,
     },
     /// Contact acquisition and availability machine.
     Contact {
@@ -978,6 +982,30 @@ impl NetworkEffectSpecification {
                     effect: self.kind(),
                 })
             }
+            Self::ControlPlaneService { queue_bound, .. }
+                if queue_bound.get() > HARD_CONTROL_PLANE_ENTRIES =>
+            {
+                Err(FaultContractError::InvalidEffectParameters {
+                    effect: self.kind(),
+                })
+            }
+            Self::ControlResultTransform { kind, result, .. } => {
+                let valid = match kind {
+                    NetworkControlResultKind::Drop | NetworkControlResultKind::Stale => {
+                        result.is_none()
+                    }
+                    NetworkControlResultKind::Bias
+                    | NetworkControlResultKind::Replace
+                    | NetworkControlResultKind::Error => result.is_some(),
+                };
+                if valid {
+                    Ok(())
+                } else {
+                    Err(FaultContractError::InvalidEffectParameters {
+                        effect: self.kind(),
+                    })
+                }
+            }
             _ => Ok(()),
         }
     }
@@ -1106,5 +1134,21 @@ mod tests {
         };
         assert!(effect(limit(64)).validate().is_ok());
         assert!(effect(limit(65)).validate().is_err());
+    }
+
+    #[test]
+    fn control_queue_bound_cannot_exceed_checkpoint_capacity() {
+        let effect = |value| NetworkEffectSpecification::ControlPlaneService {
+            service_curve: FaultObjectId::parse("service")
+                .unwrap_or_else(|error| panic!("test service ID: {error}")),
+            queue_bound: BoundedCount::new(crate::model::CountLimit::QueueEntries, value)
+                .unwrap_or_else(|error| panic!("test queue bound: {error}")),
+            overflow_policy: FaultObjectId::parse("overflow")
+                .unwrap_or_else(|error| panic!("test overflow ID: {error}")),
+            event_work_bits: PositiveU64::new("event_work_bits", 1)
+                .unwrap_or_else(|error| panic!("test event work: {error}")),
+        };
+        assert!(effect(HARD_CONTROL_PLANE_ENTRIES).validate().is_ok());
+        assert!(effect(HARD_CONTROL_PLANE_ENTRIES + 1).validate().is_err());
     }
 }

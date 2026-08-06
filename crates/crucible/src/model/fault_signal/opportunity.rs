@@ -827,6 +827,19 @@ pub enum OpportunityPayload {
         /// Digest of immutable frame bytes or normalized fields.
         payload_digest: ContentHash,
     },
+    /// Network-control request and its untransformed typed result.
+    NetworkControl {
+        /// World-declared technology contract.
+        technology: FaultObjectId,
+        /// Stable control-event sequence owned by the service queue.
+        event_sequence: u64,
+        /// Digest of the immutable typed request.
+        request_digest: ContentHash,
+        /// Schema of the successful operation result.
+        result_schema: FaultObjectId,
+        /// Digest of the untransformed successful result.
+        result_digest: ContentHash,
+    },
     /// Storage-request byte range and immutable request identity.
     StorageRequest {
         /// Adapter-owned request sequence.
@@ -956,6 +969,20 @@ impl OpportunityPayload {
                 push_optional_u64(material, *start_byte);
                 push_optional_u64(material, *length_bytes);
                 push_text(material, &request_digest.to_hex());
+            }
+            Self::NetworkControl {
+                technology,
+                event_sequence,
+                request_digest,
+                result_schema,
+                result_digest,
+            } => {
+                material.push_str("network_control;");
+                push_text(material, technology.as_str());
+                push_u64(material, *event_sequence);
+                push_text(material, &request_digest.to_hex());
+                push_text(material, result_schema.as_str());
+                push_text(material, &result_digest.to_hex());
             }
             Self::Instruction {
                 program_counter,
