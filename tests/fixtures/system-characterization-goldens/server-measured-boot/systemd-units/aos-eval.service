@@ -27,7 +27,7 @@ rm -f "/run/aos/manifest.json" /run/aos/graph.json
 # config generation to the running image before boot assessment.
 image_default_arg=""
 if [ -e "/run/aos-metadata/host.nix" ]; then
-  /nix/store/iclrfmjn54cxl4ji6pdfgdmbx3c151mg-aos-0.1.0/bin/aos metadata verify-binding
+  /nix/store/y860ysgpqjmgsg1zsdb651kwd7v6dnwv-aos-0.1.0/bin/aos metadata verify-binding
   cp -f "/run/aos-metadata/host.nix" /run/aos-eval/host.nix
 else
   printf '{}\n' > /run/aos-eval/host.nix
@@ -53,9 +53,9 @@ fi
 # Failure-safe: on any error apm __eval writes no manifest and exits
 # non-zero. Wants ordering keeps the boot reachable; downstream
 # manifest guards make the attempted switch a no-op.
-/nix/store/iclrfmjn54cxl4ji6pdfgdmbx3c151mg-aos-0.1.0/bin/apm __eval \
+/nix/store/y860ysgpqjmgsg1zsdb651kwd7v6dnwv-aos-0.1.0/bin/apm __eval \
   --host-nix /run/aos-eval/host.nix \
-  --base-lib "/nix/store/j2b5cqgwfvkdi1xba6n4c4is2d2jsmnd-aos-base-lib-server-measured-boot" \
+  --base-lib "/nix/store/ykpk256zmkjrdvc8rfnsjkvygdy2ifcc-aos-base-lib-server-measured-boot" \
   --module-abi "$module_abi" \
   --out "/run/aos/manifest.json" \
   --eval-root /run/aos-eval \
@@ -69,7 +69,7 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ReadOnlyPaths=-/run/aos-metadata/host.nix
-ReadOnlyPaths=/nix/store/j2b5cqgwfvkdi1xba6n4c4is2d2jsmnd-aos-base-lib-server-measured-boot
+ReadOnlyPaths=/nix/store/ykpk256zmkjrdvc8rfnsjkvygdy2ifcc-aos-base-lib-server-measured-boot
 ReadWritePaths=/nix
 ReadWritePaths=/run/aos
 ReadWritePaths=/run/aos-eval

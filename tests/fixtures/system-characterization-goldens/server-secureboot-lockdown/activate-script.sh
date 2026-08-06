@@ -212,7 +212,7 @@ STAGE="$STAGE_PREPARE"
 generation_dir="/var/lib/profiles/system/gen-${N}"
 generation_manifest="/var/lib/profiles/system/gen-${N}/manifest.json"
 if [ -f "$generation_manifest" ]; then
-  /nix/store/iclrfmjn54cxl4ji6pdfgdmbx3c151mg-aos-0.1.0/bin/.apm-unwrapped __materialize \
+  /nix/store/y860ysgpqjmgsg1zsdb651kwd7v6dnwv-aos-0.1.0/bin/.apm-unwrapped __materialize \
     --manifest "$generation_manifest" \
     --generation-dir "$generation_dir" \
     --mkfs-erofs /nix/store/645rfyrr4rax1ymsrgkw7anvrqyg00yk-erofs-utils-1.8.10/bin/mkfs.erofs \
@@ -278,13 +278,13 @@ fi
 # command's only stdout; diagnostics go to stderr via Printer.
 STAGE="$STAGE_PRESWAP"
 set +e
-# Invoke the UNWRAPPED binary directly, not /nix/store/iclrfmjn54cxl4ji6pdfgdmbx3c151mg-aos-0.1.0/bin/apm. The `apm` wrapper
+# Invoke the UNWRAPPED binary directly, not /nix/store/y860ysgpqjmgsg1zsdb651kwd7v6dnwv-aos-0.1.0/bin/apm. The `apm` wrapper
 # runs `exec "$(dirname "$0")/.apm-unwrapped"`, which needs `dirname` on PATH —
 # but this script runs with `PATH=` (empty), so the wrapper would die with
 # "dirname: command not found". The activate subcommands do pure filesystem +
 # D-Bus work and shell out to neither git nor nix-store, so they need none of
 # the git/nix PATH the wrapper sets up.
-plan=$(/nix/store/iclrfmjn54cxl4ji6pdfgdmbx3c151mg-aos-0.1.0/bin/.apm-unwrapped activate-pre-etc-swap \
+plan=$(/nix/store/y860ysgpqjmgsg1zsdb651kwd7v6dnwv-aos-0.1.0/bin/.apm-unwrapped activate-pre-etc-swap \
   --gen="$N" \
   --candidate-etc="$tmpEtc")
 pre_rc=$?
@@ -403,7 +403,7 @@ if [ "$network_seed_changed" = 1 ]; then
   /nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin/networkctl reconfigure --all
 fi
 set +e
-/nix/store/iclrfmjn54cxl4ji6pdfgdmbx3c151mg-aos-0.1.0/bin/.apm-unwrapped activate-post-etc-swap --plan="$plan"
+/nix/store/y860ysgpqjmgsg1zsdb651kwd7v6dnwv-aos-0.1.0/bin/.apm-unwrapped activate-post-etc-swap --plan="$plan"
 post_rc=$?
 set -e
 

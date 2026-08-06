@@ -39,7 +39,7 @@ if [ ! -e "$profile/state.json" ]; then
     /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp -a /nix/store/gx7f39szwm6b3b4fm1j976n0iai810c3-aos-package-profile-seed/. "$profile/"
   fi
 fi
-AOS_EXPOSE_START_NO_WAIT=1 /nix/store/fifx8pyly66axjrr02zaf9bfpx06a3lz-aos-reconcile-exposed-units/bin/aos-reconcile-exposed-units --system
+AOS_EXPOSE_START_NO_WAIT=1 /nix/store/0zcj0v8pq7w2m0xwyxayw5w456aaba2z-aos-reconcile-exposed-units/bin/aos-reconcile-exposed-units --system
 <<aos-job-script-end>>
 RemainAfterExit=true
 Type=oneshot
