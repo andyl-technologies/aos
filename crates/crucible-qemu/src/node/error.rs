@@ -144,6 +144,12 @@ pub enum QemuNodeError {
         /// Deterministic event-log failure diagnostic.
         message: String,
     },
+    /// A live QEMU fault command violated its admitted boundary contract.
+    #[error("QEMU fault command failed closed: {message}")]
+    FaultCommand {
+        /// Deterministic command, capability, coordinate, or result mismatch.
+        message: String,
+    },
 }
 
 impl QemuNodeError {
@@ -174,6 +180,14 @@ impl QemuNodeError {
     pub fn from_gdbstub_proxy(operation: &'static str, message: impl Into<String>) -> Self {
         Self::GdbstubProxy {
             operation,
+            message: message.into(),
+        }
+    }
+
+    /// Creates a fail-closed live fault-command error.
+    #[must_use]
+    pub fn fault_command(message: impl Into<String>) -> Self {
+        Self::FaultCommand {
             message: message.into(),
         }
     }

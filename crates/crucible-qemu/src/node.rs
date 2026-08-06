@@ -19,6 +19,7 @@ use crucible::{
     SchedulerEventLogAppend, SimulationBackend, StepObservation, VirtualTime,
 };
 use crucible_shmem::{
+    DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1, FaultResultStatus,
     SchedulerPreemptionCommand, SchedulerPreemptionKind as ShmemSchedulerPreemptionKind,
 };
 // crucible-lint: allow host-nondeterminism-state -- node transport exposes untrusted causal records for scheduler validation.
@@ -267,6 +268,27 @@ pub trait QemuShmemHotPathChannel: Send {
         command: SchedulerPreemptionCommand,
     ) -> Result<(), QemuNodeChannelError>;
 
+    /// Publishes one authenticated fault command at a scheduler boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the fault transport is absent,
+    /// full, corrupt, or rejects the command envelope.
+    fn enqueue_fault_command(
+        &mut self,
+        header: FaultCommandHeaderV1,
+        payload: &[u8],
+    ) -> Result<(), QemuNodeChannelError>;
+
+    /// Removes one completed fault result from the lossless result transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the result transport is absent or
+    /// corrupt.
+    fn dequeue_fault_result(&mut self)
+    -> Result<Option<DequeuedFaultResult>, QemuNodeChannelError>;
+
     /// Advances the node to `horizon` or until it pauses earlier.
     ///
     /// This helper is retained for direct channel tests and already-completed
@@ -482,6 +504,7 @@ pub struct QemuNode {
     pending_preemption: Option<crucible::PreemptionDecision>,
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
     console_observation: Option<QemuConsoleObservation>,
+    fault_capabilities: Vec<FaultCapabilityRowV1>,
 }
 
 impl QemuNode {
@@ -510,7 +533,149 @@ impl QemuNode {
             pending_preemption: None,
             pending_network_outputs: Vec::new(),
             console_observation: None,
+            fault_capabilities: Vec::new(),
         }
+    }
+
+    /// Installs the capability rows negotiated during plugin setup.
+    #[must_use]
+    pub fn with_fault_capabilities(
+        mut self,
+        fault_capabilities: Vec<FaultCapabilityRowV1>,
+    ) -> Self {
+        self.fault_capabilities = fault_capabilities;
+        self
+    }
+
+    /// Returns the exact QEMU fault capabilities admitted for this node.
+    #[must_use]
+    pub fn fault_capabilities(&self) -> &[FaultCapabilityRowV1] {
+        &self.fault_capabilities
+    }
+
+    /// Publishes one fault command through this node's mapped data plane.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the command transport rejects the
+    /// envelope or payload.
+    pub fn enqueue_fault_command(
+        &mut self,
+        header: FaultCommandHeaderV1,
+        payload: &[u8],
+    ) -> Result<(), QemuNodeChannelError> {
+        self.channels
+            .shmem_hot_path
+            .enqueue_fault_command(header, payload)
+    }
+
+    /// Removes one completed fault result from this node's mapped data plane.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the result transport is corrupt.
+    pub fn dequeue_fault_result(
+        &mut self,
+    ) -> Result<Option<DequeuedFaultResult>, QemuNodeChannelError> {
+        self.channels.shmem_hot_path.dequeue_fault_result()
+    }
+
+    /// Applies one admitted QEMU fault command at the exact current boundary.
+    ///
+    /// The method refuses to advance the guest. It authenticates the command
+    /// against setup-time capabilities, publishes it through shared memory,
+    /// wakes QEMU until the correlated lossless result arrives, and verifies
+    /// that the retired-instruction coordinate remained unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] for an absent capability, stale result,
+    /// coordinate mismatch, invalid result, bounded host-liveness timeout, or
+    /// any guest progress while the command was being applied.
+    pub fn apply_fault_command_at_current_boundary(
+        &mut self,
+        header: FaultCommandHeaderV1,
+        payload: &[u8],
+    ) -> Result<DequeuedFaultResult, QemuNodeError> {
+        let before = self.current_icount()?;
+        if header.target_icount != before.retired {
+            return Err(QemuNodeError::fault_command(format!(
+                "command sequence {} targets icount {} at current boundary {}",
+                header.command_sequence, header.target_icount, before.retired
+            )));
+        }
+        let payload_len = u32::try_from(payload.len()).map_err(|_source| {
+            QemuNodeError::fault_command(format!(
+                "command sequence {} payload length {} exceeds the ABI integer range",
+                header.command_sequence,
+                payload.len()
+            ))
+        })?;
+        let admitted = self.fault_capabilities.iter().any(|row| {
+            row.command_kind == header.command_kind
+                && row.semantic_version == header.semantic_version
+                && row.supports_phase(header.phase)
+                && payload_len <= row.maximum_payload_bytes
+        });
+        if !admitted {
+            return Err(QemuNodeError::fault_command(format!(
+                "command sequence {} kind {:?} version {} phase {:?} payload {} was not admitted during setup",
+                header.command_sequence,
+                header.command_kind,
+                header.semantic_version,
+                header.phase,
+                payload.len()
+            )));
+        }
+        if let Some(stale) = self.dequeue_fault_result().map_err(|source| {
+            QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+        })? {
+            return Err(QemuNodeError::fault_command(format!(
+                "result transport contained stale result before sequence {}: {stale:?}",
+                header.command_sequence
+            )));
+        }
+        self.enqueue_fault_command(header.clone(), payload)
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })?;
+        let result = self
+            .host_io_runtime
+            .await_fault_result(self.async_policy.advance_completion_timeout)
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })?;
+        let after = self.current_icount()?;
+        if after != before {
+            return Err(QemuNodeError::fault_command(format!(
+                "command sequence {} advanced guest icount from {} to {}",
+                header.command_sequence, before.retired, after.retired
+            )));
+        }
+        let DequeuedFaultResult::Valid {
+            header: result_header,
+            ..
+        } = &result
+        else {
+            return Err(QemuNodeError::fault_command(format!(
+                "command sequence {} produced an ABI-invalid result: {result:?}",
+                header.command_sequence
+            )));
+        };
+        if result_header.command_sequence != header.command_sequence
+            || result_header.command_kind != header.command_kind as u16
+            || result_header.semantic_version != header.semantic_version
+            || result_header.phase != header.phase
+            || result_header.observed_icount != before.retired
+            || (result_header.status == FaultResultStatus::Applied
+                && result_header.applied_icount != before.retired)
+        {
+            return Err(QemuNodeError::fault_command(format!(
+                "command sequence {} received mismatched result {result_header:?}",
+                header.command_sequence
+            )));
+        }
+        Ok(result)
     }
 
     /// Returns this node with output-only console bytes exposed as observations.
@@ -1303,6 +1468,10 @@ mod tests {
         CheckpointKind, ContentHash, EventLogCoverageObservation, ExecutionHorizon, GdbListen,
         NodeId, event_log_coverage_projection,
     };
+    use crucible_shmem::{
+        FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR, FAULT_COMMAND_SEMANTIC_VERSION,
+        FaultBoundaryPhase, FaultCapabilityScope, FaultCommandKind, FaultResultHeaderV1,
+    };
 
     use crate::{
         QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuQuantumOperation,
@@ -1313,6 +1482,7 @@ mod tests {
     mod shutdown_and_preemption;
 
     type SharedLog = Arc<Mutex<Vec<ChannelCall>>>;
+    type SharedFaultCommands = Arc<Mutex<Vec<(FaultCommandHeaderV1, Vec<u8>)>>>;
 
     #[test]
     fn child_poll_preserves_clean_exit_status_and_disarms_drop_cleanup()
@@ -1403,12 +1573,15 @@ mod tests {
         coverage_enabled: bool,
         quantum_coverage: Arc<Mutex<VecDeque<Vec<ObservableEvent>>>>,
         teardown_coverage: Arc<Mutex<Vec<ObservableEvent>>>,
+        fault_commands: SharedFaultCommands,
+        stale_fault_results: Arc<Mutex<VecDeque<DequeuedFaultResult>>>,
     }
 
     #[derive(Clone)]
     struct ScriptedHostIoRuntime {
         log: SharedLog,
         outcomes: VecDeque<QemuAsyncWaitOutcome>,
+        fault_results: VecDeque<DequeuedFaultResult>,
     }
 
     #[derive(Clone)]
@@ -1490,6 +1663,24 @@ mod tests {
                 .unwrap()
                 .push(ChannelCall::ShmemPreemption(command));
             Ok(())
+        }
+
+        fn enqueue_fault_command(
+            &mut self,
+            header: FaultCommandHeaderV1,
+            payload: &[u8],
+        ) -> Result<(), QemuNodeChannelError> {
+            self.fault_commands
+                .lock()
+                .unwrap()
+                .push((header, payload.to_vec()));
+            Ok(())
+        }
+
+        fn dequeue_fault_result(
+            &mut self,
+        ) -> Result<Option<DequeuedFaultResult>, QemuNodeChannelError> {
+            Ok(self.stale_fault_results.lock().unwrap().pop_front())
         }
 
         fn drain_observable_events(
@@ -1595,6 +1786,15 @@ mod tests {
         ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
             self.await_child(wait, timeout)
         }
+
+        fn await_fault_result(
+            &mut self,
+            _timeout: Duration,
+        ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
+            self.fault_results.pop_front().ok_or_else(|| {
+                QemuAsyncDriverRuntimeError::new("await fault result", "no scripted fault result")
+            })
+        }
     }
 
     #[test]
@@ -1634,6 +1834,103 @@ mod tests {
             QemuNodeLifecycleState::ShutdownRequested
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
+    -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let fault_commands = Arc::new(Mutex::new(Vec::new()));
+        let payload = vec![1_u8, 2, 3, 4];
+        let command = FaultCommandHeaderV1 {
+            abi_major: FAULT_COMMAND_ABI_MAJOR,
+            abi_minor: FAULT_COMMAND_ABI_MINOR,
+            command_kind: FaultCommandKind::MemoryMutation,
+            command_flags: 0,
+            phase: FaultBoundaryPhase::NodeBoundary,
+            semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+            command_sequence: 7,
+            target_node_hash: [1; 32],
+            target_icount: 11,
+            authorization_ceiling_icount: 11,
+            binding_hash: [2; 32],
+            opportunity_hash: [3; 32],
+            expected_precondition_hash: [4; 32],
+            payload_hash: *blake3::hash(&payload).as_bytes(),
+            payload_offset: 0,
+            payload_length: u32::try_from(payload.len())?,
+        };
+        let result = DequeuedFaultResult::Valid {
+            header: FaultResultHeaderV1 {
+                abi_major: FAULT_COMMAND_ABI_MAJOR,
+                abi_minor: FAULT_COMMAND_ABI_MINOR,
+                command_kind: FaultCommandKind::MemoryMutation as u16,
+                status: FaultResultStatus::Applied,
+                semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+                command_sequence: 7,
+                observed_icount: 11,
+                applied_icount: 11,
+                capability_version: 1,
+                phase: FaultBoundaryPhase::NodeBoundary,
+                before_hash: [4; 32],
+                after_hash: [5; 32],
+                evidence_hash: [6; 32],
+                result_payload_hash: *blake3::hash(&[]).as_bytes(),
+                result_offset: 0,
+                result_length: 0,
+            },
+            payload: Vec::new(),
+        };
+        let channels = QemuNodeChannels::new(
+            ScriptedPluginControl {
+                log: Arc::clone(&log),
+                fail_quit: false,
+            },
+            ScriptedShmemHotPath {
+                log: Arc::clone(&log),
+                fail_advance: false,
+                coverage_enabled: false,
+                quantum_coverage: Arc::new(Mutex::new(VecDeque::new())),
+                teardown_coverage: Arc::new(Mutex::new(Vec::new())),
+                fault_commands: Arc::clone(&fault_commands),
+                stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
+            },
+            ScriptedQmpMachineControl {
+                log: Arc::clone(&log),
+                fail_snapshot: false,
+                timeout_snapshot: false,
+            },
+        );
+        let child = Command::new("sleep").arg("60").spawn()?;
+        let mut node = QemuNode::new(
+            QemuNodeChild::new(child),
+            channels,
+            node_shutdown_policy(),
+            QemuAsyncDriverPolicy::fast_test(),
+            QemuCrashDetector::new("vm-a"),
+            ScriptedHostIoRuntime {
+                log,
+                outcomes: VecDeque::new(),
+                fault_results: VecDeque::from([result.clone()]),
+            },
+        )
+        .with_fault_capabilities(vec![FaultCapabilityRowV1 {
+            command_kind: FaultCommandKind::MemoryMutation,
+            semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+            scope: FaultCapabilityScope::All,
+            phase_mask: FaultBoundaryPhase::NodeBoundary.bit(),
+            maximum_payload_bytes: 64,
+            maximum_pending_commands: 1,
+            required_feature_bits: 0,
+            capability_hash: [7; 32],
+        }]);
+
+        assert_eq!(
+            node.apply_fault_command_at_current_boundary(command.clone(), &payload)?,
+            result
+        );
+        assert_eq!(*fault_commands.lock().unwrap(), vec![(command, payload)]);
         Ok(())
     }
 
@@ -2028,6 +2325,8 @@ mod tests {
                 coverage_enabled,
                 quantum_coverage: Arc::new(Mutex::new(quantum_coverage)),
                 teardown_coverage: Arc::new(Mutex::new(teardown_coverage)),
+                fault_commands: Arc::new(Mutex::new(Vec::new())),
+                stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
             },
             ScriptedQmpMachineControl {
                 log: Arc::clone(&log),
@@ -2045,6 +2344,7 @@ mod tests {
             ScriptedHostIoRuntime {
                 log,
                 outcomes: runtime_outcomes.into_iter().collect(),
+                fault_results: VecDeque::new(),
             },
         ))
     }

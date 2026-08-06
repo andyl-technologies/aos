@@ -477,6 +477,22 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             .map_err(|source| source.into_channel_error("publish_preemption_command"))
     }
 
+    fn enqueue_fault_command(
+        &mut self,
+        header: crucible_shmem::FaultCommandHeaderV1,
+        payload: &[u8],
+    ) -> Result<(), QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::enqueue_fault_command(self, header, payload)
+            .map_err(|source| source.into_channel_error("enqueue_fault_command"))
+    }
+
+    fn dequeue_fault_result(
+        &mut self,
+    ) -> Result<Option<crucible_shmem::DequeuedFaultResult>, QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::dequeue_fault_result(self)
+            .map_err(|source| source.into_channel_error("dequeue_fault_result"))
+    }
+
     fn coverage_enabled(&self) -> bool {
         self.coverage_bridge.is_some()
     }
