@@ -391,6 +391,12 @@ const NETWORK_TARGETS: &[FaultTargetKind] = &[
 ];
 const NETWORK_MEDIUM_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::NetworkMedium];
 const NETWORK_ATTACHMENT_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::NetworkAttachment];
+const NETWORK_CONTROL_TARGETS: &[FaultTargetKind] = &[
+    FaultTargetKind::NetworkForwarder,
+    FaultTargetKind::NetworkPath,
+    FaultTargetKind::NetworkAttachment,
+    FaultTargetKind::NetworkContact,
+];
 const STORAGE_TARGETS: &[FaultTargetKind] = &[
     FaultTargetKind::BlockDevice,
     FaultTargetKind::BlockRange,
@@ -527,7 +533,7 @@ effect_registry! {
     /// Versioned path transition and convergence state.
     NetworkRouteTransition => { key: "network.route_transition", adapter: Network, targets: NETWORK_TARGETS, phases: [Boundary, Resolve], lifetimes: [StateMachine], composition: StateMachine, capability: "network.route-transition.v1", evidence: ["old_path", "new_path", "cause", "convergence", "traffic_treatment"] },
     /// Shared bounded service for control-plane events.
-    NetworkControlPlaneService => { key: "network.control_plane_service", adapter: Network, targets: NETWORK_TARGETS, phases: [Queue, Resolve], lifetimes: [Persistent, StateMachine], composition: Minimum, capability: "network.control-plane.v1", evidence: ["queued_events", "applied_transitions"] },
+    NetworkControlPlaneService => { key: "network.control_plane_service", adapter: Network, targets: NETWORK_CONTROL_TARGETS, phases: [Boundary], lifetimes: [Persistent, StateMachine], composition: Minimum, capability: "network.control-plane.v1", evidence: ["queued_events", "applied_transitions"] },
     /// Stateful firewall accept, reject, or drop disposition.
     NetworkFirewallDisposition => { key: "network.firewall_disposition", adapter: Network, targets: NETWORK_TARGETS, phases: [Admit], lifetimes: [Opportunity, StateMachine], composition: Severity, capability: "network.firewall.v1", evidence: ["rule_trace", "state_transition"] },
     /// NAT, conntrack, load-balancer, tunnel, or DNS table state.
@@ -539,7 +545,7 @@ effect_registry! {
     /// Authentication, association, handoff, and address-continuity machine.
     NetworkAssociation => { key: "network.association", adapter: Network, targets: NETWORK_ATTACHMENT_TARGETS, phases: [Boundary], lifetimes: [StateMachine], composition: Conflict, capability: "network.association.v1", evidence: ["candidates", "timers", "old_attachment", "new_attachment", "traffic_policy"] },
     /// Typed mutation of network control-operation results.
-    NetworkControlResultTransform => { key: "network.control_result_transform", adapter: Network, targets: NETWORK_TARGETS, phases: [Resolve, Deliver], lifetimes: [Opportunity], composition: OrderedTransform, capability: "network.control-result-transform.v1", evidence: ["request", "result_before", "result_after"] },
+    NetworkControlResultTransform => { key: "network.control_result_transform", adapter: Network, targets: NETWORK_CONTROL_TARGETS, phases: [Resolve], lifetimes: [Opportunity], composition: OrderedTransform, capability: "network.control-result-transform.v1", evidence: ["request", "result_before", "result_after"] },
     /// Scheduled contact acquisition, availability, and teardown.
     NetworkContact => { key: "network.contact", adapter: Network, targets: NETWORK_TARGETS, phases: [Boundary, Resolve], lifetimes: [StateMachine], composition: OutageOr, capability: "network.contact.v1", evidence: ["contact_interval", "range", "beam", "gateway"] },
     /// Bounded custody queue and contact-plan routing state.

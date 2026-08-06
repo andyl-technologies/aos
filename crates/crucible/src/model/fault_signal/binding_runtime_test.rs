@@ -144,6 +144,68 @@ impl FaultActionSink for RejectActions {
     }
 }
 
+#[test]
+fn network_control_opportunities_only_match_their_typed_transform_contract() {
+    let transform = EffectRequest::new(
+        EFFECT_SEMANTIC_VERSION,
+        EffectLifetime::Opportunity,
+        EffectSpecification::Network(NetworkEffectSpecification::ControlResultTransform {
+            technology: object_id("network-routing-v1"),
+            operations: OperationSet::new(vec![FaultOperation::NetworkRoute])
+                .unwrap_or_else(|error| panic!("control operation set: {error}")),
+            kind: NetworkControlResultKind::Drop,
+            result: None,
+        }),
+    )
+    .unwrap_or_else(|error| panic!("control transform: {error}"));
+    let target = ResolvedFaultTarget::NetworkPath {
+        path_version: object_id("route-a"),
+        direction: FaultDirection::AToB,
+    };
+    let control = FaultOpportunity::new(
+        target.clone(),
+        FaultOperation::NetworkRoute,
+        FaultPhase::Resolve,
+        coordinate(1),
+        0,
+        None,
+        OpportunityPayload::NetworkControl {
+            technology: object_id("network-routing-v1"),
+            event_sequence: 0,
+            request_digest: ContentHash::from_bytes(b"request"),
+            result_schema: object_id("network-route-id-v1"),
+            result_digest: ContentHash::from_bytes(b"route-b"),
+        },
+    )
+    .unwrap_or_else(|error| panic!("control opportunity: {error}"));
+    assert!(control_opportunity_matches(&transform, Some(&control)));
+    assert!(!control_opportunity_matches(
+        &availability_effect(),
+        Some(&control)
+    ));
+
+    let wrong_technology = FaultOpportunity::new(
+        target,
+        FaultOperation::NetworkRoute,
+        FaultPhase::Resolve,
+        coordinate(1),
+        1,
+        None,
+        OpportunityPayload::NetworkControl {
+            technology: object_id("network-contact-v1"),
+            event_sequence: 1,
+            request_digest: ContentHash::from_bytes(b"request"),
+            result_schema: object_id("network-route-id-v1"),
+            result_digest: ContentHash::from_bytes(b"route-b"),
+        },
+    )
+    .unwrap_or_else(|error| panic!("wrong-technology opportunity: {error}"));
+    assert!(!control_opportunity_matches(
+        &transform,
+        Some(&wrong_technology)
+    ));
+}
+
 impl FaultActionSink for MismatchedActions {
     fn prepare_batch(
         &mut self,

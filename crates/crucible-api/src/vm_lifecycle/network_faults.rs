@@ -8,6 +8,127 @@
 mod boundary;
 mod route;
 
+/// Canonical sequence encoding for checkpoint maps whose keys are not JSON strings.
+pub(super) mod ordered_map_entries {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Serialize};
+
+    /// Serializes entries in their strict `BTreeMap` key order.
+    ///
+    /// # Errors
+    ///
+    /// Returns the serializer's error when an entry cannot be encoded.
+    pub(super) fn serialize<S, K, V>(
+        value: &BTreeMap<K, V>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+        K: Serialize,
+        V: Serialize,
+    {
+        value.iter().collect::<Vec<_>>().serialize(serializer)
+    }
+
+    /// Decodes entries while rejecting duplicates and noncanonical order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a deserialization error for malformed, duplicate, or unordered entries.
+    pub(super) fn deserialize<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        K: Deserialize<'de> + Ord,
+        V: Deserialize<'de>,
+    {
+        let entries = Vec::<(K, V)>::deserialize(deserializer)?;
+        let mut result = BTreeMap::new();
+        for (key, value) in entries {
+            if result
+                .last_key_value()
+                .is_some_and(|(prior, _value)| prior >= &key)
+            {
+                return Err(serde::de::Error::custom(
+                    "checkpoint map entries are not in strict canonical order",
+                ));
+            }
+            result.insert(key, value);
+        }
+        Ok(result)
+    }
+}
+
+mod ordered_nested_map_entries {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Serialize};
+
+    /// Serializes both map levels as canonical ordered entry sequences.
+    ///
+    /// # Errors
+    ///
+    /// Returns the serializer's error when an entry cannot be encoded.
+    pub(super) fn serialize<S, K, K2, V>(
+        value: &BTreeMap<K, BTreeMap<K2, V>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+        K: Serialize,
+        K2: Serialize,
+        V: Serialize,
+    {
+        value
+            .iter()
+            .map(|(key, entries)| (key, entries.iter().collect::<Vec<_>>()))
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    /// Decodes both map levels while rejecting duplicates and noncanonical order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a deserialization error for malformed, duplicate, or unordered entries.
+    pub(super) fn deserialize<'de, D, K, K2, V>(
+        deserializer: D,
+    ) -> Result<BTreeMap<K, BTreeMap<K2, V>>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        K: Deserialize<'de> + Ord,
+        K2: Deserialize<'de> + Ord,
+        V: Deserialize<'de>,
+    {
+        let entries = Vec::<(K, Vec<(K2, V)>)>::deserialize(deserializer)?;
+        let mut result = BTreeMap::new();
+        for (key, nested_entries) in entries {
+            if result
+                .last_key_value()
+                .is_some_and(|(prior, _value)| prior >= &key)
+            {
+                return Err(serde::de::Error::custom(
+                    "checkpoint outer map entries are not in strict canonical order",
+                ));
+            }
+            let mut nested = BTreeMap::new();
+            for (nested_key, value) in nested_entries {
+                if nested
+                    .last_key_value()
+                    .is_some_and(|(prior, _value)| prior >= &nested_key)
+                {
+                    return Err(serde::de::Error::custom(
+                        "checkpoint nested map entries are not in strict canonical order",
+                    ));
+                }
+                nested.insert(nested_key, value);
+            }
+            result.insert(key, nested);
+        }
+        Ok(result)
+    }
+}
+
 use route::{availability_allows, earliest_wakeup, network_effect_application_error};
 
 use std::collections::BTreeSet;
@@ -23,6 +144,7 @@ use crucible::{BackendNetworkOutputInterceptor, SchedulerEventLogAppend};
 
 const HARD_PENDING_NETWORK_FRAMES: usize = 65_536;
 const HARD_PENDING_NETWORK_BYTES: usize = 1_073_741_824;
+const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 2;
 
 fn stage_pending_network_output(
     pending: &mut Vec<crucible::BackendNetworkOutput>,
@@ -97,7 +219,7 @@ fn validate_pending_network_outputs(
 fn validate_network_adapter_checkpoint(
     checkpoint: &NetworkAdapterCheckpoint,
 ) -> Result<(), SchedulerError> {
-    if checkpoint.semantic_version != FAULT_RUNTIME_STATE_VERSION
+    if checkpoint.semantic_version != NETWORK_ADAPTER_CHECKPOINT_VERSION
         || checkpoint.coordinate.is_none() && checkpoint.coordinate_sequence != 0
         || checkpoint.effect_state.token_buckets.len() > 65_536
         || checkpoint.effect_state.queues.len() > 65_536
@@ -449,13 +571,20 @@ struct NetworkMediumState {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct NetworkEffectRuntimeState {
+    #[serde(with = "ordered_map_entries")]
     token_buckets: BTreeMap<NetworkEffectStateKey, NetworkTokenBucketState>,
+    #[serde(with = "ordered_map_entries")]
     queues: BTreeMap<crucible::model::ResolvedFaultTarget, NetworkQueueState>,
+    #[serde(with = "ordered_map_entries")]
     burst_states: BTreeMap<NetworkEffectStateKey, FaultObjectId>,
+    #[serde(with = "ordered_map_entries")]
     state_machines: BTreeMap<NetworkEffectStateKey, NetworkStateMachineRuntime>,
+    #[serde(with = "ordered_nested_map_entries")]
     connection_tables:
         BTreeMap<NetworkEffectStateKey, BTreeMap<ContentHash, NetworkConnectionEntry>>,
+    #[serde(with = "ordered_map_entries")]
     shared_media: BTreeMap<NetworkEffectStateKey, NetworkMediumState>,
+    #[serde(with = "ordered_map_entries")]
     backpressure: BTreeMap<NetworkEffectStateKey, NetworkPauseState>,
     boundary: boundary::BoundaryNetworkState,
 }
@@ -698,7 +827,7 @@ impl ProductionFaultNetworkInterceptor {
             &effect_state,
         )?;
         let adapter_state = serde_json::to_vec(&NetworkAdapterCheckpoint {
-            semantic_version: FAULT_RUNTIME_STATE_VERSION,
+            semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
             coordinate: self.coordinate,
             coordinate_sequence: self.coordinate_sequence,
             effect_state,
@@ -767,11 +896,105 @@ impl ProductionFaultNetworkInterceptor {
                 .cloned()
                 .chain(impulses)
                 .collect::<Vec<_>>();
-            let boundary_application = staged_effect_state.boundary.apply_actions(
+            let mut boundary_application = staged_effect_state.boundary.apply_actions(
                 coordinate,
                 boundary_actions,
                 &self.topology,
             )?;
+            let mut ready_control_events =
+                std::mem::take(&mut boundary_application.ready_control_events);
+            let mut control_index = 0_usize;
+            while control_index < ready_control_events.len() {
+                if ready_control_events.len() > 262_144 {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "network control-event batch exceeds the hard action bound",
+                        ),
+                    });
+                }
+                let event = ready_control_events[control_index].clone();
+                control_index += 1;
+                let opportunity_sequence = self.next_sequence(coordinate.virtual_nanos)?;
+                let opportunity = FaultOpportunity::new(
+                    event.action.target.clone(),
+                    event.operation,
+                    FaultPhase::Resolve,
+                    coordinate,
+                    opportunity_sequence,
+                    None,
+                    OpportunityPayload::NetworkControl {
+                        technology: event.technology.clone(),
+                        event_sequence: event.sequence,
+                        request_digest: event.action.id(),
+                        result_schema: event.result_schema.clone(),
+                        result_digest: event.result_digest,
+                    },
+                )
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("construct network control opportunity: {error}"),
+                })?;
+                let control_evaluation = self
+                    .runtime
+                    .evaluate_opportunity(&opportunity, opportunity_sequence, backend)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!("signal network control opportunity failed: {error}"),
+                    })?;
+                if !self.runtime.drain_host_impulses().is_empty() {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "network control opportunity produced a boundary impulse",
+                        ),
+                    });
+                }
+                evaluation
+                    .observations
+                    .extend(control_evaluation.observations);
+                evaluation.next_wakeup_nanos = earliest_wakeup(
+                    evaluation.next_wakeup_nanos,
+                    control_evaluation.next_wakeup_nanos,
+                );
+                let transformed = apply_network_control_transforms(
+                    event,
+                    &control_evaluation.actions,
+                    &self.topology,
+                )?;
+                let Some(transformed) = transformed else {
+                    continue;
+                };
+                let mut applied = staged_effect_state.boundary.apply_ready_control_event(
+                    coordinate,
+                    transformed,
+                    &self.topology,
+                )?;
+                boundary_application.next_wakeup_nanos = earliest_wakeup(
+                    boundary_application.next_wakeup_nanos,
+                    applied.next_wakeup_nanos,
+                );
+                boundary_application
+                    .clear_queued_targets
+                    .append(&mut applied.clear_queued_targets);
+                boundary_application
+                    .address_discontinuities
+                    .append(&mut applied.address_discontinuities);
+                boundary_application
+                    .route_transitions
+                    .append(&mut applied.route_transitions);
+                boundary_application
+                    .control_outcomes
+                    .append(&mut applied.control_outcomes);
+                ready_control_events.append(&mut applied.ready_control_events);
+            }
+            for outcome in &boundary_application.control_outcomes {
+                evaluation.observations.push(FaultObservation {
+                    semantic_version: FAULT_RUNTIME_STATE_VERSION,
+                    kind: FaultObservationKind::EffectRejected,
+                    coordinate,
+                    binding: Some(outcome.action.binding.clone()),
+                    target: Some(outcome.action.target.clone()),
+                    opportunity: outcome.action.opportunity,
+                    evidence: control_plane_outcome_evidence(outcome)?,
+                });
+            }
             for target in boundary_application.clear_queued_targets {
                 if let Some(queue) = staged_effect_state.queues.remove(&target) {
                     let removed = queue
@@ -1210,6 +1433,387 @@ fn partition_transition_queued_outputs(
     Ok(())
 }
 
+fn apply_network_control_transforms(
+    mut event: boundary::QueuedNetworkControlEvent,
+    actions: &[ResolvedBindingAction],
+    topology: &crucible::model::WorldFaultTopology,
+) -> Result<Option<boundary::QueuedNetworkControlEvent>, SchedulerError> {
+    for action in actions {
+        let EffectSpecification::Network(NetworkEffectSpecification::ControlResultTransform {
+            technology,
+            operations,
+            kind,
+            result,
+        }) = action.effect.specification()
+        else {
+            return Err(network_effect_application_error(
+                action,
+                "non-transform effect matched a network control opportunity",
+            ));
+        };
+        if technology != &event.technology || !operations.contains(event.operation) {
+            return Err(network_effect_application_error(
+                action,
+                "network control transform violated its admitted technology or operation filter",
+            ));
+        }
+        match kind {
+            crucible::model::NetworkControlResultKind::Drop
+            | crucible::model::NetworkControlResultKind::Stale
+            | crucible::model::NetworkControlResultKind::Error => return Ok(None),
+            crucible::model::NetworkControlResultKind::Bias => {
+                let (schema, bytes) = network_control_result(topology, result.as_ref(), action)?;
+                if schema.as_str() != "network-score-bias-i64-v1" || bytes.len() != 8 {
+                    return Err(network_effect_application_error(
+                        action,
+                        "association bias requires network-score-bias-i64-v1 and eight bytes",
+                    ));
+                }
+                let bias = i64::from_be_bytes(bytes.as_slice().try_into().map_err(|_error| {
+                    network_effect_application_error(action, "control bias has the wrong width")
+                })?);
+                bias_control_mapping(&mut event.action, bias, action)?;
+                event.result_digest = ContentHash::from_bytes(
+                    &route::mapped_network_integers(&event.action)?
+                        .into_iter()
+                        .flat_map(i64::to_be_bytes)
+                        .collect::<Vec<_>>(),
+                );
+            }
+            crucible::model::NetworkControlResultKind::Replace => {
+                let (schema, bytes) = network_control_result(topology, result.as_ref(), action)?;
+                replace_control_result(&mut event, schema, bytes, topology, action)?;
+            }
+        }
+    }
+    Ok(Some(event))
+}
+
+fn network_control_result<'a>(
+    topology: &'a crucible::model::WorldFaultTopology,
+    result: Option<&FaultObjectId>,
+    action: &ResolvedBindingAction,
+) -> Result<(&'a FaultObjectId, &'a Vec<u8>), SchedulerError> {
+    let result = result.ok_or_else(|| {
+        network_effect_application_error(action, "control transform omitted its result artifact")
+    })?;
+    let declaration = topology.network_policy_artifact(result).ok_or_else(|| {
+        network_effect_application_error(action, "control result disappeared after admission")
+    })?;
+    let crucible::model::NetworkPolicyArtifactKind::ControlResult { schema, bytes } =
+        &declaration.artifact
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "control result changed type after admission",
+        ));
+    };
+    Ok((schema, bytes))
+}
+
+fn bias_control_mapping(
+    action: &mut ResolvedBindingAction,
+    bias: i64,
+    transform: &ResolvedBindingAction,
+) -> Result<(), SchedulerError> {
+    let mut mapping = action.mapping_output.as_ref().clone();
+    let values = match &mut mapping {
+        crucible::model::ResolvedMappingOutput::Parameter { value, .. } => {
+            std::slice::from_mut(value)
+        }
+        crucible::model::ResolvedMappingOutput::ServiceProfile { inputs, .. } => {
+            inputs.as_mut_slice()
+        }
+        _ => {
+            return Err(network_effect_application_error(
+                transform,
+                "control bias requires a numeric association mapping",
+            ));
+        }
+    };
+    for value in values {
+        *value = match value {
+            crucible::model::SignalValue::I64(value) => {
+                crucible::model::SignalValue::I64(value.checked_add(bias).ok_or_else(|| {
+                    network_effect_application_error(transform, "control bias overflowed i64")
+                })?)
+            }
+            crucible::model::SignalValue::U64(value) => {
+                let biased = i128::from(*value) + i128::from(bias);
+                crucible::model::SignalValue::U64(u64::try_from(biased).map_err(|_error| {
+                    network_effect_application_error(transform, "control bias overflowed u64")
+                })?)
+            }
+            crucible::model::SignalValue::DurationNanos(value) => {
+                let biased = i128::from(*value) + i128::from(bias);
+                crucible::model::SignalValue::DurationNanos(u64::try_from(biased).map_err(
+                    |_error| {
+                        network_effect_application_error(
+                            transform,
+                            "control bias overflowed duration",
+                        )
+                    },
+                )?)
+            }
+            crucible::model::SignalValue::RatePerSecond(value) => {
+                let biased = i128::from(*value) + i128::from(bias);
+                crucible::model::SignalValue::RatePerSecond(u64::try_from(biased).map_err(
+                    |_error| {
+                        network_effect_application_error(transform, "control bias overflowed rate")
+                    },
+                )?)
+            }
+            crucible::model::SignalValue::ProbabilityMillionths(value) => {
+                let biased = i64::from(*value).checked_add(bias).ok_or_else(|| {
+                    network_effect_application_error(
+                        transform,
+                        "control bias overflowed probability",
+                    )
+                })?;
+                crucible::model::SignalValue::ProbabilityMillionths(u32::try_from(biased).map_err(
+                    |_error| {
+                        network_effect_application_error(
+                            transform,
+                            "control bias left the probability domain",
+                        )
+                    },
+                )?)
+            }
+            _ => {
+                return Err(network_effect_application_error(
+                    transform,
+                    "control bias encountered a non-integer mapping",
+                ));
+            }
+        };
+    }
+    action.mapping_output = Arc::new(mapping);
+    action.mapped_digest = ContentHash::from_bytes(
+        &serde_json::to_vec(action.mapping_output.as_ref()).map_err(|error| {
+            network_effect_application_error(
+                transform,
+                &format!("encode biased control mapping: {error}"),
+            )
+        })?,
+    );
+    Ok(())
+}
+
+fn replace_control_result(
+    event: &mut boundary::QueuedNetworkControlEvent,
+    schema: &FaultObjectId,
+    bytes: &[u8],
+    topology: &crucible::model::WorldFaultTopology,
+    transform: &ResolvedBindingAction,
+) -> Result<(), SchedulerError> {
+    let EffectSpecification::Network(specification) = event.action.effect.specification() else {
+        return Err(network_effect_application_error(
+            transform,
+            "control event lost its network effect",
+        ));
+    };
+    let replacement = match specification {
+        NetworkEffectSpecification::RouteTransition {
+            old_route,
+            convergence_events,
+            in_flight_policy,
+            ..
+        } if schema.as_str() == "network-route-id-v1" => {
+            let route = parse_control_object_id(bytes, transform)?;
+            if !topology
+                .network_paths
+                .iter()
+                .any(|candidate| candidate.id.as_str() == route.as_str())
+            {
+                return Err(network_effect_application_error(
+                    transform,
+                    "replacement route is absent from World",
+                ));
+            }
+            NetworkEffectSpecification::RouteTransition {
+                old_route: old_route.clone(),
+                new_route: route,
+                convergence_events: convergence_events.clone(),
+                in_flight_policy: *in_flight_policy,
+            }
+        }
+        NetworkEffectSpecification::Association { policy }
+            if schema.as_str() == "network-association-inputs-i64-v1" =>
+        {
+            if bytes.is_empty() || bytes.len() % 8 != 0 {
+                return Err(network_effect_application_error(
+                    transform,
+                    "replacement association inputs require nonempty packed i64 values",
+                ));
+            }
+            let inputs = bytes
+                .chunks_exact(8)
+                .map(|chunk| {
+                    let encoded: [u8; 8] = chunk.try_into().map_err(|_error| {
+                        network_effect_application_error(
+                            transform,
+                            "replacement association input width is invalid",
+                        )
+                    })?;
+                    Ok(crucible::model::SignalValue::I64(i64::from_be_bytes(
+                        encoded,
+                    )))
+                })
+                .collect::<Result<Vec<_>, SchedulerError>>()?;
+            let mut mapping = event.action.mapping_output.as_ref().clone();
+            match &mut mapping {
+                crucible::model::ResolvedMappingOutput::Parameter { value, .. }
+                    if inputs.len() == 1 =>
+                {
+                    *value = inputs[0].clone();
+                }
+                crucible::model::ResolvedMappingOutput::ServiceProfile {
+                    inputs: current, ..
+                } if inputs.len() == 1 || inputs.len() == current.len() => {
+                    *current = inputs;
+                }
+                _ => {
+                    return Err(network_effect_application_error(
+                        transform,
+                        "replacement association input arity is invalid",
+                    ));
+                }
+            }
+            event.action.mapping_output = Arc::new(mapping);
+            event.action.mapped_digest = ContentHash::from_bytes(
+                &serde_json::to_vec(event.action.mapping_output.as_ref()).map_err(|error| {
+                    network_effect_application_error(
+                        transform,
+                        &format!("encode replaced control mapping: {error}"),
+                    )
+                })?,
+            );
+            NetworkEffectSpecification::Association {
+                policy: policy.clone(),
+            }
+        }
+        NetworkEffectSpecification::Contact {
+            range_delay_lookup,
+            beams,
+            gateways,
+            ..
+        } if schema.as_str() == "network-contact-plan-v1" => {
+            let intervals = parse_control_object_id(bytes, transform)?;
+            let Some(declaration) = topology.network_policy_artifact(&intervals) else {
+                return Err(network_effect_application_error(
+                    transform,
+                    "replacement contact plan is absent",
+                ));
+            };
+            let crucible::model::NetworkPolicyArtifactKind::ContactPlan {
+                intervals: replacement_intervals,
+            } = &declaration.artifact
+            else {
+                return Err(network_effect_application_error(
+                    transform,
+                    "replacement contact plan has the wrong class",
+                ));
+            };
+            if replacement_intervals.iter().any(|interval| {
+                beams.as_slice().binary_search(&interval.beam).is_err()
+                    || gateways
+                        .as_slice()
+                        .binary_search(&interval.gateway)
+                        .is_err()
+            }) {
+                return Err(network_effect_application_error(
+                    transform,
+                    "replacement contact plan uses an undeclared beam or gateway",
+                ));
+            }
+            NetworkEffectSpecification::Contact {
+                intervals,
+                range_delay_lookup: range_delay_lookup.clone(),
+                beams: beams.clone(),
+                gateways: gateways.clone(),
+            }
+        }
+        NetworkEffectSpecification::ForwarderLifecycle {
+            downtime_nanos,
+            queue_policy,
+            table_policy,
+            ..
+        } if schema.as_str() == "network-forwarder-state-v1" && bytes.len() == 1 => {
+            let transition = match bytes[0] {
+                1 => crucible::model::NetworkForwarderTransition::Restart,
+                2 => crucible::model::NetworkForwarderTransition::Reset,
+                3 => crucible::model::NetworkForwarderTransition::PowerLoss,
+                _ => {
+                    return Err(network_effect_application_error(
+                        transform,
+                        "replacement forwarder transition tag is invalid",
+                    ));
+                }
+            };
+            NetworkEffectSpecification::ForwarderLifecycle {
+                transition,
+                downtime_nanos: *downtime_nanos,
+                queue_policy: *queue_policy,
+                table_policy: *table_policy,
+            }
+        }
+        _ => {
+            return Err(network_effect_application_error(
+                transform,
+                "replacement control-result schema does not match the operation",
+            ));
+        }
+    };
+    event.action.effect = Arc::new(
+        crucible::model::EffectRequest::new(
+            crucible::model::EFFECT_SEMANTIC_VERSION,
+            event.action.effect.lifetime(),
+            EffectSpecification::Network(replacement),
+        )
+        .map_err(|error| {
+            network_effect_application_error(
+                transform,
+                &format!("validate replacement control result: {error}"),
+            )
+        })?,
+    );
+    event.result_schema = schema.clone();
+    event.result_digest = ContentHash::from_bytes(bytes);
+    Ok(())
+}
+
+fn parse_control_object_id(
+    bytes: &[u8],
+    action: &ResolvedBindingAction,
+) -> Result<FaultObjectId, SchedulerError> {
+    let text = std::str::from_utf8(bytes).map_err(|_error| {
+        network_effect_application_error(action, "replacement control object ID is not UTF-8")
+    })?;
+    FaultObjectId::parse(text.to_owned()).map_err(|_error| {
+        network_effect_application_error(action, "replacement control object ID is invalid")
+    })
+}
+
+fn control_plane_outcome_evidence(
+    outcome: &boundary::ControlPlaneOutcome,
+) -> Result<ContentHash, SchedulerError> {
+    let mut material = Vec::new();
+    material.extend_from_slice(&outcome.action.id().bytes);
+    material.push(match outcome.kind {
+        boundary::ControlPlaneOutcomeKind::Dropped => 1,
+        boundary::ControlPlaneOutcomeKind::TypedError => 2,
+        boundary::ControlPlaneOutcomeKind::TimedOut => 3,
+    });
+    match &outcome.result {
+        Some(result) => {
+            material.push(1);
+            append_evidence_bytes(&mut material, result.as_str().as_bytes())?;
+        }
+        None => material.push(0),
+    }
+    Ok(ContentHash::from_bytes(&material))
+}
+
 fn availability_transition_evidence(
     action: &ResolvedBindingAction,
     old_state: NetworkAvailabilityState,
@@ -1562,10 +2166,11 @@ mod tests {
 
     use super::*;
     use crucible::model::{
-        BindingMapping, BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy,
-        EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest, EvaluatedSignal, FaultBinding,
-        FaultDirection, InverseCdfTable, NetworkInFlightPolicy, ResolvedFaultTarget,
-        ResolvedTargetSet, SampleObservation, SignalChoiceContext, SignalCoordinate, SignalDomain,
+        BindingActionCause, BindingMapping, BindingObservabilityPolicy, BindingSampling,
+        BindingSearchPolicy, EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest,
+        EvaluatedSignal, FaultBinding, FaultDirection, FaultOperation, InverseCdfTable,
+        NetworkInFlightPolicy, ResolvedFaultTarget, ResolvedMappingOutput, ResolvedTargetSet,
+        SampleObservation, SignalChoiceContext, SignalCoordinate, SignalDomain,
         SignalEvaluationError, SignalId, SignalNode, SignalNodeKind, SignalResourceLimits,
         SignalShape, SignalSourceSpecification, SignalUnit, SignalValue, SignalValueType,
         TargetSelector, WorldNetworkInterface, WorldNetworkSegment, WorldNetworkSegmentKind,
@@ -2342,7 +2947,7 @@ mod tests {
         };
         let mut state = NetworkEffectRuntimeState::default();
         state.shared_media.insert(
-            key,
+            key.clone(),
             NetworkMediumState {
                 resources: vec![object_id("left"), object_id("right")],
                 policy: object_id("radio-access"),
@@ -2377,6 +2982,33 @@ mod tests {
         );
         assert!(validate_medium_pending_links(&state, &[]).is_err());
 
+        let connection = NetworkConnectionEntry {
+            machine: NetworkStateMachineRuntime {
+                current: object_id("connected"),
+                pending: Vec::new(),
+                transition_sequence: 1,
+            },
+            created_by: opportunity,
+            last_used_nanos: 30,
+        };
+        state
+            .connection_tables
+            .entry(key)
+            .or_default()
+            .insert(opportunity, connection);
+        let checkpoint = NetworkAdapterCheckpoint {
+            semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+            coordinate: Some(30),
+            coordinate_sequence: 1,
+            effect_state: state.clone(),
+        };
+        let encoded = serde_json::to_vec(&checkpoint)
+            .unwrap_or_else(|error| panic!("encode nonempty network checkpoint: {error}"));
+        let decoded: NetworkAdapterCheckpoint = serde_json::from_slice(&encoded)
+            .unwrap_or_else(|error| panic!("decode nonempty network checkpoint: {error}"));
+        assert_eq!(decoded.effect_state.shared_media.len(), 1);
+        assert_eq!(decoded.effect_state.connection_tables.len(), 1);
+
         let evidence = |state: &NetworkEffectRuntimeState| {
             let mut material = Vec::new();
             append_network_effect_state(&mut material, state)
@@ -2393,5 +3025,413 @@ mod tests {
             .reservations[0]
             .transmit_power_femtowatts = 41;
         assert_ne!(baseline, evidence(&changed));
+    }
+
+    fn association_control_event(values: [i64; 2]) -> boundary::QueuedNetworkControlEvent {
+        let mapping = ResolvedMappingOutput::ServiceProfile {
+            service_profile: object_id("association-policy"),
+            input_contracts: Vec::new(),
+            inputs: values.into_iter().map(SignalValue::I64).collect(),
+        };
+        let mapped_digest = ContentHash::from_bytes(
+            &serde_json::to_vec(&mapping)
+                .unwrap_or_else(|error| panic!("encode test mapping: {error}")),
+        );
+        let action = ResolvedBindingAction {
+            kind: BindingActionKind::Apply,
+            binding: object_id("association-event"),
+            target: ResolvedFaultTarget::NetworkAttachment {
+                endpoint: object_id("endpoint-a"),
+                interface: object_id("interface-a"),
+                attachment: object_id("attachment-a"),
+            },
+            phase: FaultPhase::Boundary,
+            effect: Arc::new(
+                EffectRequest::new(
+                    EFFECT_SEMANTIC_VERSION,
+                    EffectLifetime::StateMachine,
+                    EffectSpecification::Network(NetworkEffectSpecification::Association {
+                        policy: object_id("association-policy"),
+                    }),
+                )
+                .unwrap_or_else(|error| panic!("association effect: {error}")),
+            ),
+            mapping_output: Arc::new(mapping),
+            mapped_digest,
+            transition_sequence: 1,
+            opportunity: None,
+            coordinate: FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            cause: BindingActionCause::Signal,
+        };
+        let bytes = values
+            .into_iter()
+            .flat_map(i64::to_be_bytes)
+            .collect::<Vec<_>>();
+        boundary::QueuedNetworkControlEvent {
+            sequence: 0,
+            operation: FaultOperation::NetworkAssociate,
+            technology: object_id("network-wireless-v1"),
+            result_schema: object_id("network-association-inputs-i64-v1"),
+            result_digest: ContentHash::from_bytes(&bytes),
+            release_nanos: 1,
+            action,
+        }
+    }
+
+    fn control_transform_action(
+        kind: crucible::model::NetworkControlResultKind,
+        result: FaultObjectId,
+    ) -> ResolvedBindingAction {
+        typed_control_transform_action(
+            object_id("network-wireless-v1"),
+            FaultOperation::NetworkAssociate,
+            kind,
+            result,
+            association_control_event([0, 0]).action.target,
+        )
+    }
+
+    fn typed_control_transform_action(
+        technology: FaultObjectId,
+        operation: FaultOperation,
+        kind: crucible::model::NetworkControlResultKind,
+        result: FaultObjectId,
+        target: ResolvedFaultTarget,
+    ) -> ResolvedBindingAction {
+        ResolvedBindingAction {
+            kind: BindingActionKind::Apply,
+            binding: object_id("association-transform"),
+            target,
+            phase: FaultPhase::Resolve,
+            effect: Arc::new(
+                EffectRequest::new(
+                    EFFECT_SEMANTIC_VERSION,
+                    EffectLifetime::Opportunity,
+                    EffectSpecification::Network(
+                        NetworkEffectSpecification::ControlResultTransform {
+                            technology,
+                            operations: crucible::model::OperationSet::new(vec![operation])
+                                .unwrap_or_else(|error| panic!("transform operations: {error}")),
+                            kind,
+                            result: Some(result),
+                        },
+                    ),
+                )
+                .unwrap_or_else(|error| panic!("control transform effect: {error}")),
+            ),
+            mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
+            mapped_digest: ContentHash::from_bytes(b"transform"),
+            transition_sequence: 1,
+            opportunity: Some(ContentHash::from_bytes(b"control-opportunity")),
+            coordinate: FaultCoordinate {
+                virtual_nanos: 1,
+                retired_instructions: None,
+            },
+            cause: BindingActionCause::Opportunity(ContentHash::from_bytes(b"control-opportunity")),
+        }
+    }
+
+    #[test]
+    fn association_control_bias_and_replacement_preserve_digest_invariants() {
+        let replacement_bytes = [30_i64, 40_i64]
+            .into_iter()
+            .flat_map(i64::to_be_bytes)
+            .collect::<Vec<_>>();
+        let mut topology = crucible::model::WorldFaultTopology {
+            network_policy_artifacts: vec![
+                crucible::model::WorldNetworkPolicyArtifact {
+                    id: object_id("association-bias"),
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::ControlResult {
+                        schema: object_id("network-score-bias-i64-v1"),
+                        bytes: 5_i64.to_be_bytes().to_vec(),
+                    },
+                },
+                crucible::model::WorldNetworkPolicyArtifact {
+                    id: object_id("association-replacement"),
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::ControlResult {
+                        schema: object_id("network-association-inputs-i64-v1"),
+                        bytes: replacement_bytes.clone(),
+                    },
+                },
+            ],
+            ..crucible::model::WorldFaultTopology::default()
+        };
+        topology
+            .network_policy_artifacts
+            .sort_by(|left, right| left.id.cmp(&right.id));
+
+        let biased = apply_network_control_transforms(
+            association_control_event([10, 20]),
+            &[control_transform_action(
+                crucible::model::NetworkControlResultKind::Bias,
+                object_id("association-bias"),
+            )],
+            &topology,
+        )
+        .unwrap_or_else(|error| panic!("bias association result: {error}"))
+        .unwrap_or_else(|| panic!("bias must retain the control result"));
+        assert_eq!(
+            route::mapped_network_integers(&biased.action),
+            Ok(vec![15, 25])
+        );
+        assert_eq!(
+            biased.result_digest,
+            ContentHash::from_bytes(
+                &[15_i64, 25_i64]
+                    .into_iter()
+                    .flat_map(i64::to_be_bytes)
+                    .collect::<Vec<_>>()
+            )
+        );
+        assert_eq!(
+            biased.action.mapped_digest,
+            ContentHash::from_bytes(
+                &serde_json::to_vec(biased.action.mapping_output.as_ref())
+                    .unwrap_or_else(|error| panic!("encode biased mapping: {error}"))
+            )
+        );
+
+        let replaced = apply_network_control_transforms(
+            association_control_event([10, 20]),
+            &[control_transform_action(
+                crucible::model::NetworkControlResultKind::Replace,
+                object_id("association-replacement"),
+            )],
+            &topology,
+        )
+        .unwrap_or_else(|error| panic!("replace association result: {error}"))
+        .unwrap_or_else(|| panic!("replacement must retain the control result"));
+        assert_eq!(
+            route::mapped_network_integers(&replaced.action),
+            Ok(vec![30, 40])
+        );
+        assert_eq!(
+            replaced.result_digest,
+            ContentHash::from_bytes(&replacement_bytes)
+        );
+        assert_eq!(
+            replaced.action.mapped_digest,
+            ContentHash::from_bytes(
+                &serde_json::to_vec(replaced.action.mapping_output.as_ref())
+                    .unwrap_or_else(|error| panic!("encode replaced mapping: {error}"))
+            )
+        );
+    }
+
+    #[test]
+    fn forwarder_and_contact_replacements_execute_only_within_world_contracts() {
+        let positive = |field, value| {
+            crucible::model::PositiveU64::new(field, value)
+                .unwrap_or_else(|error| panic!("test positive value: {error}"))
+        };
+        let forwarder_target = ResolvedFaultTarget::NetworkForwarder {
+            forwarder: object_id("forwarder-a"),
+        };
+        let forwarder_action = ResolvedBindingAction {
+            kind: BindingActionKind::Apply,
+            binding: object_id("forwarder-event"),
+            target: forwarder_target.clone(),
+            phase: FaultPhase::Boundary,
+            effect: Arc::new(
+                EffectRequest::new(
+                    EFFECT_SEMANTIC_VERSION,
+                    EffectLifetime::StateMachine,
+                    EffectSpecification::Network(NetworkEffectSpecification::ForwarderLifecycle {
+                        transition: crucible::model::NetworkForwarderTransition::Restart,
+                        downtime_nanos: positive("downtime", 1),
+                        queue_policy: crucible::model::NetworkStatePolicy::Preserve,
+                        table_policy: crucible::model::NetworkStatePolicy::Preserve,
+                    }),
+                )
+                .unwrap_or_else(|error| panic!("forwarder lifecycle: {error}")),
+            ),
+            mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
+            mapped_digest: ContentHash::from_bytes(b"forwarder"),
+            transition_sequence: 1,
+            opportunity: None,
+            coordinate: FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            cause: BindingActionCause::Signal,
+        };
+        let forwarder_event = boundary::QueuedNetworkControlEvent {
+            sequence: 0,
+            operation: FaultOperation::NetworkChange,
+            technology: object_id("network-forwarder-v1"),
+            result_schema: object_id("network-forwarder-state-v1"),
+            result_digest: ContentHash::from_bytes(&[1]),
+            release_nanos: 1,
+            action: forwarder_action,
+        };
+
+        let contact_target = ResolvedFaultTarget::NetworkContact {
+            plan: object_id("contact-plan-a"),
+            endpoint_a: object_id("ground"),
+            endpoint_b: object_id("satellite"),
+            contact: object_id("contact-a"),
+        };
+        let members = |value| {
+            crucible::model::ObjectIdSet::new(vec![object_id(value)])
+                .unwrap_or_else(|error| panic!("test contact members: {error}"))
+        };
+        let contact_action = ResolvedBindingAction {
+            kind: BindingActionKind::Apply,
+            binding: object_id("contact-event"),
+            target: contact_target.clone(),
+            phase: FaultPhase::Boundary,
+            effect: Arc::new(
+                EffectRequest::new(
+                    EFFECT_SEMANTIC_VERSION,
+                    EffectLifetime::StateMachine,
+                    EffectSpecification::Network(NetworkEffectSpecification::Contact {
+                        intervals: object_id("contact-plan-a"),
+                        range_delay_lookup: object_id("range-delay"),
+                        beams: members("beam-a"),
+                        gateways: members("gateway-a"),
+                    }),
+                )
+                .unwrap_or_else(|error| panic!("contact effect: {error}")),
+            ),
+            mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
+            mapped_digest: ContentHash::from_bytes(b"contact"),
+            transition_sequence: 1,
+            opportunity: None,
+            coordinate: FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            cause: BindingActionCause::Signal,
+        };
+        let contact_event = boundary::QueuedNetworkControlEvent {
+            sequence: 0,
+            operation: FaultOperation::NetworkAcquire,
+            technology: object_id("network-contact-v1"),
+            result_schema: object_id("network-contact-plan-v1"),
+            result_digest: ContentHash::from_bytes(b"contact-plan-a"),
+            release_nanos: 1,
+            action: contact_action,
+        };
+        let contact_interval = |beam: &str| crucible::model::NetworkPolicyContactInterval {
+            start_nanos: 0,
+            end_nanos: 100,
+            source: object_id("ground"),
+            destination: object_id("satellite"),
+            beam: object_id(beam),
+            gateway: object_id("gateway-a"),
+            minimum_range_mm: 1,
+            maximum_range_mm: 2,
+            capacity_profile: object_id("capacity-a"),
+            acquisition_nanos: 0,
+            teardown_nanos: 0,
+            confidence: crucible::model::ProbabilityMillionths::new(1_000_000)
+                .unwrap_or_else(|error| panic!("contact confidence: {error}")),
+            provenance: object_id("trace-a"),
+        };
+        let mut topology = crucible::model::WorldFaultTopology {
+            network_policy_artifacts: vec![
+                crucible::model::WorldNetworkPolicyArtifact {
+                    id: object_id("contact-plan-b"),
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::ContactPlan {
+                        intervals: vec![contact_interval("beam-a")],
+                    },
+                },
+                crucible::model::WorldNetworkPolicyArtifact {
+                    id: object_id("contact-plan-invalid"),
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::ContactPlan {
+                        intervals: vec![contact_interval("beam-b")],
+                    },
+                },
+                crucible::model::WorldNetworkPolicyArtifact {
+                    id: object_id("contact-result"),
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::ControlResult {
+                        schema: object_id("network-contact-plan-v1"),
+                        bytes: b"contact-plan-b".to_vec(),
+                    },
+                },
+                crucible::model::WorldNetworkPolicyArtifact {
+                    id: object_id("contact-result-invalid"),
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::ControlResult {
+                        schema: object_id("network-contact-plan-v1"),
+                        bytes: b"contact-plan-invalid".to_vec(),
+                    },
+                },
+                crucible::model::WorldNetworkPolicyArtifact {
+                    id: object_id("forwarder-result"),
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::ControlResult {
+                        schema: object_id("network-forwarder-state-v1"),
+                        bytes: vec![3],
+                    },
+                },
+            ],
+            ..crucible::model::WorldFaultTopology::default()
+        };
+        topology
+            .network_policy_artifacts
+            .sort_by(|left, right| left.id.cmp(&right.id));
+
+        let forwarder = apply_network_control_transforms(
+            forwarder_event,
+            &[typed_control_transform_action(
+                object_id("network-forwarder-v1"),
+                FaultOperation::NetworkChange,
+                crucible::model::NetworkControlResultKind::Replace,
+                object_id("forwarder-result"),
+                forwarder_target,
+            )],
+            &topology,
+        )
+        .unwrap_or_else(|error| panic!("replace forwarder state: {error}"))
+        .unwrap_or_else(|| panic!("forwarder replacement must remain active"));
+        assert!(matches!(
+            forwarder.action.effect.specification(),
+            EffectSpecification::Network(NetworkEffectSpecification::ForwarderLifecycle {
+                transition: crucible::model::NetworkForwarderTransition::PowerLoss,
+                ..
+            })
+        ));
+
+        let valid = apply_network_control_transforms(
+            contact_event.clone(),
+            &[typed_control_transform_action(
+                object_id("network-contact-v1"),
+                FaultOperation::NetworkAcquire,
+                crucible::model::NetworkControlResultKind::Replace,
+                object_id("contact-result"),
+                contact_target.clone(),
+            )],
+            &topology,
+        )
+        .unwrap_or_else(|error| panic!("replace contact plan: {error}"))
+        .unwrap_or_else(|| panic!("contact replacement must remain active"));
+        assert!(matches!(
+            valid.action.effect.specification(),
+            EffectSpecification::Network(NetworkEffectSpecification::Contact { intervals, .. })
+                if intervals == &object_id("contact-plan-b")
+        ));
+        let error = apply_network_control_transforms(
+            contact_event,
+            &[typed_control_transform_action(
+                object_id("network-contact-v1"),
+                FaultOperation::NetworkAcquire,
+                crucible::model::NetworkControlResultKind::Replace,
+                object_id("contact-result-invalid"),
+                contact_target,
+            )],
+            &topology,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("undeclared contact beam must fail"));
+        assert!(error.to_string().contains("undeclared beam or gateway"));
     }
 }

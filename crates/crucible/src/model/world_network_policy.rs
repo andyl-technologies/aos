@@ -578,6 +578,8 @@ pub enum NetworkPolicyArtifactKind {
         disposition: NetworkPolicyOverflow,
         /// Optional modeled timeout.
         timeout_nanos: Option<PositiveU64>,
+        /// Typed control result returned only by `typed_error`.
+        typed_error: Option<FaultObjectId>,
     },
     /// Ordered intermittent-contact intervals.
     ContactPlan {
@@ -867,10 +869,19 @@ impl WorldNetworkPolicyArtifact {
             NetworkPolicyArtifactKind::Overflow {
                 disposition,
                 timeout_nanos,
-            } => require(
-                matches!(disposition, NetworkPolicyOverflow::Timeout) == timeout_nanos.is_some(),
-                "network overflow timeout",
-            ),
+                typed_error,
+            } => {
+                require(
+                    matches!(disposition, NetworkPolicyOverflow::Timeout)
+                        == timeout_nanos.is_some(),
+                    "network overflow timeout",
+                )?;
+                require(
+                    matches!(disposition, NetworkPolicyOverflow::TypedError)
+                        == typed_error.is_some(),
+                    "network overflow typed error",
+                )
+            }
             NetworkPolicyArtifactKind::ContactPlan { intervals } => {
                 hard_policy_count(intervals.len(), "network contact intervals")?;
                 require(!intervals.is_empty(), "network contact intervals")?;
@@ -1048,6 +1059,51 @@ mod tests {
             },
         };
         assert!(declaration.validate().is_err());
+    }
+
+    #[test]
+    fn overflow_policies_require_exact_timeout_and_typed_error_fields() {
+        let declaration = |disposition, timeout_nanos, typed_error| WorldNetworkPolicyArtifact {
+            id: id("overflow"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::Overflow {
+                disposition,
+                timeout_nanos,
+                typed_error,
+            },
+        };
+        declaration(NetworkPolicyOverflow::DropNewest, None, None)
+            .validate()
+            .unwrap_or_else(|error| panic!("drop-newest overflow policy: {error}"));
+        declaration(NetworkPolicyOverflow::Timeout, Some(positive(10)), None)
+            .validate()
+            .unwrap_or_else(|error| panic!("timeout overflow policy: {error}"));
+        declaration(
+            NetworkPolicyOverflow::TypedError,
+            None,
+            Some(id("control-error")),
+        )
+        .validate()
+        .unwrap_or_else(|error| panic!("typed overflow policy: {error}"));
+        assert!(
+            declaration(NetworkPolicyOverflow::Timeout, None, None)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            declaration(NetworkPolicyOverflow::TypedError, None, None,)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            declaration(
+                NetworkPolicyOverflow::DropOldest,
+                None,
+                Some(id("unexpected-error")),
+            )
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

@@ -898,11 +898,127 @@ fn validate_network_effect_policy_references(
                 }
             }
         }
-        NetworkEffectSpecification::ControlResultTransform { result, .. } => require(
+        NetworkEffectSpecification::ControlResultTransform {
+            technology,
+            operations,
+            kind,
             result,
-            &[NetworkPolicyArtifactClass::ControlResult],
-            "result",
-        )?,
+        } => {
+            if binding
+                .opportunity_filter()
+                .is_none_or(|filter| filter.operations != *operations)
+            {
+                return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                    binding: binding.id().as_str().to_owned(),
+                    reference: technology.as_str().to_owned(),
+                    field: "opportunity_filter.operations",
+                    expected: String::from("exact control-result transform operation set"),
+                    actual: Some("different or absent operation set"),
+                });
+            }
+            if let Some(result) = result {
+                require(
+                    result,
+                    &[NetworkPolicyArtifactClass::ControlResult],
+                    "result",
+                )?;
+            }
+            let result_schema = result.as_ref().and_then(|result| {
+                topology
+                    .network_policy_artifact(result)
+                    .and_then(|artifact| {
+                        let NetworkPolicyArtifactKind::ControlResult { schema, .. } =
+                            &artifact.artifact
+                        else {
+                            return None;
+                        };
+                        Some(schema.as_str())
+                    })
+            });
+            for target in binding.selector().resolved().targets() {
+                let (expected_technology, allowed_operations, replacement_schema) = match target {
+                    ResolvedFaultTarget::NetworkPath { .. } => (
+                        "network-routing-v1",
+                        &[FaultOperation::NetworkRoute][..],
+                        "network-route-id-v1",
+                    ),
+                    ResolvedFaultTarget::NetworkAttachment { attachment, .. } => {
+                        let attachment = topology
+                            .network_attachments
+                            .iter()
+                            .find(|candidate| candidate.id.as_str() == attachment.as_str())
+                            .ok_or_else(|| {
+                                FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                                    binding: binding.id().as_str().to_owned(),
+                                    reference: attachment.as_str().to_owned(),
+                                    field: "target.attachment",
+                                    expected: String::from("declared network attachment"),
+                                    actual: None,
+                                }
+                            })?;
+                        (
+                            attachment.technology.as_str(),
+                            &[
+                                FaultOperation::NetworkAssociate,
+                                FaultOperation::NetworkHandoff,
+                            ][..],
+                            "network-association-inputs-i64-v1",
+                        )
+                    }
+                    ResolvedFaultTarget::NetworkForwarder { .. } => (
+                        "network-forwarder-v1",
+                        &[FaultOperation::NetworkChange][..],
+                        "network-forwarder-state-v1",
+                    ),
+                    ResolvedFaultTarget::NetworkContact { .. } => (
+                        "network-contact-v1",
+                        &[
+                            FaultOperation::NetworkAcquire,
+                            FaultOperation::NetworkTeardown,
+                        ][..],
+                        "network-contact-plan-v1",
+                    ),
+                    _ => {
+                        return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                            binding: binding.id().as_str().to_owned(),
+                            reference: technology.as_str().to_owned(),
+                            field: "target",
+                            expected: String::from("network control target"),
+                            actual: Some("different target kind"),
+                        });
+                    }
+                };
+                let operations_valid = operations
+                    .as_slice()
+                    .iter()
+                    .all(|operation| allowed_operations.contains(operation));
+                let schema_valid = match kind {
+                    NetworkControlResultKind::Drop | NetworkControlResultKind::Stale => {
+                        result_schema.is_none()
+                    }
+                    NetworkControlResultKind::Bias => {
+                        matches!(target, ResolvedFaultTarget::NetworkAttachment { .. })
+                            && result_schema == Some("network-score-bias-i64-v1")
+                    }
+                    NetworkControlResultKind::Replace => result_schema == Some(replacement_schema),
+                    NetworkControlResultKind::Error => {
+                        result_schema == Some("network-control-error-v1")
+                    }
+                };
+                if technology.as_str() != expected_technology || !operations_valid || !schema_valid
+                {
+                    return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: technology.as_str().to_owned(),
+                        field: "technology/operations/result",
+                        expected: String::from(
+                            "target-specific control technology, operations, and result schema",
+                        ),
+                        actual: Some("incompatible control transform contract"),
+                    });
+                }
+            }
+        }
         NetworkEffectSpecification::RecipientSubset {
             membership_version,
             drop_members,
