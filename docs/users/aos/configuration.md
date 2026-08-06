@@ -144,8 +144,11 @@ Selection prefers an authenticated configured registry. If no registry
 publishes a selected name, AOS may use the exact package and config companion
 from the active image-seeded package profile. This is the supported
 bootstrap/recovery and deliberate-offline path: every local NAR is verified
-against the measured-image generation, and missing image-local content fails
-closed instead of being fetched from an unrelated registry.
+against the immutable package seed reached through the booted image's lower
+store. Writable profile metadata must exactly match that seed, so changing a
+profile record cannot authorize a different module. Missing or mismatched
+image-local content fails closed instead of being fetched from an unrelated
+registry.
 
 `--from` selects the input for this transaction; it does not replace the
 metadata-delivered policy or its last-known-good cache. Update and, in signed

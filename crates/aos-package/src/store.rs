@@ -1161,6 +1161,7 @@ mod tests {
             baselib_digest: format!("sha256:{number:064x}"),
             root_verity_roothash: None,
             expected_pcr11: None,
+            initrd_pcr11: None,
             created_at: "2026-08-04T00:00:00Z".to_string(),
         }
     }

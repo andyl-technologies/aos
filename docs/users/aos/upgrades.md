@@ -72,7 +72,10 @@ The candidate UKI carries an sd-boot boot-counting suffix. Each unsuccessful
 attempt decrements its counter; exhaustion demotes the candidate and falls back
 to the other slot. A candidate is blessed only after it boots, re-evaluates the
 host configuration against its own ABI-pinned base library, commits a matching
-configuration generation, and reaches the boot-commit gate.
+configuration generation, reaches the TPM ready phase, and passes local
+verification of the generation quote against the live PCR 7/11 values and the
+published image PCR 11. A failed ready transition leaves evaluation and boot
+blessing inactive.
 
 ## Verify an image transition
 

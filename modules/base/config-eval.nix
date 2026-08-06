@@ -309,7 +309,7 @@ in {
       # Quote generations only after systemd has advanced PCR 11 to its stable
       # runtime (`ready`) phase. On non-UKI or non-TPM boots the phase unit's
       # conditions make this a clean no-op.
-      wants = ["network-online.target" "systemd-pcrphase.service"];
+      wants = ["network-online.target"];
       requires =
         [
           "aos-credential-recovery.service"
@@ -317,6 +317,7 @@ in {
           "aos-firstboot-reeval.service"
           "aos-nix-db.service"
         ]
+        ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "systemd-pcrphase.service"
         ++ packageSeedReadinessUnits;
       after =
         [
@@ -518,6 +519,21 @@ in {
             "$attestation" >/dev/null; then
             echo "aos-image-boot-commit: measured boot requires a quoted generation attestation" >&2
             exit 1
+          fi
+          expected_pcr11=$(${pkgs.jq}/bin/jq -r \
+            --argjson running "$running" \
+            '[.generations[] | select(.number == $running) | .expected_pcr11][0] // ""' \
+            "$state")
+          quote_dir="/var/lib/profiles/system/gen-$current/gen-attestation-quote"
+          if [ -n "$expected_pcr11" ]; then
+            ${pkgs.aos}/bin/apm attest __verify-boot-commit \
+              --generation-attestation "$attestation" \
+              --quote-dir "$quote_dir" \
+              --expected-pcr11 "$expected_pcr11"
+          else
+            ${pkgs.aos}/bin/apm attest __verify-boot-commit \
+              --generation-attestation "$attestation" \
+              --quote-dir "$quote_dir"
           fi
         ''}
         if [ "$parent" != "$running" ]; then

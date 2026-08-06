@@ -166,8 +166,10 @@ below by the production behavior that superseded them.
       CEL event, PCR 15 extension, and PCR 7/11/12/15 quote over the exact
       manifest and authenticated inputs. The public verifier checks an
       identity-pinned quote, signed release/store evidence, host trust, and
-      optional re-derivation. Boot blessing requires the matching activation
-      and generation records.
+      optional re-derivation. Image-origin inputs must exactly match the
+      independently recovered immutable package-seed catalog. Boot blessing
+      requires the matching activation and generation records plus successful
+      local quote verification after the TPM ready phase.
 
 ## Operability and compatibility
 

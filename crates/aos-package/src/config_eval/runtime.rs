@@ -493,10 +493,11 @@ fn local_closure(package: &LocalRuntimePackage) -> Result<Vec<RuntimeClosurePin>
         .map(str::trim)
         .filter(|path| !path.is_empty())
     {
-        if !Path::new(path).starts_with("/nix/store") {
-            bail!("image-local closure contains non-store path {path:?}");
+        let lower_path = immutable_lower_store_path(path)?;
+        if !lower_path.exists() {
+            bail!("image-local closure member {path} is absent from the immutable image store");
         }
-        let (nar_hash, nar_size) = local_store_identity(path)?;
+        let (nar_hash, nar_size) = local_store_identity_at(path, &lower_path)?;
         members.push(RuntimeClosurePin {
             store_path_hash: store_path_hash(path).to_string(),
             store_path: Some(path.to_string()),
@@ -509,26 +510,44 @@ fn local_closure(package: &LocalRuntimePackage) -> Result<Vec<RuntimeClosurePin>
     Ok(members)
 }
 
-/// Computes one image-local store path's canonical on-image NAR identity.
-///
-/// Image builders may reproduce a store closure in a filesystem whose NAR
-/// representation differs from the build host's registered Nix database
-/// identity. The measured image, rather than that stale database registration,
-/// is the trust root for this origin, so identity is derived from the bytes
-/// `nix-store --dump` reads from the immutable mounted image.
+/// Resolves a canonical store path through the immutable lower image store.
 ///
 /// # Errors
 ///
-/// Returns an error when Nix cannot dump the path or the NAR bytes cannot be
-/// hashed.
-pub(crate) fn local_store_identity(path: &str) -> Result<(String, u64)> {
+/// Returns an error for nested, relative, or otherwise non-canonical store
+/// paths. Callers must separately require the returned path to exist.
+pub(crate) fn immutable_lower_store_path(path: &str) -> Result<std::path::PathBuf> {
+    let store_path = Path::new(path);
+    if store_path.parent() != Some(Path::new("/nix/store")) {
+        bail!("image catalog contains non-canonical store path {path:?}");
+    }
+    let name = store_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("image catalog store path is not UTF-8")?;
+    let Some((hash, output_name)) = name.split_once('-') else {
+        bail!("image catalog store path has no output name: {path:?}");
+    };
+    if hash.len() != 32
+        || output_name.is_empty()
+        || !hash
+            .bytes()
+            .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
+    {
+        bail!("image catalog contains malformed store path {path:?}");
+    }
+    Ok(Path::new("/nix.lower/store").join(name))
+}
+
+pub(crate) fn local_store_identity_at(identity: &str, read_path: &Path) -> Result<(String, u64)> {
     let dump = Command::new("nix-store")
-        .args(["--dump", path])
+        .arg("--dump")
+        .arg(read_path)
         .output()
-        .with_context(|| format!("dumping image-local store path {path}"))?;
+        .with_context(|| format!("dumping image-local store path {identity}"))?;
     if !dump.status.success() {
         bail!(
-            "dumping image-local store path {path} failed: {}",
+            "dumping image-local store path {identity} failed: {}",
             String::from_utf8_lossy(&dump.stderr).trim()
         );
     }

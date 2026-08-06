@@ -38,6 +38,7 @@ fn rfc_0011_generation_axes_round_trip_independently() {
         module_abi: 9,
         baselib_digest: "sha256:base".into(),
         root_verity_roothash: None,
+        initrd_pcr11: None,
         expected_pcr11: None,
         created_at: "2026-01-01T00:00:00Z".into(),
     };

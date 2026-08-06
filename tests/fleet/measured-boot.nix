@@ -614,6 +614,63 @@ in {
           # Exercise the public, identity-pinned generation verifier. The
           # verifier policy is a separate file even in this single-node test;
           # production callers supply these values from their fleet catalog.
+          immutable_top = target.succeed("readlink /aos-toplevel").strip()
+          immutable_seed = target.succeed(
+              f"readlink /nix.lower{immutable_top}/package-profile-seed"
+          ).strip()
+          seed_meta_paths = target.succeed(
+              f"ls -1 /nix.lower{immutable_seed}/meta/*.json"
+          ).splitlines()
+          seed_records = [
+              json.loads(target.succeed(f"cat {path}")) for path in seed_meta_paths
+          ]
+          image_members = []
+          for package_name, store_path, nar_hash, abi, authorization, origin in zip(
+              config_inputs["package_names"],
+              config_inputs["store_paths"],
+              config_inputs["nar_hashes"],
+              config_inputs["module_abi_compat"],
+              config_inputs["authorizations"],
+              config_inputs["origins"],
+          ):
+              if origin != "image":
+                  continue
+              matches = [
+                  item for item in seed_records
+                  if item.get("pushed_by") == "aos-image"
+                  and item.get("apm", {}).get("registry") == "seed"
+                  and item.get("apm", {}).get("name") == package_name
+                  and item.get("apm", {}).get("config_module", {})
+                      .get("config_output", {}).get("store_path") == store_path
+              ]
+              assert len(matches) == 1, (package_name, matches)
+              lower_store_path = "/nix.lower" + store_path
+              target.succeed(f"test -e {lower_store_path}")
+              actual_nar_hash = "sha256:" + target.succeed(
+                  f"{pkgs.nix}/bin/nix-store --dump {lower_store_path} | sha256sum"
+              ).split()[0]
+              assert actual_nar_hash == nar_hash, (actual_nar_hash, nar_hash)
+              module = matches[0]["apm"]["config_module"]
+              owns = sorted(set(item["root"] for item in module["owns_roots"]))
+              contributes = {}
+              for contribution in module["contributes"]:
+                  contributes.setdefault(contribution["root"], []).extend(
+                      contribution["paths"]
+                  )
+              contributes = {
+                  root: sorted(set(paths)) for root, paths in sorted(contributes.items())
+              }
+              assert abi == module["module_abi_compat"], (abi, module)
+              assert authorization == {"owns": owns, "contributes": contributes}, (
+                  authorization, module
+              )
+              image_members.append({
+                  "package_name": package_name,
+                  "store_path": store_path,
+                  "nar_hash": nar_hash,
+                  "module_abi_compat": abi,
+                  "authorization": authorization,
+              })
           policy = {
               "schema": "aos.gen-attestation-policy/v1",
               "expected_pcr7": parsed[7],
@@ -622,6 +679,7 @@ in {
               "expected_facts_hash": inputs["instance_facts"]["facts_hash"],
               "trusted_config_keys": [],
               "trusted_platforms": [inputs["host_nix"]["platform"]],
+              "image_config_modules": image_members,
           }
           policy_encoded = base64.b64encode(
               json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
@@ -760,7 +818,7 @@ in {
       for var in ("db", "KEK", "PK"):
           target.succeed(f"{eu} -f {keys}/{var}.auth {var} 2>&1")
       assert efivar_byte("SetupMode") == 0, "PK enrollment should exit Setup Mode"
-      target.reboot()
+      target.reboot(timeout=600)
 
       # ════ 3. First enforcing boot — /var sealed to the signed policy ══
       wait_multi_user("boot2 (enforcing seal)")
@@ -791,7 +849,7 @@ in {
       assert_generation_attestation(root_hash, expected_pcr11)
 
       # ════ 4. Reboot — /var must unlock UNATTENDED via the TPM2 token ══
-      target.reboot()
+      target.reboot(timeout=600)
       wait_multi_user("boot3 (unattended unlock)")
       assert efivar_byte("SecureBoot") == 1
       src = var_source()
@@ -816,5 +874,32 @@ in {
       assert_verified_root()
       assert_tamper_rejected(root_hash, root_data, root_hash_device)
       print("=== /var unsealed UNATTENDED via TPM2 across reboot ===")
+
+      # ════ 5. Fault injection — failed ready phase must not bless ═══
+      target.succeed(f"""
+          set -eu
+          mkdir -p /etc/systemd/system/systemd-pcrphase.service.d
+          printf '%s\n' '[Service]' 'ExecStart=' \
+            'ExecStart=${pkgs.coreutils}/bin/false' \
+            > /etc/systemd/system/systemd-pcrphase.service.d/fail.conf
+          {JQ} '.pending = .running' /var/lib/profiles/image/state.json \
+            > /var/lib/profiles/image/.state.json.pcrphase-fault
+          mv /var/lib/profiles/image/.state.json.pcrphase-fault \
+            /var/lib/profiles/image/state.json
+          sync
+      """)
+      target.reboot(timeout=600)
+      target.wait_until_succeeds(
+          "systemctl is-failed systemd-pcrphase.service", timeout=120
+      )
+      target.succeed("systemctl show aos-eval.service -p ActiveState --value | grep -F inactive")
+      target.succeed(f"""
+          running=$({JQ} -er '.running' /var/lib/profiles/image/state.json)
+          pending=$({JQ} -er '.pending' /var/lib/profiles/image/state.json)
+          test "$pending" = "$running"
+          test -e /run/aos/image-reeval-required
+      """)
+      target.fail("systemctl is-active aos-image-boot-commit.service")
+      print("=== failed PCR 11 ready phase left the image pending and unblessed ===")
     '';
 }

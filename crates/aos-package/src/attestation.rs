@@ -510,15 +510,20 @@ pub(crate) fn persist_generation_attestation(
         return Ok(record);
     }
 
-    if running_image.expected_pcr11.is_none() || running_image.root_verity_roothash.is_none() {
-        bail!("TPM-backed generation attestation requires image PCR 11 and root verity metadata");
+    if running_image.root_verity_roothash.is_none() {
+        bail!("TPM-backed generation attestation requires image root verity metadata");
     }
-    // The image index proves that the booted UKI has published measured-boot
-    // metadata, but its early-boot snapshot may precede systemd's sysinit PCR
-    // phase. Bind the record to the exact live PCR 11 that the immediately
-    // following quote will carry. Remote verification still pins this value
-    // independently to the UKI catalog's predicted sysinit measurement.
-    inputs.base_lib.pcr11_expected = Some(crate::package_attestation::current_pcr11()?);
+    // `aos-eval.service` hard-requires systemd-pcrphase.service on measured
+    // images, so this is the stable ready-phase value. A catalog-published
+    // value is immutable policy and must match; it is never replaced by a
+    // self-reported live reading. Directly booted seed images have no external
+    // catalog record yet, so they bind the record to the ready value and rely
+    // on remote policy to supply the independent image expectation.
+    let live_pcr11 = crate::package_attestation::current_pcr11()?;
+    inputs.base_lib.pcr11_expected = Some(ready_pcr11_value(
+        running_image.expected_pcr11.as_deref(),
+        &live_pcr11,
+    )?);
     let mut record = build_unquoted_gen_attestation(
         generation_id.to_string(),
         manifest_hash.to_string(),
@@ -581,7 +586,7 @@ pub(crate) fn persist_generation_attestation(
 /// entry point, including direct same-ABI rollback paths that do not pass
 /// through the boot unit's command-line flag.
 pub(crate) fn image_requires_generation_quote(image: &ImageGeneration) -> bool {
-    image.expected_pcr11.is_some()
+    image.expected_pcr11.is_some() || image.initrd_pcr11.is_some()
 }
 
 fn read_attestation_transaction(path: &Path) -> Result<Option<GenAttestationTransaction>> {
@@ -803,10 +808,14 @@ pub struct VerifierPolicy {
     /// Release/tag/module evidence accepted after `verify_tag_chain` and
     /// signed-catalog validation.
     pub valid_release_tags: Vec<VerifiedConfigModuleRelease>,
+    /// Config-module members independently recovered from the immutable,
+    /// dm-verity-covered image package catalog.
+    pub image_config_modules: Vec<VerifiedConfigModuleMember>,
 }
 
 /// A config-module member authenticated by one signed registry release.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerifiedConfigModuleMember {
     /// Authenticated package identity.
     pub package_name: String,
@@ -1120,6 +1129,41 @@ fn config_module_release_is_trusted(
         .enumerate()
         .filter_map(|(index, origin)| (origin == "registry").then_some(index))
         .collect::<Vec<_>>();
+    let image_indexes = origins
+        .iter()
+        .enumerate()
+        .filter_map(|(index, origin)| (origin == "image").then_some(index))
+        .collect::<Vec<_>>();
+    let mut image_catalog = BTreeMap::new();
+    for member in &policy.image_config_modules {
+        if !is_canonical_store_path(&member.store_path)
+            || crate::types::validate_package_name(&member.package_name).is_err()
+            || crate::registry::store::NarBytes::from_hash(&member.nar_hash, 0)
+                .map(|nar| nar.nar_hash() != member.nar_hash)
+                .unwrap_or(true)
+            || image_catalog
+                .insert(
+                    (&member.package_name, &member.store_path, &member.nar_hash),
+                    member,
+                )
+                .is_some()
+        {
+            return false;
+        }
+    }
+    if !image_indexes.into_iter().all(|index| {
+        let key = (
+            &modules.package_names[index],
+            &modules.store_paths[index],
+            &modules.nar_hashes[index],
+        );
+        image_catalog.get(&key).is_some_and(|member| {
+            member.module_abi_compat == abi_compat[index]
+                && member.authorization == authorizations[index]
+        })
+    }) {
+        return false;
+    }
     if registry_indexes.is_empty() {
         return modules.registry.is_none()
             && modules.release_tag.is_none()
@@ -1300,6 +1344,15 @@ fn strip_sha256(s: &str) -> &str {
         .unwrap_or(s)
 }
 
+/// Binds a generation record to the independently published ready-phase PCR
+/// value, or to the live canonical value when booting an uncataloged seed.
+fn ready_pcr11_value(expected: Option<&str>, live: &str) -> Result<String> {
+    if expected.is_some_and(|value| !ct_eq(strip_sha256(value), strip_sha256(live))) {
+        bail!("live ready-phase PCR 11 does not match the published image expectation");
+    }
+    Ok(expected.unwrap_or(live).to_string())
+}
+
 /// Constant-time-ish case-insensitive hex equality. Compares lengths first, then
 /// bytes; used for PCR/digest comparison so a mismatch is total, not prefix.
 fn ct_eq(a: &str, b: &str) -> bool {
@@ -1372,6 +1425,22 @@ mod tests {
     const ROOTHASH: &str = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
     const PCR11_HEX: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const PCR7_HEX: &str = "7777777777777777777777777777777777777777777777777777777777777777";
+
+    #[test]
+    fn ready_pcr11_seed_value_keeps_one_hash_prefix() {
+        let live = format!("sha256:{PCR11_HEX}");
+        assert_eq!(ready_pcr11_value(None, &live).unwrap(), live);
+    }
+
+    #[test]
+    fn ready_pcr11_accepts_equivalent_prefixed_and_bare_values() {
+        let live = format!("sha256:{PCR11_HEX}");
+        assert_eq!(
+            ready_pcr11_value(Some(PCR11_HEX), &live).unwrap(),
+            PCR11_HEX
+        );
+        assert!(ready_pcr11_value(Some(&format!("sha256:{}", "aa".repeat(32))), &live).is_err());
+    }
 
     fn sample_inputs() -> AttestationInputs {
         let module_path = "/nix/store/cccccccccccccccccccccccccccccccc-web-config".to_string();
@@ -1451,6 +1520,7 @@ mod tests {
                     authorization: PackageAuthorization::default(),
                 }],
             }],
+            image_config_modules: Vec::new(),
         }
     }
 
@@ -1507,9 +1577,13 @@ mod tests {
             baselib_digest: format!("sha256:{}", "11".repeat(32)),
             root_verity_roothash: Some("22".repeat(32)),
             expected_pcr11: None,
+            initrd_pcr11: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
         };
         assert!(!image_requires_generation_quote(&image));
+        image.initrd_pcr11 = Some(format!("sha256:{}", "44".repeat(32)));
+        assert!(image_requires_generation_quote(&image));
+        image.initrd_pcr11 = None;
         image.expected_pcr11 = Some(format!("sha256:{}", "33".repeat(32)));
         assert!(image_requires_generation_quote(&image));
     }
@@ -1554,10 +1628,38 @@ mod tests {
         modules.tag_signer_key = None;
         modules.realization = None;
         modules.provenance["origins"] = serde_json::json!(["image"]);
+        let image_member = VerifiedConfigModuleMember {
+            package_name: modules.package_names[0].clone(),
+            store_path: modules.store_paths[0].clone(),
+            nar_hash: modules.nar_hashes[0].clone(),
+            module_abi_compat: serde_json::from_value(
+                modules.provenance["module_abi_compat"][0].clone(),
+            )
+            .unwrap(),
+            authorization: serde_json::from_value(modules.provenance["authorizations"][0].clone())
+                .unwrap(),
+        };
         let record = computed_with_inputs(inputs);
-        let result =
-            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None);
+        let mut policy = sample_policy();
+        policy.image_config_modules.push(image_member);
+        let result = verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None);
         assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[test]
+    fn verifier_rejects_uncataloged_image_config_module_origin() {
+        let mut inputs = sample_inputs();
+        let modules = &mut inputs.config_modules;
+        modules.registry = None;
+        modules.release_tag = None;
+        modules.tag_signer_key = None;
+        modules.realization = None;
+        modules.provenance["origins"] = serde_json::json!(["image"]);
+        let record = computed_with_inputs(inputs);
+        let error =
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
+                .unwrap_err();
+        assert_eq!(error, GenAttestationFailure::Tag);
     }
 
     #[test]

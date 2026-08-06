@@ -1257,10 +1257,24 @@ fn read_current_pcr15() -> Result<String> {
 /// Returns an error when the trusted TPM reader cannot run or its output does
 /// not contain a canonical PCR 11 value.
 pub(crate) fn current_pcr11() -> Result<String> {
+    current_pcr_value(11)
+}
+
+/// Reads the live SHA-256 PCR 7 Secure Boot policy value.
+///
+/// # Errors
+///
+/// Returns an error when the trusted TPM reader cannot run or its output does
+/// not contain a canonical PCR 7 value.
+pub(crate) fn current_pcr7() -> Result<String> {
+    current_pcr_value(7)
+}
+
+fn current_pcr_value(index: u8) -> Result<String> {
     let pcrread = trusted_tpm2_tool_path(TPM2_PCRREAD_ENV, "tpm2_pcrread")?;
     let tcti = tpm2_tcti()?;
     let mut command = Command::new(&pcrread);
-    command.arg(format!("{PCR_BANK}:11"));
+    command.arg(format!("{PCR_BANK}:{index}"));
     if let Some(tcti) = tcti {
         command.env("TPM2TOOLS_TCTI", tcti);
     }
@@ -1276,7 +1290,7 @@ pub(crate) fn current_pcr11() -> Result<String> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    parse_tpm2_pcrread_value(&String::from_utf8_lossy(&output.stdout), 11)
+    parse_tpm2_pcrread_value(&String::from_utf8_lossy(&output.stdout), index)
 }
 
 /// Replays only the PCR 15 digest for a package event log.

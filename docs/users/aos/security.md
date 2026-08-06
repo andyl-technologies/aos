@@ -241,9 +241,11 @@ The mechanisms currently demonstrated are:
 
 Durable upgrades preserve those bindings per image generation: APM validates
 the signed catalog, writes the inactive root/hash slot and slot-specific UKI,
-and selects the counted entry. A boot is blessed only after configuration has
-been rebound to the running image. This mechanism does not supply production
-signing keys, enrollment, or key custody.
+and selects the counted entry. A boot is blessed only after the TPM reaches the
+ready PCR phase, configuration has been rebound to the running image, and the
+boot-commit verifier confirms the stored quote's signature, nonce, and PCR 7/11
+values against both the live TPM and published image record. This mechanism
+does not supply production signing keys, enrollment, or key custody.
 
 Each committed configuration generation also carries
 `gen-attestation.json`, binding its manifest to the evaluator, base library,
