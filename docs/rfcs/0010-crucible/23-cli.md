@@ -828,13 +828,14 @@ reverse verbs. It introduces no determinism mechanism of its own ([CLI-1]).
 
 ```text
   crucible debug <ARTIFACT|SAVEPOINT> [FLAGS]
-  crucible debug --session <addr>      [FLAGS]
+  crucible debug --session <id:epoch:seed> [FLAGS]
 
   ARGS
     <ARTIFACT|SAVEPOINT>   A reproduction artifact (06 §7.1) or savepoint handle (07).
 
   FLAGS (subcommand-local; global flags from §2 also apply)
-    --session <addr>          Attach to a live daemon session (21) instead of an artifact.
+    --session <id:epoch:seed> Attach to a live daemon session (21) instead of an artifact;
+                              seed is exactly 64 lowercase hexadecimal digits.
     --at <virtual-time|icount>   Open at this coordinate (20 §4.4 DebugCoordinate).
     --at-event <seq>          Open at this event-log sequence position (19).
     --at-failure              Open at the run's first property violation (the failure footer's verb, §4).

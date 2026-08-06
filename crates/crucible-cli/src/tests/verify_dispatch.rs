@@ -2979,6 +2979,16 @@ pub(super) fn cli_remote_debug_selects_the_daemon_backend_route() -> Result<(), 
 }
 
 #[test]
+pub(super) fn cli_debug_validates_session_before_backend_discovery() {
+    let cli = Cli::parse_from(["crucible", "debug", "--session", "not-a-session"]);
+
+    let error = dispatch(&cli).expect_err("malformed session must fail before backend discovery");
+
+    assert!(matches!(error, CliError::Usage(_)));
+    assert!(error.to_string().contains("--session"));
+}
+
+#[test]
 pub(super) fn cli_debug_reverse_condition_parser_accepts_documented_forms() {
     assert_eq!(
         parse_debug_reverse_condition("quiescent")
@@ -3112,7 +3122,7 @@ pub(super) fn cli_debug_surface_requires_explicit_fork_for_allow_mutate()
         "crucible",
         "debug",
         "--session",
-        "127.0.0.1:7000",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "--at-checkpoint",
         checkpoint,
         "--allow-mutate",
@@ -3155,7 +3165,7 @@ pub(super) fn cli_debug_allow_mutate_does_not_fork_implicitly() -> Result<(), Bo
         "crucible",
         "debug",
         "--session",
-        "127.0.0.1:7000",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "--allow-mutate",
         "goto",
         "vtime:7",
@@ -3293,7 +3303,14 @@ pub(super) fn cli_debug_surface_defaults_coordinate_by_target_kind() -> Result<(
         DebugPlanCoordinate::AtCheckpoint(_)
     ));
 
-    let session_cli = Cli::parse_from(["crucible", "debug", "--session", "127.0.0.1:7000"]);
+    let session_cli = Cli::parse_from([
+        "crucible",
+        "--daemon",
+        "127.0.0.1:7000",
+        "debug",
+        "--session",
+        "7:12:1111111111111111111111111111111111111111111111111111111111111111",
+    ]);
     let Commands::Debug(args) = &session_cli.command else {
         panic!("expected debug command");
     };

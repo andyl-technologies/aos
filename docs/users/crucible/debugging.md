@@ -117,6 +117,11 @@ it prints, and connect from a second terminal:
   -ex 'target remote 127.0.0.1:<port>'
 ```
 
+The session target is the canonical identity printed by the daemon:
+`id:epoch:seed`, where `id` and `epoch` are decimal integers and `seed` is
+exactly 64 lowercase hexadecimal digits. It is not a network address; the
+global `--daemon` option selects the daemon endpoint.
+
 Crucible does not provide a symbol server. Supply the guest executable and
 DWARF files to GDB locally. The packaged GDB includes Python scripting, TUI,
 and both x86_64 and aarch64 target descriptions.

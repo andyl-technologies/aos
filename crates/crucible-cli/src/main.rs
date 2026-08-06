@@ -158,16 +158,16 @@ struct Cli {
     #[arg(long, value_name = "addr", global = true)]
     daemon: Option<String>,
     /// CA certificate used to authenticate an HTTPS daemon.
-    #[arg(long, value_name = "path", global = true)]
+    #[arg(long, value_name = "path", global = true, requires = "daemon")]
     daemon_ca: Option<PathBuf>,
     /// Client certificate chain presented to an HTTPS daemon.
-    #[arg(long, value_name = "path", global = true)]
+    #[arg(long, value_name = "path", global = true, requires = "daemon")]
     daemon_cert: Option<PathBuf>,
     /// Client private key presented to an HTTPS daemon.
-    #[arg(long, value_name = "path", global = true)]
+    #[arg(long, value_name = "path", global = true, requires = "daemon")]
     daemon_key: Option<PathBuf>,
     /// Permit an unauthenticated daemon endpoint on a trusted network.
-    #[arg(long, action = ArgAction::SetTrue, global = true)]
+    #[arg(long, action = ArgAction::SetTrue, global = true, requires = "daemon")]
     trusted_unauthenticated_daemon: bool,
     /// Patched QEMU system binary (26). Else discovered.
     #[arg(long, value_name = "path", global = true)]
@@ -721,8 +721,8 @@ struct DebugArgs {
     /// Attach to this artifact or savepoint.
     #[arg(value_name = "ARTIFACT|SAVEPOINT", conflicts_with = "session")]
     target: Option<String>,
-    /// Attach to a running session.
-    #[arg(long, value_name = "ADDR")]
+    /// Attach to a running daemon session by id:epoch:64-lowercase-hex-seed.
+    #[arg(long, value_name = "SESSION")]
     session: Option<String>,
     /// Open at a virtual-time or node-icount coordinate.
     #[arg(long, value_name = "COORD")]

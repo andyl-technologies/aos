@@ -1624,7 +1624,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "checkpoint_stride",
                 "record_transcript",
             ][..],
-            "about=Open the time-travel debugger\nusage=Usage: crucible debug [OPTIONS] <ARTIFACT|SAVEPOINT|--session <ADDR>> [COMMAND]\ntarget=Attach to this artifact or savepoint\nsession=Attach to a running session\nat=Open at a virtual-time or node-icount coordinate\nat_event=Open at this event-log sequence\nat_failure=Open at the recorded failure point\nat_checkpoint=Open at this checkpoint content address\nnode=Attach this node's gdbstub\ngdb_listen=Listen for gdb-protocol clients here\nread_only=Keep the canonical run read-only\nallow_mutate=Authorize an explicit non-canonical debug fork\ncheckpoint_stride=Bound reverse-step replay distance\nrecord_transcript=Record the non-canonical guest channel to a new transcript file\ncommand.attach-gdb=Open the mediated gdbstub channel\ncommand.fork-debug=Explicitly fork a non-canonical whole-world debug branch\ncommand.goto=Move to another debug coordinate\ncommand.reverse-step=Step backward by one deterministic grain\ncommand.reverse-continue=Continue backward to a matching condition\ncommand.exec=Execute an argv-based command through the guest debug agent\ncommand.pty=Open an interactive command on a guest PTY\ncommand.ssh=Bridge stdin/stdout to the guest agent's configured SSH server\n",
+            "about=Open the time-travel debugger\nusage=Usage: crucible debug [OPTIONS] <ARTIFACT|SAVEPOINT|--session <SESSION>> [COMMAND]\ntarget=Attach to this artifact or savepoint\nsession=Attach to a running daemon session by id:epoch:64-lowercase-hex-seed\nat=Open at a virtual-time or node-icount coordinate\nat_event=Open at this event-log sequence\nat_failure=Open at the recorded failure point\nat_checkpoint=Open at this checkpoint content address\nnode=Attach this node's gdbstub\ngdb_listen=Listen for gdb-protocol clients here\nread_only=Keep the canonical run read-only\nallow_mutate=Authorize an explicit non-canonical debug fork\ncheckpoint_stride=Bound reverse-step replay distance\nrecord_transcript=Record the non-canonical guest channel to a new transcript file\ncommand.attach-gdb=Open the mediated gdbstub channel\ncommand.fork-debug=Explicitly fork a non-canonical whole-world debug branch\ncommand.goto=Move to another debug coordinate\ncommand.reverse-step=Step backward by one deterministic grain\ncommand.reverse-continue=Continue backward to a matching condition\ncommand.exec=Execute an argv-based command through the guest debug agent\ncommand.pty=Open an interactive command on a guest PTY\ncommand.ssh=Bridge stdin/stdout to the guest agent's configured SSH server\n",
         ),
     ];
 
@@ -1768,8 +1768,38 @@ pub(super) fn cli_parser_enforces_every_normatively_required_input() {
     assert!(Cli::try_parse_from(["crucible", "verify", "--compare", "left", "right"]).is_ok());
     assert!(Cli::try_parse_from(["crucible", "fuzz", "family.toml"]).is_ok());
     assert!(Cli::try_parse_from(["crucible", "fuzz", "--family", "blake3:family"]).is_ok());
-    assert!(Cli::try_parse_from(["crucible", "debug", "--session", "127.0.0.1:9000"]).is_ok());
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "--daemon",
+            "127.0.0.1:9000",
+            "debug",
+            "--session",
+            "7:12:1111111111111111111111111111111111111111111111111111111111111111",
+        ])
+        .is_ok()
+    );
     assert!(Cli::try_parse_from(["crucible", "serve", "--listen", "127.0.0.1:9000"]).is_ok());
+}
+
+#[test]
+pub(super) fn cli_parser_requires_daemon_for_remote_transport_options() {
+    for option in ["--daemon-ca", "--daemon-cert", "--daemon-key"] {
+        let error = Cli::try_parse_from(["crucible", option, "credential.pem", "run", "case.toml"])
+            .expect_err("daemon credential without --daemon must be rejected");
+        assert_eq!(cli_parse_error_exit_code(&error), 64);
+        assert!(error.to_string().contains("--daemon"));
+    }
+
+    let error = Cli::try_parse_from([
+        "crucible",
+        "--trusted-unauthenticated-daemon",
+        "run",
+        "case.toml",
+    ])
+    .expect_err("daemon trust override without --daemon must be rejected");
+    assert_eq!(cli_parse_error_exit_code(&error), 64);
+    assert!(error.to_string().contains("--daemon"));
 }
 
 #[test]

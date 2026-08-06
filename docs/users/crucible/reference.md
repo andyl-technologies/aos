@@ -247,7 +247,7 @@ The four coordinate selectors are mutually exclusive.
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
 | `ARTIFACT\|SAVEPOINT` | Alternative to `--session` | Attach to a retained artifact or savepoint. |
-| `--session <addr>` | Alternative to positional target | Attach to a running session. |
+| `--session <id:epoch:seed>` | Alternative to positional target | Attach to a running daemon session. The seed is exactly 64 lowercase hexadecimal digits. |
 | `--at <coord>` | Optional coordinate | Open at a virtual-time or node-icount coordinate. |
 | `--at-event <seq>` | Optional coordinate | Open at an event-log sequence. |
 | `--at-failure` | Optional coordinate | Open at the recorded failure point. |

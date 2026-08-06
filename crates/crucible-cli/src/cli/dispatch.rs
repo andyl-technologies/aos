@@ -124,6 +124,10 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         _ => None,
     };
+    let debug_plan = match &cli.command {
+        Commands::Debug(args) => Some(plan_debug_invocation(cli, args)?),
+        _ => None,
+    };
     let emit_human = should_emit_human_dispatch_output(cli);
     if let Some(plan) = &ergonomics_plan {
         execute_determinism_ergonomics_plan(plan, &mut NullDeterminismErgonomicsRecorder)?;
@@ -136,13 +140,12 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     }
     if let Some(backend_plan) = plan_backend_selection(cli)? {
         execute_backend_selection_plan(&backend_plan, cli.quiet, &mut NullBackendRouteRecorder)?;
-        if let Commands::Debug(args) = &cli.command {
-            let plan = plan_debug_invocation(cli, args)?;
+        if let Some(plan) = &debug_plan {
             if cli.daemon.is_some() {
-                return run_remote_debug_relay(cli, &plan);
+                return run_remote_debug_relay(cli, plan);
             }
             let backend = require_selftest_qemu_backend(cli)?;
-            let lines = run_local_qemu_debug_workflow(&backend, &plan)?;
+            let lines = run_local_qemu_debug_workflow(&backend, plan)?;
             let mut outcome = execute_backend_routed_command(
                 &thin_plan,
                 &backend_plan,
