@@ -149,29 +149,31 @@ pub fn collect_static_origin_files(registry_dir: &Path) -> Result<Vec<StaticOrig
         "publication-receipts",
         |_| Ok(StaticOriginClass::Receipt),
     )?;
-    let repository = git2::Repository::open(registry_dir)
-        .or_else(|_| git2::Repository::open_bare(&git_dir))
-        .context("opening static origin to resolve its publication commit")?;
-    let commit = repository
-        .head()
-        .context("reading static origin HEAD")?
-        .peel_to_commit()
-        .context("resolving static origin publication commit")?
-        .id();
-    let required = format!("publication-receipts/{commit}.json");
-    if let Some(receipt) = files
-        .iter()
-        .find(|file| file.class == StaticOriginClass::Receipt && file.relative_path == required)
-        .cloned()
-    {
-        add_receipt_image_objects(&mut files, &git_dir, commit, &receipt)?;
-    } else if files.iter().any(|file| {
+    if files.iter().any(|file| {
         matches!(
             file.class,
             StaticOriginClass::ImageDisk | StaticOriginClass::Receipt
         )
     }) {
-        bail!("published image catalog has no durable receipt for current commit {commit}");
+        let repository = git2::Repository::open(registry_dir)
+            .or_else(|_| git2::Repository::open_bare(&git_dir))
+            .context("opening static origin to resolve its publication commit")?;
+        let commit = repository
+            .head()
+            .context("reading static origin HEAD")?
+            .peel_to_commit()
+            .context("resolving static origin publication commit")?
+            .id();
+        let required = format!("publication-receipts/{commit}.json");
+        if let Some(receipt) = files
+            .iter()
+            .find(|file| file.class == StaticOriginClass::Receipt && file.relative_path == required)
+            .cloned()
+        {
+            add_receipt_image_objects(&mut files, &git_dir, commit, &receipt)?;
+        } else {
+            bail!("published image catalog has no durable receipt for current commit {commit}");
+        }
     }
 
     files.sort_by(|a, b| {
