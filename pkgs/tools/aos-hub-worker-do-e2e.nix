@@ -18,7 +18,7 @@
 ##! both flat and nested resource identities: eight simultaneous distinct
 ##! parts, an exact same-part retry, and a mismatched same-part rejection for
 ##! each identity. Finally, the driver checks the
-##! live Worker body boundary at 20 MiB and 20 MiB + 1, changes the operator cap
+##! live shared-API body boundary at 8 MiB and 8 MiB + 1, changes the operator cap
 ##! through the ordinary Connect API, and proves both single and multipart
 ##! writes honor that lower cap. The transcript must end with `PASS`.
 ##!
@@ -38,6 +38,7 @@
   aos,
   aos-system-image-e2e-fixture,
   coreutils,
+  diffutils,
   grep,
   nodejs,
   nix,
@@ -100,6 +101,11 @@
     if (!fixtureRoot) throw new Error("AOS_HUB_E2E_IMAGE_FIXTURE is required");
     const objects = {};
     function collect(directory, relative = "") {
+      // The image consumer fixture needs the signed registry object graph and
+      // exact disk-image objects, not the unrelated binary-cache NAR closure.
+      // Keeping those package NARs out of the injected DO-backed surface also
+      // respects Durable Object SQL's per-value limit.
+      if (relative === "nar") return;
       for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
         const child = path.join(directory, entry.name);
         const objectPath = relative ? `''${relative}/''${entry.name}` : entry.name;
@@ -237,7 +243,7 @@
         || !imagesHtml.includes(`''${(rawBytes.length / (1024 * 1024)).toFixed(1)} MiB`)
         || !imagesHtml.includes(rawSha256)
         || !imagesHtml.includes("verified")
-        || !imagesHtml.includes("unsigned")
+        || !imagesHtml.includes("signed, unverified")
         || !imagesHtml.includes('href="/failure/images-public/-/images"')
         || !imagesHtml.includes('aria-current="page">Images')) {
       throw new Error(`Worker Images page: ''${imagesPage.status} ''${imagesHtml}`);
@@ -298,15 +304,37 @@
       throw new Error(`private image API: ''${privateApi.response.status} ''${privateApi.text}`);
     }
 
-    async function multipart(slug, path) {
-      const target = BASE + "/" + slug + "/" + path;
-      const initiated = await fetch(target + "?uploads&size=32", { method: "POST", headers, body: "" });
-      if (initiated.status !== 200) throw new Error(`initiate ''${slug}/''${path}: ''${initiated.status} ''${await initiated.text()}`);
-      const upload = await initiated.json();
+    async function cacheRpc(method, body) {
+      const response = await fetch(BASE + `/aos.hub.v1.BinaryCacheService/''${method}`, {
+        method: "POST",
+        headers: {
+          ...headers,
+          "content-type": "application/json",
+          "connect-protocol-version": "1",
+        },
+        body: JSON.stringify(body),
+      });
+      const text = await response.text();
+      return { response, text, value: text ? JSON.parse(text) : null };
+    }
+
+    async function multipart(cacheId, path, byteSize = 32) {
+      const initiated = await cacheRpc("BeginCacheMultipartUpload", {
+        delivery_url: BASE + "/" + cacheId,
+        path,
+        byte_size: byteSize,
+      });
+      if (initiated.response.status !== 200) {
+        throw new Error(`initiate ''${cacheId}/''${path}: ''${initiated.response.status} ''${initiated.text}`);
+      }
+      const upload = initiated.value;
       const send = async (part, fill) => {
-        const response = await fetch(target + `?uploadId=''${encodeURIComponent(upload.upload_id)}&partNumber=''${part}`, {
+        const response = await fetch(
+          BASE + `/aos.hub.v1.BinaryCacheService/UploadPart/''${encodeURIComponent(upload.uploadId)}/''${part}`,
+          {
           method: "PUT", headers, body: new Uint8Array(4).fill(fill),
-        });
+          },
+        );
         if (response.status !== 200) throw new Error(`part ''${part}: ''${response.status} ''${await response.text()}`);
         return await response.json();
       };
@@ -315,37 +343,50 @@
       const responses = await Promise.all(requests);
       const distinct = responses.slice(0, 8);
       if (responses[8].etag !== distinct[0].etag) throw new Error("same-part retry changed etag");
-      const mismatch = await fetch(target + `?uploadId=''${encodeURIComponent(upload.upload_id)}&partNumber=1`, {
+      const mismatch = await fetch(BASE + `/aos.hub.v1.BinaryCacheService/UploadPart/''${encodeURIComponent(upload.uploadId)}/1`, {
         method: "PUT", headers, body: new Uint8Array(4).fill(99),
       });
       if (mismatch.status < 400) throw new Error("same-part mismatch was accepted");
-      const completed = await fetch(target + `?uploadId=''${encodeURIComponent(upload.upload_id)}`, {
-        method: "POST",
-        headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({ parts: distinct.map((part) => ({ part_number: part.part_number, etag: part.etag })) }),
+      const completed = await cacheRpc("CompleteCacheMultipartUpload", {
+        upload_id: upload.uploadId,
+        parts: distinct.map((part) => ({ part_number: part.partNumber, etag: part.etag })),
       });
-      if (completed.status !== 201 && completed.status !== 200) {
-        throw new Error(`complete ''${slug}/''${path}: ''${completed.status} ''${await completed.text()}`);
+      if (completed.response.status !== 200 || completed.value.state !== "completed") {
+        throw new Error(`complete ''${cacheId}/''${path}: ''${completed.response.status} ''${completed.text}`);
       }
     }
 
-    await multipart("flat-cache", "00000000000000000000000000000000.narinfo");
+    await multipart("flat-cache", "nar/flat-path.nar");
     await multipart("failure/cache", "nar/nested/path.nar");
-    await multipart("flat-registry", "HEAD");
-    await multipart("failure/registry", "objects/ab/nested-object");
 
-    const atBuiltinLimit = await fetch(BASE + "/flat-cache/nar/builtin-limit.nar", {
-      method: "PUT", headers, body: new Uint8Array(20 * 1024 * 1024),
+    async function createSingleUpload(cacheId, path, size) {
+      const created = await cacheRpc("CreateCacheObjectUploads", {
+        delivery_url: BASE + "/" + cacheId,
+        path,
+        size,
+      });
+      if (created.response.status !== 200 || !created.value.uploadUrl) {
+        throw new Error(`single upload admission: ''${created.response.status} ''${created.text}`);
+      }
+      return created.value.uploadUrl;
+    }
+
+    const builtinBytes = 8 * 1024 * 1024;
+    const atBuiltinUrl = await createSingleUpload("flat-cache", "nar/builtin-limit.nar", builtinBytes);
+    const atBuiltinLimit = await fetch(atBuiltinUrl, {
+      method: "PUT", headers, body: new Uint8Array(builtinBytes),
     });
     if (atBuiltinLimit.status !== 201) {
       throw new Error(`built-in boundary: ''${atBuiltinLimit.status} ''${await atBuiltinLimit.text()}`);
     }
-    const overLimit = await fetch(BASE + "/flat-cache/nar/too-large.nar", {
-      method: "PUT", headers, body: new Uint8Array(20 * 1024 * 1024 + 1),
+    const overLimitUrl = await createSingleUpload("flat-cache", "nar/too-large.nar", builtinBytes);
+    const overLimit = await fetch(overLimitUrl, {
+      method: "PUT", headers, body: new Uint8Array(builtinBytes + 1),
     });
     if (overLimit.status !== 413) {
       throw new Error(`built-in over-limit: ''${overLimit.status} ''${await overLimit.text()}`);
     }
+    const configuredSingleUrl = await createSingleUpload("flat-cache", "nar/configured-cap.nar", 5);
 
     const getSettings = await fetch(BASE + "/aos.hub.v1.InstanceService/GetInstanceSettings", {
       method: "POST",
@@ -394,24 +435,25 @@
       throw new Error(`configured cap API: ''${applySettings.status} ''${await applySettings.text()}`);
     }
 
-    const cappedSingle = await fetch(BASE + "/flat-cache/nar/configured-cap.nar", {
+    const cappedSingle = await fetch(configuredSingleUrl, {
       method: "PUT", headers, body: new Uint8Array(5),
     });
-    if (cappedSingle.status !== 413) {
+    if (cappedSingle.status !== 429) {
       throw new Error(`configured single-upload cap: ''${cappedSingle.status} ''${await cappedSingle.text()}`);
     }
-    const cappedTarget = BASE + "/flat-registry/objects/ab/configured-cap";
-    const cappedInitiated = await fetch(cappedTarget + "?uploads&size=5", {
-      method: "POST", headers, body: "",
+    const cappedInitiated = await cacheRpc("BeginCacheMultipartUpload", {
+      delivery_url: BASE + "/flat-cache",
+      path: "nar/configured-multipart-cap.nar",
+      byte_size: 5,
     });
-    if (cappedInitiated.status !== 200) {
-      throw new Error(`configured multipart initiate: ''${cappedInitiated.status} ''${await cappedInitiated.text()}`);
+    if (cappedInitiated.response.status !== 200) {
+      throw new Error(`configured multipart initiate: ''${cappedInitiated.response.status} ''${cappedInitiated.text}`);
     }
-    const cappedUpload = await cappedInitiated.json();
-    const cappedPart = await fetch(cappedTarget + `?uploadId=''${encodeURIComponent(cappedUpload.upload_id)}&partNumber=1`, {
+    const cappedUpload = cappedInitiated.value;
+    const cappedPart = await fetch(BASE + `/aos.hub.v1.BinaryCacheService/UploadPart/''${encodeURIComponent(cappedUpload.uploadId)}/1`, {
       method: "PUT", headers, body: new Uint8Array(5),
     });
-    if (cappedPart.status !== 413) {
+    if (cappedPart.status !== 429) {
       throw new Error(`configured multipart cap: ''${cappedPart.status} ''${await cappedPart.text()}`);
     }
 
@@ -422,7 +464,7 @@ in
     pname = "aos-hub-worker-do-e2e";
     version = "0.1.0";
 
-    runtimeDeps = [dist aos nix nodejs workerd-source bash coreutils grep aos-system-image-e2e-fixture];
+    runtimeDeps = [dist aos nix nodejs workerd-source bash coreutils diffutils grep aos-system-image-e2e-fixture];
     nukeRefsKeep = [workerCapnp driver];
 
     phases = [
@@ -464,7 +506,7 @@ in
             --hub http://127.0.0.1:8799 \
             --registry failure/images-public --channel stable --format raw \
             --output "\$work/worker-cli.img" >/dev/null
-          ${coreutils}/bin/cmp "\$work/worker-cli.img" "\$(${coreutils}/bin/cat "\$work/producer/raw-path")"
+          ${diffutils}/bin/cmp "\$work/worker-cli.img" "\$(${coreutils}/bin/cat "\$work/producer/raw-path")"
           EOF
           chmod +x "$out/bin/aos-hub-worker-do-e2e"
         '';

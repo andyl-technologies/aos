@@ -228,7 +228,13 @@ async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
             }
         }
         let expected_body = image.byte_size - existing;
-        if response.content_length() != Some(expected_body) {
+        // Workers and intermediary proxies may legitimately stream a response
+        // with chunked framing. Validate Content-Length when it is present,
+        // then enforce the signed size while consuming the body in all cases.
+        if response
+            .content_length()
+            .is_some_and(|length| length != expected_body)
+        {
             bail!("image response length does not match signed remaining byte count");
         }
         let mut file = destination.take_async_file()?;

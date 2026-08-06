@@ -136,7 +136,7 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
         }
         let truncated = Reflect::get(&result, &JsValue::from_str("truncated"))
             .ok()
-            .and_then(|value| value.as_bool())
+            .map(|value| value.is_truthy())
             .unwrap_or(false);
         let cursor = if truncated {
             Some(
@@ -513,7 +513,7 @@ fn r2_body_stream(
             .map_err(|e| std::io::Error::other(format!("R2 read: {e:?}")))?;
         let done = Reflect::get(&result, &JsValue::from_str("done"))
             .ok()
-            .and_then(|d| d.as_bool())
+            .map(|value| value.is_truthy())
             .unwrap_or(true);
         if done {
             return Ok(None);
@@ -1400,7 +1400,11 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
         let objects = Array::new();
         objects.push(&listed);
         let _ = Reflect::set(&object, &JsValue::from_str("objects"), &objects);
-        let _ = Reflect::set(&object, &JsValue::from_str("truncated"), &JsValue::TRUE);
+        let _ = Reflect::set(
+            &object,
+            &JsValue::from_str("truncated"),
+            &JsValue::from_bool(true),
+        );
         let _ = Reflect::set(
             &object,
             &JsValue::from_str("cursor"),
@@ -1531,7 +1535,9 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
     anyhow::ensure!(
         first_page.keys == vec!["fixture/object".to_string()]
             && first_page.cursor.as_deref() == Some("cursor-2"),
-        "R2 first list response shape did not round-trip"
+        "R2 first list response shape did not round-trip: keys={:?}, cursor={:?}",
+        first_page.keys,
+        first_page.cursor
     );
     let page = contract.list("fixture/", Some("cursor-1"), 2).await?;
     anyhow::ensure!(

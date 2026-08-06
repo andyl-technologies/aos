@@ -2243,7 +2243,7 @@ impl Database {
                         ticket.prior_object_size, ticket.prior_object_hash,
                         ticket.prior_object_etag, ticket.intended_object_hash
                  FROM cache_write_tickets ticket
-                 JOIN surface_placements placement
+                 JOIN surface_placement_effective placement
                    ON placement.id = ticket.placement_id
                   AND placement.cache_id = ticket.cache_id
                  JOIN storage_bindings binding

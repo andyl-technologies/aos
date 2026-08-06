@@ -1459,6 +1459,34 @@ mod entry {
                 .map_err(|error| {
                     worker::Error::RustError(format!("topology fixture: {error:#}"))
                 })?;
+            for (surface, placement_id, slug) in [
+                (
+                    aos_hub_core::db::SurfaceTarget::BinaryCache(2),
+                    3,
+                    "flat-cache",
+                ),
+                (
+                    aos_hub_core::db::SurfaceTarget::BinaryCache(1),
+                    1,
+                    "failure/cache",
+                ),
+                (
+                    aos_hub_core::db::SurfaceTarget::Registry(2),
+                    4,
+                    "flat-registry",
+                ),
+                (
+                    aos_hub_core::db::SurfaceTarget::Registry(1),
+                    2,
+                    "failure/registry",
+                ),
+            ] {
+                crate::e2e_surface::configure_hub_delivery_route(&db, surface, placement_id, slug)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!("fixture delivery route: {error:#}"))
+                    })?;
+            }
             let image_fixture = crate::e2e_surface::decode_producer_surface_fixture(
                 producer_surface,
             )
@@ -1486,6 +1514,20 @@ mod entry {
                     "apr image publication produced {gc_root_count} GC roots, expected 4"
                 )));
             }
+            // Materialize topology setup events before installing the webhook.
+            // The lifecycle assertion below must observe only its two seeded
+            // events, and a newly-created hook must not receive historical
+            // placement or image-publication notifications.
+            loop {
+                let materialized = db.materialize_topology_events().await.map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "fixture event pre-materialization: {error:#}"
+                    ))
+                })?;
+                if materialized == 0 {
+                    break;
+                }
+            }
             let webhook_id = db
                 .seed_webhook_for_test(
                     1,
@@ -1511,7 +1553,7 @@ mod entry {
             })?;
             if materialized != 2
                 || db
-                    .claim_due_deliveries(i64::MAX - 100, 10, 30)
+                    .claim_due_deliveries(now_for_worker().saturating_add(60), 10, 30)
                     .await
                     .map_err(|error| {
                         worker::Error::RustError(format!("webhook claims: {error:#}"))
