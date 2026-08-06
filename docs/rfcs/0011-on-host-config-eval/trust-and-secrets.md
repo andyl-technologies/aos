@@ -188,7 +188,8 @@ cumulative PCR 15; quote covers PCR 7, 11, 12, 15):
     evaluator:
       store_path     = <store path of the eval binary>               # ⊂ measured UKI
     config_modules:
-      registry       = <name>
+      origins        = [<registry|image>, ...]  # aligned with module inputs
+      registry       = <name>                   # when any origin is registry
       release_tag    = <semver>                  # verify_tag_chain target
       tag_signer_key = <trusted-keys.d fingerprint>
       realization    = <hash of the signed store/ graph subset consumed>
@@ -204,9 +205,11 @@ cumulative PCR 15; quote covers PCR 7, 11, 12, 15):
   quote             = <TPM2 quote over PCR 7,11,12,15 + this record's hash>
 ```
 
-A verifier confirms (a) PCR-7/11 match the registry's recorded `expected_pcr11`
+A verifier confirms (a) PCR-7 and ready-phase PCR-11 plus the dm-verity root match the image
+catalog, thereby authenticating every `image`-origin module, and
+PCR-11 matches the registry's recorded `expected_pcr11`
 (`registry-catalog.md:42-52`, reused — not a parallel value), (b) `release_tag`
-is signed by a roster key and not revoked, (c) the recorded configuration trust
+is signed by a roster key and not revoked for the registry-origin subset, (c) the recorded configuration trust
 evidence satisfies the named policy (platform binding or trusted signed-mode
 key; the `image` mode is accepted only for the measured evaluator's exact empty
 fallback), then (d) optionally for operator input, but mandatorily for `image`

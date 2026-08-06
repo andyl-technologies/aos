@@ -4,24 +4,26 @@ Before=aos-install-baked-packages.service aos-preset.service multi-user.target
 Description=Seed baked AOS package profile
 
 [Service]
-Environment="PATH=/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/bin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/bin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/bin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin:/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/sbin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/sbin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/sbin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/sbin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/sbin"
+Environment="PATH=/nix/store/<hash>-coreutils-9.5/bin:/nix/store/<hash>-findutils-4.10.0/bin:/nix/store/<hash>-grep-3.11/bin:/nix/store/<hash>-sed-4.9/bin:/nix/store/<hash>-systemd-259.1/bin:/nix/store/<hash>-coreutils-9.5/sbin:/nix/store/<hash>-findutils-4.10.0/sbin:/nix/store/<hash>-grep-3.11/sbin:/nix/store/<hash>-sed-4.9/sbin:/nix/store/<hash>-systemd-259.1/sbin"
 ExecStart=<<aos-job-script>>
-#!/nix/store/inkxqwa69sgkj934172yi7bwv97l726g-bash-5.2.37/bin/bash
+#!/nix/store/<hash>-bash-5.2.37/bin/bash
 set -e
 
 profile=/var/lib/profiles/system-packages
 if [ ! -e "$profile/state.json" ]; then
   if [ -f /etc/aos/packages.d/fleet-seed ]; then
-    /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p "$profile/gen-1/usr" "$profile/gen-1/expose" "$profile/gen-1/meta" "$profile/meta"
+    /nix/store/<hash>-coreutils-9.5/bin/mkdir -p "$profile/gen-1/usr" "$profile/gen-1/expose" "$profile/gen-1/cfgsrc" "$profile/gen-1/meta" "$profile/meta"
     printf '%s\n' '{"current_generation":1,"next_generation":2}' > "$profile/state.json"
-    /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn gen-1 "$profile/current"
+    /nix/store/<hash>-coreutils-9.5/bin/ln -sfn gen-1 "$profile/current"
     seed_one() {
       case "$1" in
   aos-test-agent)
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn /nix/store/ri7af9743dclplw3vcyh9bv9bdk92in1-aos-test-agent-0 "$profile/gen-1/usr/ri7af9743dclplw3vcyh9bv9bdk92in1"
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn /nix/store/31gmvkzk62xxyi983g5zar86rylb0bhr-expose-aos-test-agent "$profile/gen-1/expose/31gmvkzk62xxyi983g5zar86rylb0bhr"
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp /nix/store/mr4hzlz57cy5z3jq0pil3mvbmrlzgm0a-aos-package-aos-test-agent-meta.json/ri7af9743dclplw3vcyh9bv9bdk92in1.json "$profile/meta/ri7af9743dclplw3vcyh9bv9bdk92in1.json"
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp /nix/store/mr4hzlz57cy5z3jq0pil3mvbmrlzgm0a-aos-package-aos-test-agent-meta.json/ri7af9743dclplw3vcyh9bv9bdk92in1.json "$profile/gen-1/meta/ri7af9743dclplw3vcyh9bv9bdk92in1.json"
+  /nix/store/<hash>-coreutils-9.5/bin/ln -sfn /nix/store/<hash>-aos-test-agent-0 "$profile/gen-1/usr/ri7af9743dclplw3vcyh9bv9bdk92in1"
+  /nix/store/<hash>-coreutils-9.5/bin/ln -sfn /nix/store/<hash>-expose-aos-test-agent "$profile/gen-1/expose/31gmvkzk62xxyi983g5zar86rylb0bhr"
+  /nix/store/<hash>-coreutils-9.5/bin/ln -sfn /nix/store/<hash>-aos-test-agent-config-0-config "$profile/gen-1/cfgsrc/xd6lr0mfpzh2sflh1prh60j5i8gvvmdk"
+
+  /nix/store/<hash>-coreutils-9.5/bin/cp /nix/store/<hash>-aos-package-aos-test-agent-meta.json/ri7af9743dclplw3vcyh9bv9bdk92in1.json "$profile/meta/ri7af9743dclplw3vcyh9bv9bdk92in1.json"
+  /nix/store/<hash>-coreutils-9.5/bin/cp /nix/store/<hash>-aos-package-aos-test-agent-meta.json/ri7af9743dclplw3vcyh9bv9bdk92in1.json "$profile/gen-1/meta/ri7af9743dclplw3vcyh9bv9bdk92in1.json"
   ;;
 
         *)
@@ -35,11 +37,11 @@ if [ ! -e "$profile/state.json" ]; then
       seed_one "$package"
     done < /etc/aos/packages.d/fleet-seed
   else
-    /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p "$profile"
-    /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp -a /nix/store/gx7f39szwm6b3b4fm1j976n0iai810c3-aos-package-profile-seed/. "$profile/"
+    /nix/store/<hash>-coreutils-9.5/bin/mkdir -p "$profile"
+    /nix/store/<hash>-coreutils-9.5/bin/cp -a /nix/store/<hash>-aos-package-profile-seed/. "$profile/"
   fi
 fi
-AOS_EXPOSE_START_NO_WAIT=1 /nix/store/8m57mzlgw8av8ckn6b03b6b3zbbbh5b2-aos-reconcile-exposed-units/bin/aos-reconcile-exposed-units --system
+AOS_EXPOSE_START_NO_WAIT=1 /nix/store/<hash>-aos-reconcile-exposed-units/bin/aos-reconcile-exposed-units --system
 <<aos-job-script-end>>
 RemainAfterExit=true
 Type=oneshot

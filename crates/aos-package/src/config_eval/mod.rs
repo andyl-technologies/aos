@@ -764,7 +764,8 @@ where
 
                 fetched.insert(selection.package.clone());
                 working_set.push(WorkingSetMember {
-                    registry: Some(authenticated_module.registry.to_string()),
+                    registry: (!authenticated_module.registry.is_empty())
+                        .then(|| authenticated_module.registry.to_string()),
                     release_trust: authenticated_module.release_trust.cloned(),
                     config_realization: authenticated_module.config_realization.clone(),
                     package: selection.package.clone(),
@@ -822,7 +823,7 @@ where
         let Some(resolved) = resolver.config_module(&seed.package) else {
             continue;
         };
-        seed.registry = Some(resolved.registry.to_string());
+        seed.registry = (!resolved.registry.is_empty()).then(|| resolved.registry.to_string());
         seed.release_trust = resolved.release_trust.cloned();
         seed.config_realization = resolved.config_realization.clone();
         seed.authorization = PackageAuthorization::from_module(resolved.module);
@@ -1278,8 +1279,12 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         .iter()
         .map(|member| member.package.clone())
         .collect();
-    let mut runtime = runtime::resolve_runtime(resolver.registries(), &initially_selected)
-        .context("resolving selected runtime package closures")?;
+    let mut runtime = runtime::resolve_runtime_with_local(
+        resolver.registries(),
+        resolver.image_packages(),
+        &initially_selected,
+    )
+    .context("resolving selected runtime package closures")?;
     for package in runtime.packages.keys() {
         if !seed_set.iter().any(|member| &member.package == package) {
             seed_set.push(WorkingSetMember::seed(package.clone()));
@@ -1319,8 +1324,12 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        runtime = runtime::resolve_runtime(resolver.registries(), &selected)
-            .context("resolving converged runtime package closures")?;
+        runtime = runtime::resolve_runtime_with_local(
+            resolver.registries(),
+            resolver.image_packages(),
+            &selected,
+        )
+        .context("resolving converged runtime package closures")?;
         let mut next = candidate.working_set.clone();
         for package in runtime.packages.keys() {
             if !next.iter().any(|member| &member.package == package) {
@@ -1521,6 +1530,7 @@ fn config_module_inputs(
     Vec<String>,
     Vec<ModuleAbiCompat>,
     Vec<PackageAuthorization>,
+    Vec<String>,
 )> {
     let mut seen = BTreeMap::<String, String>::new();
     let mut paths = Vec::new();
@@ -1528,6 +1538,7 @@ fn config_module_inputs(
     let mut packages = Vec::new();
     let mut abi_compat = Vec::new();
     let mut authorizations = Vec::new();
+    let mut origins = Vec::new();
     for member in working_set {
         let Some(path) = member.config_output.as_deref() else {
             continue;
@@ -1562,8 +1573,20 @@ fn config_module_inputs(
         packages.push(member.package.clone());
         abi_compat.push(compat);
         authorizations.push(member.authorization.clone());
+        origins.push(if member.registry.is_some() {
+            "registry".to_string()
+        } else {
+            "image".to_string()
+        });
     }
-    Ok((paths, nar_hashes, packages, abi_compat, authorizations))
+    Ok((
+        paths,
+        nar_hashes,
+        packages,
+        abi_compat,
+        authorizations,
+        origins,
+    ))
 }
 
 fn config_module_release_identity(
@@ -1576,7 +1599,7 @@ fn config_module_release_identity(
 )> {
     let modules = working_set
         .iter()
-        .filter(|member| member.config_output.is_some())
+        .filter(|member| member.config_output.is_some() && member.registry.is_some())
         .collect::<Vec<_>>();
     if modules.is_empty() {
         return Ok((None, None, None, None));
@@ -1656,6 +1679,7 @@ fn enrich_manifest(
         config_packages,
         config_abi_compat,
         config_authorizations,
+        config_origins,
     ) = config_module_inputs(&outcome.working_set)?;
 
     let (facts, retained_facts_bytes, facts_input_path) =
@@ -1752,6 +1776,7 @@ fn enrich_manifest(
                 "store_paths": config_outputs,
                 "nar_hashes": config_nar_hashes,
                 "package_names": config_packages,
+                "origins": config_origins,
                 "module_abi_compat": config_abi_compat,
                 "authorizations": config_authorizations,
             },

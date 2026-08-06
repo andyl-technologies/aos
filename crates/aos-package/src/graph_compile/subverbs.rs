@@ -47,7 +47,7 @@ use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
 use crate::config_eval::materialize::ConfigManifest;
-use crate::config_eval::runtime::RuntimePackagePin;
+use crate::config_eval::runtime::{RuntimePackageOrigin, RuntimePackagePin};
 use crate::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     resolve_mirror_chain, split_mirror_chain,
@@ -331,6 +331,21 @@ async fn fetch_inner(
         .package_outputs
         .get(package)
         .with_context(|| format!("manifest has no runtime output pin for package '{package}'"))?;
+    let known_paths = pinned_named_paths(pin);
+    let missing = filter_missing(&known_paths)
+        .await
+        .context("checking pinned closure validity")?;
+    if pin.origin == RuntimePackageOrigin::Image {
+        if !missing.is_empty() {
+            bail!(
+                "image-local closure for '{package}' is incomplete: {}",
+                missing.join(", ")
+            );
+        }
+        verify_local_closure(pin)?;
+        write_marker(&fetch_marker(marker_root, package), &manifest, package)?;
+        return Ok(known_paths);
+    }
     let registry = config
         .find_registry(&pin.registry)
         .map(|(registry, _)| registry)
@@ -350,10 +365,6 @@ async fn fetch_inner(
     // Only exact paths carried by the authenticated runtime pin are eligible
     // as roots. Anonymous members are discovered from narinfo References and
     // admitted solely when their IA hash appears in the same pin.
-    let known_paths = pinned_named_paths(pin);
-    let missing = filter_missing(&known_paths)
-        .await
-        .context("checking pinned closure validity")?;
     if !missing.is_empty() {
         let requests = missing
             .iter()
@@ -421,6 +432,25 @@ async fn fetch_inner(
     // Marker written only after every path verifies + imports (build-spec §4.1).
     write_marker(&fetch_marker(marker_root, package), &manifest, package)?;
     Ok(known_paths)
+}
+
+fn verify_local_closure(pin: &RuntimePackagePin) -> Result<()> {
+    for member in &pin.closure {
+        let path = member.store_path.as_deref().with_context(|| {
+            format!(
+                "image-local closure member '{}' has no exact store path",
+                member.store_path_hash
+            )
+        })?;
+        let (hash, size) = crate::config_eval::runtime::local_store_identity(path)?;
+        if !blessed_nars(pin, &member.store_path_hash)?
+            .iter()
+            .any(|expected| expected.matches(&hash, size))
+        {
+            bail!("image-local store path {path} disagrees with its measured-image pin");
+        }
+    }
+    Ok(())
 }
 
 fn pinned_named_paths(pin: &RuntimePackagePin) -> Vec<String> {
@@ -955,6 +985,7 @@ mod subverb_tests {
             version: "1".into(),
             platform: "x86_64-linux".into(),
             registry: "test".into(),
+            origin: RuntimePackageOrigin::Registry,
             store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example".into(),
             closure: vec![RuntimeClosurePin {
                 store_path_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),

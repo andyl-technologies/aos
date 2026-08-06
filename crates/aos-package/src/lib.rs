@@ -3294,6 +3294,7 @@ where
         expected_pcr11: policy_file.expected_pcr11,
         expected_root_roothash: policy_file.expected_root_roothash,
         expected_facts_hash: policy_file.expected_facts_hash,
+        pcr15_baseline: cel.pcr15_baseline.clone(),
         prior_pcr15_event_digests: prior,
         trusted_config_keys: policy_file.trusted_config_keys,
         trusted_platforms: policy_file.trusted_platforms,
@@ -3356,10 +3357,10 @@ fn verified_generation_release_from_paths(
     Vec<String>,
     Option<attestation::VerifiedConfigModuleRelease>,
 )> {
-    if modules.count == 0 {
+    let Some(registry_modules) = registry_config_module_subset(modules)? else {
         return Ok((Vec::new(), Vec::new(), None));
-    }
-    let registry_name = modules
+    };
+    let registry_name = registry_modules
         .registry
         .as_deref()
         .context("generation config modules have no registry")?;
@@ -3379,7 +3380,79 @@ fn verified_generation_release_from_paths(
             .with_context(|| {
                 format!("registry '{registry_name}' has no signed-release trust receipt")
             })?;
-    verify_generation_release_snapshot(&repo, &keys, revoked, &receipt, modules)
+    verify_generation_release_snapshot(&repo, &keys, revoked, &receipt, &registry_modules)
+}
+
+/// Selects the registry-authenticated portion of mixed config-module evidence.
+///
+/// Image-origin modules are authenticated by the generation's verified-boot
+/// binding, so the public verifier must not demand a registry release for
+/// them. Registry-origin modules remain subject to the full signed-tag and
+/// store-graph verification below. Records that predate explicit `origins`
+/// are interpreted as registry-only for compatibility.
+fn registry_config_module_subset(
+    modules: &attestation::ConfigModulesAttInput,
+) -> Result<Option<attestation::ConfigModulesAttInput>> {
+    if modules.count == 0 {
+        return Ok(None);
+    }
+    if modules.count != modules.package_names.len()
+        || modules.count != modules.store_paths.len()
+        || modules.count != modules.nar_hashes.len()
+    {
+        bail!("generation config-module membership vectors are inconsistent");
+    }
+
+    let origins = match modules.provenance.get("origins") {
+        Some(value) => serde_json::from_value::<Vec<String>>(value.clone())
+            .context("generation config-module origins are malformed")?,
+        None => vec!["registry".to_string(); modules.count],
+    };
+    if origins.len() != modules.count
+        || origins
+            .iter()
+            .any(|origin| origin != "registry" && origin != "image")
+    {
+        bail!("generation config-module origins are inconsistent");
+    }
+    let indexes = origins
+        .iter()
+        .enumerate()
+        .filter_map(|(index, origin)| (origin == "registry").then_some(index))
+        .collect::<Vec<_>>();
+    if indexes.is_empty() {
+        return Ok(None);
+    }
+
+    let mut subset = modules.clone();
+    subset.count = indexes.len();
+    subset.package_names = indexes
+        .iter()
+        .map(|index| modules.package_names[*index].clone())
+        .collect();
+    subset.store_paths = indexes
+        .iter()
+        .map(|index| modules.store_paths[*index].clone())
+        .collect();
+    subset.nar_hashes = indexes
+        .iter()
+        .map(|index| modules.nar_hashes[*index].clone())
+        .collect();
+    let mut closure_members = subset
+        .store_paths
+        .iter()
+        .zip(&subset.nar_hashes)
+        .map(|(path, nar_hash)| serde_json::json!([path, nar_hash]))
+        .collect::<Vec<_>>();
+    closure_members.sort_by(|left, right| {
+        left[0]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right[0].as_str().unwrap_or_default())
+    });
+    subset.closure_hash =
+        graph_compile::reproject::hash_cjson(&serde_json::Value::Array(closure_members));
+    Ok(Some(subset))
 }
 
 fn verify_generation_release_snapshot(
@@ -5140,6 +5213,7 @@ mod tests {
         let measured_hash = format!("sha256:{}", hex::encode(digest));
         let cel = package_attestation::PackageEventLogVerification {
             pcr15: checker.pcrs.pcr15.clone(),
+            pcr15_baseline: None,
             package_count: 0,
             current_packages: Vec::new(),
             generation_attestations: std::collections::BTreeMap::from([(
@@ -5821,6 +5895,60 @@ contributable = ["allowedTCPPorts"]
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn generation_release_selection_filters_image_origins() {
+        let mut modules = attestation::ConfigModulesAttInput {
+            registry: Some("aos-core".to_string()),
+            release_tag: Some("1.0.0".to_string()),
+            tag_signer_key: Some("1234abcd".to_string()),
+            realization: Some(format!("sha256:{}", "11".repeat(32))),
+            closure_hash: format!("sha256:{}", "22".repeat(32)),
+            count: 2,
+            store_paths: vec![
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-image-module".to_string(),
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-registry-module".to_string(),
+            ],
+            nar_hashes: vec![
+                format!("sha256:{}", "33".repeat(32)),
+                format!("sha256:{}", "44".repeat(32)),
+            ],
+            package_names: vec!["image-package".to_string(), "registry-package".to_string()],
+            provenance: serde_json::json!({
+                "module_abi_compat": [
+                    {"min": 1, "max": 1},
+                    {"min": 1, "max": 1}
+                ],
+                "authorizations": [
+                    {"owns": [], "contributes": {}},
+                    {"owns": [], "contributes": {}}
+                ],
+                "origins": ["image", "registry"]
+            }),
+        };
+
+        let subset = registry_config_module_subset(&modules)
+            .expect("select registry subset")
+            .expect("mixed evidence has a registry subset");
+        assert_eq!(subset.count, 1);
+        assert_eq!(subset.package_names, ["registry-package"]);
+        assert_eq!(subset.store_paths, [modules.store_paths[1].clone()]);
+        assert_eq!(subset.nar_hashes, [modules.nar_hashes[1].clone()]);
+
+        modules.registry = None;
+        modules.release_tag = None;
+        modules.tag_signer_key = None;
+        modules.realization = None;
+        modules.provenance["origins"] = serde_json::json!(["image", "image"]);
+        assert!(
+            registry_config_module_subset(&modules)
+                .expect("accept image-only origins")
+                .is_none()
+        );
+
+        modules.provenance["origins"] = serde_json::json!(["image"]);
+        assert!(registry_config_module_subset(&modules).is_err());
     }
 
     #[test]

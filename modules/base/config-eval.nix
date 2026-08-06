@@ -306,7 +306,10 @@ in {
     systemd.services.aos-eval = {
       description = "Evaluate host configuration to a converged manifest";
       wantedBy = ["multi-user.target"];
-      wants = ["network-online.target"];
+      # Quote generations only after systemd has advanced PCR 11 to its stable
+      # runtime (`ready`) phase. On non-UKI or non-TPM boots the phase unit's
+      # conditions make this a clean no-op.
+      wants = ["network-online.target" "systemd-pcrphase.service"];
       requires =
         [
           "aos-credential-recovery.service"
@@ -318,6 +321,7 @@ in {
       after =
         [
           "network-online.target"
+          "systemd-pcrphase.service"
           "nix-overlay-setup.service"
           "aos-config-seed.service"
           "aos-credential-recovery.service"
