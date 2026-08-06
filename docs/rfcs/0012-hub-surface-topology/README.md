@@ -1,6 +1,8 @@
 # RFC-0012: AOS Hub surface topology
 
-- **Status:** Proposed.
+- **Status:** Proposed. First-class signed system-image distribution is
+  implemented and native/Worker end-to-end tested; the complete production
+  topology cutover remains pending.
 - **Date:** 2026-08-03.
 - **Audience:** anyone working on AOS Hub registries, binary caches, storage
   bindings, frontends, domains, publication, replication, or cache garbage
@@ -23,6 +25,11 @@ AOS Hub manages two independently useful HTTP surfaces:
   Nix-cache compatible; and
 - a **binary cache**, which publishes `nix-cache-info`, narinfos, and NARs and
   need not be associated with a registry.
+
+A registry may also publish a signed AOS sysroot catalog whose release entries
+resolve directly to end-user disk encodings. Raw, QCOW2, VMDK, and VHD are
+representations of one logical release, delivered as exact image bytes through
+the same placement and route topology.
 
 This RFC separates five concerns that the current schema and console partly
 conflate:
@@ -76,14 +83,14 @@ The resulting topology is:
 | --- | --- |
 | [`00-goals-and-invariants.md`](00-goals-and-invariants.md) | Scope, terminology, and load-bearing invariants |
 | [`01-domain-model.md`](01-domain-model.md) | Surfaces, placements, write authority, bindings, domains, routes, and object presence |
-| [`02-delivery-and-auth.md`](02-delivery-and-auth.md) | Simultaneous HTTP paths, direct/CDN/Hub modes, routing, and private access |
+| [`02-delivery-and-auth.md`](02-delivery-and-auth.md) | Simultaneous HTTP paths, direct/CDN/Hub modes, routing, private access, and atomic image publication |
 | [`03-registry-cache-relations.md`](03-registry-cache-relations.md) | Standalone/shared caches, signed consumer stacks, retention, population, and coverage |
 | [`04-retention-and-gc.md`](04-retention-and-gc.md) | Release artifact snapshots, selectors, root provenance, and multi-placement GC |
 | [`05-data-model-and-api.md`](05-data-model-and-api.md) | Normative records, constraints, API verbs, and complete-cutover strategy |
 | [`06-console-and-operations.md`](06-console-and-operations.md) | Information architecture, names, status views, domain/endpoint lifecycle, and operations |
-| [`07-implementation-plan.md`](07-implementation-plan.md) | Sequencing, migration, acceptance criteria, and test matrix |
+| [`07-implementation-plan.md`](07-implementation-plan.md) | Sequencing, migration, system-image delivery, acceptance criteria, and test matrix |
 | [`08-decisions-and-open-questions.md`](08-decisions-and-open-questions.md) | Locked choices, rejected conflations, and remaining bounded questions |
-| [`09-interface-contracts.md`](09-interface-contracts.md) | Normative Web UI navigation/actions, clean-break CLI commands, and Connect-JSON services |
+| [`09-interface-contracts.md`](09-interface-contracts.md) | Normative Web UI navigation/actions, system-image discovery/downloads, clean-break CLI commands, and Connect-JSON services |
 | [`10-settings-information-architecture.md`](10-settings-information-architecture.md) | Uniform instance/organization/registry/cache settings shell, navbar hierarchy, page ownership, and responsive layout |
 | [`11-web-route-cutover-ledger.md`](11-web-route-cutover-ledger.md) | Exhaustive method+path replacement/deletion ledger for the hard Web UI cutover |
 | [`12-topology-cutover-operator-runbook.md`](12-topology-cutover-operator-runbook.md) | Signed one-shot plan, quiescence, backup/restore proof, switch, rollback, and post-cutover GC procedure |

@@ -94,6 +94,23 @@ and layout behavior are normative in
 The exhaustive old method+path deletion and replacement list is normative in
 [`11-web-route-cutover-ledger.md`](11-web-route-cutover-ledger.md).
 
+### End-user system images
+
+Every registry browse navbar includes **Images**, linking to the canonical
+`/{registry}/-/images` page. This is an end-user download surface, not a
+settings panel. It lists only disk encodings derived from the registry's
+authenticated signed sysroot catalog and shows release and channel identity,
+architecture, format, compatible targets, encoded size, release-signature
+verification, boot-payload verification, SHA-256, and a direct **Download**
+action. Filters cover release, channel, architecture, format, and target.
+
+One logical release may have raw, QCOW2, VMDK, and VHD encodings. Target labels
+such as Bare metal, QEMU/KVM, OpenStack, VMware, and Hyper-V let users select an
+artifact without seeing Nix store paths or NARs. The download action names the
+signed useful filename and serves disk-image bytes. A missing or incomplete
+direct-delivery contract is omitted instead of being presented as a broken
+download.
+
 ### Navigation and canonical paths
 
 The exact grouped labels and ordering are specified in
@@ -132,6 +149,7 @@ The exact grouped labels and ordering are specified in
 /-/org/{org}/audit-log
 /-/org/{org}/danger
 
+/{registry}/-/images
 /{registry}/-/settings
 /{registry}/-/settings/placements
 /{registry}/-/settings/delivery
@@ -381,6 +399,36 @@ shape with recursively normalized `snake_case` keys. Version 1 is closed:
 unknown envelope and command-specific `data` fields are rejected. Any field
 addition or incompatible shape change requires a new schema version and an
 explicit client upgrade.
+
+### System-image discovery and download
+
+System images are end-user porcelain and therefore live at top-level `aos
+image`, not below the Hub topology administration commands:
+
+```text
+aos image list --registry <registry>
+  [--release <release> | --channel <channel>]
+  [--package <sysroot-package>] [--architecture <architecture>]
+  [--format raw|qcow2|vmdk|vhd]
+  [--target bare-metal|qemu-kvm|openstack|vmware|hyper-v]
+aos image show --registry <registry> <selection-options>
+aos image download --registry <registry> <selection-options>
+  [--output <file>] [--no-resume]
+```
+
+`--hub` selects the Hub origin and `--token` or `AOS_TOKEN` authorizes a
+private registry. `aos --json image list|show|download` emits stable structured
+output. Download defaults to the useful filename in signed metadata, resumes
+its descriptor-confined partial file with an HTTP range request, streams exact
+disk bytes, and verifies both signed byte size and SHA-256 before atomically
+installing the destination. Verification cannot be disabled. `--no-resume`
+restarts the partial transfer; it does not permit overwriting an existing final
+file.
+
+The existing `apm install PACKAGE --system --image FORMAT --output FILE`
+workflow remains valid for package-oriented consumers. It does not replace
+`aos image`: the latter resolves end-user target, channel, and encoding through
+the signed direct-delivery catalog.
 
 ### Surface inspection
 
@@ -935,6 +983,41 @@ renamed to Hub terminology in the same change.
 
 Services use typed messages; SQL JSON encodings described elsewhere in this
 RFC are not exposed as opaque API JSON.
+
+### Image service and byte delivery
+
+`aos.hub.v1.ImageService` is the read-only end-user image API:
+
+```text
+POST /aos.hub.v1.ImageService/ListImages
+POST /aos.hub.v1.ImageService/GetImage
+POST /aos.hub.v1.ImageService/ResolveImage
+```
+
+`ListImages` filters a registry by release or channel, sysroot package,
+architecture, format, and compatible target. `GetImage` addresses an immutable
+release/package/architecture/format tuple. `ResolveImage` accepts the same
+selection used by the CLI and resolves a channel or target to one unambiguous
+encoding. Normal list pagination and registry visibility authorization apply;
+private registries are authenticated before channel or image existence is
+revealed.
+
+Every returned `SystemImage` includes release and selected channel, platform,
+architecture, format, logical image identity, useful filename, immutable
+download URL and object key, media type, compression, encoded byte size,
+SHA-256, compatible targets, signed release verification, boot-payload
+verification, logical-disk and root-filesystem digests when present, UKI/SBAT
+metadata, and the associated `image-info.json` URL, object key, media type,
+size, and SHA-256. Records are derived only from verified signed sysroot
+release metadata; Hub does not create a parallel unsigned catalog.
+
+The returned immutable URL accepts `GET` and `HEAD`, one satisfiable HTTP byte
+range, and conditional requests consistently in native and Worker runtimes.
+It returns `Content-Disposition` with the signed filename, the exact image
+media type and integrity metadata, range headers, and immutable cache headers.
+Public images permit anonymous access. Private images require the route's Hub,
+external-provider, or private-network authorization policy. A download always
+serves the encoded disk file itself, never a NAR or store directory.
 
 ### Common messages
 
