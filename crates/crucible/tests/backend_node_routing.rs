@@ -2,16 +2,36 @@
 
 use crucible::{
     BackendEffect, BackendError, BackendInput, BackendNetworkOutput,
-    BackendNetworkOutputInterceptor, BackendQuantumLoop, BackendSnapshot, Configuration, Decision,
-    EventLogOffset, ExactLocalEvent, FingerprintSample, Icount, LinkDef, LinkId,
-    LinkLossProbability, MIN_LINK_LATENCY, NetworkLinkDirection, NetworkLookahead, NodeCounter,
-    NodeId, NodeTemplate, OverrideDecision, Plan, Properties, QuantumLoop, QuantumOutcome,
-    QuantumRequest, ReadyPoint, ScenarioDef, ScenarioDefForm, ScheduledEvent, ScheduledEventKey,
-    ScheduledEventPayload, SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity,
-    SchedulerNodeId, SchedulerScenarioNode, Seed, Shift, SimDuration, SimInstant,
-    SimulationBackend, SingleScheduler, StepObservation, VirtualTime, WhiteBoxPolicy, World,
-    WorldNode,
+    BackendNetworkOutputInterceptor, BackendNetworkRoute, BackendQuantumLoop, BackendSnapshot,
+    Configuration, Decision, EventLogOffset, ExactLocalEvent, FingerprintSample, Icount, LinkDef,
+    LinkId, LinkLossProbability, MIN_LINK_LATENCY, NetworkLinkDirection, NetworkLookahead,
+    NodeCounter, NodeId, NodeTemplate, OverrideDecision, Plan, Properties, QuantumLoop,
+    QuantumOutcome, QuantumRequest, ReadyPoint, ScenarioDef, ScenarioDefForm, ScheduledEvent,
+    ScheduledEventKey, ScheduledEventPayload, SchedulerError, SchedulerLivenessScenario,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, Seed, Shift, SimDuration,
+    SimInstant, SimulationBackend, SingleScheduler, StepObservation, VirtualTime, WhiteBoxPolicy,
+    World, WorldNode,
 };
+
+fn world_node(name: &str) -> WorldNode {
+    WorldNode {
+        id: NodeId {
+            name: String::from(name),
+        },
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 0 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }
+}
 
 struct SelectedNodeLoop {
     selected: SchedulerNodeId,
@@ -292,26 +312,6 @@ fn backend_quantum_loop_delivers_resolved_network_input_at_the_exact_boundary() 
 
 #[test]
 fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
-    fn world_node(name: &str) -> WorldNode {
-        WorldNode {
-            id: NodeId {
-                name: String::from(name),
-            },
-            arch: NodeTemplate::DEFAULT_ARCH,
-            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
-            cmdline: String::new(),
-            ready_point: ReadyPoint::FixedIcount {
-                icount: Icount { retired: 0 },
-            },
-            white_box: WhiteBoxPolicy::Disabled,
-            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
-            kernel: None,
-            root_image: None,
-            initrd: None,
-        }
-    }
-
     let source = NodeId {
         name: String::from("vm-a"),
     };
@@ -358,7 +358,24 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
         emit_icount: Icount { retired: 1 },
         sequence: 0,
         payload,
+        route: None,
     };
+    let routes = scheduler
+        .resolve_backend_network_routes(&output)
+        .unwrap_or_else(|error| panic!("unicast route should resolve: {error}"));
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].destination, destination);
+
+    let mut invalid_output = output.clone();
+    invalid_output.route = Some(BackendNetworkRoute {
+        link: LinkId::from_name("not-a-world-link"),
+        direction: NetworkLinkDirection::EndpointAToEndpointB,
+        destination: destination.clone(),
+    });
+    assert!(matches!(
+        scheduler.resolve_backend_network_routes(&invalid_output),
+        Err(SchedulerError::BoundaryViolation { .. })
+    ));
     let mut adapter = BackendQuantumLoop::with_network_output_interceptor(
         scheduler,
         NodeRecordingBackend {
@@ -400,6 +417,84 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
         )
         .unwrap_or_else(|| panic!("scheduler-owned directed link should remain attached"));
     assert!(link.next_exact_local_event().is_some());
+}
+
+#[test]
+fn backend_network_route_resolution_expands_and_locks_flood_routes() {
+    let source = NodeId {
+        name: String::from("vm-a"),
+    };
+    let destination_b = NodeId {
+        name: String::from("vm-b"),
+    };
+    let destination_c = NodeId {
+        name: String::from("vm-c"),
+    };
+    let world = World::from_nodes_and_links(
+        vec![world_node("vm-a"), world_node("vm-b"), world_node("vm-c")],
+        vec![
+            LinkDef::new(source.clone(), destination_b.clone())
+                .unwrap_or_else(|error| panic!("first flood link should build: {error}")),
+            LinkDef::new(source.clone(), destination_c.clone())
+                .unwrap_or_else(|error| panic!("second flood link should build: {error}")),
+        ],
+    )
+    .unwrap_or_else(|error| panic!("flood World should build: {error}"));
+    let form = ScenarioDefForm::from_components(
+        &world,
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::from_u64(23),
+    )
+    .unwrap_or_else(|error| panic!("flood scenario should build: {error}"));
+    let runtime = SchedulerLivenessScenario::from_runnable_world(
+        "backend-network-flood",
+        Shift::new(0).unwrap_or_else(|error| panic!("zero shift should build: {error}")),
+        4,
+        SimInstant { nanos: 100 },
+        0,
+        &world,
+    )
+    .with_scenario_def(form.scenario_def());
+    let mut scheduler = SingleScheduler::new(runtime)
+        .unwrap_or_else(|error| panic!("flood scheduler should build: {error}"));
+    scheduler
+        .attach_world_network_links(&world)
+        .unwrap_or_else(|error| panic!("flood World network should attach: {error}"));
+    let mut payload = vec![0_u8; 60];
+    payload[..6].copy_from_slice(&[0xff; 6]);
+    let output = BackendNetworkOutput {
+        source,
+        destination: NodeId {
+            name: String::from("net-router"),
+        },
+        emit_icount: Icount { retired: 1 },
+        sequence: 7,
+        payload,
+        route: None,
+    };
+
+    let routes = scheduler
+        .resolve_backend_network_routes(&output)
+        .unwrap_or_else(|error| panic!("flood routes should resolve: {error}"));
+    assert_eq!(routes.len(), 2);
+    assert_eq!(
+        routes
+            .iter()
+            .map(|route| route.destination.clone())
+            .collect::<Vec<_>>(),
+        vec![destination_b, destination_c]
+    );
+    for route in routes {
+        let mut locked = output.clone();
+        locked.route = Some(route.clone());
+        assert_eq!(
+            scheduler
+                .resolve_backend_network_routes(&locked)
+                .unwrap_or_else(|error| panic!("locked flood route should validate: {error}")),
+            vec![route]
+        );
+    }
 }
 
 #[test]
@@ -579,6 +674,7 @@ fn network_branch_fixture(
         },
         sequence: 0,
         payload,
+        route: None,
     };
     let mut adapter = BackendQuantumLoop::new(
         scheduler,

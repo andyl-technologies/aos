@@ -219,6 +219,7 @@ where
                 &left.source,
                 left.sequence,
                 &left.destination,
+                &left.route,
                 &left.payload,
             )
                 .cmp(&(
@@ -226,6 +227,7 @@ where
                     &right.source,
                     right.sequence,
                     &right.destination,
+                    &right.route,
                     &right.payload,
                 ))
         });

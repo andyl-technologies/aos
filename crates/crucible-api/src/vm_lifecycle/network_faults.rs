@@ -74,11 +74,20 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
 {
     fn intercept_network_outputs(
         &mut self,
-        _loop_impl: &mut SingleScheduler,
+        loop_impl: &mut SingleScheduler,
         _backend: &mut ProductionNodeSet,
         _frontier: VirtualTime,
-        _outputs: &mut Vec<crucible::BackendNetworkOutput>,
+        outputs: &mut Vec<crucible::BackendNetworkOutput>,
     ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
+        let mut routed = Vec::new();
+        for output in outputs.drain(..) {
+            for route in loop_impl.resolve_backend_network_routes(&output)? {
+                let mut output = output.clone();
+                output.route = Some(route);
+                routed.push(output);
+            }
+        }
+        *outputs = routed;
         Ok(Vec::new())
     }
 }

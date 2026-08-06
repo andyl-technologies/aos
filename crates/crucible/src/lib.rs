@@ -44,9 +44,9 @@ pub mod trigger;
 
 pub use backend::{
     AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendNetworkOutput,
-    BackendSnapshot, ExecutionFingerprint, ExecutionHorizon, FingerprintSample, GdbAttachInfo,
-    GdbListen, MockSimulationBackend, MockSimulationBackendState, SimulationBackend,
-    StepObservation, deterministic_node_mac, deterministic_node_mac_string,
+    BackendNetworkRoute, BackendSnapshot, ExecutionFingerprint, ExecutionHorizon,
+    FingerprintSample, GdbAttachInfo, GdbListen, MockSimulationBackend, MockSimulationBackendState,
+    SimulationBackend, StepObservation, deterministic_node_mac, deterministic_node_mac_string,
 };
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use device::{
