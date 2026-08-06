@@ -24,7 +24,7 @@ pub use block_io_gate::{
 pub use block_io_servicer::{
     BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoHostWorkPin,
     QemuLiveBlockIoObservedRequest, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,
-    QemuLiveBlockIoServicerError,
+    QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError,
 };
 pub use block_node_gate::{
     BlockNodeOutcome, QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError,

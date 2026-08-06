@@ -305,6 +305,24 @@ impl BlockDevice {
         self.storage_faults.install(request_id, directive)
     }
 
+    /// Drops exact volatile-cache entries selected by their global sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when any selected sequence is absent or repeated.
+    pub fn lose_storage_volatile(&mut self, sequences: &[u64]) -> Result<(), DeviceError> {
+        self.storage_faults.lose_volatile(sequences)
+    }
+
+    /// Drops exact controller-buffer entries selected by their global sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when any selected sequence is absent or repeated.
+    pub fn lose_storage_controller(&mut self, sequences: &[u64]) -> Result<(), DeviceError> {
+        self.storage_faults.lose_controller(sequences)
+    }
+
     /// Releases a stalled storage completion at the current scheduler icount.
     ///
     /// The response remains retained if the delivery core cannot reserve its

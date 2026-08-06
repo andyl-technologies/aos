@@ -58,13 +58,15 @@ use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use crucible_device::block::ResolvedBlockFaultDirective;
+use crucible::model::ContentHash;
+use crucible_device::block::{BlockDurabilityConfig, ResolvedBlockFaultDirective};
 use crucible_device::{
-    BaseImage, BlockDevice, BlockLatency, BlockRequest, DeviceError, IoCore, Request,
+    BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockSnapshot, DeviceError, IoCore, Request,
 };
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    NodeSlotSnapshot, SLOT_BLK_IO, SetupRegionMapError, mmap_setup_region,
+    NodeSlotSnapshot, RegionHeaderSnapshot, SLOT_BLK_IO, STATUS_DONE, SetupRegionMapError,
+    SpscRingSnapshot, mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -78,6 +80,20 @@ pub struct QemuLiveBlockIoServicer {
     region: MappedSetupRegion,
     device: BlockDevice,
     vm_slot: u32,
+    frames_processed: usize,
+    frames_delivered: usize,
+}
+
+/// Complete host block-device continuation paired with a QEMU/shared-memory checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLiveBlockIoServicerCheckpoint {
+    execution_binding: ContentHash,
+    region_header: RegionHeaderSnapshot,
+    vm_slot: u32,
+    size_bytes: u64,
+    device: BlockSnapshot,
+    requests: SpscRingSnapshot,
+    responses: SpscRingSnapshot,
     frames_processed: usize,
     frames_delivered: usize,
 }
@@ -120,6 +136,131 @@ impl QemuLiveBlockIoServicer {
             vm_slot,
             frames_processed: 0,
             frames_delivered: 0,
+        })
+    }
+
+    /// Restores a block-device continuation onto the checkpoint-paired region.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::MapRegion`] when the region cannot
+    /// be mapped or [`QemuLiveBlockIoServicerError::Device`] when the device
+    /// snapshot is malformed or its deterministic base identity differs.
+    pub fn restore_from_shmem_fd(
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        expected_execution_binding: ContentHash,
+        checkpoint: QemuLiveBlockIoServicerCheckpoint,
+    ) -> Result<Self, QemuLiveBlockIoServicerError> {
+        if checkpoint.execution_binding != expected_execution_binding {
+            return Err(QemuLiveBlockIoServicerError::CheckpointBindingMismatch);
+        }
+        if region_len != checkpoint.region_header.region_size {
+            return Err(QemuLiveBlockIoServicerError::CheckpointRegionMismatch);
+        }
+        let mut region = mmap_setup_region(shmem_fd, region_len)
+            .map_err(|source| QemuLiveBlockIoServicerError::MapRegion { source })?;
+        if !same_region_layout(region.header_snapshot(), checkpoint.region_header) {
+            return Err(QemuLiveBlockIoServicerError::CheckpointRegionMismatch);
+        }
+        let base = BaseImage::new(deterministic_base_image(checkpoint.size_bytes));
+        let device = BlockDevice::restore(&checkpoint.device, base, None)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let pair = region
+            .node_directed_ring_pair_mut(
+                checkpoint.vm_slot,
+                checkpoint.vm_slot,
+                SLOT_BLK_IO as u32,
+                SLOT_BLK_IO as u32,
+                checkpoint.vm_slot,
+            )
+            .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
+        let request_depth = pair
+            .first
+            .header
+            .live_len(pair.first.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let response_depth = pair
+            .second
+            .header
+            .live_len(pair.second.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        if request_depth != 0 || response_depth != 0 {
+            return Err(QemuLiveBlockIoServicerError::RestoreRegionNotEmpty {
+                request_depth,
+                response_depth,
+            });
+        }
+        pair.first
+            .header
+            .restore(pair.first.entries, &checkpoint.requests)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        pair.second
+            .header
+            .restore(pair.second.entries, &checkpoint.responses)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        pair.node_slot.store_device_completion_deadline_icount(
+            device.core().next_exact_local_event().unwrap_or(0),
+        );
+        Ok(Self {
+            region,
+            device,
+            vm_slot: checkpoint.vm_slot,
+            frames_processed: checkpoint.frames_processed,
+            frames_delivered: checkpoint.frames_delivered,
+        })
+    }
+
+    /// Captures the complete device and quiesced ring state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::RegionAccess`] when the block
+    /// rings cannot be borrowed or [`QemuLiveBlockIoServicerError::Device`]
+    /// when either ring cannot be snapshotted exactly.
+    pub fn checkpoint(
+        &mut self,
+        execution_binding: ContentHash,
+    ) -> Result<QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError> {
+        let pair = self
+            .region
+            .node_directed_ring_pair_mut(
+                self.vm_slot,
+                self.vm_slot,
+                SLOT_BLK_IO as u32,
+                SLOT_BLK_IO as u32,
+                self.vm_slot,
+            )
+            .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
+        if pair.node_slot.snapshot().status != STATUS_DONE {
+            return Err(QemuLiveBlockIoServicerError::CheckpointNotQuiescent);
+        }
+        let requests = pair
+            .first
+            .header
+            .snapshot(pair.first.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let responses = pair
+            .second
+            .header
+            .snapshot(pair.second.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        Ok(QemuLiveBlockIoServicerCheckpoint {
+            execution_binding,
+            region_header: self.region.header_snapshot(),
+            vm_slot: self.vm_slot,
+            size_bytes: self.device.length(),
+            device: self.device.snapshot(),
+            requests,
+            responses,
+            frames_processed: self.frames_processed,
+            frames_delivered: self.frames_delivered,
         })
     }
 
@@ -226,6 +367,26 @@ impl QemuLiveBlockIoServicer {
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
+    /// Replaces the pristine write-through state with admitted World durability.
+    ///
+    /// `require_directives` must be true for a signal-driven production device;
+    /// the false setting is reserved for explicitly fault-free servicing runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] when the configuration is
+    /// malformed, differs from the base-image length, or device state is no
+    /// longer pristine.
+    pub fn configure_storage_faults(
+        &mut self,
+        config: BlockDurabilityConfig,
+        require_directives: bool,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.device
+            .configure_storage_faults(config, require_directives)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
     /// Pins the head request's completion coordinate without COMPUTE or dequeue.
     ///
     /// The method observes at most the SPSC head, computes its completion icount
@@ -247,8 +408,11 @@ impl QemuLiveBlockIoServicer {
             region,
             device,
             vm_slot,
+            frames_processed,
             ..
         } = self;
+        let request_sequence = u64::try_from(*frames_processed)
+            .map_err(|_error| QemuLiveBlockIoServicerError::RequestSequenceOverflow)?;
         let vm_slot = *vm_slot;
         let blk_slot = SLOT_BLK_IO as u32;
         let pair = region
@@ -278,6 +442,7 @@ impl QemuLiveBlockIoServicer {
                     });
                 }
                 Ok(QemuLiveBlockIoObservedRequest {
+                    request_sequence,
                     request_icount: frame.delivery_icount,
                     completion_icount,
                     request: decoded,
@@ -361,6 +526,8 @@ pub struct QemuLiveBlockIoServiceStep {
 /// A request observed before its device-side host work is dispatched.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLiveBlockIoObservedRequest {
+    /// Adapter-owned monotone sequence of this exact request.
+    pub request_sequence: u64,
     /// Icount carried by the request at observation time.
     pub request_icount: u64,
     /// Completion icount computed and pinned before host dispatch.
@@ -538,9 +705,32 @@ fn deterministic_base_image(size_bytes: u64) -> Vec<u8> {
     (0..len).map(|index| (index % 251) as u8).collect()
 }
 
+fn same_region_layout(left: RegionHeaderSnapshot, right: RegionHeaderSnapshot) -> bool {
+    left.magic == right.magic
+        && left.abi_version == right.abi_version
+        && left.node_count == right.node_count
+        && left.queue_capacity == right.queue_capacity
+        && left.ring_count == right.ring_count
+        && left.ring_hdr_off == right.ring_hdr_off
+        && left.ring_data_off == right.ring_data_off
+        && left.entry_stride == right.entry_stride
+        && left.region_size == right.region_size
+        && left.icount_shift == right.icount_shift
+        && left.fault_payload_arena_bytes == right.fault_payload_arena_bytes
+}
+
 /// Error returned by the live block-I/O servicer.
 #[derive(Debug, Error)]
 pub enum QemuLiveBlockIoServicerError {
+    /// The adapter request sequence no longer fits its stable wire width.
+    #[error("block-I/O request sequence exhausted")]
+    RequestSequenceOverflow,
+    /// The checkpoint belongs to a different QEMU execution checkpoint.
+    #[error("block-I/O checkpoint does not match the QEMU execution binding")]
+    CheckpointBindingMismatch,
+    /// The restore region's ABI geometry differs from the captured region.
+    #[error("block-I/O checkpoint does not match the shared-memory region layout")]
+    CheckpointRegionMismatch,
     /// The shared-memory region could not be mapped read-write.
     #[error("map block-I/O shared-memory region failed: {source}")]
     MapRegion {
@@ -558,6 +748,19 @@ pub enum QemuLiveBlockIoServicerError {
     Device {
         /// Underlying device error.
         source: DeviceError,
+    },
+    /// A checkpoint was attempted while the guest was not at a published boundary.
+    #[error("block-I/O checkpoint requires a quiesced guest boundary")]
+    CheckpointNotQuiescent,
+    /// Restore would overwrite live frames in the new shared-memory region.
+    #[error(
+        "block-I/O restore region is not empty (requests={request_depth}, responses={response_depth})"
+    )]
+    RestoreRegionNotEmpty {
+        /// Live guest-to-device frames.
+        request_depth: u64,
+        /// Live device-to-guest frames.
+        response_depth: u64,
     },
 }
 

@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::DeviceError;
-use crate::request::{ComputedResponse, Response, ResponseStatus};
+use crate::request::{AdditionalCompletion, ComputedResponse, Response, ResponseStatus};
 
 use super::codec::{BlockOp, BlockRequest, BlockResponse, BlockStatus};
 use super::overlay::{BaseImage, CowOverlay};
@@ -323,12 +323,40 @@ impl ResolvedBlockFaultDirective {
         adjacent_gap_nanos: u64,
         policy: BlockDuplicatePolicy,
     ) -> Result<(), DeviceError> {
+        let mut resolved = self.clone();
+        resolved.duplicate_completions.clear();
+        resolved.append_duplicate_completions(request_id, copies, adjacent_gap_nanos, policy)?;
+        self.duplicate_completions = resolved.duplicate_completions;
+        Ok(())
+    }
+
+    /// Appends duplicate outcomes after the current last primary-relative delay.
+    ///
+    /// The mutation is transactional: validation and all checked delay
+    /// arithmetic complete before this directive is changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the combined copy count exceeds the hard
+    /// bound, the adjacent gap is zero, delay arithmetic overflows, or a
+    /// protocol-error response does not match this directive's request.
+    pub fn append_duplicate_completions(
+        &mut self,
+        request_id: u32,
+        copies: u32,
+        adjacent_gap_nanos: u64,
+        policy: BlockDuplicatePolicy,
+    ) -> Result<(), DeviceError> {
         let copies =
             usize::try_from(copies).map_err(|_error| DeviceError::InvalidBlockFaultDirective {
                 reason: "duplicate copy count does not fit memory",
             })?;
         if copies == 0
-            || copies > HARD_BLOCK_DUPLICATE_COMPLETIONS
+            || self
+                .duplicate_completions
+                .len()
+                .checked_add(copies)
+                .is_none_or(|total| total > HARD_BLOCK_DUPLICATE_COMPLETIONS)
             || adjacent_gap_nanos == 0
             || matches!(
                 &policy,
@@ -341,6 +369,10 @@ impl ResolvedBlockFaultDirective {
                 reason: "duplicate completion policy is invalid",
             });
         }
+        let base_gap_nanos = self
+            .duplicate_completions
+            .last()
+            .map_or(0, ResolvedBlockDuplicateCompletion::gap_nanos);
         let mut resolved = Vec::with_capacity(copies);
         for index in 0..copies {
             let multiplier = u64::try_from(index)
@@ -349,11 +381,12 @@ impl ResolvedBlockFaultDirective {
                 .ok_or(DeviceError::InvalidBlockFaultDirective {
                     reason: "duplicate completion index overflow",
                 })?;
-            let gap_nanos = adjacent_gap_nanos.checked_mul(multiplier).ok_or(
-                DeviceError::InvalidBlockFaultDirective {
+            let gap_nanos = adjacent_gap_nanos
+                .checked_mul(multiplier)
+                .and_then(|gap| base_gap_nanos.checked_add(gap))
+                .ok_or(DeviceError::InvalidBlockFaultDirective {
                     reason: "duplicate completion delay overflow",
-                },
-            )?;
+                })?;
             resolved.push(match &policy {
                 BlockDuplicatePolicy::Ignore => {
                     ResolvedBlockDuplicateCompletion::Ignore { gap_nanos }
@@ -369,7 +402,7 @@ impl ResolvedBlockFaultDirective {
                 }
             });
         }
-        self.duplicate_completions = resolved;
+        self.duplicate_completions.extend(resolved);
         Ok(())
     }
 
@@ -454,7 +487,11 @@ impl ResolvedBlockFaultDirective {
                 });
             }
         }
-        if !self.duplicate_completions.is_empty() {
+        if self
+            .duplicate_completions
+            .iter()
+            .any(|duplicate| matches!(duplicate, ResolvedBlockDuplicateCompletion::Reset { .. }))
+        {
             return Err(DeviceError::BlockDuplicateTransportUnavailable { request_id });
         }
         if self.operation != BlockOp::Read && !self.read_transforms.is_empty() {
@@ -981,11 +1018,6 @@ impl BlockFaultState {
             None => ResolvedBlockFaultDirective::fault_free(request, self.config.length_bytes),
         };
         directive.validate_for(request, &self.config)?;
-        if !directive.duplicate_completions.is_empty() {
-            return Err(DeviceError::BlockDuplicateTransportUnavailable {
-                request_id: request.request_id,
-            });
-        }
         if directive.retain_completion
             && self.retained_completions.contains_key(&request.request_id)
         {
@@ -1040,9 +1072,33 @@ impl BlockFaultState {
                 },
             );
         }
+        let additional = directive
+            .duplicate_completions
+            .iter()
+            .map(|duplicate| {
+                let (gap_nanos, response) = match duplicate {
+                    ResolvedBlockDuplicateCompletion::Ignore { gap_nanos } => {
+                        (*gap_nanos, primary.clone())
+                    }
+                    ResolvedBlockDuplicateCompletion::ProtocolError {
+                        gap_nanos,
+                        response,
+                    } => (*gap_nanos, block_response_to_uniform(response)?),
+                    ResolvedBlockDuplicateCompletion::Reset { .. } => {
+                        return Err(DeviceError::BlockDuplicateTransportUnavailable {
+                            request_id: request.request_id,
+                        });
+                    }
+                };
+                Ok(AdditionalCompletion {
+                    gap_nanos,
+                    response,
+                })
+            })
+            .collect::<Result<Vec<_>, DeviceError>>()?;
         let computed = ComputedResponse {
             primary: (!directive.retain_completion).then_some(primary),
-            additional: Vec::new(),
+            additional,
             additional_latency_nanos: directive.additional_latency_nanos,
         };
         *self = next;
@@ -2143,10 +2199,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![11, 22, 33]
         );
+        directive
+            .append_duplicate_completions(request.request_id, 2, 7, BlockDuplicatePolicy::Ignore)
+            .unwrap_or_else(|error| panic!("duplicate contribution appends: {error}"));
+        assert_eq!(
+            directive
+                .duplicate_completions
+                .iter()
+                .map(ResolvedBlockDuplicateCompletion::gap_nanos)
+                .collect::<Vec<_>>(),
+            vec![11, 22, 33, 40, 47]
+        );
         let before = directive.duplicate_completions.clone();
         assert!(
             directive
-                .configure_duplicate_completions(
+                .append_duplicate_completions(
                     request.request_id,
                     2,
                     u64::MAX,
@@ -2158,7 +2225,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_install_fails_before_a_request_can_enter_without_live_transport() {
+    fn duplicate_reset_install_fails_before_a_request_can_enter_without_live_transport() {
         let request = BlockRequest::write(7, 0, b"data".to_vec());
         let mut directive = ResolvedBlockFaultDirective::fault_free(&request, 32);
         directive
@@ -2174,6 +2241,59 @@ mod tests {
             })
         );
         assert_eq!(state, before_state);
+    }
+
+    #[test]
+    fn duplicate_ignore_and_protocol_error_produce_exact_additional_completions() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let mut durable = CowOverlay::new();
+        let request = BlockRequest::read(7, 0, 4);
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&request, 32);
+        directive
+            .configure_duplicate_completions(
+                request.request_id,
+                1,
+                11,
+                BlockDuplicatePolicy::Ignore,
+            )
+            .unwrap_or_else(|error| panic!("ignore policy resolves: {error}"));
+        let mut state = state(BlockCompletionDurability::Durable);
+        state
+            .install(request.request_id, directive)
+            .unwrap_or_else(|error| panic!("ignore directive installs: {error}"));
+        let computed = state
+            .execute(&base, &mut durable, &request, 0)
+            .unwrap_or_else(|error| panic!("ignore directive executes: {error}"));
+        let primary = computed
+            .primary
+            .as_ref()
+            .unwrap_or_else(|| panic!("primary response should exist"));
+        assert_eq!(computed.additional.len(), 1);
+        assert_eq!(computed.additional[0].gap_nanos, 11);
+        assert_eq!(&computed.additional[0].response, primary);
+
+        let request = BlockRequest::read(8, 0, 4);
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&request, 32);
+        directive
+            .configure_duplicate_completions(
+                request.request_id,
+                1,
+                17,
+                BlockDuplicatePolicy::ProtocolError(BlockResponse::error(request.request_id)),
+            )
+            .unwrap_or_else(|error| panic!("protocol-error policy resolves: {error}"));
+        state
+            .install(request.request_id, directive)
+            .unwrap_or_else(|error| panic!("protocol-error directive installs: {error}"));
+        let computed = state
+            .execute(&base, &mut durable, &request, 0)
+            .unwrap_or_else(|error| panic!("protocol-error directive executes: {error}"));
+        assert_eq!(computed.additional.len(), 1);
+        assert_eq!(computed.additional[0].gap_nanos, 17);
+        assert_eq!(
+            computed.additional[0].response.status,
+            ResponseStatus::Error
+        );
     }
 
     #[test]
