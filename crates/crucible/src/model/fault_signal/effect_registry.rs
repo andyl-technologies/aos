@@ -390,6 +390,7 @@ const NETWORK_TARGETS: &[FaultTargetKind] = &[
     FaultTargetKind::NetworkContact,
 ];
 const NETWORK_MEDIUM_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::NetworkMedium];
+const NETWORK_ATTACHMENT_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::NetworkAttachment];
 const STORAGE_TARGETS: &[FaultTargetKind] = &[
     FaultTargetKind::BlockDevice,
     FaultTargetKind::BlockRange,
@@ -536,7 +537,7 @@ effect_registry! {
     /// Geometry-, propagation-, and interference-derived RF channel state.
     NetworkRfChannel => { key: "network.rf_channel", adapter: Network, targets: NETWORK_TARGETS, phases: [Resolve], lifetimes: [Persistent, Opportunity], composition: Composite, capability: "network.rf-channel.v1", evidence: ["geometry", "fields", "power", "resolved_profile"] },
     /// Authentication, association, handoff, and address-continuity machine.
-    NetworkAssociation => { key: "network.association", adapter: Network, targets: NETWORK_TARGETS, phases: [Boundary, Resolve], lifetimes: [StateMachine], composition: Conflict, capability: "network.association.v1", evidence: ["candidates", "timers", "old_attachment", "new_attachment", "traffic_policy"] },
+    NetworkAssociation => { key: "network.association", adapter: Network, targets: NETWORK_ATTACHMENT_TARGETS, phases: [Boundary], lifetimes: [StateMachine], composition: Conflict, capability: "network.association.v1", evidence: ["candidates", "timers", "old_attachment", "new_attachment", "traffic_policy"] },
     /// Typed mutation of network control-operation results.
     NetworkControlResultTransform => { key: "network.control_result_transform", adapter: Network, targets: NETWORK_TARGETS, phases: [Resolve, Deliver], lifetimes: [Opportunity], composition: OrderedTransform, capability: "network.control-result-transform.v1", evidence: ["request", "result_before", "result_after"] },
     /// Scheduled contact acquisition, availability, and teardown.

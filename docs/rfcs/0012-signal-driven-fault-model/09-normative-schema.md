@@ -344,7 +344,7 @@ registry expands each effect into a distinct closed field table; generic
 | `world.network_forwarder` | `id`, `kind`, ports, bounded table and queue declarations | control-plane service, `fault_domains=[]` |
 | `world.network_queue` | owner, `id`, capacity, discipline, overflow | class map, service reference |
 | `world.network_path` | `id`, ordered segments/forwarders, direction | route policy and MTU/encapsulation policy |
-| `world.network_attachment` | endpoint/interface, candidates, technology machine | authentication and address continuity policy |
+| `world.network_attachment` | `id`, interface, canonical candidate segments, `technology`, semantic version, authentication policy, address-continuity policy | none |
 | `world.network_contact_plan` | `id`, endpoints, ordered contacts, routing/custody policy | range/profile artifacts |
 
 A contact interval's acquisition and teardown durations are its complete

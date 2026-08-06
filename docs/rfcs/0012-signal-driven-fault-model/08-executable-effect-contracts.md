@@ -118,7 +118,7 @@ the effect record.
 | `network.connection_state` | state-machine; resolve | `kind = nat/conntrack/load_balancer/tunnel/dns`, table bound, packet-key artifact, exhaustive state machine/event, overflow policy | one machine per extracted flow; bounded table policy | domain capability; key digest, entry before/after, eviction/overflow and state timer |
 | `network.shared_medium` | persistent state; admit/queue/resolve | canonical `resources`, one `medium_access` policy, positive transmit power; the policy declares arbitration, conditional packet key, slot width, or complete contention record, and a duty-cycle ratio | one conflict-free policy per binding target; signals combine as inputs | `network.shared-medium.v1`; resource set, policy/transition identity, contenders, keyed attempts, airtime allocation, collision/capture/transform, and service |
 | `network.rf_channel` | persistent/opportunity; resolve | carrier/bandwidth, power, noise, gain, attenuation, fading inputs, and SINR profiles with rate/loss/corruption/retry contracts | power/interference sum in exact linear unit then transfer lookup | `network.rf-channel.v1`; sampled geometry/field/power, per-attempt draws, retries and resulting profile/outcome |
-| `network.association` | state-machine; boundary/resolve | technology, candidates, selection, hysteresis, timers, auth, buffering/address policy | one machine per interface; inputs combine before selection | technology capability; candidates, timers, old/new attachment and traffic policy |
+| `network.association` | state-machine; boundary | one self-contained association policy; the target supplies technology and the exact candidate set | one machine per attachment; inputs combine before selection | `network.association.v1`; candidates, timers, old/new attachment and traffic policy |
 | `network.control_result_transform` | opportunity; resolve/deliver | technology, operation, kind `drop/stale/bias/replace/error`, typed result fields | ordered-transform or severity for errors | technology capability; request/result schema and before/after evidence |
 | `network.contact` | state-machine; boundary/resolve | contact-plan intervals with acquisition/teardown, range-delay lookup, beam/gateway IDs | contact availability AND other outages | `network.contact.v1`; contact interval, range, selected beam/gateway |
 | `network.custody_queue` | persistent state; queue | capacity, expiry, custody policy, route/contact plan | one bounded queue policy | `network.custody.v1`; bundle identity, custody transitions, drops and next contact |
@@ -396,6 +396,39 @@ entries by joining them to the bounded pending-frame set. Restore requires every
 remaining reservation to have a matching pending frame and authenticates all
 of those fields in the network continuation digest. The global number of live
 medium reservations cannot exceed the scheduler's pending-frame bound.
+
+### 8.3.7 Association and handoff execution
+
+`network.association` targets exactly one `world.network_attachment` and refers
+to exactly one `association` policy artifact. The artifact is the complete
+selection, hysteresis, residence, scan, authentication, interruption, queued
+traffic, and address-continuity contract. Its canonical candidate list MUST
+equal the target attachment's World candidate-segment list; the effect has no
+duplicate candidate or policy fields.
+
+The mapped value is either one integer input shared by all candidate score
+tables or one integer per candidate in canonical candidate order. Any other
+arity fails closed. Each scan evaluates the integer score tables, chooses the
+greatest score, and breaks equal scores by the lexicographically smallest
+candidate ID. A selected attachment is retained until another candidate's score
+is at least `current_score + hysteresis`. The candidate must remain qualified
+for the complete `time_to_trigger_nanos`; a different winner or loss of the
+threshold restarts residence. Scans occur at exact intervals of
+`scan_interval_nanos` from the last executed scan.
+
+After residence, the machine enters authentication/interruption for exactly
+`authentication_nanos + interruption_nanos`. Frames crossing the attachment
+while searching, resident on a candidate, authenticating, interrupted, or using
+a World path that does not contain the selected candidate are dropped. At
+completion the pending candidate becomes selected. If `preserve_queued=false`,
+the attachment's queued frames are removed at handoff start. If
+`preserve_address=false`, all queued and in-flight traffic to or from the
+attachment endpoint is removed at handoff start, which is the v1 executable
+meaning of address discontinuity.
+
+Checkpoint and replay identity include phase, selected and pending candidates,
+residence and completion coordinates, next scan, mapped scores, policy flags,
+and transition sequence. Timer arithmetic is checked; overflow fails closed.
 
 ## 8.4 Storage and 9p effect registry
 

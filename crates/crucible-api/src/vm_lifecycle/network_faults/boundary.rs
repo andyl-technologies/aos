@@ -38,6 +38,29 @@ struct ContactPlanState {
     transition_sequence: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum AssociationPhase {
+    Searching,
+    Candidate,
+    Authenticating,
+    Associated,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct AssociationState {
+    policy: FaultObjectId,
+    candidates: Vec<(FaultObjectId, i64)>,
+    phase: AssociationPhase,
+    current: Option<FaultObjectId>,
+    pending: Option<FaultObjectId>,
+    pending_since_nanos: Option<u64>,
+    transfer_complete_nanos: Option<u64>,
+    next_scan_nanos: u64,
+    preserve_queued: bool,
+    preserve_address: bool,
+    transition_sequence: u64,
+}
+
 impl ContactPlanState {
     fn carries_traffic(&self, now: u64) -> bool {
         self.intervals.iter().any(|interval| {
@@ -71,6 +94,7 @@ pub(super) struct BoundaryNetworkState {
     negotiated_modes: BTreeMap<NetworkEffectStateKey, NegotiatedModeState>,
     route_transitions: BTreeMap<NetworkEffectStateKey, RouteTransitionState>,
     contact_plans: BTreeMap<NetworkEffectStateKey, ContactPlanState>,
+    associations: BTreeMap<NetworkEffectStateKey, AssociationState>,
 }
 
 /// Nonlocal mutations requested by a boundary action batch.
@@ -82,6 +106,8 @@ pub(super) struct BoundaryNetworkApplication {
     pub(super) clear_queued_targets: BTreeSet<crucible::model::ResolvedFaultTarget>,
     /// Route transitions that must update queued and in-flight path ownership.
     pub(super) route_transitions: Vec<BoundaryRouteApplication>,
+    /// Attachment transitions whose pre-transition frames cannot retain addressing.
+    pub(super) address_discontinuities: BTreeSet<crucible::model::ResolvedFaultTarget>,
 }
 
 /// One committed route-version transition and its traffic treatment.
@@ -113,14 +139,103 @@ impl BoundaryNetworkState {
     }
 
     pub(super) fn validate_bounds(&self) -> Result<(), SchedulerError> {
+        let association_candidates = self
+            .associations
+            .values()
+            .try_fold(0_usize, |total, association| {
+                total.checked_add(association.candidates.len())
+            });
         if self.outages.len() > 65_536
             || self.negotiated_modes.len() > 65_536
             || self.route_transitions.len() > 65_536
             || self.contact_plans.len() > 65_536
+            || self.associations.len() > 65_536
+            || association_candidates.is_none_or(|count| count > 65_536)
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("network boundary checkpoint exceeds hard state bounds"),
             });
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_topology(
+        &self,
+        topology: &crucible::model::WorldFaultTopology,
+    ) -> Result<(), SchedulerError> {
+        for (key, association) in &self.associations {
+            let declaration = topology
+                .network_policy_artifact(&association.policy)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "restored association policy `{}` is absent from World",
+                        association.policy
+                    ),
+                })?;
+            let crucible::model::NetworkPolicyArtifactKind::Association(policy) =
+                &declaration.artifact
+            else {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "restored association policy `{}` has the wrong class",
+                        association.policy
+                    ),
+                });
+            };
+            let expected = policy
+                .candidates
+                .iter()
+                .map(|candidate| &candidate.candidate)
+                .collect::<Vec<_>>();
+            let actual = association
+                .candidates
+                .iter()
+                .map(|(candidate, _score)| candidate)
+                .collect::<Vec<_>>();
+            let contains = |candidate: Option<&FaultObjectId>| {
+                candidate.is_none_or(|candidate| actual.binary_search(&candidate).is_ok())
+            };
+            let phase_valid = match association.phase {
+                AssociationPhase::Searching => {
+                    association.current.is_none()
+                        && association.pending.is_none()
+                        && association.pending_since_nanos.is_none()
+                        && association.transfer_complete_nanos.is_none()
+                }
+                AssociationPhase::Candidate => {
+                    association.pending.is_some()
+                        && association.pending_since_nanos.is_some()
+                        && association.transfer_complete_nanos.is_none()
+                }
+                AssociationPhase::Authenticating => {
+                    association.pending.is_some()
+                        && association.pending_since_nanos.is_some()
+                        && association.transfer_complete_nanos.is_some()
+                }
+                AssociationPhase::Associated => {
+                    association.current.is_some()
+                        && association.pending.is_none()
+                        && association.pending_since_nanos.is_none()
+                        && association.transfer_complete_nanos.is_none()
+                }
+            };
+            if expected != actual
+                || !contains(association.current.as_ref())
+                || !contains(association.pending.as_ref())
+                || !phase_valid
+                || association.preserve_queued != policy.preserve_queued
+                || association.preserve_address != policy.preserve_address
+                || !matches!(
+                    key.target,
+                    crucible::model::ResolvedFaultTarget::NetworkAttachment { .. }
+                )
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "restored association state violates its admitted World contract",
+                    ),
+                });
+            }
         }
         Ok(())
     }
@@ -141,6 +256,7 @@ impl BoundaryNetworkState {
                 self.negotiated_modes.remove(&key);
                 self.route_transitions.remove(&key);
                 self.contact_plans.remove(&key);
+                self.associations.remove(&key);
                 continue;
             }
             let EffectSpecification::Network(specification) = action.effect.specification() else {
@@ -274,41 +390,66 @@ impl BoundaryNetworkState {
                     application.next_wakeup_nanos =
                         earliest_wakeup(application.next_wakeup_nanos, Some(converged_after));
                 }
-                NetworkEffectSpecification::Association {
-                    selection_policy,
-                    timer_policy,
-                    authentication_policy,
-                    traffic_policy,
-                    ..
-                } => {
-                    let mut duration = 0_u64;
-                    for reference in [
-                        selection_policy,
-                        timer_policy,
-                        authentication_policy,
-                        traffic_policy,
-                    ] {
-                        duration =
-                            duration.max(association_interruption(topology, reference, &action)?);
-                    }
-                    let unavailable_until = coordinate
-                        .virtual_nanos
-                        .checked_add(duration)
-                        .ok_or_else(|| {
+                NetworkEffectSpecification::Association { policy } => {
+                    let declaration =
+                        topology.network_policy_artifact(policy).ok_or_else(|| {
                             network_effect_application_error(
                                 &action,
-                                "association coordinate overflowed",
+                                "association policy disappeared after admission",
                             )
                         })?;
-                    self.outages.insert(
+                    let crucible::model::NetworkPolicyArtifactKind::Association(policy_fields) =
+                        &declaration.artifact
+                    else {
+                        return Err(network_effect_application_error(
+                            &action,
+                            "association policy changed type after admission",
+                        ));
+                    };
+                    let inputs = route::mapped_network_integers(&action)?;
+                    if inputs.len() != 1 && inputs.len() != policy_fields.candidates.len() {
+                        return Err(network_effect_application_error(
+                            &action,
+                            "association mapping must provide one shared input or one input per candidate",
+                        ));
+                    }
+                    let candidates = policy_fields
+                        .candidates
+                        .iter()
+                        .enumerate()
+                        .map(|(index, candidate)| {
+                            let input = inputs[if inputs.len() == 1 { 0 } else { index }];
+                            route::lookup_network_integer_table(
+                                &candidate.score,
+                                input,
+                                candidate.candidate.as_str(),
+                            )
+                            .map(|score| (candidate.candidate.clone(), score))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let prior = self.associations.remove(&key);
+                    self.associations.insert(
                         key,
-                        TimedOutage {
-                            unavailable_until,
+                        AssociationState {
+                            policy: policy.clone(),
+                            candidates,
+                            phase: prior
+                                .as_ref()
+                                .map_or(AssociationPhase::Searching, |state| state.phase),
+                            current: prior.as_ref().and_then(|state| state.current.clone()),
+                            pending: prior.as_ref().and_then(|state| state.pending.clone()),
+                            pending_since_nanos: prior
+                                .as_ref()
+                                .and_then(|state| state.pending_since_nanos),
+                            transfer_complete_nanos: prior
+                                .as_ref()
+                                .and_then(|state| state.transfer_complete_nanos),
+                            next_scan_nanos: coordinate.virtual_nanos,
+                            preserve_queued: policy_fields.preserve_queued,
+                            preserve_address: policy_fields.preserve_address,
                             transition_sequence: action.transition_sequence,
                         },
                     );
-                    application.next_wakeup_nanos =
-                        earliest_wakeup(application.next_wakeup_nanos, Some(unavailable_until));
                 }
                 NetworkEffectSpecification::Contact { intervals, .. } => {
                     let declaration =
@@ -368,6 +509,7 @@ impl BoundaryNetworkState {
                 }
             }
         }
+        self.advance_associations(coordinate.virtual_nanos, topology, &mut application)?;
         application.next_wakeup_nanos = earliest_wakeup(
             application.next_wakeup_nanos,
             self.next_wakeup_nanos(coordinate.virtual_nanos),
@@ -379,6 +521,8 @@ impl BoundaryNetworkState {
     pub(super) fn apply_frame(
         &self,
         target: &crucible::model::ResolvedFaultTarget,
+        route_path_version: Option<&FaultObjectId>,
+        topology: &crucible::model::WorldFaultTopology,
         now: u64,
         effects: &mut crucible::ResolvedNetworkFrameEffects,
     ) -> Result<(), SchedulerError> {
@@ -392,6 +536,32 @@ impl BoundaryNetworkState {
                 .any(|(key, mode)| &key.target == target && now < mode.usable_after)
         {
             effects.mark_drop();
+        }
+        for (key, association) in &self.associations {
+            if &key.target != target {
+                continue;
+            }
+            let selected_path_contains_attachment = association.current.as_ref().is_some_and(
+                |selected| {
+                    route_path_version.is_some_and(|path_version| {
+                        topology.network_paths.iter().any(|path| {
+                            path.id.as_str() == path_version.as_str()
+                                && path.hops.iter().any(|hop| {
+                                    matches!(
+                                        hop,
+                                        crucible::model::WorldNetworkPathHop::Segment { segment, .. }
+                                            if segment.as_str() == selected.as_str()
+                                    )
+                                })
+                        })
+                    })
+                },
+            );
+            if association.phase != AssociationPhase::Associated
+                || !selected_path_contains_attachment
+            {
+                effects.mark_drop();
+            }
         }
         for (key, mode) in &self.negotiated_modes {
             if &key.target == target && now >= mode.usable_after {
@@ -439,6 +609,143 @@ impl BoundaryNetworkState {
                     &transition.new_route
                 }
             })
+    }
+
+    fn advance_associations(
+        &mut self,
+        now: u64,
+        topology: &crucible::model::WorldFaultTopology,
+        application: &mut BoundaryNetworkApplication,
+    ) -> Result<(), SchedulerError> {
+        for (key, state) in &mut self.associations {
+            let declaration = topology
+                .network_policy_artifact(&state.policy)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "association policy `{}` disappeared after admission",
+                        state.policy
+                    ),
+                })?;
+            let crucible::model::NetworkPolicyArtifactKind::Association(policy) =
+                &declaration.artifact
+            else {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "association policy `{}` changed type after admission",
+                        state.policy
+                    ),
+                });
+            };
+
+            if state
+                .transfer_complete_nanos
+                .is_some_and(|complete| now >= complete)
+            {
+                state.current = state.pending.take();
+                state.pending_since_nanos = None;
+                state.transfer_complete_nanos = None;
+                state.phase = if state.current.is_some() {
+                    AssociationPhase::Associated
+                } else {
+                    AssociationPhase::Searching
+                };
+            }
+            if state.phase == AssociationPhase::Authenticating {
+                application.next_wakeup_nanos = earliest_wakeup(
+                    application.next_wakeup_nanos,
+                    state
+                        .transfer_complete_nanos
+                        .filter(|complete| *complete > now),
+                );
+                continue;
+            }
+            if now < state.next_scan_nanos {
+                application.next_wakeup_nanos =
+                    earliest_wakeup(application.next_wakeup_nanos, Some(state.next_scan_nanos));
+                continue;
+            }
+
+            let best = state
+                .candidates
+                .iter()
+                .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
+                .map(|(candidate, score)| (candidate.clone(), *score));
+            let qualifies = best.as_ref().is_some_and(|(candidate, score)| {
+                if state.current.as_ref() == Some(candidate) {
+                    return false;
+                }
+                state.current.as_ref().is_none_or(|current| {
+                    state
+                        .candidates
+                        .iter()
+                        .find(|(candidate, _score)| candidate == current)
+                        .is_none_or(|(_candidate, current_score)| {
+                            i128::from(*score)
+                                >= i128::from(*current_score) + i128::from(policy.hysteresis)
+                        })
+                })
+            });
+            if qualifies {
+                let candidate = best.map(|(candidate, _score)| candidate);
+                if state.pending != candidate {
+                    state.pending = candidate;
+                    state.pending_since_nanos = Some(now);
+                    state.phase = AssociationPhase::Candidate;
+                }
+                let residence_complete = state
+                    .pending_since_nanos
+                    .and_then(|since| since.checked_add(policy.time_to_trigger_nanos))
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: String::from("association residence coordinate overflowed"),
+                    })?;
+                if now >= residence_complete {
+                    let transfer_complete = now
+                        .checked_add(policy.authentication_nanos)
+                        .and_then(|value| value.checked_add(policy.interruption_nanos))
+                        .ok_or_else(|| SchedulerError::BoundaryViolation {
+                            message: String::from("association transfer coordinate overflowed"),
+                        })?;
+                    if !state.preserve_queued {
+                        application.clear_queued_targets.insert(key.target.clone());
+                    }
+                    if !state.preserve_address {
+                        application
+                            .address_discontinuities
+                            .insert(key.target.clone());
+                    }
+                    if transfer_complete == now {
+                        state.current = state.pending.take();
+                        state.pending_since_nanos = None;
+                        state.transfer_complete_nanos = None;
+                        state.phase = AssociationPhase::Associated;
+                    } else {
+                        state.phase = AssociationPhase::Authenticating;
+                        state.transfer_complete_nanos = Some(transfer_complete);
+                        application.next_wakeup_nanos =
+                            earliest_wakeup(application.next_wakeup_nanos, Some(transfer_complete));
+                    }
+                } else {
+                    application.next_wakeup_nanos =
+                        earliest_wakeup(application.next_wakeup_nanos, Some(residence_complete));
+                }
+            } else {
+                state.pending = None;
+                state.pending_since_nanos = None;
+                state.phase = if state.current.is_some() {
+                    AssociationPhase::Associated
+                } else {
+                    AssociationPhase::Searching
+                };
+            }
+            state.next_scan_nanos = now
+                .checked_add(policy.scan_interval_nanos.get())
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("association scan coordinate overflowed"),
+                })?;
+            application.next_wakeup_nanos =
+                earliest_wakeup(application.next_wakeup_nanos, Some(state.next_scan_nanos));
+        }
+        Ok(())
     }
 
     pub(super) fn append_evidence(&self, material: &mut Vec<u8>) -> Result<(), SchedulerError> {
@@ -496,6 +803,40 @@ impl BoundaryNetworkState {
                 append_evidence_bytes(material, interval.provenance.as_str().as_bytes())?;
             }
         }
+        append_evidence_count(material, self.associations.len())?;
+        for (key, association) in &self.associations {
+            append_network_effect_state_key(material, key)?;
+            append_evidence_bytes(material, association.policy.as_str().as_bytes())?;
+            material.push(match association.phase {
+                AssociationPhase::Searching => 1,
+                AssociationPhase::Candidate => 2,
+                AssociationPhase::Authenticating => 3,
+                AssociationPhase::Associated => 4,
+            });
+            append_optional_fault_object_id(material, association.current.as_ref())?;
+            append_optional_fault_object_id(material, association.pending.as_ref())?;
+            material.extend_from_slice(
+                &association
+                    .pending_since_nanos
+                    .unwrap_or(u64::MAX)
+                    .to_be_bytes(),
+            );
+            material.extend_from_slice(
+                &association
+                    .transfer_complete_nanos
+                    .unwrap_or(u64::MAX)
+                    .to_be_bytes(),
+            );
+            material.extend_from_slice(&association.next_scan_nanos.to_be_bytes());
+            material.push(u8::from(association.preserve_queued));
+            material.push(u8::from(association.preserve_address));
+            material.extend_from_slice(&association.transition_sequence.to_be_bytes());
+            append_evidence_count(material, association.candidates.len())?;
+            for (candidate, score) in &association.candidates {
+                append_evidence_bytes(material, candidate.as_str().as_bytes())?;
+                material.extend_from_slice(&score.to_be_bytes());
+            }
+        }
         Ok(())
     }
 
@@ -519,9 +860,30 @@ impl BoundaryNetworkState {
                     .values()
                     .filter_map(|contact| contact.next_boundary(now)),
             )
+            .chain(self.associations.values().flat_map(|association| {
+                [
+                    Some(association.next_scan_nanos),
+                    association.transfer_complete_nanos,
+                ]
+                .into_iter()
+                .flatten()
+            }))
             .filter(|coordinate| *coordinate > now)
             .min()
     }
+}
+
+fn append_optional_fault_object_id(
+    material: &mut Vec<u8>,
+    value: Option<&FaultObjectId>,
+) -> Result<(), SchedulerError> {
+    if let Some(value) = value {
+        material.push(1);
+        append_evidence_bytes(material, value.as_str().as_bytes())?;
+    } else {
+        material.push(0);
+    }
+    Ok(())
 }
 
 fn maximum_state_machine_delay(
@@ -545,28 +907,6 @@ fn maximum_state_machine_delay(
         .map(|transition| transition.delay_nanos)
         .max()
         .unwrap_or(0))
-}
-
-fn association_interruption(
-    topology: &crucible::model::WorldFaultTopology,
-    reference: &FaultObjectId,
-    action: &ResolvedBindingAction,
-) -> Result<u64, SchedulerError> {
-    let declaration = topology.network_policy_artifact(reference).ok_or_else(|| {
-        network_effect_application_error(action, "association policy disappeared")
-    })?;
-    let crucible::model::NetworkPolicyArtifactKind::Association(policy) = &declaration.artifact
-    else {
-        return Err(network_effect_application_error(
-            action,
-            "association policy changed type after admission",
-        ));
-    };
-    policy
-        .time_to_trigger_nanos
-        .checked_add(policy.authentication_nanos)
-        .and_then(|value| value.checked_add(policy.interruption_nanos))
-        .ok_or_else(|| network_effect_application_error(action, "association timeline overflowed"))
 }
 
 #[cfg(test)]
@@ -625,6 +965,85 @@ mod tests {
         }
     }
 
+    fn association_action(policy: FaultObjectId, scores: [i64; 2]) -> ResolvedBindingAction {
+        let effect = EffectRequest::new(
+            crucible::model::EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::StateMachine,
+            EffectSpecification::Network(NetworkEffectSpecification::Association {
+                policy: policy.clone(),
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test association should be valid: {error}"));
+        ResolvedBindingAction {
+            kind: BindingActionKind::UpsertPersistent,
+            binding: id("association-binding"),
+            target: crucible::model::ResolvedFaultTarget::NetworkAttachment {
+                endpoint: id("vm-a"),
+                interface: id("interface-a"),
+                attachment: id("attachment-a"),
+            },
+            phase: FaultPhase::Boundary,
+            effect: Arc::new(effect),
+            mapping_output: Arc::new(ResolvedMappingOutput::ServiceProfile {
+                service_profile: policy,
+                input_contracts: Vec::new(),
+                inputs: scores
+                    .into_iter()
+                    .map(crucible::model::SignalValue::I64)
+                    .collect(),
+            }),
+            mapped_digest: ContentHash::from_bytes(b"association-mapping"),
+            transition_sequence: 1,
+            opportunity: None,
+            coordinate: FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            cause: BindingActionCause::Signal,
+        }
+    }
+
+    fn association_topology(policy: FaultObjectId) -> crucible::model::WorldFaultTopology {
+        let score = |candidate: &str| crucible::model::NetworkPolicyAssociationCandidate {
+            candidate: id(candidate),
+            score: crucible::model::NetworkPolicyIntegerTable {
+                input_unit: id("quality"),
+                output_unit: id("score"),
+                interpolation: crucible::model::NetworkPolicyInterpolation::LinearTiesToEven,
+                outside: crucible::model::NetworkPolicyOutsideRange::Clamp,
+                points: vec![
+                    crucible::model::NetworkPolicyIntegerPoint {
+                        input: -1_000,
+                        output: -1_000,
+                    },
+                    crucible::model::NetworkPolicyIntegerPoint {
+                        input: 1_000,
+                        output: 1_000,
+                    },
+                ],
+            },
+        };
+        crucible::model::WorldFaultTopology {
+            network_policy_artifacts: vec![crucible::model::WorldNetworkPolicyArtifact {
+                id: policy,
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::Association(
+                    crucible::model::NetworkPolicyAssociation {
+                        hysteresis: 5,
+                        time_to_trigger_nanos: 10,
+                        scan_interval_nanos: positive(2),
+                        authentication_nanos: 2,
+                        interruption_nanos: 3,
+                        preserve_queued: false,
+                        preserve_address: false,
+                        candidates: vec![score("segment-a"), score("segment-b")],
+                    },
+                ),
+            }],
+            ..crucible::model::WorldFaultTopology::default()
+        }
+    }
+
     #[test]
     fn flap_blocks_frames_until_the_exact_recovery_boundary() {
         let mut state = BoundaryNetworkState::default();
@@ -642,13 +1061,25 @@ mod tests {
 
         let mut blocked = crucible::ResolvedNetworkFrameEffects::default();
         state
-            .apply_frame(&target(), 159, &mut blocked)
+            .apply_frame(
+                &target(),
+                None,
+                &crucible::model::WorldFaultTopology::default(),
+                159,
+                &mut blocked,
+            )
             .unwrap_or_else(|error| panic!("test frame should resolve: {error}"));
         assert!(blocked.is_dropped());
 
         let mut recovered = crucible::ResolvedNetworkFrameEffects::default();
         state
-            .apply_frame(&target(), 160, &mut recovered)
+            .apply_frame(
+                &target(),
+                None,
+                &crucible::model::WorldFaultTopology::default(),
+                160,
+                &mut recovered,
+            )
             .unwrap_or_else(|error| panic!("test frame should resolve: {error}"));
         assert!(!recovered.is_dropped());
     }
@@ -681,5 +1112,69 @@ mod tests {
         assert!(contact.carries_traffic(179));
         assert!(!contact.carries_traffic(180));
         assert_eq!(contact.next_boundary(180), Some(200));
+    }
+
+    #[test]
+    fn association_executes_residence_authentication_and_handoff_timers() {
+        let policy = id("association-policy");
+        let topology = association_topology(policy.clone());
+        let mut state = BoundaryNetworkState::default();
+        let target = association_action(policy, [10, 20]).target;
+
+        let initial = state
+            .apply_actions(
+                FaultCoordinate {
+                    virtual_nanos: 0,
+                    retired_instructions: None,
+                },
+                [association_action(id("association-policy"), [10, 20])],
+                &topology,
+            )
+            .unwrap_or_else(|error| panic!("initial association scan: {error}"));
+        assert_eq!(initial.next_wakeup_nanos, Some(2));
+
+        for now in [2, 4, 6, 8] {
+            state
+                .apply_actions(
+                    FaultCoordinate {
+                        virtual_nanos: now,
+                        retired_instructions: None,
+                    },
+                    [],
+                    &topology,
+                )
+                .unwrap_or_else(|error| panic!("association residence scan: {error}"));
+        }
+        let handoff = state
+            .apply_actions(
+                FaultCoordinate {
+                    virtual_nanos: 10,
+                    retired_instructions: None,
+                },
+                [],
+                &topology,
+            )
+            .unwrap_or_else(|error| panic!("association handoff start: {error}"));
+        assert!(handoff.clear_queued_targets.contains(&target));
+        assert!(handoff.address_discontinuities.contains(&target));
+        assert_eq!(handoff.next_wakeup_nanos, Some(15));
+
+        state
+            .apply_actions(
+                FaultCoordinate {
+                    virtual_nanos: 15,
+                    retired_instructions: None,
+                },
+                [],
+                &topology,
+            )
+            .unwrap_or_else(|error| panic!("association handoff completion: {error}"));
+        let association = state
+            .associations
+            .values()
+            .next()
+            .unwrap_or_else(|| panic!("association state should remain active"));
+        assert_eq!(association.phase, AssociationPhase::Associated);
+        assert_eq!(association.current.as_ref(), Some(&id("segment-b")));
     }
 }
