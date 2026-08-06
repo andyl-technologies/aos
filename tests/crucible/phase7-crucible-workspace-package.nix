@@ -89,7 +89,7 @@
       }
       {
         label = "suite runtime closure co-retains controller/QEMU/plugin/source/kernel/fixtures";
-        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];";
+        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb];";
       }
       {
         label = "suite is the aggregate release root";
@@ -113,7 +113,7 @@
       }
       {
         label = "suite metadata inventories every project component license";
-        needle = "license = [\"Apache-2.0\" \"MIT\" \"GPL-2.0-only\" \"GPL-2.0-or-later\"];";
+        needle = "license = [\"Apache-2.0\" \"MIT\" \"GPL-2.0-only\" \"GPL-2.0-or-later\" \"GPL-3.0-or-later\"];";
       }
       {
         label = "workspace build info";

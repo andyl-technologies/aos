@@ -863,7 +863,7 @@ fn replay_to_savepoint_artifact_text(
             &content_address_bytes(b"mock-backend-source-v1"),
             &content_address_bytes(b"mock-qemu-patch-series-v1"),
             &crucible::SHMEM_ABI_VERSION.to_string(),
-            &crucible_protocol::CONTROL_PROTOCOL_VERSION.to_string(),
+            &crucible_api::CONTROL_PROTOCOL_VERSION.to_string(),
             &format!(
                 "{}.{}.{}",
                 crucible_api::RPC_PROTOCOL_MAJOR,

@@ -188,6 +188,10 @@ fn pty_child_probe() {
     if !selected_as_child || unsafe { libc::isatty(libc::STDIN_FILENO) } != 1 {
         return;
     }
+    let mut resize_ready = [0_u8; 1];
+    std::io::stdin()
+        .read_exact(&mut resize_ready)
+        .unwrap_or_else(|error| panic!("PTY resize synchronization failed: {error}"));
     let mut size = libc::winsize {
         ws_row: 0,
         ws_col: 0,
@@ -227,6 +231,9 @@ fn pty_process_has_a_controlling_terminal_and_owned_resize_handle() {
     channel
         .resize(92, 38)
         .unwrap_or_else(|error| panic!("PTY resize failed: {error}"));
+    channel
+        .write_input(b"\n")
+        .unwrap_or_else(|error| panic!("PTY resize synchronization failed: {error}"));
 
     let mut pending = VecDeque::new();
     for _ in 0..1000 {
