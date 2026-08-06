@@ -29,7 +29,7 @@ use crucible::{
     SchedulerLivenessScenario, SearchFrontierChoices, Seed, Shift, SimInstant, SimulationBackend,
     SingleScheduler, VirtualTime, World,
 };
-use crucible_qemu::ProductionFaultRuntime;
+use crucible_qemu::{ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint};
 
 use crate::LifecycleApiError;
 
@@ -111,6 +111,7 @@ struct ProductionVmCheckpointReplayTarget {
     counter: u64,
     scheduler_time: VirtualTime,
     control_count: usize,
+    fault_checkpoint: ProductionFaultRuntimeCheckpoint,
 }
 
 #[derive(Clone, Debug)]
