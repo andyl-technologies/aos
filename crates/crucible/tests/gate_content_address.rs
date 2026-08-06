@@ -377,8 +377,6 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
                 heal_at: Some(VirtualTime { ticks: 120 }),
             },
         )]),
-        active_fault_tags: BTreeMap::new(),
-        active_fault_table: crucible::ActiveFaultTable::default(),
         pending_device_decisions: Vec::new(),
         search_frontier: SearchFrontierChoices::empty(),
     };

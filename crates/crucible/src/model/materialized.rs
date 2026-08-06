@@ -552,10 +552,6 @@ pub struct SchedulerState {
     pub timers: TimerRegistry,
     /// Faults currently active in the scheduler.
     pub active_faults: BTreeMap<FaultId, FaultState>,
-    /// Active injected faults keyed by their stable heal tag.
-    pub active_fault_tags: BTreeMap<FaultTag, MembershipFault>,
-    /// Deterministic scheduler lookup table reduced from active faults.
-    pub active_fault_table: ActiveFaultTable,
     /// Device decisions already drawn but not yet emitted at a scheduler boundary.
     pub pending_device_decisions: Vec<Decision>,
     /// Search choices captured from the runtime frontier.
@@ -576,8 +572,6 @@ impl SchedulerState {
             pending_topology_changes: Vec::new(),
             timers: TimerRegistry::empty(),
             active_faults: BTreeMap::new(),
-            active_fault_tags: BTreeMap::new(),
-            active_fault_table: ActiveFaultTable::default(),
             pending_device_decisions: Vec::new(),
             search_frontier: SearchFrontierChoices::empty(),
         }
@@ -601,11 +595,6 @@ impl SchedulerState {
     /// Applies one causal decision that mutates materialized scheduler state.
     pub fn apply_decision(&mut self, decision: &Decision) {
         let _ = decision;
-    }
-
-    /// Recomputes the deterministic active-fault table from active tags.
-    pub fn recompute_active_fault_table(&mut self) {
-        self.active_fault_table = ActiveFaultTable::from_active_faults(&self.active_fault_tags);
     }
 }
 

@@ -78,10 +78,6 @@ pub enum SchedulerEventLogPayload {
 pub struct TriggerActionState {
     /// Every non-group action applied by triggers in deterministic application order.
     pub applications: Vec<TriggerActionApplication>,
-    /// Active membership faults keyed by their stable trigger tag.
-    pub active_faults: BTreeMap<crate::FaultTag, MembershipFault>,
-    /// Active full-taxonomy faults keyed by their stable trigger tag.
-    pub active_taxonomy_faults: BTreeMap<crate::FaultTag, Fault>,
     /// Trigger timers armed by name with their absolute virtual-time fire point.
     pub armed_timers: BTreeMap<TimerId, VirtualTime>,
     /// Trigger-scheduled node lifecycle overrides keyed by declared node.
@@ -99,12 +95,6 @@ pub struct TriggerActionState {
 }
 
 impl TriggerActionState {
-    /// Combines every active full-taxonomy fault currently owned by triggers.
-    #[must_use]
-    pub fn combined_faults(&self) -> CombinedFaults {
-        CombinedFaults::from_membership_faults(self.active_faults.values())
-    }
-
     /// Composes trigger pass/fail state with the final assertion-layer verdict.
     ///
     /// Assertion failures and explicit trigger failures both fail the run. An

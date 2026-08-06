@@ -1429,49 +1429,6 @@ mod tests {
     }
 
     #[test]
-    fn qemu_loadvm_preserves_materialized_scheduler_active_tags()
-    -> Result<(), QemuVmRealizationError> {
-        let log = shared_log();
-        let mut executor = scripted_executor(log);
-        let def = scenario("qemu-active-tags");
-        let config = Configuration::genesis(def);
-        let tag = crucible::FaultTag::from_name("qemu-tag");
-        let fault = crucible::MembershipFault::NotYetJoined {
-            node: NodeId {
-                name: String::from("qemu"),
-            },
-        };
-        let mut scheduler = crucible::SchedulerState::empty();
-        scheduler
-            .active_fault_tags
-            .insert(tag.clone(), fault.clone());
-        let state = MaterializedState::from_components(
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-            scheduler,
-            crucible::DecisionRngState::empty(),
-            crucible::EventLogOffset::default(),
-        );
-        let snapshot = QemuVmSnapshot {
-            checkpoint: checkpoint_for_config("qemu-active-tags", &config, CheckpointKind::Fat)
-                .with_materialized_state(Some(state)),
-            replay_oracle_validation: QemuReplayOracleValidation::Match {
-                runtime_hash: config.id(),
-            },
-        };
-
-        let runtime = executor.load_exact_snapshot(
-            &config,
-            &snapshot,
-            QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
-            QemuLoadvmRealizationAdmission::for_test(config.id()),
-        )?;
-
-        assert_eq!(runtime.scheduler.active_fault_tags.get(&tag), Some(&fault));
-        Ok(())
-    }
-
-    #[test]
     fn qemu_instantiate_replays_from_nearest_cached_ancestor() -> Result<(), QemuVmRealizationError>
     {
         let world = world("ancestor-replay");

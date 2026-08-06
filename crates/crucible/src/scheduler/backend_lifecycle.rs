@@ -29,9 +29,7 @@ impl SingleScheduler {
             .keys()
             .map(|(link, _direction)| (link.clone(), 0))
             .collect();
-        let active = self.trigger_actions.combined_faults();
-        self.apply_trigger_device_faults(&active)
-            .map_err(SchedulerWorldInstantiationError::from)
+        Ok(())
     }
 
     /// Atomically appends observations and their completed evaluation boundary.

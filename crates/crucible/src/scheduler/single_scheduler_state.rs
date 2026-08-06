@@ -73,8 +73,6 @@ impl SingleScheduler {
             .keys()
             .map(|(link, _direction)| (link.clone(), 0))
             .collect();
-        let active = scheduler.trigger_actions.combined_faults();
-        scheduler.apply_trigger_device_faults(&active)?;
         Ok(scheduler)
     }
 
@@ -119,7 +117,6 @@ impl SingleScheduler {
 
         scheduler.event_sequences = state.event_sequences.clone();
         scheduler.world_network_decisions = state.pending_device_decisions.clone();
-        scheduler.trigger_actions.active_faults = state.active_fault_tags.clone();
         scheduler.effective_topology =
             SchedulerLookaheadGraph::from_edges(state.effective_topology_edges.clone());
         for node in &mut scheduler.nodes {
@@ -127,7 +124,6 @@ impl SingleScheduler {
         }
         scheduler.topology_changes = state.pending_topology_changes.clone();
         scheduler.topology_epoch = state.topology_epoch;
-        scheduler.apply_trigger_device_faults(&state.active_fault_table.combined)?;
 
         let mut shared_positions = BTreeMap::new();
         for runtime in scheduler.world_network_links.values_mut() {
@@ -915,8 +911,6 @@ impl SingleScheduler {
         state.topology_epoch = self.topology_epoch;
         state.effective_topology_edges = self.effective_topology.edges().to_vec();
         state.pending_topology_changes = self.topology_changes.clone();
-        state.active_fault_tags = self.trigger_actions.active_faults.clone();
-        state.recompute_active_fault_table();
         state.pending_device_decisions = self.world_network_decisions.clone();
         state.search_frontier = search_frontier_choices_from_scheduled_events(
             self.configuration.clone(),
@@ -1155,7 +1149,6 @@ impl SingleScheduler {
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         self.validate_trigger_firings(firings)?;
         let mut entries = self.trigger_firing_entries(firings)?;
-        let previous_faults = self.trigger_actions.combined_faults();
         let mut trigger_actions = self.trigger_actions.clone();
         let mut action_entries = Vec::new();
         for firing in firings.iter() {
@@ -1169,13 +1162,6 @@ impl SingleScheduler {
                 &mut action_entries,
             )?;
         }
-        let next_faults = trigger_actions.combined_faults();
-        let fault_sequence = u64::try_from(trigger_actions.applications.len()).map_err(|_| {
-            SchedulerError::BoundaryViolation {
-                message: String::from("trigger fault application sequence exceeds u64"),
-            }
-        })?;
-        self.apply_trigger_taxonomy_faults(fault_sequence, &previous_faults, &next_faults)?;
         for application in &action_entries {
             if let Action::StartNode { node } = &application.action
                 && self.is_node_stopped_after_crash(node)
@@ -1194,195 +1180,6 @@ impl SingleScheduler {
         let append = self.event_log.append_entries(entries)?;
         self.trigger_actions = trigger_actions;
         Ok(append)
-    }
-
-    /// Applies active trigger-owned network faults to one live directed link.
-    ///
-    /// Trigger action application owns the deterministic fault set and the
-    /// scheduler-owned topology effects, while the concrete [`crucible_device::NetLink`]
-    /// fault table is owned by the caller's network device. This bridge reads the
-    /// current trigger taxonomy projection for `link_id`, installs the resulting
-    /// [`crucible_device::LinkFaults`] on `link`, queues any partition topology
-    /// change through the scheduler, and consumes any link latency recompute signal
-    /// when the directed edge is still live.
-    ///
-    /// Pass `restored_edges` when this call follows a heal that may restore edges
-    /// previously removed by a partition. For ordinary activation or non-partition
-    /// updates, pass an empty vector.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the scheduler rejects a topology or latency
-    /// recompute queued by the applied network fault set.
-    // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
-    #[allow(clippy::too_many_arguments)]
-    pub fn apply_trigger_network_faults_to_link(
-        &mut self,
-        sequence: u64,
-        link_id: &LinkId,
-        endpoint_a: SchedulerNodeId,
-        endpoint_b: SchedulerNodeId,
-        link: &mut crucible_device::NetLink,
-        direction: NetworkLinkDirection,
-        restored_edges: Vec<SchedulerLookaheadEdge>,
-    ) -> Result<NetworkFaultApplication, SchedulerError> {
-        let combined = self.trigger_actions.combined_faults();
-        let faults = combined_network_faults_for_link(
-            &combined.network,
-            link_id,
-            &endpoint_a.node,
-            &endpoint_b.node,
-        );
-        let has_restored_edges = !restored_edges.is_empty();
-        let application = if has_restored_edges {
-            heal_combined_network_faults_to_scheduler(
-                sequence,
-                endpoint_a.clone(),
-                endpoint_b.clone(),
-                link,
-                &faults,
-                direction,
-                restored_edges,
-                self,
-            )?
-        } else {
-            apply_combined_network_faults_to_scheduler(
-                sequence,
-                endpoint_a.clone(),
-                endpoint_b.clone(),
-                link,
-                &faults,
-                direction,
-                self,
-            )?
-        };
-
-        let partitioned = faults
-            .partition
-            .as_ref()
-            .is_some_and(|partition| network_direction_is_partitioned(direction, partition));
-        if !partitioned && !has_restored_edges {
-            let _ = self.schedule_link_latency_recompute(sequence, endpoint_a, endpoint_b, link)?;
-        }
-
-        Ok(application)
-    }
-
-    pub(super) fn apply_trigger_taxonomy_faults(
-        &mut self,
-        sequence: u64,
-        previous: &CombinedFaults,
-        next: &CombinedFaults,
-    ) -> Result<(), SchedulerError> {
-        if previous == next {
-            return Ok(());
-        }
-
-        self.apply_trigger_node_faults(sequence, previous, next)?;
-        self.apply_trigger_network_topology_faults(sequence, previous, next)?;
-        self.apply_trigger_device_faults(next)?;
-        Ok(())
-    }
-
-    pub(super) fn apply_trigger_node_faults(
-        &mut self,
-        sequence: u64,
-        previous: &CombinedFaults,
-        next: &CombinedFaults,
-    ) -> Result<(), SchedulerError> {
-        let mut nodes = previous.node.keys().cloned().collect::<BTreeSet<_>>();
-        nodes.extend(next.node.keys().cloned());
-        for node in nodes {
-            let previous_faults = previous.node.get(&node).cloned().unwrap_or_default();
-            let next_faults = next.node.get(&node).cloned().unwrap_or_default();
-            let previous_crashed = previous_faults.is_crashed();
-            let next_crashed = next_faults.is_crashed();
-            if !previous_crashed && next_crashed {
-                if let Some(restart) = next_faults.crash_restart {
-                    self.apply_node_crash(sequence, &node, restart)?;
-                }
-            } else if previous_crashed && !next_crashed {
-                let _ = self.heal_node_crash(sequence, &node)?;
-            }
-            self.apply_combined_node_timing_faults(&node, &next_faults)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn apply_trigger_network_topology_faults(
-        &mut self,
-        sequence: u64,
-        previous: &CombinedFaults,
-        next: &CombinedFaults,
-    ) -> Result<(), SchedulerError> {
-        let previous_topology = network_topology_faults(&previous.network);
-        let next_topology = network_topology_faults(&next.network);
-        if previous_topology == next_topology {
-            return Ok(());
-        }
-        let Some(static_topology) = &self.trigger_static_topology else {
-            return Ok(());
-        };
-        let legacy_counts =
-            legacy_link_id_counts_from_world_edges(&static_topology.lookahead_graph);
-        let trigger = if network_topology_faults_were_relaxed(&previous_topology, &next_topology) {
-            SchedulerTopologyChangeTrigger::Heal
-        } else {
-            SchedulerTopologyChangeTrigger::FaultActivation
-        };
-        let effective_edges = static_topology
-            .lookahead_graph
-            .iter()
-            .filter_map(|edge| world_edge_with_network_faults(edge, &next.network, &legacy_counts))
-            .collect::<Vec<_>>();
-        self.schedule_topology_change(SchedulerTopologyChange::new(
-            sequence,
-            trigger,
-            effective_edges,
-        ))
-    }
-
-    pub(super) fn apply_trigger_device_faults(
-        &mut self,
-        next: &CombinedFaults,
-    ) -> Result<(), SchedulerError> {
-        for sub_nodes in self.device_sub_nodes.values_mut() {
-            for sub_node in sub_nodes {
-                match sub_node.sub_node().kind {
-                    SchedulingNodeKind::Disk => {
-                        let faults = next.block.get(sub_node.device_id());
-                        let table = faults.map_or_else(
-                            crucible_device::IoFaults::none,
-                            block_faults_from_combined_block,
-                        );
-                        sub_node.set_io_faults(table);
-                    }
-                    SchedulingNodeKind::NineP => {
-                        let faults = next.ninep.get(sub_node.device_id());
-                        let table = faults.map_or_else(
-                            crucible_device::IoFaults::none,
-                            ninep_faults_from_combined_ninep,
-                        );
-                        sub_node.set_io_faults(table);
-                    }
-                    SchedulingNodeKind::Vm
-                    | SchedulingNodeKind::Network
-                    | SchedulingNodeKind::ControlPlane => {}
-                }
-            }
-        }
-        for network in self.world_network_links.values_mut() {
-            let active = combined_network_faults_for_world_link(
-                &next.network,
-                &network.canonical_id,
-                network.legacy_id.as_ref(),
-            );
-            let table =
-                merge_world_network_faults(&network.base_faults, &active, network.direction);
-            network.link.set_faults(table);
-            let _ = network.link.take_lookahead_recompute();
-        }
-        self.refresh_device_horizons()
     }
 
     pub(super) fn validate_trigger_firings(
