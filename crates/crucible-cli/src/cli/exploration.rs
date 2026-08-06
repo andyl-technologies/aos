@@ -41,7 +41,9 @@ pub(super) fn fuzz_dispatch_route(
     if backend_plan.target == BackendExecutionTarget::Local && is_packaged_backend(backend_plan) {
         return Some(FuzzDispatchRoute::LocalPackagedBackend);
     }
-    if plan.family.is_builtin_fault_campaign() {
+    if backend_plan.target == BackendExecutionTarget::Local
+        && plan.family.is_builtin_fault_campaign()
+    {
         return Some(FuzzDispatchRoute::BuiltInFaultCampaignProof);
     }
     #[cfg(any(test, feature = "test-double"))]

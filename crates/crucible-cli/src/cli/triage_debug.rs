@@ -1614,6 +1614,9 @@ pub(super) fn plan_debug_invocation(
     }
 
     let target = debug_target(args)?;
+    if let DebugPlanTarget::Session(session) = &target {
+        parse_debug_session_ref(session)?;
+    }
     let coordinate = debug_coordinate(args, &target)?;
     let checkpoint_stride = args
         .checkpoint_stride

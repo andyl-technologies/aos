@@ -613,6 +613,43 @@ pub(super) fn cli_fuzz_runs_builtin_fault_campaign_family() -> Result<(), Box<dy
 }
 
 #[test]
+pub(super) fn cli_fuzz_does_not_run_builtin_proof_for_remote_route() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse_from([
+        "crucible",
+        "--daemon",
+        "127.0.0.1:1",
+        "--trusted-unauthenticated-daemon",
+        "--seed",
+        "0x33a4",
+        "fuzz",
+        "builtin:fault-campaign",
+    ]);
+    let Commands::Fuzz(args) = &cli.command else {
+        panic!("expected fuzz command");
+    };
+    let seed_plan = plan_determinism_ergonomics(
+        &cli,
+        &FakeSeedEnvironment::default(),
+        &mut FakeSeedEntropySource::new(0),
+    )?
+    .expect("remote fuzz should resolve a seed");
+    let fuzz_plan = plan_fuzz_invocation(args, &seed_plan, &default_run_store_root(&cli))?;
+    let backend_plan = plan_backend_selection(&cli)?.expect("remote fuzz should route");
+
+    assert_eq!(backend_plan.target, BackendExecutionTarget::RemoteDaemon);
+    assert_eq!(fuzz_dispatch_route(&backend_plan, &fuzz_plan), None);
+
+    let error = dispatch(&cli).expect_err("remote fuzz must fail closed");
+    assert!(matches!(error, CliError::Backend(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("requires the exploration-engine driver")
+    );
+    Ok(())
+}
+
+#[test]
 pub(super) fn cli_search_fuzz_workflow_executes_local_double_search() -> Result<(), Box<dyn Error>>
 {
     assert_eq!(

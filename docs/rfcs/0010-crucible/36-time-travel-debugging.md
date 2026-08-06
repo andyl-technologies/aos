@@ -709,12 +709,13 @@ gdbstub proxy (§36.2). These flags and verbs are specified here and **also adde
 the CLI catalogue in [`23-cli.md`](23-cli.md)**.
 
 ```text
-  crucible debug <artifact|savepoint|--session <addr>> [FLAGS]
+  crucible debug <artifact|savepoint|--session <id:epoch:seed>> [FLAGS]
 
   TARGET (choose one)
     <artifact>            a reproduction artifact (06 §7.1) to attach to
     <savepoint>           a savepoint / checkpoint hash (07)
-    --session <addr>      attach to a running session via the daemon (21)
+    --session <id:epoch:seed>  attach to a running session via the daemon (21);
+                               seed is 64 lowercase hexadecimal digits
 
   COORDINATE (the resolver, §36.6)
     --at <icount|vtime>   attach at a per-node icount or world virtual time (09)
