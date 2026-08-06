@@ -25,21 +25,35 @@ pub(crate) struct LiveQemuArtifactEvidence {
     pub(crate) fingerprint_samples: Vec<VerifyFingerprintSample>,
 }
 
+/// Exact producer recipe recorded beside observed live-QEMU evidence.
+pub(crate) struct LiveQemuArtifactRecipe<'a> {
+    /// Closed producer name that selects replay semantics.
+    pub(crate) producer: &'a str,
+    /// Terminal predicate used by the producer.
+    pub(crate) terminal_condition: RunTerminalCondition,
+    /// Optional virtual-time ceiling used by the producer.
+    pub(crate) max_virtual_time_ticks: Option<u64>,
+    /// Optional quantum ceiling used by the producer.
+    pub(crate) max_quanta: Option<u64>,
+    /// Whether the run collected coverage observations.
+    pub(crate) coverage: bool,
+    /// Batch or interactive producer execution mode.
+    pub(crate) execution_mode: RunExecutionMode,
+    /// Commands issued to start producer execution.
+    pub(crate) startup_commands: &'a [SessionCommandKind],
+    /// Commands issued immediately after startup.
+    pub(crate) initial_control_commands: &'a [SessionCommandKind],
+    /// Optional retained-prefix branch recipe.
+    pub(crate) branch: LiveQemuReplayBranch,
+}
+
 /// Builds the required v3 live-QEMU components from one completed run.
 pub(crate) fn live_qemu_artifact_evidence_from_run(
-    producer: &str,
+    recipe: LiveQemuArtifactRecipe<'_>,
     scenario: &crucible::ScenarioDefForm,
-    terminal_condition: RunTerminalCondition,
-    max_virtual_time_ticks: Option<u64>,
-    max_quanta: Option<u64>,
-    coverage: bool,
-    execution_mode: RunExecutionMode,
-    startup_commands: &[SessionCommandKind],
-    initial_control_commands: &[SessionCommandKind],
-    branch: LiveQemuReplayBranch,
     report: &RunWorkflowReport,
 ) -> Result<LiveQemuArtifactEvidence, CliError> {
-    if execution_mode == RunExecutionMode::Interactive {
+    if recipe.execution_mode == RunExecutionMode::Interactive {
         return Err(artifact_error(
             "live-QEMU reproduction artifacts do not yet support interactive control recipes",
         ));
@@ -48,7 +62,7 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         artifact_error("live-QEMU artifact capture requires a terminal configuration")
     })?;
     let all_fingerprint_samples = run_fingerprint_samples(report);
-    let fingerprint_scope = if producer == "fork" {
+    let fingerprint_scope = if recipe.producer == "fork" {
         LiveQemuFingerprintScope::TerminalAllNodes
     } else {
         LiveQemuFingerprintScope::FullExecution
@@ -65,7 +79,7 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
     }
     let (mut fault_choice_indices, mut network_choice_indices) =
         replay_choice_indices(&terminal.schedule);
-    let branch_start = match &branch {
+    let branch_start = match &recipe.branch {
         LiveQemuReplayBranch::None => 0,
         LiveQemuReplayBranch::Resume { base_decisions, .. }
         | LiveQemuReplayBranch::Reseed { base_decisions, .. }
@@ -93,25 +107,25 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
             .collect::<Vec<_>>()
     };
     let contract = LiveQemuReplayContract {
-        producer: producer.to_string(),
-        terminal_condition: terminal_condition.label().to_string(),
+        producer: recipe.producer.to_string(),
+        terminal_condition: recipe.terminal_condition.label().to_string(),
         terminal_status: report.status.label().to_string(),
         terminal_outcome: terminal_outcome_label(report.outcome).to_string(),
         terminal_configuration: format_content_hash_ref(terminal.id()),
         final_frontier_ticks: report.final_frontier_ticks,
         final_quanta: report.final_quanta,
         budget_timed_out: report.budget_timed_out,
-        max_virtual_time_ticks,
-        max_quanta,
+        max_virtual_time_ticks: recipe.max_virtual_time_ticks,
+        max_quanta: recipe.max_quanta,
         run_ceiling_icount: Some(PRODUCTION_CLI_RUN_CEILING_ICOUNT),
         lifecycle_quantum_budget: Some(PRODUCTION_CLI_QUANTUM_BUDGET),
-        coverage,
+        coverage: recipe.coverage,
         fingerprint_scope,
-        branch,
+        branch: recipe.branch,
         fault_choice_indices,
         network_choice_indices,
-        startup_controls: encode_plan_controls(startup_commands),
-        initial_controls: encode_plan_controls(initial_control_commands),
+        startup_controls: encode_plan_controls(recipe.startup_commands),
+        initial_controls: encode_plan_controls(recipe.initial_control_commands),
         controls,
     };
     let fingerprint_stream = verify_fingerprint_stream_bytes(&fingerprint_samples);
@@ -189,7 +203,7 @@ pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> (Vec<u64>,
     let decisions = schedule.decisions();
     let mut fault = Vec::new();
     let mut network = Vec::new();
-    let mut recorded_faults = std::collections::HashSet::new();
+    let mut recorded_faults = std::collections::BTreeSet::new();
     for (index, decision) in decisions.iter().enumerate() {
         if let (
             crucible::Decision::RngDraw(draw),
@@ -316,16 +330,18 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
     let mut fingerprint_samples = run_fingerprint_samples(report);
     if matches!(backend, Some(ResolvedLocalBackend::Qemu { .. })) {
         let live_evidence = live_qemu_artifact_evidence_from_run(
-            "run",
+            LiveQemuArtifactRecipe {
+                producer: "run",
+                terminal_condition: run_plan.terminal_condition,
+                max_virtual_time_ticks: run_plan.max_virtual_time_ticks,
+                max_quanta: run_plan.max_quanta,
+                coverage: false,
+                execution_mode: run_plan.execution_mode,
+                startup_commands: &run_plan.startup_commands,
+                initial_control_commands: &run_plan.initial_control_commands,
+                branch: LiveQemuReplayBranch::None,
+            },
             scenario,
-            run_plan.terminal_condition,
-            run_plan.max_virtual_time_ticks,
-            run_plan.max_quanta,
-            false,
-            run_plan.execution_mode,
-            &run_plan.startup_commands,
-            &run_plan.initial_control_commands,
-            LiveQemuReplayBranch::None,
             report,
         )?;
         fingerprint_samples = live_evidence.fingerprint_samples.clone();
@@ -369,16 +385,18 @@ pub(crate) fn live_finding_reproduction_artifact_bytes(
     }
     let canonical_log = canonical_run_log_entries(run_plan, report);
     let live = live_qemu_artifact_evidence_from_run(
-        producer,
+        LiveQemuArtifactRecipe {
+            producer,
+            terminal_condition: run_plan.terminal_condition,
+            max_virtual_time_ticks: run_plan.max_virtual_time_ticks,
+            max_quanta: run_plan.max_quanta,
+            coverage: true,
+            execution_mode: run_plan.execution_mode,
+            startup_commands: &run_plan.startup_commands,
+            initial_control_commands: &run_plan.initial_control_commands,
+            branch,
+        },
         scenario,
-        run_plan.terminal_condition,
-        run_plan.max_virtual_time_ticks,
-        run_plan.max_quanta,
-        true,
-        run_plan.execution_mode,
-        &run_plan.startup_commands,
-        &run_plan.initial_control_commands,
-        branch,
         report,
     )?;
     let mut payloads =
@@ -449,12 +467,14 @@ mod tests {
         let first = nodes
             .first()
             .ok_or_else(|| std::io::Error::other("fixture has no first node"))?;
-        let error = select_live_qemu_artifact_fingerprints(
+        let error = match select_live_qemu_artifact_fingerprints(
             nodes,
             vec![sample(0, &first.id.name), sample(1, &first.id.name)],
             LiveQemuFingerprintScope::TerminalAllNodes,
-        )
-        .expect_err("duplicate terminal node samples must fail closed");
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("duplicate terminal node samples must fail closed"),
+        };
         assert!(error.to_string().contains("scenario VM nodes"));
         Ok(())
     }
