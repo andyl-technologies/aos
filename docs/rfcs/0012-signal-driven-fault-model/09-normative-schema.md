@@ -357,6 +357,13 @@ delay, retry limit, positive actual-attempt count no greater than that limit,
 and a final success boolean. An exhausted result is valid only when actual
 attempts equal the limit. `link_reset` instead requires only a positive reset
 duration and creates an adapter-owned timed outage through that boundary.
+
+`network.pause_backpressure` requires a canonical traffic-class ID. Its
+optional positive duration is measured from the contribution transition
+coordinate; omission means paused until that persistent contribution is
+removed. An independent resume-event reference is not accepted. Queue
+continuations retain exact remaining nano-bit demand so activation, expiry, and
+removal reschedule existing work without replaying service already received.
 | `world.network_recipient_membership` | version `id`; nonempty recipient records in identity order; each record has `member` and monotone `joined_sequence` | none |
 | `world.mobile_endpoint` | `id`, node, truth trajectory | observed-position sensor ID is specification-only and rejected in v2 |
 

@@ -82,6 +82,7 @@ fn validate_network_adapter_checkpoint(
         || checkpoint.effect_state.queues.len() > 65_536
         || checkpoint.effect_state.burst_states.len() > 65_536
         || checkpoint.effect_state.state_machines.len() > 65_536
+        || checkpoint.effect_state.backpressure.len() > 65_536
     {
         return Err(SchedulerError::BoundaryViolation {
             message: String::from(
@@ -89,12 +90,23 @@ fn validate_network_adapter_checkpoint(
             ),
         });
     }
-    for queue in checkpoint.effect_state.queues.values() {
+    for (target, queue) in &checkpoint.effect_state.queues {
         if queue.reservations.len() > HARD_PENDING_NETWORK_FRAMES
             || queue.served_frames_by_class.len() > 65_536
             || queue.served_bytes_by_class.len() > 65_536
             || queue.reservations.iter().any(|reservation| {
                 reservation.service_curves.len() > 65_536
+                    || reservation.base_ready_nanos > reservation.ready_nanos
+                    || reservation.ready_nanos > reservation.service_start_nanos
+                    || reservation.service_start_nanos > reservation.finish_nanos
+                    || reservation
+                        .bytes
+                        .checked_mul(8)
+                        .is_none_or(|bits| bits != reservation.payload_bits)
+                    || reservation.remaining_nano_bits == 0
+                    || u128::from(reservation.payload_bits)
+                        .checked_mul(1_000_000_000)
+                        .is_none_or(|demand| reservation.remaining_nano_bits > demand)
                     || reservation
                         .service_curves
                         .iter()
@@ -105,6 +117,56 @@ fn validate_network_adapter_checkpoint(
                 message: String::from("network adapter queue checkpoint exceeds hard bounds"),
             });
         }
+        if queue.configuration.is_none() && !queue.reservations.is_empty() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("network queue checkpoint omitted its configuration"),
+            });
+        }
+        if let Some(configuration) = &queue.configuration {
+            let parameters_required = !matches!(
+                configuration.discipline,
+                crucible::model::NetworkQueueDiscipline::Fifo
+            );
+            if &configuration.owner.target != target
+                || !matches!(
+                    configuration.owner.effect,
+                    crucible::model::EffectKind::NetworkQueuePolicy
+                        | crucible::model::EffectKind::NetworkServiceCurve
+                )
+                || parameters_required != configuration.discipline_parameters.is_some()
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from("network queue checkpoint configuration is invalid"),
+                });
+            }
+        }
+        let mut opportunities = BTreeSet::new();
+        if queue
+            .reservations
+            .iter()
+            .any(|reservation| !opportunities.insert(reservation.opportunity))
+            || queue
+                .reservations
+                .windows(2)
+                .any(|pair| pair[0].finish_nanos > pair[1].service_start_nanos)
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("network queue checkpoint schedule overlaps or repeats"),
+            });
+        }
+    }
+    if checkpoint
+        .effect_state
+        .backpressure
+        .iter()
+        .any(|(key, pause)| {
+            key.effect != crucible::model::EffectKind::NetworkPauseBackpressure
+                || pause.class.as_str().is_empty()
+        })
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("network backpressure checkpoint is invalid"),
+        });
     }
     checkpoint.effect_state.boundary.validate_bounds()
 }
@@ -154,10 +216,13 @@ struct NetworkTokenBucketState {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct NetworkQueueReservation {
     enqueue_nanos: u64,
+    base_ready_nanos: u64,
     ready_nanos: u64,
+    service_start_nanos: u64,
     finish_nanos: u64,
     bytes: u64,
     payload_bits: u64,
+    remaining_nano_bits: u128,
     base_rate_bps: Option<u64>,
     service_curves: Vec<NetworkServiceCurveState>,
     class: Option<FaultObjectId>,
@@ -170,13 +235,28 @@ struct NetworkServiceCurveState {
     segments: Vec<crucible::model::NetworkServiceSegment>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct NetworkQueueConfiguration {
+    owner: NetworkEffectStateKey,
+    discipline: crucible::model::NetworkQueueDiscipline,
+    discipline_parameters: Option<FaultObjectId>,
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct NetworkQueueState {
+    configuration: Option<NetworkQueueConfiguration>,
     service_cursor_nanos: u64,
     reservations: Vec<NetworkQueueReservation>,
     served_frames_by_class: BTreeMap<FaultObjectId, u64>,
     served_bytes_by_class: BTreeMap<FaultObjectId, u64>,
     red_average_bytes_q32: u128,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct NetworkPauseState {
+    class: FaultObjectId,
+    paused_until: Option<u64>,
+    transition_sequence: u64,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -185,6 +265,7 @@ struct NetworkEffectRuntimeState {
     queues: BTreeMap<crucible::model::ResolvedFaultTarget, NetworkQueueState>,
     burst_states: BTreeMap<NetworkEffectStateKey, FaultObjectId>,
     state_machines: BTreeMap<NetworkEffectStateKey, FaultObjectId>,
+    backpressure: BTreeMap<NetworkEffectStateKey, NetworkPauseState>,
     boundary: boundary::BoundaryNetworkState,
 }
 
@@ -548,9 +629,16 @@ impl ProductionFaultNetworkInterceptor {
                 None,
             )?;
             evaluation.observations.extend(observations);
+            let backpressure_wakeup = route::apply_network_backpressure_transitions(
+                &mut staged_effect_state,
+                &mut staged_pending,
+                &evaluation.actions,
+                &self.topology,
+                coordinate.virtual_nanos,
+            )?;
             staged_scheduler.set_signal_fault_wakeup(earliest_wakeup(
                 evaluation.next_wakeup_nanos,
-                boundary_application.next_wakeup_nanos,
+                earliest_wakeup(boundary_application.next_wakeup_nanos, backpressure_wakeup),
             ))?;
             let append = staged_scheduler.append_fault_observations(evaluation.observations)?;
             Ok((append, records))
@@ -969,14 +1057,32 @@ fn append_network_effect_state(
     append_evidence_count(material, state.queues.len())?;
     for (target, queue) in &state.queues {
         append_evidence_bytes(material, target.canonical_material().as_bytes())?;
+        match &queue.configuration {
+            Some(configuration) => {
+                material.push(1);
+                append_network_effect_state_key(material, &configuration.owner)?;
+                material.push(network_queue_discipline_tag(configuration.discipline));
+                match &configuration.discipline_parameters {
+                    Some(reference) => {
+                        material.push(1);
+                        append_evidence_bytes(material, reference.as_str().as_bytes())?;
+                    }
+                    None => material.push(0),
+                }
+            }
+            None => material.push(0),
+        }
         material.extend_from_slice(&queue.service_cursor_nanos.to_be_bytes());
         append_evidence_count(material, queue.reservations.len())?;
         for reservation in &queue.reservations {
             material.extend_from_slice(&reservation.enqueue_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.base_ready_nanos.to_be_bytes());
             material.extend_from_slice(&reservation.ready_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.service_start_nanos.to_be_bytes());
             material.extend_from_slice(&reservation.finish_nanos.to_be_bytes());
             material.extend_from_slice(&reservation.bytes.to_be_bytes());
             material.extend_from_slice(&reservation.payload_bits.to_be_bytes());
+            material.extend_from_slice(&reservation.remaining_nano_bits.to_be_bytes());
             match reservation.base_rate_bps {
                 Some(rate) => {
                     material.push(1);
@@ -1024,7 +1130,30 @@ fn append_network_effect_state(
         append_network_effect_state_key(material, key)?;
         append_evidence_bytes(material, current.as_str().as_bytes())?;
     }
+    append_evidence_count(material, state.backpressure.len())?;
+    for (key, pause) in &state.backpressure {
+        append_network_effect_state_key(material, key)?;
+        append_evidence_bytes(material, pause.class.as_str().as_bytes())?;
+        match pause.paused_until {
+            Some(until) => {
+                material.push(1);
+                material.extend_from_slice(&until.to_be_bytes());
+            }
+            None => material.push(0),
+        }
+        material.extend_from_slice(&pause.transition_sequence.to_be_bytes());
+    }
     state.boundary.append_evidence(material)
+}
+
+const fn network_queue_discipline_tag(discipline: crucible::model::NetworkQueueDiscipline) -> u8 {
+    match discipline {
+        crucible::model::NetworkQueueDiscipline::Fifo => 1,
+        crucible::model::NetworkQueueDiscipline::StrictPriority => 2,
+        crucible::model::NetworkQueueDiscipline::WeightedRoundRobin => 3,
+        crucible::model::NetworkQueueDiscipline::DeficitRoundRobin => 4,
+        crucible::model::NetworkQueueDiscipline::Red => 5,
+    }
 }
 
 fn append_network_effect_state_key(

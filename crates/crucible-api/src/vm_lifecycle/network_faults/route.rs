@@ -373,6 +373,13 @@ fn apply_network_frame_actions(
     let mut deferred_until = None;
     let mut queue_policy = None;
     let mut service_curves = Vec::new();
+    let backpressure_wakeup = apply_network_backpressure_transitions(
+        state,
+        pending_outputs,
+        actions,
+        topology,
+        opportunity.coordinate().virtual_nanos,
+    )?;
     for action in actions {
         let EffectSpecification::Network(specification) = action.effect.specification() else {
             return Err(network_effect_application_error(
@@ -422,6 +429,7 @@ fn apply_network_frame_actions(
                 *bad_to_good,
                 state_parameters,
             )?,
+            NetworkEffectSpecification::PauseBackpressure { .. } => {}
             NetworkEffectSpecification::QueuePolicy { .. }
                 if opportunity.phase() == FaultPhase::Queue =>
             {
@@ -517,9 +525,12 @@ fn apply_network_frame_actions(
         defer_until,
         next_wakeup_nanos: earliest_wakeup(
             defer_until,
-            state
-                .boundary
-                .next_wakeup_nanos(opportunity.coordinate().virtual_nanos),
+            earliest_wakeup(
+                state
+                    .boundary
+                    .next_wakeup_nanos(opportunity.coordinate().virtual_nanos),
+                backpressure_wakeup,
+            ),
         ),
     })
 }
@@ -528,6 +539,144 @@ fn apply_network_frame_actions(
 struct NetworkFrameApplication {
     defer_until: Option<u64>,
     next_wakeup_nanos: Option<u64>,
+}
+
+fn apply_network_pause_action(
+    state: &mut NetworkEffectRuntimeState,
+    action: &ResolvedBindingAction,
+    class: &FaultObjectId,
+    pause_nanos: Option<crucible::model::PositiveU64>,
+    now: u64,
+) -> Result<(), SchedulerError> {
+    let key = NetworkEffectStateKey::from_action(action);
+    if action.kind == BindingActionKind::RemovePersistent {
+        state.backpressure.remove(&key);
+        return Ok(());
+    }
+    let paused_until = pause_nanos
+        .map(|duration| {
+            action
+                .coordinate
+                .virtual_nanos
+                .checked_add(duration.get())
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "backpressure boundary overflowed")
+                })
+        })
+        .transpose()?;
+    if paused_until.is_some_and(|until| until <= now) {
+        state.backpressure.remove(&key);
+        return Ok(());
+    }
+    if let Some(existing) = state.backpressure.get(&key) {
+        if action.transition_sequence < existing.transition_sequence {
+            return Err(network_effect_application_error(
+                action,
+                "backpressure transition sequence regressed",
+            ));
+        }
+        if action.transition_sequence == existing.transition_sequence {
+            if existing.class != *class || existing.paused_until != paused_until {
+                return Err(network_effect_application_error(
+                    action,
+                    "backpressure transition replay changed state",
+                ));
+            }
+            return Ok(());
+        }
+    }
+    state.backpressure.insert(
+        key,
+        NetworkPauseState {
+            class: class.clone(),
+            paused_until,
+            transition_sequence: action.transition_sequence,
+        },
+    );
+    Ok(())
+}
+
+fn next_network_pause_wakeup(
+    pauses: &BTreeMap<NetworkEffectStateKey, NetworkPauseState>,
+    now: u64,
+) -> Option<u64> {
+    pauses
+        .values()
+        .filter_map(|pause| pause.paused_until)
+        .filter(|until| *until > now)
+        .min()
+}
+
+pub(super) fn apply_network_backpressure_transitions(
+    state: &mut NetworkEffectRuntimeState,
+    pending_outputs: &mut [crucible::BackendNetworkOutput],
+    actions: &[ResolvedBindingAction],
+    topology: &crucible::model::WorldFaultTopology,
+    now: u64,
+) -> Result<Option<u64>, SchedulerError> {
+    let mut affected = BTreeSet::new();
+    let expired = state
+        .backpressure
+        .iter()
+        .filter(|(_key, pause)| pause.paused_until.is_some_and(|until| until <= now))
+        .map(|(key, _pause)| key.clone())
+        .collect::<Vec<_>>();
+    for key in expired {
+        affected.insert(key.target.clone());
+        state.backpressure.remove(&key);
+    }
+    for action in actions {
+        let EffectSpecification::Network(NetworkEffectSpecification::PauseBackpressure {
+            class,
+            pause_nanos,
+        }) = action.effect.specification()
+        else {
+            continue;
+        };
+        affected.insert(action.target.clone());
+        apply_network_pause_action(state, action, class, *pause_nanos, now)?;
+    }
+    for target in affected {
+        let Some(queue) = state.queues.get_mut(&target) else {
+            continue;
+        };
+        let configuration =
+            queue
+                .configuration
+                .clone()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("backpressure target queue omitted its configuration"),
+                })?;
+        retire_network_queue(queue, now, &configuration.owner)?;
+        for reservation in &mut queue.reservations {
+            reservation.ready_nanos = network_pause_boundary(
+                &state.backpressure,
+                &target,
+                reservation.class.as_ref(),
+                now,
+            )
+            .map_or(reservation.base_ready_nanos, |until| {
+                reservation.base_ready_nanos.max(until)
+            });
+        }
+        let parameters = configuration
+            .discipline_parameters
+            .as_ref()
+            .map(|reference| {
+                network_queue_discipline(topology, Some(reference), &configuration.owner)
+            })
+            .transpose()?;
+        reschedule_network_queue(
+            queue,
+            pending_outputs,
+            &configuration.owner,
+            configuration.discipline,
+            parameters,
+            now,
+            None,
+        )?;
+    }
+    Ok(next_network_pause_wakeup(&state.backpressure, now))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -557,31 +706,28 @@ fn apply_network_queue_policy(
         .map(|_reference| network_queue_discipline(topology, discipline_parameters, action))
         .transpose()?;
     let class = network_queue_class(payload, discipline, parameters, topology, action)?;
+    let paused_until =
+        network_pause_boundary(&state.backpressure, &action.target, class.as_ref(), now);
     let queue = state.queues.entry(action.target.clone()).or_default();
-    let mut completed = Vec::new();
-    queue.reservations.retain(|reservation| {
-        if reservation.finish_nanos <= now {
-            completed.push((reservation.class.clone(), reservation.bytes));
-            false
-        } else {
-            true
+    let configuration = NetworkQueueConfiguration {
+        owner: NetworkEffectStateKey::from_action(action),
+        discipline,
+        discipline_parameters: discipline_parameters.cloned(),
+    };
+    match &queue.configuration {
+        Some(existing)
+            if existing.discipline != configuration.discipline
+                || existing.discipline_parameters != configuration.discipline_parameters =>
+        {
+            return Err(network_effect_application_error(
+                action,
+                "queue configuration changed without an explicit queue reset",
+            ));
         }
-    });
-    for (class, bytes) in completed {
-        if let Some(class) = class {
-            let frames = queue
-                .served_frames_by_class
-                .entry(class.clone())
-                .or_default();
-            *frames = frames.checked_add(1).ok_or_else(|| {
-                network_effect_application_error(action, "queue served-frame count overflowed")
-            })?;
-            let served = queue.served_bytes_by_class.entry(class).or_default();
-            *served = served.checked_add(bytes).ok_or_else(|| {
-                network_effect_application_error(action, "queue served-byte count overflowed")
-            })?;
-        }
+        Some(_existing) => {}
+        None => queue.configuration = Some(configuration),
     }
+    retire_network_queue(queue, now, action)?;
     queue.service_cursor_nanos = queue.service_cursor_nanos.max(now);
     let occupied_bytes = queue
         .reservations
@@ -745,12 +891,20 @@ fn apply_network_queue_policy(
     let payload_bits = payload_bytes.checked_mul(8).ok_or_else(|| {
         network_effect_application_error(action, "queue frame bit length overflowed")
     })?;
+    let base_ready_nanos = prerequisite_release.unwrap_or(now).max(now);
+    let ready_nanos = paused_until.map_or(base_ready_nanos, |pause| base_ready_nanos.max(pause));
+    let remaining_nano_bits = u128::from(payload_bits)
+        .checked_mul(1_000_000_000)
+        .ok_or_else(|| network_effect_application_error(action, "queue demand overflowed"))?;
     queue.reservations.push(NetworkQueueReservation {
         enqueue_nanos: now,
-        ready_nanos: prerequisite_release.unwrap_or(now).max(now),
+        base_ready_nanos,
+        ready_nanos,
+        service_start_nanos: ready_nanos,
         finish_nanos: 0,
         bytes: payload_bytes,
         payload_bits,
+        remaining_nano_bits,
         base_rate_bps,
         service_curves: service_curves.to_vec(),
         class,
@@ -763,8 +917,11 @@ fn apply_network_queue_policy(
         discipline,
         parameters,
         now,
-        opportunity.id(),
-    )?;
+        Some(opportunity.id()),
+    )?
+    .ok_or_else(|| {
+        network_effect_application_error(action, "arriving queue reservation disappeared")
+    })?;
     effects.mark_serialization_accounted();
     Ok(Some(finish))
 }
@@ -772,7 +929,7 @@ fn apply_network_queue_policy(
 fn network_queue_discipline<'a>(
     topology: &'a crucible::model::WorldFaultTopology,
     reference: Option<&FaultObjectId>,
-    action: &ResolvedBindingAction,
+    action: &impl NetworkEffectContext,
 ) -> Result<&'a crucible::model::NetworkPolicyQueueDiscipline, SchedulerError> {
     let reference = reference.ok_or_else(|| {
         network_effect_application_error(action, "queue discipline requires typed parameters")
@@ -825,35 +982,135 @@ fn network_queue_class(
     })
 }
 
+fn network_pause_boundary(
+    pauses: &BTreeMap<NetworkEffectStateKey, NetworkPauseState>,
+    target: &crucible::model::ResolvedFaultTarget,
+    class: Option<&FaultObjectId>,
+    now: u64,
+) -> Option<u64> {
+    let class = class?;
+    pauses
+        .iter()
+        .filter(|(key, pause)| {
+            &key.target == target
+                && &pause.class == class
+                && pause.paused_until.is_none_or(|until| now < until)
+        })
+        .map(|(_key, pause)| pause.paused_until.unwrap_or(u64::MAX))
+        .max()
+}
+
+fn retire_network_queue(
+    queue: &mut NetworkQueueState,
+    now: u64,
+    action: &impl NetworkEffectContext,
+) -> Result<(), SchedulerError> {
+    let mut completed = Vec::new();
+    queue.reservations.retain(|reservation| {
+        if reservation.finish_nanos <= now {
+            completed.push((reservation.class.clone(), reservation.bytes));
+            false
+        } else {
+            true
+        }
+    });
+    for (class, bytes) in completed {
+        if let Some(class) = class {
+            let frames = queue
+                .served_frames_by_class
+                .entry(class.clone())
+                .or_default();
+            *frames = frames.checked_add(1).ok_or_else(|| {
+                network_effect_application_error(action, "queue served-frame count overflowed")
+            })?;
+            let served = queue.served_bytes_by_class.entry(class).or_default();
+            *served = served.checked_add(bytes).ok_or_else(|| {
+                network_effect_application_error(action, "queue served-byte count overflowed")
+            })?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn reschedule_network_queue(
     queue: &mut NetworkQueueState,
     pending_outputs: &mut [crucible::BackendNetworkOutput],
-    action: &ResolvedBindingAction,
+    action: &impl NetworkEffectContext,
     discipline: crucible::model::NetworkQueueDiscipline,
     parameters: Option<&crucible::model::NetworkPolicyQueueDiscipline>,
     now: u64,
-    arriving: ContentHash,
-) -> Result<u64, SchedulerError> {
+    arriving: Option<ContentHash>,
+) -> Result<Option<u64>, SchedulerError> {
     let mut reservations = std::mem::take(&mut queue.reservations);
     let active_index = reservations
         .iter()
         .enumerate()
-        .filter(|(_index, reservation)| reservation.finish_nanos > now)
-        .min_by_key(|(_index, reservation)| reservation.finish_nanos)
+        .filter(|(_index, reservation)| {
+            reservation.service_start_nanos <= now && now < reservation.finish_nanos
+        })
+        .min_by_key(|(_index, reservation)| reservation.service_start_nanos)
         .map(|(index, _reservation)| index);
-    let active = active_index.map(|index| reservations.remove(index));
+    let mut active = active_index.map(|index| reservations.remove(index));
+    if let Some(active) = active.as_mut() {
+        let consumed = network_service_capacity(
+            active.service_start_nanos,
+            now,
+            active.base_rate_bps,
+            &active.service_curves,
+            action,
+        )?;
+        active.remaining_nano_bits = active
+            .remaining_nano_bits
+            .checked_sub(consumed)
+            .ok_or_else(|| {
+                network_effect_application_error(
+                    action,
+                    "accounted service exceeds reservation demand",
+                )
+            })?;
+        active.service_start_nanos = now;
+    }
+    if active
+        .as_ref()
+        .is_some_and(|active| active.ready_nanos > now)
+    {
+        if let Some(active) = active.take() {
+            reservations.push(active);
+        }
+    }
     let mut projected_frames = queue.served_frames_by_class.clone();
     let mut projected_bytes = queue.served_bytes_by_class.clone();
     let mut cursor = now;
     let mut ordered = Vec::with_capacity(reservations.len() + usize::from(active.is_some()));
-    if let Some(active) = active {
+    if let Some(mut active) = active {
+        active.service_start_nanos = now.max(active.ready_nanos);
+        active.finish_nanos = network_service_finish_demand(
+            active.service_start_nanos,
+            active.remaining_nano_bits,
+            active.base_rate_bps,
+            &active.service_curves,
+            action,
+        )?;
         cursor = active.finish_nanos;
         add_projected_queue_service(&mut projected_frames, &mut projected_bytes, &active, action)?;
         ordered.push(active);
     }
     while !reservations.is_empty() {
+        if reservations
+            .iter()
+            .all(|reservation| reservation.ready_nanos > cursor)
+        {
+            cursor = reservations
+                .iter()
+                .map(|reservation| reservation.ready_nanos)
+                .min()
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "queue readiness selection failed")
+                })?;
+        }
         let selected = (0..reservations.len())
+            .filter(|index| reservations[*index].ready_nanos <= cursor)
             .min_by(|left, right| {
                 compare_queue_candidates(
                     &reservations[*left],
@@ -869,9 +1126,17 @@ fn reschedule_network_queue(
             })?;
         let mut reservation = reservations.remove(selected);
         let start = cursor.max(reservation.ready_nanos);
-        reservation.finish_nanos = network_service_finish(
+        if start == u64::MAX {
+            reservation.service_start_nanos = u64::MAX;
+            reservation.finish_nanos = u64::MAX;
+            ordered.push(reservation);
+            cursor = u64::MAX;
+            continue;
+        }
+        reservation.service_start_nanos = start;
+        reservation.finish_nanos = network_service_finish_demand(
             start,
-            reservation.payload_bits,
+            reservation.remaining_nano_bits,
             reservation.base_rate_bps,
             &reservation.service_curves,
             action,
@@ -885,13 +1150,12 @@ fn reschedule_network_queue(
         )?;
         ordered.push(reservation);
     }
-    let finish = ordered
-        .iter()
-        .find(|reservation| reservation.opportunity == arriving)
-        .map(|reservation| reservation.finish_nanos)
-        .ok_or_else(|| {
-            network_effect_application_error(action, "arriving queue reservation disappeared")
-        })?;
+    let finish = arriving.and_then(|arriving| {
+        ordered
+            .iter()
+            .find(|reservation| reservation.opportunity == arriving)
+            .map(|reservation| reservation.finish_nanos)
+    });
     for reservation in &ordered {
         for output in pending_outputs.iter_mut().filter(|output| {
             output.fault_continuation.cursor().queue_opportunity() == Some(reservation.opportunity)
@@ -913,11 +1177,24 @@ fn network_service_finish(
     payload_bits: u64,
     base_rate_bps: Option<u64>,
     curves: &[NetworkServiceCurveState],
-    action: &ResolvedBindingAction,
+    action: &impl NetworkEffectContext,
 ) -> Result<u64, SchedulerError> {
-    let mut remaining = u128::from(payload_bits)
+    let remaining = u128::from(payload_bits)
         .checked_mul(1_000_000_000)
         .ok_or_else(|| network_effect_application_error(action, "service demand overflowed"))?;
+    network_service_finish_demand(start_nanos, remaining, base_rate_bps, curves, action)
+}
+
+fn network_service_finish_demand(
+    start_nanos: u64,
+    mut remaining_nano_bits: u128,
+    base_rate_bps: Option<u64>,
+    curves: &[NetworkServiceCurveState],
+    action: &impl NetworkEffectContext,
+) -> Result<u64, SchedulerError> {
+    if remaining_nano_bits == 0 {
+        return Ok(start_nanos);
+    }
     let mut cursor = start_nanos;
     loop {
         let mut rate = base_rate_bps;
@@ -966,13 +1243,13 @@ fn network_service_finish(
                 .ok_or_else(|| {
                     network_effect_application_error(action, "service interval overflowed")
                 })?;
-            if remaining > capacity {
-                remaining -= capacity;
+            if remaining_nano_bits > capacity {
+                remaining_nano_bits -= capacity;
                 cursor = breakpoint;
                 continue;
             }
         }
-        let duration = ceil_ratio_u128(remaining, u128::from(rate))
+        let duration = ceil_ratio_u128(remaining_nano_bits, u128::from(rate))
             .and_then(|duration| u64::try_from(duration).ok())
             .ok_or_else(|| {
                 network_effect_application_error(action, "service duration exceeds u64")
@@ -983,11 +1260,81 @@ fn network_service_finish(
     }
 }
 
+fn network_service_capacity(
+    start_nanos: u64,
+    end_nanos: u64,
+    base_rate_bps: Option<u64>,
+    curves: &[NetworkServiceCurveState],
+    action: &impl NetworkEffectContext,
+) -> Result<u128, SchedulerError> {
+    if end_nanos < start_nanos {
+        return Err(network_effect_application_error(
+            action,
+            "service accounting interval regressed",
+        ));
+    }
+    let mut cursor = start_nanos;
+    let mut capacity = 0_u128;
+    while cursor < end_nanos {
+        let mut rate = base_rate_bps;
+        let mut next_breakpoint = end_nanos;
+        for curve in curves {
+            let elapsed = cursor.checked_sub(curve.activation_nanos).ok_or_else(|| {
+                network_effect_application_error(
+                    action,
+                    "service-curve activation follows accounted service",
+                )
+            })?;
+            let index = curve
+                .segments
+                .partition_point(|segment| segment.at_nanos <= elapsed)
+                .checked_sub(1)
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "service curve has no initial segment")
+                })?;
+            let curve_rate = curve.segments[index].rate_bps.get();
+            rate = Some(rate.map_or(curve_rate, |current| current.min(curve_rate)));
+            if let Some(segment) = curve.segments.get(index + 1) {
+                next_breakpoint = next_breakpoint.min(
+                    curve
+                        .activation_nanos
+                        .checked_add(segment.at_nanos)
+                        .ok_or_else(|| {
+                            network_effect_application_error(
+                                action,
+                                "service-curve breakpoint overflowed",
+                            )
+                        })?,
+                );
+            }
+        }
+        let rate = rate.ok_or_else(|| {
+            network_effect_application_error(action, "accounted service has no finite rate")
+        })?;
+        let duration = next_breakpoint.checked_sub(cursor).ok_or_else(|| {
+            network_effect_application_error(action, "service breakpoint regressed")
+        })?;
+        capacity = capacity
+            .checked_add(
+                u128::from(duration)
+                    .checked_mul(u128::from(rate))
+                    .ok_or_else(|| {
+                        network_effect_application_error(action, "service capacity overflowed")
+                    })?,
+            )
+            .ok_or_else(|| {
+                network_effect_application_error(action, "service capacity overflowed")
+            })?;
+        cursor = next_breakpoint;
+    }
+    Ok(capacity)
+}
+
 fn add_projected_queue_service(
     frames: &mut BTreeMap<FaultObjectId, u64>,
     bytes: &mut BTreeMap<FaultObjectId, u64>,
     reservation: &NetworkQueueReservation,
-    action: &ResolvedBindingAction,
+    action: &impl NetworkEffectContext,
 ) -> Result<(), SchedulerError> {
     let Some(class) = &reservation.class else {
         return Ok(());
@@ -1881,15 +2228,40 @@ fn apply_network_frame_action(
     Ok(())
 }
 
+pub(super) trait NetworkEffectContext {
+    fn binding(&self) -> &FaultObjectId;
+    fn effect_kind(&self) -> crucible::model::EffectKind;
+}
+
+impl NetworkEffectContext for ResolvedBindingAction {
+    fn binding(&self) -> &FaultObjectId {
+        &self.binding
+    }
+
+    fn effect_kind(&self) -> crucible::model::EffectKind {
+        self.effect.kind()
+    }
+}
+
+impl NetworkEffectContext for NetworkEffectStateKey {
+    fn binding(&self) -> &FaultObjectId {
+        &self.binding
+    }
+
+    fn effect_kind(&self) -> crucible::model::EffectKind {
+        self.effect
+    }
+}
+
 pub(super) fn network_effect_application_error(
-    action: &ResolvedBindingAction,
+    action: &impl NetworkEffectContext,
     reason: &str,
 ) -> SchedulerError {
     SchedulerError::BoundaryViolation {
         message: format!(
             "apply network effect `{}` from binding `{}`: {reason}",
-            action.effect.kind().as_str(),
-            action.binding
+            action.effect_kind().as_str(),
+            action.binding()
         ),
     }
 }
@@ -2569,6 +2941,7 @@ mod tests {
         specification: NetworkEffectSpecification,
     ) -> ResolvedBindingAction {
         let mut action = action();
+        action.kind = BindingActionKind::Apply;
         action.phase = FaultPhase::Resolve;
         action.effect = Arc::new(
             EffectRequest::new(
@@ -2801,10 +3174,13 @@ mod tests {
     fn reservation(class: &str, sequence: u64, bytes: u64) -> NetworkQueueReservation {
         NetworkQueueReservation {
             enqueue_nanos: 0,
+            base_ready_nanos: 0,
             ready_nanos: 0,
+            service_start_nanos: 0,
             finish_nanos: 0,
             bytes,
             payload_bits: bytes * 8,
+            remaining_nano_bits: u128::from(bytes) * 8 * 1_000_000_000,
             base_rate_bps: Some(1_000_000),
             service_curves: Vec::new(),
             class: Some(id(class)),
@@ -2856,6 +3232,85 @@ mod tests {
         let finish = network_service_finish(0, 8, None, &curves, &action())
             .unwrap_or_else(|error| panic!("service integration should succeed: {error}"));
         assert_eq!(finish, 750_000_000);
+    }
+
+    #[test]
+    fn queue_reschedule_preserves_exact_partially_served_work() {
+        let action = action();
+        let mut queued = reservation("high", 1, 1);
+        queued.base_rate_bps = Some(8);
+        queued.service_start_nanos = 0;
+        queued.finish_nanos = 1_000_000_000;
+        let mut queue = NetworkQueueState {
+            configuration: Some(NetworkQueueConfiguration {
+                owner: NetworkEffectStateKey::from_action(&action),
+                discipline: crucible::model::NetworkQueueDiscipline::Fifo,
+                discipline_parameters: None,
+            }),
+            reservations: vec![queued],
+            ..NetworkQueueState::default()
+        };
+        reschedule_network_queue(
+            &mut queue,
+            &mut [],
+            &action,
+            crucible::model::NetworkQueueDiscipline::Fifo,
+            None,
+            500_000_000,
+            None,
+        )
+        .unwrap_or_else(|error| panic!("partial queue reschedule: {error}"));
+        assert_eq!(queue.reservations[0].remaining_nano_bits, 4_000_000_000);
+        assert_eq!(queue.reservations[0].service_start_nanos, 500_000_000);
+        assert_eq!(queue.reservations[0].finish_nanos, 1_000_000_000);
+    }
+
+    #[test]
+    fn class_backpressure_preempts_without_blocking_ready_siblings() {
+        let owner = action();
+        let parameters_id = id("queue-parameters");
+        let mut topology = crucible::model::WorldFaultTopology::default();
+        topology
+            .network_policy_artifacts
+            .push(crucible::model::WorldNetworkPolicyArtifact {
+                id: parameters_id.clone(),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::QueueDiscipline(
+                    queue_parameters(),
+                ),
+            });
+        let mut high = reservation("high", 1, 1);
+        high.finish_nanos = 8_000;
+        let mut low = reservation("low", 2, 1);
+        low.service_start_nanos = 8_000;
+        low.finish_nanos = 16_000;
+        let mut state = NetworkEffectRuntimeState::default();
+        state.queues.insert(
+            owner.target.clone(),
+            NetworkQueueState {
+                configuration: Some(NetworkQueueConfiguration {
+                    owner: NetworkEffectStateKey::from_action(&owner),
+                    discipline: crucible::model::NetworkQueueDiscipline::StrictPriority,
+                    discipline_parameters: Some(parameters_id),
+                }),
+                reservations: vec![high, low],
+                ..NetworkQueueState::default()
+            },
+        );
+        let pause = action_with_network_effect(NetworkEffectSpecification::PauseBackpressure {
+            class: id("high"),
+            pause_nanos: Some(positive(100)),
+        });
+        let wakeup =
+            apply_network_backpressure_transitions(&mut state, &mut [], &[pause], &topology, 0)
+                .unwrap_or_else(|error| panic!("apply class pause: {error}"));
+        assert_eq!(wakeup, Some(100));
+        let queue = state
+            .queues
+            .get(&owner.target)
+            .unwrap_or_else(|| panic!("test queue should remain"));
+        assert_eq!(queue.reservations[0].class.as_ref(), Some(&id("low")));
+        assert_eq!(queue.reservations[1].ready_nanos, 100);
     }
 
     #[test]
