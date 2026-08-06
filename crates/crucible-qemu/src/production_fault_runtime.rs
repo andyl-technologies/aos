@@ -9,10 +9,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crucible::model::{
-    BindingEvaluation, ContentHash, FaultAdapter, FaultAdapterManifests, FaultCoordinate,
-    FaultExecutionError, FaultOpportunity, FaultRuntimeCheckpoint, FaultSignalPlan,
-    HostFaultActionSink, HostFaultActionState, OwnedFaultExecutionRuntime, SignalArtifactProvider,
-    SignalBoundarySnapshot,
+    BindingEvaluation, ContentHash, EffectKind, FaultAdapterManifests, FaultCapabilityId,
+    FaultCapabilityManifest, FaultCoordinate, FaultExecutionError, FaultObjectId, FaultOpportunity,
+    FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink, HostFaultActionState,
+    OwnedFaultExecutionRuntime, SignalArtifactProvider, SignalBoundarySnapshot,
 };
 use crucible::{BackendError, NodeId};
 
@@ -327,11 +327,29 @@ fn production_manifests(
     nodes: &QemuNodeSet,
 ) -> Result<FaultAdapterManifests, ProductionFaultRuntimeError> {
     Ok(FaultAdapterManifests {
-        network: HostFaultActionSink::capability_manifest(FaultAdapter::Network)
-            .map_err(FaultExecutionError::from)?,
-        storage: HostFaultActionSink::capability_manifest(FaultAdapter::Storage)
-            .map_err(FaultExecutionError::from)?,
+        network: host_production_manifest("network-host", &[EffectKind::NetworkAvailability])?,
+        storage: host_production_manifest("storage-host", &[])?,
         node: nodes.fault_capability_manifest()?,
+    })
+}
+
+fn host_production_manifest(
+    backend: &str,
+    effects: &[EffectKind],
+) -> Result<FaultCapabilityManifest, ProductionFaultRuntimeError> {
+    let backend = FaultObjectId::parse(backend)
+        .map_err(crucible::model::FaultRuntimeError::Contract)
+        .map_err(FaultExecutionError::from)?;
+    let capabilities = effects
+        .iter()
+        .map(|effect| FaultCapabilityId::parse(effect.descriptor().capability))
+        .collect::<Result<_, _>>()
+        .map_err(crucible::model::FaultRuntimeError::Contract)
+        .map_err(FaultExecutionError::from)?;
+    Ok(FaultCapabilityManifest {
+        backend,
+        capabilities,
+        bounds: BTreeMap::new(),
     })
 }
 
@@ -343,4 +361,27 @@ fn hex_bytes(bytes: &[u8]) -> String {
         encoded.push(HEX[(byte & 0x0f) as usize] as char);
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_host_manifest_does_not_advertise_unimplemented_effects() {
+        let network = host_production_manifest("network-host", &[EffectKind::NetworkAvailability])
+            .unwrap_or_else(|error| panic!("network manifest should build: {error}"));
+        let availability =
+            FaultCapabilityId::parse(EffectKind::NetworkAvailability.descriptor().capability)
+                .unwrap_or_else(|error| panic!("availability capability should parse: {error}"));
+        let mtu = FaultCapabilityId::parse(EffectKind::NetworkMtu.descriptor().capability)
+            .unwrap_or_else(|error| panic!("MTU capability should parse: {error}"));
+        assert_eq!(network.capabilities.len(), 1);
+        assert!(network.capabilities.contains(&availability));
+        assert!(!network.capabilities.contains(&mtu));
+
+        let storage = host_production_manifest("storage-host", &[])
+            .unwrap_or_else(|error| panic!("empty storage manifest should build: {error}"));
+        assert!(storage.capabilities.is_empty());
+    }
 }

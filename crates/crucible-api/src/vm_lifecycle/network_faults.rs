@@ -6,6 +6,10 @@
 //! shared through a test-only or process-global side channel.
 
 use super::*;
+use crucible::model::{
+    ContentHash, EffectSpecification, FaultObjectId, FaultOpportunity, FaultPhase,
+    NetworkAvailabilityState, NetworkEffectSpecification, OpportunityPayload,
+};
 use crucible::{BackendNetworkOutputInterceptor, SchedulerEventLogAppend};
 
 /// Owns the production signal continuation at the pre-routing network seam.
@@ -85,9 +89,12 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
         outputs: &mut Vec<crucible::BackendNetworkOutput>,
     ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
         let mut routed = Vec::new();
+        let mut observations = Vec::new();
+        let mut next_wakeup_nanos = None;
         for output in outputs.drain(..) {
             for route in loop_impl.resolve_backend_network_routes(&output)? {
-                self.topology
+                let stages = self
+                    .topology
                     .network_route_fault_targets(
                         &output.source.name,
                         &route.destination.name,
@@ -101,10 +108,157 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                     })?;
                 let mut output = output.clone();
                 output.route = Some(route);
-                routed.push(output);
+                let producer = FaultObjectId::parse(&output.source.name).map_err(|error| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "network frame producer `{}` is not a canonical fault object: {error}",
+                            output.source.name
+                        ),
+                    }
+                })?;
+                let length_bytes = u64::try_from(output.payload.len()).map_err(|_error| {
+                    SchedulerError::BoundaryViolation {
+                        message: String::from("network frame length exceeds the fault ABI width"),
+                    }
+                })?;
+                let payload = OpportunityPayload::NetworkFrame {
+                    producer,
+                    producer_sequence: output.sequence,
+                    length_bytes,
+                    payload_digest: ContentHash::from_bytes(&output.payload),
+                };
+                let mut admitted = true;
+                for stage in stages
+                    .iter()
+                    .filter(|stage| stage.phases().contains(&FaultPhase::Admit))
+                {
+                    let opportunity = FaultOpportunity::new(
+                        stage.target.clone(),
+                        stage.operation,
+                        FaultPhase::Admit,
+                        FaultCoordinate {
+                            virtual_nanos: frontier.ticks,
+                            retired_instructions: Some(output.emit_icount.retired),
+                        },
+                        output.sequence,
+                        Some(stage.direction),
+                        payload.clone(),
+                    )
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!("construct network admission opportunity: {error}"),
+                    })?;
+                    let sequence = self.next_sequence(frontier.ticks)?;
+                    let evaluation = self
+                        .runtime
+                        .evaluate_opportunity(&opportunity, sequence, _backend)
+                        .map_err(|error| SchedulerError::BoundaryViolation {
+                            message: format!("signal network opportunity failed closed: {error}"),
+                        })?;
+                    next_wakeup_nanos =
+                        earliest_wakeup(next_wakeup_nanos, evaluation.next_wakeup_nanos);
+                    observations.extend(evaluation.observations);
+                    let impulses = self.runtime.drain_host_impulses();
+                    if !impulses.is_empty() {
+                        return Err(SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "network availability produced an invalid impulse action",
+                            ),
+                        });
+                    }
+                    for action in self
+                        .runtime
+                        .host_state()
+                        .matching(opportunity.target(), FaultPhase::Admit)
+                    {
+                        let EffectSpecification::Network(
+                            NetworkEffectSpecification::Availability { state, .. },
+                        ) = action.effect.specification()
+                        else {
+                            return Err(SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "production network admission encountered unadvertised effect `{}`",
+                                    action.effect.kind().as_str()
+                                ),
+                            });
+                        };
+                        admitted &= availability_allows(*state, stage.direction);
+                    }
+                }
+                if admitted {
+                    routed.push(output);
+                }
             }
         }
         *outputs = routed;
-        Ok(Vec::new())
+        if next_wakeup_nanos.is_some() {
+            loop_impl.set_signal_fault_wakeup(next_wakeup_nanos)?;
+        }
+        if observations.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Ok(vec![loop_impl.append_fault_observations(observations)?])
+        }
+    }
+}
+
+fn earliest_wakeup(current: Option<u64>, candidate: Option<u64>) -> Option<u64> {
+    match (current, candidate) {
+        (Some(current), Some(candidate)) => Some(current.min(candidate)),
+        (Some(current), None) => Some(current),
+        (None, candidate) => candidate,
+    }
+}
+
+fn availability_allows(
+    state: NetworkAvailabilityState,
+    direction: crucible::model::FaultDirection,
+) -> bool {
+    match state {
+        NetworkAvailabilityState::Up => true,
+        NetworkAvailabilityState::Down => false,
+        NetworkAvailabilityState::ReceiveOnly => {
+            direction == crucible::model::FaultDirection::Ingress
+        }
+        NetworkAvailabilityState::TransmitOnly => {
+            direction != crucible::model::FaultDirection::Ingress
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crucible::model::FaultDirection;
+
+    #[test]
+    fn directional_availability_has_a_closed_lattice() {
+        for direction in [
+            FaultDirection::AToB,
+            FaultDirection::BToA,
+            FaultDirection::Ingress,
+            FaultDirection::Egress,
+        ] {
+            assert!(availability_allows(NetworkAvailabilityState::Up, direction));
+            assert!(!availability_allows(
+                NetworkAvailabilityState::Down,
+                direction
+            ));
+        }
+        assert!(availability_allows(
+            NetworkAvailabilityState::ReceiveOnly,
+            FaultDirection::Ingress
+        ));
+        assert!(!availability_allows(
+            NetworkAvailabilityState::ReceiveOnly,
+            FaultDirection::Egress
+        ));
+        assert!(availability_allows(
+            NetworkAvailabilityState::TransmitOnly,
+            FaultDirection::Egress
+        ));
+        assert!(!availability_allows(
+            NetworkAvailabilityState::TransmitOnly,
+            FaultDirection::Ingress
+        ));
     }
 }
