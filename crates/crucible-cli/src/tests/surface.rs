@@ -2187,6 +2187,8 @@ pub(super) fn cli_qemu_debug_executes_live_admission_before_delegating()
     assert!(lines[0].contains("operation=debug-admission"));
     assert!(lines[0].contains("icount=42"));
     assert!(lines[1].contains("target=artifact:failure.crucible"));
+    assert!(lines[1].contains("execution=planned-only"));
+    assert!(lines[1].contains("requested_operation=attach-gdb"));
     assert!(lines[1].contains("read_only=true"));
     assert!(lines[1].contains("raw_gdb_single_step=false"));
     Ok(())
