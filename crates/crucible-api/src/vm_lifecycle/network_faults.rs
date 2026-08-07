@@ -147,7 +147,7 @@ const HARD_PENDING_NETWORK_FRAMES: usize = 65_536;
 const HARD_PENDING_NETWORK_BYTES: usize = 1_073_741_824;
 const HARD_CONTACT_SERVICE_RESERVATIONS: usize = 262_144;
 const HARD_CONTACT_SERVICE_STATES: usize = 262_144;
-const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 4;
+const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 5;
 
 fn stage_pending_network_output(
     pending: &mut Vec<crucible::BackendNetworkOutput>,
@@ -237,6 +237,9 @@ fn validate_network_adapter_checkpoint(
 ) -> Result<(), SchedulerError> {
     if checkpoint.semantic_version != NETWORK_ADAPTER_CHECKPOINT_VERSION
         || checkpoint.coordinate.is_none() && checkpoint.coordinate_sequence != 0
+        || checkpoint.coordinate.is_none() && checkpoint.journal_sequence != 0
+        || checkpoint.coordinate.is_some()
+            && checkpoint.journal_sequence <= checkpoint.coordinate_sequence
         || checkpoint.effect_state.token_buckets.len() > 65_536
         || checkpoint.effect_state.queues.len() > 65_536
         || checkpoint.effect_state.burst_states.len() > 65_536
@@ -903,6 +906,7 @@ struct NetworkAdapterCheckpoint {
     semantic_version: u16,
     coordinate: Option<u64>,
     coordinate_sequence: u64,
+    journal_sequence: u64,
     effect_state: NetworkEffectRuntimeState,
 }
 
@@ -943,6 +947,7 @@ fn stage_network_restore(
         &pending_outputs,
         adapter.coordinate,
         adapter.coordinate_sequence,
+        adapter.journal_sequence,
         &adapter.effect_state,
     )?;
     if actual != identity {
@@ -1319,12 +1324,14 @@ fn network_state_digest_from_parts(
     pending_outputs: &[crucible::BackendNetworkOutput],
     coordinate: Option<u64>,
     coordinate_sequence: u64,
+    journal_sequence: u64,
     effect_state: &NetworkEffectRuntimeState,
 ) -> Result<ContentHash, SchedulerError> {
     let mut material = Vec::new();
     material.extend_from_slice(&scheduler.network_continuation_digest()?.bytes);
     material.extend_from_slice(&coordinate.unwrap_or(u64::MAX).to_be_bytes());
     material.extend_from_slice(&coordinate_sequence.to_be_bytes());
+    material.extend_from_slice(&journal_sequence.to_be_bytes());
     let pending_count = u64::try_from(pending_outputs.len()).map_err(|_error| {
         SchedulerError::BoundaryViolation {
             message: String::from("pending network output count exceeds the checkpoint width"),
@@ -1343,10 +1350,20 @@ fn network_state_digest_from_parts(
 pub(super) struct ProductionFaultEvaluationCursor {
     coordinate: Option<u64>,
     coordinate_sequence: u64,
+    journal_sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ProductionFaultEvaluationSequence {
+    pub(super) same_coordinate: u64,
+    pub(super) journal: u64,
 }
 
 impl ProductionFaultEvaluationCursor {
-    pub(super) fn next_sequence(&mut self, coordinate: u64) -> Result<u64, SchedulerError> {
+    pub(super) fn next_sequence(
+        &mut self,
+        coordinate: u64,
+    ) -> Result<ProductionFaultEvaluationSequence, SchedulerError> {
         if self.coordinate == Some(coordinate) {
             self.coordinate_sequence =
                 self.coordinate_sequence.checked_add(1).ok_or_else(|| {
@@ -1360,7 +1377,16 @@ impl ProductionFaultEvaluationCursor {
             self.coordinate_sequence = 0;
         }
         self.coordinate = Some(coordinate);
-        Ok(self.coordinate_sequence)
+        let journal = self.journal_sequence;
+        self.journal_sequence = self.journal_sequence.checked_add(1).ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("fault observation journal sequence space is exhausted"),
+            }
+        })?;
+        Ok(ProductionFaultEvaluationSequence {
+            same_coordinate: self.coordinate_sequence,
+            journal,
+        })
     }
 }
 
@@ -1473,6 +1499,7 @@ impl ProductionFaultNetworkInterceptor {
             cursor: Arc::new(Mutex::new(ProductionFaultEvaluationCursor {
                 coordinate: staged.adapter.coordinate,
                 coordinate_sequence: staged.adapter.coordinate_sequence,
+                journal_sequence: staged.adapter.journal_sequence,
             })),
             observations,
             topology,
@@ -1533,12 +1560,14 @@ impl ProductionFaultNetworkInterceptor {
             pending_outputs,
             cursor.coordinate,
             cursor.coordinate_sequence,
+            cursor.journal_sequence,
             &effect_state,
         )?;
         let adapter_state = serde_json::to_vec(&NetworkAdapterCheckpoint {
             semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
             coordinate: cursor.coordinate,
             coordinate_sequence: cursor.coordinate_sequence,
+            journal_sequence: cursor.journal_sequence,
             effect_state,
         })
         .map_err(|error| SchedulerError::BoundaryViolation {
@@ -1588,15 +1617,16 @@ impl ProductionFaultNetworkInterceptor {
                 message: String::from("production fault runtime lock is poisoned"),
             })?;
         let host_before = runtime.host_state().clone();
-        let mut evaluation = match runtime.evaluate_boundary(coordinate, sequence, backend) {
-            Ok(evaluation) => evaluation,
-            Err(error) => {
-                *cursor = cursor_before;
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!("signal fault boundary failed closed: {error}"),
-                });
-            }
-        };
+        let mut evaluation =
+            match runtime.evaluate_boundary(coordinate, sequence.same_coordinate, backend) {
+                Ok(evaluation) => evaluation,
+                Err(error) => {
+                    *cursor = cursor_before;
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!("signal fault boundary failed closed: {error}"),
+                    });
+                }
+            };
         let staged = (|| {
             let impulses = runtime.drain_host_impulses();
             if impulses
@@ -1667,7 +1697,7 @@ impl ProductionFaultNetworkInterceptor {
                     event.operation,
                     FaultPhase::Resolve,
                     coordinate,
-                    opportunity_sequence,
+                    opportunity_sequence.same_coordinate,
                     None,
                     OpportunityPayload::NetworkControl {
                         technology: event.technology.clone(),
@@ -1681,7 +1711,11 @@ impl ProductionFaultNetworkInterceptor {
                     message: format!("construct network control opportunity: {error}"),
                 })?;
                 let control_evaluation = runtime
-                    .evaluate_opportunity(&opportunity, opportunity_sequence, backend)
+                    .evaluate_opportunity(
+                        &opportunity,
+                        opportunity_sequence.same_coordinate,
+                        backend,
+                    )
                     .map_err(|error| SchedulerError::BoundaryViolation {
                         message: format!("signal network control opportunity failed: {error}"),
                     })?;
@@ -1895,15 +1929,16 @@ impl ProductionFaultNetworkInterceptor {
                                 "production fault observation journal lock is poisoned",
                             ),
                         })?;
-                if journal.contains_sequence(sequence) {
+                if journal.contains_sequence(sequence.journal) {
                     return Err(SchedulerError::BoundaryViolation {
                         message: format!(
-                            "fault observation sequence {sequence} was reused at a scheduler boundary"
+                            "fault observation sequence {} was reused at a scheduler boundary",
+                            sequence.journal,
                         ),
                     });
                 }
                 journal
-                    .append(sequence, evaluation.observations)
+                    .append(sequence.journal, evaluation.observations)
                     .map_err(|error| SchedulerError::BoundaryViolation {
                         message: error.to_string(),
                     })?;
@@ -1911,7 +1946,7 @@ impl ProductionFaultNetworkInterceptor {
             let block_rollback = backend.checkpoint_block_boundary_state();
             if let Err(error) = backend.apply_block_boundary_actions(
                 coordinate,
-                sequence,
+                sequence.journal,
                 &storage_boundary_actions,
             ) {
                 self.observations
@@ -1921,7 +1956,7 @@ impl ProductionFaultNetworkInterceptor {
                             "production fault observation journal lock is poisoned",
                         ),
                     })?
-                    .rollback_sequence(sequence)
+                    .rollback_sequence(sequence.journal)
                     .map_err(|rollback_error| SchedulerError::BoundaryViolation {
                         message: rollback_error.to_string(),
                     })?;
@@ -1954,7 +1989,7 @@ impl ProductionFaultNetworkInterceptor {
                                 "production fault observation journal lock is poisoned",
                             ),
                         })?
-                        .rollback_sequence(sequence)
+                        .rollback_sequence(sequence.journal)
                         .map_err(|rollback_error| SchedulerError::BoundaryViolation {
                             message: rollback_error.to_string(),
                         })?;
@@ -3106,20 +3141,42 @@ mod tests {
     #[test]
     fn production_fault_cursor_sequences_only_within_one_coordinate() {
         let mut cursor = ProductionFaultEvaluationCursor::default();
-        assert_eq!(cursor.next_sequence(10).unwrap_or(u64::MAX), 0);
-        assert_eq!(cursor.next_sequence(10).unwrap_or(u64::MAX), 1);
-        assert_eq!(cursor.next_sequence(11).unwrap_or(u64::MAX), 0);
-        assert_eq!(cursor.next_sequence(11).unwrap_or(u64::MAX), 1);
+        let first = cursor
+            .next_sequence(10)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let second = cursor
+            .next_sequence(10)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let third = cursor
+            .next_sequence(11)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let fourth = cursor
+            .next_sequence(11)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!((first.same_coordinate, first.journal), (0, 0));
+        assert_eq!((second.same_coordinate, second.journal), (1, 1));
+        assert_eq!((third.same_coordinate, third.journal), (0, 2));
+        assert_eq!((fourth.same_coordinate, fourth.journal), (1, 3));
     }
 
     #[test]
-    fn production_evaluation_sequence_never_reuses_an_a_b_a_coordinate() {
+    fn production_journal_sequence_never_reuses_an_a_b_a_coordinate() {
         let mut cursor = ProductionFaultEvaluationCursor::default();
-        assert_eq!(cursor.next_sequence(10).unwrap_or(u64::MAX), 0);
-        assert_eq!(cursor.next_sequence(20).unwrap_or(u64::MAX), 1);
-        assert_eq!(cursor.next_sequence(10).unwrap_or(u64::MAX), 2);
+        let first = cursor
+            .next_sequence(10)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let second = cursor
+            .next_sequence(20)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let third = cursor
+            .next_sequence(10)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!((first.same_coordinate, first.journal), (0, 0));
+        assert_eq!((second.same_coordinate, second.journal), (0, 1));
+        assert_eq!((third.same_coordinate, third.journal), (0, 2));
         assert_eq!(cursor.coordinate, Some(10));
-        assert_eq!(cursor.coordinate_sequence, 2);
+        assert_eq!(cursor.coordinate_sequence, 0);
+        assert_eq!(cursor.journal_sequence, 3);
     }
 
     use crucible::model::{
@@ -4002,6 +4059,7 @@ mod tests {
             semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
             coordinate: Some(30),
             coordinate_sequence: 1,
+            journal_sequence: 2,
             effect_state: state.clone(),
         };
         let encoded = serde_json::to_vec(&checkpoint)

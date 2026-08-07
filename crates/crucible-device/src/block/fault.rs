@@ -298,9 +298,23 @@ pub struct ResolvedBlockCachePolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockRetainedRelease {
     /// Modeled recovery occurred before timeout.
-    Recovery,
+    Recovery {
+        /// Exact virtual coordinate of the recovery event.
+        event_nanos: u64,
+        /// Event evaluation sequence within `event_nanos`.
+        event_sequence: u64,
+    },
     /// The modeled timeout coordinate was reached first.
     Timeout,
+}
+
+/// Result of applying one eligible retained-completion release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockRetainedReleaseOutcome {
+    /// Recovery started required persistence and the completion remains retained.
+    PendingPersistence,
+    /// The selected response was reserved for delivery.
+    Released,
 }
 
 /// One fully resolved guest-transport treatment of an additional completion.
@@ -480,6 +494,8 @@ pub struct ResolvedBlockFaultDirective {
     pub retention_recovery_event: Option<[u8; 32]>,
     /// Boundary after which the subscribed recovery event may release completion.
     pub retention_recovery_after_nanos: Option<u64>,
+    /// Evaluation sequence after which a same-coordinate recovery may release.
+    pub retention_recovery_after_sequence: Option<u64>,
     /// Canonically gap-ordered duplicate transport outcomes.
     pub duplicate_completions: Vec<ResolvedBlockDuplicateCompletion>,
     /// Ordered read transformations.
@@ -584,6 +600,7 @@ impl ResolvedBlockFaultDirective {
             retention_timeout_nanos: None,
             retention_recovery_event: None,
             retention_recovery_after_nanos: None,
+            retention_recovery_after_sequence: None,
             duplicate_completions: Vec::new(),
             read_transforms: Vec::new(),
             media_rules: Vec::new(),
@@ -776,6 +793,8 @@ impl ResolvedBlockFaultDirective {
             || !self.retain_completion && self.retention_recovery_event.is_some()
             || self.retention_recovery_event.is_some()
                 != self.retention_recovery_after_nanos.is_some()
+            || self.retention_recovery_event.is_some()
+                != self.retention_recovery_after_sequence.is_some()
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "retained completion lacks a future timeout or has a stray recovery event",
@@ -1137,12 +1156,14 @@ pub struct BlockRetainedCompletion {
     pub request_icount: u64,
     /// Dynamic delay selected before the completion was retained.
     pub additional_latency_nanos: u64,
-    /// Exclusive virtual-nanosecond deadline that releases the timeout response.
+    /// Exact virtual-nanosecond deadline that releases the timeout response.
     pub timeout_nanos: u64,
     /// Optional content identity of the signal event that releases recovery.
     pub recovery_event: Option<[u8; 32]>,
     /// Boundary after which the subscribed recovery event may release completion.
     pub recovery_after_nanos: Option<u64>,
+    /// Evaluation sequence after which a same-coordinate recovery may release.
+    pub recovery_after_sequence: Option<u64>,
     /// Exclusive captured write frontier persisted before recovered flush success.
     pub persist_through_on_recovery: Option<u64>,
 }
@@ -1467,6 +1488,8 @@ impl BlockFaultState {
             || directive.retention_timeout_nanos != prior.retention_timeout_nanos
             || directive.retention_recovery_event != prior.retention_recovery_event
             || directive.retention_recovery_after_nanos != prior.retention_recovery_after_nanos
+            || directive.retention_recovery_after_sequence
+                != prior.retention_recovery_after_sequence
             || directive.duplicate_completions != prior.duplicate_completions
             || directive.read_transforms != prior.read_transforms
         {
@@ -1551,6 +1574,8 @@ impl BlockFaultState {
             || directive.retention_timeout_nanos != prior.retention_timeout_nanos
             || directive.retention_recovery_event != prior.retention_recovery_event
             || directive.retention_recovery_after_nanos != prior.retention_recovery_after_nanos
+            || directive.retention_recovery_after_sequence
+                != prior.retention_recovery_after_sequence
             || directive.read_transforms != prior.read_transforms
             || directive.media_rules != prior.media_rules
             || directive.write_disposition != prior.write_disposition
@@ -1902,6 +1927,8 @@ impl BlockFaultState {
                         != opportunity.resolved.retention_recovery_event
                     || persistence.retention_recovery_after_nanos
                         != opportunity.resolved.retention_recovery_after_nanos
+                    || persistence.retention_recovery_after_sequence
+                        != opportunity.resolved.retention_recovery_after_sequence
                 {
                     return Err(DeviceError::InvalidBlockFaultDirective {
                         reason: "restored request-persistence decision is invalid",
@@ -2498,6 +2525,7 @@ impl BlockFaultState {
         &self,
         event: [u8; 32],
         event_nanos: u64,
+        event_sequence: u64,
     ) -> Vec<BlockRequestIdentity> {
         self.retained_completions
             .iter()
@@ -2505,7 +2533,8 @@ impl BlockFaultState {
                 (completion.recovery_event == Some(event)
                     && completion
                         .recovery_after_nanos
-                        .is_some_and(|after| event_nanos > after))
+                        .zip(completion.recovery_after_sequence)
+                        .is_some_and(|after| (event_nanos, event_sequence) > after))
                 .then_some(*identity)
             })
             .collect()
@@ -2536,29 +2565,51 @@ impl BlockFaultState {
         identity: BlockRequestIdentity,
         release: BlockRetainedRelease,
         now_nanos: u64,
-    ) -> Result<Response, DeviceError> {
+    ) -> Result<Option<Response>, DeviceError> {
         let completion = self.retained_completions.get(&identity).cloned().ok_or(
             DeviceError::InvalidBlockFaultDirective {
                 reason: "storage completion is not retained",
             },
         )?;
         let response = match release {
-            BlockRetainedRelease::Recovery => {
+            BlockRetainedRelease::Recovery {
+                event_nanos,
+                event_sequence,
+            } => {
+                let subscribed_after = completion
+                    .recovery_after_nanos
+                    .zip(completion.recovery_after_sequence)
+                    .ok_or(DeviceError::InvalidBlockFaultDirective {
+                        reason: "storage completion has no recovery subscription",
+                    })?;
+                if completion.recovery_event.is_none()
+                    || (event_nanos, event_sequence) <= subscribed_after
+                    || event_nanos > completion.timeout_nanos
+                {
+                    return Err(DeviceError::InvalidBlockFaultDirective {
+                        reason: "storage recovery is outside its eligible subscription window",
+                    });
+                }
                 if let Some(frontier) = completion.persist_through_on_recovery {
                     let wait = self.persist_through(base, durable, frontier, now_nanos)?;
                     if wait != 0 {
-                        return Err(DeviceError::InvalidBlockFaultDirective {
-                            reason: "flush recovery precedes its persistence deadline",
-                        });
+                        return Ok(None);
                     }
                     self.reported_durable_frontier = self.actual_durable_frontier;
                 }
                 completion.recovery_response
             }
-            BlockRetainedRelease::Timeout => completion.timeout_response,
+            BlockRetainedRelease::Timeout => {
+                if now_nanos < completion.timeout_nanos {
+                    return Err(DeviceError::InvalidBlockFaultDirective {
+                        reason: "storage timeout was released before its deadline",
+                    });
+                }
+                completion.timeout_response
+            }
         };
         self.retained_completions.remove(&identity);
-        Ok(response)
+        Ok(Some(response))
     }
 
     /// Returns the actual durable write/cache frontier.
@@ -3630,6 +3681,7 @@ impl BlockFaultState {
                     )?,
                     recovery_event: directive.retention_recovery_event,
                     recovery_after_nanos: directive.retention_recovery_after_nanos,
+                    recovery_after_sequence: directive.retention_recovery_after_sequence,
                     persist_through_on_recovery: (request.op == BlockOp::Flush
                         && matches!(
                             directive.flush_disposition,
@@ -5938,6 +5990,7 @@ mod tests {
         directive.retention_timeout_nanos = Some(100);
         directive.retention_recovery_event = Some([7; 32]);
         directive.retention_recovery_after_nanos = Some(0);
+        directive.retention_recovery_after_sequence = Some(0);
         state
             .install(flush.identity(), directive)
             .unwrap_or_else(|error| panic!("directive installs: {error}"));
@@ -5959,9 +6012,13 @@ mod tests {
         );
         assert!(state.retained_timeouts_due(99).is_empty());
         assert_eq!(state.retained_timeouts_due(100), vec![flush.identity()]);
-        assert!(state.retained_recoveries_for([7; 32], 0).is_empty());
+        assert!(state.retained_recoveries_for([7; 32], 0, 0).is_empty());
         assert_eq!(
-            state.retained_recoveries_for([7; 32], 50),
+            state.retained_recoveries_for([7; 32], 0, 1),
+            vec![flush.identity()]
+        );
+        assert_eq!(
+            state.retained_recoveries_for([7; 32], 50, 0),
             vec![flush.identity()]
         );
         response(
@@ -5976,10 +6033,14 @@ mod tests {
                 &base,
                 &mut durable,
                 flush.identity(),
-                BlockRetainedRelease::Recovery,
-                0,
+                BlockRetainedRelease::Recovery {
+                    event_nanos: 50,
+                    event_sequence: 0,
+                },
+                50,
             )
-            .unwrap_or_else(|error| panic!("retained completion recovers: {error}"));
+            .unwrap_or_else(|error| panic!("retained completion recovers: {error}"))
+            .unwrap_or_else(|| panic!("recovery persistence should complete immediately"));
         let released = BlockResponse::decode(&released.payload)
             .unwrap_or_else(|error| panic!("released response decodes: {error}"));
         assert_eq!(released.status, BlockStatus::Ok);
@@ -6030,9 +6091,10 @@ mod tests {
                 &mut durable,
                 flush.identity(),
                 BlockRetainedRelease::Timeout,
-                0,
+                100,
             )
-            .unwrap_or_else(|error| panic!("retained completion times out: {error}"));
+            .unwrap_or_else(|error| panic!("retained completion times out: {error}"))
+            .unwrap_or_else(|| panic!("timeout should release immediately"));
         let released = BlockResponse::decode(&released.payload)
             .unwrap_or_else(|error| panic!("released response decodes: {error}"));
         assert_eq!(released.status, BlockStatus::Error);
@@ -6040,6 +6102,92 @@ mod tests {
         assert_eq!(state.actual_durable_frontier(), 0);
         assert_eq!(state.volatile_entries().len(), 4);
         assert_eq!(durable.read(&base, 8, 4).unwrap_or_default(), b"ijkl");
+    }
+
+    #[test]
+    fn stalled_flush_recovery_waits_for_delayed_persistence() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let mut durable = CowOverlay::new();
+        let mut state = state(BlockCompletionDurability::VolatileCacheAccepted);
+        response(
+            &mut state,
+            &base,
+            &mut durable,
+            &BlockRequest::write(1, 8, b"held".to_vec()),
+            |directive| {
+                directive.execution_nanos = 10;
+                directive.persistence_admitted_nanos = 10;
+                directive
+                    .persistence_transforms
+                    .push(ResolvedBlockPersistenceTransform {
+                        contributor: [7; 32],
+                        ordering_group: [6; 32],
+                        ordering: crate::block::BlockPersistenceOrdering::Preserve,
+                        delay_nanos: 100,
+                        preserve_barriers: true,
+                    });
+            },
+        );
+        let flush = BlockRequest::flush(2);
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&flush, base.len());
+        directive.execution_nanos = 20;
+        directive.flush_disposition = BlockFaultFlushDisposition::Stall;
+        directive.retain_completion = true;
+        directive.retention_timeout_response = Some(BlockResponse::error(
+            flush.request_id,
+            BlockErrorCode::Timeout,
+        ));
+        directive.retention_timeout_nanos = Some(200);
+        directive.retention_recovery_event = Some([7; 32]);
+        directive.retention_recovery_after_nanos = Some(20);
+        directive.retention_recovery_after_sequence = Some(0);
+        state
+            .install(flush.identity(), directive)
+            .unwrap_or_else(|error| panic!("directive installs: {error}"));
+        let computed = state
+            .execute(&base, &mut durable, &flush, 20)
+            .unwrap_or_else(|error| panic!("flush executes: {error}"));
+        assert!(computed.primary.is_none());
+
+        let pending = state
+            .resolve_retained_completion(
+                &base,
+                &mut durable,
+                flush.identity(),
+                BlockRetainedRelease::Recovery {
+                    event_nanos: 50,
+                    event_sequence: 0,
+                },
+                50,
+            )
+            .unwrap_or_else(|error| panic!("recovery starts persistence: {error}"));
+        assert!(pending.is_none());
+        assert!(state.retained_completion(flush.identity()).is_some());
+        assert_eq!(state.reported_durable_frontier(), 0);
+        assert_eq!(durable.read(&base, 8, 4).unwrap_or_default(), b"ijkl");
+
+        state
+            .persist_due(&base, &mut durable, 110)
+            .unwrap_or_else(|error| panic!("delayed persistence completes: {error}"));
+        let released = state
+            .resolve_retained_completion(
+                &base,
+                &mut durable,
+                flush.identity(),
+                BlockRetainedRelease::Recovery {
+                    event_nanos: 50,
+                    event_sequence: 0,
+                },
+                110,
+            )
+            .unwrap_or_else(|error| panic!("recovery completion releases: {error}"))
+            .unwrap_or_else(|| panic!("durable recovery must release"));
+        let released = BlockResponse::decode(&released.payload)
+            .unwrap_or_else(|error| panic!("released response decodes: {error}"));
+        assert_eq!(released.status, BlockStatus::Ok);
+        assert!(state.retained_completion(flush.identity()).is_none());
+        assert_eq!(state.reported_durable_frontier(), 4);
+        assert_eq!(durable.read(&base, 8, 4).unwrap_or_default(), b"held");
     }
 
     #[test]

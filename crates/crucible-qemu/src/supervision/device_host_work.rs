@@ -874,9 +874,9 @@ fn worker_loop(
                 StorageMutation::InstallExecution(directive) => {
                     servicer.install_storage_execution_directive(directive)
                 }
-                StorageMutation::ReleaseCompletion { identity, release } => {
-                    servicer.release_storage_completion(identity, release)
-                }
+                StorageMutation::ReleaseCompletion { identity, release } => servicer
+                    .release_storage_completion(identity, release)
+                    .map(|_| ()),
             }),
             WorkerCommand::InspectStorageState => {
                 WorkerReply::StorageState(servicer.storage_fault_state().clone())

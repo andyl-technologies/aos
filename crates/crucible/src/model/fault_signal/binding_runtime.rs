@@ -180,6 +180,19 @@ pub struct ReferencedSignalEvent {
     pub evidence: ContentHash,
 }
 
+impl ReferencedSignalEvent {
+    /// Returns the canonical identity and encoded size of the typed event value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BindingRuntimeError::Trace`] if the value cannot be encoded in
+    /// the canonical signal trace representation.
+    pub fn canonical_value_identity(&self) -> Result<(ContentHash, usize), BindingRuntimeError> {
+        let bytes = encode_signal_value(&self.value).map_err(BindingRuntimeError::Trace)?;
+        Ok((ContentHash::from_bytes(&bytes), bytes.len()))
+    }
+}
+
 /// One sample payload retained under a binding's observability policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetainedBindingSample {

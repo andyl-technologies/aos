@@ -39,8 +39,8 @@ use super::codec::{BlockStatus, BlockTransportReset, BlockTransportUndelivered};
 use super::fault::{
     BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
-    BlockRetainedRelease, BlockStorageOutcome, ResolvedBlockDeliveryDirective,
-    ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
+    BlockRetainedRelease, BlockRetainedReleaseOutcome, BlockStorageOutcome,
+    ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
     ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
 };
 use super::overlay::{BaseImage, CowOverlay};
@@ -574,9 +574,14 @@ impl BlockDevice {
         &mut self,
         identity: super::codec::BlockRequestIdentity,
         release: BlockRetainedRelease,
-    ) -> Result<(), DeviceError> {
-        self.release_storage_completions(&[(identity, release)])?;
-        Ok(())
+    ) -> Result<BlockRetainedReleaseOutcome, DeviceError> {
+        let outcomes = self.release_storage_completions(&[(identity, release)])?;
+        outcomes
+            .into_iter()
+            .next()
+            .ok_or(DeviceError::InvalidBlockFaultDirective {
+                reason: "single retained-completion release produced no outcome",
+            })
     }
 
     /// Atomically releases retained storage completions at the current icount.
@@ -593,9 +598,10 @@ impl BlockDevice {
     pub fn release_storage_completions(
         &mut self,
         releases: &[(super::codec::BlockRequestIdentity, BlockRetainedRelease)],
-    ) -> Result<(), DeviceError> {
+    ) -> Result<Vec<BlockRetainedReleaseOutcome>, DeviceError> {
         let mut next = self.clone();
         let now_nanos = icount_to_virtual_ns(next.core.current_icount(), next.core.shift_bits())?;
+        let mut outcomes = Vec::with_capacity(releases.len());
         for (identity, release) in releases {
             let response = next.storage_faults.resolve_retained_completion(
                 &next.base,
@@ -604,10 +610,29 @@ impl BlockDevice {
                 *release,
                 now_nanos,
             )?;
-            next.core.schedule_response_now(response)?;
+            match response {
+                Some(response) => {
+                    next.core.schedule_response_now(response)?;
+                    outcomes.push(BlockRetainedReleaseOutcome::Released);
+                }
+                None => outcomes.push(BlockRetainedReleaseOutcome::PendingPersistence),
+            }
         }
         *self = next;
-        Ok(())
+        Ok(outcomes)
+    }
+
+    /// Predicts retained-completion release outcomes without changing the device.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::release_storage_completions`].
+    pub fn preview_storage_completion_releases(
+        &self,
+        releases: &[(super::codec::BlockRequestIdentity, BlockRetainedRelease)],
+    ) -> Result<Vec<BlockRetainedReleaseOutcome>, DeviceError> {
+        let mut preview = self.clone();
+        preview.release_storage_completions(releases)
     }
 
     /// Returns a read-only view of the base image.

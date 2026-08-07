@@ -193,7 +193,11 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                             let sequence = cursor.next_sequence(frontier.ticks)?;
                             let host_before = runtime.host_state().clone();
                             let evaluation = runtime
-                                .evaluate_opportunity(&opportunity, sequence, _backend)
+                                .evaluate_opportunity(
+                                    &opportunity,
+                                    sequence.same_coordinate,
+                                    _backend,
+                                )
                                 .map_err(|error| SchedulerError::BoundaryViolation {
                                     message: format!(
                                         "signal network opportunity failed closed: {error}"
@@ -214,7 +218,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 )?;
                             let mut evaluation_observations = evaluation.observations;
                             evaluation_observations.extend(transition_observations);
-                            observation_batches.push((sequence, evaluation_observations));
+                            observation_batches.push((sequence.journal, evaluation_observations));
                             transition_records.extend(records);
                             let mut frame_actions = Vec::new();
                             staged_effect_state.boundary.apply_frame(
@@ -7479,6 +7483,7 @@ mod tests {
                 semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
                 coordinate: Some(release),
                 coordinate_sequence: 0,
+                journal_sequence: 1,
                 effect_state: overlapping_ledger,
             })
             .is_err()
@@ -7496,6 +7501,7 @@ mod tests {
                 semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
                 coordinate: Some(release),
                 coordinate_sequence: 0,
+                journal_sequence: 1,
                 effect_state: mismatched_expiry,
             })
             .is_err()
@@ -7514,6 +7520,7 @@ mod tests {
                 semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
                 coordinate: Some(release),
                 coordinate_sequence: 0,
+                journal_sequence: 1,
                 effect_state: over_byte_capacity,
             })
             .is_err()
@@ -7548,6 +7555,7 @@ mod tests {
                 semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
                 coordinate: Some(release),
                 coordinate_sequence: 0,
+                journal_sequence: 1,
                 effect_state: over_bundle_capacity,
             })
             .is_err()

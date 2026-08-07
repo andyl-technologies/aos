@@ -614,6 +614,8 @@ pub fn merge_block_fault_phase_directive(
             accumulated.retention_timeout_nanos = partial.retention_timeout_nanos;
             accumulated.retention_recovery_event = partial.retention_recovery_event;
             accumulated.retention_recovery_after_nanos = partial.retention_recovery_after_nanos;
+            accumulated.retention_recovery_after_sequence =
+                partial.retention_recovery_after_sequence;
             accumulated.read_transforms = partial.read_transforms;
             accumulated.media_rules.extend(partial.media_rules);
         }
@@ -632,6 +634,8 @@ pub fn merge_block_fault_phase_directive(
                 accumulated.retention_timeout_nanos = partial.retention_timeout_nanos;
                 accumulated.retention_recovery_event = partial.retention_recovery_event;
                 accumulated.retention_recovery_after_nanos = partial.retention_recovery_after_nanos;
+                accumulated.retention_recovery_after_sequence =
+                    partial.retention_recovery_after_sequence;
             }
             accumulated.cache_policy = partial.cache_policy;
             accumulated.persistence_transforms = partial.persistence_transforms;
