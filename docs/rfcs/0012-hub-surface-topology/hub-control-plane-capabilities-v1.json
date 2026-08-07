@@ -59,7 +59,7 @@
       "audience": "end-user",
       "cli_families": ["signing-key"],
       "web_workflows": ["signing-keys"],
-      "methods": ["ListSigningKeys", "GetSigningKey", "PlanEnrollSigningKey", "EnrollSigningKey", "PlanRotateSigningKey", "RotateSigningKey", "PlanRetireSigningKey", "RetireSigningKey", "PlanSetSigningKeyUsage", "SetSigningKeyUsage"]
+      "methods": ["ListSigningKeys", "GetSigningKey", "GetSigningKeyUsage", "PlanEnrollSigningKey", "EnrollSigningKey", "PlanRotateSigningKey", "RotateSigningKey", "PlanRetireSigningKey", "RetireSigningKey", "PlanSetSigningKeyUsage", "SetSigningKeyUsage"]
     },
     {
       "service": "ProjectService",

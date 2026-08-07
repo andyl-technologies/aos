@@ -99,10 +99,10 @@ pub enum HubSigningKeyCmd {
         #[command(subcommand)]
         command: HubSigningKeyRetireCmd,
     },
-    /// Attach or detach one typed signing usage through immutable review.
-    SetUsage {
+    /// Inspect, attach, or detach one typed signing usage.
+    Usage {
         #[command(subcommand)]
-        command: HubSigningKeySetUsageCmd,
+        command: HubSigningKeyUsageCmd,
     },
 }
 
@@ -184,9 +184,21 @@ pub enum HubSigningKeyRetireCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Explicit plan/apply flow for one signing-key usage association.
+/// Inspection and explicit plan/apply flow for one signing-key usage.
 #[derive(Subcommand)]
-pub enum HubSigningKeySetUsageCmd {
+pub enum HubSigningKeyUsageCmd {
+    /// Show one typed consumer usage and its exact pinned generation.
+    Show {
+        /// Hub connection and authentication.
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Stable typed consumer identity.
+        #[arg(long)]
+        consumer: String,
+        /// Typed signing purpose.
+        #[arg(long, value_parser = ["registry-publication", "nar-info", "channel-frontier"])]
+        purpose: String,
+    },
     /// Create and print an immutable signing-usage plan.
     Plan {
         /// Plan request identity and Hub access.

@@ -183,6 +183,13 @@
          "service" : "SigningKeyService"
       },
       {
+         "method" : "GetSigningKeyUsage",
+         "path" : "aos.hub.v1.SigningKeyService/GetSigningKeyUsage",
+         "request" : "GetSigningKeyUsageRequest",
+         "response" : "SigningKeyUsageResponse",
+         "service" : "SigningKeyService"
+      },
+      {
          "method" : "PlanEnrollSigningKey",
          "path" : "aos.hub.v1.SigningKeyService/PlanEnrollSigningKey",
          "request" : "PlanSigningKeyMutationRequest",

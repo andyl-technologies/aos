@@ -531,6 +531,8 @@ enum HubTopologyMethod {
     ListSigningKeys,
     /// Selects the normalized `GetSigningKey` Connect operation.
     GetSigningKey,
+    /// Selects the normalized `GetSigningKeyUsage` Connect operation.
+    GetSigningKeyUsage,
     /// Selects the normalized `PlanEnrollSigningKey` Connect operation.
     PlanEnrollSigningKey,
     /// Selects the normalized `EnrollSigningKey` Connect operation.
@@ -1083,6 +1085,7 @@ impl HubTopologyMethod {
             DeleteOrganization => "aos.hub.v1.OrganizationService/DeleteOrganization",
             ListSigningKeys => "aos.hub.v1.SigningKeyService/ListSigningKeys",
             GetSigningKey => "aos.hub.v1.SigningKeyService/GetSigningKey",
+            GetSigningKeyUsage => "aos.hub.v1.SigningKeyService/GetSigningKeyUsage",
             PlanEnrollSigningKey => "aos.hub.v1.SigningKeyService/PlanEnrollSigningKey",
             EnrollSigningKey => "aos.hub.v1.SigningKeyService/EnrollSigningKey",
             PlanRotateSigningKey => "aos.hub.v1.SigningKeyService/PlanRotateSigningKey",
@@ -1462,6 +1465,7 @@ pub mod hub_rpc {
         DeleteOrganization: ApplyOrganizationMutationRequest => DeleteTopologyResourceResponse;
         ListSigningKeys: ListSigningKeysRequest => ListSigningKeysResponse;
         GetSigningKey: GetSigningKeyRequest => SigningKeyResponse;
+        GetSigningKeyUsage: GetSigningKeyUsageRequest => SigningKeyUsageResponse;
         PlanEnrollSigningKey: PlanSigningKeyMutationRequest => TopologyPlanResponse;
         EnrollSigningKey: ApplyTopologyPlanRequest => SigningKeyResponse;
         PlanRotateSigningKey: PlanSigningKeyMutationRequest => TopologyPlanResponse;

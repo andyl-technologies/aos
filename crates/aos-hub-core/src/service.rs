@@ -32335,6 +32335,34 @@ impl RpcService {
         })
     }
 
+    /// Reads one typed consumer pin to an immutable signing-key generation.
+    pub async fn get_signing_key_usage(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetSigningKeyUsageRequest,
+    ) -> Result<pb::SigningKeyUsageResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        validate_signing_usage_identity(&req.consumer_stable_id, &req.purpose)?;
+        let consumer = self
+            .db
+            .resolve_signing_key_consumer(&req.consumer_stable_id, &req.purpose)
+            .await
+            .map_err(|error| RpcError::invalid(format!("invalid signing consumer: {error:#}")))?;
+        let consumer_scope = parse_authorization_scope(&consumer.scope_key)?;
+        self.require_permission(&claims, Permission::KeysManage, &consumer_scope)
+            .await?;
+        let usage = self
+            .db
+            .signing_key_usage(&req.consumer_stable_id, &req.purpose)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("signing-key usage"))?;
+
+        Ok(pb::SigningKeyUsageResponse {
+            usage: Some(signing_key_usage_message(usage)),
+        })
+    }
+
     /// Plans enrollment of a new externally custodied signing-key generation.
     pub async fn plan_enroll_signing_key(
         &self,
@@ -32935,21 +32963,30 @@ fn normalize_signing_key_mutation(
 fn validate_signing_usage_request(
     request: &pb::PlanSigningKeyUsageRequest,
 ) -> Result<(), RpcError> {
-    if !matches!(
-        request.purpose.as_str(),
-        "registry_publication" | "narinfo" | "channel_frontier"
-    ) || request.consumer_stable_id.is_empty()
-    {
-        return Err(RpcError::invalid(
-            "consumer_stable_id and a supported signing purpose are required",
-        ));
-    }
+    validate_signing_usage_identity(&request.consumer_stable_id, &request.purpose)?;
     if !matches!(request.state.as_str(), "active" | "detached") {
         return Err(RpcError::invalid("usage state must be active or detached"));
     }
     if request.signing_key_generation == 0 {
         return Err(RpcError::invalid(
             "signing_key_generation must be greater than zero",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_signing_usage_identity(
+    consumer_stable_id: &str,
+    purpose: &str,
+) -> Result<(), RpcError> {
+    if consumer_stable_id.is_empty()
+        || !matches!(
+            purpose,
+            "registry_publication" | "narinfo" | "channel_frontier"
+        )
+    {
+        return Err(RpcError::invalid(
+            "consumer_stable_id and a supported signing purpose are required",
         ));
     }
     Ok(())
@@ -35100,6 +35137,18 @@ mod cache_upload_tests {
                 .await,
             Err(RpcError::PermissionDenied(_))
         ));
+        assert!(matches!(
+            service
+                .get_signing_key_usage(
+                    Some(&underprivileged_auth),
+                    pb::GetSigningKeyUsageRequest {
+                        consumer_stable_id: registry.stable_id.clone(),
+                        purpose: "registry_publication".into(),
+                    },
+                )
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
 
         let jwt_keys = JwtKeys::from_secret(b"injected-write-flow-test-key");
         let user_id = db
@@ -35119,6 +35168,18 @@ mod cache_upload_tests {
             )
             .unwrap();
         let auth = format!("Bearer {token}");
+        assert!(matches!(
+            service
+                .get_signing_key_usage(
+                    Some(&auth),
+                    pb::GetSigningKeyUsageRequest {
+                        consumer_stable_id: registry.stable_id.clone(),
+                        purpose: "registry_publication".into(),
+                    },
+                )
+                .await,
+            Err(RpcError::NotFound(_))
+        ));
         let plan = service
             .plan_set_signing_key_usage(Some(&auth), request.clone())
             .await
@@ -35139,6 +35200,17 @@ mod cache_upload_tests {
             .await
             .unwrap();
         assert_eq!(first, replay);
+        let observed = service
+            .get_signing_key_usage(
+                Some(&auth),
+                pb::GetSigningKeyUsageRequest {
+                    consumer_stable_id: registry.stable_id.clone(),
+                    purpose: "registry_publication".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(observed, first);
         assert!(matches!(
             service
                 .plan_set_signing_key_usage(

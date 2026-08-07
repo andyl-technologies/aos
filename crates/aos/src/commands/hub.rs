@@ -35,7 +35,7 @@ use crate::cli::{
     HubRegistryCmd, HubRegistryMirrorCmd, HubReviewedApplyArgs, HubRouteCmd, HubRouteSpecArgs,
     HubServiceAccountCmd, HubServiceAccountCreateCmd, HubServiceAccountDeleteCmd,
     HubServiceAccountUpdateCmd, HubSigningKeyCmd, HubSigningKeyEnrollCmd, HubSigningKeyRetireCmd,
-    HubSigningKeyRotateCmd, HubSigningKeySetUsageCmd, HubStorageBindingCmd,
+    HubSigningKeyRotateCmd, HubSigningKeyUsageCmd, HubStorageBindingCmd,
     HubStorageBindingCredentialCmd, HubStorageBindingWriteRevisionCmd, HubSurfaceCmd,
     HubTopologyCmd, HubTopologyCutoverCmd, HubWebhookCmd,
 };
@@ -9158,8 +9158,25 @@ async fn signing_key(printer: &Printer, command: &HubSigningKeyCmd) -> Result<()
             }
             HubSigningKeyRetireCmd::Apply(apply) => apply_retire_signing_key(printer, apply).await,
         },
-        HubSigningKeyCmd::SetUsage { command } => match command {
-            HubSigningKeySetUsageCmd::Plan {
+        HubSigningKeyCmd::Usage { command } => match command {
+            HubSigningKeyUsageCmd::Show {
+                access,
+                consumer,
+                purpose,
+            } => {
+                let client = hub_client(&access.hub, access.token.as_deref())?;
+                topology_read::<_, hub_types::SigningKeyUsageResponse>(
+                    printer,
+                    &client,
+                    HubTopologyMethod::GetSigningKeyUsage,
+                    &hub_types::GetSigningKeyUsageRequest {
+                        consumer_stable_id: consumer.clone(),
+                        purpose: signing_purpose(purpose)?.to_string(),
+                    },
+                )
+                .await
+            }
+            HubSigningKeyUsageCmd::Plan {
                 request,
                 consumer,
                 purpose,
@@ -9183,7 +9200,7 @@ async fn signing_key(printer: &Printer, command: &HubSigningKeyCmd) -> Result<()
                     HubTopologyMethod::SetSigningKeyUsage,
                     &hub_types::PlanSigningKeyUsageRequest {
                         consumer_stable_id: consumer.clone(),
-                        purpose: purpose.clone(),
+                        purpose: signing_purpose(purpose)?.to_string(),
                         signing_key_stable_id: signing_key.clone(),
                         signing_key_generation: generation.get(),
                         state: state.clone(),
@@ -9195,8 +9212,17 @@ async fn signing_key(printer: &Printer, command: &HubSigningKeyCmd) -> Result<()
                 )
                 .await
             }
-            HubSigningKeySetUsageCmd::Apply(apply) => apply_signing_key_usage(printer, apply).await,
+            HubSigningKeyUsageCmd::Apply(apply) => apply_signing_key_usage(printer, apply).await,
         },
+    }
+}
+
+fn signing_purpose(value: &str) -> Result<&'static str> {
+    match value {
+        "registry-publication" => Ok("registry_publication"),
+        "nar-info" => Ok("narinfo"),
+        "channel-frontier" => Ok("channel_frontier"),
+        other => anyhow::bail!("unsupported signing purpose '{other}'"),
     }
 }
 
