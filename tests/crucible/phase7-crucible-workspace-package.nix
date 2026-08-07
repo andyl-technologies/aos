@@ -89,11 +89,19 @@
       }
       {
         label = "suite runtime closure co-retains controller/QEMU/plugin/source/kernel/fixtures";
-        needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh]";
+        needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
       }
       {
         label = "suite is the aggregate release root";
         needle = "artifact_role=aggregate-release-root";
+      }
+      {
+        label = "suite exposes packaged SSH";
+        needle = "ln -s " + "$" + "{openssh}/bin/ssh \"$out/bin/ssh\"";
+      }
+      {
+        label = "suite exposes manual live debugger matrix";
+        needle = ''$out/bin/crucible-debugger-live-matrix'';
       }
       {
         label = "suite release root names corresponding source";
@@ -113,7 +121,7 @@
       }
       {
         label = "suite metadata inventories every project component license";
-        needle = "license = [\"Apache-2.0\" \"MIT\" \"GPL-2.0-only\" \"GPL-2.0-or-later\" \"GPL-3.0-or-later\"];";
+        needle = "license = [\"Apache-2.0\" \"MIT\" \"GPL-2.0-only\" \"GPL-2.0-or-later\" \"GPL-3.0-or-later\" \"BSD-2-Clause\"];";
       }
       {
         label = "workspace build info";

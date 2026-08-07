@@ -1,0 +1,601 @@
+# Invoke through the packaged `crucible-debugger-live-matrix` wrapper. This file
+# deliberately has no host-shell shebang; the wrapper supplies the AOS-built bash.
+
+set -euo pipefail
+
+: "${CRUCIBLE_MATRIX_CRUCIBLE:?packaged Crucible path is required}"
+: "${CRUCIBLE_MATRIX_GDB:?packaged GDB path is required}"
+: "${CRUCIBLE_MATRIX_SSH:?packaged SSH path is required}"
+: "${CRUCIBLE_MATRIX_FIXTURE_GENERATOR:?packaged fixture generator is required}"
+: "${CRUCIBLE_MATRIX_BUILD_INFO:?packaged build information is required}"
+: "${CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES:?supported architectures are required}"
+
+case ",$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES," in
+  *,x86_64,aarch64,*) default_architecture=all ;;
+  *,x86_64,*) default_architecture=x86_64 ;;
+  *,aarch64,*) default_architecture=aarch64 ;;
+  *)
+    printf 'packaged debugger matrix has no supported architecture\n' >&2
+    exit 70
+    ;;
+esac
+
+architecture=$default_architecture
+output=
+base_port=${CRUCIBLE_MATRIX_BASE_PORT:-39870}
+stage_timeout_seconds=${CRUCIBLE_MATRIX_STAGE_TIMEOUT_SECONDS:-180}
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --architecture)
+      architecture=${2:?--architecture requires x86_64, aarch64, or all}
+      shift 2
+      ;;
+    --output)
+      output=${2:?--output requires a new directory}
+      shift 2
+      ;;
+    --help)
+      printf '%s\n' \
+        'usage: crucible-debugger-live-matrix [--architecture x86_64|aarch64|all] [--output NEW-DIR]'
+      printf 'packaged architectures: %s\n' "$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES"
+      exit 0
+      ;;
+    *)
+      printf 'unknown option: %s\n' "$1" >&2
+      exit 64
+      ;;
+  esac
+done
+case "$architecture" in
+  x86_64)
+    [[ ",$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES," == *,x86_64,* ]] \
+      || { printf 'x86_64 is not packaged by this suite\n' >&2; exit 64; }
+    selected_architectures=x86_64
+    ;;
+  aarch64)
+    [[ ",$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES," == *,aarch64,* ]] \
+      || { printf 'aarch64 is not packaged by this suite\n' >&2; exit 64; }
+    selected_architectures=aarch64
+    ;;
+  all)
+    [[ "$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES" == x86_64,aarch64 ]] \
+      || { printf 'the complete matrix is not packaged by this suite\n' >&2; exit 64; }
+    selected_architectures='x86_64 aarch64'
+    ;;
+  *)
+    printf 'unsupported architecture: %s\n' "$architecture" >&2
+    exit 64
+    ;;
+esac
+[[ "$base_port" =~ ^[0-9]+$ ]] || { printf 'base port must be numeric\n' >&2; exit 64; }
+[[ "$stage_timeout_seconds" =~ ^[1-9][0-9]*$ ]] \
+  || { printf 'stage timeout must be a positive integer\n' >&2; exit 64; }
+
+if [[ -n "$output" && ! "$output" =~ ^[A-Za-z0-9_./-]+$ ]]; then
+  printf 'output path contains characters unsafe for GDB command files: %s\n' "$output" >&2
+  exit 64
+fi
+if [[ -z "$output" ]]; then
+  temporary_root=${TMPDIR:-/tmp}
+  [[ "$temporary_root" =~ ^[A-Za-z0-9_./-]+$ ]] \
+    || { printf 'TMPDIR contains characters unsafe for GDB command files\n' >&2; exit 64; }
+  output=$(mktemp -d "$temporary_root/crucible-debugger-live-matrix.XXXXXX")
+elif [[ -e "$output" ]]; then
+  printf 'output path already exists: %s\n' "$output" >&2
+  exit 64
+else
+  mkdir -p "$output"
+fi
+[[ "$output" =~ ^[A-Za-z0-9_./-]+$ ]] \
+  || { printf 'final output path is unsafe for GDB command files\n' >&2; exit 64; }
+cp "$CRUCIBLE_MATRIX_BUILD_INFO" "$output/crucible-build-info"
+printf 'crucible debugger live evidence: %s\n' "$output"
+
+daemon_pid=
+run_pid=
+relay_pid=
+gdb_pid=
+channel_pid=
+gdb_probe_writer_pid=
+run_fd_open=false
+gdb_fd_open=false
+channel_fd_open=false
+progress_file="$output/progress.log"
+
+progress() {
+  printf 'stage=%s\n' "$*" | tee -a "$progress_file" >&2
+}
+
+terminate_group() {
+  local process_id=$1
+  local attempts=0
+  [[ -n "$process_id" ]] || return 0
+  if kill -0 "$process_id" 2>/dev/null || kill -0 -- "-$process_id" 2>/dev/null; then
+    kill -TERM -- "-$process_id" 2>/dev/null || kill -TERM "$process_id" 2>/dev/null || true
+  fi
+  while kill -0 "$process_id" 2>/dev/null || kill -0 -- "-$process_id" 2>/dev/null; do
+    attempts=$((attempts + 1))
+    if [[ $attempts -ge 50 ]]; then
+      kill -KILL -- "-$process_id" 2>/dev/null || kill -KILL "$process_id" 2>/dev/null || true
+      break
+    fi
+    sleep 0.1
+  done
+  kill -KILL -- "-$process_id" 2>/dev/null || true
+  wait "$process_id" 2>/dev/null || true
+}
+
+cleanup_processes() {
+  if [[ "$channel_fd_open" == true ]]; then exec 4>&- || true; channel_fd_open=false; fi
+  if [[ "$gdb_fd_open" == true ]]; then exec 5>&- || true; gdb_fd_open=false; fi
+  if [[ "$run_fd_open" == true ]]; then exec 3>&- || true; run_fd_open=false; fi
+  if [[ -n "$gdb_probe_writer_pid" ]]; then
+    kill -TERM "$gdb_probe_writer_pid" 2>/dev/null || true
+    wait "$gdb_probe_writer_pid" 2>/dev/null || true
+    gdb_probe_writer_pid=
+  fi
+  terminate_group "$channel_pid"
+  terminate_group "$gdb_pid"
+  terminate_group "$relay_pid"
+  terminate_group "$run_pid"
+  terminate_group "$daemon_pid"
+}
+trap cleanup_processes EXIT
+
+fail() {
+  printf 'live debugger matrix failed: %s\n' "$*" >&2
+  exit 1
+}
+
+wait_for_pattern() {
+  local file=$1
+  local pattern=$2
+  local process_id=$3
+  local attempts=0
+  local maximum_attempts=$((stage_timeout_seconds * 10))
+  until grep -Fq "$pattern" "$file" 2>/dev/null; do
+    if ! kill -0 "$process_id" 2>/dev/null; then
+      fail "process $process_id exited before '$pattern' appeared in $file"
+    fi
+    attempts=$((attempts + 1))
+    [[ $attempts -le $maximum_attempts ]] \
+      || fail "timed out after ${stage_timeout_seconds}s waiting for '$pattern' in $file"
+    sleep 0.1
+  done
+}
+
+wait_for_count() {
+  local file=$1
+  local pattern=$2
+  local expected=$3
+  local process_id=$4
+  local attempts=0
+  local maximum_attempts=$((stage_timeout_seconds * 10))
+  while [[ $(grep -Fc "$pattern" "$file" 2>/dev/null || true) -lt $expected ]]; do
+    if ! kill -0 "$process_id" 2>/dev/null; then
+      fail "process $process_id exited before $expected '$pattern' records appeared in $file"
+    fi
+    attempts=$((attempts + 1))
+    [[ $attempts -le $maximum_attempts ]] \
+      || fail "timed out after ${stage_timeout_seconds}s waiting for $expected '$pattern' records"
+    sleep 0.1
+  done
+}
+
+wait_for_exit() {
+  local process_id=$1
+  local attempts=0
+  local maximum_attempts=$((stage_timeout_seconds * 10))
+  while kill -0 "$process_id" 2>/dev/null; do
+    attempts=$((attempts + 1))
+    [[ $attempts -le $maximum_attempts ]] \
+      || fail "process $process_id did not exit within ${stage_timeout_seconds}s"
+    sleep 0.1
+  done
+  wait "$process_id"
+}
+
+field_value() {
+  local file=$1
+  local field=$2
+  sed -n "s/^${field}=//p" "$file" | tail -n 1
+}
+
+landed_tuple() {
+  local file=$1
+  grep '^landed-' "$file"
+}
+
+require_landed_evidence() {
+  local file=$1
+  local label=$2
+  local field
+  for field in configuration runtime-state virtual-time schedule-prefix event-log-prefix \
+    event-log-bytes event-log-events node-icount.debuggee; do
+    [[ -n "$(field_value "$file" "landed-$field")" ]] \
+      || fail "$label omitted landed-$field"
+  done
+  [[ "$(field_value "$file" retired-world-cleanup)" == reaped ]] \
+    || fail "$label did not prove retired-world cleanup"
+}
+
+debug_command() {
+  local endpoint=$1
+  local session=$2
+  shift 2
+  timeout -k 5s "$stage_timeout_seconds" "$CRUCIBLE_MATRIX_CRUCIBLE" \
+    --daemon "$endpoint" \
+    --trusted-unauthenticated-daemon \
+    debug --session "$session" --node debuggee "$@"
+}
+
+gdb_window_is_clean() {
+  local file=$1
+  local label=$2
+  if grep -Eiq \
+    'Remote replied unexpectedly|Remote connection closed|Ignoring packet error|Timed out|protocol error|Remote communication error|received: "E[0-9a-f]+"|received: ""|not supported' \
+    "$file"; then
+    fail "$label observed a GDB/RSP transport error"
+  fi
+}
+
+start_gdb_replacement_probe() {
+  local label=$1
+  local begin="CRUCIBLE_REPLACE_${label}_BEGIN"
+  local end="CRUCIBLE_REPLACE_${label}_END"
+  printf 'echo %s\\n\n' "$begin" >&5
+  wait_for_pattern "$gdb_output" "$begin" "$gdb_pid"
+  {
+    local request
+    for ((request = 0; request < 512; request++)); do
+      printf 'maintenance packet g\n'
+    done
+    printf 'echo %s\\n\n' "$end"
+  } >&5 &
+  gdb_probe_writer_pid=$!
+}
+
+finish_gdb_replacement_probe() {
+  local label=$1
+  local begin="CRUCIBLE_REPLACE_${label}_BEGIN"
+  local end="CRUCIBLE_REPLACE_${label}_END"
+  wait "$gdb_probe_writer_pid" || fail "$label GDB probe writer failed"
+  gdb_probe_writer_pid=
+  wait_for_pattern "$gdb_output" "$end" "$gdb_pid"
+  sed -n "/$begin/,/$end/p" "$gdb_output" >"$gdb_output.$label"
+  gdb_window_is_clean "$gdb_output.$label" "$label replacement"
+  [[ $(grep -Ec 'received: "[0-9a-fA-F]{128,}"' "$gdb_output.$label") -ge 128 ]] \
+    || fail "$label replacement barrier did not return sustained valid register payloads"
+}
+
+start_relay() {
+  local endpoint=$1
+  local session=$2
+  local port=$3
+  local prefix=$4
+  setsid "$CRUCIBLE_MATRIX_CRUCIBLE" \
+    --daemon "$endpoint" \
+    --trusted-unauthenticated-daemon \
+    debug --session "$session" --node debuggee \
+    --gdb-listen "127.0.0.1:$port" attach-gdb \
+    >"$prefix.relay.out" 2>"$prefix.relay.err" &
+  relay_pid=$!
+  wait_for_pattern "$prefix.relay.out" "remote GDB relay listening at 127.0.0.1:$port" "$relay_pid"
+}
+
+start_gdb() {
+  local port=$1
+  local prefix=$2
+  local fifo="$prefix.gdb.in"
+  mkfifo "$fifo"
+  setsid "$CRUCIBLE_MATRIX_GDB" --nx --quiet \
+    <"$fifo" >"$prefix.gdb.out" 2>"$prefix.gdb.err" &
+  gdb_pid=$!
+  exec 5>"$fifo"
+  gdb_fd_open=true
+  printf 'set pagination off\nset confirm off\ntarget remote 127.0.0.1:%s\n' "$port" >&5
+  printf 'maintenance packet qSupported\necho CRUCIBLE_GDB_CONNECTED\\n\n' >&5
+  wait_for_pattern "$prefix.gdb.out" CRUCIBLE_GDB_CONNECTED "$gdb_pid"
+  grep -Fq 'received: "PacketSize=' "$prefix.gdb.out" \
+    || fail "GDB did not negotiate RSP"
+}
+
+gdb_snapshot() {
+  local snapshot_file=$1
+  local registers=$2
+  local marker=$3
+  printf 'set logging file %s\n' "$snapshot_file" >&5
+  printf 'set logging overwrite on\nset logging redirect on\nset logging enabled on\n' >&5
+  printf 'info threads\ninfo registers %s\ninfo breakpoints\n' "$registers" >&5
+  printf 'set logging enabled off\necho %s\\n\n' "$marker" >&5
+  wait_for_pattern "$gdb_output" "$marker" "$gdb_pid"
+  grep -Eq '^\*?[[:space:]]*[0-9]+[[:space:]]' "$snapshot_file" \
+    || fail "GDB snapshot omitted thread state"
+}
+
+stop_gdb() {
+  printf 'disconnect\nquit\n' >&5
+  exec 5>&-
+  gdb_fd_open=false
+  wait_for_exit "$gdb_pid" || fail "GDB exited unsuccessfully"
+  gdb_pid=
+  wait_for_exit "$relay_pid" || fail "GDB relay exited unsuccessfully"
+  relay_pid=
+}
+
+run_scheduler_control() {
+  local output_file=$1
+  printf 'echo CRUCIBLE_CONTINUE_BEGIN\\n\ncontinue\necho CRUCIBLE_CONTINUE_END\\n\n' >&5
+  wait_for_pattern "$output_file" CRUCIBLE_CONTINUE_END "$gdb_pid"
+  sed -n '/CRUCIBLE_CONTINUE_BEGIN/,/CRUCIBLE_CONTINUE_END/p' "$output_file" \
+    >"$output_file.continue"
+  gdb_window_is_clean "$output_file.continue" "GDB continue"
+  grep -Eq 'Breakpoint 1,' \
+    "$output_file.continue" || fail "GDB continue produced no correlated stop"
+
+  printf 'echo CRUCIBLE_STEPI_BEGIN\\n\nstepi\necho CRUCIBLE_STEPI_END\\n\n' >&5
+  wait_for_pattern "$output_file" CRUCIBLE_STEPI_END "$gdb_pid"
+  sed -n '/CRUCIBLE_STEPI_BEGIN/,/CRUCIBLE_STEPI_END/p' "$output_file" \
+    >"$output_file.stepi"
+  gdb_window_is_clean "$output_file.stepi" "GDB stepi"
+  grep -Eq '0x[0-9a-f]+|Program received signal' "$output_file.stepi" \
+    || fail "GDB stepi produced no correlated stop"
+
+  printf 'maintenance packet vCont?\necho CRUCIBLE_VCONT_QUERY_END\\n\n' >&5
+  wait_for_pattern "$output_file" CRUCIBLE_VCONT_QUERY_END "$gdb_pid"
+  grep -Fq 'received: "vCont' "$output_file" || fail "vCont capability was not reported"
+
+  printf 'echo CRUCIBLE_VCONT_STEP_BEGIN\\n\nmaintenance packet vCont;s\necho CRUCIBLE_VCONT_STEP_END\\n\n' >&5
+  wait_for_pattern "$output_file" CRUCIBLE_VCONT_STEP_END "$gdb_pid"
+  sed -n '/CRUCIBLE_VCONT_STEP_BEGIN/,/CRUCIBLE_VCONT_STEP_END/p' "$output_file" \
+    >"$output_file.vcont-step"
+  gdb_window_is_clean "$output_file.vcont-step" "GDB vCont;s"
+  grep -Eq 'received: "T0?5|received: "S0?5' "$output_file.vcont-step" \
+    || fail "vCont;s produced no correlated scheduler stop"
+}
+
+run_architecture() {
+  local guest_architecture=$1
+  local expected_uname=$2
+  local port_offset=$3
+  local directory="$output/$guest_architecture"
+  local daemon_port=$((base_port + port_offset))
+  local relay_port=$((daemon_port + 1))
+  local endpoint="http://127.0.0.1:$daemon_port"
+  local registers='pc sp x29 x0'
+  local kernel root_image
+  if [[ "$guest_architecture" == x86_64 ]]; then
+    registers='rip rsp rbp rax'
+    kernel=${CRUCIBLE_MATRIX_KERNEL_X86_64:?x86_64 kernel is not packaged}
+    root_image=${CRUCIBLE_MATRIX_ROOT_IMAGE_X86_64:?x86_64 root image is not packaged}
+  else
+    kernel=${CRUCIBLE_MATRIX_KERNEL_AARCH64:?AArch64 kernel is not packaged}
+    root_image=${CRUCIBLE_MATRIX_ROOT_IMAGE_AARCH64:?AArch64 root image is not packaged}
+  fi
+  mkdir -p "$directory"
+  local fixture="$directory/scenario.toml"
+  progress "$guest_architecture:generate-fixture"
+  timeout -k 5s "$stage_timeout_seconds" "$CRUCIBLE_MATRIX_FIXTURE_GENERATOR" \
+    "$guest_architecture" "$kernel" "$root_image" "$fixture"
+  grep '^kernel = "blake3:' "$fixture" >"$directory/asset-identities"
+  grep '^root_image = "blake3:' "$fixture" >>"$directory/asset-identities"
+
+  progress "$guest_architecture:start-daemon"
+  setsid "$CRUCIBLE_MATRIX_CRUCIBLE" serve \
+    --listen "127.0.0.1:$daemon_port" \
+    --trusted-unauthenticated-bind \
+    --production-qemu \
+    >"$directory/daemon.out" 2>"$directory/daemon.err" &
+  daemon_pid=$!
+  wait_for_pattern "$directory/daemon.out" "serving API daemon at $endpoint" "$daemon_pid"
+
+  local fifo="$directory/run.in"
+  mkfifo "$fifo"
+  setsid "$CRUCIBLE_MATRIX_CRUCIBLE" \
+    --daemon "$endpoint" \
+    --trusted-unauthenticated-daemon \
+    --backend qemu \
+    --format table \
+    run "$fixture" --interactive --max-quanta 256 \
+    <"$fifo" >"$directory/run.out" 2>"$directory/run.err" &
+  run_pid=$!
+  exec 3>"$fifo"
+  run_fd_open=true
+  wait_for_pattern "$directory/run.err" "crucible: live-session" "$run_pid"
+  local session
+  session=$(sed -n 's/.*ref=//p' "$directory/run.err" | head -n 1)
+  [[ -n "$session" ]] || fail "live session reference was not reported"
+
+  progress "$guest_architecture:build-live-history"
+  printf 'query\nstep\nstep\nstep\nquery\n' >&3
+  wait_for_count "$directory/run.out" interactive-ack 5 "$run_pid"
+
+  debug_command "$endpoint" "$session" --read-only reverse-step event \
+    >"$directory/reverse-baseline.out" 2>"$directory/reverse-baseline.err"
+  require_landed_evidence "$directory/reverse-baseline.out" "baseline reverse"
+  local baseline_events baseline_time baseline_generation
+  baseline_events=$(field_value "$directory/reverse-baseline.out" landed-event-log-events)
+  baseline_time=$(field_value "$directory/reverse-baseline.out" landed-virtual-time)
+  baseline_generation=$(field_value "$directory/reverse-baseline.out" gateway-generation)
+  [[ "$baseline_events" =~ ^[1-9][0-9]*$ ]] \
+    || fail "baseline reverse history was empty"
+
+  progress "$guest_architecture:attach-stable-gdb"
+  start_relay "$endpoint" "$session" "$relay_port" "$directory/stable"
+  gdb_output="$directory/stable.gdb.out"
+  start_gdb "$relay_port" "$directory/stable"
+  # `$pc` is evaluated by GDB, not this shell.
+  # shellcheck disable=SC2016
+  printf 'hbreak *$pc\necho CRUCIBLE_BREAKPOINT_INSTALLED\\n\n' >&5
+  wait_for_pattern "$gdb_output" CRUCIBLE_BREAKPOINT_INSTALLED "$gdb_pid"
+  grep -Fq 'Hardware assisted breakpoint 1' "$gdb_output" \
+    || fail "architecture-correct hardware breakpoint was not installed"
+
+  gdb_snapshot "$directory/read-only-before.gdb" "$registers" CRUCIBLE_READ_ONLY_BEFORE
+  gdb_snapshot "$directory/read-only-after.gdb" "$registers" CRUCIBLE_READ_ONLY_AFTER
+  cmp "$directory/read-only-before.gdb" "$directory/read-only-after.gdb" \
+    || fail "read-only GDB inspection changed thread, register, or breakpoint state"
+
+  progress "$guest_architecture:reverse-with-live-gdb"
+  start_gdb_replacement_probe REVERSE
+  debug_command "$endpoint" "$session" --read-only reverse-step event \
+    >"$directory/reverse-earlier.out" 2>"$directory/reverse-earlier.err"
+  finish_gdb_replacement_probe REVERSE
+  require_landed_evidence "$directory/reverse-earlier.out" "earlier reverse"
+  local earlier_events earlier_time earlier_generation
+  earlier_events=$(field_value "$directory/reverse-earlier.out" landed-event-log-events)
+  earlier_time=$(field_value "$directory/reverse-earlier.out" landed-virtual-time)
+  earlier_generation=$(field_value "$directory/reverse-earlier.out" gateway-generation)
+  [[ "$earlier_events" =~ ^[0-9]+$ ]] || fail "earlier reverse event prefix was invalid"
+  ((earlier_events < baseline_events)) || fail "reverse event prefix did not decrease"
+  ((earlier_generation > baseline_generation)) || fail "reverse gateway generation did not advance"
+  kill -0 "$gdb_pid" 2>/dev/null || fail "GDB connection did not survive reverse replacement"
+  gdb_snapshot "$directory/reverse-earlier.gdb" "$registers" CRUCIBLE_REVERSE_EARLIER
+
+  start_gdb_replacement_probe GOTO_EARLIER
+  debug_command "$endpoint" "$session" --read-only goto "vtime:$earlier_time" \
+    >"$directory/goto-earlier.out" 2>"$directory/goto-earlier.err"
+  finish_gdb_replacement_probe GOTO_EARLIER
+  require_landed_evidence "$directory/goto-earlier.out" "repeated earlier goto"
+  landed_tuple "$directory/reverse-earlier.out" >"$directory/reverse-earlier.tuple"
+  landed_tuple "$directory/goto-earlier.out" >"$directory/goto-earlier.tuple"
+  cmp "$directory/reverse-earlier.tuple" "$directory/goto-earlier.tuple" \
+    || fail "repeated coordinate did not reproduce the complete landed tuple"
+  local repeated_generation
+  repeated_generation=$(field_value "$directory/goto-earlier.out" gateway-generation)
+  ((repeated_generation > earlier_generation)) \
+    || fail "repeated goto gateway generation did not advance"
+  gdb_snapshot "$directory/goto-earlier.gdb" "$registers" CRUCIBLE_GOTO_EARLIER
+  cmp "$directory/reverse-earlier.gdb" "$directory/goto-earlier.gdb" \
+    || fail "repeated coordinate changed GDB thread/register/breakpoint state"
+
+  start_gdb_replacement_probe GOTO_BASELINE
+  debug_command "$endpoint" "$session" --read-only goto "vtime:$baseline_time" \
+    >"$directory/goto-baseline.out" 2>"$directory/goto-baseline.err"
+  finish_gdb_replacement_probe GOTO_BASELINE
+  require_landed_evidence "$directory/goto-baseline.out" "baseline goto"
+  landed_tuple "$directory/reverse-baseline.out" >"$directory/reverse-baseline.tuple"
+  landed_tuple "$directory/goto-baseline.out" >"$directory/goto-baseline.tuple"
+  cmp "$directory/reverse-baseline.tuple" "$directory/goto-baseline.tuple" \
+    || fail "forward replay did not reproduce the baseline landed tuple"
+  gdb_snapshot "$directory/goto-baseline.gdb" "$registers" CRUCIBLE_GOTO_BASELINE
+
+  progress "$guest_architecture:fork-and-run-control"
+  start_gdb_replacement_probe FORK
+  debug_command "$endpoint" "$session" --allow-mutate fork-debug \
+    >"$directory/fork-debug.out" 2>"$directory/fork-debug.err"
+  finish_gdb_replacement_probe FORK
+  grep -Fq 'argv-exec=true pty=true resize=true ssh-bridge=true' "$directory/fork-debug.out" \
+    || fail "fork-time guest feature negotiation was incomplete"
+  kill -0 "$gdb_pid" 2>/dev/null || fail "GDB connection did not survive fork replacement"
+  gdb_snapshot "$directory/post-fork.gdb" "$registers" CRUCIBLE_POST_FORK
+  grep -Eq '^1[[:space:]]+breakpoint[[:space:]]+keep[[:space:]]+y' "$directory/post-fork.gdb" \
+    || fail "hardware breakpoint state was not retained across replacement"
+  run_scheduler_control "$gdb_output"
+  printf 'delete 1\ninfo breakpoints\necho CRUCIBLE_BREAKPOINT_REMOVED\\n\n' >&5
+  wait_for_pattern "$gdb_output" CRUCIBLE_BREAKPOINT_REMOVED "$gdb_pid"
+  tail -n 20 "$gdb_output" | grep -Fq 'No breakpoints or watchpoints.' \
+    || fail "hardware breakpoint removal was not acknowledged"
+
+  progress "$guest_architecture:guest-exec-pty-ssh"
+  debug_command "$endpoint" "$session" --allow-mutate \
+    --record-transcript "$directory/exec.crgt" --guest-idle-timeout 120s \
+    exec -- /bin/uname -m >"$directory/exec.out" 2>"$directory/exec.err"
+  grep -Fxq "$expected_uname" "$directory/exec.out" \
+    || fail "guest exec reported the wrong architecture"
+
+  printf '' | debug_command "$endpoint" "$session" --allow-mutate \
+    --record-transcript "$directory/pty.crgt" --guest-idle-timeout 120s \
+    pty --columns 100 --rows 30 -- /bin/sh -c '/bin/echo CRUCIBLE_PTY_OK' \
+    >"$directory/pty.out" 2>"$directory/pty.err"
+  grep -Fq CRUCIBLE_PTY_OK "$directory/pty.out" || fail "guest PTY output was not preserved"
+
+  local proxy_command
+  proxy_command="$CRUCIBLE_MATRIX_CRUCIBLE --daemon $endpoint --trusted-unauthenticated-daemon debug --session $session --node debuggee --allow-mutate --record-transcript $directory/ssh.crgt --guest-idle-timeout 120s ssh"
+  timeout -k 5s "$stage_timeout_seconds" "$CRUCIBLE_MATRIX_SSH" -F /dev/null \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o "ProxyCommand=$proxy_command" \
+    root@crucible-guest /bin/uname -m \
+    >"$directory/ssh.out" 2>"$directory/ssh.err"
+  grep -Fxq "$expected_uname" "$directory/ssh.out" \
+    || fail "guest SSH bridge reported the wrong architecture"
+  [[ $(wc -c <"$directory/ssh.crgt") -gt 8 ]] \
+    || fail "guest SSH transcript omitted protocol records"
+
+  progress "$guest_architecture:reposition-stream-closure"
+  local channel_fifo="$directory/channel.in"
+  mkfifo "$channel_fifo"
+  setsid "$CRUCIBLE_MATRIX_CRUCIBLE" \
+    --daemon "$endpoint" \
+    --trusted-unauthenticated-daemon \
+    debug --session "$session" --node debuggee --allow-mutate \
+    --record-transcript "$directory/reposition-close.crgt" --guest-idle-timeout 180s \
+    pty -- /bin/sh -c '/bin/echo CRUCIBLE_CHANNEL_READY; while :; do :; done' \
+    <"$channel_fifo" >"$directory/reposition-close.out" 2>"$directory/reposition-close.err" &
+  channel_pid=$!
+  exec 4>"$channel_fifo"
+  channel_fd_open=true
+  wait_for_pattern "$directory/reposition-close.out" CRUCIBLE_CHANNEL_READY "$channel_pid"
+  debug_command "$endpoint" "$session" --allow-mutate goto "vtime:$baseline_time" \
+    >"$directory/reposition-stream.out" 2>"$directory/reposition-stream.err"
+  exec 4>&-
+  channel_fd_open=false
+  if wait_for_exit "$channel_pid"; then
+    fail "repositioned guest PTY unexpectedly reported success"
+  fi
+  channel_pid=
+  grep -Eiq 'closed.*reposition|reposition.*closed' \
+    "$directory/reposition-close.err" "$directory/reposition-close.out" \
+    || fail "guest PTY did not report typed reposition closure"
+
+  stop_gdb
+  printf 'stop\n' >&3
+  exec 3>&-
+  run_fd_open=false
+  wait_for_exit "$run_pid" || fail "interactive run exited unsuccessfully"
+  run_pid=
+  terminate_group "$daemon_pid"
+  daemon_pid=
+
+  cat >"$directory/result" <<RESULT
+PASS
+architecture=$guest_architecture
+reverse_baseline_event_prefix=$baseline_events
+reverse_earlier_event_prefix=$earlier_events
+landed_virtual_time=$earlier_time
+gateway_generation_baseline=$baseline_generation
+gateway_generation_reverse=$earlier_generation
+gateway_generation_repeat=$repeated_generation
+read_only_neutrality=true
+complete_landed_tuple_repeat=true
+stable_gdb_across_replacement=true
+hardware_breakpoint_retained=true
+scheduler_run_control=true
+guest_exec=true
+guest_pty=true
+guest_ssh=true
+stream_reposition_close=true
+RESULT
+  printf 'PASS %s\n' "$guest_architecture"
+}
+
+for selected in $selected_architectures; do
+  case "$selected" in
+    x86_64) run_architecture x86_64 x86_64 0 ;;
+    aarch64) run_architecture aarch64 aarch64 10 ;;
+  esac
+done
+
+{
+  printf '%s\n' PASS
+  printf 'architectures=%s\n' "${selected_architectures// /,}"
+  printf 'supported_architectures=%s\n' "$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES"
+  printf 'build_info=crucible-build-info\n'
+  for selected in $selected_architectures; do
+    printf 'evidence.%s=%s/result\n' "$selected" "$selected"
+    sed "s/^/asset.$selected./" "$output/$selected/asset-identities"
+  done
+} >"$output/result"
+progress complete

@@ -330,6 +330,20 @@ pub(super) fn live_qemu_native_guest_architecture() -> Result<crucible::VmArchit
     }
 }
 
+/// Resolves opt-in verification that declared boot references match selected files.
+pub(super) fn live_qemu_validate_guest_asset_references() -> Result<bool, CliError> {
+    match std::env::var("CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES").as_deref() {
+        Ok("1" | "true") => Ok(true),
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Ok(value) => Err(backend_error(format!(
+            "CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES has unsupported value `{value}`"
+        ))),
+        Err(std::env::VarError::NotUnicode(_)) => Err(backend_error(
+            "CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES is not valid UTF-8",
+        )),
+    }
+}
+
 /// Resolves the packaged AArch64 guest artifact triplet when it is available.
 ///
 /// # Errors

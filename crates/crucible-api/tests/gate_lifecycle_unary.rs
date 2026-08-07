@@ -11,7 +11,7 @@ use crucible::{
 };
 use crucible_api::{
     ControlClient, CreateSessionRequest, CreateSessionSource, DebugAuthorizationPolicy,
-    DestroySessionRequest, HelloRequest, InProcessLifecycleClient,
+    DebugControllerAcquisition, DestroySessionRequest, HelloRequest, InProcessLifecycleClient,
     LIFECYCLE_SESSION_MAILBOX_CAPACITY, LifecycleApiError, LifecycleControlPlane,
     LifecycleLoopFactory, LifecycleServerMode, ListScenariosResponse, QuiescentLifecycleLoop,
     RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ResumeSessionRequest, RpcControlClient,

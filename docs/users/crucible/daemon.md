@@ -105,8 +105,10 @@ The control client has concrete remote workflows for:
 - `debug --session ... --node ... attach-gdb`, using an authenticated local
   loopback GDB relay; and
 - the authenticated `fork-debug`, guest `exec`, PTY, and SSH-compatible RPC
-  plumbing. The shipped production VM lifecycle does not yet activate the
-  guest agent at fork time, so the guest-channel verbs remain preview-only.
+  workflow. After the explicit non-canonical fork commits, the production VM
+  lifecycle sends the fixed QMP hotplug event and the packaged fixture starts
+  its bounded guest agent. The CLI reports the negotiated exec, PTY, resize,
+  SSH, and channel-limit features before accepting guest commands.
 
 Current restrictions include:
 
@@ -117,8 +119,8 @@ Current restrictions include:
   another daemon; and
 - the default daemon backend is quiescent; use `serve --production-qemu` for
   live guests; and
-- a production debug session currently prepares the first VM node's private
-  gdbstub, so `--node` must name that node.
+- `--node` must name a VM node configured with the matching packaged
+  architecture-specific kernel, root image, machine, CPU, and console profile.
 
 ## Security boundary
 
@@ -127,13 +129,14 @@ leases are a separate authorization layer: possessing a valid client
 certificate does not itself grant `observe`, `control`, `mutate`, `shell`, or
 `admin`. The server derives the principal from the transport, never from a
 request field. Controller leases are session-owned and generation-checked on
-every relay operation. Relay opens can connect only to the loopback endpoint
-reported by the session actor, and chunks are bounded to 64 KiB.
+every relay operation. RPC ABI v5 gives each command or long-lived relay an
+idempotent holder; only the final holder releases the exclusive principal's
+lease. Relay opens can connect only to the loopback endpoint reported by the
+session actor, and chunks are bounded to 64 KiB.
 
 ## Intended evolution
 
-Unix-socket peer authentication, fork-time guest-agent activation, bounded
-missing-agent failure, and live exec/PTY/SSH conformance remain planned. The
-current production-ready remote debugger surface is the authenticated HTTP/2
-GDB relay; the guest-channel protocol and RPC path are implemented but not yet
-complete as an operator workflow.
+Unix-socket peer authentication and captured live x86_64/AArch64 conformance
+remain planned. Fork-time activation, bounded missing-agent failure, and the
+operator exec/PTY/SSH workflow are implemented; use the packaged manual matrix
+from [Debugger workflows](debugging.md) to retain evidence outside Nix checks.

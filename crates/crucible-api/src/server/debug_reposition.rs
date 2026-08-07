@@ -22,7 +22,7 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
-    let (session, generation, coordinate) = match parse_debug_goto_request(&body) {
+    let (session, generation, holder, coordinate) = match parse_debug_goto_request(&body) {
         Ok(parsed) => parsed,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
@@ -32,6 +32,7 @@ where
         identity.as_ref(),
         session,
         generation,
+        holder,
     )
     .await
     {
@@ -62,7 +63,7 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
-    let (session, generation, grain) = match parse_debug_reverse_step_request(&body) {
+    let (session, generation, holder, grain) = match parse_debug_reverse_step_request(&body) {
         Ok(parsed) => parsed,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
@@ -72,6 +73,7 @@ where
         identity.as_ref(),
         session,
         generation,
+        holder,
     )
     .await
     {
@@ -104,7 +106,8 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
-    let (session, generation, condition) = match parse_debug_reverse_continue_request(&body) {
+    let (session, generation, holder, condition) = match parse_debug_reverse_continue_request(&body)
+    {
         Ok(parsed) => parsed,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
@@ -114,6 +117,7 @@ where
         identity.as_ref(),
         session,
         generation,
+        holder,
     )
     .await
     {
@@ -160,6 +164,7 @@ async fn authorized_reposition_dispatch<L, F>(
     identity: Option<&Extension<DebugTransportIdentity>>,
     session: SessionRef,
     generation: u64,
+    holder: DebugControllerHolderId,
 ) -> Result<crate::DebugRepositionDispatch, Response>
 where
     L: QuantumLoop + Send + 'static,
@@ -171,6 +176,7 @@ where
     let (client, role) =
         debug_principal(&state.debug_authorization, identity).map_err(|response| *response)?;
     let lease = DebugControllerLease { client, generation };
+    authorize_debug_holder(state, session, &lease, holder).await?;
     let control_plane = state.control_plane.lock().await;
     for capability in [DebugCapability::Control, DebugCapability::Observe] {
         control_plane
@@ -184,27 +190,45 @@ where
 
 fn parse_debug_goto_request(
     body: &[u8],
-) -> Result<(SessionRef, u64, crucible::DebugCoordinate), String> {
+) -> Result<
+    (
+        SessionRef,
+        u64,
+        DebugControllerHolderId,
+        crucible::DebugCoordinate,
+    ),
+    String,
+> {
     let text =
         std::str::from_utf8(body).map_err(|error| format!("request is not UTF-8: {error}"))?;
     let mut lines = text.lines();
     expect_wire_header(lines.next(), "crucible.rpc/debug-goto-request")?;
     let session = parse_session_ref(&mut lines)?;
     let generation = parse_u64_line(lines.next(), "generation=")?;
+    let holder = parse_debug_holder(lines.next())?;
     let coordinate = parse_debug_coordinate(parse_wire_line(lines.next(), "coordinate=")?)?;
     reject_extra_line(lines.next())?;
-    Ok((session, generation, coordinate))
+    Ok((session, generation, holder, coordinate))
 }
 
 fn parse_debug_reverse_step_request(
     body: &[u8],
-) -> Result<(SessionRef, u64, crucible::DebugReverseStepGrain), String> {
+) -> Result<
+    (
+        SessionRef,
+        u64,
+        DebugControllerHolderId,
+        crucible::DebugReverseStepGrain,
+    ),
+    String,
+> {
     let text =
         std::str::from_utf8(body).map_err(|error| format!("request is not UTF-8: {error}"))?;
     let mut lines = text.lines();
     expect_wire_header(lines.next(), "crucible.rpc/debug-reverse-step-request")?;
     let session = parse_session_ref(&mut lines)?;
     let generation = parse_u64_line(lines.next(), "generation=")?;
+    let holder = parse_debug_holder(lines.next())?;
     let grain = match parse_wire_line(lines.next(), "grain=")? {
         "instruction" => crucible::DebugReverseStepGrain::Instruction,
         "quantum" => crucible::DebugReverseStepGrain::Quantum,
@@ -214,23 +238,32 @@ fn parse_debug_reverse_step_request(
         value => return Err(format!("invalid reverse-step grain `{value}`")),
     };
     reject_extra_line(lines.next())?;
-    Ok((session, generation, grain))
+    Ok((session, generation, holder, grain))
 }
 
 fn parse_debug_reverse_continue_request(
     body: &[u8],
-) -> Result<(SessionRef, u64, crucible::Condition), String> {
+) -> Result<
+    (
+        SessionRef,
+        u64,
+        DebugControllerHolderId,
+        crucible::Condition,
+    ),
+    String,
+> {
     let text =
         std::str::from_utf8(body).map_err(|error| format!("request is not UTF-8: {error}"))?;
     let mut lines = text.lines();
     expect_wire_header(lines.next(), "crucible.rpc/debug-reverse-continue-request")?;
     let session = parse_session_ref(&mut lines)?;
     let generation = parse_u64_line(lines.next(), "generation=")?;
+    let holder = parse_debug_holder(lines.next())?;
     let encoded = parse_wire_line(lines.next(), "condition=")?;
     let condition = crucible::Predicate::from_compact_binary(&parse_hex_bytes(encoded)?)
         .map_err(|error| format!("invalid reverse-continue condition: {error}"))?;
     reject_extra_line(lines.next())?;
-    Ok((session, generation, condition))
+    Ok((session, generation, holder, condition))
 }
 
 fn parse_debug_coordinate(value: &str) -> Result<crucible::DebugCoordinate, String> {
@@ -389,13 +422,14 @@ mod tests {
     use super::*;
 
     const TEST_SEED: &str = "000000000000000000000000000000000000000000000000000000000000004d";
+    const TEST_HOLDER: &str = "00000000-0000-0000-0000-000000000009";
 
     #[test]
     fn goto_parser_accepts_actor_owned_coordinate_intents() {
         let virtual_time = format!(
-            "crucible.rpc/debug-goto-request\nsession-id=7\nepoch=3\nseed={TEST_SEED}\ngeneration=9\ncoordinate=virtual-time:42\n"
+            "crucible.rpc/debug-goto-request\nsession-id=7\nepoch=3\nseed={TEST_SEED}\ngeneration=9\nholder={TEST_HOLDER}\ncoordinate=virtual-time:42\n"
         );
-        let (_, generation, coordinate) =
+        let (_, generation, _, coordinate) =
             parse_debug_goto_request(virtual_time.as_bytes()).expect("virtual time must parse");
         assert_eq!(generation, 9);
         assert_eq!(
@@ -405,9 +439,9 @@ mod tests {
 
         let node = hex_encode(b"node-a");
         let node_icount = format!(
-            "crucible.rpc/debug-goto-request\nsession-id=7\nepoch=3\nseed={TEST_SEED}\ngeneration=9\ncoordinate=node-icount:{node}:81\n"
+            "crucible.rpc/debug-goto-request\nsession-id=7\nepoch=3\nseed={TEST_SEED}\ngeneration=9\nholder={TEST_HOLDER}\ncoordinate=node-icount:{node}:81\n"
         );
-        let (_, _, coordinate) =
+        let (_, _, _, coordinate) =
             parse_debug_goto_request(node_icount.as_bytes()).expect("node icount must parse");
         assert_eq!(
             coordinate,
@@ -423,18 +457,18 @@ mod tests {
     #[test]
     fn reverse_parsers_preserve_closed_grain_and_condition_sets() {
         let step = format!(
-            "crucible.rpc/debug-reverse-step-request\nsession-id=7\nepoch=3\nseed={TEST_SEED}\ngeneration=9\ngrain=assertion\n"
+            "crucible.rpc/debug-reverse-step-request\nsession-id=7\nepoch=3\nseed={TEST_SEED}\ngeneration=9\nholder={TEST_HOLDER}\ngrain=assertion\n"
         );
-        let (_, _, grain) =
+        let (_, _, _, grain) =
             parse_debug_reverse_step_request(step.as_bytes()).expect("grain must parse");
         assert_eq!(grain, crucible::DebugReverseStepGrain::Assertion);
 
         let predicate = crucible::Predicate::quiescent();
         let condition = hex_encode(&predicate.to_compact_binary());
         let request = format!(
-            "crucible.rpc/debug-reverse-continue-request\nsession-id=7\nepoch=3\nseed={TEST_SEED}\ngeneration=9\ncondition={condition}\n"
+            "crucible.rpc/debug-reverse-continue-request\nsession-id=7\nepoch=3\nseed={TEST_SEED}\ngeneration=9\nholder={TEST_HOLDER}\ncondition={condition}\n"
         );
-        let (_, _, parsed) =
+        let (_, _, _, parsed) =
             parse_debug_reverse_continue_request(request.as_bytes()).expect("condition must parse");
         assert_eq!(parsed, predicate);
     }

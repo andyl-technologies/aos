@@ -7,6 +7,7 @@
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
+  liveDebuggerMatrix = builtins.readFile ../../examples/codex-skills/crucible-debugger/scripts/live-matrix.sh;
   cliHermeticDiscoveryCheck = builtins.readFile ./phase5-cli-hermetic-discovery.nix;
   workspaceBuildCheck = builtins.readFile ./phase1-aos-workspace-build.nix;
   cliMain = import ./_cli-source.nix {inherit lib;};
@@ -58,7 +59,7 @@
       }
       {
         label = "suite runtime closure keeps controller and QEMU-side outputs separate";
-        needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh]";
+        needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
       }
       {
         label = "suite runtime closure retains AArch64 guest artifacts";
@@ -83,6 +84,14 @@
       {
         label = "runtime AArch64 root-image wrapper configuration";
         needle = "CRUCIBLE_ROOT_IMAGE_AARCH64:=";
+      }
+      {
+        label = "packaged manual debugger matrix";
+        needle = "crucible-debugger-live-matrix";
+      }
+      {
+        label = "manual debugger matrix uses only AOS tools";
+        needle = "export PATH=\"" + "$" + "{coreutils}/bin:" + "$" + "{grep}/bin:" + "$" + "{sed}/bin:" + "$" + "{util-linux}/bin:" + "$" + "{bash}/bin\"";
       }
       {
         label = "QEMU package build-info field";
@@ -173,6 +182,32 @@
       {
         label = "absence and mismatch regression test";
         needle = "cli_hermetic_qemu_discovery_fails_absent_or_mismatched_artifacts_with_exit_4";
+      }
+    ]
+    ++ failuresFor "examples/codex-skills/crucible-debugger/scripts/live-matrix.sh" liveDebuggerMatrix [
+      {
+        label = "live fixture binds packaged boot assets";
+        needle = ''"$CRUCIBLE_MATRIX_FIXTURE_GENERATOR"'';
+      }
+      {
+        label = "read-only GDB state comparison";
+        needle = ''cmp "$directory/read-only-before.gdb" "$directory/read-only-after.gdb"'';
+      }
+      {
+        label = "complete landed tuple comparison";
+        needle = ''cmp "$directory/reverse-earlier.tuple" "$directory/goto-earlier.tuple"'';
+      }
+      {
+        label = "stable GDB survives replacement";
+        needle = ''kill -0 "$gdb_pid" 2>/dev/null || fail "GDB connection did not survive reverse replacement"'';
+      }
+      {
+        label = "guest channel is live before reposition";
+        needle = "CRUCIBLE_CHANNEL_READY";
+      }
+      {
+        label = "SSH transcript is retained";
+        needle = ''--record-transcript $directory/ssh.crgt'';
       }
     ]
     ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [

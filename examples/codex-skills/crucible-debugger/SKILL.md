@@ -18,6 +18,14 @@ the failure.
    output. Never overwrite an existing transcript or failure artifact.
 4. Record the exact command, seed, backend selection, and exit status for each run.
 
+For the complete packaged production matrix, run
+`crucible-debugger-live-matrix --architecture all`. It retains a new evidence
+directory and refuses to overwrite an existing one. The command clears external
+backend/asset overrides and binds generated scenarios to the packaged kernel and
+root-image digests. Use `--output NEW-DIR` when the evidence location must be
+stable; check `--help` before requesting `all` on a suite that may retain only
+its native guest architecture.
+
 ## Reproduce before changing anything
 
 Run the scenario at least twice with the same seed and compare the terminal

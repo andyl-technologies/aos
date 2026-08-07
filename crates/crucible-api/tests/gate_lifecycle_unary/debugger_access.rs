@@ -102,18 +102,26 @@ async fn trusted_http2_debug_controller_uses_server_side_identity_and_lease() {
         .await
         .unwrap_or_else(|error| panic!("RPC create should start session: {error}"));
 
+    let acquisition = DebugControllerAcquisition::new();
     let lease = client
-        .acquire_debug_controller(created.session)
+        .acquire_debug_controller(created.session, &acquisition)
         .await
         .unwrap_or_else(|error| panic!("trusted controller should acquire lease: {error}"));
-    assert_eq!(lease.client.as_str(), "trusted-unauthenticated");
+    assert_eq!(lease.lease().client.as_str(), "trusted-unauthenticated");
     assert_eq!(
         client
-            .acquire_debug_controller(created.session)
+            .acquire_debug_controller(created.session, &acquisition)
             .await
-            .unwrap_or_else(|error| panic!("lease retry should be idempotent: {error}")),
-        lease
+            .unwrap_or_else(|error| panic!("acquisition retry should succeed: {error}")),
+        lease,
     );
+    let concurrent_acquisition = DebugControllerAcquisition::new();
+    let concurrent = client
+        .clone()
+        .acquire_debug_controller(created.session, &concurrent_acquisition)
+        .await
+        .unwrap_or_else(|error| panic!("concurrent acquisition should succeed: {error}"));
+    assert_eq!(concurrent.lease(), lease.lease());
     client
         .attach_debugger(
             created.session,
@@ -171,10 +179,37 @@ async fn trusted_http2_debug_controller_uses_server_side_identity_and_lease() {
         .unwrap_or_else(|error| panic!("current RPC lease should release: {error}"));
     assert!(
         client
-            .release_debug_controller(created.session, &lease)
+            .attach_debugger(
+                created.session,
+                &lease,
+                &NodeId {
+                    name: String::from("server"),
+                },
+            )
             .await
             .is_err(),
-        "a released generation must be rejected as stale"
+        "a released acquisition must not borrow a sibling holder's generation"
+    );
+    client
+        .attach_debugger(
+            created.session,
+            &concurrent,
+            &NodeId {
+                name: String::from("server"),
+            },
+        )
+        .await
+        .unwrap_or_else(|error| panic!("concurrent acquisition must survive release: {error}"));
+    client
+        .release_debug_controller(created.session, &concurrent)
+        .await
+        .unwrap_or_else(|error| panic!("final concurrent acquisition should release: {error}"));
+    assert!(
+        client
+            .release_debug_controller(created.session, &lease)
+            .await
+            .is_ok(),
+        "a release retry should be idempotent while its tombstone is retained"
     );
 
     let _ = shutdown_sender.send(());
