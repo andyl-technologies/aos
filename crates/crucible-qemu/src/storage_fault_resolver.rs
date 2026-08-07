@@ -142,8 +142,9 @@ use crucible_device::block::{
     BlockCompletionDurability, BlockDuplicatePolicy, BlockDurabilityConfig, BlockFaultAvailability,
     BlockFaultByteSpan, BlockFaultCacheEviction, BlockFaultDirtyEviction,
     BlockFaultFlushDisposition, BlockFaultReadTransform, BlockFaultResult, BlockFaultState,
-    BlockFaultWriteDisposition, BlockOp, BlockPersistenceOrdering, BlockRequest, BlockResponse,
-    ResolvedBlockCachePolicy, ResolvedBlockFaultDirective, ResolvedBlockPersistenceTransform,
+    BlockFaultWriteDisposition, BlockMediaRangeState, BlockOp, BlockPersistenceOrdering,
+    BlockRequest, BlockResponse, ResolvedBlockCachePolicy, ResolvedBlockFaultDirective,
+    ResolvedBlockMediaRule, ResolvedBlockPersistenceTransform,
 };
 
 /// Resolves one cache-loss impulse into exact live cache sequence identities.
@@ -752,26 +753,28 @@ fn apply_effect(
         } if operation_selected(operations.as_slice(), request.op)
             && request_intersects(request, range.start(), range.length()) =>
         {
-            if count_threshold.is_some() {
-                return Err(unsupported(action, "stateful media access threshold"));
-            }
-            if time_threshold_nanos
-                .is_some_and(|threshold| action.coordinate.virtual_nanos < threshold.get())
-            {
-                return Ok(());
-            }
-            match state {
-                StorageMediaState::Bad | StorageMediaState::Latent => {
-                    directive.error_result = Some(BlockFaultResult::MediumError);
-                }
-                StorageMediaState::Poisoned if request.op == BlockOp::Read => {
-                    directive.error_result = Some(BlockFaultResult::IntegrityError);
-                }
-                StorageMediaState::ReadOnly if request.op == BlockOp::Write => {
-                    directive.error_result = Some(BlockFaultResult::ReadOnly);
-                }
-                StorageMediaState::Poisoned | StorageMediaState::ReadOnly => {}
-            }
+            directive.media_rules.push(ResolvedBlockMediaRule {
+                contributor: action.id().bytes,
+                start: range.start(),
+                length: range.length(),
+                state: match state {
+                    StorageMediaState::Bad => BlockMediaRangeState::Bad,
+                    StorageMediaState::Latent => BlockMediaRangeState::Latent,
+                    StorageMediaState::Poisoned => BlockMediaRangeState::Poisoned,
+                    StorageMediaState::ReadOnly => BlockMediaRangeState::ReadOnly,
+                },
+                operations: [
+                    BlockOp::Read,
+                    BlockOp::Write,
+                    BlockOp::Flush,
+                    BlockOp::GetLength,
+                ]
+                .into_iter()
+                .filter(|operation| operation_selected(operations.as_slice(), *operation))
+                .collect(),
+                count_threshold: count_threshold.as_ref().map(|value| value.get()),
+                time_threshold_nanos: time_threshold_nanos.as_ref().map(|value| value.get()),
+            });
         }
         StorageEffectSpecification::FlushDisposition { kind, status }
             if request.op == BlockOp::Flush =>
