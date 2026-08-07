@@ -1,0 +1,3652 @@
+syntax = "proto3";
+package aos.hub.v1;
+
+// Read-path services of the registry hub (RFC-0004). Phase 1 exposes the
+// verified index — registries, packages, channels, releases — to browsers,
+// CLIs, and third parties over one schema. Write-path services
+// (RegistryConfigurationService, PublishService, …) arrive with later phases;
+// PublishService
+// mints short-lived, registry-scoped upload credentials.
+//
+// All list RPCs paginate: pass the previous response's next_page_token to
+// continue; an empty token means the listing is complete.
+
+service RegistryService {
+  rpc ListRegistries(ListRegistriesRequest) returns (ListRegistriesResponse);
+  rpc GetRegistry(GetRegistryRequest) returns (GetRegistryResponse);
+  rpc ListReleases(ListReleasesRequest) returns (ListReleasesResponse);
+  rpc PlanCreateRegistry(PlanCreateRegistryRequest) returns (TopologyPlanResponse);
+  rpc CreateRegistry(ApplyRegistryMutationRequest) returns (RegistryResponse);
+  rpc PlanUpdateRegistry(PlanUpdateRegistryRequest) returns (TopologyPlanResponse);
+  rpc UpdateRegistry(ApplyRegistryMutationRequest) returns (RegistryResponse);
+  rpc PlanDeleteRegistry(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteRegistry(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+}
+
+// Orgs, membership, and invitations (RFC-0004 "Tenancy and IAM").
+service OrganizationService {
+  rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse);
+  rpc GetOrganization(GetOrganizationRequest) returns (OrganizationResponse);
+  rpc PlanCreateOrganization(PlanCreateOrganizationRequest) returns (TopologyPlanResponse);
+  rpc CreateOrganization(ApplyOrganizationMutationRequest) returns (OrganizationResponse);
+  rpc PlanUpdateOrganization(PlanUpdateOrganizationRequest) returns (TopologyPlanResponse);
+  rpc UpdateOrganization(ApplyOrganizationMutationRequest) returns (OrganizationResponse);
+  rpc PlanDeleteOrganization(PlanDeleteOrganizationRequest) returns (TopologyPlanResponse);
+  rpc DeleteOrganization(ApplyOrganizationMutationRequest) returns (DeleteTopologyResourceResponse);
+}
+
+// Immutable signing-key generations and typed surface usage bindings. Private
+// key bytes are never accepted or returned by this API.
+service SigningKeyService {
+  rpc ListSigningKeys(ListSigningKeysRequest) returns (ListSigningKeysResponse);
+  rpc GetSigningKey(GetSigningKeyRequest) returns (SigningKeyResponse);
+  rpc PlanEnrollSigningKey(PlanSigningKeyMutationRequest) returns (TopologyPlanResponse);
+  rpc EnrollSigningKey(ApplyTopologyPlanRequest) returns (SigningKeyResponse);
+  rpc PlanRotateSigningKey(PlanSigningKeyMutationRequest) returns (TopologyPlanResponse);
+  rpc RotateSigningKey(ApplyTopologyPlanRequest) returns (SigningKeyResponse);
+  rpc PlanRetireSigningKey(PlanRetireSigningKeyRequest) returns (TopologyPlanResponse);
+  rpc RetireSigningKey(ApplyTopologyPlanRequest) returns (SigningKeyResponse);
+  rpc PlanSetSigningKeyUsage(PlanSigningKeyUsageRequest) returns (TopologyPlanResponse);
+  rpc SetSigningKeyUsage(ApplyTopologyPlanRequest) returns (SigningKeyUsageResponse);
+}
+
+// Project-tree CRUD (RFC-0004 "Tenancy and IAM").
+service ProjectService {
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc GetProject(GetProjectRequest) returns (ProjectResponse);
+  rpc PlanCreateProject(PlanCreateProjectRequest) returns (TopologyPlanResponse);
+  rpc CreateProject(ApplyProjectMutationRequest) returns (ProjectResponse);
+  rpc PlanDeleteProject(PlanDeleteProjectRequest) returns (TopologyPlanResponse);
+  rpc DeleteProject(ApplyProjectMutationRequest) returns (DeleteTopologyResourceResponse);
+}
+
+// Storage bindings (RFC-0004 "Storage: StorageBinding and shared buckets").
+service StorageBindingService {
+  rpc ListStorageBindings(ListStorageBindingsRequest) returns (ListStorageBindingsResponse);
+  rpc GetStorageBinding(GetStorageBindingRequest) returns (GetStorageBindingResponse);
+  rpc PlanCreateStorageBinding(PlanStorageBindingMutationRequest) returns (TopologyPlanResponse);
+  rpc CreateStorageBinding(ApplyStorageBindingMutationRequest) returns (StorageBindingResponse);
+  rpc PlanSetStorageBindingCredential(PlanStorageBindingCredentialRequest) returns (TopologyPlanResponse);
+  rpc SetStorageBindingCredential(ApplyStorageBindingCredentialRequest) returns (StorageBindingCredentialResponse);
+  rpc PlanRotateStorageBindingCredential(PlanStorageBindingCredentialRequest) returns (TopologyPlanResponse);
+  rpc RotateStorageBindingCredential(ApplyStorageBindingCredentialRequest) returns (StorageBindingCredentialResponse);
+  rpc PlanValidateStorageBindingCredential(PlanValidateStorageBindingCredentialRequest) returns (TopologyPlanResponse);
+  rpc ValidateStorageBindingCredential(ApplyTopologyPlanRequest) returns (OperationResponse);
+  rpc PlanGrantStorageBindingScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc GrantStorageBindingScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PlanRevokeStorageBindingScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc RevokeStorageBindingScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc ListStorageBindingWriteRevisions(ListStorageBindingWriteRevisionsRequest) returns (ListStorageBindingWriteRevisionsResponse);
+  rpc GetStorageBindingWriteRevision(GetStorageBindingWriteRevisionRequest) returns (StorageBindingWriteRevisionResponse);
+  rpc PlanDeleteStorageBinding(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteStorageBinding(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+  rpc GetInstanceDefaultStorageBinding(GetInstanceTopologyDefaultsRequest) returns (GetStorageBindingResponse);
+  rpc GetInstanceTopologyDefaults(GetInstanceTopologyDefaultsRequest) returns (TopologyDefaultsResponse);
+  rpc PlanSetInstanceTopologyDefaults(PlanSetTopologyDefaultsRequest) returns (TopologyPlanResponse);
+  rpc SetInstanceTopologyDefaults(ApplySetTopologyDefaultsRequest) returns (TopologyDefaultsResponse);
+  rpc GetOrganizationTopologyDefaults(GetOrganizationTopologyDefaultsRequest) returns (TopologyDefaultsResponse);
+  rpc PlanSetOrganizationTopologyDefaults(PlanSetTopologyDefaultsRequest) returns (TopologyPlanResponse);
+  rpc SetOrganizationTopologyDefaults(ApplySetTopologyDefaultsRequest) returns (TopologyDefaultsResponse);
+}
+
+service DomainService {
+  rpc ListDomains(ListDomainsRequest) returns (ListDomainsResponse);
+  rpc GetDomain(GetTopologyResourceRequest) returns (DomainResponse);
+  rpc PlanCreateDomain(PlanDomainMutationRequest) returns (TopologyPlanResponse);
+  rpc CreateDomain(ApplyDomainMutationRequest) returns (DomainResponse);
+  rpc PlanConfigureDomainDns(PlanDomainDnsRequest) returns (TopologyPlanResponse);
+  rpc ConfigureDomainDns(ApplyDomainConfigurationRequest) returns (DomainResponse);
+  rpc PlanConfigureDomainCertificate(PlanDomainCertificateRequest) returns (TopologyPlanResponse);
+  rpc ConfigureDomainCertificate(ApplyDomainConfigurationRequest) returns (DomainResponse);
+  rpc PlanVerifyDomain(PlanVerifyDomainRequest) returns (TopologyPlanResponse);
+  rpc VerifyDomain(ApplyTopologyPlanRequest) returns (OperationResponse);
+  rpc PlanDeleteDomain(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteDomain(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+}
+
+service NetworkBoundaryService {
+  rpc ListNetworkBoundaries(ListTopologyResourcesRequest) returns (ListNetworkBoundariesResponse);
+  rpc GetNetworkBoundary(GetTopologyResourceRequest) returns (NetworkBoundaryResponse);
+  rpc PlanCreateNetworkBoundary(PlanNetworkBoundaryMutationRequest) returns (TopologyPlanResponse);
+  rpc CreateNetworkBoundary(ApplyNetworkBoundaryMutationRequest) returns (NetworkBoundaryResponse);
+  rpc ListNetworkBoundaryRevisions(ListNetworkBoundaryRevisionsRequest) returns (ListNetworkBoundaryRevisionsResponse);
+  rpc GetNetworkBoundaryRevision(GetNetworkBoundaryRevisionRequest) returns (NetworkBoundaryRevisionResponse);
+  rpc PlanReviseNetworkBoundary(PlanNetworkBoundaryRevisionRequest) returns (TopologyPlanResponse);
+  rpc ReviseNetworkBoundary(ApplyNetworkBoundaryRevisionRequest) returns (NetworkBoundaryRevisionResponse);
+  rpc PlanActivateNetworkBoundaryRevision(PlanNetworkBoundaryLifecycleRequest) returns (TopologyPlanResponse);
+  rpc ActivateNetworkBoundaryRevision(ApplyNetworkBoundaryLifecycleRequest) returns (NetworkBoundaryRevisionResponse);
+  rpc PlanRetireNetworkBoundaryRevision(PlanNetworkBoundaryLifecycleRequest) returns (TopologyPlanResponse);
+  rpc RetireNetworkBoundaryRevision(ApplyNetworkBoundaryLifecycleRequest) returns (NetworkBoundaryRevisionResponse);
+  rpc PlanGrantNetworkBoundaryScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc GrantNetworkBoundaryScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PlanRevokeNetworkBoundaryScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc RevokeNetworkBoundaryScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PlanDeleteNetworkBoundary(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteNetworkBoundary(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+}
+
+service DeliveryService {
+  rpc ListDeliveryEndpoints(ListTopologyResourcesRequest) returns (ListDeliveryEndpointsResponse);
+  rpc GetDeliveryEndpoint(GetTopologyResourceRequest) returns (DeliveryEndpointResponse);
+  rpc PlanCreateDeliveryEndpoint(PlanDeliveryEndpointMutationRequest) returns (TopologyPlanResponse);
+  rpc CreateDeliveryEndpoint(ApplyDeliveryEndpointMutationRequest) returns (DeliveryEndpointResponse);
+  rpc ListDeliveryEndpointGenerations(ListDeliveryEndpointGenerationsRequest) returns (ListDeliveryEndpointGenerationsResponse);
+  rpc GetDeliveryEndpointGeneration(GetDeliveryEndpointGenerationRequest) returns (DeliveryEndpointGenerationResponse);
+  rpc PlanStageDeliveryEndpointGeneration(PlanStageDeliveryEndpointGenerationRequest) returns (TopologyPlanResponse);
+  rpc StageDeliveryEndpointGeneration(ApplyDeliveryEndpointGenerationRequest) returns (DeliveryEndpointGenerationResponse);
+  rpc PlanActivateDeliveryEndpointGeneration(PlanActivateDeliveryEndpointGenerationRequest) returns (TopologyPlanResponse);
+  rpc ActivateDeliveryEndpointGeneration(ApplyDeliveryEndpointGenerationRequest) returns (DeliveryEndpointResponse);
+  rpc PlanGrantDeliveryEndpointScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc GrantDeliveryEndpointScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PlanRevokeDeliveryEndpointScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc RevokeDeliveryEndpointScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PlanDeleteDeliveryEndpoint(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteDeliveryEndpoint(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+
+  rpc ListStorageGateways(ListStorageGatewaysRequest) returns (ListStorageGatewaysResponse);
+  rpc GetStorageGateway(GetTopologyResourceRequest) returns (StorageGatewayResponse);
+  rpc PlanCreateStorageGateway(PlanStorageGatewayMutationRequest) returns (TopologyPlanResponse);
+  rpc CreateStorageGateway(ApplyStorageGatewayMutationRequest) returns (StorageGatewayResponse);
+  rpc PlanUpdateStorageGateway(PlanStorageGatewayMutationRequest) returns (TopologyPlanResponse);
+  rpc UpdateStorageGateway(ApplyStorageGatewayMutationRequest) returns (StorageGatewayResponse);
+  rpc PlanGrantStorageGatewayScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc GrantStorageGatewayScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PlanRevokeStorageGatewayScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc RevokeStorageGatewayScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PreviewGatewayRoutes(GetTopologyResourceRequest) returns (GatewayRoutePreviewResponse);
+  rpc PlanEnableStorageGateway(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc EnableStorageGateway(ApplyDeleteTopologyResourceRequest) returns (StorageGatewayResponse);
+  rpc PlanDisableStorageGateway(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DisableStorageGateway(ApplyDeleteTopologyResourceRequest) returns (StorageGatewayResponse);
+  rpc PlanDeleteStorageGateway(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteStorageGateway(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+}
+
+service RouteService {
+  rpc ListRoutes(ListRoutesRequest) returns (ListRoutesResponse);
+  rpc GetRoute(GetTopologyResourceRequest) returns (DeliveryRouteResponse);
+  rpc PlanCreateRoute(PlanRouteMutationRequest) returns (TopologyPlanResponse);
+  rpc CreateRoute(ApplyRouteMutationRequest) returns (DeliveryRouteResponse);
+  rpc PlanUpdateRoute(PlanRouteMutationRequest) returns (TopologyPlanResponse);
+  rpc UpdateRoute(ApplyRouteMutationRequest) returns (DeliveryRouteResponse);
+  rpc PlanReplaceRoute(PlanReplaceRouteRequest) returns (TopologyPlanResponse);
+  rpc ReplaceRoute(ApplyRouteMutationRequest) returns (DeliveryRouteResponse);
+  rpc PlanEnableRoute(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc EnableRoute(ApplyDeleteTopologyResourceRequest) returns (DeliveryRouteResponse);
+  rpc PlanDisableRoute(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DisableRoute(ApplyDeleteTopologyResourceRequest) returns (DeliveryRouteResponse);
+  rpc PlanDeleteRoute(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteRoute(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+  rpc PlanSetCanonicalRoute(PlanCanonicalRouteRequest) returns (TopologyPlanResponse);
+  rpc SetCanonicalRoute(ApplyCanonicalRouteRequest) returns (CanonicalRouteResponse);
+  rpc ExplainRoute(ExplainRouteRequest) returns (ExplainRouteResponse);
+}
+
+// Topology inventory and placement lifecycle management for registry and
+// binary-cache surfaces. Desired placement configuration, controller
+// observations, and single-writer authority are separate resources.
+// Placement identities are stable names within a typed surface; database ids
+// are deliberately not public.
+// All placement writes temporarily require storage.manage on the owning org
+// (or root iam.admin for an org-less surface) until topology.manage exists.
+service TopologyService {
+  rpc GetSurfaceTopology(GetSurfaceTopologyRequest) returns (GetSurfaceTopologyResponse);
+  rpc ExplainSurfaceRequest(ExplainSurfaceRequestRequest) returns (ExplainSurfaceRequestResponse);
+  rpc ListPlacements(ListPlacementsRequest) returns (ListPlacementsResponse);
+  rpc GetPlacement(GetPlacementRequest) returns (GetPlacementResponse);
+  rpc PlanCreatePlacement(PlanCreatePlacementRequest) returns (TopologyPlanResponse);
+  rpc CreatePlacement(ApplyTopologyPlanRequest) returns (PlacementResponse);
+  rpc PlanUpdatePlacement(PlanUpdatePlacementRequest) returns (TopologyPlanResponse);
+  rpc UpdatePlacement(ApplyTopologyPlanRequest) returns (PlacementResponse);
+  rpc GetWriteAuthority(GetWriteAuthorityRequest) returns (GetWriteAuthorityResponse);
+  rpc PlanPromotePlacement(PlacementMutationRequest) returns (TopologyPlanResponse);
+  rpc PromotePlacement(ApplyTopologyPlanRequest) returns (GetWriteAuthorityResponse);
+  rpc PlanCancelPlacementPromotion(SurfaceMutationRequest) returns (TopologyPlanResponse);
+  rpc CancelPlacementPromotion(ApplyTopologyPlanRequest) returns (GetWriteAuthorityResponse);
+  rpc PlanRemoveWriteAuthority(SurfaceMutationRequest) returns (TopologyPlanResponse);
+  rpc RemoveWriteAuthority(ApplyTopologyPlanRequest) returns (RemoveWriteAuthorityResponse);
+  rpc PlanDrainPlacement(PlacementMutationRequest) returns (TopologyPlanResponse);
+  rpc DrainPlacement(ApplyTopologyPlanRequest) returns (OperationResponse);
+  rpc PlanCancelPlacementDrain(PlacementMutationRequest) returns (TopologyPlanResponse);
+  rpc CancelPlacementDrain(ApplyTopologyPlanRequest) returns (PlacementResponse);
+  rpc PlanDeletePlacement(PlacementMutationRequest) returns (TopologyPlanResponse);
+  rpc DeletePlacement(ApplyTopologyPlanRequest) returns (DeleteTopologyResourceResponse);
+  rpc PlanScanPlacement(PlanScanPlacementRequest) returns (TopologyPlanResponse);
+  rpc ScanPlacement(ApplyTopologyPlanRequest) returns (OperationResponse);
+  rpc PlanReplicatePlacement(PlanReplicatePlacementRequest) returns (TopologyPlanResponse);
+  rpc ReplicatePlacement(ApplyTopologyPlanRequest) returns (OperationResponse);
+  rpc PlanRepairPlacement(PlanRepairPlacementRequest) returns (TopologyPlanResponse);
+  rpc RepairPlacement(ApplyTopologyPlanRequest) returns (OperationResponse);
+  rpc ListObjectPresence(ListObjectPresenceRequest) returns (ListObjectPresenceResponse);
+
+  rpc ListPlacementPolicies(SurfaceListRequest) returns (ListPlacementPoliciesResponse);
+  rpc GetPlacementPolicy(GetPlacementPolicyRequest) returns (PlacementPolicyResponse);
+  rpc ListPlacementPolicyRevisions(ListPlacementPolicyRevisionsRequest) returns (ListPlacementPolicyRevisionsResponse);
+  rpc GetPlacementPolicyRevision(GetPlacementPolicyRevisionRequest) returns (PlacementPolicyRevisionResponse);
+  rpc PlanCreatePlacementPolicy(PlanPlacementPolicyMutationRequest) returns (TopologyPlanResponse);
+  rpc CreatePlacementPolicy(ApplyTopologyPlanRequest) returns (PlacementPolicyResponse);
+  rpc PlanRevisePlacementPolicy(PlanPlacementPolicyMutationRequest) returns (TopologyPlanResponse);
+  rpc RevisePlacementPolicy(ApplyTopologyPlanRequest) returns (PlacementPolicyRevisionResponse);
+  rpc TestPlacementPolicyRevision(TestPlacementPolicyRevisionRequest) returns (TestPlacementPolicyRevisionResponse);
+
+  rpc ListPlacementEquivalences(SurfaceListRequest) returns (ListPlacementEquivalencesResponse);
+  rpc PlanConfirmPlacementEquivalence(PlanPlacementEquivalenceRequest) returns (TopologyPlanResponse);
+  rpc ConfirmPlacementEquivalence(ApplyTopologyPlanRequest) returns (PlacementEquivalenceResponse);
+  rpc PlanDeletePlacementEquivalence(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeletePlacementEquivalence(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+}
+
+service RegistryMirrorService {
+  rpc GetRegistryMirror(GetRegistryMirrorRequest) returns (RegistryMirrorResponse);
+  rpc PlanSetRegistryMirror(PlanRegistryMirrorMutationRequest) returns (TopologyPlanResponse);
+  rpc SetRegistryMirror(ApplyTopologyPlanRequest) returns (RegistryMirrorResponse);
+  rpc PlanDeleteRegistryMirror(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteRegistryMirror(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+  rpc PlanSyncRegistryMirror(PlanSyncRegistryMirrorRequest) returns (TopologyPlanResponse);
+  rpc SyncRegistryMirror(ApplyTopologyPlanRequest) returns (OperationResponse);
+}
+
+// Fenced controller-only observations. These services are never routed through
+// the public API surface. Every request identifies the held controller lease,
+// fences its generation, and CASes the exact prior observation version.
+service StorageBindingControllerService {
+  rpc ReportStorageBindingWriteRevision(ReportStorageBindingWriteRevisionRequest) returns (StorageBindingWriteRevisionResponse);
+}
+service NetworkBoundaryControllerService {
+  rpc CompleteNetworkBoundaryRevisionProbe(CompleteNetworkBoundaryRevisionProbeRequest) returns (NetworkBoundaryRevisionResponse);
+  rpc ReportNetworkBoundaryRevision(ReportNetworkBoundaryRevisionRequest) returns (NetworkBoundaryRevisionResponse);
+}
+service DeliveryControllerService {
+  rpc CompleteDeliveryEndpointProbe(CompleteDeliveryEndpointProbeRequest) returns (DeliveryEndpointResponse);
+  rpc ReportDeliveryEndpoint(ReportDeliveryEndpointRequest) returns (DeliveryEndpointResponse);
+  rpc ReportStorageGateway(ReportStorageGatewayRequest) returns (StorageGatewayResponse);
+}
+service RouteControllerService {
+  rpc CompleteRouteProbe(CompleteRouteProbeRequest) returns (OperationResponse);
+}
+service TopologyControllerService {
+  rpc ReportWriteAuthority(ReportWriteAuthorityRequest) returns (WriteAuthorityObservationResponse);
+}
+service BinaryCacheUploadControllerService {
+  rpc ReportCacheUpload(ReportCacheUploadRequest) returns (CacheUploadObservationResponse);
+  rpc ReportCacheNarinfos(ReportCacheNarinfosRequest) returns (CacheNarinfoRegistrationResponse);
+}
+
+// Append-only audit log queries (RFC-0004 "Tenancy and IAM" / "Access
+// matrix"). Reads require audit.read (admin+) on the queried scope.
+service AuditService {
+  // List recent audit entries at a scope, newest first. Requires a bearer
+  // JWT with audit.read on the scope.
+  rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
+}
+
+// Deployment-wide instance settings (RFC-0004 "Instance administration"):
+// branding, footer/legal links, identity policy, and serving defaults. The
+// same key/value surface the `/-/instance` console edits and the `aos hub
+// instance` CLI drives. Reads require iam.admin at the instance root; updates
+// likewise.
+service InstanceService {
+  // Read the full editable instance-settings bundle. Requires iam.admin at the
+  // instance root.
+  rpc GetInstanceSettings(GetInstanceSettingsRequest)
+      returns (GetInstanceSettingsResponse);
+  // Persist an immutable, exact-version plan for replacing instance settings.
+  // Requires iam.admin at the instance root.
+  rpc PlanSetInstanceSettings(PlanSetInstanceSettingsRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed instance-settings plan exactly once.
+  rpc SetInstanceSettings(ApplyTopologyPlanRequest)
+      returns (GetInstanceSettingsResponse);
+}
+
+// SQL-backed configuration change-sets (RFC-0004 "Configuration
+// management"): the append-only revision log over orgs, projects, members,
+// roles, tokens, visibility, and bindings. Reads require audit.read on the
+// scope. Durable configuration changes use the retained change-request API;
+// this service is intentionally read-only.
+service RegistryConfigurationService {
+  // List change-sets at a scope, newest first. Requires audit.read.
+  rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse);
+  // Load one change-set's revisions and their semantic field diffs (the
+  // terraform-plan review view). Requires audit.read.
+  rpc GetChangeset(GetChangesetRequest) returns (GetChangesetResponse);
+}
+
+service PackageService {
+  rpc ListPackages(ListPackagesRequest) returns (ListPackagesResponse);
+  rpc GetPackage(GetPackageRequest) returns (GetPackageResponse);
+}
+
+service ChannelService {
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
+  rpc GetChannel(GetChannelRequest) returns (GetChannelResponse);
+}
+
+// End-user AOS system-image discovery. Every result is derived from direct
+// delivery metadata inside an authenticated signed sysroot catalog. The
+// service exposes exact disk-image bytes, never a NAR or store directory.
+service ImageService {
+  rpc ListImages(ListImagesRequest) returns (ListImagesResponse);
+  rpc GetImage(GetImageRequest) returns (GetImageResponse);
+  rpc ResolveImage(ResolveImageRequest) returns (GetImageResponse);
+}
+
+// The managed, placement-aware registry publication path. Producers declare an
+// exact manifest, upload bytes through object-id URLs, and commit only after
+// every required placement has verified every immutable object and mutable
+// pointer. No resource-slug upload facade exists.
+service PublishService {
+  rpc BeginRegistryPublication(BeginRegistryPublicationRequest)
+      returns (RegistryPublication);
+  rpc GetRegistryPublication(GetRegistryPublicationRequest)
+      returns (RegistryPublication);
+  rpc CommitRegistryPublication(CommitRegistryPublicationRequest)
+      returns (RegistryPublication);
+  rpc AbortRegistryPublication(AbortRegistryPublicationRequest)
+      returns (RegistryPublication);
+}
+
+// Git read API for the UI and remote `apr` (RFC-0012 "API: aos.hub.v1"
+// GitService; "Configuration management" git-backed change requests). Reads of
+// the committed history and config diffs require `read` (or `audit.read` for the
+// change-request list) on the registry's scope, following registry visibility.
+service GitService {
+  // The committed commit log of a registry's tracked branch, newest first.
+  // Requires `read` on the registry scope.
+  rpc GitLog(GitLogRequest) returns (GitLogResponse);
+  // A textual unified-ish diff of the committed config files (registry.toml,
+  // keys.toml, packages/) between two commits. Requires `read`.
+  rpc GitDiff(GitDiffRequest) returns (GitDiffResponse);
+  // The registry's draft git-backed change requests with their file diffs and
+  // the `apr change merge` command that promotes each. Requires `audit.read`.
+  rpc ListChangeRequests(ListChangeRequestsRequest)
+      returns (ListChangeRequestsResponse);
+}
+
+// Outbound webhook subscriptions (RFC-0004 phase 4 "webhooks/notifications").
+// An org subscribes an HTTP endpoint to a set of registry event types; the hub
+// HMAC-signs and delivers each matching event. Every RPC is admin-only:
+// they require members.manage on the org scope (managing notification
+// endpoints is an org-administration surface, alongside member and token
+// management).
+service WebhookService {
+  rpc ListWebhooks(ListWebhooksRequest) returns (ListWebhooksResponse);
+  rpc PlanCreateWebhook(PlanCreateWebhookRequest) returns (TopologyPlanResponse);
+  rpc CreateWebhook(ApplyWebhookMutationRequest) returns (CreateWebhookResponse);
+  rpc PlanDeleteWebhook(PlanDeleteWebhookRequest) returns (TopologyPlanResponse);
+  rpc DeleteWebhook(ApplyWebhookMutationRequest) returns (DeleteTopologyResourceResponse);
+}
+
+message ListRegistriesRequest {
+  uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListRegistriesResponse {
+  repeated Registry registries = 1;
+  string next_page_token = 2;
+}
+
+message GetRegistryRequest {
+  string slug = 1;
+}
+
+message GetRegistryResponse {
+  Registry registry = 1;
+}
+
+message ListReleasesRequest {
+  string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListReleasesResponse {
+  repeated Release releases = 1;
+  string next_page_token = 2;
+}
+
+message ListPackagesRequest {
+  string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListPackagesResponse {
+  repeated PackageSummary packages = 1;
+  string next_page_token = 2;
+}
+
+message GetPackageRequest {
+  string slug = 1;
+  string name = 2;
+}
+
+message GetPackageResponse {
+  Package package = 1;
+}
+
+message ListChannelsRequest {
+  string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListChannelsResponse {
+  repeated Channel channels = 1;
+  string next_page_token = 2;
+}
+
+message GetChannelRequest {
+  string slug = 1;
+  string name = 2;
+}
+
+message GetChannelResponse {
+  Channel channel = 1;
+}
+
+message ListImagesRequest {
+  string slug = 1;
+  string release = 2;
+  string channel = 3;
+  string architecture = 4;
+  string format = 5;
+  string target = 6;
+  uint32 page_size = 7;
+  string page_token = 8;
+  string package = 9;
+}
+
+message ListImagesResponse {
+  repeated SystemImage images = 1;
+  string next_page_token = 2;
+}
+
+message GetImageRequest {
+  string slug = 1;
+  string release = 2;
+  string architecture = 3;
+  string format = 4;
+  string package = 5;
+}
+
+message ResolveImageRequest {
+  string slug = 1;
+  string release = 2;
+  string channel = 3;
+  string architecture = 4;
+  string format = 5;
+  string target = 6;
+  string package = 7;
+}
+
+message GetImageResponse {
+  SystemImage image = 1;
+}
+
+// One immutable disk encoding belonging to a signed logical AOS release.
+message SystemImage {
+  string package = 1;
+  string release = 2;
+  string channel = 3;
+  string platform = 4;
+  string architecture = 5;
+  string format = 6;
+  string logical_image_id = 7;
+  string filename = 8;
+  string download_url = 9;
+  string media_type = 10;
+  string compression = 11;
+  uint64 byte_size = 12;
+  string sha256 = 13;
+  repeated string compatible_targets = 14;
+  // Secure Boot/UKI verification state for the boot payload.
+  string boot_verification = 15;
+  string object_key = 16;
+  ImageInfo image_info = 17;
+  string logical_disk_sha256 = 18;
+  string rootfs_sha256 = 19;
+  ImageUki uki = 20;
+  // Verification state of the registry release signature. Published images
+  // are returned only after this state reaches "verified".
+  string release_verification = 21;
+}
+
+message ImageUki {
+  string filename = 1;
+  string esp_path = 2;
+  uint64 byte_size = 3;
+  string sha256 = 4;
+  string verification = 5;
+  string signer_cert_sha256 = 6;
+  repeated SbatGeneration sbat = 7;
+  bool measured = 8;
+  string expected_pcr11 = 9;
+}
+
+message SbatGeneration {
+  string component = 1;
+  uint32 generation = 2;
+}
+
+message ImageInfo {
+  string filename = 1;
+  string object_key = 2;
+  string download_url = 3;
+  string media_type = 4;
+  uint64 byte_size = 5;
+  string sha256 = 6;
+}
+
+// One registered registry with its verified index status.
+message Registry {
+  reserved 4;
+  reserved "source_url";
+  string slug = 1;
+  // Committed registry name from registry.toml (empty until indexed).
+  string name = 2;
+  string description = 3;
+  // Index state: fresh | indexing | stale | failed.
+  string index_state = 5;
+  // Failure detail when index_state is failed.
+  string index_error = 6;
+  // Commit the current index was built from (64-hex sha256).
+  string last_indexed_commit = 7;
+  // Unix seconds of the last successful index.
+  int64 indexed_at = 8;
+  // Pinned trust anchors in name:Ed25519:<base64> form.
+  repeated string trust_keys = 9;
+  // Flattened committed cache-stack endpoints, highest priority first.
+  repeated ConsumerCacheStackEntry consumer_cache_stack = 10;
+  // Committed signing-key roster.
+  repeated RosterKey roster = 11;
+  // Crawl posture backing the generated robots.txt:
+  // allow_all | allow_no_ai | deny_all.
+  string crawl_policy = 12;
+  // Operator-authored llms.txt body served verbatim (empty = auto-generated).
+  string llms_txt_body = 13;
+  string stable_id = 14;
+  string visibility = 15;
+  string resource_version = 16;
+  int64 updated_at = 17;
+}
+
+message ConsumerCacheStackEntry {
+  string entry_id = 1;
+  oneof source {
+    string binary_cache_id = 2;
+    ExternalConsumerCache external = 3;
+  }
+  uint32 priority = 4;
+  string mirror_group_id = 5;
+}
+
+message ExternalConsumerCache {
+  string url = 1;
+}
+
+message RosterKey {
+  string id = 1;
+  // Key in name:Ed25519:<base64> form; empty for revoked entries whose
+  // key material left the roster.
+  string key = 2;
+  // active | revoked.
+  string status = 3;
+}
+
+message PackageSummary {
+  string name = 1;
+  string description = 2;
+  string license = 3;
+  string latest_version = 4;
+}
+
+// Full package detail: every version and platform artifact.
+message Package {
+  string name = 1;
+  string description = 2;
+  string homepage = 3;
+  string license = 4;
+  string maintainer = 5;
+  bool sysroot = 6;
+  repeated Version versions = 7;
+}
+
+message Version {
+  string version = 1;
+  // Previous version in the sysroot upgrade chain.
+  string previous = 2;
+  repeated Platform platforms = 3;
+}
+
+message Platform {
+  string platform = 1;
+  string store_path = 2;
+  string nar_hash = 3;
+  uint64 nar_size = 4;
+  uint64 closure_size = 5;
+}
+
+// One rollout channel with its 256-partition assignment map.
+message Channel {
+  string name = 1;
+  // Newest release any partition targets.
+  string frontier = 2;
+  // Assigned partitions only; unassigned buckets are omitted.
+  repeated Partition partitions = 3;
+}
+
+message Partition {
+  // Bucket index, 0..=255.
+  uint32 bucket = 1;
+  string release = 2;
+}
+
+// One verified, signed release tag.
+message Release {
+  string semver = 1;
+  // Unpeeled tag object id.
+  string tag_oid = 2;
+  string commit_oid = 3;
+  // Base64 SSH wire blob of the trusted key that signed the tag.
+  string signer = 4;
+  // Tagger timestamp, Unix seconds.
+  int64 tagged_at = 5;
+}
+
+// -- Tenancy: orgs and projects (phase 2c) ---------------------------------
+
+// An organization: the tenant boundary.
+message Organization {
+  string stable_id = 1;
+  string slug = 2;
+  string display_name = 3;
+  string owner_scope_key = 4;
+  string resource_version = 5;
+  // Unix seconds the org was created.
+  int64 created_at = 6;
+  int64 updated_at = 7;
+}
+
+message PlanCreateOrganizationRequest {
+  string slug = 1;
+  string display_name = 2;
+  string idempotency_key = 3;
+  string expected_resource_version = 4;
+}
+
+message ApplyOrganizationMutationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+
+message GetOrganizationRequest {
+  string slug = 1;
+}
+
+message ListOrganizationsRequest {
+  uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListOrganizationsResponse {
+  repeated Organization organizations = 1;
+  string next_page_token = 2;
+}
+message PlanUpdateOrganizationRequest {
+  string slug = 1;
+  string display_name = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message PlanDeleteOrganizationRequest {
+  string slug = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+message OrganizationResponse { Organization organization = 1; }
+
+message SigningKeyGeneration {
+  uint64 generation = 1;
+  string algorithm = 2;
+  string public_key = 3;
+  string public_key_fingerprint = 4;
+  string custody = 5;
+  string state = 6;
+  int64 created_at = 7;
+  int64 retired_at = 8;
+}
+
+message SigningKey {
+  string stable_id = 1;
+  string scope_key = 2;
+  string name = 3;
+  string resource_version = 4;
+  SigningKeyGeneration latest_generation = 5;
+  int64 created_at = 6;
+  int64 updated_at = 7;
+}
+
+message SigningKeyUsage {
+  string stable_id = 1;
+  string consumer_stable_id = 2;
+  string purpose = 3;
+  string signing_key_stable_id = 4;
+  uint64 signing_key_generation = 5;
+  string state = 6;
+  string resource_version = 7;
+  int64 created_at = 8;
+  int64 updated_at = 9;
+  string consumer_kind = 10;
+  string consumer_scope_key = 11;
+  string consumer_name = 12;
+}
+
+message ListSigningKeysRequest {
+  string scope_key = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListSigningKeysResponse {
+  repeated SigningKey signing_keys = 1;
+  string next_page_token = 2;
+}
+
+message GetSigningKeyRequest {
+  string scope_key = 1;
+  string name = 2;
+}
+
+message SigningKeyResponse { SigningKey signing_key = 1; }
+
+message PlanSigningKeyMutationRequest {
+  string scope_key = 1;
+  string name = 2;
+  string public_key = 3;
+  string public_key_fingerprint = 4;
+  string custody = 5;
+  string expected_resource_version = 6;
+  string idempotency_key = 7;
+}
+
+message PlanRetireSigningKeyRequest {
+  string scope_key = 1;
+  string name = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+message PlanSigningKeyUsageRequest {
+  string consumer_stable_id = 1;
+  string purpose = 2;
+  string signing_key_stable_id = 3;
+  uint64 signing_key_generation = 4;
+  string state = 5;
+  string expected_resource_version = 6;
+  string idempotency_key = 7;
+}
+
+message SigningKeyUsageResponse { SigningKeyUsage usage = 1; }
+
+// A project: a materialized-path node within an org.
+message Project {
+  string org_slug = 1;
+  // Materialized path within the org ("" for an org-root project).
+  string path = 2;
+  string name = 3;
+  string stable_id = 4;
+  string authorization_scope_key = 5;
+  string resource_version = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+}
+
+message GetProjectRequest {
+  string org_slug = 1;
+  string path = 2;
+}
+
+message PlanCreateProjectRequest {
+  string org_slug = 1;
+  string path = 2;
+  string name = 3;
+  string idempotency_key = 4;
+  string expected_resource_version = 5;
+}
+
+message PlanDeleteProjectRequest {
+  string org_slug = 1;
+  string path = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+message ApplyProjectMutationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+
+message ProjectResponse { Project project = 1; }
+
+message ListProjectsRequest {
+  string org_slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListProjectsResponse {
+  repeated Project projects = 1;
+  string next_page_token = 2;
+}
+
+message SurfaceRef {
+  oneof target {
+    string registry_slug = 1;
+    string cache_slug = 2;
+  }
+}
+
+message GetSurfaceTopologyRequest { SurfaceRef surface = 1; }
+message GetSurfaceTopologyResponse {
+  SurfaceRef surface = 1;
+  repeated Placement placements = 2;
+  repeated DeliveryRoute routes = 3;
+  repeated CanonicalRoute canonical_routes = 4;
+  SurfaceWriteAuthority write_authority = 5;
+  repeated PlacementPolicy placement_policies = 6;
+  repeated PlacementEquivalence placement_equivalences = 7;
+  repeated DeliveryEndpoint canonical_endpoints = 8;
+  repeated OperationRef active_operations = 9;
+}
+message ExplainSurfaceRequestRequest {
+  SurfaceRef surface = 1;
+  string url = 2;
+  string machine_path = 3;
+  string access_class = 4;
+}
+message ExplainSurfaceRequestResponse {
+  string normalized_url = 1;
+  string selected_route_id = 2;
+  repeated string decisions = 3;
+  repeated string rejection_reasons = 4;
+}
+
+// A typed half-open hash range in the fixed 16-bit shard space.
+message HashRangeV1 {
+  // Inclusive first bucket, in 0..65535.
+  uint32 start = 1;
+  // Exclusive last bucket, in 1..65536 and greater than start.
+  uint32 end = 2;
+}
+
+// Operator-owned desired placement configuration.
+message PlacementSpec {
+  // complete | shard | archive.
+  string kind = 1;
+  // active | draining | offline.
+  string desired_state = 2;
+  // Whether policy selection may consider the placement for reads.
+  bool desired_read_enabled = 3;
+  // Lower values are preferred for ordered reads.
+  int64 read_order = 4;
+  // Monotonic writer-critical specification version.
+  int64 write_spec_version = 5;
+  // Whether this placement's writer contract needs conditional object writes.
+  bool requires_conditional_writes = 6;
+  // Required exactly for shard placements.
+  HashRangeV1 hash_range = 7;
+}
+
+// Controller-owned placement health and inventory evidence.
+message PlacementObservation {
+  // provisioning | syncing | ready | degraded | offline.
+  string state = 1;
+  // complete | partial | unknown.
+  string completeness = 2;
+  int64 observed_at = 3;
+  string observation_version = 4;
+  // Registry-only publication fully materialized at this placement.
+  string mutable_publication_id = 5;
+  // Registry-only publication whose pointer update owns the watermark CAS.
+  string pending_publication_id = 6;
+  string watermark_resource_version = 7;
+}
+
+// Derived selection and authority facts; no field is directly mutable.
+message PlacementStatus {
+  // primary for the observed writer, otherwise replica, shard, or archive.
+  string derived_role = 1;
+  bool desired_writer = 2;
+  bool observed_writer = 3;
+  bool promotion_pending = 4;
+  // Coarse health/topology predicate before request-specific object evidence.
+  bool effective_read_enabled = 5;
+  // Complete authority/capability/health predicate for writes.
+  bool effective_write_enabled = 6;
+}
+
+message Placement {
+  string name = 1;
+  string storage_binding_name = 2;
+  string prefix = 3;
+  PlacementSpec spec = 4;
+  PlacementObservation observation = 5;
+  PlacementStatus status = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+  string resource_version = 9;
+}
+
+message ListPlacementsRequest {
+  SurfaceRef surface = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListPlacementsResponse {
+  repeated Placement placements = 1;
+  string next_page_token = 2;
+}
+
+message GetPlacementRequest {
+  SurfaceRef surface = 1;
+  string name = 2;
+}
+
+message GetPlacementResponse {
+  Placement placement = 1;
+}
+
+// Desired and observed single-writer authority for a surface.
+message SurfaceWriteAuthority {
+  string mode = 1;
+  string desired_placement_name = 2;
+  string observed_placement_name = 3;
+  int64 desired_write_spec_version = 4;
+  int64 observed_write_spec_version = 5;
+  int64 desired_binding_write_revision = 6;
+  int64 observed_binding_write_revision = 7;
+  int64 desired_generation = 8;
+  int64 observed_generation = 9;
+  string reconciliation_state = 10;
+  string reconciliation_error = 11;
+  string resource_version = 12;
+  // Immutable opaque identity of this authority lifetime.
+  string incarnation_id = 13;
+}
+
+message GetWriteAuthorityRequest {
+  SurfaceRef surface = 1;
+}
+
+message GetWriteAuthorityResponse {
+  // Absent for an explicitly read-only surface.
+  SurfaceWriteAuthority authority = 1;
+}
+
+// Service-account controller acknowledgement of exactly one desired authority
+// generation. Human operator tokens cannot call this method.
+message ReportWriteAuthorityRequest {
+  SurfaceRef surface = 1;
+  string expected_observation_version = 2;
+  int64 desired_generation = 3;
+  // ready | failed.
+  string state = 4;
+  // Required exactly for failed.
+  string error = 5;
+  string controller_lease_id = 6;
+  int64 controller_generation = 7;
+}
+
+message WriteAuthorityObservationResponse {
+  SurfaceWriteAuthority authority = 1;
+}
+
+message RemoveWriteAuthorityResponse {
+  bool removed = 1;
+}
+
+message PlanCreatePlacementRequest {
+  SurfaceRef surface = 1;
+  string name = 2;
+  string storage_binding_id = 3;
+  string prefix = 4;
+  string kind = 5;
+  string desired_state = 6;
+  optional bool desired_read_enabled = 7;
+  optional int64 read_order = 8;
+  HashRangeV1 hash_range = 9;
+  bool requires_conditional_writes = 10;
+  string idempotency_key = 11;
+  string expected_resource_version = 12;
+}
+
+message PlanUpdatePlacementRequest {
+  SurfaceRef surface = 1;
+  string name = 2;
+  string expected_resource_version = 3;
+  string desired_state = 4;
+  optional bool desired_read_enabled = 5;
+  optional int64 read_order = 6;
+  repeated string update_mask = 7;
+  string idempotency_key = 8;
+}
+
+message PlacementResponse { Placement placement = 1; }
+
+message SurfaceMutationRequest {
+  SurfaceRef surface = 1;
+  optional string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+
+message PlacementMutationRequest {
+  SurfaceRef surface = 1;
+  string placement_name = 2;
+  optional string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+message PlanScanPlacementRequest {
+  SurfaceRef surface = 1;
+  string placement_name = 2;
+  string idempotency_key = 3;
+  string expected_resource_version = 4;
+}
+
+message PlanReplicatePlacementRequest {
+  SurfaceRef surface = 1;
+  string source_placement_name = 2;
+  string destination_placement_name = 3;
+  string idempotency_key = 4;
+  string expected_resource_version = 5;
+}
+
+message PlanRepairPlacementRequest {
+  SurfaceRef surface = 1;
+  string placement_name = 2;
+  string source_placement_name = 3;
+  string idempotency_key = 4;
+  string expected_resource_version = 5;
+}
+
+message ObjectPresence {
+  string object_ref = 1;
+  string placement_name = 2;
+  string state = 3;
+  string content_digest = 4;
+  uint64 size = 5;
+  int64 observed_at = 6;
+}
+
+message ListObjectPresenceRequest {
+  SurfaceRef surface = 1;
+  string object_ref = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+message ListObjectPresenceResponse {
+  repeated ObjectPresence presences = 1;
+  string next_page_token = 2;
+}
+
+message SurfaceListRequest {
+  SurfaceRef surface = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message PlacementPolicy {
+  string stable_id = 1;
+  SurfaceRef surface = 2;
+  string name = 3;
+  string kind = 4;
+  int64 current_revision = 5;
+  string current_content_digest = 6;
+  string resource_version = 7;
+  int64 created_at = 8;
+  int64 updated_at = 9;
+}
+
+enum PlacementPolicyKind {
+  PLACEMENT_POLICY_KIND_UNSPECIFIED = 0;
+  PLACEMENT_POLICY_KIND_ORDERED_FAILOVER = 1;
+  PLACEMENT_POLICY_KIND_LOCAL_THEN_REMOTE = 2;
+  PLACEMENT_POLICY_KIND_HASH_PARTITION = 3;
+}
+
+enum AccessClass {
+  ACCESS_CLASS_UNSPECIFIED = 0;
+  ACCESS_CLASS_LOCAL = 1;
+  ACCESS_CLASS_REMOTE = 2;
+}
+
+enum PolicyRetryCondition {
+  POLICY_RETRY_CONDITION_UNSPECIFIED = 0;
+  POLICY_RETRY_CONDITION_CONNECT_FAILURE = 1;
+  POLICY_RETRY_CONDITION_TIMEOUT_BEFORE_HEADERS = 2;
+  POLICY_RETRY_CONDITION_ORIGIN_429 = 3;
+  POLICY_RETRY_CONDITION_ORIGIN_502 = 4;
+  POLICY_RETRY_CONDITION_ORIGIN_503 = 5;
+  POLICY_RETRY_CONDITION_ORIGIN_504 = 6;
+  POLICY_RETRY_CONDITION_PRESENCE_MISMATCH = 7;
+  POLICY_RETRY_CONDITION_VERIFIED_CORRUPTION = 8;
+}
+
+message PolicyFailureContract {
+  repeated PolicyRetryCondition retry_on = 1;
+}
+
+message PlacementPolicyReplicaGroup {
+  repeated string placement_names = 1;
+  AccessClass access_class = 2;
+  HashRangeV1 hash_range = 3;
+}
+
+message OrderedFailoverPlacementPolicy {
+  repeated PlacementPolicyReplicaGroup replica_groups = 1;
+}
+
+message LocalThenRemotePlacementPolicy {
+  repeated PlacementPolicyReplicaGroup replica_groups = 1;
+  NetworkBoundaryRevisionRef local_boundary = 2;
+  bool allow_remote_fallback = 3;
+}
+
+message HashPartitionPlacementPolicy {
+  repeated PlacementPolicyReplicaGroup ranges = 1;
+  repeated string complete_fallback_placements = 2;
+}
+
+message NetworkBoundaryRevisionRef {
+  string boundary_id = 1;
+  int64 revision = 2;
+}
+
+message PlacementPolicyRevisionSpec {
+  oneof selector {
+    OrderedFailoverPlacementPolicy ordered_failover = 1;
+    LocalThenRemotePlacementPolicy local_then_remote = 2;
+    HashPartitionPlacementPolicy hash_partition = 3;
+  }
+  PolicyFailureContract failure_contract = 4;
+}
+
+message PlacementPolicyRevision {
+  string policy_id = 1;
+  int64 revision = 2;
+  PlacementPolicyRevisionSpec spec = 3;
+  string content_digest = 4;
+  string created_by = 5;
+  int64 created_at = 6;
+}
+
+message ListPlacementPoliciesResponse {
+  repeated PlacementPolicy policies = 1;
+  string next_page_token = 2;
+}
+message GetPlacementPolicyRequest {
+  SurfaceRef surface = 1;
+  string policy_id = 2;
+}
+message PlacementPolicyResponse { PlacementPolicy policy = 1; }
+message ListPlacementPolicyRevisionsResponse {
+  repeated PlacementPolicyRevision revisions = 1;
+  string next_page_token = 2;
+}
+message ListPlacementPolicyRevisionsRequest {
+  SurfaceRef surface = 1;
+  string policy_id = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+message GetPlacementPolicyRevisionRequest {
+  SurfaceRef surface = 1;
+  string policy_id = 2;
+  int64 revision = 3;
+}
+message PlacementPolicyRevisionResponse { PlacementPolicyRevision revision = 1; }
+message PlanPlacementPolicyMutationRequest {
+  SurfaceRef surface = 1;
+  string policy_id = 2;
+  string name = 3;
+  PlacementPolicyRevisionSpec desired = 4;
+  optional string expected_resource_version = 5;
+  string idempotency_key = 6;
+}
+message TestPlacementPolicyRevisionRequest {
+  SurfaceRef surface = 1;
+  string policy_id = 2;
+  int64 revision = 3;
+  string object_ref = 4;
+  AccessClass access_class = 5;
+}
+message TestPlacementPolicyRevisionResponse {
+  uint32 bucket = 1;
+  repeated string selected_placements = 2;
+  repeated string decisions = 3;
+}
+
+message PlacementEquivalence {
+  string stable_id = 1;
+  SurfaceRef surface = 2;
+  string placement_a = 3;
+  string placement_b = 4;
+  string evidence_digest = 5;
+  string state = 6;
+  string resource_version = 7;
+  int64 confirmed_at = 8;
+}
+message ListPlacementEquivalencesResponse {
+  repeated PlacementEquivalence equivalences = 1;
+  string next_page_token = 2;
+}
+message PlanPlacementEquivalenceRequest {
+  SurfaceRef surface = 1;
+  string placement_a = 2;
+  string placement_b = 3;
+  optional string expected_a_resource_version = 4;
+  optional string expected_b_resource_version = 5;
+  string idempotency_key = 6;
+  string expected_resource_version = 7;
+}
+message PlacementEquivalenceResponse { PlacementEquivalence equivalence = 1; }
+
+message RegistryMirror {
+  string registry_id = 1;
+  string source_url = 2;
+  string refspec = 3;
+  string auth_secret_ref = 4;
+  int64 interval_seconds = 5;
+  string state = 6;
+  string observed_commit = 7;
+  string error = 8;
+  int64 last_sync_at = 9;
+  string resource_version = 10;
+  string signature_policy = 11;
+  RegistryMirrorMode mode = 12;
+}
+enum RegistryMirrorMode {
+  REGISTRY_MIRROR_MODE_UNSPECIFIED = 0;
+  REGISTRY_MIRROR_MODE_FULL = 1;
+  REGISTRY_MIRROR_MODE_PULL_THROUGH = 2;
+}
+message RegistryMirrorSpec {
+  string source_url = 1;
+  string refspec = 2;
+  string auth_secret_ref = 3;
+  int64 interval_seconds = 4;
+  string signature_policy = 5;
+  RegistryMirrorMode mode = 6;
+}
+message GetRegistryMirrorRequest { string registry_id = 1; }
+message PlanSyncRegistryMirrorRequest {
+  string registry_id = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+message RegistryMirrorResponse { RegistryMirror mirror = 1; }
+message PlanRegistryMirrorMutationRequest {
+  string registry_id = 1;
+  RegistryMirrorSpec desired = 2;
+  optional string expected_resource_version = 3;
+  repeated string update_mask = 4;
+  string idempotency_key = 5;
+}
+
+// -- Managed registry creation (phase 2c) ----------------------------------
+
+message PlanCreateRegistryRequest {
+  reserved 5, 6;
+  reserved "binding_name", "prefix";
+  string org_slug = 1;
+  // Owning project's materialized path ("" for an org-root registry).
+  string project_path = 2;
+  // Registry name (the last canonical-path segment).
+  string name = 3;
+  // Visibility: public | internal | private (defaults to private).
+  string visibility = 4;
+  // Pinned trust anchors in name:Ed25519:<base64> form.
+  repeated string trust_keys = 7;
+  string idempotency_key = 8;
+  string expected_resource_version = 9;
+}
+
+message ApplyRegistryMutationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+
+message RegistryResponse {
+  Registry registry = 1;
+}
+
+message PlanUpdateRegistryRequest {
+  string slug = 1;
+  string visibility = 2;
+  string crawl_policy = 3;
+  string llms_txt_body = 4;
+  repeated string trust_keys = 5;
+  repeated string update_mask = 6;
+  string expected_resource_version = 7;
+  string idempotency_key = 8;
+}
+
+// The full editable instance-settings bundle. Every field carries its
+// effective value (a stored override or the documented default), so a client
+// reads exactly what the serving path uses. Unset optionals (the numeric
+// `*_secs`/`*_bytes`) are conveyed as 0, meaning "use the built-in default".
+message InstanceSettings {
+  // Site title shown in the masthead and page titles; empty falls back to the
+  // deploy brand.
+  string site_title = 1;
+  // Short tagline shown beside the brand.
+  string tagline = 2;
+  // Global announcement banner rendered on every console page; empty for none.
+  string announcement = 3;
+  // Terms-of-service URL for the footer.
+  string tos_url = 4;
+  // Privacy-policy URL for the footer.
+  string privacy_url = 5;
+  // Support/contact URL for the footer.
+  string support_url = 6;
+  // Who may create organizations: open | invite_only.
+  string signup_policy = 7;
+  // Lowercased email-domain allowlist for signup; empty allows any domain.
+  repeated string signup_domains = 8;
+  // Whether local password login is offered (else SSO/magic-link only).
+  bool password_login = 9;
+  // Session absolute lifetime in seconds; 0 = the built-in default.
+  int64 session_lifetime_secs = 10;
+  // Default robots.txt crawl policy new registries inherit:
+  // allow_all | allow_no_ai | deny_all.
+  string default_crawl_policy = 11;
+  // Maximum surface upload size in bytes; 0 = the built-in default.
+  int64 max_upload_bytes = 12;
+  // Whether cache discovery is visible to unauthenticated visitors.
+  bool caches_public = 13;
+}
+
+message GetInstanceSettingsRequest {}
+
+message GetInstanceSettingsResponse {
+  // The full effective settings bundle.
+  InstanceSettings settings = 1;
+  // SHA-256 revision of the exact effective bundle.
+  string resource_version = 2;
+}
+
+message PlanSetInstanceSettingsRequest {
+  // Keys to set, by their canonical name (e.g. `site_title`, `signup_policy`,
+  // `signup_domains`). A blank value clears the key to its default; values are
+  // validated per key (`signup_policy`, `default_crawl_policy`, and the numeric
+  // keys are checked) and an unknown key is rejected.
+  map<string, string> values = 1;
+  // Keys to explicitly reset to their default (equivalent to setting them
+  // blank). Same key namespace as `values`.
+  repeated string clear = 2;
+  // Exact current settings revision observed while planning.
+  string expected_resource_version = 3;
+  // Idempotency key for creating or replaying this immutable plan.
+  string idempotency_key = 4;
+}
+// -- Audit log (phase 3a) --------------------------------------------------
+
+// One append-only audit-log entry: who did what, where, and the change-set
+// and cryptographic-history cross-references.
+message AuditEntry {
+  // The change-set this entry ties to ("" when not change-set driven).
+  string change_id = 1;
+  // Human label of the actor ("alice@acme.com", "sa:acme/ci", a key
+  // fingerprint, or "system").
+  string actor_label = 2;
+  // The action verb (e.g. "registry.visibility", "membership.grant").
+  string action = 3;
+  // Scope path the action targeted.
+  string scope = 4;
+  // Resulting git commit hash for surface-touching ops ("" otherwise).
+  string result_commit = 5;
+  // Resulting git tag hash for surface-touching ops ("" otherwise).
+  string result_tag = 6;
+  // Free-form detail (often a compact JSON object).
+  string detail = 7;
+  // Unix seconds the entry was recorded.
+  int64 created_at = 8;
+}
+
+message ListAuditRequest {
+  // Scope path to filter on; the root scope ("") lists instance-wide.
+  string scope = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListAuditResponse {
+  repeated AuditEntry entries = 1;
+  string next_page_token = 2;
+}
+
+// -- Configuration change-sets (phase 3a) ----------------------------------
+
+// One configuration change-set summary.
+message Changeset {
+  string change_id = 1;
+  // Human label of the actor that opened the change-set.
+  string actor_label = 2;
+  // Scope path the change-set targets.
+  string scope = 3;
+  // Lifecycle status: draft | applied | reverted.
+  string status = 4;
+  // One-line human summary.
+  string summary = 5;
+  // Unix seconds the change-set was created.
+  int64 created_at = 6;
+  // Unix seconds the change-set was applied (0 when never applied).
+  int64 applied_at = 7;
+  // The change-set that reverted this one ("" when not reverted).
+  string reverted_by_change_id = 8;
+}
+
+// One revision within a change-set: a staged operation on one object.
+message Revision {
+  // The object's type (e.g. "registry", "membership", "token").
+  string object_type = 1;
+  // The object's stable id within its type.
+  string object_id = 2;
+  // The operation: create | update | delete.
+  string op = 3;
+  // Semantic field-level diffs of this revision.
+  repeated FieldDiff diffs = 4;
+}
+
+// One field-level diff between a revision's old and new object snapshots.
+message FieldDiff {
+  // The field name (a JSON object key).
+  string field = 1;
+  // The old scalar value ("" when the field was added).
+  string old = 2;
+  // The new scalar value ("" when the field was removed).
+  string new = 3;
+}
+
+message ListChangesetsRequest {
+  // Scope path to filter on; the root scope ("") lists instance-wide.
+  string scope = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListChangesetsResponse {
+  repeated Changeset changesets = 1;
+  string next_page_token = 2;
+}
+
+message GetChangesetRequest {
+  string change_id = 1;
+}
+
+message GetChangesetResponse {
+  Changeset changeset = 1;
+  repeated Revision revisions = 2;
+}
+
+// -- Publish: placement-aware registry publications -----------------------
+
+message RegistryPublicationObjectInput {
+  string path = 1;
+  string sha256 = 2;
+  int64 byte_size = 3;
+  // immutable | mutable_pointer
+  string kind = 4;
+  string media_type = 5;
+}
+
+message BeginRegistryPublicationRequest {
+  string registry = 1;
+  string generation = 2;
+  string refs_digest = 3;
+  string default_commit = 4;
+  string parent_publication_id = 5;
+  repeated RegistryPublicationObjectInput objects = 6;
+}
+
+message GetRegistryPublicationRequest {
+  string publication_id = 1;
+}
+
+message CommitRegistryPublicationRequest {
+  string publication_id = 1;
+}
+
+message AbortRegistryPublicationRequest {
+  string publication_id = 1;
+}
+
+message RegistryPublicationObject {
+  int64 object_id = 1;
+  string path = 2;
+  string sha256 = 3;
+  int64 byte_size = 4;
+  string kind = 5;
+  string media_type = 6;
+  // Exact Hub proxy URL accepting the disk/metadata bytes for this object.
+  string upload_url = 7;
+}
+
+message RegistryPublicationPlacement {
+  int64 placement_id = 1;
+  string name = 2;
+  bool required = 3;
+  string state = 4;
+}
+
+message RegistryPublication {
+  string publication_id = 1;
+  string registry = 2;
+  int64 ordinal = 3;
+  string generation = 4;
+  string manifest_digest = 5;
+  string refs_digest = 6;
+  string default_commit = 7;
+  string parent_publication_id = 8;
+  string state = 9;
+  repeated RegistryPublicationObject objects = 10;
+  repeated RegistryPublicationPlacement placements = 11;
+  int64 created_at = 12;
+  int64 completed_at = 13;
+}
+
+// -- Webhooks (phase 4) ----------------------------------------------------
+
+// One webhook subscription. Signing material is never accepted or returned by
+// this API; secret_version_ref identifies an immutable operator-managed secret
+// that the delivery runtime resolves only while signing a request.
+message Webhook {
+  int64 id = 1;
+  string org_slug = 2;
+  // Destination URL each subscribed event is POSTed to.
+  string url = 3;
+  // Subscribed event-type strings; empty means all events.
+  repeated string events = 4;
+  // Whether the subscription currently receives deliveries.
+  bool active = 5;
+  // Unix seconds the subscription was created.
+  int64 created_at = 6;
+  string resource_version = 7;
+  int64 updated_at = 8;
+  // Immutable secret-provider reference used for delivery signing.
+  string secret_version_ref = 9;
+  // Required SHA-256 hex digest of the resolved secret, used to reject a
+  // provider value that does not match the planned credential version.
+  string credential_fingerprint = 10;
+}
+
+message PlanCreateWebhookRequest {
+  string org_slug = 1;
+  // Destination URL.
+  string url = 2;
+  // Event-type strings to subscribe to; empty subscribes to all events.
+  repeated string events = 3;
+  string idempotency_key = 4;
+  // Immutable operator-managed secret-provider reference. Plaintext signing
+  // secrets are not accepted by the Hub API and must never be placed here.
+  string secret_version_ref = 5;
+  // Required SHA-256 hex digest of the resolved signing secret.
+  string credential_fingerprint = 6;
+  string expected_resource_version = 7;
+}
+
+message CreateWebhookResponse {
+  Webhook webhook = 1;
+  reserved 2;
+  reserved "secret";
+}
+
+message ListWebhooksRequest {
+  string org_slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListWebhooksResponse {
+  repeated Webhook webhooks = 1;
+  string next_page_token = 2;
+}
+
+message PlanDeleteWebhookRequest {
+  int64 id = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+
+message ApplyWebhookMutationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+
+// -- Git read API + change requests ----------------------------------------
+
+// One commit in a registry's committed history.
+message GitCommit {
+  // Commit object id (64-hex sha256).
+  string oid = 1;
+  // Parent commit oids, in header order.
+  repeated string parents = 2;
+  // Commit message (full body).
+  string message = 3;
+  // Committer identity line ("Name <email>").
+  string author = 4;
+  // Committer timestamp, Unix seconds.
+  int64 when = 5;
+  // The AOS-Change-Id trailer when the commit carries one ("" otherwise).
+  string change_id = 6;
+}
+
+message GitLogRequest {
+  string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message GitLogResponse {
+  repeated GitCommit commits = 1;
+  string next_page_token = 2;
+}
+
+message GitDiffRequest {
+  string slug = 1;
+  // Base commit oid (64-hex). Empty diffs the whole tree as additions.
+  string from_oid = 2;
+  // Target commit oid (64-hex). Empty defaults to the current HEAD.
+  string to_oid = 3;
+}
+
+message GitDiffResponse {
+  // A textual unified-ish diff of the committed config files between the two
+  // commits.
+  string diff = 1;
+}
+
+// One git-backed change request: a draft change-set with the hub's signed
+// draft commit and ref, its file diff, and the promotion command.
+message ChangeRequest {
+  // The change-set id (also the AOS-Change-Id trailer and ref suffix).
+  string change_id = 1;
+  // The draft ref the hub wrote (refs/hub/changes/<change_id>).
+  string git_ref = 2;
+  // The signed draft-commit oid the ref points at.
+  string git_commit = 3;
+  // Lifecycle status: draft | applied | reverted.
+  string status = 4;
+  // One-line human summary.
+  string summary = 5;
+  // Human label of the actor that opened the change request.
+  string actor_label = 6;
+  // Unix seconds the change request was created.
+  int64 created_at = 7;
+  // The committed file each revision edits, with its semantic diff.
+  repeated FileDiff file_diffs = 8;
+  // The `apr change merge <change_id>` command a maintainer runs to promote it.
+  string merge_command = 9;
+}
+
+// One edited committed file within a change request, with a unified diff.
+message FileDiff {
+  // The committed file path (e.g. "registry.toml").
+  string path = 1;
+  // A textual unified-ish diff of the file's old vs new contents.
+  string diff = 2;
+}
+
+message ListChangeRequestsRequest {
+  string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListChangeRequestsResponse {
+  repeated ChangeRequest change_requests = 1;
+  string next_page_token = 2;
+}
+
+// -- Binary caches, integrations, retention, and GC (RFC-0012) -------------
+
+service BinaryCacheService {
+  rpc ListBinaryCaches(ListBinaryCachesRequest) returns (ListBinaryCachesResponse);
+  rpc GetBinaryCache(GetBinaryCacheRequest) returns (BinaryCacheResponse);
+  rpc PlanCreateBinaryCache(PlanBinaryCacheMutationRequest) returns (TopologyPlanResponse);
+  rpc CreateBinaryCache(ApplyBinaryCacheMutationRequest) returns (BinaryCacheResponse);
+  rpc PlanUpdateBinaryCache(PlanBinaryCacheMutationRequest) returns (TopologyPlanResponse);
+  rpc UpdateBinaryCache(ApplyBinaryCacheMutationRequest) returns (BinaryCacheResponse);
+  rpc PlanDeleteBinaryCache(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteBinaryCache(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+
+  rpc GetCacheGcPolicy(GetCacheGcPolicyRequest) returns (GetCacheGcPolicyResponse);
+  rpc PlanSetCacheGcPolicy(PlanSetCacheGcPolicyRequest) returns (TopologyPlanResponse);
+  rpc SetCacheGcPolicy(ApplyCachePlanRequest) returns (GetCacheGcPolicyResponse);
+  rpc PlanRunCacheGc(PlanRunCacheGcRequest) returns (TopologyPlanResponse);
+  rpc RunCacheGc(ApplyCachePlanRequest) returns (OperationResponse);
+  rpc PlanAcknowledgeCacheGcFirstSweep(PlanAcknowledgeCacheGcFirstSweepRequest) returns (TopologyPlanResponse);
+  rpc AcknowledgeCacheGcFirstSweep(ApplyCachePlanRequest) returns (CacheGcGenerationResponse);
+  rpc GetCacheGcPlan(GetCacheGcPlanRequest) returns (CacheGcPlanResponse);
+  rpc GetCacheGcRun(GetCacheOperationRequest) returns (CacheGcRunResponse);
+  rpc SearchCache(SearchCacheRequest) returns (SearchCacheResponse);
+  rpc GetCacheObject(GetCacheObjectRequest) returns (GetCacheObjectResponse);
+  rpc ListCacheGcRuns(ListCacheGcRunsRequest) returns (ListCacheGcRunsResponse);
+  rpc GetCacheGcDeletionJob(GetCacheGcDeletionJobRequest) returns (CacheGcDeletionJobResponse);
+  rpc ListCacheGcDeletionJobs(ListCacheGcDeletionJobsRequest) returns (ListCacheGcDeletionJobsResponse);
+  rpc PlanRetryCacheGcDeletionJob(PlanRetryCacheGcDeletionJobRequest) returns (TopologyPlanResponse);
+  rpc RetryCacheGcDeletionJob(ApplyTopologyPlanRequest) returns (OperationResponse);
+  rpc PlanAbandonCacheGcDeletionJob(PlanAbandonCacheGcDeletionJobRequest) returns (TopologyPlanResponse);
+  rpc AbandonCacheGcDeletionJob(ApplyCachePlanRequest) returns (CacheGcDeletionJobResponse);
+
+  rpc ListRootReasons(ListRootReasonsRequest) returns (ListRootReasonsResponse);
+  rpc GetRetentionRoot(GetRetentionRootRequest) returns (RetentionRootResponse);
+  rpc ListRetentionRoots(ListRetentionRootsRequest) returns (ListRetentionRootsResponse);
+  rpc PlanCreateManualRetentionRoot(PlanManualRetentionRootRequest) returns (TopologyPlanResponse);
+  rpc CreateManualRetentionRoot(ApplyCachePlanRequest) returns (RetentionRootResponse);
+  rpc PlanRenewRetentionLease(PlanRetentionLeaseRequest) returns (TopologyPlanResponse);
+  rpc RenewRetentionLease(ApplyCachePlanRequest) returns (RetentionLeaseResponse);
+  rpc PlanRevokeRetentionLease(PlanRevokeRetentionLeaseRequest) returns (TopologyPlanResponse);
+  rpc RevokeRetentionLease(ApplyCachePlanRequest) returns (RetentionLeaseResponse);
+  rpc PlanDeleteManualRetentionRoot(PlanDeleteManualRetentionRootRequest) returns (TopologyPlanResponse);
+  rpc DeleteManualRetentionRoot(ApplyCachePlanRequest) returns (DeleteTopologyResourceResponse);
+  rpc PlanRefreshAllRetention(PlanRefreshAllRetentionRequest) returns (TopologyPlanResponse);
+  rpc RefreshAllRetention(ApplyTopologyPlanRequest) returns (OperationResponse);
+
+  rpc PlanRunPlacementEviction(PlanRunPlacementEvictionRequest) returns (TopologyPlanResponse);
+  rpc RunPlacementEviction(ApplyTopologyPlanRequest) returns (OperationResponse);
+  rpc CacheClosure(CacheClosureRequest) returns (CacheClosureResponse);
+  rpc CreateCacheObjectUploads(CreateCacheObjectUploadsRequest)
+      returns (CreateCacheObjectUploadsResponse);
+  rpc BeginCacheMultipartUpload(BeginCacheMultipartUploadRequest)
+      returns (BeginCacheMultipartUploadResponse);
+  rpc CompleteCacheMultipartUpload(CompleteCacheMultipartUploadRequest)
+      returns (CacheMultipartUploadResponse);
+  rpc AbortCacheMultipartUpload(AbortCacheMultipartUploadRequest)
+      returns (CacheMultipartUploadResponse);
+}
+
+service CacheIntegrationService {
+  rpc ListRegistryCacheIntegrations(ListRegistryCacheIntegrationsRequest) returns (ListCacheIntegrationsResponse);
+  rpc ListCacheRegistryIntegrations(ListCacheRegistryIntegrationsRequest) returns (ListCacheIntegrationsResponse);
+  rpc GetCacheRegistryIntegration(GetCacheRegistryIntegrationRequest) returns (CacheIntegrationResponse);
+  rpc PreviewCacheIntegration(PreviewCacheIntegrationRequest) returns (PreviewCacheIntegrationResponse);
+  rpc GetConsumerCacheStack(GetConsumerCacheStackRequest) returns (ConsumerCacheStackResponse);
+  rpc ValidateConsumerCacheStack(GetConsumerCacheStackRequest) returns (ConsumerCacheStackValidationResponse);
+  rpc PlanCreateConsumerCacheChangeset(PlanCreateConsumerCacheChangesetRequest) returns (TopologyPlanResponse);
+  rpc CreateConsumerCacheChangeset(ApplyTopologyPlanRequest) returns (ConsumerCacheChangesetResponse);
+  rpc GetRetentionSubscription(GetRetentionSubscriptionRequest) returns (RetentionSubscriptionResponse);
+  rpc ListRetentionSubscriptions(ListRetentionSubscriptionsRequest) returns (ListRetentionSubscriptionsResponse);
+  rpc PlanSetRetentionSubscription(PlanRetentionSubscriptionRequest) returns (TopologyPlanResponse);
+  rpc SetRetentionSubscription(ApplyCachePlanRequest) returns (RetentionSubscriptionResponse);
+  rpc PlanDeleteRetentionSubscription(PlanDeleteRetentionSubscriptionRequest) returns (TopologyPlanResponse);
+  rpc DeleteRetentionSubscription(ApplyCachePlanRequest) returns (DeleteTopologyResourceResponse);
+  rpc PlanRefreshRetentionSubscription(PlanRefreshRetentionSubscriptionRequest) returns (TopologyPlanResponse);
+  rpc RefreshRetentionSubscription(ApplyTopologyPlanRequest) returns (OperationResponse);
+  rpc ExplainRetention(ExplainRetentionRequest) returns (ExplainRetentionResponse);
+  rpc GetPopulationTarget(GetPopulationTargetRequest) returns (PopulationTargetResponse);
+  rpc ListPopulationTargets(ListPopulationTargetsRequest) returns (ListPopulationTargetsResponse);
+  rpc PlanSetPopulationTarget(PlanPopulationTargetRequest) returns (TopologyPlanResponse);
+  rpc SetPopulationTarget(ApplyCachePlanRequest) returns (PopulationTargetResponse);
+  rpc PlanDeletePopulationTarget(PlanDeletePopulationTargetRequest) returns (TopologyPlanResponse);
+  rpc DeletePopulationTarget(ApplyCachePlanRequest) returns (DeleteTopologyResourceResponse);
+  rpc PlanRunPopulation(PlanRunPopulationRequest) returns (TopologyPlanResponse);
+  rpc RunPopulation(ApplyTopologyPlanRequest) returns (OperationResponse);
+  rpc GetCoverage(GetPopulationTargetRequest) returns (CoverageResponse);
+  rpc PlanRunCoverageValidation(PlanCoverageOperationRequest) returns (TopologyPlanResponse);
+  rpc RunCoverageValidation(ApplyTopologyPlanRequest) returns (OperationResponse);
+  rpc PlanRunCoverageRepair(PlanCoverageOperationRequest) returns (TopologyPlanResponse);
+  rpc RunCoverageRepair(ApplyTopologyPlanRequest) returns (OperationResponse);
+}
+
+service OperationService {
+  rpc GetOperation(GetOperationRequest) returns (OperationDetailResponse);
+  rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
+  rpc WatchOperation(WatchOperationRequest) returns (WatchOperationResponse);
+  rpc CancelOperation(MutateOperationRequest) returns (OperationDetailResponse);
+  rpc RetryOperation(MutateOperationRequest) returns (OperationDetailResponse);
+}
+
+message BinaryCache {
+  string stable_id = 1;
+  string slug = 2;
+  string name = 3;
+  string owner_scope_key = 4;
+  string visibility = 5;
+  uint32 nix_priority = 6;
+  string compression = 7;
+  bool want_mass_query = 8;
+  bool signed = 9;
+  string resource_version = 10;
+  int64 created_at = 11;
+  int64 updated_at = 12;
+  uint64 used_bytes = 13;
+  uint64 object_count = 14;
+  uint64 placement_count = 15;
+  uint64 retention_root_count = 16;
+}
+
+message BinaryCacheSpec {
+  string slug = 1;
+  string name = 2;
+  string owner_scope_key = 3;
+  string visibility = 4;
+  uint32 nix_priority = 5;
+  string compression = 6;
+  bool want_mass_query = 7;
+}
+
+message PlanBinaryCacheMutationRequest {
+  string stable_id = 1;
+  BinaryCacheSpec desired = 2;
+  repeated string update_mask = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+}
+
+message ApplyBinaryCacheMutationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+
+message GetBinaryCacheRequest { string cache_id = 1; }
+message BinaryCacheResponse { BinaryCache cache = 1; }
+message ListBinaryCachesRequest {
+  string owner_scope_key = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message ListBinaryCachesResponse {
+  repeated BinaryCache caches = 1;
+  string next_page_token = 2;
+}
+
+message OperationRef {
+  string operation_id = 1;
+  string kind = 2;
+  string state = 3;
+  int64 created_at = 4;
+}
+message OperationResponse { OperationRef operation = 1; }
+message OperationResourceRef {
+  oneof target {
+    string registry_id = 1;
+    string binary_cache_id = 2;
+    string placement_id = 3;
+    string domain_id = 4;
+    string network_boundary_id = 5;
+    string delivery_endpoint_id = 6;
+    string storage_gateway_id = 7;
+    string delivery_route_id = 8;
+    string placement_policy_id = 9;
+    string retention_subscription_id = 10;
+    string population_target_id = 11;
+    string cache_gc_generation_id = 12;
+    string storage_binding_id = 13;
+  }
+}
+message OperationTarget {
+  string role = 1;
+  oneof target {
+    string registry_id = 2;
+    string binary_cache_id = 3;
+    string placement_id = 4;
+    string domain_id = 5;
+    string network_boundary_id = 6;
+    string delivery_endpoint_id = 7;
+    string storage_gateway_id = 8;
+    string delivery_route_id = 9;
+    string placement_policy_id = 10;
+    string retention_subscription_id = 11;
+    string population_target_id = 12;
+    string cache_gc_generation_id = 13;
+    string storage_binding_id = 14;
+  }
+  int64 generation_key = 20;
+  string configuration_digest = 21;
+}
+message OperationDetail {
+  OperationRef operation = 1;
+  repeated OperationTarget targets = 2;
+  uint64 completed_units = 4;
+  optional uint64 total_units = 5;
+  string error = 6;
+  int64 updated_at = 7;
+  optional int64 finished_at = 8;
+  string resource_version = 9;
+}
+message GetOperationRequest { string operation_id = 1; }
+message OperationDetailResponse { OperationDetail operation = 1; }
+message ListOperationsRequest {
+  OperationResourceRef target = 1;
+  string state = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+message ListOperationsResponse {
+  repeated OperationDetail operations = 1;
+  string next_page_token = 2;
+}
+message WatchOperationRequest {
+  string operation_id = 1;
+  string after_resource_version = 2;
+  int64 timeout_seconds = 3;
+}
+message WatchOperationResponse {
+  OperationDetail operation = 1;
+  bool terminal = 2;
+}
+message MutateOperationRequest {
+  string operation_id = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+message ApplyCachePlanRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message ApplyTopologyPlanRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+
+message CacheIntegration {
+  string cache_id = 1;
+  string registry_id = 2;
+  repeated ConsumerCacheStackEntry publications = 3;
+  RetentionSubscription retention = 4;
+  PopulationTarget population = 5;
+}
+message CacheIntegrationResponse { CacheIntegration integration = 1; }
+message ListRegistryCacheIntegrationsRequest {
+  string registry_id = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message ListCacheRegistryIntegrationsRequest {
+  string cache_id = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message GetCacheRegistryIntegrationRequest {
+  string cache_id = 1;
+  string registry_id = 2;
+}
+message ListCacheIntegrationsResponse {
+  repeated CacheIntegration integrations = 1;
+  string next_page_token = 2;
+}
+message PreviewCacheIntegrationRequest {
+  string cache_id = 1;
+  string registry_id = 2;
+  ConsumerCacheChange publication = 3;
+  RetentionSubscriptionSpec retention = 4;
+  PopulationTargetSpec population = 5;
+}
+message PreviewCacheIntegrationResponse {
+  TopologyPlan publication_plan = 1;
+  TopologyPlan retention_plan = 2;
+  TopologyPlan population_plan = 3;
+}
+
+message ConsumerCacheStack {
+  string registry_id = 1;
+  string indexed_commit = 2;
+  repeated ConsumerCacheStackEntry entries = 3;
+  string resource_version = 4;
+}
+message ConsumerCacheStackResponse { ConsumerCacheStack stack = 1; }
+message GetConsumerCacheStackRequest { string registry_id = 1; }
+message ConsumerCacheStackValidationResponse {
+  bool valid = 1;
+  repeated string errors = 2;
+  repeated string warnings = 3;
+}
+message ConsumerCacheChange {
+  string operation = 1;
+  string entry_id = 2;
+  ConsumerCacheStackEntry desired = 3;
+  string before_entry_id = 4;
+  string mirror_with_entry_id = 5;
+}
+message PlanCreateConsumerCacheChangesetRequest {
+  string registry_id = 1;
+  ConsumerCacheChange change = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message ConsumerCacheChangesetResponse {
+  string change_id = 1;
+  string state = 2;
+}
+
+message RetentionSelector {
+  bool current_catalog = 1;
+  ChannelTargetSelector channel_targets = 2;
+  RecentReleaseSelector recent_releases = 3;
+  repeated string release_tags = 4;
+  SemverRetentionSelector semver = 5;
+  bool all_releases = 6;
+}
+message ChannelTargetSelector {
+  bool all = 1;
+  repeated string names = 2;
+}
+message RecentReleaseSelector {
+  uint32 count = 1;
+  bool include_prereleases = 2;
+}
+message SemverRetentionSelector {
+  string requirement = 1;
+  bool include_prereleases = 2;
+}
+message RetentionSubscriptionSpec {
+  RetentionSelector selector = 1;
+  int64 removal_grace_seconds = 2;
+}
+message RetentionSubscription {
+  string subscription_id = 1;
+  string cache_id = 2;
+  string registry_id = 3;
+  RetentionSubscriptionSpec desired = 4;
+  int64 policy_version = 5;
+  string current_refresh_id = 6;
+  string refresh_state = 7;
+  string resource_version = 8;
+}
+message GetRetentionSubscriptionRequest {
+  string cache_id = 1;
+  string registry_id = 2;
+}
+message PlanRefreshRetentionSubscriptionRequest {
+  string cache_id = 1;
+  string registry_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message PlanRefreshAllRetentionRequest {
+  string cache_id = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+message ListRetentionSubscriptionsRequest {
+  string cache_id = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message PlanRetentionSubscriptionRequest {
+  string cache_id = 1;
+  string registry_id = 2;
+  RetentionSubscriptionSpec desired = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+}
+message PlanDeleteRetentionSubscriptionRequest {
+  string cache_id = 1;
+  string registry_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message RetentionSubscriptionResponse { RetentionSubscription subscription = 1; }
+message ListRetentionSubscriptionsResponse {
+  repeated RetentionSubscription subscriptions = 1;
+  string next_page_token = 2;
+}
+message ExplainRetentionRequest {
+  string cache_id = 1;
+  string store_hash = 2;
+}
+message ExplainRetentionResponse {
+  bool retained = 1;
+  repeated RootReason reasons = 2;
+}
+
+message PopulationTargetSpec {
+  string trigger = 1;
+  bool required = 2;
+  string placement_policy_revision_id = 3;
+  string validation_gate = 4;
+}
+message PopulationTarget {
+  string target_id = 1;
+  string cache_id = 2;
+  string registry_id = 3;
+  PopulationTargetSpec desired = 4;
+  string state = 5;
+  string resource_version = 6;
+}
+message GetPopulationTargetRequest {
+  string cache_id = 1;
+  string registry_id = 2;
+}
+message ListPopulationTargetsRequest {
+  string cache_id = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message PlanPopulationTargetRequest {
+  string cache_id = 1;
+  string registry_id = 2;
+  PopulationTargetSpec desired = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+}
+message PlanDeletePopulationTargetRequest {
+  string cache_id = 1;
+  string registry_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message PopulationTargetResponse { PopulationTarget target = 1; }
+message ListPopulationTargetsResponse {
+  repeated PopulationTarget targets = 1;
+  string next_page_token = 2;
+}
+message PlanRunPopulationRequest {
+  string cache_id = 1;
+  string registry_id = 2;
+  optional string release_tag = 3;
+  string idempotency_key = 4;
+  string expected_resource_version = 5;
+}
+message PlanCoverageOperationRequest {
+  string cache_id = 1;
+  string registry_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message CoverageResponse {
+  string cache_id = 1;
+  string registry_id = 2;
+  string state = 3;
+  uint64 required_objects = 4;
+  uint64 present_objects = 5;
+  repeated string missing_store_hashes = 6;
+  int64 observed_at = 7;
+}
+
+message CacheGcPolicy {
+  int64 unreferenced_grace_seconds = 1;
+  optional uint64 soft_max_bytes = 2;
+  optional uint64 soft_max_objects = 3;
+  string schedule = 4;
+  uint32 deletion_concurrency = 5;
+  int64 retry_initial_seconds = 6;
+  int64 retry_max_seconds = 7;
+  uint32 retry_max_attempts = 8;
+  int64 tombstone_retention_seconds = 9;
+  int64 policy_version = 10;
+  string resource_version = 11;
+}
+message GetCacheGcPolicyRequest { string cache_id = 1; }
+message GetCacheGcPolicyResponse { CacheGcPolicy policy = 1; }
+message PlanSetCacheGcPolicyRequest {
+  string cache_id = 1;
+  CacheGcPolicy desired = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+  repeated string update_mask = 5;
+}
+message CacheGcGeneration {
+  string cache_id = 1;
+  int64 epoch = 2;
+  string state = 3;
+  string resource_version = 4;
+}
+message CacheGcGenerationResponse { CacheGcGeneration generation = 1; }
+message CacheGcCandidate {
+  string store_hash = 1;
+  uint64 logical_bytes = 2;
+  repeated string blocking_reasons = 3;
+}
+message CacheGcPlacementAction {
+  string placement_id = 1;
+  string store_hash = 2;
+  string action = 3;
+  string inventory_version = 4;
+}
+message CacheGcPlan {
+  string plan_id = 1;
+  string cache_id = 2;
+  int64 expires_at = 3;
+  int64 gc_epoch = 4;
+  int64 policy_version = 5;
+  string root_set_version = 6;
+  string object_set_version = 7;
+  string topology_version = 8;
+  repeated CacheGcCandidate candidates = 9;
+  repeated CacheGcPlacementAction placement_actions = 10;
+  repeated string coverage_failures = 11;
+  string candidate_manifest_hash = 12;
+  string confirmation_hash = 13;
+}
+message PlanRunCacheGcRequest {
+  string cache_id = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+message GetCacheGcPlanRequest {
+  string cache_id = 1;
+  string plan_id = 2;
+}
+message CacheGcPlanResponse { CacheGcPlan plan = 1; }
+message PlanAcknowledgeCacheGcFirstSweepRequest {
+  string cache_id = 1;
+  string gc_plan_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message CacheGcRun {
+  string operation_id = 1;
+  string cache_id = 2;
+  string plan_id = 3;
+  string state = 4;
+  uint64 scanned_objects = 5;
+  uint64 retained_objects = 6;
+  uint64 tombstoned_objects = 7;
+  uint64 logical_bytes_reclaimed = 8;
+  string error = 9;
+  int64 created_at = 10;
+  optional int64 finished_at = 11;
+}
+message GetCacheOperationRequest {
+  string cache_id = 1;
+  string operation_id = 2;
+}
+message CacheGcRunResponse { CacheGcRun run = 1; }
+message ListCacheGcRunsRequest {
+  string cache_id = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message ListCacheGcRunsResponse {
+  repeated CacheGcRun runs = 1;
+  string next_page_token = 2;
+}
+message CacheGcDeletionJob {
+  string job_id = 1;
+  string operation_id = 2;
+  string placement_id = 3;
+  string store_hash = 4;
+  string state = 5;
+  uint32 attempts = 6;
+  string last_error = 7;
+  int64 next_attempt_at = 8;
+  string resource_version = 9;
+}
+message GetCacheGcDeletionJobRequest {
+  string cache_id = 1;
+  string job_id = 2;
+}
+message PlanRetryCacheGcDeletionJobRequest {
+  string cache_id = 1;
+  string job_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message PlanAbandonCacheGcDeletionJobRequest {
+  string cache_id = 1;
+  string job_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message CacheGcDeletionJobResponse { CacheGcDeletionJob job = 1; }
+message ListCacheGcDeletionJobsRequest {
+  string cache_id = 1;
+  string operation_id = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+message ListCacheGcDeletionJobsResponse {
+  repeated CacheGcDeletionJob jobs = 1;
+  string next_page_token = 2;
+}
+
+message ManualRetentionRoot {
+  string root_id = 1;
+  string cache_id = 2;
+  string store_hash = 3;
+  string reason = 4;
+  string created_by = 5;
+  int64 created_at = 6;
+  optional int64 deleted_at = 7;
+  RetentionLease current_lease = 8;
+  string resource_version = 9;
+}
+message RetentionLease {
+  string lease_id = 1;
+  string root_id = 2;
+  int64 expires_at = 3;
+  string state = 4;
+  string renewed_from_lease_id = 5;
+  string actor = 6;
+  int64 created_at = 7;
+  optional int64 revoked_at = 8;
+}
+message RootReason {
+  string reason_id = 1;
+  string cache_id = 2;
+  string store_hash = 3;
+  string source_kind = 4;
+  string registry_id = 5;
+  string retention_subscription_id = 6;
+  string manual_retention_root_id = 7;
+  string retention_lease_id = 8;
+  string release_id = 9;
+  string reason_key = 10;
+}
+message GetRetentionRootRequest {
+  string cache_id = 1;
+  string root_id = 2;
+}
+message RetentionRootResponse { ManualRetentionRoot root = 1; }
+message ListRetentionRootsRequest {
+  string cache_id = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message ListRetentionRootsResponse {
+  repeated ManualRetentionRoot roots = 1;
+  string next_page_token = 2;
+}
+message ListRootReasonsRequest {
+  string cache_id = 1;
+  string registry_id = 2;
+  string store_hash = 3;
+  uint32 page_size = 4;
+  string page_token = 5;
+}
+message ListRootReasonsResponse {
+  repeated RootReason reasons = 1;
+  string next_page_token = 2;
+}
+message PlanManualRetentionRootRequest {
+  string cache_id = 1;
+  string store_hash = 2;
+  string reason = 3;
+  optional int64 lease_until = 4;
+  string idempotency_key = 5;
+  string expected_resource_version = 6;
+}
+message PlanDeleteManualRetentionRootRequest {
+  string cache_id = 1;
+  string root_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message PlanRetentionLeaseRequest {
+  string cache_id = 1;
+  string root_id = 2;
+  string lease_id = 3;
+  optional int64 expires_at = 4;
+  string expected_resource_version = 5;
+  string idempotency_key = 6;
+}
+message PlanRevokeRetentionLeaseRequest {
+  string cache_id = 1;
+  string lease_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message RetentionLeaseResponse { RetentionLease lease = 1; }
+message PlanRunPlacementEvictionRequest {
+  SurfaceRef surface = 1;
+  string placement_id = 2;
+  optional string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+message CacheObject {
+  string store_hash = 1;
+  string store_name = 2;
+  string nar_url = 3;
+  string nar_hash = 4;
+  uint64 nar_size = 5;
+  string file_hash = 6;
+  uint64 file_size = 7;
+  string compression = 8;
+  string deriver = 9;
+  repeated string refs = 10;
+  string signature = 11;
+  string content_address = 12;
+  int64 uploaded_at = 13;
+}
+message SearchCacheRequest {
+  string cache_id = 1;
+  string query = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+message SearchCacheResponse {
+  repeated CacheObject objects = 1;
+  string next_page_token = 2;
+}
+message GetCacheObjectRequest {
+  string cache_id = 1;
+  string store_hash = 2;
+}
+message GetCacheObjectResponse { CacheObject object = 1; }
+message CacheClosureRequest {
+  string cache_id = 1;
+  string store_hash = 2;
+}
+message CacheClosureNode {
+  string store_hash = 1;
+  string store_name = 2;
+  uint64 file_size = 3;
+  repeated string refs = 4;
+  bool present = 5;
+}
+message CacheClosureResponse {
+  repeated CacheClosureNode nodes = 1;
+  uint64 total_size = 2;
+}
+
+message CreateCacheObjectUploadsRequest {
+  string cache_id = 1;
+  // Single object path under the cache (e.g. `<hash>.narinfo` or `nar/<file>`).
+  // Used for one upload; for bulk admission use `paths` instead.
+  string path = 2;
+  // Batch of object paths to admit in one round-trip. When non-empty,
+  // the response's `uploads` is populated (parallel to this list) and the
+  // single-path `upload_url` is unused.
+  repeated string paths = 3;
+  // Declared byte size for `path`.
+  uint64 size = 4;
+  // Declared sizes parallel to `paths` for batch minting.
+  repeated uint64 sizes = 5;
+  // Exact configured delivery URL when the caller does not already know the
+  // cache's immutable stable id. Every simultaneously active route resolves
+  // to the same logical cache.
+  string delivery_url = 6;
+}
+
+message CreateCacheObjectUploadsResponse {
+  // Exact PUT URL. This is either a short-lived direct-origin capability or an
+  // authenticated typed Hub-proxy URL. Empty only when multipart is required.
+  string upload_url = 1;
+  // Unix seconds the direct-origin URL expires. Zero for an authenticated Hub
+  // proxy URL or when multipart is required.
+  int64 expires_at = 2;
+  // Batch results, one per requested `paths` entry in the same order.
+  repeated CacheObjectUpload uploads = 3;
+  // Durable write ticket for a direct-origin or Hub-proxy upload. Empty only
+  // when multipart admission is required.
+  string upload_ticket_id = 4;
+}
+
+// One exact cache-object upload admission.
+message CacheObjectUpload {
+  // The cache-relative object path this URL uploads to.
+  string path = 1;
+  // Direct-origin or typed Hub-proxy PUT URL; empty when multipart is required.
+  string upload_url = 2;
+  // Unix seconds the direct-origin URL expires. Zero for an authenticated Hub
+  // proxy URL or when multipart is required.
+  int64 expires_at = 3;
+  // Durable write ticket for a direct-origin or Hub-proxy upload. Empty only
+  // when multipart admission is required.
+  string upload_ticket_id = 4;
+}
+
+message BeginCacheMultipartUploadRequest {
+  string cache_id = 1;
+  string delivery_url = 2;
+  string path = 3;
+  uint64 byte_size = 4;
+  string sha256 = 5;
+}
+
+message BeginCacheMultipartUploadResponse {
+  string upload_id = 1;
+  uint64 part_size = 2;
+  string part_upload_url = 3;
+}
+
+message CacheMultipartPart {
+  uint32 part_number = 1;
+  string etag = 2;
+}
+
+message CompleteCacheMultipartUploadRequest {
+  string upload_id = 1;
+  repeated CacheMultipartPart parts = 2;
+}
+
+message AbortCacheMultipartUploadRequest { string upload_id = 1; }
+
+message CacheMultipartUploadResponse {
+  string upload_id = 1;
+  string state = 2;
+}
+
+message ReportCacheUploadRequest {
+  string cache_id = 1;
+  string path = 2;
+  string upload_ticket_id = 3;
+  string controller_lease_id = 4;
+  int64 controller_generation = 5;
+  string expected_observation_version = 6;
+}
+
+message CacheUploadObservationResponse {
+  bool observed = 1;
+  int64 expires_at = 2;
+}
+
+message ReportCacheNarinfosRequest {
+  string cache_id = 1;
+  // The narinfos to write + index.
+  repeated CacheNarinfo narinfos = 2;
+  string controller_lease_id = 3;
+  int64 controller_generation = 4;
+  string expected_observation_version = 5;
+}
+
+// One narinfo to register: its store-path hash and full narinfo text.
+message CacheNarinfo {
+  // Store-path hash component (the narinfo object is `<store_hash>.narinfo`).
+  string store_hash = 1;
+  // The narinfo body (uploaded to the origin and parsed for the index).
+  string narinfo = 2;
+  // Ticket returned for the direct NAR PUT. When present, registration first
+  // HEAD-acknowledges that exact NAR object on its pinned placement.
+  string nar_upload_ticket_id = 3;
+}
+
+message CacheNarinfoRegistrationResponse {
+  // Number of narinfos successfully registered.
+  int64 registered = 1;
+}
+
+// IAM management: service accounts, scoped role grants, and registry-scoped
+// tokens — the machine API behind the producer console's settings pages, so the
+// CLI and automation administer identities over the authenticated API instead
+// of direct database access (RFC-0004 ch.14 "manage everything via the API").
+//
+// Every method takes a bearer JWT and authorizes against the same grants the
+// console enforces: `iam.admin` at the instance root, or `registry.configure`
+// at the target registry/org scope. A minted token's effective permissions are
+// intersected with the owning principal's grants — a token can never exceed its
+// owner's authority.
+service IdentityService {
+  // Plan creation of an org-owned non-human automation principal.
+  rpc PlanCreateAutomationPrincipal(PlanCreateAutomationPrincipalRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed automation-principal plan exactly once.
+  rpc CreateAutomationPrincipal(ApplyTopologyPlanRequest)
+      returns (AutomationPrincipalResponse);
+  // Read one direct membership grant and its exact resource version.
+  rpc GetMembership(GetMembershipRequest) returns (MembershipResponse);
+  // Plan an exact membership replacement. An empty role removes the grant.
+  rpc PlanSetMembership(PlanSetMembershipRequest) returns (TopologyPlanResponse);
+  // Apply one reviewed membership replacement exactly once.
+  rpc SetMembership(ApplyTopologyPlanRequest) returns (MembershipResponse);
+  // Plan issuance of a registry-scoped bearer token.
+  rpc PlanIssueRegistryToken(PlanIssueRegistryTokenRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed token-issuance plan; the secret is returned once.
+  rpc IssueRegistryToken(ApplyTopologyPlanRequest)
+      returns (RegistryTokenResponse);
+  // Plan retirement of one token generation.
+  rpc PlanRetireRegistryToken(PlanRetireRegistryTokenRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed token-retirement plan exactly once.
+  rpc RetireRegistryToken(ApplyTopologyPlanRequest)
+      returns (RegistryTokenRetirementResponse);
+  // List the tokens visible at a scope (metadata only — never the secret).
+  rpc ListTokens(ListTokensRequest) returns (ListTokensResponse);
+}
+
+message PlanCreateAutomationPrincipalRequest {
+  // Owning org slug.
+  string org_slug = 1;
+  // Service-account name, unique within the org.
+  string name = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+// A non-human principal owned by an org.
+message ServiceAccount {
+  int64 id = 1;
+  string org_slug = 2;
+  string name = 3;
+}
+
+message AutomationPrincipalResponse {
+  ServiceAccount service_account = 1;
+}
+
+message GetMembershipRequest {
+  string principal_kind = 1;
+  string principal_ref = 2;
+  string scope = 3;
+}
+
+message PlanSetMembershipRequest {
+  // Principal kind: "user" or "service_account".
+  string principal_kind = 1;
+  // Principal reference: a user's email, or "<org_slug>/<name>" for a service
+  // account.
+  string principal_ref = 2;
+  // Canonical scope: "" (instance root), "<org>", or "<org>/<registry>".
+  string scope = 3;
+  // Role name: owner | admin | maintainer | developer | viewer.
+  string role = 4;
+  string expected_resource_version = 5;
+  string idempotency_key = 6;
+}
+
+message MembershipResponse {
+  string principal_kind = 1;
+  string principal_ref = 2;
+  string scope = 3;
+  string role = 4;
+  // Current role, or `absent` when no direct grant exists.
+  string resource_version = 5;
+}
+
+message PlanIssueRegistryTokenRequest {
+  // Token owner: "user:<email>" or "service_account:<org_slug>/<name>".
+  string owner = 1;
+  // Canonical live registry scope the token is bound to.
+  string scope = 2;
+  // Strict registry permission vocabulary: registry.read, registry.publish,
+  // registry.manage, registry.admin, registry.owner. Every requested permission
+  // must be present in the owner's effective authority at `scope`.
+  repeated string permissions = 3;
+  // Optional time-to-live in seconds; 0 applies the hub's default policy.
+  int64 ttl_secs = 4;
+  string expected_resource_version = 5;
+  string idempotency_key = 6;
+}
+
+message RegistryTokenResponse {
+  // Stable, non-secret token id (used by Revoke/List).
+  string token_id = 1;
+  // The token secret — returned ONCE; only its hash is persisted.
+  string secret = 2;
+}
+
+message PlanRetireRegistryTokenRequest {
+  string token_id = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+
+message RegistryTokenRetirementResponse {}
+
+message ListTokensRequest {
+  // Canonical live registry scope whose token generations to list.
+  string scope = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+// Token metadata (never includes the secret).
+message TokenInfo {
+  string token_id = 1;
+  string owner = 2;
+  string scope = 3;
+  repeated string permissions = 4;
+  int64 created_at = 5;
+  // Unix seconds the token expires; 0 for non-expiring.
+  int64 expires_at = 6;
+  // Exact lifecycle revision (`active`, `rotated`, or `retired`).
+  string resource_version = 7;
+}
+
+message ListTokensResponse {
+  repeated TokenInfo tokens = 1;
+  string next_page_token = 2;
+}
+
+// -- Normalized storage and delivery topology (RFC-0012) -------------------
+
+message TopologyPlan {
+  string plan_id = 1;
+  int64 expires_at = 2;
+  repeated string input_versions = 3;
+  repeated string effects = 4;
+  repeated string warnings = 5;
+  string confirmation_hash = 6;
+  repeated TopologyPinImpact pin_impacts = 7;
+}
+
+enum PinResolutionAction {
+  PIN_RESOLUTION_ACTION_UNSPECIFIED = 0;
+  PIN_RESOLUTION_ACTION_MOVE_ENDPOINT = 1;
+  PIN_RESOLUTION_ACTION_REPLACE_ROUTE = 2;
+  PIN_RESOLUTION_ACTION_RELEASE = 3;
+}
+
+// One typed, exact live pin included in a reviewed topology plan. The source
+// resource version is the CAS value required in a resolution document.
+message TopologyPinImpact {
+  string pin_id = 1;
+  string target_kind = 2;
+  string target_stable_id = 3;
+  int64 target_generation = 4;
+  string configuration_digest = 5;
+  string expected_source_resource_version = 6;
+  repeated PinResolutionAction allowed_actions = 7;
+}
+
+message TopologyPlanResponse { TopologyPlan plan = 1; }
+
+message ListTopologyResourcesRequest {
+  string owner_scope_key = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message GetTopologyResourceRequest {
+  string stable_id = 1;
+}
+message PlanVerifyDomainRequest {
+  string stable_id = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+
+message PlanDeleteTopologyResourceRequest {
+  string stable_id = 1;
+  optional string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+
+message ApplyDeleteTopologyResourceRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+
+message DeleteTopologyResourceResponse { bool deleted = 1; }
+
+message StorageBindingRef {
+  oneof target {
+    bool instance_default = 1;
+    OrganizationStorageBindingRef organization = 2;
+  }
+}
+
+message OrganizationStorageBindingRef {
+  string org_slug = 1;
+  string name = 2;
+}
+
+message StorageEndpoint {
+  string scheme = 1;
+  oneof host {
+    string dns_name = 2;
+    bytes ipv4 = 3;
+    bytes ipv6 = 4;
+  }
+  uint32 port = 5;
+}
+
+message StorageBindingSpec {
+  string name = 1;
+  oneof provider {
+    LocalFilesystemStorageProvider local_filesystem = 2;
+    S3StorageProvider s3 = 3;
+    R2StorageProvider r2 = 4;
+    DeploymentR2StorageProvider deployment_r2 = 5;
+  }
+}
+
+message LocalFilesystemStorageProvider {
+  string root_path = 1;
+}
+
+message S3StorageProvider {
+  string bucket = 1;
+  string prefix = 2;
+  StorageEndpoint endpoint = 3;
+  string signing_region = 4;
+  string access_mode = 5;
+}
+
+message R2StorageProvider {
+  string bucket = 1;
+  string prefix = 2;
+  StorageEndpoint endpoint = 3;
+  string signing_region = 4;
+  string access_mode = 5;
+}
+
+message DeploymentR2StorageProvider {
+  string bucket_binding = 1;
+}
+
+message StorageBindingCapabilities {
+  bool reads_supported = 1;
+  bool writes_supported = 2;
+  bool conditional_writes_supported = 3;
+  bool deletes_supported = 4;
+  bool lists_supported = 5;
+  bool presigns_supported = 6;
+}
+
+message StorageBindingHealth {
+  string state = 1;
+  int64 observed_at = 2;
+  string error = 3;
+}
+
+message StorageBinding {
+  string stable_id = 1;
+  string owner_scope_key = 2;
+  StorageBindingSpec spec = 3;
+  StorageBindingCapabilities capabilities = 4;
+  StorageBindingHealth health = 5;
+  repeated ConsumerScopeGrant grants = 6;
+  string resource_version = 7;
+  int64 created_at = 8;
+  int64 updated_at = 9;
+}
+
+message ListStorageBindingsRequest {
+  string owner_scope_key = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message ListStorageBindingsResponse {
+  repeated StorageBinding storage_bindings = 1;
+  string next_page_token = 2;
+}
+message GetStorageBindingRequest { StorageBindingRef storage_binding = 1; }
+message GetStorageBindingResponse { StorageBinding storage_binding = 1; }
+message PlanStorageBindingMutationRequest {
+  string stable_id = 1;
+  string owner_scope_key = 2;
+  StorageBindingSpec spec = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+  repeated string update_mask = 6;
+}
+message ApplyStorageBindingMutationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message StorageBindingResponse { StorageBinding storage_binding = 1; }
+
+message StorageBindingCredential {
+  string storage_binding_id = 1;
+  string purpose = 2;
+  int64 generation = 3;
+  string secret_version_ref = 4;
+  string validation_state = 5;
+  int64 validated_at = 6;
+  string validation_error = 7;
+  string credential_fingerprint = 8;
+  int64 created_at = 9;
+  string resource_version = 10;
+}
+message PlanStorageBindingCredentialRequest {
+  string storage_binding_id = 1;
+  string purpose = 2;
+  string secret_version_ref = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+  int64 expected_current_generation = 6;
+  // Required SHA-256 hex digest of the exact resolved provider value.
+  string credential_fingerprint = 7;
+}
+message ApplyStorageBindingCredentialRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message PlanValidateStorageBindingCredentialRequest {
+  string storage_binding_id = 1;
+  string purpose = 2;
+  int64 generation = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+}
+message StorageBindingCredentialResponse {
+  StorageBindingCredential credential = 1;
+}
+
+message StorageBindingWriteRevision {
+  string storage_binding_id = 1;
+  int64 revision = 2;
+  string write_credential_purpose = 3;
+  int64 write_credential_generation = 4;
+  string write_credential_version_ref = 5;
+  bool writes_supported = 6;
+  bool conditional_writes_supported = 7;
+  string revision_fingerprint = 8;
+  string capability_fingerprint = 9;
+  string validation_state = 10;
+  int64 validated_at = 11;
+  string validation_error = 12;
+  int64 created_at = 13;
+  string resource_version = 14;
+}
+message ListStorageBindingWriteRevisionsResponse {
+  repeated StorageBindingWriteRevision revisions = 1;
+  string next_page_token = 2;
+}
+message ListStorageBindingWriteRevisionsRequest {
+  StorageBindingRef storage_binding = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message GetStorageBindingWriteRevisionRequest {
+  StorageBindingRef storage_binding = 1;
+  int64 revision = 2;
+}
+message StorageBindingWriteRevisionResponse {
+  StorageBindingWriteRevision revision = 1;
+}
+message ReportStorageBindingWriteRevisionRequest {
+  string storage_binding_id = 1;
+  int64 revision = 2;
+  string state = 3;
+  string validation_error = 4;
+  string expected_observation_version = 5;
+  string controller_lease_id = 6;
+  int64 controller_generation = 7;
+}
+
+message TopologyDefaults {
+  string scope_key = 1;
+  string storage_binding_id = 2;
+  string domain_id = 3;
+  string delivery_endpoint_id = 4;
+  int64 delivery_endpoint_generation = 5;
+  string storage_gateway_id = 6;
+  int64 storage_gateway_generation = 7;
+  string resource_version = 8;
+}
+message GetInstanceTopologyDefaultsRequest {}
+message GetOrganizationTopologyDefaultsRequest { string org_slug = 1; }
+message PlanSetTopologyDefaultsRequest {
+  TopologyDefaults defaults = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+message ApplySetTopologyDefaultsRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message TopologyDefaultsResponse { TopologyDefaults defaults = 1; }
+
+message ConsumerScopeGrant {
+  string resource_kind = 1;
+  string resource_stable_id = 2;
+  int64 resource_generation = 3;
+  string consumer_scope_key = 4;
+  int64 grant_generation = 5;
+  string grant_kind = 6;
+  string state = 7;
+  string granted_by = 8;
+  int64 granted_at = 9;
+  string revoked_by = 10;
+  int64 revoked_at = 11;
+  uint64 live_pin_count = 12;
+  repeated TopologyPinImpact live_pin_impacts = 13;
+  string resource_version = 14;
+}
+// One exact replacement target sealed into a pin-resolution plan.
+message PinResolutionTarget {
+  string resource_kind = 1;
+  string resource_stable_id = 2;
+  int64 resource_generation = 3;
+  string configuration_digest = 4;
+  string expected_resource_version = 5;
+}
+// Moves an endpoint listener pin to an already-declared endpoint generation.
+message MoveEndpointPinResolution {
+  PinResolutionTarget replacement_endpoint = 1;
+  string expected_source_resource_version = 2;
+}
+// Replaces every use represented by one route pin with an exact live route.
+message ReplaceRoutePinResolution {
+  PinResolutionTarget replacement_route = 1;
+  string expected_source_resource_version = 2;
+}
+// Releases the exact source target. Routes are disabled before their pins are
+// released; other target kinds must be deleted under their sealed CAS.
+message ReleasePinResolution {
+  string expected_source_resource_version = 1;
+}
+// Resolves exactly one live grant or boundary pin. Plans reject missing,
+// duplicate, and extra pin ids rather than accepting a partial impact set.
+message PinResolution {
+  string pin_id = 1;
+  oneof resolution {
+    MoveEndpointPinResolution move_endpoint = 2;
+    ReplaceRoutePinResolution replace_route = 3;
+    ReleasePinResolution release = 4;
+  }
+}
+message PlanConsumerScopeGrantRequest {
+  string resource_kind = 1;
+  string resource_stable_id = 2;
+  int64 resource_generation = 3;
+  string consumer_scope_key = 4;
+  string expected_resource_version = 5;
+  string idempotency_key = 6;
+  repeated PinResolution pin_resolutions = 7;
+}
+message ApplyConsumerScopeGrantRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message ConsumerScopeGrantResponse {
+  ConsumerScopeGrant grant = 1;
+  OperationRef coordination_operation = 2;
+}
+
+message DomainDesiredState {
+  DnsConfiguration dns_configuration = 1;
+  CertificateConfiguration certificate_configuration = 2;
+}
+message DomainObservedState {
+  string dns_state = 1;
+  string certificate_state = 2;
+  int64 verified_at = 3;
+  int64 observed_at = 4;
+  string error = 5;
+  string observation_digest = 6;
+  string probe_location = 7;
+}
+message HubManagedDnsConfiguration {
+  string provider = 1;
+  string zone_id = 2;
+  string record_mode = 3;
+  string target = 4;
+  uint32 ttl_seconds = 5;
+}
+message ExternalDnsConfiguration { string expected_target = 1; }
+message DnsConfiguration {
+  oneof configuration {
+    HubManagedDnsConfiguration hub_managed = 1;
+    ExternalDnsConfiguration external = 2;
+  }
+}
+message HubManagedCertificateConfiguration {
+  string issuer = 1;
+  string dns_challenge_provider = 2;
+}
+message ExternalCertificateConfiguration { string certificate_secret_ref = 1; }
+message CertificateConfiguration {
+  oneof configuration {
+    HubManagedCertificateConfiguration hub_managed = 1;
+    ExternalCertificateConfiguration external = 2;
+  }
+}
+message Domain {
+  string stable_id = 1;
+  string owner_scope_key = 2;
+  string hostname = 3;
+  DomainDesiredState desired = 4;
+  DomainObservedState observed = 5;
+  string resource_version = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+}
+message ListDomainsRequest {
+  string owner_scope_key = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message ListDomainsResponse {
+  repeated Domain domains = 1;
+  string next_page_token = 2;
+}
+message DomainResponse { Domain domain = 1; }
+message PlanDomainMutationRequest {
+  string owner_scope_key = 1;
+  string hostname = 2;
+  string idempotency_key = 3;
+  string expected_resource_version = 4;
+}
+message ApplyDomainMutationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message PlanDomainDnsRequest {
+  string stable_id = 1;
+  DnsConfiguration configuration = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message PlanDomainCertificateRequest {
+  string stable_id = 1;
+  CertificateConfiguration configuration = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message ApplyDomainConfigurationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message NetworkBoundaryIdentity {
+  oneof identity {
+    bool public = 1;
+    ProviderResourceIdentity vpn = 2;
+    ProviderNetworkIdentity provider_network = 3;
+    ProviderResourceIdentity tunnel = 4;
+    string source_allowlist_id = 5;
+    ProviderNetworkIdentity trusted_ingress = 6;
+  }
+}
+message ProviderResourceIdentity {
+  string provider = 1;
+  string account_or_tenant = 2;
+  string resource_id = 3;
+}
+message ProviderNetworkIdentity {
+  string provider = 1;
+  string account_or_tenant = 2;
+  string resource_id = 3;
+  string listener_id = 4;
+}
+message TrustedIngressConfiguration {
+  oneof configuration {
+    bool none = 1;
+    MtlsTrustedIngress mtls = 2;
+    SignedAssertionTrustedIngress signed_assertion = 3;
+  }
+}
+message MtlsTrustedIngress {
+  string ca_secret_ref = 1;
+  repeated string client_sans = 2;
+}
+message SignedAssertionTrustedIngress {
+  string issuer = 1;
+  string audience = 2;
+  string verification_key_secret_ref = 3;
+}
+message NetworkBoundaryRevisionSpec {
+  bool protected_transport_required = 1;
+  TrustedIngressConfiguration trusted_ingress = 2;
+  repeated string source_allowlist_cidrs = 3;
+  string probe_location_configuration_ref = 4;
+}
+message NetworkBoundaryObservation {
+  string state = 1;
+  bool protected_transport_observed = 2;
+  string trusted_ingress_observed = 3;
+  int64 observed_at = 4;
+  string error = 5;
+}
+message NetworkBoundaryRevisionLifecycle {
+  string state = 1;
+  string activation_mode = 2;
+  int64 consumer_version = 3;
+  int64 activated_at = 4;
+  int64 retired_at = 5;
+  string resource_version = 6;
+}
+message NetworkBoundaryRevision {
+  string boundary_id = 1;
+  int64 revision = 2;
+  NetworkBoundaryRevisionSpec spec = 3;
+  NetworkBoundaryObservation observation = 4;
+  NetworkBoundaryRevisionLifecycle lifecycle = 5;
+  string content_digest = 6;
+  int64 created_at = 7;
+}
+message NetworkBoundary {
+  string stable_id = 1;
+  string owner_scope_key = 2;
+  string name = 3;
+  string kind = 4;
+  NetworkBoundaryIdentity identity = 5;
+  string identity_fingerprint = 6;
+  int64 default_revision = 7;
+  repeated ConsumerScopeGrant grants = 8;
+  string resource_version = 9;
+  int64 created_at = 10;
+  int64 updated_at = 11;
+}
+message ListNetworkBoundariesResponse {
+  repeated NetworkBoundary network_boundaries = 1;
+  string next_page_token = 2;
+}
+message NetworkBoundaryResponse { NetworkBoundary network_boundary = 1; }
+message ListNetworkBoundaryRevisionsResponse {
+  repeated NetworkBoundaryRevision revisions = 1;
+  string next_page_token = 2;
+}
+message ListNetworkBoundaryRevisionsRequest {
+  string boundary_id = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message GetNetworkBoundaryRevisionRequest {
+  string boundary_id = 1;
+  int64 revision = 2;
+}
+message NetworkBoundaryRevisionResponse {
+  NetworkBoundaryRevision revision = 1;
+  OperationRef coordination_operation = 2;
+}
+message PlanNetworkBoundaryMutationRequest {
+  string stable_id = 1;
+  string owner_scope_key = 2;
+  string name = 3;
+  string kind = 4;
+  NetworkBoundaryIdentity identity = 5;
+  NetworkBoundaryRevisionSpec initial_revision = 6;
+  string idempotency_key = 7;
+  string expected_resource_version = 8;
+}
+message ApplyNetworkBoundaryMutationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message PlanNetworkBoundaryRevisionRequest {
+  string boundary_id = 1;
+  NetworkBoundaryRevisionSpec spec = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+  repeated string update_mask = 5;
+}
+message ApplyNetworkBoundaryRevisionRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message ReportNetworkBoundaryRevisionRequest {
+  string boundary_id = 1;
+  int64 revision = 2;
+  NetworkBoundaryObservation observation = 3;
+  string expected_observation_version = 4;
+  string controller_lease_id = 5;
+  int64 controller_generation = 6;
+}
+message CompleteNetworkBoundaryRevisionProbeRequest {
+  string boundary_id = 1;
+  int64 revision = 2;
+  string controller_lease_id = 3;
+  int64 controller_generation = 4;
+  string expected_observation_version = 5;
+}
+message PlanNetworkBoundaryLifecycleRequest {
+  string boundary_id = 1;
+  int64 revision = 2;
+  string activation_mode = 3;
+  bool default_for_new_plans = 4;
+  string expected_resource_version = 5;
+  string idempotency_key = 6;
+  repeated PinResolution pin_resolutions = 7;
+}
+message ApplyNetworkBoundaryLifecycleRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+
+message EndpointHost {
+  oneof host {
+    string domain_id = 1;
+    bytes ipv4 = 2;
+    bytes ipv6 = 3;
+  }
+}
+message TlsConfiguration {
+  string provider = 1;
+  string certificate_ref = 2;
+  bool require_client_certificate = 3;
+}
+enum EndpointIngressKind {
+  ENDPOINT_INGRESS_KIND_UNSPECIFIED = 0;
+  ENDPOINT_INGRESS_KIND_HUB = 1;
+  ENDPOINT_INGRESS_KIND_EXTERNAL = 2;
+  ENDPOINT_INGRESS_KIND_LAYER7 = 3;
+}
+message DeliveryEndpointRevisionSpec {
+  int64 boundary_revision = 1;
+  EndpointIngressKind ingress_kind = 2;
+  string listener_configuration_ref = 3;
+  TlsConfiguration tls = 4;
+  string probe_configuration_ref = 5;
+}
+message EndpointObservedState {
+  int64 observed_generation = 1;
+  int64 boundary_revision = 2;
+  string state = 3;
+  bool listener_observed = 4;
+  bool tls_observed = 5;
+  int64 observed_at = 6;
+  string error = 7;
+}
+message DeliveryEndpoint {
+  string stable_id = 1;
+  string owner_scope_key = 2;
+  string scheme = 3;
+  EndpointHost host = 4;
+  uint32 effective_port = 5;
+  string network_boundary_id = 6;
+  int64 desired_generation = 7;
+  string endpoint_identity_digest = 8;
+  DeliveryEndpointRevisionSpec desired = 9;
+  EndpointObservedState observed = 10;
+  repeated ConsumerScopeGrant grants = 11;
+  string resource_version = 12;
+  int64 created_at = 13;
+  int64 updated_at = 14;
+}
+message ListDeliveryEndpointsResponse {
+  repeated DeliveryEndpoint delivery_endpoints = 1;
+  string next_page_token = 2;
+}
+message DeliveryEndpointResponse { DeliveryEndpoint delivery_endpoint = 1; }
+message DeliveryEndpointGeneration {
+  string endpoint_id = 1;
+  int64 generation = 2;
+  string network_boundary_id = 3;
+  DeliveryEndpointRevisionSpec desired = 4;
+  EndpointObservedState observed = 5;
+  repeated ConsumerScopeGrant grants = 6;
+  string content_digest = 7;
+  string created_by = 8;
+  int64 created_at = 9;
+  bool selected = 10;
+}
+message ListDeliveryEndpointGenerationsRequest {
+  string endpoint_id = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message ListDeliveryEndpointGenerationsResponse {
+  repeated DeliveryEndpointGeneration generations = 1;
+  string next_page_token = 2;
+}
+message GetDeliveryEndpointGenerationRequest {
+  string endpoint_id = 1;
+  int64 generation = 2;
+}
+message DeliveryEndpointGenerationResponse {
+  DeliveryEndpointGeneration generation = 1;
+}
+message PlanDeliveryEndpointMutationRequest {
+  string stable_id = 1;
+  string owner_scope_key = 2;
+  string scheme = 3;
+  EndpointHost host = 4;
+  uint32 effective_port = 5;
+  string network_boundary_id = 6;
+  DeliveryEndpointRevisionSpec revision = 7;
+  repeated string carry_forward_consumer_scopes = 8;
+  string expected_resource_version = 9;
+  string idempotency_key = 10;
+  repeated string update_mask = 11;
+}
+message ApplyDeliveryEndpointMutationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message PlanStageDeliveryEndpointGenerationRequest {
+  string endpoint_id = 1;
+  DeliveryEndpointRevisionSpec revision = 2;
+  repeated string carry_forward_consumer_scopes = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+  repeated string update_mask = 6;
+}
+message PlanActivateDeliveryEndpointGenerationRequest {
+  string endpoint_id = 1;
+  int64 generation = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+message ApplyDeliveryEndpointGenerationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message ReportDeliveryEndpointRequest {
+  string stable_id = 1;
+  EndpointObservedState observation = 2;
+  string expected_observation_version = 3;
+  string controller_lease_id = 4;
+  int64 controller_generation = 5;
+}
+message CompleteDeliveryEndpointProbeRequest {
+  string stable_id = 1;
+  string controller_lease_id = 2;
+  int64 controller_generation = 3;
+  string expected_observation_version = 4;
+}
+
+message ExternalProviderPolicy {
+  string provider_kind = 1;
+  string resource_id = 2;
+  string revision = 3;
+  repeated ExternalClientMechanism client_mechanisms = 4;
+  repeated string client_classes = 5;
+}
+message ExternalClientMechanism {
+  string kind = 1;
+  string verification_secret_ref = 2;
+}
+message HubAuthPolicy {
+  repeated string principals = 1;
+  repeated string client_classes = 2;
+  bool allow_anonymous_metadata = 3;
+}
+message PrivateNetworkPolicy {
+  string boundary_id = 1;
+  int64 boundary_revision = 2;
+}
+message DeliveryAccessPolicy {
+  oneof policy {
+    bool public = 1;
+    HubAuthPolicy hub_auth = 2;
+    ExternalProviderPolicy external_provider = 3;
+    PrivateNetworkPolicy private_network = 4;
+  }
+}
+message StorageGatewayRevisionSpec {
+  string storage_binding_id = 1;
+  string endpoint_id = 2;
+  int64 endpoint_generation = 3;
+  string client_base_path = 4;
+  string origin_prefix = 5;
+  DeliveryAccessPolicy access_policy = 6;
+}
+message StorageGateway {
+  string stable_id = 1;
+  string owner_scope_key = 2;
+  bool enabled = 3;
+  int64 desired_generation = 4;
+  int64 observed_generation = 5;
+  string reconciliation_state = 6;
+  string reconciliation_error = 7;
+  StorageGatewayRevisionSpec desired = 8;
+  repeated ConsumerScopeGrant grants = 9;
+  string resource_version = 10;
+  int64 created_at = 11;
+  int64 updated_at = 12;
+}
+message ListStorageGatewaysResponse {
+  repeated StorageGateway storage_gateways = 1;
+  string next_page_token = 2;
+}
+message ListStorageGatewaysRequest {
+  StorageBindingRef storage_binding = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message StorageGatewayResponse { StorageGateway storage_gateway = 1; }
+message PlanStorageGatewayMutationRequest {
+  string stable_id = 1;
+  string owner_scope_key = 2;
+  StorageGatewayRevisionSpec revision = 3;
+  repeated string carry_forward_consumer_scopes = 4;
+  string expected_resource_version = 5;
+  string idempotency_key = 6;
+  repeated string update_mask = 7;
+}
+message ApplyStorageGatewayMutationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message ReportStorageGatewayRequest {
+  string stable_id = 1;
+  int64 observed_generation = 2;
+  string state = 3;
+  string error = 4;
+  string expected_observation_version = 5;
+  string controller_lease_id = 6;
+  int64 controller_generation = 7;
+}
+message CompleteRouteProbeRequest {
+  string stable_id = 1;
+  string controller_lease_id = 2;
+  int64 controller_generation = 3;
+  string expected_observation_version = 4;
+}
+message GatewayRoutePreview {
+  string canonical_url = 1;
+  string placement_name = 2;
+  string base_path = 3;
+  repeated string warnings = 4;
+}
+message GatewayRoutePreviewResponse {
+  repeated GatewayRoutePreview routes = 1;
+}
+
+message RouteCapabilities {
+  bool serves_git = 1;
+  bool serves_cache = 2;
+  bool serves_web = 3;
+}
+enum HubDeliveryKind {
+  HUB_DELIVERY_KIND_UNSPECIFIED = 0;
+  HUB_DELIVERY_KIND_PROXY = 1;
+  HUB_DELIVERY_KIND_REDIRECT = 2;
+}
+message HubPlacementTarget {
+  string placement_name = 1;
+  HubDeliveryKind delivery_kind = 2;
+}
+message HubPolicyRevisionTarget {
+  string policy_name = 1;
+  int64 revision = 2;
+  HubDeliveryKind delivery_kind = 3;
+}
+message DirectGatewayPlacementTarget {
+  string placement_name = 1;
+  string gateway_id = 2;
+  int64 gateway_generation = 3;
+}
+message DeliveryRouteTarget {
+  oneof target {
+    HubPlacementTarget hub_placement = 1;
+    HubPolicyRevisionTarget hub_policy_revision = 2;
+    DirectGatewayPlacementTarget direct_gateway_placement = 3;
+  }
+}
+message DeliveryRouteSpec {
+  SurfaceRef surface = 1;
+  string endpoint_id = 2;
+  int64 endpoint_generation = 3;
+  string base_path = 4;
+  DeliveryRouteTarget target = 5;
+  DeliveryAccessPolicy access_policy = 6;
+  RouteCapabilities capabilities = 7;
+  bool enabled = 8;
+}
+message DeliveryRouteObservation {
+  int64 configuration_generation = 1;
+  string configuration_digest = 2;
+  string state = 3;
+  int64 observed_at = 4;
+  string error = 5;
+}
+message DeliveryRoute {
+  string stable_id = 1;
+  DeliveryRouteSpec spec = 2;
+  int64 configuration_generation = 3;
+  string configuration_digest = 4;
+  string canonical_rendered_url = 5;
+  DeliveryRouteObservation observation = 6;
+  string resource_version = 7;
+  int64 created_at = 8;
+  int64 updated_at = 9;
+}
+message ListRoutesRequest {
+  SurfaceRef surface = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message ListRoutesResponse {
+  repeated DeliveryRoute routes = 1;
+  string next_page_token = 2;
+}
+message DeliveryRouteResponse { DeliveryRoute route = 1; }
+message PlanRouteMutationRequest {
+  string stable_id = 1;
+  DeliveryRouteSpec spec = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+  repeated string update_mask = 5;
+}
+message ApplyRouteMutationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message PlanReplaceRouteRequest {
+  string predecessor_route_id = 1;
+  string stable_id = 2;
+  DeliveryRouteSpec spec = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+}
+message PlanCanonicalRouteRequest {
+  SurfaceRef surface = 1;
+  string audience = 2;
+  string route_id = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+}
+message ApplyCanonicalRouteRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+message CanonicalRoute {
+  SurfaceRef surface = 1;
+  string audience = 2;
+  string route_id = 3;
+  string resource_version = 4;
+}
+message CanonicalRouteResponse { CanonicalRoute canonical_route = 1; }
+message ExplainRouteRequest {
+  string route_id = 1;
+  string machine_path = 2;
+  string access_class = 3;
+}
+message ExplainRouteResponse {
+  string normalized_url = 1;
+  repeated string decisions = 2;
+  repeated string rejection_reasons = 3;
+}

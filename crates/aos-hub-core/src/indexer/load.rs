@@ -29,7 +29,7 @@ use crate::fetch::SurfaceFetch;
 /// of millions of tiny valid package files across nested buckets, and the
 /// background re-index runs in the web-server process — so an uncapped walk
 /// would let one tenant OOM the hub for all of them. Mirrors the indexer's
-/// [`MAX_SEMVER_TAGS`](crate::indexer::MAX_SEMVER_TAGS) /
+/// [`MAX_RELEASE_TAGS`](crate::indexer::MAX_RELEASE_TAGS) /
 /// [`MAX_BRANCHES`](crate::indexer::MAX_BRANCHES) caps, but aborts (rather than
 /// truncating) so a registry that overflows is marked failed instead of being
 /// silently partially indexed. Sized far above any realistic registry.
@@ -157,8 +157,7 @@ pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Re
                     );
                 }
                 let content = read_utf8_blob(&reader, file.oid, &file.name).await?;
-                let package = parse_package_file(&content)
-                    .with_context(|| format!("parsing committed packages/…/{}", file.name))?;
+                let package = parse_committed_package(&file.name, &content)?;
                 packages.push(package);
             }
         }
@@ -198,6 +197,10 @@ pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Re
     })
 }
 
+fn parse_committed_package(name: &str, content: &str) -> Result<PackageToml> {
+    parse_package_file(content).with_context(|| format!("parsing committed packages/…/{name}"))
+}
+
 /// Read one loose blob object and decode its bytes as UTF-8.
 ///
 /// # Errors
@@ -206,4 +209,47 @@ pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Re
 async fn read_utf8_blob(reader: &ObjectReader<'_>, oid: Oid, name: &str) -> Result<String> {
     let content = reader.read_kind(oid, ObjectKind::Blob).await?;
     String::from_utf8(content).with_context(|| format!("committed file {name} is not UTF-8"))
+}
+
+#[cfg(test)]
+mod image_catalog_tests {
+    use super::*;
+
+    const DUPLICATE_IMAGE_FORMAT: &str = r#"
+[package]
+name = "server"
+description = "test"
+license = "MIT"
+maintainer = "test"
+sysroot = true
+
+[[versions]]
+version = "2026.08"
+
+[versions.platforms.x86_64-linux]
+store_path = "/aos/store/server"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+
+[[versions.platforms.x86_64-linux.images]]
+format = "raw"
+store_path = "/aos/store/raw-one"
+nar_hash = "sha256:one"
+nar_size = 1
+
+[[versions.platforms.x86_64-linux.images]]
+format = "raw"
+store_path = "/aos/store/raw-two"
+nar_hash = "sha256:two"
+nar_size = 1
+"#;
+
+    #[test]
+    fn hub_committed_package_loader_rejects_duplicate_image_encodings() {
+        let error = parse_committed_package("server.toml", DUPLICATE_IMAGE_FORMAT).unwrap_err();
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("packages/…/server.toml"));
+        assert!(rendered.contains("duplicate 'raw' image encodings"));
+    }
 }

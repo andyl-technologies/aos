@@ -1,16 +1,50 @@
 # Install an AOS image
 
-AOS is installed from one golden x86-64 UEFI disk image. There is no `aos
-install` command that writes a disk: installation means importing the image
-into a hypervisor or writing it with the target platform's normal imaging
-tool.
+AOS is installed from a signed UEFI disk image published by an AOS Hub
+registry. There is no `aos install` command that writes a disk: installation
+means downloading a verified image, importing it into a hypervisor, or writing
+it with the target platform's normal imaging tool.
 
-AOS is currently an early preview and the public system image is not published
-yet. AOS Hub will provide the image catalog and downloads; it does not expose
-that surface today. Do not treat a source build as the normal installation
-path. Maintainers and release integrators can use the
-[source-build guide](../../maintainers/) until public image distribution is
-available.
+## Discover and download an image
+
+Open the registry's **Images** page at `https://HUB/REGISTRY/-/images`, or use
+the CLI. Select a target when possible; the Hub resolves it to a compatible
+disk encoding without exposing Nix store paths:
+
+```sh
+aos image list \
+  --hub https://HUB \
+  --registry REGISTRY \
+  --channel stable
+
+aos image download \
+  --hub https://HUB \
+  --registry REGISTRY \
+  --channel stable \
+  --architecture x86_64 \
+  --target qemu-kvm \
+  --output aos-server.qcow2
+```
+
+`download` resumes an interrupted partial transfer by default and verifies the
+signed byte size and SHA-256 before placing the final file. Omit `--output` to
+use the useful filename from signed release metadata. Use `--no-resume` to
+restart a partial transfer. Existing final files are never overwritten.
+
+Public registries need no credentials. For a private registry, set
+`AOS_TOKEN` or pass `--token`; use HTTPS whenever a bearer token is present:
+
+```sh
+AOS_TOKEN=REPLACE_WITH_TOKEN aos image list \
+  --hub https://HUB \
+  --registry PRIVATE_REGISTRY \
+  --channel stable
+```
+
+Use `aos --json image list` or `aos --json image show` for automation. The
+record includes the immutable download URL, format, target compatibility,
+media type, compression, exact size, SHA-256, release-signature and boot
+verification states, and the associated integrity-bound `image-info.json`.
 
 ## Choose an image format
 
@@ -23,9 +57,9 @@ The same golden system may be published in several disk encodings:
 | VMDK | VMware and vSphere |
 | Dynamic VHD | Hyper-V and VHD-based conversion pipelines |
 
-Use the format published for the target. Verify the release checksum or
-signature and retain its `image-info.json` with the deployment record. UEFI
-firmware is required; do not pass a separate kernel or initrd.
+Use the format published for the target. The CLI verifies the file checksum by
+default; retain its `image-info.json` with the deployment record. UEFI firmware
+is required; do not pass a separate kernel or initrd.
 
 ## Size the target
 

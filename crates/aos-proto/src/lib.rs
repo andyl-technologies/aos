@@ -13,7 +13,7 @@
 //!   and GC result summaries.
 //! - `aos::auth::v1` — exchanging a provisioning token for a JWT access
 //!   token.
-//! - `aos::registry::v1` — the registry hub's read-path API (RFC-0004):
+//! - `aos::hub::v1` — the Hub's registry and control-plane API:
 //!   registries with verified index status, packages, channels with
 //!   partition maps, and signed releases. Implemented by
 //!   `aos-hub`.

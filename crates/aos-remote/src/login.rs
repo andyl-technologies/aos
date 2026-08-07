@@ -40,7 +40,7 @@ pub struct TokenGrant {
 /// Exchanges a provisioning secret for a hub access JWT at `POST /oauth2/token`.
 ///
 /// `base_url` is the hub root (`http(s)://…`); `provisioning_secret` is the
-/// `aos_`-prefixed secret minted by the hub (e.g. via `apr`/`MintUploadCredentials`).
+/// `aos_`-prefixed provisioning secret minted by the hub.
 /// The secret is sent as a `Bearer` credential and never logged.
 ///
 /// # Errors

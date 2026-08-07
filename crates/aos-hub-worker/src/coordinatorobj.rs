@@ -2,7 +2,7 @@
 //! (wasm32-only).
 //!
 //! RFC-0004 chapter 14 routes the hub's *atomic* state — fixed-window rate
-//! limits, the publish lease, channel anti-rollback floors — off D1 and onto a
+//! limits, the publish lease, channel anti-rollback floors — through a
 //! **Durable Object**, whose single global instance and serialized execution
 //! give strict serializability without a per-request SQL round-trip (and without
 //! a write on the read path). Workers KV cannot serve this (eventually

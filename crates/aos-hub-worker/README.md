@@ -1,29 +1,62 @@
-# aos-hub-worker
+# AOS Hub Worker
 
-This crate is the Cloudflare Worker runtime for AOS Hub. It mounts the shared
-Hub web, API, registry, cache, authentication, and publishing surface in a
-Worker, backed by:
+`aos-hub-worker` is the Cloudflare shell for the shared `aos-hub-core`
+application. It serves the same Connect API, producer console, authentication,
+machine surfaces, topology controllers, and write path as the native Hub.
 
-- SQLite in the `HubDb` Durable Object for relational state;
-- R2 for registry and binary-cache surfaces;
-- KV as a read-through cache for sessions and frequently read point state;
-- Durable Object and edge rate-limit bindings for coordination and request
-  budgets;
-- a scheduled trigger for indexing and maintenance.
+Platform-specific adapters provide:
 
-The Worker and native `aos-hub` server share the application core but not their
-operator interface. Native administration can act directly on local SQLite.
-Worker administration goes through the web/API surface, while deployment and
-root bootstrap use `aos-hub worker`.
+- `HubDb`, a Durable Object with colocated SQLite, as the relational system of
+  record;
+- R2 for registry/cache surface objects;
+- KV for cache-aside session state and revocation tombstones;
+- Durable Objects/Queues for coordination and deferred work;
+- edge rate-limit bindings; and
+- Worker Fetch for external HTTP operations, with an optional authenticated
+  `aos-hub-egress` router for installations requiring pinned DNS and signed
+  connected-peer evidence.
+
+`HubDb` applies the shared schema on first use, and administrative mutations
+use the typed Hub API.
+
+Webhook work is anchored in `HubDb`, not in Queue messages. Each message carries
+only a stable delivery ID; the consumer conditionally leases that row with a
+fencing token before resolving its secret version and sending. Cron both
+materializes topology outbox events and drains a bounded due batch, so it is a
+durable backstop for failed Queue publication. Delivery is at least once and
+receivers should deduplicate retries by `X-AOS-Delivery-ID`.
+
+## Outbound security boundary
+
+Worker Fetch is the default outbound transport and needs no separately deployed
+service. AOS validates targets, rebuilds a closed request, bounds redirects, and
+prevents credentials from crossing origins. The optional packaged
+`aos-hub-egress` router adds connect-time DNS pinning and signs its final-URL,
+peer, status, and nonce evidence under `aos-hardened-egress-v3`. Missing, stale,
+or invalid evidence fails closed whenever that transport is selected.
+See [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
 
 ## Build and deploy
 
-Use the repository packages so the Worker, provider tooling, and installer are
-built together:
+Production deployment uses the hermetically built Worker artifact packaged with
+`aos-hub-cloudflare`; the installer renders `wrangler.toml` and deploys it
+without a host rebuild. The checked-in `wrangler.toml` exists for manual
+development and documents required binding names.
 
 ```sh
 nix build .#pkg-aos-hub-cloudflare
+./result/bin/aos-hub worker install \
+  --name aos-hub \
+  --cloudflare-api-token "$HUB_CLOUDFLARE_API_TOKEN" \
+  --domain reg.example.com \
+  --root-email ops@example.com \
+  --root-password-stdin
 ```
+
+The Worker feature is target-gated so native workspace checks do not compile
+Workers-only bindings. Runtime validation additionally requires workerd or a
+Cloudflare account; database and shared-domain behavior is exercised through
+the runtime-neutral core tests.
 
 The canonical user guide is [Deploy AOS Hub to
 Cloudflare](../../docs/users/aos-hub/cloudflare.md). It covers the supported

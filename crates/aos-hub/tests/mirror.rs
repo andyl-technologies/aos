@@ -18,7 +18,7 @@ use aos_hub::mirror::{fetch_through, sync_full_mirror};
 use aos_hub::server::{router, AppState};
 use axum::body::Body;
 use axum::extract::{Path as AxPath, State};
-use axum::http::{Request, StatusCode};
+use axum::http::{header, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tower::ServiceExt;
@@ -53,32 +53,47 @@ async fn serve_upstream(surface: PathBuf) -> String {
 }
 
 /// Create a managed mirror registry whose surface lives under a `local_fs`
-/// binding, returning `(registry_id, binding_root)`.
+/// binding, returning `(registry_id, placement_id, binding_root)`.
 async fn make_mirror_registry(
     db: &Database,
     trust_key: &str,
     binding_root: &std::path::Path,
-) -> (i64, PathBuf) {
+) -> (i64, i64, PathBuf) {
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", &binding_root.to_string_lossy())
+    db.create_project(org, "infra/prod", "Production")
         .await
         .unwrap();
+    let binding =
+        common::create_local_binding(&db, org, "primary", &binding_root.to_string_lossy()).await;
     let reg = db
         .create_managed_registry(
             org,
             "infra/prod",
             "mirror",
             "public",
-            Some(binding),
-            "infra/prod/mirror",
             std::slice::from_ref(&trust_key.to_string()),
             true,
         )
         .await
         .unwrap();
-    let root = db.registry_surface_root(reg).await.unwrap().unwrap();
-    (reg, root)
+    let placement = common::create_ready_placement(
+        db,
+        aos_hub::db::SurfaceTarget::Registry(reg),
+        binding,
+        "primary",
+        "infra/prod/mirror",
+    )
+    .await;
+    common::configure_write_authority(
+        db,
+        aos_hub::db::SurfaceTarget::Registry(reg),
+        binding,
+        &placement,
+        "mirror-write-authority",
+    )
+    .await;
+    let root = binding_root.join("infra/prod/mirror");
+    (reg, placement.id, root)
 }
 
 #[tokio::test]
@@ -95,7 +110,8 @@ async fn full_mirror_verifies_then_copies_upstream() {
     // consumer keeps upstream trust), bound to an empty local directory.
     let binding_root = dir.path().join("binding");
     let db = Database::open_in_memory().await.unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
+    let (reg, _placement, local_root) =
+        make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
     db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
         .await
         .unwrap();
@@ -148,7 +164,8 @@ async fn full_mirror_refuses_untrusted_upstream() {
 
     let binding_root = dir.path().join("binding");
     let db = Database::open_in_memory().await.unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &wrong_anchor, &binding_root).await;
+    let (reg, _placement, local_root) =
+        make_mirror_registry(&db, &wrong_anchor, &binding_root).await;
     db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
         .await
         .unwrap();
@@ -181,10 +198,34 @@ async fn pull_through_fetches_verifies_persists_and_serves() {
     // A pull-through mirror with an EMPTY local binding.
     let binding_root = dir.path().join("binding");
     let db = Database::open_in_memory().await.unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
+    let (reg, placement, local_root) =
+        make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
     db.create_mirror_source(reg, &upstream_url, "pullthrough", true, 3600)
         .await
         .unwrap();
+    let registry = db.registry_by_id(reg).await.unwrap().unwrap();
+    db.grant_consumer_scope(
+        aos_hub::db::GrantResource::NetworkBoundary {
+            id: "instance:public",
+        },
+        &registry.owner_scope_key,
+        "explicit",
+        "test",
+        "request:mirror-boundary-grant",
+    )
+    .await
+    .unwrap();
+    common::configure_hub_delivery_route(
+        &db,
+        aos_hub::db::SurfaceTarget::Registry(reg),
+        placement,
+        &registry.owner_scope_key,
+        "endpoint:mirror",
+        "route:mirror",
+        "/acme/infra/prod/mirror",
+        "git",
+    )
+    .await;
 
     // Pick a real loose-object path from the upstream surface to request.
     let oid_hex = find_a_loose_object(&upstream_surface);
@@ -219,7 +260,13 @@ async fn pull_through_fetches_verifies_persists_and_serves() {
     let uri = format!("/acme/infra/prod/mirror/{object_path}");
     let response = app
         .clone()
-        .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(&uri)
+                .header(header::HOST, "127.0.0.1:8420")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -254,7 +301,8 @@ async fn pull_through_rejects_tampered_object_by_oid() {
 
     let binding_root = dir.path().join("binding");
     let db = Database::open_in_memory().await.unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
+    let (reg, _placement, local_root) =
+        make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
 
     let fetch = aos_hub::fetch::HttpFetch::new(&upstream_url).await;
     let err = fetch_through(
@@ -298,7 +346,8 @@ async fn full_mirror_rejects_unsigned_narinfo() {
 
     let binding_root = dir.path().join("binding");
     let db = Database::open_in_memory().await.unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
+    let (reg, _placement, local_root) =
+        make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
     db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
         .await
         .unwrap();
@@ -333,7 +382,8 @@ async fn full_mirror_rejects_tampered_nar() {
 
     let binding_root = dir.path().join("binding");
     let db = Database::open_in_memory().await.unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
+    let (reg, _placement, local_root) =
+        make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
     db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
         .await
         .unwrap();
@@ -358,7 +408,8 @@ async fn pull_through_refuses_tampered_narinfo_and_nar() {
 
     let binding_root = dir.path().join("binding");
     let db = Database::open_in_memory().await.unwrap();
-    let (_reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
+    let (_reg, _placement, local_root) =
+        make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
     let trusted = vec![fixture.trust_key.clone()];
 
     // A correctly-signed narinfo and matching NAR are served.
@@ -611,7 +662,8 @@ async fn full_mirror_writes_verified_nar_bytes_not_a_refetch() {
 
     let binding_root = dir.path().join("binding");
     let db = Database::open_in_memory().await.unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
+    let (reg, _placement, local_root) =
+        make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
     db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
         .await
         .unwrap();

@@ -41,7 +41,7 @@ use anyhow::{Context, Result};
 
 use super::super::dialect::Dialect;
 use super::super::value::{Row, Value};
-use super::Statement;
+use super::{CheckedStatement, Statement};
 // Multi-statement migration splitting is only needed by the postgres/mysql
 // drivers (sqlite runs the whole script in one call via `raw_sql`).
 #[cfg(any(feature = "postgres", feature = "mysql"))]
@@ -223,6 +223,16 @@ impl super::Backend for SqlxBackend {
             Self::Mysql(pool) => mysql::batch(pool, stmts).await,
         }
     }
+
+    async fn checked_batch(&self, stmts: &[CheckedStatement]) -> Result<()> {
+        match self {
+            Self::Sqlite(pool) => sqlite::checked_batch(pool, stmts).await,
+            #[cfg(feature = "postgres")]
+            Self::Postgres(pool) => postgres::checked_batch(pool, stmts).await,
+            #[cfg(feature = "mysql")]
+            Self::Mysql(pool) => mysql::checked_batch(pool, stmts).await,
+        }
+    }
 }
 
 /// The sqlite binding, decoding, and statement helpers.
@@ -235,7 +245,7 @@ mod sqlite {
 
     use super::super::super::dialect::Dialect;
     use super::super::super::value::{Row, Value};
-    use super::super::{prepare, Statement};
+    use super::super::{prepare, CheckedStatement, Statement};
 
     /// Binds `params` onto a sqlite query, encoding each [`Value`] in its
     /// native type.
@@ -326,6 +336,31 @@ mod sqlite {
         tx.commit().await.context("committing sqlite transaction")?;
         Ok(())
     }
+
+    /// Runs a checked sqlite transaction, rolling back on a row-count mismatch.
+    pub(super) async fn checked_batch(pool: &SqlitePool, stmts: &[CheckedStatement]) -> Result<()> {
+        let mut tx = pool.begin().await.context("beginning sqlite transaction")?;
+        for checked in stmts {
+            let (sql, params) = prepare(
+                Dialect::Sqlite,
+                &checked.statement.sql,
+                &checked.statement.params,
+            )?;
+            let result = bind(sqlx::query(&sql), &params)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("executing {sql}"))?;
+            if let Some(expected) = checked.expected_rows {
+                anyhow::ensure!(
+                    result.rows_affected() == expected,
+                    "checked batch expected {expected} affected rows, got {} for {sql}",
+                    result.rows_affected()
+                );
+            }
+        }
+        tx.commit().await.context("committing sqlite transaction")?;
+        Ok(())
+    }
 }
 
 #[cfg(feature = "postgres")]
@@ -340,7 +375,7 @@ mod postgres {
 
     use super::super::super::dialect::Dialect;
     use super::super::super::value::{Row, Value};
-    use super::super::{prepare, with_returning_id, Statement};
+    use super::super::{prepare, with_returning_id, CheckedStatement, Statement};
     use super::SqlxBackend;
 
     /// Binds `params` onto a postgres query.
@@ -437,6 +472,36 @@ mod postgres {
         Ok(())
     }
 
+    /// Runs a checked postgres transaction, rolling back on a row-count mismatch.
+    pub(super) async fn checked_batch(pool: &PgPool, stmts: &[CheckedStatement]) -> Result<()> {
+        let mut tx = pool
+            .begin()
+            .await
+            .context("beginning postgres transaction")?;
+        for checked in stmts {
+            let (sql, params) = prepare(
+                Dialect::Postgres,
+                &checked.statement.sql,
+                &checked.statement.params,
+            )?;
+            let result = bind(sqlx::query(&sql), &params)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("executing {sql}"))?;
+            if let Some(expected) = checked.expected_rows {
+                anyhow::ensure!(
+                    result.rows_affected() == expected,
+                    "checked batch expected {expected} affected rows, got {} for {sql}",
+                    result.rows_affected()
+                );
+            }
+        }
+        tx.commit()
+            .await
+            .context("committing postgres transaction")?;
+        Ok(())
+    }
+
     /// References `Column` so the import is not flagged unused.
     #[allow(dead_code)]
     fn _uses_column(row: &sqlx::postgres::PgRow) -> usize {
@@ -457,7 +522,7 @@ mod mysql {
 
     use super::super::super::dialect::Dialect;
     use super::super::super::value::{Row, Value};
-    use super::super::{prepare, Statement};
+    use super::super::{prepare, CheckedStatement, Statement};
 
     /// Binds `params` onto a mysql query.
     fn bind<'q>(
@@ -546,6 +611,31 @@ mod mysql {
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("executing {sql}"))?;
+        }
+        tx.commit().await.context("committing mysql transaction")?;
+        Ok(())
+    }
+
+    /// Runs a checked mysql transaction, rolling back on a row-count mismatch.
+    pub(super) async fn checked_batch(pool: &MySqlPool, stmts: &[CheckedStatement]) -> Result<()> {
+        let mut tx = pool.begin().await.context("beginning mysql transaction")?;
+        for checked in stmts {
+            let (sql, params) = prepare(
+                Dialect::Mysql,
+                &checked.statement.sql,
+                &checked.statement.params,
+            )?;
+            let result = bind(sqlx::query(&sql), &params)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("executing {sql}"))?;
+            if let Some(expected) = checked.expected_rows {
+                anyhow::ensure!(
+                    result.rows_affected() == expected,
+                    "checked batch expected {expected} affected rows, got {} for {sql}",
+                    result.rows_affected()
+                );
+            }
         }
         tx.commit().await.context("committing mysql transaction")?;
         Ok(())

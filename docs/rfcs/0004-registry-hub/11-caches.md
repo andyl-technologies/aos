@@ -1,7 +1,11 @@
 # Managed caches — hosting Nix binary caches in `aos-hub`
 
-- **Status:** Proposed (2026-06-17). Not yet implemented; this file carries
-  its own working status and the implementation checklist at the bottom.
+- **Status:** Implemented as recorded by the checklist below. The target
+  topology for cache placements, routes, registry/cache relationships, and GC
+  provenance is superseded by
+  [RFC-0012](../0012-hub-surface-topology/README.md). This file remains the
+  historical record for the shipped single-placement/link model until that
+  migration is implemented.
 - **Supersedes naming:** the hub becomes **`aos-hub`** — it manages two
   first-class surface kinds, *registries* (git wire surfaces) and *caches*
   (Nix binary caches), so the `aos-registry-*` crate/binary names are renamed
@@ -26,8 +30,9 @@ Connect-JSON router — no Worker-only capability is introduced.
 ## Topology: organizations / registries / caches
 
 A cache is a **sibling of a registry**, not a child of one. Both are
-org-scoped surfaces backed by a `storage_bindings` row, optionally signed by a
-`hosted_keys` row, and exposed through one or more `frontends`. They differ
+org-scoped logical surfaces with explicit placements, optionally bound to an
+exact signing-key generation through a typed usage, and exposed through one or
+more delivery routes. They differ
 only in payload: a registry's surface is a git wire surface (refs, signed
 tags, releases, channels); a cache's surface is a NAR + narinfo object store.
 
@@ -36,7 +41,7 @@ org  (acme)                         ── or no org: an instance-level standalo
  ├── projects ─────────────> registries        git surface: releases, channels, packages
  │                               │ cache_stack   (advertised substituter URLs)
  ├── storage_bindings ──────────┼──> buckets / prefixes      "hosted in different buckets"
- ├── hosted_keys ───────────────┤                            signs registries AND caches
+ ├── signing keys + usages ─────┤                            signs registries AND caches
  ├── frontends ─────────────────┴──> domains / CDN URLs      serves_git | serves_cache | serves_web
  │                                                           "served with different URLs / CDNs"
  └── caches ─────────────────────> NAR + narinfo store       nix-cache-info, Ed25519-signed narinfo
@@ -138,9 +143,10 @@ loose objects, narinfo, JSON RPC bodies). Concretely the cache work:
 Registry-surface reads/writes keep the buffered `fetch()`/`write()` (small,
 bounded); the streaming variants are what NARs and any future large body use.
 
-**Signing.** A cache with a `hosted_key_id` signs every `.narinfo` with that
-Ed25519 key at publish time, using the same sealed-key machinery the registries
-use (`hosted_keys.secret_enc`, the AES-256-GCM sealer). The cache's public key
+**Signing.** A cache may pin its narinfo purpose to one exact immutable
+Ed25519 signing-key generation. External custody accepts signed artifacts;
+secret-provider custody resolves an immutable provider version at publish time.
+The cache's public key
 is surfaced in the canonical `<name>:<base64>` substituter form on the cache's
 browse page and at a stable endpoint, so a consumer can drop it into
 `nix.conf` `trusted-public-keys`. An unsigned cache is permitted (a private,
@@ -155,8 +161,6 @@ System-of-record tables (not derivable from the bucket; backed up):
 caches(
   id, org_id NULL→orgs,            -- NULL = instance-level standalone cache
   slug UNIQUE, name,
-  storage_binding_id→storage_bindings, prefix,
-  hosted_key_id NULL→hosted_keys,  -- narinfo signing key; NULL = unsigned
   visibility,                      -- public | internal | private
   priority,                        -- nix-cache-info Priority (substituter order)
   compression DEFAULT 'zstd', want_mass_query DEFAULT 1,
@@ -391,7 +395,7 @@ existing global `--target` (`local` | `d1:<name>`), so every operation runs the
 same `core::Database` code against the local sqlite file or live D1:
 
 ```text
-aos-hub cache create <slug> --binding <b> [--org <o>] [--key <hosted-key>]
+aos-hub cache create <slug> --org <o>
                             [--prefix <p>] [--visibility <v>] [--priority <n>]
 aos-hub cache list | show <slug> | update <slug> … | rm <slug>
 aos-hub cache link   <cache> <registry> [--advertise] [--roots-packages]
@@ -538,14 +542,13 @@ the current spec. Phases are orderable; A lands first, E last.
       `nar_refcount`, usage, GC-run lifecycle — all on the async `Backend`
       (sqlite + D1 clean), with contract tests.
 - [x] Cache storage layout writer/reader: `nix-cache-info`, `<hash>.narinfo`
-      (Ed25519-signed via `hosted_keys` sealer when keyed), content-addressed
+      (Ed25519-signed through an exact retained signing-key usage), content-addressed
       `nar/<file-hash>.nar.<ext>` with cross-cache refcount on the
       binding+prefix. Signing lives in the wasm-clean `nix_sign` module (Nix
       fingerprint `1;path;narHash;narSize;refs` + raw Ed25519 `Sig:` line, idempotent
-      per key, preserves other keys' sigs); `put_cache_path` signs every uploaded
-      root `<hash>.narinfo` with the cache's hosted key when an (optional) sealer
-      is wired into the shared `RpcService` (both shells pass their `HUB_SEAL_KEY`
-      sealer). Unit-tested (fingerprint/verify/idempotency) + an e2e upload→serve
+      per key, preserves other keys' sigs); publication resolves the pinned
+      generation through its declared custody provider. Unit-tested
+      (fingerprint/verify/idempotency) + an e2e upload→serve
       signature assertion. **Fixed en route:** the native PUT facade never reached
       caches (only HEAD did) — `nix copy --to <hub>/<cache>` 404'd on the native
       hub; the PUT route now mirrors HEAD's cache fallthrough.
@@ -594,7 +597,7 @@ the current spec. Phases are orderable; A lands first, E last.
       **and** the wasm worker via the one shared router; visibility +
       soft-delete (tombstone) enforced before any byte. The cache home page now
       advertises the `extra-trusted-public-keys` line for a keyed cache (derived
-      from the hosted key's stored SSH line via `nix_sign::nix_public_key_from_ssh_line`
+      from the generation's SSH public line via `nix_sign::nix_public_key_from_ssh_line`
       — public material, no sealer). **Remaining:** client `Range:` → `206`
       streaming on the *worker* (with #19; native already streams).
 - [x] **Backend access mode:** v23 adds `storage_bindings.access`

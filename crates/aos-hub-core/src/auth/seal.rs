@@ -1,8 +1,8 @@
 //! AEAD secret sealing: the [`SecretSealer`] seam and its implementations.
 //!
-//! The hub holds two classes of long-lived secrets in its database — per-org
-//! OIDC client secrets and hosted-key Ed25519 signing seeds — stored **sealed**
-//! and unsealed only at the instant they are used. This module owns the pure,
+//! The hub stores OIDC client secrets and the isolated instance draft-signing
+//! seed **sealed**, unsealing them only when used. Live signing-key generations
+//! keep private material in explicit external secret-provider custody. This module owns the pure,
 //! runtime-agnostic sealing crypto shared by the native hub and the Cloudflare
 //! Worker (RFC-0004 Phase 5): the [`SecretSealer`] trait, the production
 //! [`AesGcmSealer`], the dev/test placeholder [`XorSealer`], and the

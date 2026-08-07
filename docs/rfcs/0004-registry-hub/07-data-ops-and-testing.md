@@ -9,7 +9,7 @@ last_used_at)`, `sessions`, `invitations`, `org_idp_configs`
 **`registries`** (identity, slug, visibility, `storage_binding_id`,
 prefix — facts that exist nowhere on the surface and do *not* survive a
 re-index), `storage_bindings`, `frontends`, `cache_stores`,
-`mirror_sources`, `hosted_keys` (encrypted), `publish_jobs` (leases,
+`mirror_sources`, signing-key identities/generations/usages, `publish_jobs` (leases,
 staged releases, pipeline state), `config_changesets`,
 `config_revisions`, `audit_log`, `webhooks` (phase 4; event taxonomy
 and delivery model in a follow-up RFC). The `cache_stores` sketched here
@@ -45,10 +45,9 @@ written down:
 - **Backup.** The SoR tables must be backed up: D1 Time Travel /
   export on Cloudflare; `sqlite3 .backup` / `pg_dump` / `mysqldump`
   natively; plus an app-level encrypted export covering the same data
-  for backend moves. Hosted keys are the one unrecoverable secret:
-  they are encrypted at rest with an instance KMS key (Workers secret
-  / native keyfile), exports keep them encrypted, and losing the KMS
-  key means re-enrolling keys — stated loudly in the enrollment UI.
+  for backend moves. Signing-key private material remains in explicit external
+  custody; exports retain public generations, exact usage pins, and immutable
+  provider-version references but never private key bytes.
 - **Quotas and limits.** Per-org quotas on hub-managed storage (bytes
   and object count — enforced at the upload facade with
   `507 Insufficient Storage`, the same contract as `aos-server`'s
@@ -75,8 +74,8 @@ written down:
   — the export job copies the prefix to any S3-compatible target the
   org supplies, and the SQL SoR (members, tokens-metadata, audit
   slice) exports as JSON. At hard-delete, hub-managed objects are
-  removed, hosted keys are destroyed (loud, irreversible, stated at
-  enrollment), and the audit log is retained per instance policy
+  removed, signing-key usages are detached while public generations remain
+  available for verification, and the audit log is retained per instance policy
   (default one year) with the org tombstoned. User deletion requires
   transferring sole ownerships first; their sessions and owned tokens
   deaden immediately.
@@ -160,4 +159,3 @@ overlay registries compose today. True committed inheritance
 packages) is backwards-compatible to add (the parser ignores unknown
 fields; old clients simply don't see inherited packages) and is
 deliberately deferred.
-

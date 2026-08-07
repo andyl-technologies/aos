@@ -1,0 +1,935 @@
+{
+  "schema_version": "aos.hub.topology-cutover-report/v1",
+  "document_kind": "cutover_report",
+  "canonicalization": {
+    "algorithm": "RFC8785-JCS",
+    "unicode": "UTF-8",
+    "numbers": "I-JSON",
+    "array_order": "schema-defined-sort-keys-v1"
+  },
+  "execution_id": "cutover/example/2026-08-05",
+  "attempt": {
+    "namespace": "cutover/production/topology-v1",
+    "attempt_id": "attempt/production/1",
+    "ordinal": 1,
+    "predecessor_attempt_id": null,
+    "state": "completed",
+    "discarded_at": null,
+    "idempotency_key": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLmlkZW1wb3RlbmN5L3Yx:eyJidW5kbGVfaWQiOiJidW5kbGUvZml4dHVyZS90b3BvbG9neS12MSIsInBsYW5faWQiOiJwbGFuL2ZpeHR1cmUvdG9wb2xvZ3ktdjEiLCJzb3VyY2VfZGVwbG95bWVudF9yZXZpc2lvbiI6InNvdXJjZS1hYmNkZWYwIiwidGFyZ2V0X2RlcGxveW1lbnRfcmV2aXNpb24iOiJ0YXJnZXQtYWJjZGVmMCIsInRhcmdldF9zY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifQ"
+  },
+  "transition_ledger": [
+    {
+      "sequence": 1,
+      "from_state": "planned",
+      "to_state": "quiesced",
+      "occurred_at": "2026-08-05T02:04:00Z",
+      "target_write_open_count": 0,
+      "admitted_target_write_count": 0,
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      }
+    },
+    {
+      "sequence": 2,
+      "from_state": "quiesced",
+      "to_state": "backed_up",
+      "occurred_at": "2026-08-05T02:06:00Z",
+      "target_write_open_count": 0,
+      "admitted_target_write_count": 0,
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      }
+    },
+    {
+      "sequence": 3,
+      "from_state": "backed_up",
+      "to_state": "transformed",
+      "occurred_at": "2026-08-05T02:12:00Z",
+      "target_write_open_count": 0,
+      "admitted_target_write_count": 0,
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      }
+    },
+    {
+      "sequence": 4,
+      "from_state": "transformed",
+      "to_state": "validated",
+      "occurred_at": "2026-08-05T02:20:00Z",
+      "target_write_open_count": 0,
+      "admitted_target_write_count": 0,
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      }
+    },
+    {
+      "sequence": 5,
+      "from_state": "validated",
+      "to_state": "switched",
+      "occurred_at": "2026-08-05T02:32:00Z",
+      "target_write_open_count": 1,
+      "admitted_target_write_count": 0,
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      }
+    },
+    {
+      "sequence": 6,
+      "from_state": "switched",
+      "to_state": "closed",
+      "occurred_at": "2026-08-05T02:50:00Z",
+      "target_write_open_count": 1,
+      "admitted_target_write_count": 0,
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      }
+    }
+  ],
+  "plan": {
+    "plan_id": "plan/fixture/topology-v1"
+  },
+  "started_at": "2026-08-05T02:00:00Z",
+  "finished_at": "2026-08-05T03:00:00Z",
+  "result": "succeeded",
+  "operator_principal_stable_id": "principal/operator/example",
+  "preflight": {
+    "state": "completed",
+    "source_deployment_revision": "source-abcdef0",
+    "source_schema_revision": "legacy-000001",
+    "source_topology_digest": "derive:sha256:1000000000000000000000000000000000000000000000000000000000000001",
+    "online_checks": [
+      {
+        "check_id": "check/preflight/source-digest",
+        "kind": "stable_identity",
+        "result": "pass",
+        "observed_digest": "derive:sha256:1000000000000000000000000000000000000000000000000000000000000001",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      }
+    ],
+    "completed_at": "2026-08-05T02:01:00Z"
+  },
+  "maintenance": {
+    "state": "quiesced",
+    "entered_at": "2026-08-05T02:02:00Z",
+    "write_admission": "closed",
+    "inflight_writes": 0,
+    "inflight_mutations": 0,
+    "targets": [
+      {
+        "stable_id": "alarm/domain-probes",
+        "kind": "alarm",
+        "state": "closed",
+        "inflight_count": 0,
+        "capability_expiry_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      {
+        "stable_id": "schedule/cron",
+        "kind": "cron",
+        "state": "closed",
+        "inflight_count": 0,
+        "capability_expiry_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      {
+        "stable_id": "database/production",
+        "kind": "database",
+        "state": "closed",
+        "inflight_count": 0,
+        "capability_expiry_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      {
+        "stable_id": "credential/direct-writes",
+        "kind": "direct_write_credential",
+        "state": "closed",
+        "inflight_count": 0,
+        "capability_expiry_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      {
+        "stable_id": "database/do/topology",
+        "kind": "durable_object_namespace",
+        "state": "closed",
+        "inflight_count": 0,
+        "capability_expiry_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      {
+        "stable_id": "object-store/production",
+        "kind": "object_store",
+        "state": "closed",
+        "inflight_count": 0,
+        "capability_expiry_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      {
+        "stable_id": "queue/topology",
+        "kind": "queue",
+        "state": "closed",
+        "inflight_count": 0,
+        "capability_expiry_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      {
+        "stable_id": "runtime/native",
+        "kind": "runtime",
+        "state": "closed",
+        "inflight_count": 0,
+        "capability_expiry_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      {
+        "stable_id": "runtime/worker",
+        "kind": "runtime",
+        "state": "closed",
+        "inflight_count": 0,
+        "capability_expiry_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      }
+    ],
+    "consistency_point_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000025",
+    "quiesce_evidence": {
+      "artifact_node_id": "evidence/cutover-fixture"
+    }
+  },
+  "backup": [
+    {
+      "database_stable_id": "database/do/topology",
+      "captured_at": "2026-08-05T02:05:00Z",
+      "source_logical_digest": "8ed7fd1dc6b502bec8979fa04bb4b98c1b0af63b8e7d6bbe5b730fae7b4d7dbf",
+      "restore_verification": {
+        "isolated_restore": true,
+        "schema_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000023",
+        "logical_data_digest": "8ed7fd1dc6b502bec8979fa04bb4b98c1b0af63b8e7d6bbe5b730fae7b4d7dbf",
+        "row_count": 2,
+        "integrity_result": "pass",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "database_kind": "durable_object_sqlite",
+      "method": "durable_object_logical_export",
+      "quiesce_epoch": 1,
+      "durable_object_count": 1,
+      "expected_object_set_digest": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3sibG9naWNhbF9kaWdlc3QiOiI4ZWQ3ZmQxZGM2YjUwMmJlYzg5NzlmYTA0YmI0Yjk4YzFiMGFmNjNiOGU3ZDZiYmU1YjczMGZhZTdiNGQ3ZGJmIiwib2JqZWN0X3N0YWJsZV9pZCI6ImR1cmFibGUtb2JqZWN0L2h1Yi1kYi9wcm9kdWN0aW9uIiwicm93X2NvdW50IjoyLCJzY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifV0",
+      "observed_object_set_digest": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3sibG9naWNhbF9kaWdlc3QiOiI4ZWQ3ZmQxZGM2YjUwMmJlYzg5NzlmYTA0YmI0Yjk4YzFiMGFmNjNiOGU3ZDZiYmU1YjczMGZhZTdiNGQ3ZGJmIiwib2JqZWN0X3N0YWJsZV9pZCI6ImR1cmFibGUtb2JqZWN0L2h1Yi1kYi9wcm9kdWN0aW9uIiwicm93X2NvdW50IjoyLCJzY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifV0",
+      "object_manifests": [
+        {
+          "object_stable_id": "durable-object/hub-db/production",
+          "schema_revision": "topology-000001",
+          "row_count": 2,
+          "logical_digest": "8ed7fd1dc6b502bec8979fa04bb4b98c1b0af63b8e7d6bbe5b730fae7b4d7dbf"
+        }
+      ],
+      "aggregate_manifest_digest": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLmRvLWFnZ3JlZ2F0ZS92MQ:eyJkYXRhYmFzZV9zdGFibGVfaWQiOiJkYXRhYmFzZS9kby90b3BvbG9neSIsIm9iamVjdF9tYW5pZmVzdHMiOlt7ImxvZ2ljYWxfZGlnZXN0IjoiOGVkN2ZkMWRjNmI1MDJiZWM4OTc5ZmEwNGJiNGI5OGMxYjBhZjYzYjhlN2Q2YmJlNWI3MzBmYWU3YjRkN2RiZiIsIm9iamVjdF9zdGFibGVfaWQiOiJkdXJhYmxlLW9iamVjdC9odWItZGIvcHJvZHVjdGlvbiIsInJvd19jb3VudCI6Miwic2NoZW1hX3JldmlzaW9uIjoidG9wb2xvZ3ktMDAwMDAxIn1dLCJyZWNvbXB1dGVkX29iamVjdF9jb3VudCI6MSwicmVjb21wdXRlZF9yb3dfY291bnQiOjJ9",
+      "verified_aggregate_manifest_digest": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLmRvLWFnZ3JlZ2F0ZS92MQ:eyJkYXRhYmFzZV9zdGFibGVfaWQiOiJkYXRhYmFzZS9kby90b3BvbG9neSIsIm9iamVjdF9tYW5pZmVzdHMiOlt7ImxvZ2ljYWxfZGlnZXN0IjoiOGVkN2ZkMWRjNmI1MDJiZWM4OTc5ZmEwNGJiNGI5OGMxYjBhZjYzYjhlN2Q2YmJlNWI3MzBmYWU3YjRkN2RiZiIsIm9iamVjdF9zdGFibGVfaWQiOiJkdXJhYmxlLW9iamVjdC9odWItZGIvcHJvZHVjdGlvbiIsInJvd19jb3VudCI6Miwic2NoZW1hX3JldmlzaW9uIjoidG9wb2xvZ3ktMDAwMDAxIn1dLCJyZWNvbXB1dGVkX29iamVjdF9jb3VudCI6MSwicmVjb21wdXRlZF9yb3dfY291bnQiOjJ9",
+      "isolated_replay_verified": true,
+      "artifact_node_id": "artifact/backup/do-topology"
+    },
+    {
+      "database_stable_id": "database/production",
+      "captured_at": "2026-08-05T02:05:00Z",
+      "source_logical_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000005",
+      "restore_verification": {
+        "isolated_restore": true,
+        "schema_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000006",
+        "logical_data_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000005",
+        "row_count": 10,
+        "integrity_result": "pass",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "database_kind": "d1",
+      "method": "d1_export",
+      "export_bookmark": "bookmark/d1/cutover-1",
+      "isolated_d1_import_verified": true,
+      "artifact_node_id": "artifact/backup/d1"
+    }
+  ],
+  "transform": {
+    "state": "completed",
+    "input_digest": "derive:sha256:1000000000000000000000000000000000000000000000000000000000000001",
+    "output_digest": "derive:sha256:4000000000000000000000000000000000000000000000000000000000000003",
+    "side_by_side_namespace_stable_id": "namespace/topology-v1",
+    "started_at": "2026-08-05T02:10:00Z",
+    "finished_at": "2026-08-05T02:12:00Z",
+    "legacy_rows_read": 10,
+    "legacy_rows_written": 0,
+    "target_rows_written": 31,
+    "rejected_rows": 0,
+    "mapping_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000012",
+    "transformer_node_id": "artifact/transformer/v1"
+  },
+  "validation": {
+    "state": "completed",
+    "checks": [
+      {
+        "check_id": "check/auth-no-widening",
+        "kind": "auth_no_widening",
+        "result": "pass",
+        "observed_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000008",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/gc-disabled",
+        "kind": "gc_disabled",
+        "result": "pass",
+        "observed_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000008",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/legacy-absent",
+        "kind": "legacy_absent",
+        "result": "pass",
+        "observed_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000008",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/new-runtime-health",
+        "kind": "runtime_health",
+        "result": "pass",
+        "observed_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000008",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/old-runtime-stopped",
+        "kind": "runtime_health",
+        "result": "pass",
+        "observed_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000008",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/referential-integrity",
+        "kind": "referential_integrity",
+        "result": "pass",
+        "observed_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000008",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/retention-fresh",
+        "kind": "retention_fresh",
+        "result": "pass",
+        "observed_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000008",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/rollback-health",
+        "kind": "runtime_health",
+        "result": "pass",
+        "observed_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000008",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/route-parity",
+        "kind": "route_parity",
+        "result": "pass",
+        "observed_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000008",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/storage-access",
+        "kind": "storage_access",
+        "result": "pass",
+        "observed_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000008",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/target/inventory-complete",
+        "kind": "inventory_complete",
+        "result": "pass",
+        "observed_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000008",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/target/schema",
+        "kind": "schema",
+        "result": "pass",
+        "observed_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000008",
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        },
+        "evidence_required": true
+      }
+    ],
+    "stable_id_proof": {
+      "algorithm": "stable-id-bijection-v1",
+      "source_count": 31,
+      "target_count": 31,
+      "mapping_count": 31,
+      "collision_count": 0,
+      "missing_source_count": 0,
+      "unplanned_target_count": 0,
+      "mapping_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000012",
+      "result": "pass",
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      }
+    },
+    "auth_no_widening_proof": {
+      "algorithm": "permission-set-subset-v1",
+      "principal_scope_count": 1,
+      "route_count": 3,
+      "widening_count": 0,
+      "source_policy_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000001",
+      "target_policy_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000002",
+      "proof_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000003",
+      "result": "pass",
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      }
+    },
+    "resources": {
+      "instances": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000003",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "organizations": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000004",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "projects": {
+        "expected_count": 0,
+        "actual_count": 0,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000049",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "surfaces": {
+        "expected_count": 2,
+        "actual_count": 2,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000020",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "bindings": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000003",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "binding_capability_observations": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000044",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "credential_generations": {
+        "expected_count": 0,
+        "actual_count": 0,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000046",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "binding_write_revisions": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000022",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "binding_grants": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000024",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "storage_defaults": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000026",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "placements": {
+        "expected_count": 2,
+        "actual_count": 2,
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000004",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "write_authorities": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000028",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "delivery_endpoints": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000030",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "network_boundaries": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000032",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "gateways": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000034",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "routes": {
+        "expected_count": 3,
+        "actual_count": 3,
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000005",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "route_configurations": {
+        "expected_count": 3,
+        "actual_count": 3,
+        "configuration_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000001",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "domains": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000006",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "placement_policies": {
+        "expected_count": 2,
+        "actual_count": 2,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000036",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "equivalence_sets": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000038",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "registry_publications": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000006",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "publication_bindings": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000040",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "population_targets": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000042",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "retention_subscriptions": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000006",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      },
+      "placement_manifests": {
+        "expected_count": 1,
+        "actual_count": 1,
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000008",
+        "invalid_count": 0,
+        "evidence": {
+          "artifact_node_id": "evidence/cutover-fixture"
+        }
+      }
+    },
+    "inventories": {
+      "expected_count": 1,
+      "actual_count": 1,
+      "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000007",
+      "invalid_count": 0,
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      },
+      "incomplete_count": 0,
+      "weak_identity_count": 0
+    },
+    "passed_at": "2026-08-05T02:20:00Z"
+  },
+  "smoke_tests": [
+    {
+      "test_id": "smoke/api-private-denied",
+      "surface": "api",
+      "route_stable_id": null,
+      "placement_stable_id": null,
+      "binding_stable_id": null,
+      "auth_context": "anonymous",
+      "result": "pass",
+      "status": 401,
+      "response_digest": "derive:sha256:c000000000000000000000000000000000000000000000000000000000000005",
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      },
+      "evidence_required": true,
+      "method": "GET",
+      "path_digest": "derive:sha256:8000000000000000000000000000000000000000000000000000000000000002"
+    },
+    {
+      "test_id": "smoke/cli-private-reader",
+      "surface": "cli",
+      "route_stable_id": null,
+      "placement_stable_id": null,
+      "binding_stable_id": null,
+      "auth_context": "least_privileged_reader",
+      "result": "pass",
+      "status": 200,
+      "response_digest": "derive:sha256:c000000000000000000000000000000000000000000000000000000000000007",
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      },
+      "evidence_required": true,
+      "method": "CLI",
+      "path_digest": "derive:sha256:8000000000000000000000000000000000000000000000000000000000000003"
+    },
+    {
+      "test_id": "smoke/git-private-denied",
+      "surface": "git",
+      "route_stable_id": "org/example/registry/main/route/git",
+      "placement_stable_id": "org/example/registry/main/placement/primary",
+      "binding_stable_id": "org/example/binding/local",
+      "auth_context": "anonymous",
+      "result": "pass",
+      "status": 401,
+      "response_digest": "derive:sha256:c000000000000000000000000000000000000000000000000000000000000008",
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      },
+      "evidence_required": true,
+      "method": "GET",
+      "path_digest": "derive:sha256:8000000000000000000000000000000000000000000000000000000000000004"
+    },
+    {
+      "test_id": "smoke/git-private-reader",
+      "surface": "git",
+      "route_stable_id": "org/example/registry/main/route/git",
+      "placement_stable_id": "org/example/registry/main/placement/primary",
+      "binding_stable_id": "org/example/binding/local",
+      "auth_context": "least_privileged_reader",
+      "result": "pass",
+      "status": 200,
+      "response_digest": "derive:sha256:c000000000000000000000000000000000000000000000000000000000000010",
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      },
+      "evidence_required": true,
+      "method": "GET",
+      "path_digest": "derive:sha256:8000000000000000000000000000000000000000000000000000000000000006"
+    },
+    {
+      "test_id": "smoke/nix-cache-info",
+      "surface": "nix_cache",
+      "route_stable_id": "org/example/cache/main/route/canonical",
+      "placement_stable_id": "org/example/cache/main/placement/primary",
+      "binding_stable_id": "org/example/binding/local",
+      "auth_context": "anonymous",
+      "result": "pass",
+      "status": 200,
+      "response_digest": "derive:sha256:c000000000000000000000000000000000000000000000000000000000000001",
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      },
+      "evidence_required": true,
+      "method": "GET",
+      "path_digest": "derive:sha256:8000000000000000000000000000000000000000000000000000000000000001"
+    },
+    {
+      "test_id": "smoke/web-public-read",
+      "surface": "web",
+      "route_stable_id": "org/example/registry/main/route/web",
+      "placement_stable_id": "org/example/registry/main/placement/primary",
+      "binding_stable_id": "org/example/binding/local",
+      "auth_context": "anonymous",
+      "result": "pass",
+      "status": 200,
+      "response_digest": "derive:sha256:c000000000000000000000000000000000000000000000000000000000000009",
+      "evidence": {
+        "artifact_node_id": "evidence/cutover-fixture"
+      },
+      "evidence_required": true,
+      "method": "GET",
+      "path_digest": "derive:sha256:8000000000000000000000000000000000000000000000000000000000000005"
+    }
+  ],
+  "switch": {
+    "state": "completed",
+    "strategy": "single_atomic_runtime_switch",
+    "old_deployment_revision": "source-abcdef0",
+    "new_deployment_revision": "target-abcdef0",
+    "old_runtime_stopped_at": "2026-08-05T02:30:00Z",
+    "new_runtime_started_at": "2026-08-05T02:31:00Z",
+    "traffic_switched_at": "2026-08-05T02:32:00Z",
+    "write_admission_after_switch": "opened_after_validation",
+    "evidence": {
+      "artifact_node_id": "evidence/cutover-fixture"
+    }
+  },
+  "gc_gate": {
+    "destructive_gc_state_at_switch": "disabled",
+    "readiness": "ready",
+    "first_sweep_acknowledgement_state": "absent",
+    "inventory_gate": "complete",
+    "retention_gate": "fresh",
+    "outstanding_check_ids": [],
+    "evidence": {
+      "artifact_node_id": "evidence/cutover-fixture"
+    }
+  },
+  "rollback": {
+    "state": "closed_unused",
+    "closed_at": "2026-08-05T02:50:00Z",
+    "backup_artifacts": [
+      {
+        "artifact_node_id": "artifact/backup/d1"
+      },
+      {
+        "artifact_node_id": "artifact/backup/do-topology"
+      }
+    ],
+    "database_restores": [
+      {
+        "database_stable_id": "database/do/topology",
+        "database_kind": "durable_object_sqlite",
+        "expected_source_digest": "8ed7fd1dc6b502bec8979fa04bb4b98c1b0af63b8e7d6bbe5b730fae7b4d7dbf",
+        "status": "not_run",
+        "restored_digest": null,
+        "restored_row_count": null,
+        "evidence": null,
+        "backup_artifact_node_id": "artifact/backup/do-topology",
+        "expected_source_row_count": 2,
+        "restore_started_at": null,
+        "restore_finished_at": null,
+        "verification_query_set_node_id": "ruleset/database-restore-verification"
+      },
+      {
+        "database_stable_id": "database/production",
+        "database_kind": "d1",
+        "expected_source_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000005",
+        "status": "not_run",
+        "restored_digest": null,
+        "restored_row_count": null,
+        "evidence": null,
+        "backup_artifact_node_id": "artifact/backup/d1",
+        "expected_source_row_count": 10,
+        "restore_started_at": null,
+        "restore_finished_at": null,
+        "verification_query_set_node_id": "ruleset/database-restore-verification"
+      }
+    ],
+    "old_deployment_artifact": {
+      "artifact_node_id": "artifact/deployment/source"
+    },
+    "rollback_boundary_crossed": true,
+    "new_runtime_writes_before_closure": 0,
+    "restore_expected_count": 2,
+    "restore_completed_count": 0,
+    "restore_failed_count": 0,
+    "restore_set_result": "not_run",
+    "old_deployment_restored": "not_run",
+    "old_runtime_smoke_result": "not_run",
+    "old_writes_reopened_after_verification": false,
+    "closure_evidence": {
+      "artifact_node_id": "evidence/cutover-fixture"
+    }
+  },
+  "legacy_removal": {
+    "state": "completed",
+    "final_head_revision": "target-abcdef0",
+    "ruleset_digest": "derive:sha256:9200000000000000000000000000000000000000000000000000000000000001",
+    "scanned_path_set_digest": "derive:sha256:9200000000000000000000000000000000000000000000000000000000000002",
+    "allowlist_digest": "derive:sha256:9200000000000000000000000000000000000000000000000000000000000003",
+    "legacy_parser_matches": 0,
+    "legacy_route_matches": 0,
+    "legacy_schema_matches": 0,
+    "compatibility_feature_matches": 0,
+    "absence_categories": {
+      "source": 0,
+      "generated": 0,
+      "linked_symbols": 0,
+      "build_features": 0,
+      "database": 0,
+      "http_rpc": 0,
+      "cli": 0,
+      "environment": 0,
+      "configuration": 0,
+      "migrations": 0,
+      "worker_bindings": 0,
+      "deployed_manifests": 0
+    },
+    "repository_scan_evidence": {
+      "artifact_node_id": "evidence/cutover-fixture"
+    }
+  },
+  "blockers": [],
+  "coverage": {
+    "plan_resource_set_digest": "derive:sha256:f000000000000000000000000000000000000000000000000000000000000001",
+    "reported_resource_set_digest": "derive:sha256:f000000000000000000000000000000000000000000000000000000000000001",
+    "plan_check_set_digest": "derive:sha256:f000000000000000000000000000000000000000000000000000000000000002",
+    "reported_check_set_digest": "derive:sha256:f000000000000000000000000000000000000000000000000000000000000002",
+    "plan_smoke_set_digest": "derive:sha256:f000000000000000000000000000000000000000000000000000000000000003",
+    "reported_smoke_set_digest": "derive:sha256:f000000000000000000000000000000000000000000000000000000000000003",
+    "plan_database_set_digest": "derive:sha256:f000000000000000000000000000000000000000000000000000000000000004",
+    "reported_database_set_digest": "derive:sha256:f000000000000000000000000000000000000000000000000000000000000004",
+    "plan_backup_set_digest": "derive:sha256:f000000000000000000000000000000000000000000000000000000000000005",
+    "reported_backup_set_digest": "derive:sha256:f000000000000000000000000000000000000000000000000000000000000005",
+    "missing_resource_count": 0,
+    "unplanned_resource_count": 0,
+    "missing_check_count": 0,
+    "unplanned_check_count": 0,
+    "failed_check_count": 0,
+    "not_run_check_count": 0,
+    "missing_smoke_count": 0,
+    "unplanned_smoke_count": 0,
+    "failed_smoke_count": 0,
+    "not_run_smoke_count": 0,
+    "missing_database_count": 0,
+    "unplanned_database_count": 0,
+    "missing_backup_count": 0,
+    "unplanned_backup_count": 0,
+    "failed_backup_count": 0
+  },
+  "failure": null,
+  "dialect": "aos-cutover-schema/v1",
+  "bundle_id": "bundle/fixture/topology-v1",
+  "generation": {
+    "reporter_revision": "reporter-abcdef0"
+  },
+  "attempt_history": [
+    {
+      "namespace": "cutover/production/topology-v1",
+      "attempt_id": "attempt/production/1",
+      "ordinal": 1,
+      "predecessor_attempt_id": null,
+      "state": "completed",
+      "discarded_at": null,
+      "idempotency_key": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLmlkZW1wb3RlbmN5L3Yx:eyJidW5kbGVfaWQiOiJidW5kbGUvZml4dHVyZS90b3BvbG9neS12MSIsInBsYW5faWQiOiJwbGFuL2ZpeHR1cmUvdG9wb2xvZ3ktdjEiLCJzb3VyY2VfZGVwbG95bWVudF9yZXZpc2lvbiI6InNvdXJjZS1hYmNkZWYwIiwidGFyZ2V0X2RlcGxveW1lbnRfcmV2aXNpb24iOiJ0YXJnZXQtYWJjZGVmMCIsInRhcmdldF9zY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifQ"
+    }
+  ]
+}
