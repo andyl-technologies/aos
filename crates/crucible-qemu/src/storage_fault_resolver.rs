@@ -14,9 +14,9 @@ use crucible::model::{
     ResolvedFaultTarget, ResolvedMappingOutput, SignalValue, StorageAvailabilityState,
     StorageEffectSpecification, StorageFlushKind, StorageMediaState, StoragePolicyArtifactKind,
     StoragePolicyCacheEviction, StoragePolicyDirtyEviction, StoragePolicyDuplicateCompletion,
-    StoragePolicyTypedResult, StorageReadMutation, StorageSelection, StorageVolatileCacheLossKind,
-    StorageVolatileCacheLossSelector, StorageWriteDispositionKind, World,
-    WorldCompletionDurability,
+    StoragePolicyPersistenceOrdering, StoragePolicyTypedResult, StorageReadMutation,
+    StorageSelection, StorageVolatileCacheLossKind, StorageVolatileCacheLossSelector,
+    StorageWriteDispositionKind, World, WorldCompletionDurability,
 };
 
 /// Scenario-owned entropy used only for keyed storage adapter choices.
@@ -141,8 +141,8 @@ use crucible_device::block::{
     BlockCompletionDurability, BlockDuplicatePolicy, BlockDurabilityConfig, BlockFaultAvailability,
     BlockFaultByteSpan, BlockFaultCacheEviction, BlockFaultDirtyEviction,
     BlockFaultFlushDisposition, BlockFaultReadTransform, BlockFaultResult, BlockFaultState,
-    BlockFaultWriteDisposition, BlockOp, BlockRequest, BlockResponse, ResolvedBlockCachePolicy,
-    ResolvedBlockFaultDirective,
+    BlockFaultWriteDisposition, BlockOp, BlockPersistenceOrdering, BlockRequest, BlockResponse,
+    ResolvedBlockCachePolicy, ResolvedBlockFaultDirective, ResolvedBlockPersistenceTransform,
 };
 
 /// Resolves one cache-loss impulse into exact live cache sequence identities.
@@ -639,6 +639,55 @@ fn apply_effect(
             directive.write_disposition =
                 resolve_write_disposition(world, context, action, request, disposition)?;
         }
+        StorageEffectSpecification::PersistenceOrder {
+            ordering_group,
+            ordering_rule,
+        } if request.op == BlockOp::Write => {
+            let policy = world
+                .fault_topology()
+                .storage_policy_artifact(ordering_rule)
+                .and_then(|artifact| match &artifact.artifact {
+                    StoragePolicyArtifactKind::Persistence(policy) => Some(policy),
+                    _ => None,
+                })
+                .ok_or_else(|| StorageFaultResolutionError::PolicyReference {
+                    binding: action.binding.clone(),
+                    reference: ordering_rule.clone(),
+                    expected: "persistence",
+                })?;
+            if !directive.persistence_transforms.is_empty()
+                && directive.persistence_admitted_nanos != action.coordinate.virtual_nanos
+            {
+                return Err(StorageFaultResolutionError::InvalidDirective {
+                    binding: action.binding.clone(),
+                    reason: String::from(
+                        "composed persistence transformations disagree on admission time",
+                    ),
+                });
+            }
+            directive.persistence_admitted_nanos = action.coordinate.virtual_nanos;
+            directive
+                .persistence_transforms
+                .push(ResolvedBlockPersistenceTransform {
+                    ordering_group: *blake3::hash(ordering_group.as_str().as_bytes()).as_bytes(),
+                    ordering: match policy.ordering {
+                        StoragePolicyPersistenceOrdering::Preserve => {
+                            BlockPersistenceOrdering::Preserve
+                        }
+                        StoragePolicyPersistenceOrdering::ReverseReady => {
+                            BlockPersistenceOrdering::ReverseReady
+                        }
+                        StoragePolicyPersistenceOrdering::DescendingRange => {
+                            BlockPersistenceOrdering::DescendingRange
+                        }
+                        StoragePolicyPersistenceOrdering::KeyedPermutation => {
+                            BlockPersistenceOrdering::KeyedPermutation
+                        }
+                    },
+                    delay_nanos: policy.delay_nanos,
+                    preserve_barriers: policy.preserve_barriers,
+                });
+        }
         StorageEffectSpecification::VolatileCache {
             capacity_bytes,
             cache_policy,
@@ -775,6 +824,7 @@ fn apply_effect(
         | StorageEffectSpecification::OperationFailure { .. }
         | StorageEffectSpecification::ReadTransform { .. }
         | StorageEffectSpecification::WriteDisposition { .. }
+        | StorageEffectSpecification::PersistenceOrder { .. }
         | StorageEffectSpecification::VolatileCache { .. }
         | StorageEffectSpecification::MediaRange { .. }
         | StorageEffectSpecification::FlushDisposition { .. } => {}

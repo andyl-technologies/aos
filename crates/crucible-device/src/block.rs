@@ -23,6 +23,7 @@ pub mod codec;
 pub mod device;
 pub mod fault;
 pub mod overlay;
+pub mod persistence;
 
 pub use codec::{
     BLOCK_ABI_VERSION, BlockCodecError, BlockErrorCode, BlockOp, BlockRequest, BlockResponse,
@@ -31,6 +32,11 @@ pub use codec::{
 pub use device::{BlockDevice, BlockLatency, BlockSnapshot, submit_cross_device_misdirected_write};
 pub use fault::*;
 pub use overlay::{BaseImage, CowOverlay, OverlayDelta, PAGE_SIZE};
+pub use persistence::{
+    BlockPersistenceGraph, BlockPersistenceNode, BlockPersistenceOrdering,
+    BlockPersistenceReadyKey, BlockPersistenceTransformationEvidence, BlockWriteFragmentId,
+    ResolvedBlockPersistenceTransform,
+};
 
 #[cfg(test)]
 mod tests {
