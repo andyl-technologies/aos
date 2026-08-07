@@ -203,6 +203,17 @@ impl PendingPlan {
             confirmation_hash: self.plan.confirmation_hash.clone(),
         }
     }
+
+    /// Builds a storage-gateway mutation apply envelope for this exact plan.
+    pub(crate) fn storage_gateway_apply(
+        &self,
+    ) -> aos_proto_types::ApplyStorageGatewayMutationRequest {
+        aos_proto_types::ApplyStorageGatewayMutationRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
 }
 
 static IDEMPOTENCY_SEQUENCE: AtomicU32 = AtomicU32::new(0);
