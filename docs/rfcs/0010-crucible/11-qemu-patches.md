@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **49 patches**. This count is checked against
+The carried series contains **50 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -215,6 +215,7 @@ DEVICE CO-SIM (shmem transport)                        class  enforces
   crucible-dev-cb-api ........... register blk/9p callbacks  F    PATCH-30, PLUG, SHM-17
   crucible-net-tx-callback ...... intercept guest TX         F    PATCH-31, DET-18, E18, SHM-17
   crucible-net-flush-api ........ lossless RX inject + flush F    PATCH-32, DET-18, E18
+  crucible-block-typed-errors ... exact block result to errno     F    STOR-RESULT, IO-8, PATCH-26
 
 TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-sim-loop-fix ......... single-vCPU loop fixes     D    PATCH-34, DET-1, NG-1

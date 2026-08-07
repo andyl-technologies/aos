@@ -104,9 +104,14 @@ fn qemu_patch_created_files_match_license_inventory() -> Result<(), Box<dyn Erro
         "accel/tcg/tcg-accel-ops-sim-shmem.h".to_owned(),
         "accel/tcg/tcg-accel-ops-sim.c".to_owned(),
         "block/crucible-shmem.c".to_owned(),
+        "include/qemu/crucible-fault.h".to_owned(),
+        "include/qemu/crucible-process.h".to_owned(),
         "include/system/crucible-plugin-wake.h".to_owned(),
         "include/system/crucible-sim-ipi.h".to_owned(),
         "include/system/crucible-sim-preemption.h".to_owned(),
+        "plugins/crucible-fault-memory.c".to_owned(),
+        "plugins/crucible-fault.c".to_owned(),
+        "tests/tcg/plugins/crucible-memory.c".to_owned(),
     ]);
     assert_eq!(created, expected, "QEMU patch-created file set drifted");
 

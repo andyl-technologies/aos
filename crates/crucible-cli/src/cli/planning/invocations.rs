@@ -1276,7 +1276,7 @@ pub(crate) fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOver
 ///
 /// Returns [`CliError`] when the scenario or budget is invalid, incompatible
 /// evidence inputs are selected, or an evidence file cannot be loaded.
-#[cfg(any(test, feature = "test-double"))]
+#[cfg(test)]
 pub(crate) fn plan_search_invocation(
     args: &SearchArgs,
     store_root: &Path,
@@ -1758,7 +1758,7 @@ pub(crate) fn parse_search_retained_evidence_configuration(
 ///
 /// Returns [`CliError`] when budgets, corpus paths, or the scenario-family
 /// reference are invalid.
-#[cfg(any(test, feature = "test-double"))]
+#[cfg(test)]
 pub(crate) fn plan_fuzz_invocation(
     args: &FuzzArgs,
     seed: &DeterminismErgonomicsPlan,

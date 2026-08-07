@@ -25,6 +25,7 @@
         branchCommit
         branchTree
         ;
+      branchSubject = patch.branchSubject or (lib.removeSuffix ".patch" patch.file);
     })
     series.patches;
   patchBranchMaterial = builtins.toJSON {
@@ -65,8 +66,8 @@
     builtins.filter (patch: !(builtins.elem patch manifestPatchFiles)) patchFiles;
 
   patchBranchManifest = lib.concatMapStringsSep "\n" (patch: let
-    subject = lib.removeSuffix ".patch" patch.file;
-  in "${patch.file} ${subject} ${patch.branchCommit} ${patch.branchTree}")
+    subject = patch.branchSubject or (lib.removeSuffix ".patch" patch.file);
+  in "${patch.file}|${patch.branchCommit}|${patch.branchTree}|${subject}")
   series.patches;
 
   staticFailures =
@@ -211,7 +212,7 @@ in
 
             : > "$out/patch-branch-manifest.actual"
             line_number=0
-            while read -r patch_name patch_subject expected_commit expected_tree; do
+            while IFS='|' read -r patch_name expected_commit expected_tree patch_subject; do
               line_number=$((line_number + 1))
               committed_patch="${patchDir}/$patch_name"
               generated_patch="$generated_dir/$patch_name"
@@ -233,7 +234,7 @@ in
               ')
               test "$dco_count" = "1:1" \
                 || fail "$patch_name must carry exactly one manifest-contributor DCO sign-off (observed $dco_count)"
-              printf '%s %s %s %s\n' "$patch_name" "$subject" "$commit" "$tree" \
+              printf '%s|%s|%s|%s\n' "$patch_name" "$commit" "$tree" "$subject" \
                 >> "$out/patch-branch-manifest.actual"
 
               git diff --name-only "$parent_commit" "$commit" > "$paths_file"
@@ -257,7 +258,7 @@ in
             git log --reverse --format=%s "$base_commit..refs/heads/patch-stack" \
               > "$out/commit-order.actual"
             cat > "$out/commit-order.expected" <<'ORDER'
-            ${builtins.concatStringsSep "\n" (map (patch: lib.removeSuffix ".patch" patch) manifestPatchFiles)}
+            ${builtins.concatStringsSep "\n" (map (patch: patch.branchSubject or (lib.removeSuffix ".patch" patch.file)) series.patches)}
             ORDER
             cmp -s "$out/commit-order.expected" "$out/commit-order.actual" \
               || fail "deterministic commit order differs from manifest"

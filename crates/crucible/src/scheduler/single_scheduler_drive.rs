@@ -1550,7 +1550,7 @@ impl SingleScheduler {
             .collect::<Result<Vec<_>, _>>()?;
         let mut ordered_plans = plans
             .into_iter()
-            .zip(plan_preemptions.into_iter())
+            .zip(plan_preemptions)
             .enumerate()
             .map(|(index, (plan, preemptions))| {
                 Ok((
@@ -1866,7 +1866,7 @@ impl SingleScheduler {
                 SchedulerEventLogPayload::Decision(decision.clone()),
             ));
         }
-        payloads.sort_by(|left, right| left.0.ticks.cmp(&right.0.ticks));
+        payloads.sort_by_key(|payload| payload.0.ticks);
 
         let mut entries = Vec::with_capacity(payloads.len() + 1);
         for (entry_time, payload) in payloads {

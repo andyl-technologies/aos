@@ -276,6 +276,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0060-crucible-block-typed-errors.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

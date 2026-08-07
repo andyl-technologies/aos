@@ -11,6 +11,7 @@ typedef enum TestOutcome {
     TEST_OUTCOME_ZERO_SUCCESS,
     TEST_OUTCOME_ERROR,
     TEST_OUTCOME_TOO_LARGE,
+    TEST_OUTCOME_TYPED_ERROR,
 } TestOutcome;
 
 typedef struct TestBackend {
@@ -29,12 +30,38 @@ typedef struct TestBackend {
     size_t submitted_len;
     int submit_count;
     int poll_count;
+    int typed_errno;
 } TestBackend;
 
 static AioContext fixture_aio_context;
 static unsigned int fixture_schedule_count;
 static unsigned int fixture_yield_count;
 static BlockDriver *fixture_registered_driver;
+
+void fixture_co_queue_init(CoQueue *queue)
+{
+    queue->unused = 0;
+}
+
+bool fixture_co_queue_empty(const CoQueue *queue)
+{
+    (void)queue;
+    return true;
+}
+
+void fixture_co_queue_wait(CoQueue *queue, QemuMutex *mutex)
+{
+    (void)queue;
+    (void)mutex;
+    fixture_schedule_count++;
+    fixture_yield_count++;
+}
+
+void fixture_co_enter_all(CoQueue *queue, void *lockable)
+{
+    (void)queue;
+    (void)lockable;
+}
 
 void *qemu_coroutine_self(void)
 {
@@ -146,6 +173,12 @@ static int64_t test_poll(uint32_t request_id, uint8_t *data, size_t capacity,
         return -1;
     case TEST_OUTCOME_TOO_LARGE:
         return (int64_t)capacity + 1;
+    case TEST_OUTCOME_TYPED_ERROR:
+#ifdef QEMU_PLUGIN_BLK_POLL_ERROR_BASE
+        return QEMU_PLUGIN_BLK_POLL_ERROR(backend->typed_errno);
+#else
+        return -1;
+#endif
     }
     return -1;
 }
@@ -284,6 +317,39 @@ static int exercise_driver(void)
         return 1;
     }
 
+#ifdef QEMU_PLUGIN_BLK_POLL_ERROR_BASE
+    {
+        static const int typed_errnos[] = {
+            ENOMEDIUM, EROFS, EINVAL, EBUSY, ETIMEDOUT, EIO,
+            EILSEQ, EIO, ENOSPC, ENOENT, ESTALE,
+        };
+        size_t index;
+
+        for (index = 0; index < sizeof(typed_errnos) / sizeof(typed_errnos[0]);
+             index++) {
+            reset_backend(&backend, QEMU_PLUGIN_BLK_OP_READ, 0,
+                          sizeof(read_target), 0, TEST_OUTCOME_TYPED_ERROR);
+            backend.typed_errno = typed_errnos[index];
+            if (expect_bool(crucible_shmem_co_preadv(
+                                &bs, 0, sizeof(read_target), &read_qiov, 0) ==
+                                -typed_errnos[index],
+                            "typed read error was not propagated exactly")) {
+                return 1;
+            }
+        }
+
+        reset_backend(&backend, QEMU_PLUGIN_BLK_OP_READ, 0,
+                      sizeof(read_target), 0, TEST_OUTCOME_TYPED_ERROR);
+        backend.typed_errno = QEMU_PLUGIN_BLK_POLL_ERROR_MAX + 1;
+        if (expect_bool(crucible_shmem_co_preadv(
+                            &bs, 0, sizeof(read_target), &read_qiov, 0) ==
+                            -EOVERFLOW,
+                        "out-of-range typed error did not fail closed")) {
+            return 1;
+        }
+    }
+#endif
+
     if (expect_bool(crucible_shmem_co_pwritev(&bs, 63, 2, &write_qiov, 0) ==
                         -ENOSPC,
                     "write beyond end did not fail closed") ||
@@ -309,6 +375,10 @@ static int exercise_driver(void)
     puts("oversized_completion_fails_closed=true");
     puts("range_checks_fail_closed=true");
     puts("stock_negative_control_block_symbols_absent=true");
+#ifdef QEMU_PLUGIN_BLK_POLL_ERROR_BASE
+    puts("typed_error_errno_mapping_exact=true");
+    puts("typed_error_out_of_range_fails_closed=true");
+#endif
     return 0;
 }
 

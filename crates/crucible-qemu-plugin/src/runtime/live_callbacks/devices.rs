@@ -15,11 +15,12 @@ use thiserror::Error;
 use crate::{
     BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,
     BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestToken, BlockResponse,
-    BlockResponseStatus, BlockWireError, NinePGuestCompletion, NinePGuestCompletionError,
-    NinePInboundRing, NinePIoError, NinePOutboundRing, NinePPoll, NinePRequest, NinePRequestToken,
-    NinePResponse, PluginBlockIo, PluginDeviceIoFreeze, PluginNinePIo,
-    handle_9p_burst_done_callback, handle_9p_burst_start_callback, handle_9p_poll_callback,
-    handle_9p_submit_callback, handle_block_poll_callback, handle_block_submit_callback,
+    BlockResponseErrorCode, BlockResponseStatus, BlockWireError, NinePGuestCompletion,
+    NinePGuestCompletionError, NinePInboundRing, NinePIoError, NinePOutboundRing, NinePPoll,
+    NinePRequest, NinePRequestToken, NinePResponse, PluginBlockIo, PluginDeviceIoFreeze,
+    PluginNinePIo, handle_9p_burst_done_callback, handle_9p_burst_start_callback,
+    handle_9p_poll_callback, handle_9p_submit_callback, handle_block_poll_callback,
+    handle_block_submit_callback,
 };
 
 use super::{
@@ -28,6 +29,7 @@ use super::{
 };
 
 const QEMU_PLUGIN_BLOCK_POLL_PENDING: i64 = -2;
+const QEMU_PLUGIN_BLOCK_ERROR_BASE: i64 = 4096;
 const QEMU_PLUGIN_NINEP_POLL_PENDING: i64 = -2;
 
 pub(super) struct LiveDeviceCallbackState {
@@ -160,7 +162,14 @@ impl LiveDeviceCallbackState {
                         }
                     })
                 }
-                BlockResponseStatus::Error => Ok(-1),
+                BlockResponseStatus::Error => {
+                    let errno = block_error_errno(response.error_code().map_err(|source| {
+                        LiveDeviceCallbackError::Block {
+                            source: BlockIoError::Wire { source },
+                        }
+                    })?);
+                    Ok(-(QEMU_PLUGIN_BLOCK_ERROR_BASE + errno))
+                }
             },
         }
     }
@@ -286,6 +295,21 @@ impl LiveDeviceCallbackState {
         handle_9p_burst_done_callback(&self.ninep, &mut self.freeze, slot)
             .map(|_state| ())
             .map_err(|source| LiveDeviceCallbackError::NineP { source })
+    }
+}
+
+const fn block_error_errno(error: BlockResponseErrorCode) -> i64 {
+    match error {
+        BlockResponseErrorCode::Offline => 123,
+        BlockResponseErrorCode::ReadOnly => 30,
+        BlockResponseErrorCode::InvalidRange => 22,
+        BlockResponseErrorCode::Busy => 16,
+        BlockResponseErrorCode::Timeout => 110,
+        BlockResponseErrorCode::MediumError | BlockResponseErrorCode::IoError => 5,
+        BlockResponseErrorCode::IntegrityError => 84,
+        BlockResponseErrorCode::NoSpace => 28,
+        BlockResponseErrorCode::NotFound => 2,
+        BlockResponseErrorCode::Stale => 116,
     }
 }
 

@@ -29,10 +29,16 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0057-crucible-guest-clock-faults`](11-guest-clocks.md) | Offset, drift, jump, freeze, jitter, source failure and timer consistency | Determinism-critical |
 | [`0058-crucible-accelerator-fault-device`](12-accelerator-device.md) | Production QEMU co-sim accelerator device and fault hooks | Feature plus determinism-critical service hooks |
 | [`0059-crucible-fault-vmstate`](13-vmstate-and-final-gates.md) | VMState for all fault state, terminal capability/evidence, aggregate gates | Determinism-critical |
+| [`0060-crucible-block-typed-errors`](14-block-typed-errors.md) | Closed block result transport and exact guest-visible errno translation | Feature |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
 and names; all references and `_series.nix` update atomically.
+
+Patch `0060` follows the reserved node-fault band because it evolves the
+pre-existing block co-simulation ABI rather than the generic node command ABI.
+It may be implemented before `0050` through `0059`, but remains ordered after
+them in the final linear series.
 
 ## 14.2 Process and license boundary
 

@@ -139,8 +139,8 @@ pub use args::{
 pub use block_io::{
     BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,
     BlockOperation, BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestToken, BlockResponse,
-    BlockResponseStatus, BlockSubmit, BlockWireError, PluginBlockIo, handle_block_poll_callback,
-    handle_block_submit_callback,
+    BlockResponseErrorCode, BlockResponseStatus, BlockSubmit, BlockWireError, PluginBlockIo,
+    handle_block_poll_callback, handle_block_submit_callback,
 };
 pub use boot_barrier::{
     BOOT_BARRIER_FIRST_GUEST_ICOUNT, BootBarrierError, BootBarrierRelease, BootBarrierWait,

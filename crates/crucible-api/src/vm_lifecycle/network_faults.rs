@@ -630,6 +630,10 @@ fn validate_network_adapter_checkpoint(
 }
 
 #[derive(Clone, Debug)]
+#[allow(
+    dead_code,
+    reason = "the complete transition record is retained for deterministic fault diagnostics"
+)]
 struct NetworkAvailabilityTransitionRecord {
     action: ContentHash,
     binding: FaultObjectId,
@@ -1181,16 +1185,15 @@ fn validate_custody_contact_topology(
                 {
                     return Err(invalid());
                 }
-            } else if let Some(first_open) = first_open {
-                if reservation.release_nanos < first_open
+            } else if let Some(first_open) = first_open
+                && (reservation.release_nanos < first_open
                     || !output
                         .fault_continuation
                         .resolved_frame_effects()
                         .accounted_contact_services()
-                        .is_empty()
-                {
-                    return Err(invalid());
-                }
+                        .is_empty())
+            {
+                return Err(invalid());
             }
         }
         for timeout in &queue.overflow_timeouts {
@@ -1371,6 +1374,10 @@ impl ProductionFaultNetworkInterceptor {
     /// Returns [`SchedulerError`] when the runtime has no paired network state,
     /// its schema/bounds are invalid, scheduler restoration fails, or the
     /// independently recomputed continuation identity differs.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "restore authenticates and atomically stages each independent runtime owner"
+    )]
     pub(super) fn restore(
         plan: crucible::model::FaultSignalPlan,
         artifacts: Option<Arc<dyn SignalArtifactProvider>>,
@@ -1661,12 +1668,11 @@ impl ProductionFaultNetworkInterceptor {
                             .completed_phases()
                             .iter()
                             .any(|completed| &completed.target == target);
-                    if affected {
-                        if let Some(opportunity) =
+                    if affected
+                        && let Some(opportunity) =
                             output.fault_continuation.cursor().queue_opportunity()
-                        {
-                            removed_attachment_opportunities.insert(opportunity);
-                        }
+                    {
+                        removed_attachment_opportunities.insert(opportunity);
                     }
                     !affected
                 });
@@ -1808,15 +1814,14 @@ impl ProductionFaultNetworkInterceptor {
         let transitions = actions
             .iter()
             .filter(|action| action.kind == BindingActionKind::UpsertPersistent)
-            .filter_map(|action| {
-                let EffectSpecification::Network(NetworkEffectSpecification::Availability {
-                    state,
-                    ..
-                }) = action.effect.specification()
-                else {
-                    return None;
-                };
-                (*state != NetworkAvailabilityState::Up).then_some(action)
+            .filter(|action| {
+                matches!(
+                    action.effect.specification(),
+                    EffectSpecification::Network(NetworkEffectSpecification::Availability {
+                        state,
+                        ..
+                    }) if *state != NetworkAvailabilityState::Up
+                )
             })
             .collect::<Vec<_>>();
         if transitions.is_empty() {
@@ -2270,7 +2275,7 @@ fn replace_control_result(
         NetworkEffectSpecification::Association { policy }
             if schema.as_str() == "network-association-inputs-i64-v1" =>
         {
-            if bytes.is_empty() || bytes.len() % 8 != 0 {
+            if bytes.is_empty() || !bytes.len().is_multiple_of(8) {
                 return Err(network_effect_application_error(
                     transform,
                     "replacement association inputs require nonempty packed i64 values",
@@ -2444,6 +2449,10 @@ fn control_plane_outcome_evidence(
     Ok(ContentHash::from_bytes(&material))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "evidence commits every independent availability-transition input"
+)]
 fn availability_transition_evidence(
     action: &ResolvedBindingAction,
     old_state: NetworkAvailabilityState,

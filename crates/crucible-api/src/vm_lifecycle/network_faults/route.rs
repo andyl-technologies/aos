@@ -82,16 +82,15 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                         .cursor()
                         .route_path_version()
                         .is_none()
-                    {
-                        if let Some(path) = stages.iter().find_map(|stage| match &stage.target {
+                        && let Some(path) = stages.iter().find_map(|stage| match &stage.target {
                             crucible::model::ResolvedFaultTarget::NetworkPath {
                                 path_version,
                                 ..
                             } => Some(path_version.clone()),
                             _ => None,
-                        }) {
-                            output.fault_continuation.cursor_mut().lock_route_path(path);
-                        }
+                        })
+                    {
+                        output.fault_continuation.cursor_mut().lock_route_path(path);
                     }
                     let producer = FaultObjectId::parse(&output.source.name).map_err(|error| {
                         SchedulerError::BoundaryViolation {
@@ -697,6 +696,10 @@ pub(super) fn availability_allows(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "frame mutation joins the independently authenticated opportunity, topology, state, and output owners"
+)]
 fn apply_network_frame_actions(
     payload: &mut Vec<u8>,
     effects: &mut crucible::ResolvedNetworkFrameEffects,
@@ -2754,10 +2757,9 @@ fn reschedule_network_queue(
     if active
         .as_ref()
         .is_some_and(|active| active.ready_nanos > now)
+        && let Some(active) = active.take()
     {
-        if let Some(active) = active.take() {
-            reservations.push(active);
-        }
+        reservations.push(active);
     }
     let mut projected_frames = queue.served_frames_by_class.clone();
     let mut projected_bytes = queue.served_bytes_by_class.clone();
@@ -3178,8 +3180,7 @@ fn apply_network_token_bucket(
     }
     if bucket.tokens_nano_bits >= cost {
         bucket.tokens_nano_bits -= cost;
-        return u64::try_from(service_base - now)
-            .map_err(|_error| network_effect_application_error(action, "token delay exceeds u64"));
+        return Ok(service_base - now);
     }
     let deficit = cost - bucket.tokens_nano_bits;
     let delay = ceil_ratio_u128(deficit, u128::from(rate_bps))
@@ -3497,6 +3498,8 @@ struct NetworkContactRouteReservation {
     identities: Vec<[u8; 32]>,
 }
 
+type NetworkContactServicePreview = (u64, u64, u64, NetworkContactServiceKey, [u8; 32]);
+
 fn preview_network_contact_service(
     state: &NetworkEffectRuntimeState,
     topology: &crucible::model::WorldFaultTopology,
@@ -3505,7 +3508,7 @@ fn preview_network_contact_service(
     earliest_nanos: u64,
     payload_bytes: u64,
     action: &ResolvedBindingAction,
-) -> Result<Option<(u64, u64, u64, NetworkContactServiceKey, [u8; 32])>, SchedulerError> {
+) -> Result<Option<NetworkContactServicePreview>, SchedulerError> {
     let (open, traffic_end) = contact_traffic_bounds(interval, action)?;
     let key = NetworkContactServiceKey {
         plan: plan.clone(),
@@ -5183,7 +5186,7 @@ fn divide_ties_to_even(numerator: u128, denominator: u128) -> u128 {
     let remainder = numerator % denominator;
     let half = denominator / 2;
     let above_half = remainder > half;
-    let exactly_half = denominator % 2 == 0 && remainder == half;
+    let exactly_half = denominator.is_multiple_of(2) && remainder == half;
     if above_half || exactly_half && quotient % 2 == 1 {
         quotient + 1
     } else {
@@ -6212,42 +6215,44 @@ mod tests {
                 delay_nanos,
                 traffic_policy: crucible::model::NetworkInFlightPolicy::Preserve,
             };
-        let mut topology = crucible::model::WorldFaultTopology::default();
-        topology.network_policy_artifacts = vec![
-            crucible::model::WorldNetworkPolicyArtifact {
-                id: selector.clone(),
-                semantic_version: 1,
-                artifact: crucible::model::NetworkPolicyArtifactKind::PacketSelector {
-                    matches: vec![crucible::model::NetworkPolicyByteMatch {
-                        offset_bytes: 0,
-                        value: vec![0xaa],
-                        mask: vec![0xff],
-                    }],
+        let mut topology = crucible::model::WorldFaultTopology {
+            network_policy_artifacts: vec![
+                crucible::model::WorldNetworkPolicyArtifact {
+                    id: selector.clone(),
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::PacketSelector {
+                        matches: vec![crucible::model::NetworkPolicyByteMatch {
+                            offset_bytes: 0,
+                            value: vec![0xaa],
+                            mask: vec![0xff],
+                        }],
+                    },
                 },
-            },
-            crucible::model::WorldNetworkPolicyArtifact {
-                id: key.clone(),
-                semantic_version: 1,
-                artifact: crucible::model::NetworkPolicyArtifactKind::PacketKey {
-                    ranges: vec![
-                        crucible::model::ByteRange::new(0, 1)
-                            .unwrap_or_else(|error| panic!("test packet key: {error}")),
-                    ],
+                crucible::model::WorldNetworkPolicyArtifact {
+                    id: key.clone(),
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::PacketKey {
+                        ranges: vec![
+                            crucible::model::ByteRange::new(0, 1)
+                                .unwrap_or_else(|error| panic!("test packet key: {error}")),
+                        ],
+                    },
                 },
-            },
-            crucible::model::WorldNetworkPolicyArtifact {
-                id: machine.clone(),
-                semantic_version: 1,
-                artifact: crucible::model::NetworkPolicyArtifactKind::StateMachine {
-                    initial: id("cold"),
-                    states: vec![id("cold"), id("warm")],
-                    transitions: vec![
-                        transition("cold", "warm", 10),
-                        transition("warm", "warm", 10),
-                    ],
+                crucible::model::WorldNetworkPolicyArtifact {
+                    id: machine.clone(),
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::StateMachine {
+                        initial: id("cold"),
+                        states: vec![id("cold"), id("warm")],
+                        transitions: vec![
+                            transition("cold", "warm", 10),
+                            transition("warm", "warm", 10),
+                        ],
+                    },
                 },
-            },
-        ];
+            ],
+            ..Default::default()
+        };
         topology
             .network_policy_artifacts
             .sort_by(|left, right| left.id.cmp(&right.id));
@@ -6500,30 +6505,32 @@ mod tests {
             maximum_retries: 0,
             retry_delay_nanos: 0,
         };
-        let mut topology = crucible::model::WorldFaultTopology::default();
-        topology.network_policy_artifacts = vec![
-            crucible::model::WorldNetworkPolicyArtifact {
-                id: id("propagation"),
-                semantic_version: 1,
-                artifact: crucible::model::NetworkPolicyArtifactKind::RfPropagation(
-                    crucible::model::NetworkPolicyRfPropagation {
-                        path_gain_ratio: integer_table("millimetres", 500_000),
-                        antenna_gain_ratio: integer_table("millidegrees", 1_000_000),
-                        spatial_cell_mm: positive(1),
-                        fading_bucket_nanos: positive(1),
-                    },
-                ),
-            },
-            crucible::model::WorldNetworkPolicyArtifact {
-                id: id("transfer"),
-                semantic_version: 1,
-                artifact: crucible::model::NetworkPolicyArtifactKind::RfTransfer(
-                    crucible::model::NetworkPolicyRfTransfer {
-                        profiles: vec![profile],
-                    },
-                ),
-            },
-        ];
+        let mut topology = crucible::model::WorldFaultTopology {
+            network_policy_artifacts: vec![
+                crucible::model::WorldNetworkPolicyArtifact {
+                    id: id("propagation"),
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::RfPropagation(
+                        crucible::model::NetworkPolicyRfPropagation {
+                            path_gain_ratio: integer_table("millimetres", 500_000),
+                            antenna_gain_ratio: integer_table("millidegrees", 1_000_000),
+                            spatial_cell_mm: positive(1),
+                            fading_bucket_nanos: positive(1),
+                        },
+                    ),
+                },
+                crucible::model::WorldNetworkPolicyArtifact {
+                    id: id("transfer"),
+                    semantic_version: 1,
+                    artifact: crucible::model::NetworkPolicyArtifactKind::RfTransfer(
+                        crucible::model::NetworkPolicyRfTransfer {
+                            profiles: vec![profile],
+                        },
+                    ),
+                },
+            ],
+            ..Default::default()
+        };
         let effect = EffectRequest::new(
             EFFECT_SEMANTIC_VERSION,
             EffectLifetime::Opportunity,
@@ -7693,7 +7700,7 @@ mod tests {
                     reservations: Vec::new(),
                 },
             );
-            let error = reserve_network_contact_service(
+            let error = match reserve_network_contact_service(
                 &mut state,
                 &topology,
                 &id("contact-plan"),
@@ -7704,8 +7711,10 @@ mod tests {
                 1,
                 ContentHash::from_bytes(b"overflow-direct-contact"),
                 &action,
-            )
-            .expect_err("direct contact counter overflow must fail");
+            ) {
+                Ok(_) => panic!("direct contact counter overflow must fail"),
+                Err(error) => error,
+            };
             assert!(error.to_string().contains("before direct reservation"));
             let service = state
                 .contact_services
@@ -8099,7 +8108,7 @@ mod tests {
         let mut payload = vec![1];
         let mut effects = crucible::ResolvedNetworkFrameEffects::default();
         let mut state = NetworkEffectRuntimeState::default();
-        let error = apply_network_frame_actions(
+        let error = match apply_network_frame_actions(
             &mut payload,
             &mut effects,
             &[first, second],
@@ -8110,8 +8119,10 @@ mod tests {
             &mut Vec::new(),
             None,
             None,
-        )
-        .expect_err("two custody queues must conflict");
+        ) {
+            Ok(_) => panic!("two custody queues must conflict"),
+            Err(error) => error,
+        };
         assert!(error.to_string().contains("multiple custody queues"));
         assert!(state.custody_queues.is_empty());
         assert!(state.contact_services.is_empty());

@@ -304,7 +304,7 @@ impl RunRole {
 
 enum BlockServiceMode {
     Synchronous(Box<QemuLiveBlockIoServicer>),
-    Asynchronous(QemuLiveBlockHostWorkPool),
+    Asynchronous(Box<QemuLiveBlockHostWorkPool>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -400,7 +400,7 @@ fn run_one_scenario(
             )
             .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?,
         )),
-        RunRole::HostWins | RunRole::GuestWins => BlockServiceMode::Asynchronous(
+        RunRole::HostWins | RunRole::GuestWins => BlockServiceMode::Asynchronous(Box::new(
             QemuLiveBlockHostWorkPool::from_shmem_fd(
                 setup.shmem_as_fd(),
                 setup.region().region_len,
@@ -409,7 +409,7 @@ fn run_one_scenario(
                 config.device_size_bytes,
             )
             .map_err(|source| QemuLiveBlockIoGateError::HostWorkPool { source })?,
-        ),
+        )),
     };
 
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)

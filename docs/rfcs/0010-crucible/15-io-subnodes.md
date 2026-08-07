@@ -238,7 +238,7 @@ Block requests and responses ride the SPSC frame rings of
 ```text
 BlockRequest  (VM slot -> SLOT_BLK_IO)
   u8   type        -- 0=read, 1=write, 2=flush, 3=get_length
-  u8   version     -- block wire ABI version (= 1)
+  u8   version     -- block wire ABI version (= 2)
   u16  _reserved   -- zero
   u32  request_id  -- correlates response to request
   u64  offset      -- byte offset (read/write)
@@ -247,12 +247,18 @@ BlockRequest  (VM slot -> SLOT_BLK_IO)
 
 BlockResponse (SLOT_BLK_IO -> VM slot)
   u8   status      -- 0=ok, 1=error
-  u8   version     -- block wire ABI version (= 1)
+  u8   version     -- block wire ABI version (= 2)
   u16  _reserved   -- zero
   u32  request_id  -- echoes the request
   u32  count       -- response data length
-  [count bytes]    -- payload (read / get-length), empty for write/flush
+  [count bytes]    -- success data; exactly one typed-result byte on error
 ```
+
+Version 2 defines the closed error payload used by signal-driven storage
+faults. The one-byte values and their guest-visible errno mapping are listed in
+[`14-block-typed-errors.md`](../0012-signal-driven-fault-model/14-qemu-fault-patches/14-block-typed-errors.md).
+Version 1 is not accepted by a version 2 endpoint; there is no legacy decode or
+silent downgrade path.
 
 - **[IO-8]** The block request/response wire format MUST be a **versioned
   boundary ABI** ([G-8]): every message MUST carry an ABI version byte and a

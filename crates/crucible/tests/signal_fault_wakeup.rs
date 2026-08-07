@@ -56,16 +56,18 @@ fn signal_fault_wakeup_rejects_current_or_past_coordinates() {
 }
 
 #[test]
-fn signal_fault_wakeup_rejects_unrepresentable_virtual_coordinates() {
+fn signal_fault_wakeup_rounds_unrepresentable_virtual_coordinates_upward() {
     let mut scenario = scenario(vec![idle_node("a")]);
     scenario.shift = Shift::new(2).expect("shift should be valid");
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
 
-    assert!(scheduler.set_signal_fault_wakeup(Some(6)).is_err());
-    assert_eq!(scheduler.signal_fault_wakeup(), None);
     scheduler
-        .set_signal_fault_wakeup(Some(8))
-        .expect("aligned wakeup should arm");
+        .set_signal_fault_wakeup(Some(6))
+        .expect("unaligned wakeup should round upward");
+    assert_eq!(
+        scheduler.signal_fault_wakeup(),
+        Some(SimInstant { nanos: 8 })
+    );
 }
 
 fn scenario(nodes: Vec<SchedulerScenarioNode>) -> SchedulerLivenessScenario {

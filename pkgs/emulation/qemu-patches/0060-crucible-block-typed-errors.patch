@@ -1,0 +1,75 @@
+diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+index b8d9057..1788515 100644
+--- a/block/crucible-shmem.c
++++ b/block/crucible-shmem.c
+@@ -239,6 +239,25 @@ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
+     }
+ }
+ 
++static int crucible_shmem_decode_poll_result(int64_t poll_ret,
++                                             size_t in_capacity)
++{
++    int64_t typed_error_min = QEMU_PLUGIN_BLK_POLL_ERROR(
++        QEMU_PLUGIN_BLK_POLL_ERROR_MAX);
++    int64_t typed_error_max = QEMU_PLUGIN_BLK_POLL_ERROR(1);
++
++    if (poll_ret == -1) {
++        return -EIO;
++    }
++    if (poll_ret >= typed_error_min && poll_ret <= typed_error_max) {
++        return (int)(poll_ret + QEMU_PLUGIN_BLK_POLL_ERROR_BASE);
++    }
++    if (poll_ret < -1 || (uint64_t)poll_ret > in_capacity) {
++        return -EOVERFLOW;
++    }
++    return (int)poll_ret;
++}
++
+ static int coroutine_fn
+ crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
+                                uint64_t offset, const uint8_t *out_data,
+@@ -267,14 +286,7 @@ crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
+ 
+     poll_ret = crucible_shmem_poll_until_ready(bs, request_id, in_data,
+                                                in_capacity);
+-    if (poll_ret == -1) {
+-        return -EIO;
+-    }
+-    if (poll_ret < -1 || (uint64_t)poll_ret > in_capacity) {
+-        return -EOVERFLOW;
+-    }
+-
+-    return (int)poll_ret;
++    return crucible_shmem_decode_poll_result(poll_ret, in_capacity);
+ }
+ 
+ static int coroutine_fn GRAPH_RDLOCK
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 60f860d..9d05a1f 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -243,8 +243,11 @@ typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,
+  * @capacity: byte capacity of @data
+  * @userdata: a pointer supplied when callbacks were registered
+  *
+- * Returns: nonnegative response payload length on success, -1 on device error,
+- * and QEMU_PLUGIN_BLK_POLL_PENDING when no response is ready yet.
++ * Returns: nonnegative response payload length on success,
++ * QEMU_PLUGIN_BLK_POLL_ERROR(@errno) for an exact guest-visible Linux errno,
++ * -1 for an untyped device error, and QEMU_PLUGIN_BLK_POLL_PENDING when no
++ * response is ready yet.  @errno must be in the inclusive range 1 through
++ * QEMU_PLUGIN_BLK_POLL_ERROR_MAX.
+  */
+ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
+                                              uint8_t *data,
+@@ -267,6 +270,10 @@ typedef void (*qemu_plugin_blk_wait_cb_t)(uint32_t request_id,
+ #define QEMU_PLUGIN_BLK_OP_WRITE 1u
+ #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
+ #define QEMU_PLUGIN_BLK_POLL_PENDING (-2)
++#define QEMU_PLUGIN_BLK_POLL_ERROR_BASE INT64_C(4096)
++#define QEMU_PLUGIN_BLK_POLL_ERROR_MAX INT64_C(4095)
++#define QEMU_PLUGIN_BLK_POLL_ERROR(error_number) \
++    (-(QEMU_PLUGIN_BLK_POLL_ERROR_BASE + (int64_t)(error_number)))
+ 
+ /**
+  * typedef qemu_plugin_9p_burst_cb_t - shmem 9p burst callback

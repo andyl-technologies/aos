@@ -21,7 +21,7 @@ use crate::{
 };
 
 const BLOCK_IO_SLOT_U32: u32 = SLOT_BLK_IO as u32;
-const BLOCK_WIRE_VERSION: u8 = 1;
+const BLOCK_WIRE_VERSION: u8 = 2;
 const BLOCK_REQUEST_HEADER_LEN: usize = 20;
 const BLOCK_RESPONSE_HEADER_LEN: usize = 12;
 
@@ -712,6 +712,22 @@ impl BlockResponse {
         &self.payload
     }
 
+    /// Returns the typed block error for a failed response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockWireError::InvalidErrorPayload`] unless this is an error
+    /// response carrying exactly one defined result byte.
+    pub fn error_code(&self) -> Result<BlockResponseErrorCode, BlockWireError> {
+        if self.status != BlockResponseStatus::Error || self.payload.len() != 1 {
+            return Err(BlockWireError::InvalidErrorPayload {
+                status: self.status.wire_status(),
+                len: self.payload.len(),
+            });
+        }
+        BlockResponseErrorCode::from_wire(self.payload[0])
+    }
+
     /// Encodes a response in the block wire format.
     ///
     /// # Errors
@@ -791,12 +807,16 @@ impl BlockResponse {
                 payload_len: actual,
             });
         }
-        Ok(Self {
+        let response = Self {
             status,
             request_id,
             payload: payload[BLOCK_RESPONSE_HEADER_LEN..BLOCK_RESPONSE_HEADER_LEN + count_usize]
                 .to_vec(),
-        })
+        };
+        if status == BlockResponseStatus::Error {
+            response.error_code()?;
+        }
+        Ok(response)
     }
 }
 
@@ -807,6 +827,52 @@ pub enum BlockResponseStatus {
     Ok,
     /// Request completed with a device error.
     Error,
+}
+
+/// Closed protocol-neutral error result on the block shared-memory ABI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockResponseErrorCode {
+    /// Device unavailable.
+    Offline,
+    /// Write to read-only storage.
+    ReadOnly,
+    /// Invalid addressed range.
+    InvalidRange,
+    /// Controller or queue busy.
+    Busy,
+    /// Modeled timeout.
+    Timeout,
+    /// Uncorrectable medium error.
+    MediumError,
+    /// Integrity verification error.
+    IntegrityError,
+    /// Generic I/O error.
+    IoError,
+    /// Capacity exhausted.
+    NoSpace,
+    /// Namespace or object absent.
+    NotFound,
+    /// Stale retained identity.
+    Stale,
+}
+
+impl BlockResponseErrorCode {
+    fn from_wire(code: u8) -> Result<Self, BlockWireError> {
+        match code {
+            1 => Ok(Self::Offline),
+            2 => Ok(Self::ReadOnly),
+            3 => Ok(Self::InvalidRange),
+            4 => Ok(Self::Busy),
+            5 => Ok(Self::Timeout),
+            6 => Ok(Self::MediumError),
+            7 => Ok(Self::IntegrityError),
+            8 => Ok(Self::IoError),
+            9 => Ok(Self::NoSpace),
+            10 => Ok(Self::NotFound),
+            11 => Ok(Self::Stale),
+            other => Err(BlockWireError::UnknownErrorCode { code: other }),
+        }
+    }
 }
 
 impl BlockResponseStatus {
@@ -1147,6 +1213,20 @@ pub enum BlockWireError {
         /// The unknown status byte.
         status: u8,
     },
+    /// Typed response error code is unknown.
+    #[error("block response error code {code} is unknown")]
+    UnknownErrorCode {
+        /// The undefined typed-result byte.
+        code: u8,
+    },
+    /// An error response does not carry exactly one typed-result byte.
+    #[error("invalid block error payload for status {status}: length {len}")]
+    InvalidErrorPayload {
+        /// Response status wire byte.
+        status: u8,
+        /// Actual payload length.
+        len: usize,
+    },
     /// Response count cannot be represented locally.
     #[error("block response count {count} cannot fit in usize")]
     CountLengthOverflow {
@@ -1294,7 +1374,7 @@ mod tests {
         assert_eq!(
             ring.entries[0].payload(),
             Ok(&[
-                1, 1, 0, 0, // type/version/reserved
+                1, 2, 0, 0, // type/version/reserved
                 0, 0, 0, 0, // request_id
                 0, 0x10, 0, 0, 0, 0, 0, 0, // offset
                 4, 0, 0, 0, // count
@@ -1635,12 +1715,56 @@ mod tests {
         assert_eq!(
             frame.payload(),
             Ok(&[
-                0, 1, 0, 0, // status/version/reserved
+                0, 2, 0, 0, // status/version/reserved
                 9, 0, 0, 0, // request_id
                 5, 0, 0, 0, // count
                 b'b', b'l', b'o', b'c', b'k',
             ][..])
         );
+    }
+
+    #[test]
+    fn block_response_typed_errors_are_closed_and_exact() {
+        let cases = [
+            (1, BlockResponseErrorCode::Offline),
+            (2, BlockResponseErrorCode::ReadOnly),
+            (3, BlockResponseErrorCode::InvalidRange),
+            (4, BlockResponseErrorCode::Busy),
+            (5, BlockResponseErrorCode::Timeout),
+            (6, BlockResponseErrorCode::MediumError),
+            (7, BlockResponseErrorCode::IntegrityError),
+            (8, BlockResponseErrorCode::IoError),
+            (9, BlockResponseErrorCode::NoSpace),
+            (10, BlockResponseErrorCode::NotFound),
+            (11, BlockResponseErrorCode::Stale),
+        ];
+        for (wire, expected) in cases {
+            let response = BlockResponse::new(BlockResponseStatus::Error, 7, vec![wire]);
+            let decoded = BlockResponse::decode(
+                &response
+                    .encode()
+                    .unwrap_or_else(|error| panic!("typed error should encode: {error}")),
+            )
+            .unwrap_or_else(|error| panic!("typed error should decode: {error}"));
+            assert_eq!(
+                decoded
+                    .error_code()
+                    .unwrap_or_else(|error| panic!("typed error should validate: {error}")),
+                expected
+            );
+        }
+
+        for payload in [Vec::new(), vec![0], vec![1, 2]] {
+            let response = BlockResponse::new(BlockResponseStatus::Error, 7, payload);
+            assert!(
+                BlockResponse::decode(
+                    &response.encode().unwrap_or_else(|error| panic!(
+                        "malformed response should encode: {error}"
+                    ))
+                )
+                .is_err()
+            );
+        }
     }
 
     #[derive(Default)]

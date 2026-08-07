@@ -25,8 +25,8 @@ pub mod fault;
 pub mod overlay;
 
 pub use codec::{
-    BLOCK_ABI_VERSION, BlockCodecError, BlockOp, BlockRequest, BlockResponse, BlockStatus,
-    REQUEST_HEADER_LEN, RESPONSE_HEADER_LEN,
+    BLOCK_ABI_VERSION, BlockCodecError, BlockErrorCode, BlockOp, BlockRequest, BlockResponse,
+    BlockStatus, REQUEST_HEADER_LEN, RESPONSE_HEADER_LEN,
 };
 pub use device::{BlockDevice, BlockLatency, BlockSnapshot, submit_cross_device_misdirected_write};
 pub use fault::*;
@@ -94,7 +94,10 @@ mod tests {
         let mut directive = ResolvedBlockFaultDirective::fault_free(&flush, PAGE_SIZE as u64);
         directive.flush_disposition = BlockFaultFlushDisposition::Stall;
         directive.retain_completion = true;
-        directive.retention_timeout_response = Some(BlockResponse::error(flush.request_id));
+        directive.retention_timeout_response = Some(BlockResponse::error(
+            flush.request_id,
+            BlockErrorCode::Timeout,
+        ));
         ok(original.install_storage_fault_directive(flush.request_id, directive));
         ok(original.submit(0, &flush));
 
@@ -301,8 +304,42 @@ mod tests {
     fn response_round_trips() {
         let resp = BlockResponse::ok(11, vec![1, 2, 3, 4]);
         assert_eq!(ok(BlockResponse::decode(&ok(resp.encode()))), resp);
-        let err = BlockResponse::error(12);
+        let err = BlockResponse::error(12, BlockErrorCode::NoSpace);
         assert_eq!(ok(BlockResponse::decode(&ok(err.encode()))), err);
+    }
+
+    #[test]
+    fn every_typed_error_round_trips() {
+        let errors = [
+            BlockErrorCode::Offline,
+            BlockErrorCode::ReadOnly,
+            BlockErrorCode::InvalidRange,
+            BlockErrorCode::Busy,
+            BlockErrorCode::Timeout,
+            BlockErrorCode::MediumError,
+            BlockErrorCode::IntegrityError,
+            BlockErrorCode::IoError,
+            BlockErrorCode::NoSpace,
+            BlockErrorCode::NotFound,
+            BlockErrorCode::Stale,
+        ];
+        for error in errors {
+            let response = BlockResponse::error(12, error);
+            let decoded = ok(BlockResponse::decode(&ok(response.encode())));
+            assert_eq!(ok(decoded.error_code()), error);
+        }
+    }
+
+    #[test]
+    fn decode_rejects_malformed_typed_error_payloads() {
+        for data in [Vec::new(), vec![0], vec![1, 2]] {
+            let response = BlockResponse {
+                status: BlockStatus::Error,
+                request_id: 12,
+                data,
+            };
+            assert!(BlockResponse::decode(&ok(response.encode())).is_err());
+        }
     }
 
     #[test]

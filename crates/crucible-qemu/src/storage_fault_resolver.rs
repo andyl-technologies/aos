@@ -350,6 +350,10 @@ pub fn resolve_block_fault_directive<'a>(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "exact storage resolution keeps independently typed world, target, request, time, and evidence inputs explicit"
+)]
 fn resolve_block_fault_directive_with_capacity<'a>(
     world: &World,
     target: &ResolvedFaultTarget,
@@ -465,7 +469,14 @@ fn apply_effect(
                 return Ok(());
             }
             require_block_result(world, status, false, &action.binding)?;
-            directive.force_error = true;
+            directive.error_result =
+                Some(resolve_block_failure(world, status).ok_or_else(|| {
+                    StorageFaultResolutionError::PolicyReference {
+                        binding: action.binding.clone(),
+                        reference: status.clone(),
+                        expected: "non-success block typed_result",
+                    }
+                })?);
         }
         StorageEffectSpecification::StallTimeout {
             stall_nanos,
@@ -476,7 +487,14 @@ fn apply_effect(
             if let Some(stall_nanos) = stall_nanos {
                 let stall_nanos = mapped_u64(action, MappedEffectParameter::DurationNanos)?
                     .unwrap_or(stall_nanos.get());
-                directive.force_error = true;
+                directive.error_result =
+                    Some(resolve_block_failure(world, timeout_result).ok_or_else(|| {
+                        StorageFaultResolutionError::PolicyReference {
+                            binding: action.binding.clone(),
+                            reference: timeout_result.clone(),
+                            expected: "non-success block typed_result",
+                        }
+                    })?);
                 directive.additional_latency_nanos = directive
                     .additional_latency_nanos
                     .checked_add(stall_nanos)
@@ -535,7 +553,16 @@ fn apply_effect(
                 StoragePolicyDuplicateCompletion::Ignore => BlockDuplicatePolicy::Ignore,
                 StoragePolicyDuplicateCompletion::ProtocolError { result } => {
                     require_block_result(world, result, false, &action.binding)?;
-                    BlockDuplicatePolicy::ProtocolError(BlockResponse::error(request.request_id))
+                    BlockDuplicatePolicy::ProtocolError(BlockResponse::error(
+                        request.request_id,
+                        resolve_block_failure(world, result).ok_or_else(|| {
+                            StorageFaultResolutionError::PolicyReference {
+                                binding: action.binding.clone(),
+                                reference: result.clone(),
+                                expected: "non-success block typed_result",
+                            }
+                        })?,
+                    ))
                 }
                 StoragePolicyDuplicateCompletion::Reset { transition_policy } => {
                     require_policy_kind(
@@ -682,12 +709,14 @@ fn apply_effect(
                 return Ok(());
             }
             match state {
-                StorageMediaState::Bad | StorageMediaState::Latent => directive.force_error = true,
+                StorageMediaState::Bad | StorageMediaState::Latent => {
+                    directive.error_result = Some(BlockFaultResult::MediumError);
+                }
                 StorageMediaState::Poisoned if request.op == BlockOp::Read => {
-                    directive.force_error = true;
+                    directive.error_result = Some(BlockFaultResult::IntegrityError);
                 }
                 StorageMediaState::ReadOnly if request.op == BlockOp::Write => {
-                    directive.force_error = true;
+                    directive.error_result = Some(BlockFaultResult::ReadOnly);
                 }
                 StorageMediaState::Poisoned | StorageMediaState::ReadOnly => {}
             }
@@ -699,7 +728,15 @@ fn apply_effect(
             require_block_result(world, status, success, &action.binding)?;
             directive.flush_disposition = match kind {
                 StorageFlushKind::Honest => BlockFaultFlushDisposition::Honest,
-                StorageFlushKind::Error => BlockFaultFlushDisposition::Error,
+                StorageFlushKind::Error => BlockFaultFlushDisposition::Error(
+                    resolve_block_failure(world, status).ok_or_else(|| {
+                        StorageFaultResolutionError::PolicyReference {
+                            binding: action.binding.clone(),
+                            reference: status.clone(),
+                            expected: "non-success block typed_result",
+                        }
+                    })?,
+                ),
                 StorageFlushKind::Lie => BlockFaultFlushDisposition::Lie,
                 StorageFlushKind::Stall => {
                     return Err(unsupported(action, "event-driven flush stall"));
@@ -1090,6 +1127,12 @@ fn resolve_block_failure(world: &World, reference: &FaultObjectId) -> Option<Blo
             }
             _ => None,
         })?;
+    block_failure_from_result(result)
+}
+
+fn block_failure_from_result(
+    result: crucible::model::StoragePolicyResult,
+) -> Option<BlockFaultResult> {
     match result {
         crucible::model::StoragePolicyResult::Success => None,
         crucible::model::StoragePolicyResult::Offline => Some(BlockFaultResult::Offline),
@@ -1154,7 +1197,7 @@ fn resolve_write_disposition(
             let spans = fragments
                 .iter()
                 .enumerate()
-                .filter_map(|(index, fragment)| (index != selected).then_some(fragment.clone()))
+                .filter_map(|(index, fragment)| (index != selected).then_some(*fragment))
                 .collect::<Vec<_>>();
             if spans.is_empty() {
                 Ok(BlockFaultWriteDisposition::Lost)
@@ -1174,7 +1217,7 @@ fn resolve_write_disposition(
             let selected =
                 selected_fragment_index(context, action, request, *selection, fragments.len())?;
             Ok(BlockFaultWriteDisposition::Torn {
-                spans: vec![fragments[selected].clone()],
+                spans: vec![fragments[selected]],
             })
         }
         StorageWriteDispositionKind::Misdirected {
@@ -1643,7 +1686,7 @@ mod tests {
         let request = BlockRequest::read(9, 0, 512);
         let opportunity = opportunity(&request, FaultPhase::Resolve);
         let latency = bind_to_opportunity(latency, &opportunity);
-        let error = resolve_block_fault_directive_with_capacity(
+        let error = match resolve_block_fault_directive_with_capacity(
             &opaque_world(),
             &target(),
             &request,
@@ -1652,8 +1695,10 @@ mod tests {
             4096,
             context(),
             [&latency],
-        )
-        .expect_err("wrong dynamic field must fail closed");
+        ) {
+            Ok(_) => panic!("wrong dynamic field must fail closed"),
+            Err(error) => error,
+        };
         assert!(matches!(
             error,
             StorageFaultResolutionError::MappingOutput {
@@ -1733,6 +1778,41 @@ mod tests {
 
         assert_eq!(first, repeated);
         assert_ne!(first, different_seed);
+    }
+
+    #[test]
+    fn every_non_success_block_policy_result_maps_exactly() {
+        use crucible::model::StoragePolicyResult;
+
+        let cases = [
+            (StoragePolicyResult::Offline, BlockFaultResult::Offline),
+            (StoragePolicyResult::ReadOnly, BlockFaultResult::ReadOnly),
+            (
+                StoragePolicyResult::InvalidRange,
+                BlockFaultResult::InvalidRange,
+            ),
+            (StoragePolicyResult::Busy, BlockFaultResult::Busy),
+            (StoragePolicyResult::Timeout, BlockFaultResult::Timeout),
+            (
+                StoragePolicyResult::MediumError,
+                BlockFaultResult::MediumError,
+            ),
+            (
+                StoragePolicyResult::IntegrityError,
+                BlockFaultResult::IntegrityError,
+            ),
+            (StoragePolicyResult::IoError, BlockFaultResult::IoError),
+            (StoragePolicyResult::NoSpace, BlockFaultResult::NoSpace),
+            (StoragePolicyResult::NotFound, BlockFaultResult::NotFound),
+            (StoragePolicyResult::Stale, BlockFaultResult::Stale),
+        ];
+        assert_eq!(
+            block_failure_from_result(StoragePolicyResult::Success),
+            None
+        );
+        for (policy, expected) in cases {
+            assert_eq!(block_failure_from_result(policy), Some(expected));
+        }
     }
 
     #[test]
