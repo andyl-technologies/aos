@@ -139,6 +139,11 @@ Save at virtual time:
   --label before-election
 ```
 
+Virtual-time saves pause after each scheduler quantum and export only at the
+exact requested coordinate. A backend that cannot advance virtual time or that
+steps past the coordinate fails the command instead of exporting an ambiguous
+handle. Zero-time boot quanta are allowed within a bounded progress window.
+
 Other boundaries are:
 
 ```sh

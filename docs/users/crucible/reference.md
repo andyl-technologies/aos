@@ -138,7 +138,7 @@ option; it is not part of the shipped production interface.
 | `SCENARIO` | Required | Scenario path or content hash. |
 | `--at <virtual-time\|quiescence\|property\|marker>` | Required | Select the save boundary; see [boundary values](#terminal-and-save-boundary-values). |
 | `--label <name>` | Optional | Add a human-readable savepoint label. |
-| `--max-virtual-time <dur>` | Required with `--at virtual-time` | Virtual-time coordinate at which to save. |
+| `--max-virtual-time <dur>` | Required with `--at virtual-time` | Exact virtual-time coordinate at which to save; stagnation and overshoot fail closed. |
 | `--property <assertion>` | Required with `--at property` | Assertion ID whose verdict supplies the boundary. |
 | `--marker <name>` | Required with `--at marker` | Guest-marker ID whose observation supplies the boundary. |
 | `--out <path>` | Default below `--artifact-dir` | Select the exported savepoint-handle path. |

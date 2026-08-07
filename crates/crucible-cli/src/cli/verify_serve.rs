@@ -1250,45 +1250,16 @@ where
             let budget = run_plan.max_virtual_time_ticks.ok_or_else(|| {
                 usage_error("save --at virtual-time requires --max-virtual-time <dur>")
             })?;
-            let summary =
-                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
-                    .await?;
-            let boundary = if summary.frontier.ticks < budget {
-                send_save_workflow_command(
-                    client,
-                    created.session,
-                    &mut command_id,
-                    SessionCommand::step(StepMode::Duration(SimDuration {
-                        nanos: budget.saturating_sub(summary.frontier.ticks),
-                    })),
-                    &mut acknowledged_commands,
-                    &mut state_updates,
-                )
-                .await?;
-                let max_attempts = RUN_INTERACTIVE_ACK_QUANTA_BOUND
-                    .saturating_add(budget.saturating_sub(summary.frontier.ticks));
-                wait_for_save_workflow_summary(
-                    client,
-                    created.session,
-                    |candidate| {
-                        candidate.state == LiveStateKind::Paused
-                            && candidate.frontier.ticks >= budget
-                            && candidate.quanta_stepped > summary.quanta_stepped
-                    },
-                    "paused requested virtual-time save boundary",
-                    max_attempts,
-                )
-                .await?
-            } else {
-                summary
-            };
-            if boundary.frontier.ticks != budget {
-                return Err(CliError::Identity(format!(
-                    "save virtual-time boundary reached {}, expected {}",
-                    boundary.frontier.ticks, budget
-                )));
-            }
-            boundary
+            drive_save_to_virtual_time_boundary(
+                client,
+                created.session,
+                budget,
+                &mut command_id,
+                &mut acknowledged_commands,
+                &mut state_updates,
+                "",
+            )
+            .await?
         }
         SaveAtArg::Property | SaveAtArg::Marker => {
             run_save_selector_to_boundary(

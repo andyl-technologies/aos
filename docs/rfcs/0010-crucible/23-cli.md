@@ -499,6 +499,10 @@ breakpoints of 20 §4.3/§6 internally), issues `create_savepoint` (20 §4), and
 exports the resulting handle. Because a savepoint is a checkpoint in the temporal
 graph (07), it is CoW-shared with its ancestors and validated `fat == thin` by
 the oracle (07 §6) on export — a save that fails the oracle fails the command.
+For `--at virtual-time`, the controller advances one acknowledged scheduler
+quantum at a time. It tolerates bounded zero-time boot quanta, rejects sustained
+stagnation or an overshooting boundary, and exports only when the observed
+frontier equals the requested coordinate exactly.
 
 **Exit codes.** `0` = savepoint materialized, oracle-validated, and exported;
 `1` = the run hit a non-savepoint terminal outcome before `--at` (the outcome is
@@ -1114,8 +1118,10 @@ branch on the verdict without parsing output:
   QEMU/plugin identity metadata, process-tests real-binary `save --backend qemu`
   JSONL output and handle export through marker-resolved QEMU/plugin identity,
   routes remote-daemon quiescence and virtual-time saves over the RPC control
-  API with replay-oracle validation, routes remote selector proof queries over
-  RPC breakpoint-firing payloads, transfers arbitrary scenario selector sources
+  API with replay-oracle validation, advances virtual-time saves as individually
+  acknowledged quanta so observer polling cannot hide a hung duration step,
+  rejects sustained zero-time progress and coordinate overshoot, routes remote
+  selector proof queries over RPC breakpoint-firing payloads, transfers arbitrary scenario selector sources
   to remote daemons as form-bearing inline `CreateSession` RPC payloads, derives
   remote guest-marker white-box policy from the transferred source form, and
   fails undeclared property selectors and marker selectors without a white-box
