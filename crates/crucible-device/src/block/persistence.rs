@@ -12,6 +12,8 @@ use crate::error::DeviceError;
 pub const HARD_BLOCK_PERSISTENCE_NODES: usize = 4_194_304;
 /// Hard maximum aggregate dependency edges across live persistence nodes.
 pub const HARD_BLOCK_PERSISTENCE_EDGES: usize = 16_777_216;
+/// Hard maximum unconsumed persistence transformation evidence records.
+pub const HARD_BLOCK_PERSISTENCE_EVIDENCE: usize = 1_048_576;
 
 /// Stable identity of one atomic write fragment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -42,6 +44,8 @@ pub enum BlockPersistenceOrdering {
 /// One resolved persistence transformation applied at fragment admission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedBlockPersistenceTransform {
+    /// Stable resolved binding-action identity.
+    pub contributor: [u8; 32],
     /// Stable ordering-group identity digest.
     pub ordering_group: [u8; 32],
     /// Closed ready-set ordering rule.
@@ -65,6 +69,8 @@ pub struct BlockPersistenceNode {
     pub dependency_depth: u32,
     /// Independent normal writeback sequence.
     pub writeback_sequence: u64,
+    /// Group-scoped transformed slot in the global normal writeback order.
+    pub transformed_writeback_sequence: u64,
     /// Earliest virtual nanosecond at which service may select this node.
     pub persistence_deadline_nanos: Option<u64>,
     /// Whether a flush/FUA/transaction barrier contributed an immutable edge.
@@ -75,8 +81,16 @@ pub struct BlockPersistenceNode {
 }
 
 /// Before/after identity of the most recently admitted graph transformation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockPersistenceTransformationEvidence {
+    /// Original guest request whose fragments were admitted.
+    pub request_id: u32,
+    /// First admitted global fragment sequence.
+    pub first_sequence: u64,
+    /// Exclusive admitted global fragment sequence frontier.
+    pub sequence_frontier: u64,
+    /// Canonically sorted exact binding-action identities that contributed.
+    pub contributors: Vec<[u8; 32]>,
     /// Graph digest before admitting and transforming the fragments.
     pub before: [u8; 32],
     /// Graph digest after the complete atomic admission.
@@ -88,8 +102,9 @@ pub struct BlockPersistenceTransformationEvidence {
 pub struct BlockPersistenceGraph {
     nodes: BTreeMap<u64, BlockPersistenceNode>,
     edge_count: usize,
+    edge_limit: usize,
     next_writeback_sequence: u64,
-    last_transformation: Option<BlockPersistenceTransformationEvidence>,
+    transformation_evidence: Vec<BlockPersistenceTransformationEvidence>,
 }
 
 impl Default for BlockPersistenceGraph {
@@ -99,15 +114,50 @@ impl Default for BlockPersistenceGraph {
 }
 
 impl BlockPersistenceGraph {
+    /// Validates a resolved transformation set without mutating graph state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] for conflicting groups/rules or a persistence
+    /// deadline that cannot be represented.
+    pub fn validate_transforms(
+        transforms: &[ResolvedBlockPersistenceTransform],
+        admitted_nanos: u64,
+    ) -> Result<(), DeviceError> {
+        if let Some(transform) = compose_transforms(transforms)? {
+            admitted_nanos
+                .checked_add(transform.delay_nanos)
+                .ok_or_else(|| invalid("persistence deadline overflow"))?;
+        }
+        Ok(())
+    }
+
     /// Creates an empty persistence graph.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
             edge_count: 0,
+            edge_limit: HARD_BLOCK_PERSISTENCE_EDGES,
             next_writeback_sequence: 0,
-            last_transformation: None,
+            transformation_evidence: Vec::new(),
         }
+    }
+
+    /// Creates an empty graph with an admitted per-device edge ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when `edge_limit` is zero or exceeds the hard
+    /// implementation ceiling.
+    pub fn with_edge_limit(edge_limit: usize) -> Result<Self, DeviceError> {
+        if edge_limit == 0 || edge_limit > HARD_BLOCK_PERSISTENCE_EDGES {
+            return Err(invalid("persistence dependency limit is invalid"));
+        }
+        Ok(Self {
+            edge_limit,
+            ..Self::new()
+        })
     }
 
     /// Returns all live nodes in controller-sequence order.
@@ -116,10 +166,21 @@ impl BlockPersistenceGraph {
         &self.nodes
     }
 
-    /// Returns the most recent atomic graph-transformation evidence.
+    /// Returns the admitted per-device dependency-edge ceiling.
     #[must_use]
-    pub const fn last_transformation(&self) -> Option<BlockPersistenceTransformationEvidence> {
-        self.last_transformation
+    pub const fn edge_limit(&self) -> usize {
+        self.edge_limit
+    }
+
+    /// Returns every unconsumed atomic graph-transformation evidence record.
+    #[must_use]
+    pub fn transformation_evidence(&self) -> &[BlockPersistenceTransformationEvidence] {
+        &self.transformation_evidence
+    }
+
+    /// Drains transformation evidence after the event log has retained it.
+    pub fn drain_transformation_evidence(&mut self) -> Vec<BlockPersistenceTransformationEvidence> {
+        std::mem::take(&mut self.transformation_evidence)
     }
 
     /// Returns the canonical digest of the complete live graph continuation.
@@ -127,6 +188,11 @@ impl BlockPersistenceGraph {
     pub fn digest(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"crucible.block-persistence-graph.v1\0");
+        hasher.update(
+            &u64::try_from(self.edge_limit)
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
         hasher.update(&self.next_writeback_sequence.to_be_bytes());
         for node in self.nodes.values() {
             hasher.update(&node.sequence.to_be_bytes());
@@ -136,6 +202,7 @@ impl BlockPersistenceGraph {
             hasher.update(&node.fragment.length.to_be_bytes());
             hasher.update(&node.dependency_depth.to_be_bytes());
             hasher.update(&node.writeback_sequence.to_be_bytes());
+            hasher.update(&node.transformed_writeback_sequence.to_be_bytes());
             match node.persistence_deadline_nanos {
                 Some(deadline) => {
                     hasher.update(&[1]);
@@ -178,6 +245,18 @@ impl BlockPersistenceGraph {
     pub fn validate(&self) -> Result<(), DeviceError> {
         if self.nodes.len() > HARD_BLOCK_PERSISTENCE_NODES
             || self.edge_count > HARD_BLOCK_PERSISTENCE_EDGES
+            || self.edge_limit == 0
+            || self.edge_limit > HARD_BLOCK_PERSISTENCE_EDGES
+            || self.edge_count > self.edge_limit
+            || self.transformation_evidence.len() > HARD_BLOCK_PERSISTENCE_EVIDENCE
+            || self.transformation_evidence.iter().any(|evidence| {
+                evidence.first_sequence >= evidence.sequence_frontier
+                    || evidence.contributors.is_empty()
+                    || evidence
+                        .contributors
+                        .windows(2)
+                        .any(|pair| pair[0] >= pair[1])
+            })
             || self.edge_count
                 != self
                     .nodes
@@ -188,6 +267,7 @@ impl BlockPersistenceGraph {
                 *sequence != node.sequence
                     || node.fragment.length == 0
                     || node.writeback_sequence >= self.next_writeback_sequence
+                    || node.transformed_writeback_sequence >= self.next_writeback_sequence
                     || node.dependencies.iter().any(|dependency| {
                         *dependency >= node.sequence || !self.nodes.contains_key(dependency)
                     })
@@ -195,6 +275,16 @@ impl BlockPersistenceGraph {
         {
             return Err(invalid(
                 "restored persistence graph violates bounds or ownership",
+            ));
+        }
+        let transformed_slots = self
+            .nodes
+            .values()
+            .map(|node| node.transformed_writeback_sequence)
+            .collect::<BTreeSet<_>>();
+        if transformed_slots.len() != self.nodes.len() {
+            return Err(invalid(
+                "restored persistence graph repeats a transformed ordering slot",
             ));
         }
         for node in self.nodes.values() {
@@ -230,13 +320,38 @@ impl BlockPersistenceGraph {
         admitted_nanos: u64,
         transforms: &[ResolvedBlockPersistenceTransform],
     ) -> Result<BlockPersistenceTransformationEvidence, DeviceError> {
+        self.admit_request_with_barrier(fragments, admitted_nanos, transforms, None)
+    }
+
+    /// Atomically admits fragments and an optional preceding flush frontier.
+    ///
+    /// When the composed transformation preserves barriers, the request's
+    /// first fragment depends on every still-live node below `barrier_frontier`.
+    /// A transformation that explicitly disables barrier preservation omits
+    /// those edges while retaining overlap and intra-request dependencies.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] under the same conditions as
+    /// [`Self::admit_request`], or when the barrier frontier exceeds the first
+    /// admitted sequence.
+    pub fn admit_request_with_barrier(
+        &mut self,
+        fragments: &[(u64, BlockWriteFragmentId)],
+        admitted_nanos: u64,
+        transforms: &[ResolvedBlockPersistenceTransform],
+        barrier_frontier: Option<u64>,
+    ) -> Result<BlockPersistenceTransformationEvidence, DeviceError> {
         let before = self.digest();
         if fragments.is_empty() {
             let evidence = BlockPersistenceTransformationEvidence {
+                request_id: 0,
+                first_sequence: 0,
+                sequence_frontier: 0,
+                contributors: Vec::new(),
                 before,
                 after: before,
             };
-            self.last_transformation = Some(evidence);
             return Ok(evidence);
         }
         if self
@@ -257,6 +372,21 @@ impl BlockPersistenceGraph {
         }
         let mut next = self.clone();
         let transform = compose_transforms(transforms)?;
+        if barrier_frontier.is_some_and(|frontier| frontier > fragments[0].0) {
+            return Err(invalid(
+                "persistence barrier frontier exceeds the admitted request sequence",
+            ));
+        }
+        if let Some(transform) = transform
+            && next.nodes.values().any(|node| {
+                node.ordering_group == Some(transform.ordering_group)
+                    && node.ordering != transform.ordering
+            })
+        {
+            return Err(invalid(
+                "persistence ordering group changes its live ordering rule",
+            ));
+        }
         let mut prior_fragment = None;
         for (sequence, fragment) in fragments {
             let mut dependencies = next
@@ -275,6 +405,12 @@ impl BlockPersistenceGraph {
                 .collect::<BTreeSet<_>>();
             if let Some(prior) = prior_fragment {
                 dependencies.insert(prior);
+            }
+            let barrier_protected = prior_fragment.is_none()
+                && barrier_frontier.is_some()
+                && transform.is_none_or(|transform| transform.preserve_barriers);
+            if barrier_protected && let Some(frontier) = barrier_frontier {
+                dependencies.extend(next.nodes.keys().copied().filter(|prior| *prior < frontier));
             }
             let dependency_depth = dependencies
                 .iter()
@@ -308,9 +444,9 @@ impl BlockPersistenceGraph {
                 .edge_count
                 .checked_add(dependencies.len())
                 .ok_or_else(|| invalid("persistence dependency count overflow"))?;
-            if next.edge_count > HARD_BLOCK_PERSISTENCE_EDGES {
+            if next.edge_count > next.edge_limit {
                 return Err(invalid(
-                    "persistence dependency graph exceeds its edge bound",
+                    "persistence dependency graph exceeds its configured edge bound",
                 ));
             }
             next.nodes.insert(
@@ -321,8 +457,9 @@ impl BlockPersistenceGraph {
                     dependencies,
                     dependency_depth,
                     writeback_sequence,
+                    transformed_writeback_sequence: writeback_sequence,
                     persistence_deadline_nanos,
-                    barrier_protected: false,
+                    barrier_protected,
                     ordering_group,
                     ordering,
                     keyed_rank,
@@ -330,10 +467,38 @@ impl BlockPersistenceGraph {
             );
             prior_fragment = Some(*sequence);
         }
+        if let Some(transform) = transform {
+            next.recompute_group_slots(transform.ordering_group)?;
+        }
         next.validate()?;
         let after = next.digest();
-        let evidence = BlockPersistenceTransformationEvidence { before, after };
-        next.last_transformation = Some(evidence);
+        let first_sequence = fragments[0].0;
+        let sequence_frontier = fragments
+            .last()
+            .and_then(|(sequence, _fragment)| sequence.checked_add(1))
+            .ok_or_else(|| invalid("persistence evidence sequence frontier overflow"))?;
+        let mut contributors = transforms
+            .iter()
+            .map(|transform| transform.contributor)
+            .collect::<Vec<_>>();
+        contributors.sort_unstable();
+        contributors.dedup();
+        let evidence = BlockPersistenceTransformationEvidence {
+            request_id: fragments[0].1.request_id,
+            first_sequence,
+            sequence_frontier,
+            contributors,
+            before,
+            after,
+        };
+        if !transforms.is_empty() {
+            if next.transformation_evidence.len() == HARD_BLOCK_PERSISTENCE_EVIDENCE {
+                return Err(invalid(
+                    "persistence transformation evidence exceeds its hard bound",
+                ));
+            }
+            next.transformation_evidence.push(evidence.clone());
+        }
         *self = next;
         Ok(evidence)
     }
@@ -386,8 +551,16 @@ impl BlockPersistenceGraph {
         node.barrier_protected |= barrier;
         next.validate()?;
         let after = next.digest();
-        let evidence = BlockPersistenceTransformationEvidence { before, after };
-        next.last_transformation = Some(evidence);
+        let evidence = BlockPersistenceTransformationEvidence {
+            request_id: next.nodes[&sequence].fragment.request_id,
+            first_sequence: sequence,
+            sequence_frontier: sequence
+                .checked_add(1)
+                .ok_or_else(|| invalid("persistence evidence sequence frontier overflow"))?,
+            contributors: Vec::new(),
+            before,
+            after,
+        };
         *self = next;
         Ok(evidence)
     }
@@ -420,6 +593,25 @@ impl BlockPersistenceGraph {
         self.nodes
             .get(&sequence)
             .is_some_and(|node| node.dependencies.is_empty())
+    }
+
+    /// Returns whether one live node is dependency-ready and its delay elapsed.
+    #[must_use]
+    pub fn is_ready_at(&self, sequence: u64, now_nanos: u64) -> bool {
+        self.nodes.get(&sequence).is_some_and(|node| {
+            node.dependencies.is_empty()
+                && node
+                    .persistence_deadline_nanos
+                    .is_none_or(|deadline| deadline <= now_nanos)
+        })
+    }
+
+    /// Returns one node's modeled persistence deadline.
+    #[must_use]
+    pub fn deadline_nanos(&self, sequence: u64) -> Option<u64> {
+        self.nodes
+            .get(&sequence)
+            .and_then(|node| node.persistence_deadline_nanos)
     }
 
     /// Commits one ready node as durably persisted and unblocks dependents.
@@ -470,6 +662,37 @@ impl BlockPersistenceGraph {
         }
         Ok(())
     }
+
+    fn recompute_group_slots(&mut self, group: [u8; 32]) -> Result<(), DeviceError> {
+        let members = self
+            .nodes
+            .values()
+            .filter(|node| node.ordering_group == Some(group))
+            .map(|node| node.sequence)
+            .collect::<Vec<_>>();
+        let mut slots = members
+            .iter()
+            .filter_map(|sequence| self.nodes.get(sequence))
+            .map(|node| node.writeback_sequence)
+            .collect::<Vec<_>>();
+        slots.sort_unstable();
+        let mut ranked = members;
+        ranked.sort_by(|left, right| {
+            let left = &self.nodes[left];
+            let right = &self.nodes[right];
+            transformation_rank(left).cmp(&transformation_rank(right))
+        });
+        if ranked.len() != slots.len() {
+            return Err(invalid("persistence group slot accounting differs"));
+        }
+        for (sequence, slot) in ranked.into_iter().zip(slots) {
+            self.nodes
+                .get_mut(&sequence)
+                .ok_or_else(|| invalid("persistence group member disappeared"))?
+                .transformed_writeback_sequence = slot;
+        }
+        Ok(())
+    }
 }
 
 /// Canonical total-order key for one ready persistence node.
@@ -483,19 +706,23 @@ pub struct BlockPersistenceReadyKey {
 }
 
 fn persistence_order_key(node: &BlockPersistenceNode) -> BlockPersistenceReadyKey {
-    let transformed_primary = match node.ordering {
+    BlockPersistenceReadyKey {
+        dependency_depth: node.dependency_depth,
+        transformed_primary: expanded_u64(node.transformed_writeback_sequence),
+        controller_sequence: node.sequence,
+        range_start: node.fragment.start,
+        fragment: node.fragment,
+    }
+}
+
+fn transformation_rank(node: &BlockPersistenceNode) -> ([u8; 32], u64, BlockWriteFragmentId) {
+    let primary = match node.ordering {
         BlockPersistenceOrdering::Preserve => expanded_u64(node.writeback_sequence),
         BlockPersistenceOrdering::ReverseReady => expanded_u64(u64::MAX - node.writeback_sequence),
         BlockPersistenceOrdering::DescendingRange => expanded_u64(u64::MAX - node.fragment.start),
         BlockPersistenceOrdering::KeyedPermutation => node.keyed_rank,
     };
-    BlockPersistenceReadyKey {
-        dependency_depth: node.dependency_depth,
-        transformed_primary,
-        controller_sequence: node.sequence,
-        range_start: node.fragment.start,
-        fragment: node.fragment,
-    }
+    (primary, node.sequence, node.fragment)
 }
 
 fn expanded_u64(value: u64) -> [u8; 32] {
@@ -607,6 +834,7 @@ mod tests {
     fn flush_frontier_excludes_later_writes_and_delay_is_exact() {
         let mut graph = BlockPersistenceGraph::new();
         let transform = ResolvedBlockPersistenceTransform {
+            contributor: [1; 32],
             ordering_group: [7; 32],
             ordering: BlockPersistenceOrdering::DescendingRange,
             delay_nanos: 5,
@@ -643,6 +871,7 @@ mod tests {
     fn reverse_ready_changes_only_mutually_ready_selection() {
         let mut graph = BlockPersistenceGraph::new();
         let transform = ResolvedBlockPersistenceTransform {
+            contributor: [2; 32],
             ordering_group: [9; 32],
             ordering: BlockPersistenceOrdering::ReverseReady,
             delay_nanos: 0,
@@ -663,6 +892,26 @@ mod tests {
     }
 
     #[test]
+    fn ordering_group_does_not_reorder_an_out_of_group_fragment() {
+        let mut graph = BlockPersistenceGraph::new();
+        let reverse = ResolvedBlockPersistenceTransform {
+            contributor: [3; 32],
+            ordering_group: [3; 32],
+            ordering: BlockPersistenceOrdering::ReverseReady,
+            delay_nanos: 0,
+            preserve_barriers: true,
+        };
+        graph
+            .admit_request(&[(0, fragment(1, 0, 0))], 0, &[reverse])
+            .unwrap_or_else(|error| panic!("group admission: {error}"));
+        graph
+            .admit_request(&[(1, fragment(2, 0, 1024))], 0, &[])
+            .unwrap_or_else(|error| panic!("ungrouped admission: {error}"));
+
+        assert_eq!(graph.next_ready_before(2, 0), Some(0));
+    }
+
+    #[test]
     fn loss_unblocks_dependents_without_claiming_durability() {
         let mut graph = BlockPersistenceGraph::new();
         graph
@@ -677,5 +926,76 @@ mod tests {
         graph
             .validate()
             .unwrap_or_else(|error| panic!("post-loss graph: {error}"));
+    }
+
+    #[test]
+    fn configured_edge_bound_and_barrier_policy_fail_closed() {
+        let mut bounded = BlockPersistenceGraph::with_edge_limit(1)
+            .unwrap_or_else(|error| panic!("edge bound: {error}"));
+        bounded
+            .admit_request(&[(0, fragment(1, 0, 0))], 0, &[])
+            .unwrap_or_else(|error| panic!("first write: {error}"));
+        bounded
+            .admit_request(&[(1, fragment(2, 0, 0))], 0, &[])
+            .unwrap_or_else(|error| panic!("second write: {error}"));
+        let before = bounded.clone();
+        assert!(
+            bounded
+                .admit_request(&[(2, fragment(3, 0, 0))], 0, &[])
+                .is_err()
+        );
+        assert_eq!(bounded, before);
+
+        for (preserve_barriers, expected_dependencies) in
+            [(true, BTreeSet::from([0])), (false, BTreeSet::new())]
+        {
+            let mut graph = BlockPersistenceGraph::new();
+            graph
+                .admit_request(&[(0, fragment(1, 0, 0))], 0, &[])
+                .unwrap_or_else(|error| panic!("barrier predecessor: {error}"));
+            let transform = ResolvedBlockPersistenceTransform {
+                contributor: [8; 32],
+                ordering_group: [4; 32],
+                ordering: BlockPersistenceOrdering::Preserve,
+                delay_nanos: 0,
+                preserve_barriers,
+            };
+            graph
+                .admit_request_with_barrier(&[(1, fragment(2, 0, 1024))], 0, &[transform], Some(1))
+                .unwrap_or_else(|error| panic!("barrier admission: {error}"));
+            assert_eq!(graph.nodes()[&1].dependencies, expected_dependencies);
+            assert_eq!(graph.nodes()[&1].barrier_protected, preserve_barriers);
+        }
+    }
+
+    #[test]
+    fn transformation_evidence_retains_every_contributor_until_drained() {
+        let mut graph = BlockPersistenceGraph::new();
+        for (sequence, contributor) in [(0, [1; 32]), (1, [2; 32])] {
+            graph
+                .admit_request(
+                    &[(sequence, fragment(sequence as u32 + 1, 0, sequence * 1024))],
+                    0,
+                    &[ResolvedBlockPersistenceTransform {
+                        contributor,
+                        ordering_group: [5; 32],
+                        ordering: BlockPersistenceOrdering::Preserve,
+                        delay_nanos: 0,
+                        preserve_barriers: true,
+                    }],
+                )
+                .unwrap_or_else(|error| panic!("transformed admission: {error}"));
+        }
+        assert_eq!(graph.transformation_evidence().len(), 2);
+        assert_eq!(
+            graph.transformation_evidence()[0].contributors,
+            vec![[1; 32]]
+        );
+        assert_eq!(
+            graph.transformation_evidence()[1].contributors,
+            vec![[2; 32]]
+        );
+        assert_eq!(graph.drain_transformation_evidence().len(), 2);
+        assert!(graph.transformation_evidence().is_empty());
     }
 }

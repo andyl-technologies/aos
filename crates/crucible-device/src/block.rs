@@ -78,6 +78,7 @@ mod tests {
             cache_entries: 64,
             controller_buffer_bytes: 0,
             controller_entries: 0,
+            persistence_dependencies: 1024,
             retained_versions: 64,
             completion_durability: BlockCompletionDurability::VolatileCacheAccepted,
         }
