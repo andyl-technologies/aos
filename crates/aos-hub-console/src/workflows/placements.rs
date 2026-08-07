@@ -13,6 +13,7 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
+use super::placement_policies::{PlacementEquivalencePanel, PlacementPolicyPanel};
 use super::resources::UnavailableWorkflow;
 
 /// Renders placement workflows and delegates unrelated pages onward.
@@ -82,6 +83,8 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
                 </Suspense>
             </section>
             <WriteAuthorityPanel client=client.clone() surface=authority_surface/>
+            <PlacementPolicyPanel client=client.clone() surface=create_surface.clone()/>
+            <PlacementEquivalencePanel client=client.clone() surface=create_surface.clone()/>
             <PlacementReplication client=client.clone() surface=replication_surface/>
             <PlacementCreate client=client surface=create_surface/>
         </div>
