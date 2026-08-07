@@ -353,6 +353,13 @@
         patchName = "0062-crucible-block-transport-reset.patch";
       };
     }
+    {
+      patch = "0063-crucible-plugin-vmstop.patch";
+      check = import ./phase1-plugin-runtime-apis.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0063-crucible-plugin-vmstop.patch";
+      };
+    }
   ];
 
   microtestPatchNames =

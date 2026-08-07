@@ -12,8 +12,8 @@ use std::time::Duration;
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QemuQmpVmStateControlChannel,
-    QemuSavevmCompletenessPolicy, QmpCommandKind, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QemuExactSnapshotPolicy,
+    QemuQmpVmStateControlChannel, QmpCommandKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -28,7 +28,9 @@ fn vmstate_control_saves_and_restores_checkpoint_tags() -> Result<(), Box<dyn Er
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-save-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
         r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
+        r#"{"return":{}}"#,
         r#"{"return":{}}"#,
     ]);
     let written = Arc::clone(&stream.written);
@@ -72,21 +74,21 @@ fn vmstate_control_saves_and_restores_checkpoint_tags() -> Result<(), Box<dyn Er
         Some(QMP_QUERY_JOBS_COMMAND)
     );
     assert_eq!(
-        execute_name(json_line(&lines, 3)),
+        execute_name(json_line(&lines, 4)),
         Some(QMP_SNAPSHOT_LOAD_COMMAND)
     );
     assert_eq!(
-        json_line(&lines, 3)
+        json_line(&lines, 4)
             .pointer("/arguments/tag")
             .and_then(Value::as_str),
         Some(HASH_AB_TAG)
     );
     assert_eq!(
-        execute_name(json_line(&lines, 4)),
+        execute_name(json_line(&lines, 5)),
         Some(QMP_QUERY_JOBS_COMMAND)
     );
     assert_eq!(
-        execute_name(json_line(&lines, 5)),
+        execute_name(json_line(&lines, 7)),
         Some(QMP_QUIT_COMMAND_NAME)
     );
     Ok(())
@@ -101,7 +103,7 @@ fn vmstate_control_uses_the_public_snapshot_tag_derivation() {
 }
 
 fn loadvm_probe_authorization() -> crucible_qemu::QemuLoadvmCommandAuthorization {
-    QemuSavevmCompletenessPolicy::complete().authorize_loadvm_probe()
+    QemuExactSnapshotPolicy::production().authorize_loadvm_probe()
 }
 
 fn scripted_qmp<const N: usize>(lines: [&str; N]) -> ScriptedQmpStream {

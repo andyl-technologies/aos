@@ -154,6 +154,19 @@ on_sim_observer_max_advance_icount(void *userdata)
   return next_sample;
 }
 
+static int
+request_exact_vmstop(void)
+{
+  const int status = qemu_plugin_request_vmstop();
+
+  if (status != 0) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: exact VM stop request failed\n");
+    qemu_plugin_request_shutdown(1);
+  }
+  return status;
+}
+
 static uint64_t
 fnv1a_u64(uint64_t hash, uint64_t value)
 {
@@ -1861,7 +1874,7 @@ on_insn(unsigned int vcpu_index, void *userdata)
     }
     qemu_plugin_outs("crucible-qemu-trace-plugin: stop_at reached\n");
     if (!extended_fingerprint) {
-      qemu_plugin_crucible_pause_vm();
+      (void)request_exact_vmstop();
     }
   }
 }
@@ -1888,8 +1901,10 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
       qemu_plugin_outs(
           "crucible-qemu-trace-plugin: terminal horizon boundary was not exact\n");
       terminal_pause_status = -ERANGE;
-      qemu_plugin_crucible_pause_vm();
-      on_terminal_paused(terminal_pause_status, NULL);
+      const int vmstop_status = request_exact_vmstop();
+
+      on_terminal_paused(
+          vmstop_status == 0 ? terminal_pause_status : vmstop_status, NULL);
       return;
     }
 
@@ -1900,8 +1915,9 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
       qemu_plugin_outs(
           "crucible-qemu-trace-plugin: terminal pause request failed\n");
       terminal_pause_status = status;
-      qemu_plugin_crucible_pause_vm();
-      on_terminal_paused(status, NULL);
+      const int vmstop_status = request_exact_vmstop();
+
+      on_terminal_paused(vmstop_status == 0 ? status : vmstop_status, NULL);
     }
     return;
   }
@@ -1945,12 +1961,12 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
     stop_requested = true;
     horizon_emitted = true;
     next_sample = UINT64_MAX;
-    qemu_plugin_crucible_pause_vm();
+    (void)request_exact_vmstop();
     return;
   }
   if (horizon_due) {
     stop_requested = true;
-    qemu_plugin_crucible_pause_vm();
+    (void)request_exact_vmstop();
   }
   record_sample(
       last_valid_rr_cursor_available

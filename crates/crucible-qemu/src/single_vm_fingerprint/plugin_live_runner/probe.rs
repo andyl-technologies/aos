@@ -3,11 +3,10 @@
 //! Refinement replays each fixed run by RESTART to an exact aggregate icount: a
 //! fresh QEMU process is driven from cold to the requested boundary and the
 //! plugin-published fingerprint sample there is folded into the cumulative
-//! prefix. Snapshot restore (`loadvm`) is deliberately not used — it stays
-//! policy-disabled per [`crate::single_vm_fingerprint`]'s savevm fallback
-//! contract (see `savevm_policy.rs` / the phase2 `qemuExactSnapshotRestore` gate),
-//! which forbids restoring VM state into the deterministic replay path. Every
-//! probe therefore reproduces state from the same immutable launch inputs.
+//! prefix. Snapshot restore (`loadvm`) is deliberately not used because this
+//! fresh-run replay is the independent oracle against which exact snapshots are
+//! checked. Every probe therefore reproduces state from the same immutable
+//! launch inputs.
 //! Full divergence dumps use two additional fresh runs. At the requested exact
 //! boundary, the plugin terminally pauses QEMU and exports complete register,
 //! writable-RAM, and non-RAM VMState bytes through the patched raw-state API.

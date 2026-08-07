@@ -104,7 +104,7 @@
         needle = "SameConfigurationProbe::Fork";
       }
       {
-        label = "snapshot-completeness probe";
+        label = "replay-oracle probe";
         needle = "SameConfigurationProbe::SnapshotCompleteness";
       }
       {
@@ -650,7 +650,7 @@
         needle = "same-configuration-twice";
       }
       {
-        label = "T-PAT-9 completion names snapshot-completeness probe";
+        label = "T-PAT-9 completion names replay-oracle probe";
         needle = "snapshot-completeness";
       }
       {

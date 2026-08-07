@@ -1,10 +1,10 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 1c0888f..26abdbf 100644
+index 00ebbbe..c3a6c95 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1071,6 +1071,18 @@ uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
+@@ -1059,6 +1059,18 @@ uint64_t qemu_plugin_crucible_rr_switch_quantum(void);
  QEMU_PLUGIN_API
- void qemu_plugin_crucible_pause_vm(void);
+ uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
  
 +/**
 + * qemu_plugin_clock_deadline_ns() - return next virtual-clock timer expiry time

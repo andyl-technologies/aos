@@ -1,7 +1,7 @@
 //! Minimal typed QMP client.
 //!
 //! RFC-0010 QEMU-19 limits QMP use to capability negotiation, typed VM
-//! status/topology observation, VM snapshot save/load, snapshot job polling,
+//! status/topology observation, VM snapshot save/load/delete, snapshot job polling,
 //! and graceful quit. The client parses
 //! JSON-line QMP responses internally, skips asynchronous event objects while
 //! waiting for a command response, and exposes no public arbitrary-command
@@ -33,10 +33,18 @@ pub const QMP_CAPABILITIES_COMMAND: &str = "qmp_capabilities";
 pub const QMP_SNAPSHOT_SAVE_COMMAND: &str = "snapshot-save";
 /// QMP command name used for loading the QEMU VMState half of a checkpoint.
 pub const QMP_SNAPSHOT_LOAD_COMMAND: &str = "snapshot-load";
+/// QMP command name used for deleting the QEMU VMState half of a checkpoint.
+pub const QMP_SNAPSHOT_DELETE_COMMAND: &str = "snapshot-delete";
 /// QMP command name used for polling snapshot job completion.
 pub const QMP_QUERY_JOBS_COMMAND: &str = "query-jobs";
+/// QMP command name used to release one concluded snapshot job.
+pub const QMP_JOB_DISMISS_COMMAND: &str = "job-dismiss";
 /// QMP command name used for reading the VM run state.
 pub const QMP_QUERY_STATUS_COMMAND: &str = "query-status";
+/// QMP command used to stop guest execution at a lifecycle boundary.
+pub const QMP_STOP_COMMAND: &str = "stop";
+/// QMP command used to resume guest execution after a lifecycle boundary.
+pub const QMP_CONT_COMMAND: &str = "cont";
 /// QMP command name used for reading configured vCPU indexes.
 pub const QMP_QUERY_CPUS_FAST_COMMAND: &str = "query-cpus-fast";
 /// QMP command name used for graceful QEMU termination.
@@ -201,7 +209,19 @@ where
     pub fn loadvm(
         &mut self,
         tag: &QmpSnapshotTag,
-        _authorization: QemuLoadvmCommandAuthorization,
+        authorization: QemuLoadvmCommandAuthorization,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        if authorization.purpose() != crate::QemuLoadvmCommandPurpose::ReplayOracleProbe {
+            return Err(QmpError::UnauthorizedLoadvmPurpose {
+                purpose: authorization.purpose(),
+            });
+        }
+        self.loadvm_authorized(tag)
+    }
+
+    pub(crate) fn loadvm_authorized(
+        &mut self,
+        tag: &QmpSnapshotTag,
     ) -> Result<QmpCommandComplete, QmpError> {
         let job_id = snapshot_job_id("load", tag);
         self.send_command(QmpCommand::LoadVm {
@@ -209,6 +229,24 @@ where
             job_id: &job_id,
         })?;
         self.wait_for_job(QmpCommandKind::LoadVm, &job_id)
+    }
+
+    /// Deletes the VMState snapshot named by a checkpoint-derived tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request cannot be written, when the response
+    /// cannot be decoded, or when the delete job fails or exceeds its poll bound.
+    pub fn delete_snapshot(
+        &mut self,
+        tag: &QmpSnapshotTag,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        let job_id = snapshot_job_id("delete", tag);
+        self.send_command(QmpCommand::DeleteSnapshot {
+            tag,
+            job_id: &job_id,
+        })?;
+        self.wait_for_job(QmpCommandKind::DeleteSnapshot, &job_id)
     }
 
     /// Requests graceful QEMU termination over QMP.
@@ -245,6 +283,44 @@ where
                 response: response.value.to_string(),
             }),
         }
+    }
+
+    /// Stops guest execution while leaving the QMP main loop responsive.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the command fails or QEMU does not report the
+    /// typed paused state after acknowledging it.
+    pub fn stop(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        let complete = self.send_command(QmpCommand::Stop)?;
+        let state = self.query_status()?;
+        if state.running || state.status != QmpRunStateKind::Paused {
+            return Err(QmpError::UnexpectedRunState {
+                command: QmpCommandKind::Stop,
+                status: state.status,
+                running: state.running,
+            });
+        }
+        Ok(complete)
+    }
+
+    /// Resumes guest execution after a lifecycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the command fails or QEMU does not report the
+    /// typed running state after acknowledging it.
+    pub fn cont(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        let complete = self.send_command(QmpCommand::Cont)?;
+        let state = self.query_status()?;
+        if !state.running || state.status != QmpRunStateKind::Running {
+            return Err(QmpError::UnexpectedRunState {
+                command: QmpCommandKind::Cont,
+                status: state.status,
+                running: state.running,
+            });
+        }
+        Ok(complete)
     }
 
     /// Returns the exact sorted set of configured vCPU indexes.
@@ -381,6 +457,7 @@ where
                     continue;
                 }
                 if let Some(error) = job.get("error") {
+                    self.send_command(QmpCommand::JobDismiss { job_id })?;
                     return Err(QmpError::JobFailed {
                         command,
                         job_id: job_id.to_owned(),
@@ -388,6 +465,7 @@ where
                     });
                 }
                 if job.get("status").and_then(Value::as_str) == Some("concluded") {
+                    self.send_command(QmpCommand::JobDismiss { job_id })?;
                     return Ok(QmpCommandComplete { command });
                 }
             }
@@ -748,10 +826,18 @@ pub enum QmpCommandKind {
     SaveVm,
     /// VMState snapshot load.
     LoadVm,
+    /// VMState snapshot deletion.
+    DeleteSnapshot,
     /// Snapshot job status query.
     QueryJobs,
+    /// Release a concluded snapshot job.
+    JobDismiss,
     /// VM run-state query.
     QueryStatus,
+    /// Stop guest execution.
+    Stop,
+    /// Resume guest execution.
+    Cont,
     /// Configured vCPU topology query.
     QueryCpusFast,
     /// Graceful QEMU quit.
@@ -764,8 +850,12 @@ impl QmpCommandKind {
             Self::Capabilities => QMP_CAPABILITIES_COMMAND,
             Self::SaveVm => QMP_SNAPSHOT_SAVE_COMMAND,
             Self::LoadVm => QMP_SNAPSHOT_LOAD_COMMAND,
+            Self::DeleteSnapshot => QMP_SNAPSHOT_DELETE_COMMAND,
             Self::QueryJobs => QMP_QUERY_JOBS_COMMAND,
+            Self::JobDismiss => QMP_JOB_DISMISS_COMMAND,
             Self::QueryStatus => QMP_QUERY_STATUS_COMMAND,
+            Self::Stop => QMP_STOP_COMMAND,
+            Self::Cont => QMP_CONT_COMMAND,
             Self::QueryCpusFast => QMP_QUERY_CPUS_FAST_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
         }
@@ -788,6 +878,12 @@ struct QmpCommandReturn {
 /// Typed errors returned by the minimal QMP client.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QmpError {
+    /// A public low-level load attempted production runtime realization.
+    #[error("public QMP loadvm only admits replay-oracle probes, got {purpose:?}")]
+    UnauthorizedLoadvmPurpose {
+        /// Rejected authorization purpose.
+        purpose: crate::QemuLoadvmCommandPurpose,
+    },
     /// A QMP stream operation had no timeout budget.
     #[error("{operation} has zero QMP timeout")]
     UnboundedTimeout {
@@ -855,6 +951,16 @@ pub enum QmpError {
         command: QmpCommandKind,
         /// Unexpected return payload.
         response: String,
+    },
+    /// QEMU acknowledged a run-state transition but reported another state.
+    #[error("QMP command {command:?} produced run state {status:?} (running={running})")]
+    UnexpectedRunState {
+        /// Transition command that was acknowledged.
+        command: QmpCommandKind,
+        /// Typed state observed afterward.
+        status: QmpRunStateKind,
+        /// QEMU's paired running boolean.
+        running: bool,
     },
     /// A QMP snapshot job reported an error.
     #[error("QMP job {job_id} for {command:?} failed: {detail}")]
@@ -943,8 +1049,17 @@ enum QmpCommand<'a> {
         tag: &'a QmpSnapshotTag,
         job_id: &'a str,
     },
+    DeleteSnapshot {
+        tag: &'a QmpSnapshotTag,
+        job_id: &'a str,
+    },
     QueryJobs,
+    JobDismiss {
+        job_id: &'a str,
+    },
     QueryStatus,
+    Stop,
+    Cont,
     QueryCpusFast,
     Quit,
 }
@@ -955,8 +1070,12 @@ impl QmpCommand<'_> {
             Self::Capabilities => QmpCommandKind::Capabilities,
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
             Self::LoadVm { .. } => QmpCommandKind::LoadVm,
+            Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
             Self::QueryJobs => QmpCommandKind::QueryJobs,
+            Self::JobDismiss { .. } => QmpCommandKind::JobDismiss,
             Self::QueryStatus => QmpCommandKind::QueryStatus,
+            Self::Stop => QmpCommandKind::Stop,
+            Self::Cont => QmpCommandKind::Cont,
             Self::QueryCpusFast => QmpCommandKind::QueryCpusFast,
             Self::Quit => QmpCommandKind::Quit,
         }
@@ -973,11 +1092,29 @@ impl QmpCommand<'_> {
             Self::LoadVm { tag, job_id } => {
                 snapshot_request(QMP_SNAPSHOT_LOAD_COMMAND, job_id, tag)
             }
+            Self::DeleteSnapshot { tag, job_id } => json!({
+                "execute": QMP_SNAPSHOT_DELETE_COMMAND,
+                "arguments": {
+                    "job-id": job_id,
+                    "tag": tag.as_str(),
+                    "devices": [QMP_SNAPSHOT_VMSTATE_DEVICE],
+                },
+            }),
             Self::QueryJobs => json!({
                 "execute": QMP_QUERY_JOBS_COMMAND,
             }),
+            Self::JobDismiss { job_id } => json!({
+                "execute": QMP_JOB_DISMISS_COMMAND,
+                "arguments": { "id": job_id },
+            }),
             Self::QueryStatus => json!({
                 "execute": QMP_QUERY_STATUS_COMMAND,
+            }),
+            Self::Stop => json!({
+                "execute": QMP_STOP_COMMAND,
+            }),
+            Self::Cont => json!({
+                "execute": QMP_CONT_COMMAND,
             }),
             Self::QueryCpusFast => json!({
                 "execute": QMP_QUERY_CPUS_FAST_COMMAND,

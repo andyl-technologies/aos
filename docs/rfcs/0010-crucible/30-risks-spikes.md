@@ -63,9 +63,9 @@ is unambiguous and reviewable:
   **S4** (producer→consumer visibility is icount-not-wallclock), and **S3**
   (snapshot/restore completeness). S1 is the highest priority because its failure
   invalidates the entire RFC; S2 and S4 gate the I/O and injection models that
-  Phase 1's transport and scheduler depend on; S3 gates fast-resume and fork but
-  has a clean fallback (thin/replay checkpoints), so it is a blocker for the
-  *snapshot* path only, not for the determinism foundation. *Gate:*
+  Phase 1's transport and scheduler depend on; S3 gates exact resume and
+  fork-by-snapshot. Explicit thin replay remains an independent realization
+  mode, not a fallback selected after an exact-operation failure. *Gate:*
   `gate:single-vm-fingerprint`, `gate:layer1-injection`, `gate:replay-oracle`.
   *Spec:* §30.1, §30.13 (risk register).
 
@@ -301,10 +301,11 @@ oracle ([INV-2], [QEMU-22]).
   the Crucible-owned ring/overlay/RNG round-trip) reproduces a runtime whose
   forward fingerprint sequence is **bit-identical** to an uninterrupted run to the
   same icounts, at several snapshot points including one inside a device-I/O burst
-  — i.e. a restored fat checkpoint passes the replay oracle ([INV-2]). Until S3 is
-  green, the host MUST default to the **thin-checkpoint (replay) fallback**
-  ([QEMU-21], [QEMU-26]): realize a configuration by replaying from genesis or a
-  verified ancestor rather than by `loadvm` of an unverified fat snapshot. *Gate:*
+  — i.e. a restored fat checkpoint passes the replay oracle ([INV-2]). The
+  production gate MUST cover both diskless VMState and pending real block I/O,
+  force-kill the captured process, restore in a fresh process, and compare the
+  continued suffix with independent replay. An unverified or incomplete fat
+  snapshot MUST be rejected. *Gate:*
   `gate:replay-oracle`. *Spec:* §30.4; satisfies [DET-32], [QEMU-21]; back-ref
   §4.9, §10.4.
 
@@ -315,23 +316,25 @@ does **not** invalidate the determinism contract or the execution model, because
 those are defined over `reduce` (replay), and replay is the always-correct base
 case ([QEMU-26]).
 
-### Fallback
+### Historical fallback decision (retired)
 
-The thin-checkpoint fallback ([QEMU-21], [QEMU-26],
+The Phase-0 thin-checkpoint fallback ([QEMU-21], [QEMU-26],
 [`07-temporal-graph.md`](07-temporal-graph.md)): every checkpoint is stored as
 `(parent, schedule_delta)` and realized by replay from a verified ancestor (whose
 base case is the baked genesis snapshot). Fast-resume becomes "replay from the
 nearest verified ancestor" instead of "load a snapshot." This is slower but always
 correct; the savevm path is purely a performance optimization layered on top once
 S3 (or a per-state-component subset of it) is green. If S3 fails for a *specific*
-state component, an intermediate fallback is to patch QEMU's snapshot path to
+state component, the required response is to patch QEMU's snapshot path to
 serialize that component (recorded as a patch-series item, 11) and re-run S3.
+This paragraph records the original spike decision only. Current production
+code has no automatic exact-to-replay transition; replay is a separate request.
 
-- **[RISK-9]** The temporal graph and `instantiate` MUST be designed so that the
-  thin-checkpoint (replay) realization is the **default and always-correct** path
-  and the fat-snapshot (`loadvm`) realization is an *optimization gated on S3*;
-  the two MUST yield content-equal runtimes ([QEMU-27], [INV-2]), so adopting the
-  fallback changes only performance, never `S`/`T`. *Gate:* `gate:replay-oracle`.
+- **[RISK-9]** The temporal graph and `instantiate` MUST expose thin replay and
+  exact fat-snapshot (`loadvm`) as explicit realization choices. The two MUST
+  yield content-equal runtimes ([QEMU-27], [INV-2]), but a failure of either
+  choice MUST be reported without automatically selecting the other. *Gate:*
+  `gate:replay-oracle`.
   *Spec:* §30.4; satisfies [QEMU-27], references [EXEC-15].
 
 ## 30.5 S4 — producer→consumer shmem visibility is icount-not-wallclock
@@ -1414,10 +1417,13 @@ discipline, and delivery order ignores arrival order. Production QEMU/plugin
 device injection remains owned by the later `gate:layer1-injection` and QEMU
 integration gates.
 
-**RISK-8 / RISK-9** are resolved by `T-RISK-4` with the thin/replay fallback
-adopted: `checks.crucible.phase0.s3SavevmLoadvm` verified the currently
-available QMP snapshot transport and the Crucible-owned checkpoint half without
-enabling fat snapshots as the default. The check found typed
+**RISK-8 / RISK-9** were initially mitigated by the historical `T-RISK-4`
+thin/replay spike. That fallback is no longer an implementation path:
+`QemuNode::capture_exact_snapshot`, `QemuVmSnapshot`, and
+`QemuHostIoCheckpoint` now require one complete identity-bound QEMU/host pair,
+and `checks.crucible.phase2.qemuExactSnapshotRestore` rejects incomplete state.
+The original `checks.crucible.phase0.s3SavevmLoadvm` evidence is retained below
+as a dated negative result. The check found typed
 `snapshot-save`/`snapshot-load`, `migrate`, `migrate-incoming`, and
 `human-monitor-command` in QMP, confirmed typed legacy `savevm`/`loadvm` are not
 available, and used `snapshot-save`/`snapshot-load` against a qcow2 `vmstate`
@@ -1452,13 +1458,13 @@ after restore with `mid_io_suffix_fingerprint_match=false`. The run reported
 `fat_snapshot_default=false`, `loadvm_branch_enabled=false`,
 `fallback_adopted=thin_replay_until_full_s3`,
 `risk8_status=mitigated_by_fallback_not_retired_for_fat_snapshot`, and
-`risk9_status=retired_thin_replay_default`. This adopts the [QEMU-21] /
-[QEMU-26] fallback for Phase 0: checkpoint realization defaults to thin replay
-from genesis or a verified ancestor, and the `loadvm` branch remains disabled
-until a later S3 rerun proves fat snapshots across the full required surface.
-RISK-9 is retired for the default realization discipline; RISK-8 is mitigated by
-non-use of unverified fat snapshots, not retired for the fat-snapshot
-optimization.
+`risk9_status=retired_thin_replay_default`. Those fields describe only the
+Phase-0 run. Current production realization admits exact snapshots, requires
+  the host continuation to carry the same checkpoint identity, transactionally
+  deletes only artifacts known to have been created by the failed transaction,
+  preserves pre-existing artifacts after an ambiguous or duplicate save, and
+  replay-oracle validates restore; there is no runtime
+fallback from incomplete VMState to thin replay.
 
 **RISK-12** is retired by `T-RISK-5`:
 `checks.crucible.phase0.s5VirtualMemory` booted a diskless stock Linux guest and

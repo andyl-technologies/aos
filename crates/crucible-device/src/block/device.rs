@@ -271,6 +271,15 @@ impl BlockDevice {
         &self.latency
     }
 
+    /// Replaces the deterministic latency model for future request admissions.
+    ///
+    /// Responses already in flight retain their computed delivery coordinates;
+    /// the replacement applies when subsequent requests are admitted. The active
+    /// model is included in [`Self::snapshot`] and therefore survives restore.
+    pub fn set_latency_model(&mut self, latency: BlockLatency) {
+        self.latency = latency;
+    }
+
     /// Returns a read-only view of the copy-on-write overlay.
     #[must_use]
     pub fn overlay(&self) -> &CowOverlay {

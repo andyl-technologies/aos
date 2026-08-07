@@ -69,7 +69,11 @@
 //! 88      4     preemption_arg0
 //! 92      4     preemption_arg1
 //! 96      1     preemption_kind
-//! 97      31    reserved
+//! 97      7     padding
+//! 104     8     logical_time_raw_icount
+//! 112     8     logical_time_restore_target
+//! 120     4     logical_time_restore_request
+//! 124     4     logical_time_restore_ack
 //! ```
 //!
 //! SPSC ring header wire layout:
@@ -161,9 +165,9 @@ pub const DEFAULT_QUEUE_CAPACITY: u32 = 64;
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// Current shared-memory ABI version.
 ///
-/// Version 7 makes the bounded per-node fault payload-arena size explicit in
-/// the region header so admitted mutation envelopes are reconstructed exactly.
-pub const ABI_VERSION: u32 = 7;
+/// Version 8 adds the per-node logical-time calibration restore transaction so
+/// a fresh plugin can reconstruct idle-jump time after QEMU loads VMState.
+pub const ABI_VERSION: u32 = 8;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///

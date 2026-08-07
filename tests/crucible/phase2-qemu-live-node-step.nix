@@ -129,7 +129,7 @@ in
           grep -Fxq 'plugin_loaded=rust-control-cdylib' "$report"
           grep -Fxq 'node_kind=live-qemu-node' "$report"
           grep -Fxq 'host_io_runtime=qemu-live-host-io-runtime' "$report"
-          grep -Fxq 'qmp_channel=vmstate-shutdown-only' "$report"
+          grep -Fxq 'qmp_channel=vmstate-exact-snapshot' "$report"
           # The runner drove every scheduled busy-window step through the live
           # QemuNode's public advance_to_ceiling path.
           grep -Eq '^quantum_count=[1-9][0-9]*$' "$report"

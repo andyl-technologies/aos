@@ -374,6 +374,30 @@ fn node_cannot_self_extend_past_published_ceiling() {
 }
 
 #[test]
+fn external_restore_ceiling_does_not_wake_or_rewind_the_slot() {
+    let slot = NodeSlot::new(KIND_VM);
+    assert!(slot.publish_scheduler_ceiling(ceiling(0, 10)).is_ok());
+    assert!(slot.publish_reached_icount(10, 0).is_ok());
+    let before = slot.snapshot();
+
+    assert_eq!(slot.arm_external_state_restore_ceiling(37), Ok(()));
+    let armed = slot.snapshot();
+    assert_eq!(armed.current_icount, 10);
+    assert_eq!(armed.max_advance_icount, 37);
+    assert_eq!(armed.wake_signal, before.wake_signal);
+    assert_eq!(armed.publish_gen, before.publish_gen);
+
+    assert_eq!(
+        slot.arm_external_state_restore_ceiling(9),
+        Err(NodeSlotError::CeilingBeforePublishedCurrent {
+            current_icount: 10,
+            max_advance_icount: 9,
+        })
+    );
+    assert_eq!(slot.snapshot(), armed);
+}
+
+#[test]
 fn idle_publish_uses_race_free_futex_wait_and_wake_counter() {
     let slot = NodeSlot::new(KIND_VM);
     let first_ceiling = ceiling(0, 10);

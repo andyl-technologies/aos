@@ -54,6 +54,16 @@ fn default_vm_config() -> QemuVmLaunchConfig {
     )
 }
 
+fn firmware_boot_vm_config() -> QemuVmLaunchConfig {
+    QemuVmLaunchConfig::new_firmware_boot(
+        "vm-firmware",
+        artifact(
+            "firmware",
+            "/nix/store/77777777777777777777777777777777-crucible-firmware/bios.bin",
+        ),
+    )
+}
+
 fn default_qemu_binary() -> &'static str {
     "/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-x86_64"
 }
@@ -1280,10 +1290,12 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
         "argv[0]=-nodefaults",
         "argv[14]=-accel",
         "argv[15]=sim,thread=single",
-        "argv[34]=-kernel",
-        "argv[35]=/nix/store/33333333333333333333333333333333-crucible-kernel/bzImage",
-        "argv[40]=-plugin",
-        &format!("argv[41]={plugin_argument}"),
+        "argv[34]=-blockdev",
+        "argv[35]=driver=qcow2,node-name=vmstate,file.driver=file,file.filename=crucible-vmstate.qcow2",
+        "argv[36]=-kernel",
+        "argv[37]=/nix/store/33333333333333333333333333333333-crucible-kernel/bzImage",
+        "argv[42]=-plugin",
+        &format!("argv[43]={plugin_argument}"),
     ] {
         assert!(material.contains(expected), "missing {expected}");
     }
@@ -1335,6 +1347,45 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
     ] {
         assert!(vm_material.contains(expected), "missing {expected}");
     }
+}
+
+#[test]
+fn firmware_boot_omits_direct_kernel_and_has_explicit_identity() {
+    let command = default_profile()
+        .qemu_launch_command(
+            firmware_boot_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config(),
+        )
+        .unwrap_or_else(|error| panic!("firmware boot launch should build: {error}"));
+
+    assert!(!command.args().iter().any(|argument| argument == "-kernel"));
+    assert!(!command.args().iter().any(|argument| argument == "-append"));
+    assert!(command.args().windows(2).any(|window| {
+        window
+            == [
+                "-bios",
+                "/nix/store/77777777777777777777777777777777-crucible-firmware/bios.bin",
+            ]
+    }));
+    assert!(
+        command
+            .vm_launch_hash_material()
+            .contains("kernel=firmware-boot")
+    );
+}
+
+#[test]
+fn firmware_boot_rejects_initrd_without_direct_kernel() {
+    let vm = firmware_boot_vm_config().with_initrd(artifact(
+        "initrd",
+        "/nix/store/55555555555555555555555555555555-crucible-initrd/initrd",
+    ));
+    let error = default_profile()
+        .qemu_launch_command(vm, default_qemu_binary(), default_plugin_config())
+        .unwrap_err();
+
+    assert_eq!(error, QemuLaunchCommandError::InitrdWithoutKernel);
 }
 
 #[test]

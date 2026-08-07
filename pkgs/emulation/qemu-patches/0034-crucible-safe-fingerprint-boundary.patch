@@ -257,7 +257,7 @@ index 69553f3..913017c 100644
  
  #endif /* TCG_ACCEL_OPS_SIM_SHMEM_H */
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index ba82225..7156b90 100644
+index 9041f88..e267931 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1064,17 +1064,20 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(

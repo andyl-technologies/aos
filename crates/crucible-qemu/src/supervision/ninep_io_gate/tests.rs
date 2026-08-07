@@ -15,6 +15,10 @@ fn idle_snapshot(current_icount: u64, idle_wake_icount: u64) -> NodeSlotSnapshot
         kind: KIND_VM,
         device_io_active: 0,
         publish_gen: 0,
+        logical_time_raw_icount: current_icount,
+        logical_time_restore_target: 0,
+        logical_time_restore_request: 0,
+        logical_time_restore_ack: 0,
     }
 }
 

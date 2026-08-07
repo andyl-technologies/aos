@@ -183,28 +183,44 @@ fn qemu_node_timeout_reports_crash_and_runs_shutdown() -> Result<(), Box<dyn Err
 }
 
 #[test]
-fn qemu_node_reports_qmp_failures_without_touching_hot_path() -> Result<(), Box<dyn Error>> {
+fn qemu_node_terminates_after_indeterminate_qmp_save_failure() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node = scripted_node(Arc::clone(&log), false, false, true)?;
 
-    let result = Backend::snapshot(&mut node);
-
-    assert_eq!(
-        result,
-        Err(BackendError::Rejected {
-            message: String::from(
-                "QMP machine control channel operation save_checkpoint failed: QMP error"
-            ),
-        })
+    let mut checkpoint = checkpoint("qmp-failure");
+    checkpoint.virtual_time = node.synchronize_observed_time()?;
+    let node_identity = node_id("vm-a");
+    checkpoint.node_icounts.insert(
+        node_identity.clone(),
+        Icount {
+            retired: checkpoint.virtual_time.ticks,
+        },
     );
-    assert_eq!(recorded(&log), vec![ChannelCall::QmpSnapshot]);
-    assert!(node.shutdown_child()?.reaped);
+    let result = node.capture_exact_snapshot(&node_identity, checkpoint.clone());
+
+    let error = result.expect_err("failed QMP save must reject exact capture");
+    assert!(error.to_string().contains("save_checkpoint_vmstate"));
+    assert!(error.to_string().contains("QMP error"));
+    assert!(error.to_string().contains("terminated and reaped"));
+    assert_eq!(
+        recorded(&log),
+        vec![
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::QmpStop,
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::QmpExactSave(checkpoint.id),
+            ChannelCall::PluginQuit,
+            ChannelCall::QmpQuit,
+        ]
+    );
+    assert!(node.child_reaped());
 
     Ok(())
 }
 
 #[test]
-fn qemu_node_qmp_timeout_reports_crash_and_runs_shutdown() -> Result<(), Box<dyn Error>> {
+fn qemu_node_qmp_timeout_terminates_indeterminate_save_job() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node = scripted_node_with_options(
         Arc::clone(&log),
@@ -215,16 +231,22 @@ fn qemu_node_qmp_timeout_reports_crash_and_runs_shutdown() -> Result<(), Box<dyn
         [QemuAsyncWaitOutcome::Completed],
     )?;
 
-    let result = Backend::snapshot(&mut node);
+    let mut checkpoint = checkpoint("qmp-timeout");
+    checkpoint.virtual_time = node.synchronize_observed_time()?;
+    let node_identity = node_id("vm-a");
+    checkpoint.node_icounts.insert(
+        node_identity.clone(),
+        Icount {
+            retired: checkpoint.virtual_time.ticks,
+        },
+    );
+    let result = node.capture_exact_snapshot(&node_identity, checkpoint.clone());
 
-    match result {
-        Err(BackendError::Rejected { message }) => {
-            assert!(message.contains("QEMU node crashed during bounded await"));
-            assert!(message.contains("BoundedAwaitTimeout"));
-            assert!(message.contains("save_checkpoint"));
-        }
-        other => panic!("expected QMP timeout crash, got {other:?}"),
-    }
+    let error = result.expect_err("timed-out QMP save must crash and reject exact capture");
+    let message = error.to_string();
+    assert!(message.contains("timed out"));
+    assert!(message.contains("terminated and reaped"));
+    assert!(message.contains("save_checkpoint_vmstate"));
     assert!(node.child_reaped());
     assert_eq!(
         node.lifecycle_state(),
@@ -233,7 +255,11 @@ fn qemu_node_qmp_timeout_reports_crash_and_runs_shutdown() -> Result<(), Box<dyn
     assert_eq!(
         recorded(&log),
         vec![
-            ChannelCall::QmpSnapshot,
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::QmpStop,
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::QmpExactSave(checkpoint.id),
             ChannelCall::PluginQuit,
             ChannelCall::QmpQuit,
         ]

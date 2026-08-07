@@ -859,14 +859,12 @@ bit-identical.
   over. *Gate:* `gate:layer1-injection`, `gate:e2e-determinism`,
   `gate:divergence-bisect`. *Spec:* §17.8; cross-ref 04, 24.
 
-- **[FAULT-32]** The fault model MUST be exercisable by the in-process test double
-  ([`24-determinism-harness-testing.md`](24-determinism-harness-testing.md),
-  [IO-27]) without a real QEMU: a test MUST be able to apply each fault kind to a
-  link/device/node sub-node, drive it through a request/frame sequence with a
-  fixed seed, and assert the perturbed deliveries, dropped items, and recorded
-  decisions — and a run-twice determinism test ([IO-28]) MUST confirm
-  byte-identical results. This is where most fault determinism is proved in
-  milliseconds before any real-VM run. *Gate:* `gate:layer1-injection`,
+- **[FAULT-32]** Every fault kind MUST be exercised through its production
+  link/device/node core with a fixed-seed request or frame sequence, asserting
+  perturbed deliveries, dropped items, and recorded decisions. Run-twice
+  component coverage ([IO-28]) MUST confirm byte-identical core behavior, and
+  the corresponding production adapter MUST pass its live-QEMU gate; a model or
+  test-only adapter cannot satisfy acceptance. *Gate:* `gate:layer1-injection`,
   `gate:divergence-bisect`. *Spec:* §17.8; cross-ref 15 §15.7, 24.
 
 ## 17.9 Summary
@@ -1185,13 +1183,13 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   fingerprint includes these activation counters and crash-discard records
   alongside the already concrete failure, timing, duplicate, and corruption
   effects required by [FAULT-31].
-- [x] **T-FAULT-16** Exercise every fault kind against the in-process test double
+- [x] **T-FAULT-16** Exercise every fault kind against its production device core
   (apply fault, drive request/frame sequence with a fixed seed, assert perturbed
   deliveries/drops/recorded decisions) with a per-kind run-twice determinism +
   divergence-localization test. — satisfies [FAULT-32]; spec §17.8; cross-ref 15
   §15.7, 24.
-  Completed by `checks.crucible.phase4.faultTestDoubleGate`: the in-process
-  double now drives every network-link, block, and 9p fault kind through a fixed
+  Completed by `checks.crucible.phase4.faultProductionDeviceCoreGate`: the production device core
+  now drives every network-link, block, and 9p fault kind through a fixed
   frame/request sequence, asserts the visible perturbation (drop, delay, duplicate
   delivery, error reply/status, byte corruption, bandwidth serialization), checks
   exact recorded `RngDraw` replay and `FaultFires` loss/duplicate/corrupt triples,

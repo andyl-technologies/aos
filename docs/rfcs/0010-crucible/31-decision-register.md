@@ -1553,7 +1553,7 @@ register.
     specified fallback if a future target path commonly busy-polls.
 
 - **RISK-8 / RISK-9 / T-RISK-4 — S3 savevm/loadvm completeness fallback**
-  - **Status:** PASS WITH FALLBACK; the thin/replay checkpoint realization is
+  - **Status:** HISTORICAL SPIKE, SUPERSEDED; the thin/replay checkpoint realization was
     adopted as the Phase-0 default, so unverified fat snapshots are not used.
   - **Check:** `checks.crucible.phase0.s3SavevmLoadvm`.
   - **Result:** `qmp_snapshot_save_available=true`,
@@ -1608,12 +1608,14 @@ register.
     pending-I/O snapshot as a negative control and records the restored suffix
     divergence, so it deliberately does not claim the full S3 pass criterion for
     fat checkpoints.
-  - **Fallback:** adopted. `instantiate` and the temporal graph default to thin
-    checkpoint realization by replay from genesis or a verified ancestor; the
-    fat-snapshot `loadvm` branch remains disabled until a later S3 rerun proves
-    the complete replay-oracle surface. This retires RISK-9 for the default
-    realization discipline and mitigates RISK-8 by non-use of unverified fat
-    snapshots.
+  - **Current decision:** no fallback. `QemuNode::capture_exact_snapshot`
+    captures the Apache-side host-I/O continuation and QEMU VMState as one
+    identity-bound pair, removes only QEMU artifacts known to have been created
+    by a transaction that later fails, preserves pre-existing artifacts after
+    ambiguous or duplicate saves, and rejects incomplete or mismatched pairs
+    before publishing a child.
+    `QemuExactSnapshotPolicy` additionally requires replay-oracle admission.
+    The Phase-0 result fields above remain solely as historical evidence.
 
 - **RISK-12 / T-RISK-5 — S5 guest virtual-memory payload reads**
   - **Status:** PASS; the virtual pointer+length payload form is retained for

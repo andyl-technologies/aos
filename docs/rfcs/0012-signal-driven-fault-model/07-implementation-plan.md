@@ -293,6 +293,22 @@ produce live patched-QEMU architectural or device evidence.
   save/restore for all fault state, a cross-patch snapshot barrier, system
   evidence closure, rollback/revert-sensitive tests, inertness/performance gates,
   and final capability closure.
+- [ ] **T-QEMU-0060** Implement
+  [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
+  the closed block result ABI, exact Linux errno translation, malformed-result
+  rejection, and live guest-visible error tests.
+- [ ] **T-QEMU-0061** Implement
+  [`crucible-block-discard`](14-qemu-fault-patches/15-block-discard.md):
+  payload-free discard transport, closed readback policies, deterministic
+  persistence composition, and live discard tests.
+- [ ] **T-QEMU-0062** Implement
+  [`crucible-block-transport-reset`](14-qemu-fault-patches/16-block-transport-reset.md):
+  epoch-scoped reset, recovery admission, every outstanding-request policy,
+  duplicate history, VMState, and declared topology re-enumeration.
+- [ ] **T-QEMU-0063** Implement
+  [`crucible-plugin-vmstop`](14-qemu-fault-patches/17-plugin-vmstop.md): an exact
+  plugin-boundary handoff into QEMU's native paused runstate, fail-closed mode
+  validation, capture/restore cleanup, and diskless plus dirty-cache live gates.
 - [ ] **T-QEMU-LICENSE** Land every numbered patch as a separate DCO-signed
   commit, retain applicable upstream notices, update the series/catalog/license
   inventories, preserve the public shared-memory process boundary, and ship the

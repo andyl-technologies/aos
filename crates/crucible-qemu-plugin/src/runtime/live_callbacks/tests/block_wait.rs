@@ -72,6 +72,30 @@ fn live_block_wait_queues_and_commits_the_device_deadline() {
 }
 
 #[test]
+fn live_block_wait_stops_at_scheduler_ceiling_before_device_deadline() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    slot.store_device_completion_deadline_icount(50);
+    let state = test_live_state(48, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_NS.set(-1);
+
+    state.on_block_wait(1).unwrap_or_else(|error| {
+        panic!("device wait should queue the authorized boundary: {error}")
+    });
+    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 20);
+    state
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 20))
+        .unwrap_or_else(|error| panic!("scheduler boundary should commit: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 20);
+    assert_eq!(slot.device_completion_deadline_icount(), 50);
+}
+
+#[test]
 fn live_block_wait_preserves_an_earlier_timer_deadline() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)

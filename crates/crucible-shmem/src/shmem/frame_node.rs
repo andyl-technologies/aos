@@ -71,7 +71,11 @@ pub struct NodeSlot {
     preemption_arg0: AtomicU32,
     preemption_arg1: AtomicU32,
     preemption_kind: AtomicU8,
-    _reserved: [u8; 31],
+    _pad2: [u8; 7],
+    logical_time_raw_icount: AtomicU64,
+    logical_time_restore_target: AtomicU64,
+    logical_time_restore_request: AtomicU32,
+    logical_time_restore_ack: AtomicU32,
 }
 
 impl Clone for NodeSlot {
@@ -108,7 +112,19 @@ impl Clone for NodeSlot {
             preemption_arg0: AtomicU32::new(self.preemption_arg0.load(Ordering::Acquire)),
             preemption_arg1: AtomicU32::new(self.preemption_arg1.load(Ordering::Acquire)),
             preemption_kind: AtomicU8::new(self.preemption_kind.load(Ordering::Acquire)),
-            _reserved: [0; 31],
+            _pad2: [0; 7],
+            logical_time_raw_icount: AtomicU64::new(
+                self.logical_time_raw_icount.load(Ordering::Acquire),
+            ),
+            logical_time_restore_target: AtomicU64::new(
+                self.logical_time_restore_target.load(Ordering::Acquire),
+            ),
+            logical_time_restore_request: AtomicU32::new(
+                self.logical_time_restore_request.load(Ordering::Acquire),
+            ),
+            logical_time_restore_ack: AtomicU32::new(
+                self.logical_time_restore_ack.load(Ordering::Acquire),
+            ),
         }
     }
 }
@@ -163,8 +179,20 @@ pub const NODE_SLOT_PREEMPTION_ARG1_OFFSET: usize =
 /// Byte offset of the preemption-kind discriminator.
 pub const NODE_SLOT_PREEMPTION_KIND_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, preemption_kind);
-/// Byte offset of [`NodeSlot`]'s reserved forward-compatibility bytes.
-pub const NODE_SLOT_RESERVED_OFFSET: usize = core::mem::offset_of!(NodeSlot, _reserved);
+/// Byte offset of the alignment padding before logical-time fields.
+pub const NODE_SLOT_PAD2_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad2);
+/// Byte offset of the plugin-published raw icount paired with logical time.
+pub const NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, logical_time_raw_icount);
+/// Byte offset of the host-published logical-time restore target.
+pub const NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, logical_time_restore_target);
+/// Byte offset of the host-published logical-time restore request generation.
+pub const NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, logical_time_restore_request);
+/// Byte offset of the plugin-published logical-time restore acknowledgement.
+pub const NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, logical_time_restore_ack);
 /// Wire size of one [`NodeSlot`].
 pub const NODE_SLOT_SIZE: usize = core::mem::size_of::<NodeSlot>();
 /// Wire alignment of one [`NodeSlot`].
@@ -190,7 +218,11 @@ pub(super) const _: () = assert!(NODE_SLOT_PREEMPTION_CONSUMED_SEQUENCE_OFFSET =
 pub(super) const _: () = assert!(NODE_SLOT_PREEMPTION_ARG0_OFFSET == 88);
 pub(super) const _: () = assert!(NODE_SLOT_PREEMPTION_ARG1_OFFSET == 92);
 pub(super) const _: () = assert!(NODE_SLOT_PREEMPTION_KIND_OFFSET == 96);
-pub(super) const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 97);
+pub(super) const _: () = assert!(NODE_SLOT_PAD2_OFFSET == 97);
+pub(super) const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET == 104);
+pub(super) const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET == 112);
+pub(super) const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET == 120);
+pub(super) const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET == 124);
 pub(super) const _: () = assert!(NODE_SLOT_SIZE == 128);
 pub(super) const _: () = assert!(NODE_SLOT_ALIGN == 128);
 
@@ -223,7 +255,11 @@ impl NodeSlot {
             preemption_arg0: AtomicU32::new(0),
             preemption_arg1: AtomicU32::new(0),
             preemption_kind: AtomicU8::new(PREEMPTION_KIND_NONE),
-            _reserved: [0; 31],
+            _pad2: [0; 7],
+            logical_time_raw_icount: AtomicU64::new(0),
+            logical_time_restore_target: AtomicU64::new(0),
+            logical_time_restore_request: AtomicU32::new(0),
+            logical_time_restore_ack: AtomicU32::new(0),
         }
     }
 
@@ -245,6 +281,34 @@ impl NodeSlot {
         self.validate_scheduler_ceiling(ceiling)?;
 
         self.publish_prevalidated_scheduler_ceiling(ceiling)
+    }
+
+    /// Arms a ceiling for an externally restored execution state without waking it.
+    ///
+    /// A process supervisor uses this only while the external executor is
+    /// quiesced immediately before restoring state whose first published
+    /// instruction counter may be ahead of this slot's current value. Unlike a
+    /// normal scheduler handoff, this operation deliberately does not increment
+    /// the futex word: the restore command, not a scheduler quantum, owns the
+    /// executor transition. The restored executor must publish its exact current
+    /// state before normal scheduling resumes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError::CeilingBeforePublishedCurrent`] when
+    /// `restored_icount` is behind the slot's currently published counter.
+    pub fn arm_external_state_restore_ceiling(
+        &self,
+        restored_icount: u64,
+    ) -> Result<(), NodeSlotError> {
+        let ceiling = AdvanceCeiling {
+            current_icount: self.current_icount.load(Ordering::Acquire),
+            max_advance_icount: restored_icount,
+        };
+        self.validate_scheduler_ceiling(ceiling)?;
+        self.max_advance_icount
+            .store(restored_icount, Ordering::Release);
+        Ok(())
     }
 
     /// Publishes pending inbox frames, then the scheduler ceiling, then the wake.
@@ -388,15 +452,104 @@ impl NodeSlot {
     pub fn publish_pause_quiesced(
         &self,
         reached_icount: u64,
+        raw_icount: u64,
         shift_bits: u8,
     ) -> Result<(), NodeSlotError> {
         let current_ns = icount_to_virtual_ns(reached_icount, shift_bits)?;
-        self.publish_state(
-            reached_icount,
-            current_ns,
-            Some(reached_icount),
-            STATUS_IDLE,
-        );
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.current_icount.store(reached_icount, Ordering::Release);
+        self.current_ns.store(current_ns, Ordering::Release);
+        self.idle_wake_icount
+            .store(reached_icount, Ordering::Release);
+        self.logical_time_raw_icount
+            .store(raw_icount, Ordering::Release);
+        self.status.store(STATUS_IDLE, Ordering::Release);
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Arms one host-to-plugin logical-time restore transaction.
+    ///
+    /// The caller must hold the external executor stopped. The returned
+    /// generation identifies the request that the plugin must acknowledge
+    /// after VMState has restored QEMU's raw icount.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError::LogicalTimeRestoreAlreadyPending`] when a prior
+    /// request has not been acknowledged.
+    pub fn arm_logical_time_restore(&self, target_icount: u64) -> Result<u32, NodeSlotError> {
+        let request = self.logical_time_restore_request.load(Ordering::Acquire);
+        let ack = self.logical_time_restore_ack.load(Ordering::Acquire);
+        if request != ack {
+            return Err(NodeSlotError::LogicalTimeRestoreAlreadyPending { request, ack });
+        }
+        let mut next = request.wrapping_add(1);
+        if next == 0 {
+            next = 1;
+        }
+        self.logical_time_restore_target
+            .store(target_icount, Ordering::Release);
+        self.logical_time_restore_request
+            .store(next, Ordering::Release);
+        Ok(next)
+    }
+
+    /// Returns the pending logical-time restore request, if any.
+    #[must_use]
+    pub fn pending_logical_time_restore(&self) -> Option<LogicalTimeRestoreRequest> {
+        let request = self.logical_time_restore_request.load(Ordering::Acquire);
+        let ack = self.logical_time_restore_ack.load(Ordering::Acquire);
+        (request != ack).then(|| LogicalTimeRestoreRequest {
+            generation: request,
+            target_icount: self.logical_time_restore_target.load(Ordering::Acquire),
+        })
+    }
+
+    /// Acknowledges a logical-time restore and publishes its exact boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when the request is stale, its logical target
+    /// differs from `reached_icount`, or virtual-time conversion fails.
+    pub fn acknowledge_logical_time_restore(
+        &self,
+        request: LogicalTimeRestoreRequest,
+        reached_icount: u64,
+        raw_icount: u64,
+        shift_bits: u8,
+    ) -> Result<(), NodeSlotError> {
+        let published_request = self.logical_time_restore_request.load(Ordering::Acquire);
+        if published_request != request.generation {
+            return Err(NodeSlotError::LogicalTimeRestoreRequestChanged {
+                expected: request.generation,
+                observed: published_request,
+            });
+        }
+        if request.target_icount != reached_icount {
+            return Err(NodeSlotError::LogicalTimeRestoreTargetMismatch {
+                requested: request.target_icount,
+                reached: reached_icount,
+            });
+        }
+        if raw_icount > reached_icount {
+            return Err(NodeSlotError::LogicalTimeRestoreRawAhead {
+                logical_icount: reached_icount,
+                raw_icount,
+            });
+        }
+        let current_ns = icount_to_virtual_ns(reached_icount, shift_bits)?;
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.current_icount.store(reached_icount, Ordering::Release);
+        self.current_ns.store(current_ns, Ordering::Release);
+        self.idle_wake_icount
+            .store(reached_icount, Ordering::Release);
+        self.logical_time_raw_icount
+            .store(raw_icount, Ordering::Release);
+        self.status.store(STATUS_IDLE, Ordering::Release);
+        self.logical_time_restore_ack
+            .store(request.generation, Ordering::Release);
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -432,6 +585,14 @@ impl NodeSlot {
                 kind: self.kind.load(Ordering::Acquire),
                 device_io_active: self.device_io_active.load(Ordering::Acquire),
                 publish_gen: before,
+                logical_time_raw_icount: self.logical_time_raw_icount.load(Ordering::Acquire),
+                logical_time_restore_target: self
+                    .logical_time_restore_target
+                    .load(Ordering::Acquire),
+                logical_time_restore_request: self
+                    .logical_time_restore_request
+                    .load(Ordering::Acquire),
+                logical_time_restore_ack: self.logical_time_restore_ack.load(Ordering::Acquire),
             };
             let after = self.publish_gen.load(Ordering::Acquire);
             if before == after && after.is_multiple_of(2) {
@@ -445,7 +606,7 @@ impl NodeSlot {
     pub fn reserved_bytes_are_zero(&self) -> bool {
         self._pad0 == 0
             && self._pad1.iter().all(|byte| *byte == 0)
-            && self._reserved.iter().all(|byte| *byte == 0)
+            && self._pad2.iter().all(|byte| *byte == 0)
     }
 
     /// Publishes the host-computed device-completion deadline icount for this slot.
@@ -566,6 +727,23 @@ pub struct NodeSlotSnapshot {
     pub device_io_active: u8,
     /// The even publish generation observed for this snapshot.
     pub publish_gen: u32,
+    /// QEMU's raw retired-instruction count paired with the published logical time.
+    pub logical_time_raw_icount: u64,
+    /// Logical target carried by the most recent restore request.
+    pub logical_time_restore_target: u64,
+    /// Host-published logical-time restore request generation.
+    pub logical_time_restore_request: u32,
+    /// Plugin-published logical-time restore acknowledgement generation.
+    pub logical_time_restore_ack: u32,
+}
+
+/// One host-published logical-time restore request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogicalTimeRestoreRequest {
+    /// Monotonic transaction generation.
+    pub generation: u32,
+    /// Logical icount that must be reconstructed over restored raw icount.
+    pub target_icount: u64,
 }
 
 /// Converts an icount into virtual nanoseconds with the fixed shift.

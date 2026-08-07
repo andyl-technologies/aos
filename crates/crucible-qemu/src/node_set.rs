@@ -15,6 +15,7 @@ use crucible::{
 use crucible_shmem::{DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1};
 
 use crate::QemuNode;
+use crate::QemuVmSnapshot;
 
 /// Maximum early-pause reissues for one scheduler-selected node step.
 const MAX_STEP_REISSUES: u32 = 64;
@@ -125,6 +126,37 @@ impl QemuNodeSet {
     /// node into the authoritative lifecycle at the same configuration.
     pub fn take(&mut self, node: &NodeId) -> Option<QemuNode> {
         self.nodes.remove(node)
+    }
+
+    /// Captures one live node's complete exact snapshot at a completed boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or VMState, host-I/O,
+    /// or scheduler-facing continuation capture fails.
+    pub fn capture_exact_snapshot(
+        &mut self,
+        node: &NodeId,
+        checkpoint: crucible::Checkpoint,
+    ) -> Result<QemuVmSnapshot, BackendError> {
+        self.node_mut(node)?
+            .capture_exact_snapshot(node, checkpoint)
+            .map_err(BackendError::from)
+    }
+
+    /// Deletes one exact VMState artifact after an uncommitted capture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or QMP deletion fails.
+    pub fn delete_exact_snapshot(
+        &mut self,
+        node: &NodeId,
+        snapshot: &QemuVmSnapshot,
+    ) -> Result<(), BackendError> {
+        self.node_mut(node)?
+            .delete_exact_snapshot(snapshot)
+            .map_err(BackendError::from)
     }
 
     /// Stops and removes one intended-crash runtime.

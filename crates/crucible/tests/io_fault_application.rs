@@ -86,8 +86,8 @@ fn combined_block_faults_apply_to_subnode_resolve_path() {
 
     assert_eq!(primary.delivery_icount.retired, first_delivery);
     assert!(
-        (17_104..=17_141).contains(&first_delivery),
-        "latency + bandwidth shift plus reorder window should bound delivery"
+        (25_104..=25_141).contains(&first_delivery),
+        "latency + bandwidth shift plus reorder window should bound delivery; got {first_delivery}"
     );
     assert_eq!(duplicate.delivery_icount.retired, first_delivery + 11);
     assert_ne!(

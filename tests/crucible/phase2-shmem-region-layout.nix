@@ -91,7 +91,7 @@
       }
       {
         label = "ABI version";
-        needle = "pub const ABI_VERSION: u32 = 5;";
+        needle = "pub const ABI_VERSION: u32 = 8;";
       }
       {
         label = "physical slot capacity";
@@ -166,8 +166,8 @@
         needle = "NODE_SLOT_PAD0_OFFSET == 39";
       }
       {
-        label = "node slot reserved offset";
-        needle = "NODE_SLOT_RESERVED_OFFSET == 97";
+        label = "node slot logical-time raw offset";
+        needle = "NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET == 104";
       }
       {
         label = "ring header size";

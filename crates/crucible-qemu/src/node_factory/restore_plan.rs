@@ -4,7 +4,7 @@ use crucible::{Checkpoint, ContentHash};
 
 use crate::{
     QemuBakedGenesisRestoreAdmission, QemuHostIoCheckpoint, QemuLoadvmCommandAuthorization,
-    QemuLoadvmRealizationAdmission,
+    QemuLoadvmRealizationAdmission, QemuNodeContinuationCheckpoint, QemuVmSnapshot,
 };
 
 /// Authorized VMState restore inputs for warm QEMU node realization.
@@ -13,6 +13,7 @@ pub struct QemuNodeRestorePlan<'a> {
     pub(super) authorization: QemuLoadvmCommandAuthorization,
     pub(super) admission: QemuNodeRestoreAdmission,
     pub(super) host_io_checkpoint: Option<&'a QemuHostIoCheckpoint>,
+    pub(super) node_continuation: Option<&'a QemuNodeContinuationCheckpoint>,
 }
 
 /// Admission proof for the VMState snapshot restored before node assembly.
@@ -25,8 +26,13 @@ pub enum QemuNodeRestoreAdmission {
     },
     /// A replay-oracle-validated exact fat checkpoint runtime.
     ReplayOracle(QemuLoadvmRealizationAdmission),
+    /// A complete snapshot emitted by a live scheduler-facing node.
+    CapturedExact {
+        /// Identity shared by VMState and both Apache continuation halves.
+        execution_binding: ContentHash,
+    },
     /// A probe-only exact snapshot that cannot be admitted as a runtime.
-    SnapshotCompletenessProbe,
+    ReplayOracleProbe,
 }
 
 impl<'a> QemuNodeRestorePlan<'a> {
@@ -42,6 +48,7 @@ impl<'a> QemuNodeRestorePlan<'a> {
             authorization,
             admission: QemuNodeRestoreAdmission::ReplayOracle(admission),
             host_io_checkpoint: None,
+            node_continuation: None,
         }
     }
 
@@ -54,8 +61,9 @@ impl<'a> QemuNodeRestorePlan<'a> {
         Self {
             checkpoint,
             authorization,
-            admission: QemuNodeRestoreAdmission::SnapshotCompletenessProbe,
+            admission: QemuNodeRestoreAdmission::ReplayOracleProbe,
             host_io_checkpoint: None,
+            node_continuation: None,
         }
     }
 
@@ -69,6 +77,19 @@ impl<'a> QemuNodeRestorePlan<'a> {
                 world_id: admission.world_id(),
             },
             host_io_checkpoint: None,
+            node_continuation: None,
+        }
+    }
+
+    pub(crate) fn captured_exact(snapshot: &'a QemuVmSnapshot) -> Self {
+        Self {
+            checkpoint: snapshot.checkpoint(),
+            authorization: crate::QemuExactSnapshotPolicy::production().authorize_loadvm_runtime(),
+            admission: QemuNodeRestoreAdmission::CapturedExact {
+                execution_binding: snapshot.checkpoint().id,
+            },
+            host_io_checkpoint: Some(snapshot.host_io()),
+            node_continuation: Some(snapshot.node_continuation()),
         }
     }
 
@@ -76,6 +97,16 @@ impl<'a> QemuNodeRestorePlan<'a> {
     #[must_use]
     pub const fn with_host_io_checkpoint(mut self, checkpoint: &'a QemuHostIoCheckpoint) -> Self {
         self.host_io_checkpoint = Some(checkpoint);
+        self
+    }
+
+    /// Pairs the restore with scheduler-facing node continuation state.
+    #[must_use]
+    pub const fn with_node_continuation(
+        mut self,
+        checkpoint: &'a QemuNodeContinuationCheckpoint,
+    ) -> Self {
+        self.node_continuation = Some(checkpoint);
         self
     }
 

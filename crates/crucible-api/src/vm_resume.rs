@@ -10,9 +10,9 @@ use crucible::{
 };
 use crucible_qemu::{
     QemuBackendRealizationExecutor, QemuBakedGenesisSnapshot, QemuCachedAncestor,
-    QemuReplayOracleValidation, QemuSavevmCompletenessPolicy, QemuVmRealization,
-    QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmRealizationKind,
-    QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmSnapshot, resume_qemu_vm,
+    QemuExactSnapshotPolicy, QemuVmRealization, QemuVmRealizationError, QemuVmRealizationExecutor,
+    QemuVmRealizationKind, QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmSnapshot,
+    resume_qemu_vm,
 };
 use crucible_session::validation::{ResumeRealizationError, realize_resume_from_savepoint};
 use thiserror::Error;
@@ -35,9 +35,11 @@ pub use crucible_qemu::QemuRootImageFormat as ProductionRootImageFormat;
 pub use crucible_qemu::run_live_plugin_install_gate as run_production_plugin_install_gate;
 pub(crate) use crucible_qemu::{
     DEFAULT_ROOT_OVERLAY_FILE_NAME as PRODUCTION_ROOT_OVERLAY_FILE_NAME,
+    DEFAULT_VMSTATE_FILE_NAME as PRODUCTION_VMSTATE_FILE_NAME,
     QemuGdbstubChannelConfig as ProductionGdbstubChannelConfig,
     QemuLiveNodeStepGateConfig as ProductionLiveNodeStepGateConfig, QemuNode as ProductionLiveNode,
     QemuNodeSet as ProductionNodeSet, launch_qemu_live_node as launch_production_live_node,
+    launch_qemu_live_node_exact_snapshot as launch_production_live_node_exact_snapshot,
 };
 
 /// Errors returned while deriving a process-local VM resume realization proof.
@@ -141,16 +143,9 @@ impl<'a> ApiVmResumeRealizationStore<'a> {
 impl<'a> QemuVmRealizationStore for ApiVmResumeRealizationStore<'a> {
     fn exact_snapshot(
         &mut self,
-        config: &Configuration,
+        _config: &Configuration,
     ) -> Result<Option<QemuVmSnapshot>, QemuVmRealizationError> {
-        if *config == *self.source_configuration {
-            Ok(Some(QemuVmSnapshot {
-                checkpoint: self.source_checkpoint.clone(),
-                replay_oracle_validation: QemuReplayOracleValidation::NotRun,
-            }))
-        } else {
-            Ok(None)
-        }
+        Ok(None)
     }
 
     fn nearest_cached_ancestor(
@@ -256,7 +251,7 @@ pub(crate) fn realize_qemu_vm_resume_from_savepoint_with_executor(
         target,
         &mut store,
         executor,
-        QemuSavevmCompletenessPolicy::default(),
+        QemuExactSnapshotPolicy::default(),
     )
     .map_err(|error| VmResumeRealizationError::Realization {
         message: error.to_string(),

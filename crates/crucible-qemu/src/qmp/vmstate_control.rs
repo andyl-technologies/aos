@@ -61,6 +61,32 @@ where
         self.client
     }
 
+    /// Stops guest execution for an exact checkpoint transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot enter and confirm the
+    /// paused run state.
+    pub fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .stop()
+            .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Resumes guest execution after an exact checkpoint transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot enter and confirm the
+    /// running state.
+    pub fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .cont()
+            .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Saves the QEMU VMState under a tag derived from `checkpoint`.
     ///
     /// This operation persists only the QEMU VMState half. The caller remains
@@ -80,7 +106,7 @@ where
 
     /// Restores the QEMU VMState tagged by `checkpoint`.
     ///
-    /// The authorization token must be issued by the savevm policy for either
+    /// The authorization token must be issued by the exact snapshot policy for either
     /// replay-oracle probing or admitted runtime realization.
     ///
     /// # Errors
@@ -92,9 +118,37 @@ where
         checkpoint: &Checkpoint,
         authorization: QemuLoadvmCommandAuthorization,
     ) -> Result<QmpCommandComplete, QemuNodeChannelError> {
+        if authorization.purpose() != crate::QemuLoadvmCommandPurpose::ReplayOracleProbe {
+            return Err(QemuNodeChannelError::new(
+                "qmp",
+                "public VMState restore only admits replay-oracle probes",
+            ));
+        }
+        self.restore_checkpoint_vmstate_authorized(checkpoint)
+    }
+
+    pub(crate) fn restore_checkpoint_vmstate_authorized(
+        &mut self,
+        checkpoint: &Checkpoint,
+    ) -> Result<QmpCommandComplete, QemuNodeChannelError> {
         let tag = QmpSnapshotTag::from_checkpoint(checkpoint);
         self.client
-            .loadvm(&tag, authorization)
+            .loadvm_authorized(&tag)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Deletes the QEMU VMState artifact tagged by `checkpoint`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP cannot complete deletion.
+    pub fn delete_checkpoint_vmstate(
+        &mut self,
+        checkpoint: &Checkpoint,
+    ) -> Result<QmpCommandComplete, QemuNodeChannelError> {
+        let tag = QmpSnapshotTag::from_checkpoint(checkpoint);
+        self.client
+            .delete_snapshot(&tag)
             .map_err(QemuNodeChannelError::from)
     }
 

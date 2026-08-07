@@ -34,7 +34,8 @@ pub use crucible_shmem_9p::{
     DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID, DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG,
 };
 pub use crucible_shmem_block::{
-    CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID,
+    CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_BLOCK_NODE_NAME,
+    DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID,
 };
 pub use crucible_shmem_network::{
     CrucibleShmemNetworkDevice, DEFAULT_CRUCIBLE_SHMEM_NETDEV_ID,
@@ -132,6 +133,9 @@ pub const QEMU_PLUGIN_SHMEM_FD: i32 = FIXED_PLUGIN_SHMEM_FD;
 pub const QEMU_PLUGIN_WAKE_FD: i32 = FIXED_PLUGIN_WAKE_FD;
 /// Default per-run copy-on-write overlay file consumed by QEMU launch commands.
 pub const DEFAULT_ROOT_OVERLAY_FILE_NAME: &str = "crucible-root-overlay.qcow2";
+/// Default per-run qcow2 container for exact VMState snapshots.
+pub const DEFAULT_VMSTATE_FILE_NAME: &str = "crucible-vmstate.qcow2";
+const VMSTATE_DRIVE_ID: &str = "vmstate";
 const ROOT_DRIVE_ID: &str = "crucible-root0";
 const ROOT_DEVICE_ID: &str = "crucible-root-device0";
 const MAX_ICOUNT_SHIFT: u8 = 62;
@@ -702,6 +706,9 @@ impl QemuLaunchCommandBuilder {
 
         let vm_hash_material = self.vm.launch_hash_material();
         let mut args = self.profile.canonical_qemu_args();
+        if self.vm.kernel().is_none() {
+            remove_option_with_value(&mut args, "-append")?;
+        }
         if self.console_capture {
             replace_option_value(
                 &mut args,
@@ -775,6 +782,20 @@ fn replace_option_value(
     Ok(())
 }
 
+fn remove_option_with_value(
+    args: &mut Vec<String>,
+    option: &'static str,
+) -> Result<(), QemuLaunchCommandError> {
+    let Some(index) = args.iter().position(|argument| argument == option) else {
+        return Err(QemuLaunchCommandError::InvalidLaunchText { field: option });
+    };
+    if index.saturating_add(1) >= args.len() {
+        return Err(QemuLaunchCommandError::InvalidLaunchText { field: option });
+    }
+    args.drain(index..=index + 1);
+    Ok(())
+}
+
 /// An immutable launch artifact resolved from a content-addressed world entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLaunchArtifact {
@@ -832,7 +853,7 @@ impl QemuRootImageFormat {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuVmLaunchConfig {
     node_id: String,
-    kernel: QemuLaunchArtifact,
+    kernel: Option<QemuLaunchArtifact>,
     root_image: Option<QemuLaunchArtifact>,
     firmware: Option<QemuLaunchArtifact>,
     initrd: Option<QemuLaunchArtifact>,
@@ -853,7 +874,7 @@ impl QemuVmLaunchConfig {
     ) -> Self {
         Self {
             node_id: node_id.into(),
-            kernel,
+            kernel: Some(kernel),
             root_image: Some(root_image),
             firmware: None,
             initrd: None,
@@ -878,7 +899,28 @@ impl QemuVmLaunchConfig {
     ) -> Self {
         Self {
             node_id: node_id.into(),
-            kernel,
+            kernel: Some(kernel),
+            root_image: None,
+            firmware: Some(firmware),
+            initrd: None,
+            root_image_format: QemuRootImageFormat::Qcow2,
+            root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
+            crucible_shmem_block: None,
+            crucible_shmem_9p: None,
+            crucible_shmem_network: None,
+        }
+    }
+
+    /// Builds a firmware-only VM launch config with no direct kernel payload.
+    ///
+    /// Firmware selects and boots attached devices using their ordinary QEMU
+    /// front-ends. This is useful for boot-path validation where `-kernel` would
+    /// bypass firmware disk discovery.
+    #[must_use]
+    pub fn new_firmware_boot(node_id: impl Into<String>, firmware: QemuLaunchArtifact) -> Self {
+        Self {
+            node_id: node_id.into(),
+            kernel: None,
             root_image: None,
             firmware: Some(firmware),
             initrd: None,
@@ -920,9 +962,10 @@ impl QemuVmLaunchConfig {
 
     /// Returns a config that attaches a crucible-shmem virtio-blk device.
     ///
-    /// The device is opened through the legacy `-drive driver=crucible-shmem`
-    /// interface and backed by the host I/O sub-node over the `SLOT_BLK_IO`
-    /// shared-memory rings. A config without one emits byte-identical argv.
+    /// The device is opened through the typed `-blockdev
+    /// driver=crucible-shmem` interface and backed by the host I/O sub-node over
+    /// the `SLOT_BLK_IO` shared-memory rings. A config without one emits
+    /// byte-identical argv.
     #[must_use]
     pub fn with_crucible_shmem_block(mut self, device: CrucibleShmemBlockDevice) -> Self {
         self.crucible_shmem_block = Some(device);
@@ -974,10 +1017,10 @@ impl QemuVmLaunchConfig {
         &self.node_id
     }
 
-    /// Returns the content-addressed kernel artifact.
+    /// Returns the directly loaded kernel artifact, if one is configured.
     #[must_use]
-    pub const fn kernel(&self) -> &QemuLaunchArtifact {
-        &self.kernel
+    pub const fn kernel(&self) -> Option<&QemuLaunchArtifact> {
+        self.kernel.as_ref()
     }
 
     /// Returns the content-addressed root-image artifact, if the launch has a disk.
@@ -1004,9 +1047,17 @@ impl QemuVmLaunchConfig {
         let mut lines = vec![
             "crucible.qemu-vm-launch.v1".to_owned(),
             format!("node_id={}", self.node_id),
-            format!("kernel_hash={}", content_hash_hex(self.kernel.content_hash)),
-            format!("kernel_path={}", self.kernel.path),
         ];
+        match &self.kernel {
+            Some(kernel) => {
+                lines.push(format!(
+                    "kernel_hash={}",
+                    content_hash_hex(kernel.content_hash)
+                ));
+                lines.push(format!("kernel_path={}", kernel.path));
+            }
+            None => lines.push("kernel=firmware-boot".to_owned()),
+        }
         if let Some(firmware) = &self.firmware {
             lines.push(format!(
                 "firmware_hash={}",
@@ -1058,10 +1109,18 @@ impl QemuVmLaunchConfig {
 
     fn qemu_args(&self) -> Vec<String> {
         let mut args = Vec::new();
+        args.extend([
+            "-blockdev".to_owned(),
+            format!(
+                "driver=qcow2,node-name={VMSTATE_DRIVE_ID},file.driver=file,file.filename={DEFAULT_VMSTATE_FILE_NAME}"
+            ),
+        ]);
         if let Some(firmware) = &self.firmware {
             args.extend(["-bios".to_owned(), firmware.path.clone()]);
         }
-        args.extend(["-kernel".to_owned(), self.kernel.path.clone()]);
+        if let Some(kernel) = &self.kernel {
+            args.extend(["-kernel".to_owned(), kernel.path.clone()]);
+        }
         if let Some(root_image) = &self.root_image {
             args.extend([
                 "-drive".to_owned(),
@@ -1092,7 +1151,9 @@ impl QemuVmLaunchConfig {
 
     fn validate(&self) -> Result<(), QemuLaunchCommandError> {
         validate_launch_text("node_id", &self.node_id)?;
-        self.kernel.validate("kernel_path")?;
+        if let Some(kernel) = &self.kernel {
+            kernel.validate("kernel_path")?;
+        }
         if let Some(firmware) = &self.firmware {
             firmware.validate("firmware_path")?;
         }
@@ -1101,6 +1162,9 @@ impl QemuVmLaunchConfig {
             validate_overlay_file_name(&self.root_overlay_file_name)?;
         }
         if let Some(initrd) = &self.initrd {
+            if self.kernel.is_none() {
+                return Err(QemuLaunchCommandError::InitrdWithoutKernel);
+            }
             initrd.validate("initrd_path")?;
         }
         if let Some(device) = &self.crucible_shmem_block {

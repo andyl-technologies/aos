@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 axum = { workspace = true }
+blake3 = { workspace = true }
 bytes = { workspace = true }
 crucible = { path = "../crucible" }
 crucible-device = { path = "../crucible-device" }

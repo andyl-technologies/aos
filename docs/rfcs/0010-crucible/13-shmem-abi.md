@@ -202,8 +202,9 @@ process-local pointer or host-layout fact crosses the ABI.
 
 The region header carries the identity and shape of the region: a magic number,
 the ABI version, the configured node count and queue capacity, the computed
-frame sub-region offsets, and the global pause flag. ABI v5 mappers derive the
-coverage, fingerprint-sample, and white-box marker tail sections from that
+frame sub-region offsets, the global control flags, and the per-direction fault
+payload-arena size. ABI v8 mappers derive the coverage, fingerprint-sample,
+white-box marker, device-I/O, and fault-command tail sections from that
 validated frame extent, the VM count, and fixed ABI constants. The header is
 the first thing a mapper reads and the thing
 the handshake ([`14-protocol.md`](14-protocol.md)) validates before any node
@@ -215,7 +216,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 5;
+pub const ABI_VERSION: u32 = 8;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -260,10 +261,13 @@ pub struct RegionHeader {
     /// Global teardown flag: set when the run is ending so parked nodes wake and
     /// observe DONE rather than spinning.
     pub shutdown_requested: AtomicU8, // @ 61
-    // @ 62..256 reserved, zero-initialized, for forward-compatible additions
+    pub(crate) _control_padding: [u8; 2], // @ 62
+    /// Bytes in each direction's bounded fault payload arena.
+    pub fault_payload_arena_bytes: AtomicU32, // @ 64
+    // @ 68..256 reserved, zero-initialized, for forward-compatible additions
     // that do not change existing offsets. New fields take reserved space and
     // bump ABI_VERSION (§13.6).
-    pub(crate) _reserved: [u8; 194],
+    pub(crate) _reserved: [u8; 188],
 }
 
 const _: () = assert!(core::mem::size_of::<RegionHeader>() == 256);
@@ -274,8 +278,9 @@ const _: () = assert!(core::mem::align_of::<RegionHeader>() == 128);
   magic number, the ABI version, the configured node count, the per-ring queue
   capacity, the ring count, the byte offsets and stride locating the ring headers
   and frame-entry storage, the region size, the fixed icount shift, and the global
-  pause and shutdown flags. A mapper MUST be able to locate every sub-region from
-  the header alone, with no out-of-band parameters. *Gate:* `gate:abi-conformance`.
+  pause and shutdown flags, plus the per-direction fault payload-arena size. A
+  mapper MUST be able to locate every sub-region from the header alone, with no
+  out-of-band parameters. *Gate:* `gate:abi-conformance`.
   *Spec:* §13.3.1, §13.4.
 
 - **[SHM-8]** The region header MUST carry the **fixed icount shift** ([SHM-7]),
@@ -373,8 +378,16 @@ pub struct NodeSlot {
     pub preemption_arg1: AtomicU32, // @ 92
     /// Command kind: none, vCPU switch, or interrupt injection.
     pub preemption_kind: AtomicU8, // @ 96
-    // @ 97..128 reserved, zero-initialized (forward-compatible additions only).
-    pub(crate) _reserved: [u8; 31],
+    pub(crate) _pad2: [u8; 7], // @ 97
+    /// Raw QEMU icount paired atomically with `current_icount`. Their checked
+    /// difference is the plugin's logical-time offset after idle jumps.
+    pub logical_time_raw_icount: AtomicU64, // @ 104
+    /// Logical scheduler boundary requested after a VMState load.
+    pub logical_time_restore_target: AtomicU64, // @ 112
+    /// Host-published nonzero restore transaction generation.
+    pub logical_time_restore_request: AtomicU32, // @ 120
+    /// Plugin-published generation after recalibration and quiescence.
+    pub logical_time_restore_ack: AtomicU32, // @ 124
 }
 
 const _: () = assert!(core::mem::size_of::<NodeSlot>() == 128);
@@ -417,6 +430,23 @@ const _: () = assert!(core::mem::align_of::<NodeSlot>() == 128);
   ([DET-29]) is routed over QMP / plugin introspection (12), NOT over this shmem
   region. *Gate:* `gate:abi-conformance`, `gate:layer1-injection`. *Spec:*
   §13.3.2, forward-ref [`12-qemu-plugin.md`](12-qemu-plugin.md), 09.
+
+- **[SHM-47]** Every quiesced VM publication MUST place the logical
+  `current_icount` and QEMU's raw icount in the same seqlock transaction. An
+  exact checkpoint MUST retain that pair. After VMState load, while QEMU is
+  still inaccessible to the scheduler, the host MUST publish a fresh nonzero
+  restore generation and logical target, resume QEMU only to reach a plugin
+  callback, and wait for an acknowledgement carrying the same generation,
+  logical target, and restored raw icount. The plugin MUST reconstruct the
+  checked logical offset as `target - raw`, publish an idle boundary, and stop
+  QEMU. The host MUST independently confirm the native QEMU stop before it
+  clears the shared pause and performs the final resume. Generation mismatch,
+  raw time ahead of logical time, timeout, or any post-load restore failure MUST
+  terminate and reap the new QEMU process; a partially restored node MUST never
+  be exposed. *Gate:* `gate:abi-conformance`,
+  `gate:qemu-exact-snapshot-restore`, `gate:qemu-node-factory`. *Spec:*
+  §13.3.2, [`10-qemu-integration.md`](10-qemu-integration.md),
+  [`36-time-travel-debugging.md`](36-time-travel-debugging.md).
 
 ### 13.3.3 SPSC ring header and frame entry
 
@@ -1026,7 +1056,12 @@ word no longer equals `v`.
   on `pause_requested`, a node MUST quiesce at its current TB boundary and park so
   the scheduler can take a coordinated snapshot; on `shutdown_requested`, a parked
   node MUST wake, set `status = STATUS_DONE`, and exit. Setting either flag MUST be
-  accompanied by a wake of every parked node. *Gate:* `gate:layer1-injection`.
+  accompanied by a wake of every parked node. The host MUST distinguish the
+  acknowledgement from an older idle publish by requiring `publish_gen` to
+  change after it release-stores the pause request; observing a pre-existing
+  `STATUS_IDLE` alone is not an acknowledgement. Clearing the flag MUST be
+  followed by both a non-private futex wake and the QEMU doorbell wake. *Gate:*
+  `gate:layer1-injection`.
   *Spec:* §13.7, forward-ref [`20-session-control-plane.md`](20-session-control-plane.md).
 
 ## 13.8 Versioning and conformance

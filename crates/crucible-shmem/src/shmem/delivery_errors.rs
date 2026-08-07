@@ -529,6 +529,40 @@ pub enum NodeSlotError {
         /// The rejected idle wake icount.
         idle_wake_icount: u64,
     },
+    /// A host attempted to arm a second logical-time restore request.
+    #[error("logical-time restore request {request} is still pending acknowledgement {ack}")]
+    LogicalTimeRestoreAlreadyPending {
+        /// Outstanding request generation.
+        request: u32,
+        /// Last acknowledged generation.
+        ack: u32,
+    },
+    /// The restore request changed while the plugin was acknowledging it.
+    #[error("logical-time restore request changed from {expected} to {observed}")]
+    LogicalTimeRestoreRequestChanged {
+        /// Generation acquired before recalibration.
+        expected: u32,
+        /// Generation observed at acknowledgement.
+        observed: u32,
+    },
+    /// The plugin attempted to acknowledge a different logical target.
+    #[error("logical-time restore requested icount {requested}, reached {reached}")]
+    LogicalTimeRestoreTargetMismatch {
+        /// Host-requested logical icount.
+        requested: u64,
+        /// Plugin-published logical icount.
+        reached: u64,
+    },
+    /// The restored raw QEMU counter is ahead of its requested logical value.
+    #[error(
+        "logical-time restore raw icount {raw_icount} is ahead of logical icount {logical_icount}"
+    )]
+    LogicalTimeRestoreRawAhead {
+        /// Host-requested and plugin-published logical icount.
+        logical_icount: u64,
+        /// Raw QEMU icount observed after VMState restore.
+        raw_icount: u64,
+    },
     /// A non-private futex wake failed after `wake_signal` was incremented.
     #[error("non-private futex wake failed after incrementing wake_signal: {source}")]
     FutexWake {

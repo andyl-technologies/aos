@@ -185,8 +185,8 @@
         needle = "\n          phase6.explorationLifecycle.rawGate\n";
       }
       {
-        label = "phase6 savevm completeness raw dependency";
-        needle = "\n          phase6.savevmCompleteness.rawGate\n";
+        label = "phase6 checkpoint materialization raw dependency";
+        needle = "\n          phase6.checkpointMaterialization.rawGate\n";
       }
       {
         label = "phase4 replay oracle green dependency";
@@ -201,8 +201,8 @@
         needle = "\n        phase6.explorationLifecycle\n";
       }
       {
-        label = "phase6 savevm completeness green dependency";
-        needle = "\n        phase6.savevmCompleteness\n";
+        label = "phase6 checkpoint materialization green dependency";
+        needle = "\n        phase6.checkpointMaterialization\n";
       }
     ];
 in

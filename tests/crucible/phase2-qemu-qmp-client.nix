@@ -81,6 +81,10 @@
         needle = "pub fn loadvm";
       }
       {
+        label = "snapshot delete API";
+        needle = "pub fn delete_snapshot";
+      }
+      {
         label = "quit API";
         needle = "pub fn quit";
       }
@@ -95,6 +99,10 @@
       {
         label = "snapshot-load wire command";
         needle = "QMP_SNAPSHOT_LOAD_COMMAND";
+      }
+      {
+        label = "snapshot-delete wire command";
+        needle = "QMP_SNAPSHOT_DELETE_COMMAND";
       }
       {
         label = "async event skipping";
@@ -171,6 +179,10 @@
       {
         label = "loadvm quit test";
         needle = "loadvm_and_quit_are_typed_qmp_commands";
+      }
+      {
+        label = "snapshot delete test";
+        needle = "snapshot_delete_uses_the_same_tag_and_vmstate_device";
       }
       {
         label = "event skipping test";
@@ -268,8 +280,8 @@ in
             check_scope=task-level
             related_gates=gate:control-responsive,gate:replay-oracle,gate:content-address
             rust_test=crucible-qemu::qmp
-            commands=qmp_capabilities,snapshot-save,snapshot-load,query-jobs,quit
-            public_api=connect,savevm,loadvm,quit
+            commands=qmp_capabilities,snapshot-save,snapshot-load,snapshot-delete,query-jobs,quit
+            public_api=connect,savevm,loadvm,delete_snapshot,quit
             async_events=skipped-until-return-or-error
             errors=typed-result
             snapshot_tag=checkpoint-content-address-derived

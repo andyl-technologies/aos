@@ -61,7 +61,10 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_node_slot, preemption_arg0)",
         "offsetof(crucible_shmem_node_slot, preemption_arg1)",
         "offsetof(crucible_shmem_node_slot, preemption_kind)",
-        "offsetof(crucible_shmem_node_slot, reserved)",
+        "offsetof(crucible_shmem_node_slot, logical_time_raw_icount)",
+        "offsetof(crucible_shmem_node_slot, logical_time_restore_target)",
+        "offsetof(crucible_shmem_node_slot, logical_time_restore_request)",
+        "offsetof(crucible_shmem_node_slot, logical_time_restore_ack)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_ring_header)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_ring_header)",
         "offsetof(crucible_shmem_ring_header, read_idx)",
@@ -215,6 +218,10 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
     assert_eq!(decoded.region.ring_count, 12);
     assert_eq!(decoded.node.status, STATUS_IDLE);
     assert_eq!(decoded.node.kind, 0);
+    assert_eq!(decoded.node.logical_time_raw_icount, 96);
+    assert_eq!(decoded.node.logical_time_restore_target, 128);
+    assert_eq!(decoded.node.logical_time_restore_request, 13);
+    assert_eq!(decoded.node.logical_time_restore_ack, 13);
     assert_eq!(decoded.frame.payload, b"PING");
     assert_eq!(decoded.coverage.current_icount, 901);
     assert_eq!(decoded.coverage.guest_pc, 0x4010);

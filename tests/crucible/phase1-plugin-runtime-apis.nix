@@ -15,8 +15,12 @@
     "0012-crucible-plugin-vcpu-exit.patch"
     "0013-crucible-plugin-wake-fd.patch"
     "0014-crucible-plugin-tcg-exec-cb.patch"
+    "0063-crucible-plugin-vmstop.patch"
   ];
-  taskIds = ["T-PATCH-11"];
+  taskIds =
+    if patchName == "0063-crucible-plugin-vmstop.patch"
+    then ["T-QEMU-0063"]
+    else ["T-PATCH-11"];
   qemuPackageResultLines =
     if qemuPackage == null
     then ''
@@ -136,7 +140,8 @@
         needle = "SHUTDOWN_CAUSE_HOST_ERROR";
       }
     ]
-    else [
+    else if patchName == "0014-crucible-plugin-tcg-exec-cb.patch"
+    then [
       {
         label = "TCG exec callback export";
         needle = "qemu_plugin_register_tcg_exec_cb";
@@ -160,6 +165,28 @@
       {
         label = "non-mutating current-vCPU observation";
         needle = "icount_get_raw_observed";
+      }
+    ]
+    else [
+      {
+        label = "native VM stop export";
+        needle = "qemu_plugin_request_vmstop";
+      }
+      {
+        label = "current-vCPU boundary validation";
+        needle = "if (!current_cpu";
+      }
+      {
+        label = "precise icount validation";
+        needle = "icount_enabled() != ICOUNT_PRECISE";
+      }
+      {
+        label = "serialized sim validation";
+        needle = "!qemu_plugin_crucible_single_threaded_rr()";
+      }
+      {
+        label = "native paused runstate transition";
+        needle = "vm_stop(RUN_STATE_PAUSED)";
       }
     ];
 
@@ -216,6 +243,18 @@
       {
         label = "stock negative control";
         needle = "stock_negative_control_plugin_runtime_symbols_absent=true";
+      }
+      {
+        label = "native VM stop transition exercised";
+        needle = "request_vmstop_native_paused_transition=true";
+      }
+      {
+        label = "native VM stop rejection modes exercised";
+        needle = "request_vmstop_rejects_nonexact_modes=true";
+      }
+      {
+        label = "native VM stop failure propagation exercised";
+        needle = "request_vmstop_propagates_native_failure=true";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
@@ -368,7 +407,14 @@ in
 
             #define SHUTDOWN_CAUSE_HOST_ERROR 1
             #define SHUTDOWN_CAUSE_HOST_QMP_QUIT 2
+
+            typedef enum RunState {
+                RUN_STATE_PAUSED,
+                RUN_STATE__MAX,
+            } RunState;
+
             void qemu_system_shutdown_request(int reason);
+            int vm_stop(RunState state);
 
             #endif
             RUNSTATE_FIXTURE
@@ -755,6 +801,7 @@ in
               qemu_plugin_crucible_single_threaded_rr \
               qemu_plugin_register_wake_fd \
               qemu_plugin_request_shutdown \
+              qemu_plugin_request_vmstop \
               qemu_plugin_register_tcg_exec_cb
             do
               cat > "stock-plugin-runtime-negative-$symbol.c" <<STOCK_NEGATIVE
@@ -791,6 +838,7 @@ in
             grep -q 'qemu_plugin_crucible_single_threaded_rr' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_register_wake_fd' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_request_shutdown' include/qemu/qemu-plugin.h
+            grep -q 'qemu_plugin_request_vmstop' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_register_tcg_exec_cb' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_maybe_fire_tcg_exec_cb(cpu);' accel/tcg/tcg-accel-ops-rr.c
             awk '
@@ -815,6 +863,9 @@ in
             grep -q '^tb_entry_icount_chained_early_exit_multi_vcpu=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^first_exit_phase_normalized=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^single_threaded_rr_mode_discriminator_fixture_exercised=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^request_vmstop_native_paused_transition=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^request_vmstop_rejects_nonexact_modes=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^request_vmstop_propagates_native_failure=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_registered=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_single_owner=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_same_descriptor_idempotent=true$' "$out/plugin-runtime-apis-microtest"
@@ -861,6 +912,10 @@ in
             first_exit_phase_normalized=true
             single_threaded_rr_symbol=qemu_plugin_crucible_single_threaded_rr
             single_threaded_rr_mode_discriminator_fixture_exercised=true
+            request_vmstop_symbol=qemu_plugin_request_vmstop
+            request_vmstop_native_paused_transition=true
+            request_vmstop_rejects_nonexact_modes=true
+            request_vmstop_propagates_native_failure=true
             wake_fd_registration_symbol=qemu_plugin_register_wake_fd
             wake_fd_registered=true
             wake_fd_single_owner=true

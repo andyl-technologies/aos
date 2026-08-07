@@ -240,7 +240,9 @@ in
           require_fixed "$PATCH_0001_NAME" 'TYPE_SIM_ACCEL'
           require_fixed "$PATCH_0001_NAME" 'ACCEL_OPS_NAME("sim")'
           require_fixed "$PATCH_0001_NAME" '-accel sim requires -icount shift=N'
-          require_fixed "$PATCH_0002_NAME" 'qemu_plugin_crucible_pause_vm'
+          if grep -F -q -- 'qemu_plugin_crucible_pause_vm' "$PATCH_0002_NAME"; then
+            fail "legacy unvalidated VM pause export remains in patch 0002"
+          fi
           require_fixed "$PATCH_0002_NAME" 'qemu_plugin_crucible_ram_hash'
           require_fixed "$PATCH_0002_NAME" 'qemu_plugin_crucible_get_vcpu_registers'
           require_fixed "$PATCH_0002_NAME" 'rr_switch_quantum'

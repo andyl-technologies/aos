@@ -1,8 +1,8 @@
 //! Production host-I/O runtime for a live QEMU node.
 //!
 //! [`QemuLiveHostIoRuntime`] is the first non-test [`QemuHostIoRuntime`]. It maps
-//! the plugin's shared-memory region read-only (an independent `MAP_SHARED` view
-//! of the same descriptor the node's hot-path channel writes) and, on an
+//! an independent `MAP_SHARED` view of the same descriptor the node's hot-path
+//! channel writes and, on an
 //! `AdvanceCompletion` await, signals QEMU's plugin wake eventfd once and then
 //! polls the node slot for the quantum boundary using the shared
 //! [`classify_quantum_boundary`] decision -- the same classification the M1
@@ -35,12 +35,13 @@ use crucible_shmem::{
 };
 use thiserror::Error;
 
-use super::block_io_servicer::{
-    BlockIoDiagnostics, QemuLiveBlockIoServicer, QemuLiveBlockIoServicerCheckpoint,
-};
+use super::block_io_servicer::{BlockIoDiagnostics, QemuLiveBlockIoServicer};
 use crate::quantum::idle_state_from_snapshot;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
-use crate::{QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuHostIoRuntime};
+use crate::{
+    QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuHostIoCheckpoint,
+    QemuHostIoRuntime,
+};
 use deadline::AdvanceWaitDeadline;
 
 mod deadline;
@@ -52,10 +53,11 @@ mod deadline;
 /// depends on the poll rate.
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
-/// A production host-I/O runtime backed by a read-only shared-memory view.
+/// A production host-I/O runtime backed by an independently mapped shared-memory view.
 ///
-/// The runtime's own [`MappedSetupRegion`] is an observer view: it only reads the
-/// guest node slot. An optional [`QemuLiveBlockIoServicer`] added with
+/// The runtime reads the guest node slot and owns the global coordinated-pause
+/// request/clear operations. It does not write scheduler ceilings, ring indices,
+/// or plugin-owned slot state. An optional [`QemuLiveBlockIoServicer`] added with
 /// [`QemuLiveHostIoRuntime::with_block_servicer`] is the participant half -- it
 /// owns a separate writable mapping confined to the `SLOT_BLK_IO` ring pair and
 /// is driven once per advance poll so a guest blocked on real block I/O can make
@@ -74,36 +76,6 @@ struct BlockIoServicing {
     servicer: QemuLiveBlockIoServicer,
     diagnostics: Arc<BlockIoDiagnostics>,
     coordinator: Option<Box<dyn QemuBlockFaultCoordinator>>,
-}
-
-/// Complete host-I/O continuation paired with one QEMU VMState checkpoint.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QemuHostIoCheckpoint {
-    execution_binding: ContentHash,
-    block: Option<QemuLiveBlockIoServicerCheckpoint>,
-}
-
-impl QemuHostIoCheckpoint {
-    /// Builds a checkpoint for a runtime with no shared-memory block device.
-    #[must_use]
-    pub const fn without_block(execution_binding: ContentHash) -> Self {
-        Self {
-            execution_binding,
-            block: None,
-        }
-    }
-
-    /// Returns the QEMU VMState identity paired with this host continuation.
-    #[must_use]
-    pub const fn execution_binding(&self) -> ContentHash {
-        self.execution_binding
-    }
-
-    /// Returns the block continuation when the captured runtime owned one.
-    #[must_use]
-    pub const fn block(&self) -> Option<&QemuLiveBlockIoServicerCheckpoint> {
-        self.block.as_ref()
-    }
 }
 
 /// Owns exact signal evaluation around one live block servicing pass.
@@ -142,7 +114,7 @@ pub trait QemuBlockFaultCoordinator: Send {
 }
 
 impl QemuLiveHostIoRuntime {
-    /// Maps `shmem_fd` read-only, clones `wake_fd`, and binds the runtime to `vm_slot`.
+    /// Maps `shmem_fd`, clones `wake_fd`, and binds the runtime to `vm_slot`.
     ///
     /// The shmem descriptor is the same region the node's hot-path channel writes;
     /// this independent mapping observes the plugin's published node slot without
@@ -236,6 +208,47 @@ impl QemuLiveHostIoRuntime {
         wake.write_all(&1_u64.to_ne_bytes()).map_err(|error| {
             QemuAsyncDriverRuntimeError::new("signal plugin wake", error.to_string())
         })
+    }
+
+    /// Clears a coordinated pause and wakes both plugin wait mechanisms.
+    fn release_checkpoint_pause(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.region.header().clear_pause();
+        let futex_result = self
+            .region
+            .node_slot(self.vm_slot)
+            .map_err(map_slot_error)
+            .and_then(|slot| {
+                slot.wake_for_frame_delivery().map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "resume from checkpoint pause",
+                        source.to_string(),
+                    )
+                })
+            });
+        let doorbell_result = self.signal_wake();
+        match (futex_result, doorbell_result) {
+            (Ok(_), Ok(())) => Ok(()),
+            (Err(futex), Ok(())) => Err(futex),
+            (Ok(_), Err(doorbell)) => Err(doorbell),
+            (Err(futex), Err(doorbell)) => Err(QemuAsyncDriverRuntimeError::new(
+                "resume from checkpoint pause",
+                format!("futex wake failed: {futex}; doorbell wake failed: {doorbell}"),
+            )),
+        }
+    }
+
+    /// Releases a failed pause transaction while retaining both diagnostics.
+    fn fail_checkpoint_pause(
+        &mut self,
+        primary: QemuAsyncDriverRuntimeError,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        match self.release_checkpoint_pause() {
+            Ok(()) => Err(primary),
+            Err(cleanup) => Err(QemuAsyncDriverRuntimeError::new(
+                "rollback failed checkpoint pause",
+                format!("primary failure: {primary}; pause release failure: {cleanup}"),
+            )),
+        }
     }
 
     /// Polls the node slot for a quantum boundary within a bounded attempt count.
@@ -395,6 +408,72 @@ impl QemuLiveHostIoRuntime {
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    /// Requests an exact plugin boundary and hands QEMU's execution path to QMP.
+    fn quiesce_for_checkpoint(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if timeout.is_zero() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "quiesce for checkpoint",
+                "checkpoint pause timeout is zero",
+            ));
+        }
+        let slot = self
+            .region
+            .node_slot(self.vm_slot)
+            .map_err(map_slot_error)?;
+        let initial_publish_gen = slot.snapshot().publish_gen;
+        if let Err(source) = self.region.header().request_pause([slot]) {
+            return self.fail_checkpoint_pause(QemuAsyncDriverRuntimeError::new(
+                "request checkpoint pause",
+                source.to_string(),
+            ));
+        }
+        if let Err(source) = self.signal_wake() {
+            return self.fail_checkpoint_pause(source);
+        }
+        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
+        for attempt in 0..attempts {
+            let snapshot = match self.region.node_slot(self.vm_slot).map_err(map_slot_error) {
+                Ok(slot) => slot.snapshot(),
+                Err(source) => return self.fail_checkpoint_pause(source),
+            };
+            if snapshot.publish_gen != initial_publish_gen
+                && snapshot.status == crucible_shmem::STATUS_IDLE
+                && snapshot.idle_wake_icount == snapshot.current_icount
+                && snapshot.device_io_active == 0
+            {
+                return Ok(());
+            }
+            if attempt + 1 < attempts {
+                if let Err(source) = self.signal_wake() {
+                    return self.fail_checkpoint_pause(source);
+                }
+                thread::sleep(self.poll_interval);
+            }
+        }
+        self.fail_checkpoint_pause(QemuAsyncDriverRuntimeError::new(
+            "await checkpoint pause",
+            format!("plugin did not acknowledge an exact boundary within {timeout:?}"),
+        ))
+    }
+
+    fn resume_after_checkpoint(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.release_checkpoint_pause()
+    }
+
+    fn has_pending_block_io(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        self.block
+            .as_mut()
+            .map(|block| block.servicer.has_pending_work())
+            .transpose()
+            .map(Option::unwrap_or_default)
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new("inspect pending block I/O", source.to_string())
+            })
+    }
+
     fn checkpoint_host_io(
         &mut self,
         execution_binding: ContentHash,
@@ -407,9 +486,9 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             .map_err(|source| {
                 QemuAsyncDriverRuntimeError::new("checkpoint host block I/O", source.to_string())
             })?;
-        Ok(QemuHostIoCheckpoint {
-            execution_binding,
-            block,
+        Ok(match block {
+            Some(block) => QemuHostIoCheckpoint::with_block(execution_binding, block),
+            None => QemuHostIoCheckpoint::without_block(execution_binding),
         })
     }
 

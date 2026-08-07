@@ -5,6 +5,9 @@ use super::super::*;
 use super::support::*;
 use crucible_shmem::{KIND_VM, STATUS_DONE, STATUS_IDLE, STATUS_RUNNING};
 
+#[cfg(target_os = "linux")]
+use std::{sync::Arc, thread, time::Duration};
+
 #[test]
 fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {
     let timer_wins = match compute_idle_wake_plan(
@@ -325,6 +328,58 @@ fn idle_loop_shutdown_wake_marks_done_and_returns_teardown_outcome() {
     assert_eq!(snapshot.current_icount, 10);
     assert_eq!(snapshot.current_ns, 10);
     assert_eq!(snapshot.status, STATUS_DONE);
+    assert_eq!(clock.current_icount(), 10);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn idle_loop_pause_quiesces_without_advancing_and_returns_to_qemu() {
+    let header = Arc::new(header());
+    let slot = Arc::new(NodeSlot::new(KIND_VM));
+    publish_ceiling(&slot, ceiling(0, 10));
+    let clock = owned_clock(10, 0);
+    let request =
+        PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_20), None, None)
+            .unwrap_or_else(|error| panic!("idle publish should park: {error}"));
+
+    header
+        .request_pause([slot.as_ref()])
+        .unwrap_or_else(|error| panic!("pause request should wake the idle slot: {error}"));
+    assert_eq!(
+        PluginIdleHotLoop::wait_for_scheduler_release(&header, &slot, &request),
+        Ok(IdleWaitOutcome::CheckpointPauseRequested)
+    );
+    let paused = slot.snapshot();
+    assert_eq!(paused.status, STATUS_IDLE);
+    assert_eq!(paused.current_icount, 10);
+    assert_eq!(paused.idle_wake_icount, 10);
+    assert_eq!(clock.current_icount(), 10);
+
+    header.clear_pause();
+    assert_eq!(clock.current_icount(), 10);
+}
+
+#[test]
+fn idle_loop_shutdown_takes_priority_over_an_active_pause() {
+    let header = header();
+    let slot = NodeSlot::new(KIND_VM);
+    publish_ceiling(&slot, ceiling(0, 10));
+    let clock = owned_clock(10, 0);
+    let request =
+        PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_20), None, None)
+            .unwrap_or_else(|error| panic!("idle publish should park: {error}"));
+    header
+        .request_pause([&slot])
+        .unwrap_or_else(|error| panic!("pause request should publish: {error}"));
+    header
+        .request_shutdown([&slot])
+        .unwrap_or_else(|error| panic!("shutdown request should publish: {error}"));
+
+    assert_eq!(
+        PluginIdleHotLoop::wait_for_scheduler_release(&header, &slot, &request),
+        Ok(IdleWaitOutcome::ShutdownRequested)
+    );
+    assert_eq!(slot.snapshot().status, STATUS_DONE);
     assert_eq!(clock.current_icount(), 10);
 }
 

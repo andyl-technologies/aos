@@ -209,7 +209,9 @@ request_pause(const struct traced_insn *insn)
   request_retired = retired_total;
   request_vaddr = insn->vaddr;
   record_pause_request(insn);
-  qemu_plugin_crucible_pause_vm();
+  if (qemu_plugin_request_vmstop() != 0) {
+    qemu_plugin_request_shutdown(1);
+  }
 }
 
 static void

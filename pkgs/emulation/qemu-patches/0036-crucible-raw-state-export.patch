@@ -92,7 +92,7 @@ index e3112d3..02dfd45 100644
   * Construct a qemu_plugin_meminfo_t.
   */
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 0fc574c..30ad25a 100644
+index c53bd5f..d23f7bf 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1413,6 +1413,139 @@ QEMU_PLUGIN_API
@@ -419,7 +419,7 @@ index ab5afbe..3c3c64d 100644
          return false;
      }
 diff --git a/plugins/api.c b/plugins/api.c
-index 795997d..784526c 100644
+index df34473..9fb02d1 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -36,6 +36,7 @@
@@ -442,7 +442,7 @@ index 795997d..784526c 100644
  #include "exec/cpu-common.h"
  #include "exec/gdbstub.h"
  #include "exec/memory.h"
-@@ -976,6 +979,359 @@ int qemu_plugin_crucible_device_state_schema_sha256(
+@@ -971,6 +974,359 @@ int qemu_plugin_crucible_device_state_schema_sha256(
      return qemu_savevm_crucible_schema_sha256(digest_out, sections_out);
  }
  

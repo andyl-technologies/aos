@@ -58,7 +58,7 @@ use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use crucible::model::ContentHash;
+use crucible::ContentHash;
 use crucible_device::block::{
     BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
@@ -67,15 +67,17 @@ use crucible_device::block::{
     ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
 };
 use crucible_device::{
-    BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockRequestIdentity, BlockSnapshot,
-    DeviceError, IoCore, Request,
+    BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockRequestIdentity, DeviceError, IoCore,
+    Request,
 };
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    NodeSlotSnapshot, RegionHeaderSnapshot, SLOT_BLK_IO, STATUS_DONE, SetupRegionMapError,
-    SpscRingSnapshot, icount_to_virtual_ns, mmap_setup_region,
+    NodeSlotSnapshot, RegionHeaderSnapshot, SLOT_BLK_IO, STATUS_IDLE, SetupRegionMapError,
+    icount_to_virtual_ns, mmap_setup_region,
 };
 use thiserror::Error;
+
+use crate::QemuLiveBlockIoServicerCheckpoint;
 
 /// In-flight request-queue capacity for the servicer's I/O core.
 const SERVICER_INBOX_CAPACITY: u64 = 16;
@@ -91,39 +93,6 @@ pub struct QemuLiveBlockIoServicer {
     vm_slot: u32,
     frames_processed: usize,
     frames_delivered: usize,
-}
-
-/// Complete host block-device continuation paired with a QEMU/shared-memory checkpoint.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QemuLiveBlockIoServicerCheckpoint {
-    execution_binding: ContentHash,
-    storage_device: Option<ContentHash>,
-    region_header: RegionHeaderSnapshot,
-    vm_slot: u32,
-    size_bytes: u64,
-    device: BlockSnapshot,
-    requests: SpscRingSnapshot,
-    responses: SpscRingSnapshot,
-    frames_processed: usize,
-    frames_delivered: usize,
-}
-
-impl QemuLiveBlockIoServicerCheckpoint {
-    /// Returns the QEMU execution checkpoint paired with this host continuation.
-    #[must_use]
-    pub const fn execution_binding(&self) -> ContentHash {
-        self.execution_binding
-    }
-
-    /// Records the scenario storage target owned by the host work pool.
-    pub(crate) fn set_storage_device(&mut self, storage_device: Option<ContentHash>) {
-        self.storage_device = storage_device;
-    }
-
-    /// Returns the scenario storage target restored with this continuation.
-    pub(crate) const fn storage_device(&self) -> Option<ContentHash> {
-        self.storage_device
-    }
 }
 
 impl QemuLiveBlockIoServicer {
@@ -174,6 +143,36 @@ impl QemuLiveBlockIoServicer {
         icount_shift: u8,
         base: BaseImage,
     ) -> Result<Self, QemuLiveBlockIoServicerError> {
+        Self::from_shmem_fd_with_base_and_latency(
+            shmem_fd,
+            region_len,
+            vm_slot,
+            icount_shift,
+            base,
+            BlockLatency::default(),
+        )
+    }
+
+    /// Maps the live block transport with an explicit deterministic latency model.
+    ///
+    /// This constructor is used when a World's storage realization declares
+    /// device timing rather than accepting [`BlockLatency::default`]. The model
+    /// is part of the block-device snapshot, so an in-flight completion retains
+    /// its timing across exact capture and restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::MapRegion`] when shared memory
+    /// cannot be mapped, or [`QemuLiveBlockIoServicerError::Device`] when the
+    /// deterministic I/O core rejects its clock or queue configuration.
+    pub fn from_shmem_fd_with_base_and_latency(
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        vm_slot: u32,
+        icount_shift: u8,
+        base: BaseImage,
+        latency: BlockLatency,
+    ) -> Result<Self, QemuLiveBlockIoServicerError> {
         let region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLiveBlockIoServicerError::MapRegion { source })?;
         let core = IoCore::new(
@@ -183,7 +182,7 @@ impl QemuLiveBlockIoServicer {
             SERVICER_OUTBOX_CAPACITY,
         )
         .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
-        let device = BlockDevice::new(core, base, BlockLatency::default());
+        let device = BlockDevice::new(core, base, latency);
         Ok(Self {
             region,
             device,
@@ -191,6 +190,15 @@ impl QemuLiveBlockIoServicer {
             frames_processed: 0,
             frames_delivered: 0,
         })
+    }
+
+    /// Replaces the deterministic latency model for future block admissions.
+    ///
+    /// This is the production activation seam for a model that must take effect
+    /// after fault-free firmware discovery. Any response already in flight keeps
+    /// its previously computed delivery coordinate.
+    pub fn set_latency_model(&mut self, latency: BlockLatency) {
+        self.device.set_latency_model(latency);
     }
 
     /// Restores a block-device continuation onto the checkpoint-paired region.
@@ -292,7 +300,8 @@ impl QemuLiveBlockIoServicer {
                 self.vm_slot,
             )
             .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
-        if pair.node_slot.snapshot().status != STATUS_DONE {
+        let node = pair.node_slot.snapshot();
+        if node.status != STATUS_IDLE || node.device_io_active != 0 {
             return Err(QemuLiveBlockIoServicerError::CheckpointNotQuiescent);
         }
         let requests = pair
@@ -429,10 +438,55 @@ impl QemuLiveBlockIoServicer {
                 self.vm_slot,
             )
             .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
-        if pair.node_slot.snapshot().status != STATUS_DONE {
+        let node = pair.node_slot.snapshot();
+        if node.status != STATUS_IDLE || node.device_io_active != 0 {
             return Err(QemuLiveBlockIoServicerError::CheckpointNotQuiescent);
         }
         Ok(())
+    }
+
+    /// Reports whether a quiescent guest transport has pending host durability.
+    ///
+    /// A true result means both shared-memory rings and every request/response
+    /// queue are empty, while an accepted controller, cache, or media mutation
+    /// remains in the checkpointed storage state. This is the savevm-safe
+    /// boundary: QEMU has no block coroutine for `bdrv_drain_all_begin()` to
+    /// wait on, but exact restore still has real Apache-side work to preserve.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError`] when either mapped ring cannot
+    /// be snapshotted consistently.
+    pub fn has_pending_work(&mut self) -> Result<bool, QemuLiveBlockIoServicerError> {
+        let pair = self
+            .region
+            .node_directed_ring_pair_mut(
+                self.vm_slot,
+                self.vm_slot,
+                SLOT_BLK_IO as u32,
+                SLOT_BLK_IO as u32,
+                self.vm_slot,
+            )
+            .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
+        let requests = pair
+            .first
+            .header
+            .snapshot(pair.first.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let responses = pair
+            .second
+            .header
+            .snapshot(pair.second.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let device = self.device.snapshot();
+        let transport_quiescent = requests.frames.is_empty()
+            && responses.frames.is_empty()
+            && device.core.inbox.is_empty()
+            && device.core.inflight.is_empty()
+            && device.core.outbox.is_empty();
+        Ok(transport_quiescent && device.storage_faults.has_pending_durability_continuation())
     }
 
     /// Drains newly arrived requests and delivers responses due at `guest_icount`.
@@ -1360,8 +1414,8 @@ pub enum QemuLiveBlockIoServicerError {
         /// Underlying device error.
         source: DeviceError,
     },
-    /// A checkpoint was attempted while the guest was not at a published boundary.
-    #[error("block-I/O checkpoint requires a quiesced guest boundary")]
+    /// A checkpoint was attempted without a plugin-acknowledged coordinated pause.
+    #[error("block-I/O checkpoint requires a plugin-acknowledged coordinated pause")]
     CheckpointNotQuiescent,
     /// Restore would overwrite live frames in the new shared-memory region.
     #[error(
@@ -1396,6 +1450,13 @@ mod tests {
 
     #[cfg(unix)]
     fn checkpoint_fixture() -> (fs::File, u64, QemuLiveBlockIoServicer) {
+        checkpoint_fixture_with_latency(BlockLatency::default())
+    }
+
+    #[cfg(unix)]
+    fn checkpoint_fixture_with_latency(
+        latency: BlockLatency,
+    ) -> (fs::File, u64, QemuLiveBlockIoServicer) {
         let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))
             .unwrap_or_else(|error| panic!("allocate test region: {error}"));
         let slot = allocation
@@ -1407,7 +1468,12 @@ mod tests {
             .unwrap_or_else(|error| panic!("publish test ceiling: {error}"));
         slot.publish_reached_icount(0, 0)
             .unwrap_or_else(|error| panic!("publish test boundary: {error}"));
-        slot.mark_done();
+        allocation
+            .header()
+            .request_pause([slot])
+            .unwrap_or_else(|error| panic!("request test checkpoint pause: {error}"));
+        slot.publish_pause_quiesced(0, 0, 0)
+            .unwrap_or_else(|error| panic!("publish test checkpoint pause: {error}"));
         let layout = allocation.layout();
         let bytes = allocation
             .setup_region_bytes()
@@ -1429,9 +1495,15 @@ mod tests {
             .unwrap_or_else(|error| panic!("size test region: {error}"));
         file.write_all(&bytes)
             .unwrap_or_else(|error| panic!("write test region: {error}"));
-        let servicer =
-            QemuLiveBlockIoServicer::from_shmem_fd(file.as_fd(), layout.region_size, 0, 0, 4096)
-                .unwrap_or_else(|error| panic!("map test servicer: {error}"));
+        let servicer = QemuLiveBlockIoServicer::from_shmem_fd_with_base_and_latency(
+            file.as_fd(),
+            layout.region_size,
+            0,
+            0,
+            BaseImage::new(deterministic_base_image(4096)),
+            latency,
+        )
+        .unwrap_or_else(|error| panic!("map test servicer: {error}"));
         (file, layout.region_size, servicer)
     }
 
@@ -1444,6 +1516,31 @@ mod tests {
         assert_eq!(first[0], 0);
         assert_eq!(first[251], 0);
         assert_eq!(first[250], 250);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_latency_is_retained_in_exact_checkpoint_state() {
+        let latency = BlockLatency::new(50_000_000, 60_000_000, 700, 300, 4);
+        let (_file, _region_len, mut servicer) = checkpoint_fixture_with_latency(latency);
+        let checkpoint = servicer
+            .checkpoint(ContentHash::from_bytes(b"explicit-block-latency"))
+            .unwrap_or_else(|error| panic!("capture timed block checkpoint: {error}"));
+
+        assert_eq!(checkpoint.device.latency, latency);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn latency_replacement_is_retained_in_exact_checkpoint_state() {
+        let replacement = BlockLatency::new(70_000_000, 80_000_000, 900, 400, 8);
+        let (_file, _region_len, mut servicer) = checkpoint_fixture();
+        servicer.set_latency_model(replacement);
+        let checkpoint = servicer
+            .checkpoint(ContentHash::from_bytes(b"replacement-block-latency"))
+            .unwrap_or_else(|error| panic!("capture replacement block checkpoint: {error}"));
+
+        assert_eq!(checkpoint.device.latency, replacement);
     }
 
     #[test]

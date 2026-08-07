@@ -69,6 +69,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0060-crucible-block-typed-errors.patch",
     "0061-crucible-block-discard.patch",
     "0062-crucible-block-transport-reset.patch",
+    "0063-crucible-plugin-vmstop.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

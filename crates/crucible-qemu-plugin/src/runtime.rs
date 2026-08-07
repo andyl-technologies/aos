@@ -245,6 +245,7 @@ impl OwnedCallbackRuntimeState {
         fault_node_hash: [u8; 32],
         icount_raw: crate::QemuIcountRawFn,
         force_vcpu_exit: crate::QemuForceVcpuExitFn,
+        request_vmstop: crate::QemuRequestVmstopFn,
         preemption_injector: crate::PluginPreemptionInjector,
         initial_raw_icount: u64,
         exact_deadline: crate::ExactDeadlineReader,
@@ -296,6 +297,7 @@ impl OwnedCallbackRuntimeState {
             plugin_id,
             icount_raw,
             force_vcpu_exit,
+            request_vmstop,
             preemption_injector,
             vcpu_count,
             icount_shift,
@@ -792,6 +794,7 @@ where
 pub(crate) struct LiveInstallCapabilities {
     pub(crate) icount_raw: crate::QemuIcountRawFn,
     pub(crate) force_vcpu_exit: crate::QemuForceVcpuExitFn,
+    pub(crate) request_vmstop: crate::QemuRequestVmstopFn,
     pub(crate) inject_preemption: Option<crate::QemuInjectPreemptionFn>,
     pub(crate) request_time_control: Option<QemuRequestTimeControlFn>,
     pub(crate) clock_deadline_ns: Option<QemuClockDeadlineFn>,
@@ -996,6 +999,7 @@ impl FailClosedOwnedCallbackRegistrar {
                 LiveVcpuTimeCallbackCapabilities {
                     icount_raw: capabilities.icount_raw,
                     force_vcpu_exit: capabilities.force_vcpu_exit,
+                    request_vmstop: capabilities.request_vmstop,
                     inject_preemption: capabilities.inject_preemption,
                     clock_deadline_ns: capabilities.clock_deadline_ns,
                     advance_time_ns: capabilities.advance_time_ns,

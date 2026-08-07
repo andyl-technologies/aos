@@ -1,5 +1,5 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 5147466..377e631 100644
+index 126a4e1..78d058f 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -788,6 +788,16 @@ int qemu_plugin_advance_time_ns(int64_t time);

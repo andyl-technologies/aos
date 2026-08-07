@@ -42,7 +42,7 @@ index 3db26a7..b8d9057 100644
      }
  }
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 30ad25a..93c00b7 100644
+index d23f7bf..28b4ff7 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -240,6 +240,18 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,

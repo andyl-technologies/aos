@@ -86,6 +86,8 @@ pub const QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL: &str = QEMU_PLUGIN_INSTALL_SYM
 pub const QEMU_PLUGIN_ICOUNT_RAW_SYMBOL: &str = "qemu_plugin_icount_raw";
 /// QEMU plugin API symbol used to request current-vCPU exit.
 pub const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL: &str = "qemu_plugin_force_vcpu_exit";
+/// QEMU plugin API symbol used to enter the native paused runstate.
+pub const QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL: &str = "qemu_plugin_request_vmstop";
 /// QEMU plugin API symbol used to register the setup wake fd with QEMU.
 pub const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL: &str = "qemu_plugin_register_wake_fd";
 /// QEMU plugin API symbol used to request a clean or fail-loud process shutdown.
@@ -117,6 +119,7 @@ const QEMU_PLUGIN_READ_VCPU_REGS_SYMBOL_C: &[u8] = b"qemu_plugin_read_vcpu_regs\
 const QEMU_PLUGIN_RR_CURSOR_SYMBOL_C: &[u8] = b"qemu_plugin_rr_cursor\0";
 const QEMU_PLUGIN_ICOUNT_RAW_SYMBOL_C: &[u8] = b"qemu_plugin_icount_raw\0";
 const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL_C: &[u8] = b"qemu_plugin_force_vcpu_exit\0";
+const QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL_C: &[u8] = b"qemu_plugin_request_vmstop\0";
 const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL_C: &[u8] = b"qemu_plugin_register_wake_fd\0";
 const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL_C: &[u8] = b"qemu_plugin_request_shutdown\0";
 const QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_tcg_exec_cb\0";
@@ -316,6 +319,8 @@ pub type InertDeviceCallback = extern "C" fn(QemuPluginId, *mut c_void);
 pub type QemuIcountRawFn = extern "C" fn() -> u64;
 /// QEMU current-vCPU exit request exported by `crucible-plugin-vcpu-exit`.
 pub type QemuForceVcpuExitFn = extern "C" fn();
+/// QEMU native VM-stop request exported by the checkpoint-handoff patch.
+pub type QemuRequestVmstopFn = extern "C" fn() -> c_int;
 /// QEMU wake-fd registration exported by `crucible-plugin-wake-fd`.
 pub type QemuRegisterWakeFdFn = extern "C" fn(c_int) -> c_int;
 /// QEMU shutdown request function; nonzero selects the fail-loud host-error path.
@@ -1436,6 +1441,33 @@ pub const fn resolve_qemu_force_vcpu_exit_symbol() -> Option<QemuForceVcpuExitFn
     None
 }
 
+/// Resolves QEMU's native VM-stop request export from the loaded process.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_request_vmstop_symbol() -> Option<QemuRequestVmstopFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name. The QEMU
+    // patch defines the symbol with the exact `extern "C" fn() -> c_int` ABI.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null symbol has the declaration documented above.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRequestVmstopFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's native VM-stop request export from the loaded process.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_request_vmstop_symbol() -> Option<QemuRequestVmstopFn> {
+    None
+}
+
 /// Resolves QEMU's wake-fd registration export from the loaded process.
 #[cfg(unix)]
 #[must_use]
@@ -1998,6 +2030,7 @@ fn install_owned_boundary(
     let read_rr_cursor = resolve_qemu_rr_cursor_symbol();
     let icount_raw = resolve_qemu_icount_raw_symbol();
     let force_vcpu_exit = resolve_qemu_force_vcpu_exit_symbol();
+    let request_vmstop = resolve_qemu_request_vmstop_symbol();
     let register_wake_fd = resolve_qemu_register_wake_fd_symbol();
     let request_shutdown = resolve_qemu_request_shutdown_symbol();
     let register_tcg_exec_cb = resolve_qemu_register_tcg_exec_cb_symbol();
@@ -2032,6 +2065,7 @@ fn install_owned_boundary(
         })?;
     let request_shutdown =
         require_runtime_api(request_shutdown, QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL)?;
+    let request_vmstop = require_runtime_api(request_vmstop, QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL)?;
     let basic_block_coverage = if boundary.args.coverage().is_on() {
         Some(resolve_qemu_basic_block_coverage_apis()?)
     } else {
@@ -2040,6 +2074,7 @@ fn install_owned_boundary(
     let capabilities = crate::runtime::LiveInstallCapabilities {
         icount_raw: runtime_apis.icount_raw(),
         force_vcpu_exit: runtime_apis.force_vcpu_exit(),
+        request_vmstop,
         inject_preemption,
         request_time_control: resolve_qemu_request_time_control_symbol(),
         clock_deadline_ns,

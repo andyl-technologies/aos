@@ -4,36 +4,32 @@
 
 use crucible::ContentHash;
 use crucible_qemu::{
-    QEMU_SAVEVM_COMPLETENESS_CHECK, QemuLoadvmCommandPurpose, QemuReplayOracleValidation,
-    QemuSavevmCompletenessPolicy, QemuSavevmPolicyError,
+    QEMU_EXACT_SNAPSHOT_RESTORE_CHECK, QemuExactSnapshotPolicy, QemuExactSnapshotPolicyError,
+    QemuLoadvmCommandPurpose, QemuReplayOracleValidation,
 };
 
 #[test]
-fn complete_policy_authorizes_probe_and_runtime_loadvm() {
-    let policy = QemuSavevmCompletenessPolicy::complete();
+fn production_policy_authorizes_probe_and_runtime_loadvm() {
+    let policy = QemuExactSnapshotPolicy::production();
 
     assert_eq!(
-        QEMU_SAVEVM_COMPLETENESS_CHECK,
+        QEMU_EXACT_SNAPSHOT_RESTORE_CHECK,
         "checks.crucible.phase2.qemuExactSnapshotRestore"
     );
     assert_eq!(
         policy.authorize_loadvm_probe().purpose(),
-        QemuLoadvmCommandPurpose::SnapshotCompletenessProbe
-    );
-    assert_eq!(
-        policy.authorize_loadvm_runtime().purpose(),
-        QemuLoadvmCommandPurpose::RuntimeRealization
+        QemuLoadvmCommandPurpose::ReplayOracleProbe
     );
 }
 
 #[test]
-fn complete_policy_requires_matching_replay_oracle_evidence() {
-    let policy = QemuSavevmCompletenessPolicy::complete();
+fn production_policy_requires_matching_replay_oracle_evidence() {
+    let policy = QemuExactSnapshotPolicy::production();
     let runtime_hash = content_hash_with_byte(0x11);
 
     assert_eq!(
         policy.accept_loadvm_realized_runtime(QemuReplayOracleValidation::NotRun),
-        Err(QemuSavevmPolicyError::ReplayOracleValidationRequired)
+        Err(QemuExactSnapshotPolicyError::ReplayOracleValidationRequired)
     );
     let admission = policy
         .accept_loadvm_realized_runtime(QemuReplayOracleValidation::Match { runtime_hash })

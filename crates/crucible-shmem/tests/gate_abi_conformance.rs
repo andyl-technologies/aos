@@ -11,6 +11,8 @@ use crucible_shmem::{
     FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE, FRAME_ENTRY_SRC_NODE_OFFSET,
     FrameEntry, MAX_FRAME_DATA, NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
     NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
+    NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET, NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
+    NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET, NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET,
     NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET, NODE_SLOT_PREEMPTION_ARG0_OFFSET,
     NODE_SLOT_PREEMPTION_ARG1_OFFSET, NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
     NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET, NODE_SLOT_PREEMPTION_CONSUMED_SEQUENCE_OFFSET,
@@ -261,6 +263,26 @@ fn live_golden_bytes() -> Vec<u8> {
         &mut bytes,
         GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_KIND_OFFSET,
         PREEMPTION_KIND_VCPU_SWITCH,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET,
+        96,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET,
+        128,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET,
+        13,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
+        13,
     );
 
     write_u64(
@@ -529,6 +551,22 @@ fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                 bytes,
                 GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_KIND_OFFSET,
             ),
+            logical_time_raw_icount: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET,
+            ),
+            logical_time_restore_target: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET,
+            ),
+            logical_time_restore_request: read_u32(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET,
+            ),
+            logical_time_restore_ack: read_u32(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
+            ),
         },
         ring: RingHeaderState {
             read_idx: read_u64(bytes, GOLDEN_RING_HEADER_BASE + RING_HEADER_READ_IDX_OFFSET),
@@ -742,6 +780,26 @@ fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
         GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_KIND_OFFSET,
         state.node.preemption_kind,
     );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET,
+        state.node.logical_time_raw_icount,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET,
+        state.node.logical_time_restore_target,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET,
+        state.node.logical_time_restore_request,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
+        state.node.logical_time_restore_ack,
+    );
 
     write_u64(
         &mut bytes,
@@ -922,6 +980,10 @@ struct NodeSlotState {
     preemption_arg0: u32,
     preemption_arg1: u32,
     preemption_kind: u8,
+    logical_time_raw_icount: u64,
+    logical_time_restore_target: u64,
+    logical_time_restore_request: u32,
+    logical_time_restore_ack: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -103,10 +103,6 @@
       needle = "*bytes_out = buffer->usage";
     }
     {
-      label = "pause VM plugin export";
-      needle = "qemu_plugin_crucible_pause_vm";
-    }
-    {
       label = "cryptographic guest RAM export";
       needle = "qemu_plugin_crucible_guest_ram_sha256";
     }
@@ -298,7 +294,10 @@
   failures =
     failuresFor "pkgs/emulation/qemu.nix" qemuNix qemuNixRequirements
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource patchRequirements
-    ++ failuresFor "tests/crucible/phase1-rr-fingerprint-helpers.c" microtestSource microtestRequirements;
+    ++ failuresFor "tests/crucible/phase1-rr-fingerprint-helpers.c" microtestSource microtestRequirements
+    ++ lib.optionals (hasInfix "qemu_plugin_crucible_pause_vm" patchSource) [
+      "pkgs/emulation/qemu-patches/${patchName}: legacy unvalidated VM pause export remains"
+    ];
 in
   if failures != []
   then throw "crucible phase1 RR fingerprint helper check failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -709,7 +708,6 @@ in
             grep -q '^device_state_schema_digest_and_count=true$' "$out/result"
             grep -q '^device_state_schema_field_and_subsection_mutations=true$' "$out/result"
             grep -q '^observed_icount_and_runstate=true$' "$out/result"
-            grep -q '^pause_vm_requests_run_state_paused=true$' "$out/result"
             grep -q '^migration_host_timer_zeroed_under_icount=true$' "$out/result"
             grep -q '^migration_host_timer_preserved_without_icount=true$' "$out/result"
             grep -q '^stock_negative_control_rr_budget_unpinned=true$' "$out/result"

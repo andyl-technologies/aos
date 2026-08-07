@@ -74,10 +74,10 @@ index 0000000..4ba3752
 +
 +#endif
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index d8fde5e..0689e65 100644
+index a9bf018..bd4f5e6 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1787,6 +1787,139 @@ void qemu_plugin_crucible_pause_vm(void);
+@@ -1775,6 +1775,139 @@ uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
  QEMU_PLUGIN_API
  int64_t qemu_plugin_clock_deadline_ns(void);
  

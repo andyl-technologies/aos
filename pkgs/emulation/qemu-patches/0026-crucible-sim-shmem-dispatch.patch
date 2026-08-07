@@ -153,7 +153,7 @@ index 0000000..69553f3
 +
 +#endif /* TCG_ACCEL_OPS_SIM_SHMEM_H */
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 259ccd1..55c0bea 100644
+index ab65817..7a5acaf 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -173,6 +173,22 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,

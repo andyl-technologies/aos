@@ -21,6 +21,8 @@ thread_local! {
     static TEST_CLOCK_DEADLINE_NS: Cell<i64> = const { Cell::new(-1) };
     static LAST_QUEUED_ADVANCE_NS: Cell<i64> = const { Cell::new(-1) };
     static TEST_QUEUED_ADVANCE_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
+    static TEST_REQUEST_VMSTOP_CALLS: Cell<u64> = const { Cell::new(0) };
+    static TEST_REQUEST_VMSTOP_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
 }
 static TEST_RX_SEND_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEST_RX_FLUSH_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -75,6 +77,7 @@ fn test_live_state_with_teardown(
         plugin_id,
         test_icount_raw,
         test_force_vcpu_exit,
+        test_request_vmstop,
         test_support::test_preemption_injector(),
         vcpu_count,
         icount_shift,
@@ -90,6 +93,11 @@ fn test_live_state_with_teardown(
 }
 
 extern "C" fn test_force_vcpu_exit() {}
+
+extern "C" fn test_request_vmstop() -> std::os::raw::c_int {
+    TEST_REQUEST_VMSTOP_CALLS.set(TEST_REQUEST_VMSTOP_CALLS.get() + 1);
+    TEST_REQUEST_VMSTOP_STATUS.get()
+}
 
 #[test]
 fn shared_shutdown_resume_signal_is_one_shot_and_defers_done_to_worker() {
@@ -249,6 +257,70 @@ fn live_state_dispatches_vcpu_init_publish_and_ceiling() {
     assert_eq!(slot.snapshot().current_icount, 5);
     assert!(state.initialized_vcpus[0].load(Ordering::Acquire));
     assert!(state.initialized_vcpus[1].load(Ordering::Acquire));
+}
+
+#[test]
+fn busy_max_advance_acknowledges_pause_without_advancing_or_pumping_work() {
+    TEST_REQUEST_VMSTOP_CALLS.set(0);
+    TEST_REQUEST_VMSTOP_STATUS.set(0);
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = RegionHeader::new(layout);
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 12, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let (sender, receiver) = mpsc::channel();
+    std::mem::forget(receiver);
+    let state = test_live_state_with_teardown(74, 1, 0, 0, &header, &slot, sender)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    header
+        .request_pause([&slot])
+        .unwrap_or_else(|error| panic!("pause request should publish: {error}"));
+
+    assert_eq!(state.max_advance_icount(), Ok(0));
+    let paused = slot.snapshot();
+    assert_eq!(paused.status, STATUS_IDLE);
+    assert_eq!(paused.current_icount, 0);
+    assert_eq!(paused.idle_wake_icount, 0);
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
+
+    header.clear_pause();
+    assert_eq!(state.max_advance_icount(), Ok(12));
+    assert_eq!(slot.snapshot().current_icount, 0);
+}
+
+#[test]
+fn busy_pause_publishes_exact_boundary_before_vmstop_rejection_is_reported() {
+    TEST_REQUEST_VMSTOP_CALLS.set(0);
+    TEST_REQUEST_VMSTOP_STATUS.set(-7);
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = RegionHeader::new(layout);
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 12, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let (sender, receiver) = mpsc::channel();
+    std::mem::forget(receiver);
+    let state = test_live_state_with_teardown(75, 1, 0, 0, &header, &slot, sender)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    header
+        .request_pause([&slot])
+        .unwrap_or_else(|error| panic!("pause request should publish: {error}"));
+
+    assert_eq!(
+        state.max_advance_icount(),
+        Err(LiveVcpuTimeCallbackError::CheckpointVmStopRejected { status: -7 })
+    );
+    let paused = slot.snapshot();
+    assert_eq!(paused.status, STATUS_IDLE);
+    assert_eq!(paused.current_icount, 0);
+    assert_eq!(paused.idle_wake_icount, 0);
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
+    TEST_REQUEST_VMSTOP_STATUS.set(0);
 }
 
 #[test]
@@ -534,6 +606,44 @@ fn live_idle_callback_parks_when_an_advance_still_owns_the_qemu_barrier() {
             .unwrap_or_else(|error| panic!("pending state should remain readable: {error}"))
             .is_none()
     );
+}
+
+#[test]
+fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = RegionHeader::new(layout);
+    let slot = NodeSlot::new(KIND_VM);
+    let priming = authorize_advance_ceiling(0, 100, None)
+        .unwrap_or_else(|error| panic!("priming ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(priming)
+        .unwrap_or_else(|error| panic!("priming ceiling should publish: {error}"));
+    slot.publish_reached_icount(100, 0)
+        .unwrap_or_else(|error| panic!("priming boundary should publish: {error}"));
+    let state = test_live_state_with_teardown(88, 1, 0, 100, &header, &slot, mpsc::channel().0)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    let restored_ceiling = authorize_advance_ceiling(100, 500, None)
+        .unwrap_or_else(|error| panic!("restore ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(restored_ceiling)
+        .unwrap_or_else(|error| panic!("restore ceiling should publish: {error}"));
+    let generation = slot
+        .arm_logical_time_restore(500)
+        .unwrap_or_else(|error| panic!("logical-time restore should arm: {error}"));
+    header
+        .request_pause([&slot])
+        .unwrap_or_else(|error| panic!("restore pause should publish: {error}"));
+    TEST_REQUEST_VMSTOP_CALLS.set(0);
+
+    assert_eq!(state.publish_pause_if_requested(40), Ok(true));
+
+    let snapshot = slot.snapshot();
+    assert_eq!(snapshot.logical_time_restore_request, generation);
+    assert_eq!(snapshot.logical_time_restore_ack, generation);
+    assert_eq!(snapshot.current_icount, 500);
+    assert_eq!(snapshot.logical_time_raw_icount, 40);
+    assert_eq!(state.logical_icount_offset.load(Ordering::Acquire), 460);
+    assert_eq!(state.logical_icount_for_raw(41), Ok(501));
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
 }
 
 #[test]

@@ -157,7 +157,7 @@ in
             grep -q 'qemu_plugin_crucible_rr_switch_quantum' \
               ${packages.qemu-crucible}/include/qemu/qemu-plugin.h
             test -f ${packages.qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h
-            grep -q '#define CRUCIBLE_SHMEM_ABI_VERSION 5u' \
+            grep -q '#define CRUCIBLE_SHMEM_ABI_VERSION 8u' \
               ${packages.qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h
             test -f ${packages.qemu-crucible}/share/aos/crucible/qemu-build-identity.env
             grep -q '^qemu_sim_capability=qemu-crucible$' \

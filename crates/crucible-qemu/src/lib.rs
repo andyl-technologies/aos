@@ -27,7 +27,7 @@
 //! the Linux post-setup node composition boundary; `quantum` owns the
 //! per-quantum shared-memory hot path; `qmp` owns the minimal typed QMP client;
 //! `realization` owns the start/resume/fork instantiate branch coordinator; and
-//! `savevm_policy` owns exact paired QEMU `savevm`/`loadvm` restore admission.
+//! `exact_snapshot_policy` owns exact paired QEMU `savevm`/`loadvm` restore admission.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
 //! details stay private; public callers use a safe host-driver API that
@@ -40,9 +40,11 @@
 mod async_driver;
 #[cfg(target_os = "linux")]
 mod block_realization_gate;
+mod checkpoint;
 mod coverage;
 mod crash_detection;
 mod determinism_boundary;
+mod exact_snapshot_policy;
 mod fault_action_sink;
 mod fault_capability;
 mod gdbstub_proxy;
@@ -70,7 +72,6 @@ mod qmp;
 mod quantum;
 mod quantum_boundary;
 mod realization;
-mod savevm_policy;
 mod setup_failure;
 mod shutdown;
 mod single_vm_fingerprint;
@@ -93,6 +94,9 @@ pub use block_realization_gate::{
     BlockRealizationGateConfig, BlockRealizationGateError, BlockRealizationReport,
     run_block_realization_gate,
 };
+pub use checkpoint::{
+    QemuHostIoCheckpoint, QemuLiveBlockIoServicerCheckpoint, QemuNodeContinuationCheckpoint,
+};
 pub use coverage::{
     QemuBasicBlockCoverageBridge, QemuCoverageError, QemuCoverageFingerprintReport,
     QemuCoverageFingerprintRun, compare_coverage_opt_in_fingerprint_streams,
@@ -109,6 +113,11 @@ pub use determinism_boundary::{
     QemuFingerprintStateComponent, REQUIRED_QEMU_ENTROPY_ELIMINATIONS,
     REQUIRED_QEMU_FINGERPRINT_COMPONENTS, REQUIRED_QEMU_FINGERPRINT_EVENT_BOUNDARIES,
     qemu_entropy_elimination_microtests, validate_qemu_determinism_boundary,
+};
+pub use exact_snapshot_policy::{
+    QEMU_EXACT_SNAPSHOT_RESTORE_CHECK, QemuExactSnapshotPolicy, QemuExactSnapshotPolicyError,
+    QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission,
+    QemuReplayOracleValidation,
 };
 pub use fault_action_sink::QemuFaultActionSink;
 pub use fault_capability::QemuFaultCapabilityRequirement;
@@ -133,18 +142,19 @@ pub use launch::{
     CrucibleShmem9pDevice, CrucibleShmem9pFsdevBackend, CrucibleShmemBlockDevice,
     CrucibleShmemNetworkDevice, DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID,
     DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID, DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG,
-    DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID,
+    DEFAULT_CRUCIBLE_SHMEM_BLOCK_NODE_NAME, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID,
     DEFAULT_CRUCIBLE_SHMEM_NETDEV_ID, DEFAULT_CRUCIBLE_SHMEM_NETWORK_DEVICE_ID,
-    DEFAULT_CRUCIBLE_SHMEM_NETWORK_MAC, DEFAULT_ROOT_OVERLAY_FILE_NAME, DeterministicLaunchProfile,
-    DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, GuestEntropySeed,
-    GuestEntropySeedFile, IcountShiftSetting, InputPolicy, LaunchProfileCandidate,
-    LaunchProfileError, LivePluginGuestArchitecture, MachineResetMode, NodeClockSkewDeclaration,
-    NodeIcountShift, QEMU_CONSOLE_CHARDEV_ID, QEMU_CONSOLE_SOCKET_FILE_NAME,
-    QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD, QemuGdbstubChannelConfig,
-    QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
-    QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig,
-    QemuRootImageFormat, QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation,
+    DEFAULT_CRUCIBLE_SHMEM_NETWORK_MAC, DEFAULT_ROOT_OVERLAY_FILE_NAME, DEFAULT_VMSTATE_FILE_NAME,
+    DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
+    GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
+    LaunchProfileCandidate, LaunchProfileError, LivePluginGuestArchitecture, MachineResetMode,
+    NodeClockSkewDeclaration, NodeIcountShift, QEMU_CONSOLE_CHARDEV_ID,
+    QEMU_CONSOLE_SOCKET_FILE_NAME, QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD,
+    QEMU_PLUGIN_WAKE_FD, QemuGdbstubChannelConfig, QemuLaunchAppRandomConfig, QemuLaunchArtifact,
+    QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchInheritedFds,
+    QemuLaunchPluginConfig, QemuLaunchPluginSwitch, QemuPreSpawnLaunchValidation,
+    QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig, QemuRootImageFormat,
+    QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation,
     probe_x86_whitebox_setup, qemu_fault_target_hash, validate_aarch64_whitebox_setup,
     validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
 };
@@ -167,15 +177,15 @@ pub use live_plugin_quantum_gate::{
 #[cfg(unix)]
 pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError};
 pub use node::{
-    QemuNode, QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeChannels, QemuNodeChild,
-    QemuNodeEmittedFrame, QemuNodeError, QemuNodeIdleState, QemuNodeLifecycleState,
-    QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuQmpMachineControlChannel,
-    QemuShmemHotPathChannel,
+    QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,
+    QemuNodeChannels, QemuNodeChild, QemuNodeEmittedFrame, QemuNodeError, QemuNodeIdleState,
+    QemuNodeLifecycleState, QemuNodePendingQuantum, QemuPluginIpcControlChannel,
+    QemuQmpMachineControlChannel, QemuShmemHotPathChannel,
 };
 #[cfg(target_os = "linux")]
 pub use node_factory::{
     QemuNodeFactoryError, QemuNodeFactoryRuntime, QemuNodeRestoreAdmission, QemuNodeRestorePlan,
-    QemuQmpShutdownOnlyControlChannel, QemuWarmRestoreLaunchError,
+    QemuQmpExactSnapshotControlChannel, QemuWarmRestoreLaunchError,
     build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
     spawn_setup_and_restore_qemu_node,
 };
@@ -188,13 +198,13 @@ pub use production_fault_runtime::{
 };
 pub use production_fault_sink::ProductionFaultActionSink;
 pub use qmp::{
-    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT, QMP_JOB_QUERY_INTERVAL,
-    QMP_JOB_QUERY_LIMIT, QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_JOBS_COMMAND,
-    QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND,
-    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuQmpVmStateControlChannel,
-    QmpClient, QmpCommandComplete, QmpCommandKind, QmpCpuTopology, QmpError, QmpGreeting,
-    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunState, QmpRunStateKind, QmpSnapshotTag,
-    QmpTimeoutStream,
+    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT, QMP_JOB_DISMISS_COMMAND,
+    QMP_JOB_QUERY_INTERVAL, QMP_JOB_QUERY_LIMIT, QMP_QUERY_CPUS_FAST_COMMAND,
+    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
+    QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
+    QMP_SNAPSHOT_VMSTATE_DEVICE, QemuQmpVmStateControlChannel, QmpClient, QmpCommandComplete,
+    QmpCommandKind, QmpCpuTopology, QmpError, QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy,
+    QmpRunState, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 pub use quantum::{
     QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuDueInboundFrame, QemuInboundFrame,
@@ -204,21 +214,15 @@ pub use quantum::{
 };
 pub use realization::{
     QemuBackendRealizationExecutor, QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot,
-    QemuCachedAncestor, QemuVmBakeExecutor, QemuVmLoadvmAdmissionPolicy, QemuVmRealization,
-    QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmRealizationKind,
-    QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot,
-    bake_qemu_genesis_vm, check_qemu_replay_oracle, fork_qemu_vm, instantiate_qemu_vm,
-    resume_qemu_vm, start_qemu_vm,
+    QemuCachedAncestor, QemuVmBakeExecutor, QemuVmRealization, QemuVmRealizationError,
+    QemuVmRealizationExecutor, QemuVmRealizationKind, QemuVmRealizationOperation,
+    QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot, bake_qemu_genesis_vm,
+    check_qemu_replay_oracle, fork_qemu_vm, instantiate_qemu_vm, resume_qemu_vm, start_qemu_vm,
 };
 #[cfg(target_os = "linux")]
 pub use realization::{
     QemuNodeRealizationExecutor, QemuNodeRealizationLauncher, QemuRealizedNodeBackend,
     QemuWarmRestoreNodeLauncher,
-};
-pub use savevm_policy::{
-    QEMU_SAVEVM_COMPLETENESS_CHECK, QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose,
-    QemuLoadvmRealizationAdmission, QemuReplayOracleValidation, QemuSavevmCompletenessPolicy,
-    QemuSavevmPolicyError,
 };
 pub use setup_failure::{
     FailedQemuNodeSetup, QemuNodeSetup, QemuSchedulableNodeSetup, QemuSetupAbortError,
@@ -296,19 +300,20 @@ pub use supervision::{
     LIVE_NETWORK_REPLY_LATENCY_ICOUNT, LIVE_NETWORK_REPLY_PAYLOAD, LiveNetworkIoServiceStep,
     LiveNetworkIoSnapshot, LiveNetworkTxObservation, NinepIoAdvanceOutcome, NinepIoDiagnostics,
     NinepIoDiagnosticsSnapshot, QemuBlockFaultCoordinator, QemuDeviceHostWorkDelay,
-    QemuHostIoCheckpoint, QemuLive9pIoGateConfig, QemuLive9pIoGateError, QemuLive9pIoReport,
-    QemuLive9pIoServiceStep, QemuLive9pIoServicer, QemuLive9pIoServicerError,
-    QemuLiveBlockHostWorkPool, QemuLiveBlockHostWorkPoolError, QemuLiveBlockIoDeliveryStep,
-    QemuLiveBlockIoGateConfig, QemuLiveBlockIoGateError, QemuLiveBlockIoHostWorkPin,
-    QemuLiveBlockIoIntakeStep, QemuLiveBlockIoObservedRequest, QemuLiveBlockIoReport,
-    QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer, QemuLiveBlockIoServicerCheckpoint,
-    QemuLiveBlockIoServicerError, QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError,
-    QemuLiveBlockNodeReport, QemuLiveBlockStorageEvents, QemuLiveHostIoRuntime,
-    QemuLiveHostIoRuntimeError, QemuLiveHostParallelGateError, QemuLiveHostParallelReport,
-    QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError, QemuLiveNetworkIoReport,
-    QemuLiveNetworkIoServicer, QemuLiveNetworkIoServicerError, QemuLiveNodeStepGateConfig,
-    QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum, QemuLiveNodeStepReport,
-    QemuLiveNodeStepSchedule, launch_qemu_live_node, launch_qemu_live_node_restored,
+    QemuLive9pIoGateConfig, QemuLive9pIoGateError, QemuLive9pIoReport, QemuLive9pIoServiceStep,
+    QemuLive9pIoServicer, QemuLive9pIoServicerError, QemuLiveBlockHostWorkPool,
+    QemuLiveBlockHostWorkPoolError, QemuLiveBlockIoDeliveryStep, QemuLiveBlockIoGateConfig,
+    QemuLiveBlockIoGateError, QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoIntakeStep,
+    QemuLiveBlockIoObservedRequest, QemuLiveBlockIoReport, QemuLiveBlockIoServiceStep,
+    QemuLiveBlockIoServicer, QemuLiveBlockIoServicerError, QemuLiveBlockNodeGateConfig,
+    QemuLiveBlockNodeGateError, QemuLiveBlockNodeReport, QemuLiveBlockStorageEvents,
+    QemuLiveExactSnapshotReport, QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError,
+    QemuLiveHostParallelGateError, QemuLiveHostParallelReport, QemuLiveNetworkIoGateConfig,
+    QemuLiveNetworkIoGateError, QemuLiveNetworkIoReport, QemuLiveNetworkIoServicer,
+    QemuLiveNetworkIoServicerError, QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError,
+    QemuLiveNodeStepQuantum, QemuLiveNodeStepReport, QemuLiveNodeStepSchedule,
+    launch_qemu_live_node, launch_qemu_live_node_exact_snapshot, launch_qemu_live_node_restored,
     run_qemu_live_9p_io_gate, run_qemu_live_block_io_gate, run_qemu_live_block_node_gate,
-    run_qemu_live_host_parallel_gate, run_qemu_live_network_io_gate, run_qemu_live_node_step_gate,
+    run_qemu_live_exact_snapshot_gate, run_qemu_live_host_parallel_gate,
+    run_qemu_live_network_io_gate, run_qemu_live_node_step_gate,
 };

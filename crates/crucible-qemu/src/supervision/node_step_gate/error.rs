@@ -27,6 +27,34 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// A crash-safe exact-snapshot artifact could not be copied.
+    #[error("copy exact-snapshot artifact from {source_path} to {destination_path} failed")]
+    SnapshotArtifactCopy {
+        /// Captured artifact path.
+        source_path: PathBuf,
+        /// Fresh restore artifact path.
+        destination_path: PathBuf,
+        /// Underlying copy error.
+        source: std::io::Error,
+    },
+    /// The dedicated VMState qcow2 container could not be created.
+    #[error("prepare VMState container {path} failed")]
+    PrepareVmState {
+        /// VMState container path.
+        path: PathBuf,
+        /// Underlying process-spawn error.
+        source: std::io::Error,
+    },
+    /// `qemu-img` rejected VMState container creation.
+    #[error("qemu-img rejected VMState container {path} creation with {status}: {stderr}")]
+    VmStateImageTool {
+        /// VMState container path.
+        path: PathBuf,
+        /// Child exit status.
+        status: String,
+        /// Bounded diagnostic emitted by `qemu-img`.
+        stderr: String,
+    },
     /// The deterministic launch profile could not be derived.
     #[error("derive deterministic launch profile failed")]
     LaunchProfile {
@@ -80,6 +108,15 @@ pub enum QemuLiveNodeStepGateError {
     /// The plugin setup acknowledgement did not permit scheduling.
     #[error("plugin setup acknowledgement did not permit scheduling")]
     SetupAckNotReady,
+    /// The supplied exact snapshot was not emitted by a live QEMU node.
+    #[error("production exact restore rejected a non-live or identity-inconsistent snapshot")]
+    InvalidExactSnapshot,
+    /// A live exact save/crash/load continuation violated its identity contract.
+    #[error("live exact snapshot invariant failed: {reason}")]
+    ExactSnapshotInvariant {
+        /// Deterministic mismatch or missing-evidence detail.
+        reason: String,
+    },
     /// The priming hot path could not map the shared-memory region.
     #[error("map priming shared-memory region failed")]
     PrimeRegionMap {

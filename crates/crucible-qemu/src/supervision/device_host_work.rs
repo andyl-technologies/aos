@@ -33,11 +33,11 @@ use crucible_device::block::{
 
 use super::block_io_servicer::{
     QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,
-    QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError,
+    QemuLiveBlockIoServicerError,
 };
 use crate::{
-    ResolvedVolatileCacheLoss, StorageFaultResolutionContext, StorageFaultResolutionError,
-    VolatileCacheLossReplay, resolve_volatile_cache_loss,
+    QemuLiveBlockIoServicerCheckpoint, ResolvedVolatileCacheLoss, StorageFaultResolutionContext,
+    StorageFaultResolutionError, VolatileCacheLossReplay, resolve_volatile_cache_loss,
 };
 
 /// Capacity of the owner-to-worker command queue.

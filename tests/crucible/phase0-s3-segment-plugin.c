@@ -438,7 +438,9 @@ request_pause(void)
 {
   stop_requested = true;
   record_sample(true);
-  qemu_plugin_crucible_pause_vm();
+  if (qemu_plugin_request_vmstop() != 0) {
+    qemu_plugin_request_shutdown(1);
+  }
 }
 
 static void

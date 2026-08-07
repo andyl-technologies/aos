@@ -24,8 +24,7 @@ pub use block_io_gate::{
 pub use block_io_servicer::{
     BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoDeliveryStep,
     QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoIntakeStep, QemuLiveBlockIoObservedRequest,
-    QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer, QemuLiveBlockIoServicerCheckpoint,
-    QemuLiveBlockIoServicerError,
+    QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer, QemuLiveBlockIoServicerError,
 };
 pub use block_node_gate::{
     BlockNodeOutcome, QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError,
@@ -36,8 +35,7 @@ pub use device_host_work::{
     QemuLiveBlockStorageEvents,
 };
 pub use host_io_runtime::{
-    QemuBlockFaultCoordinator, QemuHostIoCheckpoint, QemuLiveHostIoRuntime,
-    QemuLiveHostIoRuntimeError,
+    QemuBlockFaultCoordinator, QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError,
 };
 pub use host_parallel_gate::{
     QemuLiveHostParallelGateError, QemuLiveHostParallelReport, run_qemu_live_host_parallel_gate,
@@ -61,7 +59,8 @@ pub use ninep_io_servicer::{
     QemuLive9pIoServicerError,
 };
 pub use node_step_gate::{
-    QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum,
-    QemuLiveNodeStepReport, QemuLiveNodeStepSchedule, launch_qemu_live_node,
-    launch_qemu_live_node_restored, run_qemu_live_node_step_gate,
+    QemuLiveExactSnapshotReport, QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError,
+    QemuLiveNodeStepQuantum, QemuLiveNodeStepReport, QemuLiveNodeStepSchedule,
+    launch_qemu_live_node, launch_qemu_live_node_exact_snapshot, launch_qemu_live_node_restored,
+    run_qemu_live_exact_snapshot_gate, run_qemu_live_node_step_gate,
 };

@@ -74,6 +74,36 @@ pub struct QemuNodeIdleState {
     pub next_deadline: Option<Icount>,
 }
 
+/// Plugin logical-time calibration observed at one coherent shared-memory boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct QemuLogicalTimeCalibration {
+    /// Scheduler-visible logical instruction count.
+    pub logical_icount: u64,
+    /// QEMU VMState-owned raw retired-instruction count.
+    pub raw_icount: u64,
+}
+
+impl QemuLogicalTimeCalibration {
+    /// Returns the idle-jump offset applied over QEMU's raw icount.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when raw icount is ahead of logical time.
+    pub fn offset(self) -> Result<u64, QemuNodeChannelError> {
+        self.logical_icount
+            .checked_sub(self.raw_icount)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "read logical-time calibration",
+                    format!(
+                        "raw icount {} is ahead of logical icount {}",
+                        self.raw_icount, self.logical_icount
+                    ),
+                )
+            })
+    }
+}
+
 /// The one QEMU child process owned by a [`QemuNode`].
 #[derive(Debug)]
 pub struct QemuNodeChild {
@@ -164,6 +194,29 @@ impl QemuNodeChild {
             QemuChildWait::StillRunning => Ok(QemuReap::StillAlive),
         }
     }
+
+    /// Force-kills and synchronously reaps a failed fresh realization.
+    ///
+    /// This failure-only path deliberately has no reap timeout: returning an
+    /// assembly error while abandoning this process would leave a live child or
+    /// zombie owned by the long-running host. Ordinary node shutdown remains
+    /// bounded by [`QemuShutdownPolicy`].
+    pub(crate) fn force_kill_and_reap_failed_realization(
+        &mut self,
+    ) -> Result<(), QemuShutdownTargetError> {
+        if self.reaped {
+            return Ok(());
+        }
+        // A kill error can mean the child exited between the factory failure
+        // and this call. Waiting is still mandatory and decides whether the
+        // child was actually reaped.
+        let _kill_result = self.child.kill();
+        self.child.wait().map_err(|error| {
+            QemuShutdownTargetError::new("reap failed QEMU realization", error.to_string())
+        })?;
+        self.reaped = true;
+        Ok(())
+    }
 }
 
 /// Bounded deadline for reaping a force-killed child in [`QemuNodeChild::drop`].
@@ -223,6 +276,16 @@ pub trait QemuShmemHotPathChannel: Send {
     /// Returns [`QemuNodeChannelError`] when the shared-memory state cannot be
     /// observed.
     fn current_icount(&mut self) -> Result<Icount, QemuNodeChannelError>;
+
+    /// Reads the coherent plugin logical/raw time calibration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the shared-memory state cannot be
+    /// observed or carries an impossible raw/logical relationship.
+    fn logical_time_calibration(
+        &mut self,
+    ) -> Result<QemuLogicalTimeCalibration, QemuNodeChannelError>;
 
     /// Starts a split quantum by publishing `horizon` through shared memory.
     ///
@@ -425,19 +488,39 @@ impl QemuNodePendingQuantum {
 
 /// QMP machine-control channel for snapshot and quit commands.
 pub trait QemuQmpMachineControlChannel: Send {
-    /// Captures the VM-state half of a checkpoint through QMP.
+    /// Stops guest execution for a checkpoint transaction.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when QMP cannot save the checkpoint.
-    fn save_checkpoint(&mut self) -> Result<Checkpoint, QemuNodeChannelError>;
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot confirm the paused state.
+    fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError>;
 
-    /// Restores the VM-state half of `checkpoint` through QMP.
+    /// Resumes guest execution after a checkpoint transaction.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when QMP cannot restore the checkpoint.
-    fn restore_checkpoint(&mut self, checkpoint: &Checkpoint) -> Result<(), QemuNodeChannelError>;
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot confirm the running state.
+    fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError>;
+
+    /// Saves VMState under the supplied checkpoint identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP cannot complete the save job.
+    fn save_checkpoint_vmstate(
+        &mut self,
+        checkpoint: &Checkpoint,
+    ) -> Result<(), QemuNodeChannelError>;
+
+    /// Deletes VMState stored under the supplied checkpoint identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP cannot complete the delete job.
+    fn delete_checkpoint_vmstate(
+        &mut self,
+        checkpoint: &Checkpoint,
+    ) -> Result<(), QemuNodeChannelError>;
 
     /// Requests QEMU termination through QMP `quit`.
     ///
@@ -1043,37 +1126,262 @@ impl QemuNode {
             })
     }
 
-    /// Captures a checkpoint through QMP machine control.
+    /// Captures QEMU VMState and the Apache host-I/O continuation as one pair.
+    ///
+    /// The caller supplies the already materialized scheduler checkpoint whose
+    /// content identity names the VMState artifact. Host-I/O state is captured
+    /// first at the completed quantum boundary; QMP then saves guest state under
+    /// the same identity. A failed save leaves any pre-existing artifact intact;
+    /// the typed QMP client dismisses every concluded snapshot job.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeError`] when QMP cannot save the checkpoint.
-    pub fn save_checkpoint(&mut self) -> Result<Checkpoint, QemuNodeError> {
-        match self.channels.qmp_machine_control.save_checkpoint() {
-            Ok(mut checkpoint) => {
-                checkpoint.virtual_time = self.last_observed_time;
-                Ok(checkpoint)
+    /// Returns [`QemuNodeError`] when the node is not at the checkpoint's
+    /// virtual-time boundary, host-I/O capture fails, or QMP save fails.
+    pub fn capture_exact_snapshot(
+        &mut self,
+        node: &NodeId,
+        checkpoint: Checkpoint,
+    ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
+        if self.lifecycle_state != QemuNodeLifecycleState::Running {
+            return Err(QemuNodeError::checkpoint(
+                "exact snapshot capture requires a running QEMU node",
+            ));
+        }
+        if self.active_gdbstub.is_some() {
+            return Err(QemuNodeError::checkpoint(
+                "exact snapshot capture is forbidden while a debugger proxy is active",
+            ));
+        }
+        let expected_icount = checkpoint.node_icounts.get(node).ok_or_else(|| {
+            QemuNodeError::checkpoint(format!(
+                "checkpoint has no instruction counter for QEMU node `{}`",
+                node.name
+            ))
+        })?;
+        if expected_icount.retired != self.last_observed_time.ticks {
+            return Err(QemuNodeError::checkpoint(format!(
+                "checkpoint icount {} for `{}` does not match QEMU boundary {}",
+                expected_icount.retired, node.name, self.last_observed_time.ticks
+            )));
+        }
+        let observed_icount = self.current_icount()?;
+        if observed_icount.retired != self.last_observed_time.ticks {
+            return Err(QemuNodeError::checkpoint(format!(
+                "shared-memory icount {} does not match completed QEMU boundary {}",
+                observed_icount.retired, self.last_observed_time.ticks
+            )));
+        }
+        self.host_io_runtime
+            .quiesce_for_checkpoint(self.async_policy.qmp_command_timeout)
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })?;
+        if let Err(source) = self.channels.qmp_machine_control.stop_for_checkpoint() {
+            self.host_io_runtime
+                .resume_after_checkpoint()
+                .map_err(|cleanup| {
+                    QemuNodeError::checkpoint(format!(
+                        "QMP stop failed ({source}); releasing the plugin pause also failed ({cleanup})"
+                    ))
+                })?;
+            return self.handle_qmp_channel_error(source);
+        }
+        if let Err(source) = self.host_io_runtime.resume_after_checkpoint() {
+            let resume = self.channels.qmp_machine_control.resume_after_checkpoint();
+            return match resume {
+                Ok(()) => Err(QemuNodeError::from_async_driver(
+                    crate::QemuAsyncDriverError::Runtime(source),
+                )),
+                Err(qmp) => Err(QemuNodeError::checkpoint(format!(
+                    "releasing the plugin checkpoint pause failed ({source}); resuming QEMU also failed ({qmp})"
+                ))),
+            };
+        }
+        let capture_result = (|| {
+            let paused_icount = self.current_icount()?;
+            if paused_icount.retired != self.last_observed_time.ticks {
+                return Err(QemuNodeError::checkpoint(format!(
+                    "checkpoint pause moved shared-memory icount from {} to {}",
+                    self.last_observed_time.ticks, paused_icount.retired
+                )));
             }
+            let host_io = self
+                .host_io_runtime
+                .checkpoint_host_io(checkpoint.id)
+                .map_err(|source| {
+                    QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+                })?;
+            let logical_time_calibration = self
+                .channels
+                .shmem_hot_path
+                .logical_time_calibration()
+                .map_err(|source| {
+                    QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+                })?;
+            if logical_time_calibration.logical_icount != self.last_observed_time.ticks {
+                return Err(QemuNodeError::checkpoint(format!(
+                    "checkpoint logical-time calibration {} differs from scheduler boundary {}",
+                    logical_time_calibration.logical_icount, self.last_observed_time.ticks
+                )));
+            }
+            let _logical_time_offset = logical_time_calibration.offset().map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })?;
+            let node = crate::QemuNodeContinuationCheckpoint {
+                execution_binding: checkpoint.id,
+                last_observed_time: self.last_observed_time,
+                logical_time_calibration,
+                console_observation_boundary: self.console_observation_boundary,
+                pending_preemption: self.pending_preemption.clone(),
+                pending_network_outputs: self.pending_network_outputs.clone(),
+                next_fault_command_sequence: self.next_fault_command_sequence,
+            };
+            crate::QemuVmSnapshot::from_live_capture(
+                checkpoint.clone(),
+                host_io,
+                node,
+                crate::QemuReplayOracleValidation::NotRun,
+            )
+            .map_err(|error| QemuNodeError::checkpoint(error.to_string()))
+        })();
+        let snapshot = match capture_result {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let resume = self.channels.qmp_machine_control.resume_after_checkpoint();
+                return match resume {
+                    Ok(()) => Err(error),
+                    Err(resume_error) => Err(QemuNodeError::checkpoint(format!(
+                        "checkpoint capture failed ({error}); resuming QEMU also failed ({resume_error})"
+                    ))),
+                };
+            }
+        };
+        if let Err(save_error) = self
+            .channels
+            .qmp_machine_control
+            .save_checkpoint_vmstate(&checkpoint)
+        {
+            // Once snapshot-save has been written, a transport, decode, poll,
+            // dismiss, or timeout failure can leave an asynchronous job active.
+            // Never issue `cont` into that indeterminate state. Terminate and
+            // reap the owned process through the full shutdown ladder instead.
+            return match self.shutdown_child_after_coverage_drain() {
+                Ok(shutdown) => Err(QemuNodeError::checkpoint(format!(
+                    "saving QEMU VMState failed ({save_error}); the indeterminate checkpoint process was terminated and reaped: {shutdown:?}"
+                ))),
+                Err(shutdown) => Err(QemuNodeError::checkpoint(format!(
+                    "saving QEMU VMState failed ({save_error}); terminating the indeterminate checkpoint process also failed ({shutdown})"
+                ))),
+            };
+        }
+        if let Err(source) = self.channels.qmp_machine_control.resume_after_checkpoint() {
+            return self.handle_qmp_channel_error(source);
+        }
+        Ok(snapshot)
+    }
+
+    /// Reports whether the real block continuation has work crossing this boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the production host runtime cannot inspect
+    /// the block transport or device continuation.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn has_pending_block_io_for_gate(&mut self) -> Result<bool, QemuNodeError> {
+        self.host_io_runtime
+            .has_pending_block_io()
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })
+    }
+
+    pub(crate) fn restore_node_continuation(
+        &mut self,
+        checkpoint: &crate::QemuNodeContinuationCheckpoint,
+    ) -> Result<(), QemuNodeError> {
+        if checkpoint.next_fault_command_sequence < 2 {
+            return Err(QemuNodeError::checkpoint(
+                "restored fault-command sequence precedes setup capability admission",
+            ));
+        }
+        self.last_observed_time = checkpoint.last_observed_time;
+        self.console_observation_boundary = checkpoint.console_observation_boundary;
+        self.pending_preemption = checkpoint.pending_preemption.clone();
+        self.pending_network_outputs = checkpoint.pending_network_outputs.clone();
+        self.next_fault_command_sequence = checkpoint.next_fault_command_sequence;
+        Ok(())
+    }
+
+    /// Resumes a fully reconstructed node after the factory restores continuation state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when QMP cannot confirm the running state.
+    pub(crate) fn resume_after_restore(&mut self) -> Result<(), QemuNodeError> {
+        self.channels
+            .qmp_machine_control
+            .resume_after_checkpoint()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
+            })
+    }
+
+    /// Prevents a partially assembled restored node from leaking its child.
+    pub(crate) fn reap_failed_realization(&mut self) -> Result<(), QemuShutdownTargetError> {
+        self.child.force_kill_and_reap_failed_realization()
+    }
+
+    /// Deletes the VMState artifact owned by a previously captured snapshot.
+    ///
+    /// Callers use this when committing the Apache-side checkpoint to durable
+    /// storage fails after QMP save succeeds. The host-I/O value is immutable
+    /// owned data and needs no separate rollback operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the pair is identity-inconsistent or QMP
+    /// cannot complete the bounded delete job.
+    pub fn delete_exact_snapshot(
+        &mut self,
+        snapshot: &crate::QemuVmSnapshot,
+    ) -> Result<(), QemuNodeError> {
+        if snapshot.host_io().execution_binding() != snapshot.checkpoint().id {
+            return Err(QemuNodeError::checkpoint(
+                "refusing to delete an identity-inconsistent exact snapshot",
+            ));
+        }
+        match self
+            .channels
+            .qmp_machine_control
+            .delete_checkpoint_vmstate(snapshot.checkpoint())
+        {
+            Ok(()) => Ok(()),
             Err(source) => self.handle_qmp_channel_error(source),
         }
     }
 
-    /// Restores a checkpoint through QMP machine control.
+    /// Force-kills and reaps the child for the live exact-restore gate.
     ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeError`] when QMP cannot restore `checkpoint`.
-    pub fn restore_checkpoint(&mut self, checkpoint: &Checkpoint) -> Result<(), QemuNodeError> {
+    /// The gate deliberately avoids every graceful teardown channel so the
+    /// subsequent restore proves that no state survived in the old process.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn force_crash_and_reap_for_gate(&mut self) -> Result<(), QemuNodeError> {
+        self.child.send_sigkill().map_err(|error| {
+            QemuNodeError::checkpoint(format!("force checkpoint crash: {error}"))
+        })?;
         match self
-            .channels
-            .qmp_machine_control
-            .restore_checkpoint(checkpoint)
+            .child
+            .reap(self.shutdown_policy.reap_wait)
+            .map_err(|error| QemuNodeError::checkpoint(format!("reap checkpoint crash: {error}")))?
         {
-            Ok(()) => {
-                self.last_observed_time = checkpoint.virtual_time;
+            QemuReap::Reaped => {
+                self.lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
                 Ok(())
             }
-            Err(source) => self.handle_qmp_channel_error(source),
+            QemuReap::StillAlive => Err(QemuNodeError::checkpoint(
+                "force-killed checkpoint process remained alive past the reap deadline",
+            )),
         }
     }
 
@@ -1237,12 +1545,17 @@ impl Backend for QemuNode {
     }
 
     fn snapshot(&mut self) -> Result<Checkpoint, BackendError> {
-        self.save_checkpoint().map_err(BackendError::from)
+        Err(BackendError::Rejected {
+            message: String::from(
+                "QEMU snapshots require capture_exact_snapshot with scheduler checkpoint metadata",
+            ),
+        })
     }
 
-    fn restore(&mut self, checkpoint: &Checkpoint) -> Result<(), BackendError> {
-        self.restore_checkpoint(checkpoint)
-            .map_err(BackendError::from)
+    fn restore(&mut self, _checkpoint: &Checkpoint) -> Result<(), BackendError> {
+        Err(BackendError::Rejected {
+            message: String::from("QEMU restore requires paired VMState and host-I/O realization"),
+        })
     }
 
     fn shutdown(&mut self) -> Result<(), BackendError> {
@@ -1399,14 +1712,17 @@ impl SimulationBackend for QemuNode {
     }
 
     fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
-        self.save_checkpoint()
-            .map(BackendSnapshot::new)
-            .map_err(BackendError::from)
+        Err(BackendError::Rejected {
+            message: String::from(
+                "QEMU snapshots require capture_exact_snapshot with scheduler checkpoint metadata",
+            ),
+        })
     }
 
-    fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError> {
-        self.restore_checkpoint(&snapshot.checkpoint)
-            .map_err(BackendError::from)
+    fn restore(&mut self, _snapshot: &BackendSnapshot) -> Result<(), BackendError> {
+        Err(BackendError::Rejected {
+            message: String::from("QEMU restore requires paired VMState and host-I/O realization"),
+        })
     }
 
     fn now(&self) -> VirtualTime {
@@ -1664,8 +1980,10 @@ mod tests {
         ShmemEmit,
         ShmemIdle,
         ShmemFingerprint,
-        QmpSnapshot,
-        QmpRestore(ContentHash),
+        QmpStop,
+        QmpContinue,
+        QmpExactSave(ContentHash),
+        QmpExactDelete(ContentHash),
         PluginQuit,
         QmpQuit,
     }
@@ -1722,6 +2040,15 @@ mod tests {
                 .unwrap()
                 .push(ChannelCall::ShmemCurrentIcount);
             Ok(Icount { retired: 11 })
+        }
+
+        fn logical_time_calibration(
+            &mut self,
+        ) -> Result<QemuLogicalTimeCalibration, QemuNodeChannelError> {
+            Ok(QemuLogicalTimeCalibration {
+                logical_icount: 11,
+                raw_icount: 11,
+            })
         }
 
         fn start_quantum(
@@ -1835,29 +2162,48 @@ mod tests {
     }
 
     impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
-        fn save_checkpoint(&mut self) -> Result<Checkpoint, QemuNodeChannelError> {
-            self.log.lock().unwrap().push(ChannelCall::QmpSnapshot);
-            if self.timeout_snapshot {
-                return Err(QemuNodeChannelError::bounded_await_timeout(
-                    "save_checkpoint",
-                    "QMP command timed out",
-                    Duration::from_millis(2),
-                ));
-            }
-            if self.fail_snapshot {
-                return Err(QemuNodeChannelError::new("save_checkpoint", "QMP error"));
-            }
-            Ok(checkpoint("snapshot"))
+        fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+            self.log.lock().unwrap().push(ChannelCall::QmpStop);
+            Ok(())
         }
 
-        fn restore_checkpoint(
+        fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+            self.log.lock().unwrap().push(ChannelCall::QmpContinue);
+            Ok(())
+        }
+
+        fn save_checkpoint_vmstate(
             &mut self,
             checkpoint: &Checkpoint,
         ) -> Result<(), QemuNodeChannelError> {
             self.log
                 .lock()
                 .unwrap()
-                .push(ChannelCall::QmpRestore(checkpoint.id));
+                .push(ChannelCall::QmpExactSave(checkpoint.id));
+            if self.timeout_snapshot {
+                return Err(QemuNodeChannelError::bounded_await_timeout(
+                    "save_checkpoint_vmstate",
+                    "QMP command timed out",
+                    Duration::from_millis(2),
+                ));
+            }
+            if self.fail_snapshot {
+                return Err(QemuNodeChannelError::new(
+                    "save_checkpoint_vmstate",
+                    "QMP error",
+                ));
+            }
+            Ok(())
+        }
+
+        fn delete_checkpoint_vmstate(
+            &mut self,
+            checkpoint: &Checkpoint,
+        ) -> Result<(), QemuNodeChannelError> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(ChannelCall::QmpExactDelete(checkpoint.id));
             Ok(())
         }
 
@@ -2101,10 +2447,11 @@ mod tests {
             }
         );
 
-        let saved = Backend::snapshot(&mut node)?;
-        assert_eq!(saved.id, checkpoint("snapshot").id);
-        assert_eq!(saved.virtual_time, VirtualTime { ticks: 19 });
-        Backend::restore(&mut node, &saved)?;
+        assert!(matches!(
+            Backend::snapshot(&mut node),
+            Err(BackendError::Rejected { message })
+                if message.contains("capture_exact_snapshot")
+        ));
         let report = node.shutdown_child()?;
 
         assert!(report.reaped);
@@ -2132,13 +2479,86 @@ mod tests {
                 ChannelCall::ShmemEmit,
                 ChannelCall::ShmemIdle,
                 ChannelCall::ShmemFingerprint,
-                ChannelCall::QmpSnapshot,
-                ChannelCall::QmpRestore(content_hash("checkpoint", "snapshot")),
                 ChannelCall::PluginQuit,
                 ChannelCall::QmpQuit,
             ]
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_node_captures_one_identity_bound_vmstate_and_host_io_pair() -> Result<(), Box<dyn Error>>
+    {
+        let log = shared_log();
+        let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+        let mut checkpoint = checkpoint("paired-exact");
+        checkpoint.virtual_time = node.synchronize_observed_time()?;
+        let node_identity = node_id("vm-a");
+        checkpoint.node_icounts.insert(
+            node_identity.clone(),
+            Icount {
+                retired: checkpoint.virtual_time.ticks,
+            },
+        );
+
+        let snapshot = node.capture_exact_snapshot(&node_identity, checkpoint.clone())?;
+
+        assert_eq!(snapshot.checkpoint(), &checkpoint);
+        assert_eq!(
+            snapshot.host_io().execution_binding(),
+            snapshot.checkpoint().id
+        );
+        assert_eq!(
+            snapshot.replay_oracle_validation(),
+            crate::QemuReplayOracleValidation::NotRun
+        );
+        assert_eq!(
+            recorded(&log),
+            vec![
+                ChannelCall::ShmemCurrentIcount,
+                ChannelCall::ShmemCurrentIcount,
+                ChannelCall::QmpStop,
+                ChannelCall::ShmemCurrentIcount,
+                ChannelCall::QmpExactSave(snapshot.checkpoint().id),
+                ChannelCall::QmpContinue,
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_node_terminates_after_failed_exact_capture() -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let mut node = scripted_node(Arc::clone(&log), false, false, true)?;
+        let mut checkpoint = checkpoint("failed-exact");
+        checkpoint.virtual_time = node.synchronize_observed_time()?;
+        let node_identity = node_id("vm-a");
+        checkpoint.node_icounts.insert(
+            node_identity.clone(),
+            Icount {
+                retired: checkpoint.virtual_time.ticks,
+            },
+        );
+
+        let error = node
+            .capture_exact_snapshot(&node_identity, checkpoint.clone())
+            .expect_err("failed QMP save must reject the paired checkpoint");
+
+        assert!(error.to_string().contains("save_checkpoint_vmstate"));
+        assert_eq!(
+            recorded(&log),
+            vec![
+                ChannelCall::ShmemCurrentIcount,
+                ChannelCall::ShmemCurrentIcount,
+                ChannelCall::QmpStop,
+                ChannelCall::ShmemCurrentIcount,
+                ChannelCall::QmpExactSave(checkpoint.id),
+                ChannelCall::PluginQuit,
+                ChannelCall::QmpQuit,
+            ]
+        );
+        assert!(node.child_reaped());
         Ok(())
     }
 
@@ -2323,14 +2743,14 @@ mod tests {
             }
         );
 
-        let snapshot = SimulationBackend::snapshot(&mut node)?;
-        assert_eq!(snapshot.checkpoint.id, checkpoint("snapshot").id);
-        assert_eq!(snapshot.checkpoint.virtual_time, VirtualTime { ticks: 23 });
+        assert!(matches!(
+            SimulationBackend::snapshot(&mut node),
+            Err(BackendError::Rejected { message })
+                if message.contains("capture_exact_snapshot")
+        ));
         let later = SimulationBackend::step_to(&mut node, VirtualTime { ticks: 29 })?;
         assert_eq!(later.reached, VirtualTime { ticks: 29 });
         assert_eq!(SimulationBackend::now(&node), VirtualTime { ticks: 29 });
-        SimulationBackend::restore(&mut node, &snapshot)?;
-        assert_eq!(SimulationBackend::now(&node), VirtualTime { ticks: 23 });
         SimulationBackend::shutdown(&mut node)?;
 
         assert_eq!(
@@ -2350,7 +2770,6 @@ mod tests {
                     payload: vec![3, 2, 1],
                 },
                 ChannelCall::ShmemFingerprint,
-                ChannelCall::QmpSnapshot,
                 ChannelCall::HostYield,
                 ChannelCall::ShmemStart(29),
                 ChannelCall::HostAwait {
@@ -2360,7 +2779,6 @@ mod tests {
                 },
                 ChannelCall::ShmemFinish(29),
                 ChannelCall::HostYield,
-                ChannelCall::QmpRestore(content_hash("checkpoint", "snapshot")),
                 ChannelCall::PluginQuit,
                 ChannelCall::QmpQuit,
             ]

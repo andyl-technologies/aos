@@ -147,13 +147,50 @@ pub enum QemuAsyncDriverOperation {
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Requests a coordinated shared-memory pause and waits for quiescence.
+    ///
+    /// Runtimes without a live external executor have nothing to pause. A live
+    /// runtime overrides this method and must fail closed when the pause is not
+    /// acknowledged within `timeout`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the pause cannot be
+    /// requested, acknowledged, or serviced within the supplied bound.
+    fn quiesce_for_checkpoint(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
+    /// Clears a coordinated checkpoint pause after capture or restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the live executor cannot be
+    /// released from the checkpoint barrier.
+    fn resume_after_checkpoint(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
+    /// Reports whether block work crosses the current scheduler boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when live block queues or device
+    /// continuation state cannot be inspected consistently.
+    #[cfg(target_os = "linux")]
+    fn has_pending_block_io(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        Ok(false)
+    }
+
     /// Captures the complete host-I/O continuation paired with QEMU VMState.
     ///
     /// # Errors
     ///
     /// Returns [`QemuAsyncDriverRuntimeError`] when the guest is not quiescent
     /// or an attached device or shared-memory ring cannot be snapshotted.
-    #[cfg(target_os = "linux")]
     fn checkpoint_host_io(
         &mut self,
         execution_binding: crucible::model::ContentHash,
@@ -170,7 +207,6 @@ pub trait QemuHostIoRuntime: Send {
     /// Returns [`QemuAsyncDriverRuntimeError`] when the checkpoint identity or
     /// live device topology differs. The default runtime accepts only the
     /// explicit no-block topology.
-    #[cfg(target_os = "linux")]
     fn validate_host_io_checkpoint(
         &mut self,
         execution_binding: crucible::model::ContentHash,
@@ -192,7 +228,6 @@ pub trait QemuHostIoRuntime: Send {
     ///
     /// Returns [`QemuAsyncDriverRuntimeError`] under the same conditions as
     /// [`Self::validate_host_io_checkpoint`].
-    #[cfg(target_os = "linux")]
     fn restore_host_io_checkpoint(
         &mut self,
         execution_binding: crucible::model::ContentHash,

@@ -358,9 +358,6 @@ in
             QEMU_PLUGIN_API
             uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
 
-            QEMU_PLUGIN_API
-            void qemu_plugin_crucible_pause_vm(void);
-
             /**
              * qemu_plugin_scoreboard_new() - alloc a new scoreboard
              *

@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **50 patches**. This count is checked against
+The carried series contains **53 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -206,6 +206,7 @@ PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-plugin-vcpu-exit ..... force vCPU exit            D    DET-1, INV-10
   crucible-plugin-wake-fd ....... main-loop wake-fd          F    SHM-26, INV-8
   crucible-plugin-tcg-exec-cb ... TCG-exec callback          F    coverage, INV-7
+  crucible-plugin-vmstop ........ exact boundary to native pause D  DET-1, INV-10, QEMU-43
 
 DEVICE CO-SIM (shmem transport)                        class  enforces
   crucible-blk-shmem ............ virtio-blk over shmem      F    PATCH-26, DET-16, E19, SHM-13
