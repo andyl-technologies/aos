@@ -69,6 +69,10 @@
         needle = "CRUCIBLE_QEMU:=";
       }
       {
+        label = "runtime native guest architecture configuration";
+        needle = "CRUCIBLE_NATIVE_GUEST_ARCHITECTURE:=";
+      }
+      {
         label = "runtime plugin wrapper configuration";
         needle = "CRUCIBLE_PLUGIN:=";
       }

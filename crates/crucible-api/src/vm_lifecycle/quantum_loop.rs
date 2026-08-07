@@ -335,32 +335,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from("production debugger configuration is unavailable"),
                 })?;
-        if listen.as_str() != configured.operator_listen {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "requested debugger listener {} does not match configured listener {}",
-                    listen.as_str(),
-                    configured.operator_listen
-                ),
-            });
-        }
-        let requested: SocketAddr =
-            listen
-                .as_str()
-                .parse()
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "parse trusted debugger listener {}: {error}",
-                        listen.as_str()
-                    ),
-                })?;
-        if !requested.ip().is_loopback() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "unauthenticated production debugger listener must be loopback, not {requested}"
-                ),
-            });
-        }
+        let requested = trusted_debug_listener(configured, &listen)?;
         let executable = self
             .config
             .debug_gateway_executable
@@ -471,5 +446,91 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             return Err(error);
         }
         shutdown
+    }
+}
+
+/// Validates an operator listener against the lifecycle's debugger policy.
+fn trusted_debug_listener(
+    configured: &ProductionVmDebugConfig,
+    listen: &GdbListen,
+) -> Result<SocketAddr, SchedulerError> {
+    let requested: SocketAddr =
+        listen
+            .as_str()
+            .parse()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "parse trusted debugger listener {}: {error}",
+                    listen.as_str()
+                ),
+            })?;
+    if !requested.ip().is_loopback() {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "unauthenticated production debugger listener must be loopback, not {requested}"
+            ),
+        });
+    }
+    if !configured.allow_requested_loopback_listen && listen.as_str() != configured.operator_listen
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "requested debugger listener {} does not match configured listener {}",
+                listen.as_str(),
+                configured.operator_listen
+            ),
+        });
+    }
+    Ok(requested)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn debug_config(allow_requested_loopback_listen: bool) -> ProductionVmDebugConfig {
+        ProductionVmDebugConfig {
+            node: None,
+            operator_listen: String::from("127.0.0.1:0"),
+            all_nodes: allow_requested_loopback_listen,
+            allow_requested_loopback_listen,
+        }
+    }
+
+    #[test]
+    fn daemon_debug_policy_accepts_an_explicit_loopback_listener() {
+        let listen = GdbListen::new("127.0.0.1:9000")
+            .unwrap_or_else(|error| panic!("loopback listener should parse: {error}"));
+
+        let requested = trusted_debug_listener(&debug_config(true), &listen)
+            .unwrap_or_else(|error| panic!("daemon listener should be admitted: {error}"));
+
+        assert_eq!(requested, SocketAddr::from(([127, 0, 0, 1], 9000)));
+    }
+
+    #[test]
+    fn fixed_debug_policy_rejects_a_different_listener() {
+        let listen = GdbListen::new("127.0.0.1:9000")
+            .unwrap_or_else(|error| panic!("loopback listener should parse: {error}"));
+
+        let error = trusted_debug_listener(&debug_config(false), &listen)
+            .expect_err("fixed listener policy should reject a different port");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not match configured listener")
+        );
+    }
+
+    #[test]
+    fn daemon_debug_policy_rejects_a_non_loopback_listener() {
+        let listen = GdbListen::new("0.0.0.0:9000")
+            .unwrap_or_else(|error| panic!("socket listener should parse: {error}"));
+
+        let error = trusted_debug_listener(&debug_config(true), &listen)
+            .expect_err("daemon listener policy must remain loopback-only");
+
+        assert!(error.to_string().contains("must be loopback"));
     }
 }

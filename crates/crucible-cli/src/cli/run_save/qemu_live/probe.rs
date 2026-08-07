@@ -209,6 +209,10 @@ pub(crate) fn run_live_qemu_backend_probe(
         option_env!("CRUCIBLE_AOS_ROOT_IMAGE"),
         "root image",
     )?;
+    let architecture = match live_qemu_native_guest_architecture()? {
+        crucible::VmArchitecture::X86_64 => production_api::ProductionGuestArchitecture::X86_64,
+        crucible::VmArchitecture::Aarch64 => production_api::ProductionGuestArchitecture::Aarch64,
+    };
     let run_directory = tempfile::TempDir::new()?;
     prepare_live_qemu_root_overlay(qemu, &root_image, run_directory.path())?;
     let mut config = production_api::ProductionPluginInstallConfig::new(
@@ -217,7 +221,7 @@ pub(crate) fn run_live_qemu_backend_probe(
         kernel,
         root_image,
         run_directory.path(),
-        production_api::ProductionGuestArchitecture::X86_64,
+        architecture,
     )
     .with_root_image_format(production_api::ProductionRootImageFormat::Raw)
     .with_fingerprint(production_api::ProductionPluginSwitch::On);
@@ -312,7 +316,26 @@ pub(super) fn live_qemu_kernel_cmdline() -> Option<String> {
         .or_else(|| option_env!("CRUCIBLE_AOS_KERNEL_CMDLINE").map(str::to_owned))
 }
 
+/// Resolves the architecture of the package-native guest artifact triplet.
+pub(super) fn live_qemu_native_guest_architecture() -> Result<crucible::VmArchitecture, CliError> {
+    match std::env::var("CRUCIBLE_NATIVE_GUEST_ARCHITECTURE").as_deref() {
+        Ok("aarch64") => Ok(crucible::VmArchitecture::Aarch64),
+        Ok("x86_64") | Err(std::env::VarError::NotPresent) => Ok(crucible::VmArchitecture::X86_64),
+        Ok(value) => Err(backend_error(format!(
+            "CRUCIBLE_NATIVE_GUEST_ARCHITECTURE has unsupported value `{value}`"
+        ))),
+        Err(std::env::VarError::NotUnicode(_)) => Err(backend_error(
+            "CRUCIBLE_NATIVE_GUEST_ARCHITECTURE is not valid UTF-8",
+        )),
+    }
+}
+
 /// Resolves the packaged AArch64 guest artifact triplet when it is available.
+///
+/// # Errors
+///
+/// Returns an error when an override asset is unreadable or the architecture-specific
+/// kernel, root image, and kernel command line are not configured together.
 pub(super) fn live_qemu_aarch64_assets()
 -> Result<Option<(PathBuf, PathBuf, Option<String>)>, CliError> {
     let kernel = optional_live_qemu_asset(
@@ -329,11 +352,72 @@ pub(super) fn live_qemu_aarch64_assets()
         .ok()
         .or_else(|| option_env!("CRUCIBLE_AOS_KERNEL_CMDLINE_AARCH64").map(str::to_owned));
 
-    match (kernel, root_image) {
-        (Some(kernel), Some(root_image)) => Ok(Some((kernel, root_image, kernel_cmdline))),
-        (None, None) if kernel_cmdline.is_none() => Ok(None),
+    resolve_aarch64_guest_assets(kernel, root_image, kernel_cmdline)
+}
+
+fn resolve_aarch64_guest_assets(
+    kernel: Option<PathBuf>,
+    root_image: Option<PathBuf>,
+    kernel_cmdline: Option<String>,
+) -> Result<Option<(PathBuf, PathBuf, Option<String>)>, CliError> {
+    match (kernel, root_image, kernel_cmdline) {
+        (Some(kernel), Some(root_image), Some(kernel_cmdline)) => {
+            Ok(Some((kernel, root_image, Some(kernel_cmdline))))
+        }
+        (None, None, None) => Ok(None),
         _ => Err(backend_error(
-            "AArch64 guest support requires CRUCIBLE_KERNEL_AARCH64 and CRUCIBLE_ROOT_IMAGE_AARCH64 together",
+            "AArch64 guest support requires CRUCIBLE_KERNEL_AARCH64, CRUCIBLE_ROOT_IMAGE_AARCH64, and CRUCIBLE_KERNEL_CMDLINE_AARCH64 together",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_aarch64_assets_disable_cross_architecture_support() {
+        let assets = resolve_aarch64_guest_assets(None, None, None);
+
+        assert!(matches!(assets, Ok(None)));
+    }
+
+    #[test]
+    fn complete_aarch64_assets_preserve_the_architecture_specific_cmdline() {
+        let kernel = PathBuf::from("aarch64-kernel");
+        let root_image = PathBuf::from("aarch64-root-image");
+        let kernel_cmdline = String::from("console=ttyAMA0 root=/dev/vda");
+
+        let assets = resolve_aarch64_guest_assets(
+            Some(kernel.clone()),
+            Some(root_image.clone()),
+            Some(kernel_cmdline.clone()),
+        )
+        .expect("complete AArch64 assets should resolve");
+
+        assert_eq!(assets, Some((kernel, root_image, Some(kernel_cmdline))));
+    }
+
+    #[test]
+    fn incomplete_aarch64_assets_fail_closed() {
+        let configurations = [
+            (Some(PathBuf::from("kernel")), None, None),
+            (None, Some(PathBuf::from("root-image")), None),
+            (None, None, Some(String::from("console=ttyAMA0"))),
+            (
+                Some(PathBuf::from("kernel")),
+                Some(PathBuf::from("root-image")),
+                None,
+            ),
+        ];
+
+        for (kernel, root_image, kernel_cmdline) in configurations {
+            let error = resolve_aarch64_guest_assets(kernel, root_image, kernel_cmdline)
+                .expect_err("incomplete AArch64 assets must be rejected");
+
+            assert!(error.to_string().contains(
+                "CRUCIBLE_KERNEL_AARCH64, CRUCIBLE_ROOT_IMAGE_AARCH64, and CRUCIBLE_KERNEL_CMDLINE_AARCH64 together"
+            ));
+        }
     }
 }
