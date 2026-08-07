@@ -128,6 +128,26 @@ impl PendingPlan {
             confirmation_hash: self.plan.confirmation_hash.clone(),
         }
     }
+
+    /// Builds a domain-identity apply envelope for this exact plan.
+    pub(crate) fn domain_apply(&self) -> aos_proto_types::ApplyDomainMutationRequest {
+        aos_proto_types::ApplyDomainMutationRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds a domain-configuration apply envelope for this exact plan.
+    pub(crate) fn domain_configuration_apply(
+        &self,
+    ) -> aos_proto_types::ApplyDomainConfigurationRequest {
+        aos_proto_types::ApplyDomainConfigurationRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
 }
 
 static IDEMPOTENCY_SEQUENCE: AtomicU32 = AtomicU32::new(0);
