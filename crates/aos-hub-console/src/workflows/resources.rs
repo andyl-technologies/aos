@@ -92,12 +92,13 @@ fn OrganizationInventory(client: ApiClient) -> impl IntoView {
         let client = client.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListOrganizationsResponse>(
+                .collect_pages::<_, aos_proto_types::ListOrganizationsResponse, _, _, _>(
                     aos_proto_types::ORGANIZATION_SERVICE_LIST_ORGANIZATIONS_PATH,
-                    &aos_proto_types::ListOrganizationsRequest {
+                    |page_token| aos_proto_types::ListOrganizationsRequest {
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.organizations, response.next_page_token),
                 )
                 .await
         }
@@ -116,7 +117,7 @@ fn OrganizationInventory(client: ApiClient) -> impl IntoView {
             <Suspense fallback=move || view! { <p class="loading-row">"Loading organizations…"</p> }>
                 {move || Suspend::new(async move {
                     match inventory.await.as_ref() {
-                        Ok(response) if response.organizations.is_empty() => view! {
+                        Ok(organizations) if organizations.is_empty() => view! {
                             <EmptyState
                                 title="No organizations yet".to_string()
                                 detail="Create the first tenant boundary for managed resources.".to_string()
@@ -124,9 +125,9 @@ fn OrganizationInventory(client: ApiClient) -> impl IntoView {
                                 action=None
                             />
                         }.into_any(),
-                        Ok(response) => view! {
+                        Ok(organizations) => view! {
                             <div class="resource-grid">
-                                {response.organizations.iter().cloned().map(|organization| {
+                                {organizations.iter().cloned().map(|organization| {
                                     let href = format!("/-/org/{}", organization.slug);
                                     view! {
                                         <a class="resource-card" href=href>
@@ -403,13 +404,14 @@ fn ProjectInventory(client: ApiClient, organization: String) -> impl IntoView {
         let org_slug = inventory_org.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListProjectsResponse>(
+                .collect_pages::<_, aos_proto_types::ListProjectsResponse, _, _, _>(
                     aos_proto_types::PROJECT_SERVICE_LIST_PROJECTS_PATH,
-                    &aos_proto_types::ListProjectsRequest {
-                        org_slug,
+                    move |page_token| aos_proto_types::ListProjectsRequest {
+                        org_slug: org_slug.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.projects, response.next_page_token),
                 )
                 .await
         }
@@ -486,9 +488,9 @@ fn ProjectInventory(client: ApiClient, organization: String) -> impl IntoView {
                         let organization = organization.clone();
                         Suspend::new(async move {
                             match inventory.await.as_ref() {
-                                Ok(response) if response.projects.is_empty() => view! { <p class="muted">"No projects yet. Registries may still live at the organization root."</p> }.into_any(),
-                                Ok(response) => view! { <table class="resource-table"><thead><tr><th>"Path"</th><th>"Name"</th><th>"Stable ID"</th><th><span class="visually-hidden">"Actions"</span></th></tr></thead><tbody>
-                                    {response.projects.iter().cloned().map(|project| view! { <ProjectRow client=client.clone() project=project return_path=format!("/-/org/{organization}/projects")/> }).collect_view()}
+                                Ok(projects) if projects.is_empty() => view! { <p class="muted">"No projects yet. Registries may still live at the organization root."</p> }.into_any(),
+                                Ok(projects) => view! { <table class="resource-table"><thead><tr><th>"Path"</th><th>"Name"</th><th>"Stable ID"</th><th><span class="visually-hidden">"Actions"</span></th></tr></thead><tbody>
+                                    {projects.iter().cloned().map(|project| view! { <ProjectRow client=client.clone() project=project return_path=format!("/-/org/{organization}/projects")/> }).collect_view()}
                                 </tbody></table> }.into_any(),
                                 Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                             }
@@ -596,12 +598,13 @@ fn RegistryInventory(client: ApiClient, organization: String) -> impl IntoView {
         let client = inventory_client.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListRegistriesResponse>(
+                .collect_pages::<_, aos_proto_types::ListRegistriesResponse, _, _, _>(
                     aos_proto_types::REGISTRY_SERVICE_LIST_REGISTRIES_PATH,
-                    &aos_proto_types::ListRegistriesRequest {
+                    |page_token| aos_proto_types::ListRegistriesRequest {
                         page_size: 250,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.registries, response.next_page_token),
                 )
                 .await
         }
@@ -677,7 +680,7 @@ fn RegistryInventory(client: ApiClient, organization: String) -> impl IntoView {
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading registries…"</p> }>{move || {
                     let prefix = prefix.clone();
                     Suspend::new(async move { match inventory.await.as_ref() {
-                        Ok(response) => { let registries = response.registries.iter().filter(|registry| registry.slug.starts_with(&prefix)).cloned().collect::<Vec<_>>(); if registries.is_empty() { view! { <p class="muted">"No registries in this organization."</p> }.into_any() } else { view! { <div class="resource-grid">{registries.into_iter().map(|registry| { let href = format!("/{}/-/settings", registry.slug); view! { <a class="resource-card" href=href><div><span class="resource-kind">{registry.visibility}</span><h3>{registry.name}</h3><code>{registry.slug}</code><StatusBadge state=registry.index_state.clone() positive=registry.index_state == "fresh"/></div><span class="card-arrow">"→"</span></a> } }).collect_view()}</div> }.into_any() } },
+                        Ok(all_registries) => { let registries = all_registries.iter().filter(|registry| registry.slug.starts_with(&prefix)).cloned().collect::<Vec<_>>(); if registries.is_empty() { view! { <p class="muted">"No registries in this organization."</p> }.into_any() } else { view! { <div class="resource-grid">{registries.into_iter().map(|registry| { let href = format!("/{}/-/settings", registry.slug); view! { <a class="resource-card" href=href><div><span class="resource-kind">{registry.visibility}</span><h3>{registry.name}</h3><code>{registry.slug}</code><StatusBadge state=registry.index_state.clone() positive=registry.index_state == "fresh"/></div><span class="card-arrow">"→"</span></a> } }).collect_view()}</div> }.into_any() } },
                         Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                     } })
                 }}</Suspense>

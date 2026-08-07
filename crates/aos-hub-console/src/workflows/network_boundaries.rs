@@ -189,18 +189,19 @@ fn BoundaryRevisions(
         let boundary_id = boundary_id.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListNetworkBoundaryRevisionsResponse>(
+                .collect_pages::<_, aos_proto_types::ListNetworkBoundaryRevisionsResponse, _, _, _>(
                     aos_proto_types::NETWORK_BOUNDARY_SERVICE_LIST_NETWORK_BOUNDARY_REVISIONS_PATH,
-                    &aos_proto_types::ListNetworkBoundaryRevisionsRequest {
-                        boundary_id,
+                    move |page_token| aos_proto_types::ListNetworkBoundaryRevisionsRequest {
+                        boundary_id: boundary_id.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.revisions, response.next_page_token),
                 )
                 .await
         }
     });
-    view! { <section class="subworkflow"><h4>"Immutable revisions"</h4><Suspense fallback=move || view! { <p class="loading-row">"Loading revisions…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match revisions.await.as_ref() { Ok(response) => view! { <div class="compact-list">{response.revisions.iter().cloned().map(|revision| view! { <BoundaryRevisionRow client=client.clone() revision=revision/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> }
+    view! { <section class="subworkflow"><h4>"Immutable revisions"</h4><Suspense fallback=move || view! { <p class="loading-row">"Loading revisions…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match revisions.await.as_ref() { Ok(revisions) => view! { <div class="compact-list">{revisions.iter().cloned().map(|revision| view! { <BoundaryRevisionRow client=client.clone() revision=revision/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

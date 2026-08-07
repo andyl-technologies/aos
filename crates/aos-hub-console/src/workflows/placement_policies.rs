@@ -25,13 +25,14 @@ pub(super) fn PlacementPolicyPanel(
         let surface = read_surface.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListPlacementPoliciesResponse>(
+                .collect_pages::<_, aos_proto_types::ListPlacementPoliciesResponse, _, _, _>(
                     aos_proto_types::TOPOLOGY_SERVICE_LIST_PLACEMENT_POLICIES_PATH,
-                    &aos_proto_types::SurfaceListRequest {
-                        surface: Some(surface),
+                    move |page_token| aos_proto_types::SurfaceListRequest {
+                        surface: Some(surface.clone()),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.policies, response.next_page_token),
                 )
                 .await
         }
@@ -45,8 +46,8 @@ pub(super) fn PlacementPolicyPanel(
             <Suspense fallback=move || view! { <p class="loading-row">"Loading placement policies…"</p> }>
                 {move || { let client = view_client.clone(); let surface = view_surface.clone(); Suspend::new(async move {
                     match policies.await.as_ref() {
-                        Ok(response) if response.policies.is_empty() => view! { <p class="muted">"No placement policies for this surface."</p> }.into_any(),
-                        Ok(response) => view! { <div class="binding-list">{response.policies.iter().cloned().map(|policy| view! { <PolicyCard client=client.clone() surface=surface.clone() policy=policy/> }).collect_view()}</div> }.into_any(),
+                        Ok(policies) if policies.is_empty() => view! { <p class="muted">"No placement policies for this surface."</p> }.into_any(),
+                        Ok(policies) => view! { <div class="binding-list">{policies.iter().cloned().map(|policy| view! { <PolicyCard client=client.clone() surface=surface.clone() policy=policy/> }).collect_view()}</div> }.into_any(),
                         Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                     }
                 }) }}
@@ -71,21 +72,22 @@ fn PolicyCard(
         let policy_id = policy_id.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListPlacementPolicyRevisionsResponse>(
+                .collect_pages::<_, aos_proto_types::ListPlacementPolicyRevisionsResponse, _, _, _>(
                     aos_proto_types::TOPOLOGY_SERVICE_LIST_PLACEMENT_POLICY_REVISIONS_PATH,
-                    &aos_proto_types::ListPlacementPolicyRevisionsRequest {
-                        surface: Some(surface),
-                        policy_id,
+                    move |page_token| aos_proto_types::ListPlacementPolicyRevisionsRequest {
+                        surface: Some(surface.clone()),
+                        policy_id: policy_id.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.revisions, response.next_page_token),
                 )
                 .await
         }
     });
 
     view! {
-        <details class="binding-card"><summary><div><span class="resource-kind">{policy.kind.clone()}</span><h3>{policy.name.clone()}</h3><code>{policy.stable_id.clone()}</code></div><StatusBadge state=format!("revision {}", policy.current_revision) positive=true/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Current digest"</span><code>{policy.current_content_digest.clone()}</code></div><div><span>"Version"</span><code>{policy.resource_version.clone()}</code></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading policy revisions…"</p> }>{move || Suspend::new(async move { match revisions.await.as_ref() { Ok(response) => view! { <div class="compact-list">{response.revisions.iter().map(|revision| view! { <div class="compact-list-row"><div><strong>{format!("Revision {}", revision.revision)}</strong><code>{revision.content_digest.clone()}</code><span>{format!("created by {}", revision.created_by)}</span></div></div> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } })}</Suspense><div class="subworkflow-grid"><PolicyMutationForm client=client.clone() surface=surface.clone() policy=Some(policy.clone())/><PolicyTest client=client surface=surface policy=policy/></div></div></details>
+        <details class="binding-card"><summary><div><span class="resource-kind">{policy.kind.clone()}</span><h3>{policy.name.clone()}</h3><code>{policy.stable_id.clone()}</code></div><StatusBadge state=format!("revision {}", policy.current_revision) positive=true/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Current digest"</span><code>{policy.current_content_digest.clone()}</code></div><div><span>"Version"</span><code>{policy.resource_version.clone()}</code></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading policy revisions…"</p> }>{move || Suspend::new(async move { match revisions.await.as_ref() { Ok(revisions) => view! { <div class="compact-list">{revisions.iter().map(|revision| view! { <div class="compact-list-row"><div><strong>{format!("Revision {}", revision.revision)}</strong><code>{revision.content_digest.clone()}</code><span>{format!("created by {}", revision.created_by)}</span></div></div> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } })}</Suspense><div class="subworkflow-grid"><PolicyMutationForm client=client.clone() surface=surface.clone() policy=Some(policy.clone())/><PolicyTest client=client surface=surface policy=policy/></div></div></details>
     }
 }
 
@@ -409,13 +411,14 @@ pub(super) fn PlacementEquivalencePanel(
         let surface = read_surface.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListPlacementEquivalencesResponse>(
+                .collect_pages::<_, aos_proto_types::ListPlacementEquivalencesResponse, _, _, _>(
                     aos_proto_types::TOPOLOGY_SERVICE_LIST_PLACEMENT_EQUIVALENCES_PATH,
-                    &aos_proto_types::SurfaceListRequest {
-                        surface: Some(surface),
+                    move |page_token| aos_proto_types::SurfaceListRequest {
+                        surface: Some(surface.clone()),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.equivalences, response.next_page_token),
                 )
                 .await
         }
@@ -427,13 +430,14 @@ pub(super) fn PlacementEquivalencePanel(
         let surface = placements_surface.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListPlacementsResponse>(
+                .collect_pages::<_, aos_proto_types::ListPlacementsResponse, _, _, _>(
                     aos_proto_types::TOPOLOGY_SERVICE_LIST_PLACEMENTS_PATH,
-                    &aos_proto_types::ListPlacementsRequest {
-                        surface: Some(surface),
+                    move |page_token| aos_proto_types::ListPlacementsRequest {
+                        surface: Some(surface.clone()),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.placements, response.next_page_token),
                 )
                 .await
         }
@@ -442,7 +446,7 @@ pub(super) fn PlacementEquivalencePanel(
     let view_surface = surface.clone();
 
     view! {
-        <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Migration evidence"</p><h2>"Placement equivalence"</h2><p>"Equivalence is confirmed from exact placement revisions and retained as explicit evidence for safe topology changes."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading equivalence evidence…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match equivalences.await.as_ref() { Ok(response) if response.equivalences.is_empty() => view! { <p class="muted">"No confirmed placement equivalences."</p> }.into_any(), Ok(response) => view! { <div class="compact-list">{response.equivalences.iter().cloned().map(|equivalence| view! { <EquivalenceRow client=client.clone() equivalence=equivalence/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense><Suspense fallback=move || view! { <p class="loading-row">"Loading placement revisions…"</p> }>{move || { let client = client.clone(); let surface = view_surface.clone(); Suspend::new(async move { match placements.await.as_ref() { Ok(response) => view! { <EquivalenceCreate client=client surface=surface placements=response.placements.clone()/> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
+        <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Migration evidence"</p><h2>"Placement equivalence"</h2><p>"Equivalence is confirmed from exact placement revisions and retained as explicit evidence for safe topology changes."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading equivalence evidence…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match equivalences.await.as_ref() { Ok(equivalences) if equivalences.is_empty() => view! { <p class="muted">"No confirmed placement equivalences."</p> }.into_any(), Ok(equivalences) => view! { <div class="compact-list">{equivalences.iter().cloned().map(|equivalence| view! { <EquivalenceRow client=client.clone() equivalence=equivalence/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense><Suspense fallback=move || view! { <p class="loading-row">"Loading placement revisions…"</p> }>{move || { let client = client.clone(); let surface = view_surface.clone(); Suspend::new(async move { match placements.await.as_ref() { Ok(placements) => view! { <EquivalenceCreate client=client surface=surface placements=placements.clone()/> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
     }
 }
 

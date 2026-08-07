@@ -56,6 +56,11 @@ separately only for API references whose declared identity is a human-facing
 organization name. Constructing `org:{slug}` or parsing a stable scope back
 into a slug is forbidden.
 
+Web inventory is complete rather than viewport-sized: every paginated list
+follows opaque `next_page_token` values to exhaustion. The shared browser
+transport rejects a repeated non-empty token, so a server pagination cycle
+fails visibly instead of spinning or silently truncating the resource graph.
+
 Every durable desired-state mutation follows one interaction:
 
 1. Read the resource and exact resource version.

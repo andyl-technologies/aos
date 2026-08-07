@@ -47,13 +47,14 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
         let surface = list_surface.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListPlacementsResponse>(
+                .collect_pages::<_, aos_proto_types::ListPlacementsResponse, _, _, _>(
                     aos_proto_types::TOPOLOGY_SERVICE_LIST_PLACEMENTS_PATH,
-                    &aos_proto_types::ListPlacementsRequest {
-                        surface: Some(surface),
+                    move |page_token| aos_proto_types::ListPlacementsRequest {
+                        surface: Some(surface.clone()),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.placements, response.next_page_token),
                 )
                 .await
         }
@@ -74,8 +75,8 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
                         let surface = view_surface.clone();
                         Suspend::new(async move {
                             match placements.await.as_ref() {
-                                Ok(response) if response.placements.is_empty() => view! { <p class="muted">"No placements for this surface."</p> }.into_any(),
-                                Ok(response) => view! { <div class="binding-list">{response.placements.iter().cloned().map(|placement| view! { <PlacementCard client=client.clone() surface=surface.clone() placement=placement/> }).collect_view()}</div> }.into_any(),
+                                Ok(placements) if placements.is_empty() => view! { <p class="muted">"No placements for this surface."</p> }.into_any(),
+                                Ok(placements) => view! { <div class="binding-list">{placements.iter().cloned().map(|placement| view! { <PlacementCard client=client.clone() surface=surface.clone() placement=placement/> }).collect_view()}</div> }.into_any(),
                                 Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                             }
                         })
@@ -507,20 +508,21 @@ fn PlacementReplication(client: ApiClient, surface: aos_proto_types::SurfaceRef)
         let surface = read_surface.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListPlacementsResponse>(
+                .collect_pages::<_, aos_proto_types::ListPlacementsResponse, _, _, _>(
                     aos_proto_types::TOPOLOGY_SERVICE_LIST_PLACEMENTS_PATH,
-                    &aos_proto_types::ListPlacementsRequest {
-                        surface: Some(surface),
+                    move |page_token| aos_proto_types::ListPlacementsRequest {
+                        surface: Some(surface.clone()),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.placements, response.next_page_token),
                 )
                 .await
         }
     });
 
     view! {
-        <section class="panel editor-panel"><p class="section-kicker">"Data movement"</p><h2>"Replicate placement"</h2><Suspense fallback=move || view! { <p class="loading-row">"Loading replication targets…"</p> }>{move || { let client = client.clone(); let surface = surface.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(response) => view! { <ReplicationForm client=client surface=surface placements=response.placements.clone()/> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
+        <section class="panel editor-panel"><p class="section-kicker">"Data movement"</p><h2>"Replicate placement"</h2><Suspense fallback=move || view! { <p class="loading-row">"Loading replication targets…"</p> }>{move || { let client = client.clone(); let surface = surface.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(placements) => view! { <ReplicationForm client=client surface=surface placements=placements.clone()/> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
     }
 }
 

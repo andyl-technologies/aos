@@ -317,13 +317,14 @@ fn StorageWriteRevisions(
         let storage_binding = storage_binding.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListStorageBindingWriteRevisionsResponse>(
+                .collect_pages::<_, aos_proto_types::ListStorageBindingWriteRevisionsResponse, _, _, _>(
                     aos_proto_types::STORAGE_BINDING_SERVICE_LIST_STORAGE_BINDING_WRITE_REVISIONS_PATH,
-                    &aos_proto_types::ListStorageBindingWriteRevisionsRequest {
-                        storage_binding: Some(storage_binding),
+                    move |page_token| aos_proto_types::ListStorageBindingWriteRevisionsRequest {
+                        storage_binding: Some(storage_binding.clone()),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.revisions, response.next_page_token),
                 )
                 .await
         }
@@ -334,8 +335,8 @@ fn StorageWriteRevisions(
             <Suspense fallback=move || view! { <p class="loading-row">"Loading revisions…"</p> }>
                 {move || Suspend::new(async move {
                     match revisions.await.as_ref() {
-                        Ok(response) if response.revisions.is_empty() => view! { <p class="muted">"No validated write revision yet."</p> }.into_any(),
-                        Ok(response) => view! { <div class="compact-list">{response.revisions.iter().cloned().map(|revision| view! {
+                        Ok(revisions) if revisions.is_empty() => view! { <p class="muted">"No validated write revision yet."</p> }.into_any(),
+                        Ok(revisions) => view! { <div class="compact-list">{revisions.iter().cloned().map(|revision| view! {
                             <div class="compact-list-row"><div><strong>{format!("Revision {}", revision.revision)}</strong><span>{format!("credential generation {} · {}", revision.write_credential_generation, revision.validation_state)}</span>{(!revision.validation_error.is_empty()).then(|| view! { <small>{revision.validation_error}</small> })}</div><code>{revision.resource_version}</code></div>
                         }).collect_view()}</div> }.into_any(),
                         Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),

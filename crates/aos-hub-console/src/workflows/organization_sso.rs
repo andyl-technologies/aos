@@ -226,13 +226,14 @@ fn OrganizationDomains(client: ApiClient, organization: String) -> impl IntoView
         let org_slug = list_org.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListOrganizationDomainsResponse>(
+                .collect_pages::<_, aos_proto_types::ListOrganizationDomainsResponse, _, _, _>(
                     aos_proto_types::IDENTITY_SERVICE_LIST_ORGANIZATION_DOMAINS_PATH,
-                    &aos_proto_types::ListOrganizationDomainsRequest {
-                        org_slug,
+                    move |page_token| aos_proto_types::ListOrganizationDomainsRequest {
+                        org_slug: org_slug.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.domains, response.next_page_token),
                 )
                 .await
         }
@@ -248,8 +249,8 @@ fn OrganizationDomains(client: ApiClient, organization: String) -> impl IntoView
                     let client = view_client.clone();
                     Suspend::new(async move {
                         match domains.await.as_ref() {
-                            Ok(response) if response.domains.is_empty() => view! { <p class="muted">"No email domains claimed."</p> }.into_any(),
-                            Ok(response) => view! { <div class="binding-list">{response.domains.iter().cloned().map(|domain| view! { <OrganizationDomainCard client=client.clone() domain=domain/> }).collect_view()}</div> }.into_any(),
+                            Ok(domains) if domains.is_empty() => view! { <p class="muted">"No email domains claimed."</p> }.into_any(),
+                            Ok(domains) => view! { <div class="binding-list">{domains.iter().cloned().map(|domain| view! { <OrganizationDomainCard client=client.clone() domain=domain/> }).collect_view()}</div> }.into_any(),
                             Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                         }
                     })
