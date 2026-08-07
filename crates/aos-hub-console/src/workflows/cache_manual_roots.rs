@@ -21,13 +21,14 @@ pub(super) fn ManualRetentionRoots(client: ApiClient, cache_id: String) -> impl 
         let cache_id = read_cache.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListRetentionRootsResponse>(
+                .collect_pages::<_, aos_proto_types::ListRetentionRootsResponse, _, _, _>(
                     aos_proto_types::BINARY_CACHE_SERVICE_LIST_RETENTION_ROOTS_PATH,
-                    &aos_proto_types::ListRetentionRootsRequest {
-                        cache_id,
+                    move |page_token| aos_proto_types::ListRetentionRootsRequest {
+                        cache_id: cache_id.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.roots, response.next_page_token),
                 )
                 .await
         }
@@ -52,13 +53,13 @@ pub(super) fn ManualRetentionRoots(client: ApiClient, cache_id: String) -> impl 
                     let cache_id = view_cache.clone();
                     Suspend::new(async move {
                     match roots.await.as_ref() {
-                        Ok(response) if response.roots.is_empty() => view! {
+                        Ok(roots) if roots.is_empty() => view! {
                             <p class="muted">"No manual retention roots."</p>
                         }
                         .into_any(),
-                        Ok(response) => view! {
+                        Ok(roots) => view! {
                             <div class="binding-list">
-                                {response.roots.iter().cloned().map(|root| view! {
+                                {roots.iter().cloned().map(|root| view! {
                                     <ManualRootSummary client=client.clone() cache_id=cache_id.clone() root=root/>
                                 }).collect_view()}
                             </div>

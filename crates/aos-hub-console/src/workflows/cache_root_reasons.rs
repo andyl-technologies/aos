@@ -16,7 +16,7 @@ use crate::transport::ApiClient;
 pub(super) fn RetentionReasons(client: ApiClient, cache_id: String) -> impl IntoView {
     let registry_id = RwSignal::new(String::new());
     let store_hash = RwSignal::new(String::new());
-    let reasons = RwSignal::new(None::<aos_proto_types::ListRootReasonsResponse>);
+    let reasons = RwSignal::new(None::<Vec<aos_proto_types::RootReason>>);
     let explanation = RwSignal::new(None::<aos_proto_types::ExplainRetentionResponse>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -32,16 +32,20 @@ pub(super) fn RetentionReasons(client: ApiClient, cache_id: String) -> impl Into
         explanation.set(None);
         busy.set(true);
         spawn_local(async move {
+            let list_cache_id = cache_id.clone();
+            let list_registry_id = registry_id.clone();
+            let list_store_hash = store_hash.clone();
             let listed = client
-                .call::<_, aos_proto_types::ListRootReasonsResponse>(
+                .collect_pages::<_, aos_proto_types::ListRootReasonsResponse, _, _, _>(
                     aos_proto_types::BINARY_CACHE_SERVICE_LIST_ROOT_REASONS_PATH,
-                    &aos_proto_types::ListRootReasonsRequest {
-                        cache_id: cache_id.clone(),
-                        registry_id,
-                        store_hash: store_hash.clone(),
+                    move |page_token| aos_proto_types::ListRootReasonsRequest {
+                        cache_id: list_cache_id.clone(),
+                        registry_id: list_registry_id.clone(),
+                        store_hash: list_store_hash.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.reasons, response.next_page_token),
                 )
                 .await;
             match listed {
@@ -105,13 +109,13 @@ pub(super) fn RetentionReasons(client: ApiClient, cache_id: String) -> impl Into
                     />
                 </div>
             })}
-            {move || reasons.get().map(|response| {
-                if response.reasons.is_empty() {
+            {move || reasons.get().map(|reasons| {
+                if reasons.is_empty() {
                     view! { <p class="muted">"No matching retention roots."</p> }.into_any()
                 } else {
                     view! {
                         <div class="binding-list">
-                            {response.reasons.into_iter().map(|reason| view! {
+                            {reasons.into_iter().map(|reason| view! {
                                 <RootReasonCard reason=reason/>
                             }).collect_view()}
                         </div>

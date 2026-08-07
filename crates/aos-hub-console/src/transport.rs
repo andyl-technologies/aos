@@ -6,6 +6,7 @@
 //! management request then uses a generated canonical Connect path and a
 //! ProtoJSON request/response type.
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use gloo_net::http::Request;
@@ -84,6 +85,47 @@ impl ApiClient {
             });
         }
         serde_json::from_str(&body).map_err(|error| TransportError::Json(error.to_string()))
+    }
+
+    /// Collects every page from one generated Connect-JSON list method.
+    ///
+    /// The request factory receives the next page token. The response splitter
+    /// returns that page's items and following token. Repeated non-empty tokens
+    /// fail closed rather than spinning or silently truncating inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any page request fails or the server repeats a
+    /// pagination token.
+    pub(crate) async fn collect_pages<RequestMessage, ResponseMessage, Item, MakeRequest, Split>(
+        &self,
+        path: &str,
+        mut make_request: MakeRequest,
+        split: Split,
+    ) -> Result<Vec<Item>, TransportError>
+    where
+        RequestMessage: Serialize,
+        ResponseMessage: DeserializeOwned,
+        MakeRequest: FnMut(String) -> RequestMessage,
+        Split: Fn(ResponseMessage) -> (Vec<Item>, String),
+    {
+        let mut token = String::new();
+        let mut seen = HashSet::new();
+        let mut items = Vec::new();
+        loop {
+            let response = self
+                .call::<RequestMessage, ResponseMessage>(path, &make_request(token))
+                .await?;
+            let (page, next) = split(response);
+            items.extend(page);
+            if next.is_empty() {
+                return Ok(items);
+            }
+            if !seen.insert(next.clone()) {
+                return Err(TransportError::PaginationCycle);
+            }
+            token = next;
+        }
     }
 
     fn session_guard(&self) -> MutexGuard<'_, aos_proto_types::BrowserSessionTokenResponse> {
@@ -179,6 +221,9 @@ pub enum TransportError {
     /// The caller supplied a non-canonical Connect route.
     #[error("the API method path is not canonical")]
     InvalidPath,
+    /// A list endpoint repeated a non-empty page token.
+    #[error("the Hub repeated a pagination token")]
+    PaginationCycle,
 }
 
 fn is_generated_connect_path(path: &str) -> bool {
