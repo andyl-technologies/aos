@@ -183,6 +183,13 @@ pub(super) fn savepoint_handle_evidence(
         .map_err(|error| {
             artifact_error(format!("savepoint scenario payload is malformed: {error}"))
         })?;
+    validate_save_selector_for_scenario(handle.selector.as_ref(), &scenario_form).map_err(
+        |error| {
+            artifact_error(format!(
+                "savepoint selector is not admitted by its embedded scenario: {error}"
+            ))
+        },
+    )?;
     let scenario = scenario_form.scenario_def();
     if scenario.id().to_hex() != handle.scenario_id_hex {
         return Err(CliError::Identity(format!(
@@ -1997,15 +2004,30 @@ pub(super) fn finish_save_workflow_outcome(
     save_plan: &SaveInvocationPlan,
     report: SaveWorkflowReport,
 ) -> Result<BackendCommandOutcome, CliError> {
-    let oracle = report.oracle;
+    let SaveWorkflowReport {
+        run,
+        oracle,
+        boundary_evidence,
+    } = report;
     let mut outcome = finish_run_workflow_outcome(
         thin_plan,
         backend_plan,
         ergonomics_plan,
         &save_plan.run_plan,
-        report.run,
+        run,
     )?;
     outcome.terminal_savepoint = Some(oracle.fat_checkpoint);
+    outcome.stdout.push(format!(
+        "save-boundary\t{}",
+        boundary_evidence.canonical_summary()
+    ));
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("control"),
+        kind: String::from("save_boundary_proof"),
+        summary: boundary_evidence.canonical_summary(),
+    });
     outcome.stdout.push(format!(
         "save-oracle\tstatus={}\tconfiguration={}\tfat={}\tthin={}\tstore_objects={}",
         oracle.status_label(),
@@ -2029,6 +2051,7 @@ pub(super) fn finish_save_workflow_outcome(
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     outcome.savepoint_oracle = Some(oracle);
+    outcome.save_boundary_evidence = Some(boundary_evidence);
     Ok(outcome)
 }
 

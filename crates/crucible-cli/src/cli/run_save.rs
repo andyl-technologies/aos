@@ -31,6 +31,80 @@ pub(super) struct RunWorkflowReport {
 pub(super) struct SaveWorkflowReport {
     pub(super) run: RunWorkflowReport,
     pub(super) oracle: SavepointOracleProof,
+    pub(super) boundary_evidence: SaveBoundaryEvidence,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SaveBoundaryEvidence {
+    pub(crate) at: SaveAtArg,
+    pub(crate) selector: Option<SaveAtSelector>,
+    pub(crate) frontier_ticks: u64,
+    pub(crate) quanta: u64,
+    pub(crate) breakpoint_firing: Option<crucible_session::BreakpointFiring>,
+}
+
+impl SaveBoundaryEvidence {
+    pub(crate) fn selector_kind(&self) -> &'static str {
+        match &self.selector {
+            Some(SaveAtSelector::PropertyViolation { .. }) => "property-violation",
+            Some(SaveAtSelector::Marker { .. }) => "guest-marker",
+            None => "none",
+        }
+    }
+
+    pub(crate) fn selector_name(&self) -> Option<&str> {
+        match &self.selector {
+            Some(SaveAtSelector::PropertyViolation { assertion }) => Some(assertion),
+            Some(SaveAtSelector::Marker { name }) => Some(name),
+            None => None,
+        }
+    }
+
+    pub(crate) fn canonical_summary(&self) -> String {
+        let selector = self
+            .selector_name()
+            .map(|name| {
+                format!(
+                    "{}:{}",
+                    self.selector_kind(),
+                    encode_canonical_summary_value(name)
+                )
+            })
+            .unwrap_or_else(|| String::from("none"));
+        let proof = self
+            .breakpoint_firing
+            .as_ref()
+            .map(|firing| {
+                format!(
+                    "breakpoint={} disposition=suspend firing_frontier={} firing_quanta={}",
+                    firing.id, firing.frontier.ticks, firing.quanta
+                )
+            })
+            .unwrap_or_else(|| String::from("breakpoint=none"));
+        format!(
+            "at={} selector={} frontier={} quanta={} {}",
+            self.at.label(),
+            selector,
+            self.frontier_ticks,
+            self.quanta,
+            proof
+        )
+    }
+}
+
+fn encode_canonical_summary_value(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

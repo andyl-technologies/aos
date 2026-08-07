@@ -1009,6 +1009,27 @@ pub(super) fn write_savepoint_handle_fixture(
     );
     artifact_line(&mut text, &["frontier", &frontier_ticks.to_string()]);
     artifact_line(&mut text, &["at", "quiescence"]);
+    artifact_line(&mut text, &["selector", "none"]);
+    artifact_line(
+        &mut text,
+        &[
+            "boundary-proof",
+            "breakpoint",
+            "1",
+            "suspend",
+            &frontier_ticks.to_string(),
+            &schedule.len().to_string(),
+        ],
+    );
+    let boundary_predicate = crucible::Predicate::quiescent().to_compact_binary();
+    artifact_line(
+        &mut text,
+        &[
+            "boundary-predicate",
+            &content_address_bytes(&boundary_predicate),
+            &hex_bytes(&boundary_predicate),
+        ],
+    );
     artifact_line(&mut text, &["terminal-condition", "quiescence"]);
     artifact_line(&mut text, &["materialization", "create-savepoint", "reply"]);
     artifact_line(&mut text, &["oracle", "fat==thin-passed"]);

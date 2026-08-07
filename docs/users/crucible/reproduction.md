@@ -176,6 +176,19 @@ requested evidence never appeared. `--max-virtual-time` is accepted only with
 QEMU boundary observation can wait for the backend's production completion
 window and is not limited by the control stream's short acknowledgement poll.
 
+New savepoint handles use schema `crucible.savepoint-handle.v3`. They include a
+`selector` line naming the property violation or guest marker (or `none`) and a
+`boundary-proof` line with the exact breakpoint or virtual-time coordinate.
+Breakpoint proofs use positional fields `breakpoint`, ID, `suspend`, frontier,
+and quantum, followed by a `boundary-predicate` line containing the predicate's
+content address and canonical payload. Coordinate proofs use `coordinate`,
+frontier, and quantum with `boundary-predicate none`. The canonical trace
+contains a matching `save_boundary_proof` entry; selector names there are
+percent-encoded so spaces and punctuation cannot resemble additional fields.
+This lets an agent audit which selector fired and where, instead of inferring it
+from generic `set-breakpoint` acknowledgements. Crucible still reads v2 handles
+created by older builds; those handles do not contain selector provenance.
+
 Use `--out <path>` to choose the handle path. Otherwise it is written below
 `--artifact-dir`. Crucible does not export a handle if replay-oracle validation
 fails.

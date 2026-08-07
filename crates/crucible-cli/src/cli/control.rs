@@ -29,7 +29,7 @@ where
     let mut state_updates = Vec::new();
     let mut command_id = 1;
 
-    let boundary = match save_plan.at {
+    let (boundary, breakpoint_firing) = match save_plan.at {
         SaveAtArg::Quiescence => {
             let predicate = crucible::Predicate::quiescent();
             let (boundary, breakpoint_id) = run_save_predicate_to_boundary(
@@ -51,20 +51,20 @@ where
                 &mut state_updates,
             )
             .await?;
-            validate_save_breakpoint_firing(
+            let firing = validate_save_breakpoint_firing(
                 "quiescence",
                 &predicate,
                 breakpoint_id,
                 &boundary,
                 &firings,
             )?;
-            boundary
+            (boundary, Some(firing))
         }
         SaveAtArg::VirtualTime => {
             let budget = run_plan.max_virtual_time_ticks.ok_or_else(|| {
                 usage_error("save --at virtual-time requires --max-virtual-time <dur>")
             })?;
-            drive_save_to_virtual_time_boundary(
+            let boundary = drive_save_to_virtual_time_boundary(
                 client,
                 created.session,
                 budget,
@@ -73,10 +73,11 @@ where
                 &mut state_updates,
                 "remote ",
             )
-            .await?
+            .await?;
+            (boundary, None)
         }
         SaveAtArg::Property | SaveAtArg::Marker => {
-            run_save_selector_to_boundary(
+            let (boundary, firing) = run_save_selector_to_boundary(
                 client,
                 created.session,
                 save_plan,
@@ -84,7 +85,8 @@ where
                 &mut acknowledged_commands,
                 &mut state_updates,
             )
-            .await?
+            .await?;
+            (boundary, Some(firing))
         }
     };
 
@@ -233,6 +235,13 @@ where
             watch_statuses: Vec::new(),
         },
         oracle,
+        boundary_evidence: SaveBoundaryEvidence {
+            at: save_plan.at,
+            selector: save_plan.selector.clone(),
+            frontier_ticks: boundary.frontier.ticks,
+            quanta: boundary.quanta_stepped,
+            breakpoint_firing,
+        },
     })
 }
 
@@ -243,7 +252,13 @@ pub(super) async fn run_save_selector_to_boundary<C>(
     command_id: &mut u64,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
     state_updates: &mut Vec<String>,
-) -> Result<crucible_api::SessionSummary, CliError>
+) -> Result<
+    (
+        crucible_api::SessionSummary,
+        crucible_session::BreakpointFiring,
+    ),
+    CliError,
+>
 where
     C: ControlClient + Sync,
 {
@@ -286,8 +301,8 @@ where
             ));
         }
     };
-    validate_save_selector_firing(selector, breakpoint_id, &boundary, &firings)?;
-    Ok(boundary)
+    let firing = validate_save_selector_firing(selector, breakpoint_id, &boundary, &firings)?;
+    Ok((boundary, firing))
 }
 
 pub(super) async fn run_save_predicate_to_boundary<C>(
@@ -483,7 +498,7 @@ pub(super) fn validate_save_selector_firing(
     breakpoint_id: BreakpointId,
     boundary: &crucible_api::SessionSummary,
     firings: &[crucible_session::BreakpointFiring],
-) -> Result<(), CliError> {
+) -> Result<crucible_session::BreakpointFiring, CliError> {
     let expected = save_selector_predicate(selector)?;
     let label = match selector {
         SaveAtSelector::PropertyViolation { assertion } => {
@@ -500,7 +515,7 @@ pub(super) fn validate_save_breakpoint_firing(
     breakpoint_id: BreakpointId,
     boundary: &crucible_api::SessionSummary,
     firings: &[crucible_session::BreakpointFiring],
-) -> Result<(), CliError> {
+) -> Result<crucible_session::BreakpointFiring, CliError> {
     let firing = firings
         .iter()
         .find(|firing| firing.id == breakpoint_id)
@@ -533,7 +548,7 @@ pub(super) fn validate_save_breakpoint_firing(
             firing.quanta, boundary.quanta_stepped
         )));
     }
-    Ok(())
+    Ok(firing.clone())
 }
 
 pub(super) async fn send_save_workflow_command<C>(
@@ -2037,6 +2052,7 @@ pub(super) fn backend_command_outcome(
         artifact_digest,
         terminal_savepoint: None,
         savepoint_oracle: None,
+        save_boundary_evidence: None,
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
     }

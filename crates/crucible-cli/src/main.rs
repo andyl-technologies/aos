@@ -81,7 +81,8 @@ const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
 const SEARCH_RETAINED_EVIDENCE_SCHEMA: &str = "crucible.search-retained-evidence.v1";
 const SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE: &str =
     "application/vnd.crucible.search-retained-evidence+toml";
-const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v2";
+const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v3";
+const SAVEPOINT_HANDLE_SCHEMA_V2: &str = "crucible.savepoint-handle.v2";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1: &str = "crucible.failure-triage.findings-ledger.v1";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2: &str = "crucible.failure-triage.findings-ledger.v2";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V3: &str = "crucible.failure-triage.findings-ledger.v3";

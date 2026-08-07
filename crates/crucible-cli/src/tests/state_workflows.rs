@@ -110,8 +110,16 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     assert!(handle.contains("label\trelease candidate\n"));
     assert!(handle.contains("checkpoint\tblake3:"));
     assert!(handle.contains("at\tquiescence\n"));
+    assert!(handle.contains("selector\tnone\n"));
+    assert!(handle.contains("boundary-proof\tbreakpoint\t"));
+    assert!(handle.contains("boundary-predicate\tcrucible-hash:"));
     assert!(handle.contains("materialization\tcreate-savepoint\treply\n"));
     assert!(handle.contains("oracle\tfat==thin-passed\n"));
+    let contradictory_quiescence = handle.replace(
+        "terminal-condition\tquiescence\n",
+        "terminal-condition\tproperty\n",
+    );
+    assert!(decode_savepoint_handle(contradictory_quiescence.as_bytes()).is_err());
 
     let saved_checkpoint = outcome
         .terminal_savepoint
@@ -270,13 +278,24 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     let virtual_time_handle = fs::read_to_string(virtual_time_out)?;
     assert!(virtual_time_handle.contains("label\tat-two-ticks\n"));
     assert!(virtual_time_handle.contains("at\tvirtual-time\n"));
+    assert!(virtual_time_handle.contains("selector\tnone\n"));
+    assert!(virtual_time_handle.contains("boundary-proof\tcoordinate\t2\t2\n"));
+    assert!(virtual_time_handle.contains("boundary-predicate\tnone\n"));
     assert!(virtual_time_handle.contains("oracle\tfat==thin-passed\n"));
+    let contradictory_virtual_time = virtual_time_handle.replace(
+        "terminal-condition\tvirtual-time\n",
+        "terminal-condition\tquiescence\n",
+    );
+    assert!(decode_savepoint_handle(contradictory_virtual_time.as_bytes()).is_err());
 
     let property_selector_scenario = write_property_selector_scenario(&temp)?;
     let property_out = temp.path().join("property.crucible-savepoint");
+    let property_trace = temp.path().join("property.jsonl");
     let property_cli = Cli::parse_from([
         String::from("crucible"),
         String::from("--quiet"),
+        String::from("--trace"),
+        property_trace.display().to_string(),
         String::from("--artifact-dir"),
         artifact_dir.display().to_string(),
         String::from("--backend"),
@@ -298,7 +317,61 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     let property_handle = fs::read_to_string(property_out)?;
     assert!(property_handle.contains("label\tproperty-stop\n"));
     assert!(property_handle.contains("at\tproperty\n"));
+    assert!(property_handle.contains("selector\tproperty-violation\tno-split-brain\n"));
+    assert!(property_handle.contains("boundary-proof\tbreakpoint\t"));
+    assert!(property_handle.contains("boundary-predicate\tcrucible-hash:"));
     assert!(property_handle.contains("oracle\tfat==thin-passed\n"));
+    let property_trace = fs::read_to_string(property_trace)?;
+    assert!(property_trace.contains("save_boundary_proof"));
+    assert!(property_trace.contains("property-violation:no-split-brain"));
+
+    let contradictory_terminal = property_handle.replace(
+        "terminal-condition\tproperty\n",
+        "terminal-condition\tvirtual-time\n",
+    );
+    let error = decode_savepoint_handle(contradictory_terminal.as_bytes())
+        .expect_err("v3 property handle must reject a contradictory terminal condition");
+    assert!(error.to_string().contains("does not match --at property"));
+
+    let declared_predicate = crucible::Predicate::assertion_state(
+        crucible::AssertionId::from_name("no-split-brain"),
+        crucible::AssertionPhase::Violated,
+    );
+    let undeclared_predicate = crucible::Predicate::assertion_state(
+        crucible::AssertionId::from_name("undeclared-property"),
+        crucible::AssertionPhase::Violated,
+    );
+    let mut declared_predicate_line = String::new();
+    let declared_payload = declared_predicate.to_compact_binary();
+    artifact_line(
+        &mut declared_predicate_line,
+        &[
+            "boundary-predicate",
+            &content_address_bytes(&declared_payload),
+            &hex_bytes(&declared_payload),
+        ],
+    );
+    let mut undeclared_predicate_line = String::new();
+    let undeclared_payload = undeclared_predicate.to_compact_binary();
+    artifact_line(
+        &mut undeclared_predicate_line,
+        &[
+            "boundary-predicate",
+            &content_address_bytes(&undeclared_payload),
+            &hex_bytes(&undeclared_payload),
+        ],
+    );
+    let forged_selector = property_handle
+        .replace(
+            "selector\tproperty-violation\tno-split-brain\n",
+            "selector\tproperty-violation\tundeclared-property\n",
+        )
+        .replace(&declared_predicate_line, &undeclared_predicate_line);
+    let forged_handle = decode_savepoint_handle(forged_selector.as_bytes())?;
+    let error = savepoint_handle_evidence("resume", &forged_handle)
+        .expect_err("embedded scenario must reject an undeclared property selector");
+    assert!(matches!(error, CliError::Artifact(_)));
+    assert!(error.to_string().contains("not declared by scenario"));
 
     let split_property_out = temp.path().join("split-property.crucible-savepoint");
     let split_property_cli = Cli::parse_from([
@@ -353,7 +426,15 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     let marker_handle = fs::read_to_string(marker_out)?;
     assert!(marker_handle.contains("label\tmarker-stop\n"));
     assert!(marker_handle.contains("at\tmarker\n"));
+    assert!(marker_handle.contains("selector\tguest-marker\tphase-two-marker\n"));
+    assert!(marker_handle.contains("boundary-proof\tbreakpoint\t"));
+    assert!(marker_handle.contains("boundary-predicate\tcrucible-hash:"));
     assert!(marker_handle.contains("oracle\tfat==thin-passed\n"));
+    let contradictory_marker = marker_handle.replace(
+        "terminal-condition\tquiescence\n",
+        "terminal-condition\tproperty\n",
+    );
+    assert!(decode_savepoint_handle(contradictory_marker.as_bytes()).is_err());
 
     let wrong_marker_out = temp.path().join("wrong-marker.crucible-savepoint");
     let wrong_marker_cli = Cli::parse_from([
@@ -746,6 +827,21 @@ pub(super) fn cli_save_selector_proof_rejects_invalid_breakpoint_evidence()
     assert!(matches!(error, CliError::Identity(_)));
     assert!(error.to_string().contains("quantum"));
 
+    let ambiguous_name = "check~frontier=999:forged";
+    let summary = SaveBoundaryEvidence {
+        at: SaveAtArg::Property,
+        selector: Some(SaveAtSelector::PropertyViolation {
+            assertion: ambiguous_name.to_string(),
+        }),
+        frontier_ticks: 2,
+        quanta: 2,
+        breakpoint_firing: Some(valid_firing),
+    }
+    .canonical_summary();
+    assert!(summary.contains("property-violation:check~frontier%3D999%3Aforged"));
+    assert!(!summary.contains(ambiguous_name));
+    assert!(summary.contains("disposition=suspend"));
+
     Ok(())
 }
 
@@ -845,10 +941,51 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
     assert_eq!(handle.schedule_payload, schedule.to_compact_binary());
     assert_eq!(handle.frontier_ticks, 1);
     assert_eq!(handle.at, SaveAtArg::Quiescence);
+    assert_eq!(handle.selector, None);
+    assert!(matches!(
+        handle.boundary_proof,
+        Some(SavepointBoundaryProof::Breakpoint {
+            frontier_ticks: 1,
+            ..
+        })
+    ));
+    assert_eq!(
+        handle.boundary_predicate,
+        Some(crucible::Predicate::quiescent())
+    );
     assert_eq!(handle.terminal_condition, RunTerminalCondition::Quiescence);
     assert_eq!(handle.materialization, "create-savepoint:reply");
     assert_eq!(handle.oracle_status, "fat==thin-passed");
     assert_eq!(handle.canonical_log_digest, canonical_log);
+
+    let v3_text = fs::read_to_string(&handle_path)?;
+    let mismatched_proof = v3_text.replace("\tsuspend\t1\t1\n", "\tsuspend\t8\t1\n");
+    let error = decode_savepoint_handle(mismatched_proof.as_bytes())
+        .expect_err("v3 boundary proof must match the top-level frontier");
+    assert!(matches!(error, CliError::Artifact(_)));
+    assert!(error.to_string().contains("did not match handle frontier"));
+
+    let legacy_text = v3_text
+        .lines()
+        .filter(|line| {
+            !line.starts_with("selector\t")
+                && !line.starts_with("boundary-proof\t")
+                && !line.starts_with("boundary-predicate\t")
+        })
+        .map(|line| {
+            if line == format!("schema\t{SAVEPOINT_HANDLE_SCHEMA}") {
+                format!("schema\t{SAVEPOINT_HANDLE_SCHEMA_V2}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let legacy_handle = decode_savepoint_handle(legacy_text.as_bytes())?;
+    assert_eq!(legacy_handle.selector, None);
+    assert_eq!(legacy_handle.boundary_proof, None);
+    assert_eq!(legacy_handle.boundary_predicate, None);
 
     let reference = format_content_hash_ref(checkpoint);
     let hash_cli = Cli::parse_from([
@@ -1108,7 +1245,9 @@ pub(super) fn cli_resume_workflow_rejects_tampered_handle_frontier() -> Result<(
     let tampered_path = temp.path().join("bad-frontier.crucible-savepoint");
     fs::write(
         &tampered_path,
-        fs::read_to_string(&handle_path)?.replace("frontier\t1\n", "frontier\t8\n"),
+        fs::read_to_string(&handle_path)?
+            .replace("frontier\t1\n", "frontier\t8\n")
+            .replace("\tsuspend\t1\t1\n", "\tsuspend\t8\t1\n"),
     )?;
     let cli = Cli::parse_from([
         String::from("crucible"),
@@ -2660,7 +2799,9 @@ pub(super) fn cli_fork_workflow_rejects_tampered_handle_frontier() -> Result<(),
     let tampered_path = temp.path().join("bad-fork-frontier.crucible-savepoint");
     fs::write(
         &tampered_path,
-        fs::read_to_string(&handle_path)?.replace("frontier\t1\n", "frontier\t8\n"),
+        fs::read_to_string(&handle_path)?
+            .replace("frontier\t1\n", "frontier\t8\n")
+            .replace("\tsuspend\t1\t1\n", "\tsuspend\t8\t1\n"),
     )?;
     let cli = Cli::parse_from([
         String::from("crucible"),
