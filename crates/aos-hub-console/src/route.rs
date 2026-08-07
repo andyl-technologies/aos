@@ -253,6 +253,13 @@ pub const INSTANCE_PAGES: &[PageSpec] = &[
         "instance-settings",
     ),
     PageSpec::new(
+        "tokens",
+        "Access tokens",
+        "Access & trust",
+        "tokens",
+        "access-tokens",
+    ),
+    PageSpec::new(
         "resource-defaults",
         "Resource defaults",
         "Policy",
@@ -375,6 +382,13 @@ pub const ORGANIZATION_PAGES: &[PageSpec] = &[
         "signing-keys",
         "signing-keys",
     ),
+    PageSpec::new(
+        "tokens",
+        "Access tokens",
+        "Access & trust",
+        "tokens",
+        "access-tokens",
+    ),
     PageSpec::new("webhooks", "Webhooks", "Automation", "webhooks", "webhooks"),
     PageSpec::new(
         "operations",
@@ -447,7 +461,7 @@ pub const REGISTRY_PAGES: &[PageSpec] = &[
     ),
     PageSpec::new(
         "tokens",
-        "Tokens",
+        "Access tokens",
         "Access & trust",
         "tokens",
         "access-tokens",
@@ -543,10 +557,17 @@ pub const CACHE_PAGES: &[PageSpec] = &[
     ),
     PageSpec::new(
         "signing",
-        "Signing key",
+        "Signing keys",
         "Access & trust",
-        "signing-key",
         "signing-keys",
+        "signing-keys",
+    ),
+    PageSpec::new(
+        "tokens",
+        "Access tokens",
+        "Access & trust",
+        "tokens",
+        "access-tokens",
     ),
     PageSpec::new(
         "retention",
@@ -612,6 +633,25 @@ mod tests {
             .expect("cache route must resolve");
         assert!(matches!(cache.scope, ConsoleScope::Cache { .. }));
         assert_eq!(cache.page.key, "retention");
+    }
+
+    #[test]
+    fn access_and_token_routes_use_one_uniform_vocabulary() {
+        for path in [
+            "/-/instance/tokens",
+            "/-/org/acme/tokens",
+            "/acme/main/-/settings/tokens",
+            "/-/org/acme/caches/main/tokens",
+            "/acme/main/-/settings/access",
+            "/-/org/acme/caches/main/access",
+            "/-/org/acme/caches/main/signing-keys",
+        ] {
+            assert!(
+                ConsoleRoute::resolve(path).is_some(),
+                "route did not resolve: {path}"
+            );
+        }
+        assert!(ConsoleRoute::resolve("/-/org/acme/caches/main/signing-key").is_none());
     }
 
     #[test]

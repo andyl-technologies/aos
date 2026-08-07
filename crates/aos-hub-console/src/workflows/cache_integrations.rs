@@ -10,7 +10,7 @@ use crate::components::{InlineError, StatusBadge};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
-use super::access_tokens::RegistryAccessTokens;
+use super::access_tokens::{AccessTokenSurface, AccessTokenWorkflow};
 use super::cache_gc::CacheGcWorkflow;
 use super::cache_integration_preview::CacheIntegrationPreview;
 use super::cache_objects::CacheObjects;
@@ -24,6 +24,7 @@ use super::registry_configuration::RegistryConfiguration;
 use super::registry_images::RegistryImages;
 use super::registry_mirror::RegistryMirrorWorkflow;
 use super::registry_publication::RegistryPublicationWorkflow;
+use super::resource_access::{ResourceAccessSurface, ResourceAccessWorkflow};
 use super::resources::UnavailableWorkflow;
 use super::signing_keys::{SigningKeyTarget, SigningKeyWorkflow};
 
@@ -31,6 +32,17 @@ use super::signing_keys::{SigningKeyTarget, SigningKeyWorkflow};
 #[component]
 pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
     match (&route.scope, route.page.key) {
+        (ConsoleScope::Instance, "tokens") => view! {
+            <AccessTokenWorkflow client=client surface=AccessTokenSurface::Instance/>
+        }
+        .into_any(),
+        (ConsoleScope::Organization { slug }, "tokens") => view! {
+            <AccessTokenWorkflow
+                client=client
+                surface=AccessTokenSurface::Organization(slug.clone())
+            />
+        }
+        .into_any(),
         (ConsoleScope::Instance, "operations") => view! {
             <OperationsWorkflow client=client surface=OperationSurface::Instance/>
         }
@@ -66,6 +78,29 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             <RegistryCacheStack client=client registry_id=path.clone()/>
         }
         .into_any(),
+        (ConsoleScope::Registry { path }, "access") => view! {
+            <ResourceAccessWorkflow
+                client=client
+                surface=ResourceAccessSurface::Registry(path.clone())
+            />
+        }
+        .into_any(),
+        (
+            ConsoleScope::Cache {
+                organization,
+                cache,
+            },
+            "access",
+        ) => view! {
+            <ResourceAccessWorkflow
+                client=client
+                surface=ResourceAccessSurface::Cache {
+                    organization: organization.clone(),
+                    cache: cache.clone(),
+                }
+            />
+        }
+        .into_any(),
         (ConsoleScope::Registry { path }, "publishes") => view! {
             <RegistryPublicationWorkflow client=client registry_id=path.clone()/>
         }
@@ -87,7 +122,23 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
         }
         .into_any(),
         (ConsoleScope::Registry { path }, "tokens") => view! {
-            <RegistryAccessTokens client=client registry_id=path.clone()/>
+            <AccessTokenWorkflow
+                client=client
+                surface=AccessTokenSurface::Registry(path.clone())
+            />
+        }
+        .into_any(),
+        (
+            ConsoleScope::Cache {
+                organization,
+                cache,
+            },
+            "tokens",
+        ) => view! {
+            <AccessTokenWorkflow
+                client=client
+                surface=AccessTokenSurface::Cache(format!("{organization}/{cache}"))
+            />
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "signing") => view! {
