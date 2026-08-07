@@ -2078,7 +2078,7 @@ pub(super) fn finish_verify_workflow_outcome(
         outcome.status = BackendCommandStatus::Failed;
         outcome.exit_code = outcome.status.exit_code();
         outcome.stdout.push(format!(
-            "verify-divergence\tleft={}\tright={}\tmismatch={}\tfirst_decision={}\tfirst_fingerprint_sample={}\tfirst_instruction={}\tnode={}\tbyte={}",
+            "verify-divergence\tleft={}\tright={}\tmismatch={}\tfirst_decision={}\tfirst_fingerprint_sample={}\tfirst_virtual_time={}\tfirst_virtual_time_node={}\tfirst_instruction={}\tfirst_instruction_node={}\tbyte={}",
             divergence.left,
             divergence.right,
             divergence.mismatch.label(),
@@ -2090,8 +2090,22 @@ pub(super) fn finish_verify_workflow_outcome(
                 .first_different_fingerprint_sample
                 .map(|sample| sample.to_string())
                 .unwrap_or_else(|| String::from("unknown")),
-            divergence.first_different_instruction,
-            divergence.node.as_deref().unwrap_or("unknown"),
+            divergence
+                .first_different_virtual_time
+                .map(|ticks| ticks.to_string())
+                .unwrap_or_else(|| String::from("unknown")),
+            divergence
+                .first_different_virtual_time_node
+                .as_deref()
+                .unwrap_or("unknown"),
+            divergence
+                .first_different_instruction
+                .map(|instruction| instruction.to_string())
+                .unwrap_or_else(|| String::from("unknown")),
+            divergence
+                .first_different_instruction_node
+                .as_deref()
+                .unwrap_or("unknown"),
             divergence.first_different_byte
         ));
         if verify_plan.print_bisection_state_dump {
@@ -2107,16 +2121,32 @@ pub(super) fn finish_verify_workflow_outcome(
             sequence: outcome.canonical_log.len() as u64,
             virtual_time_ticks: outcome.canonical_log.len() as u64,
             node: divergence
-                .node
+                .first_different_virtual_time_node
                 .clone()
+                .or_else(|| divergence.first_different_instruction_node.clone())
                 .unwrap_or_else(|| String::from("verify")),
             kind: String::from("verify_divergence_bisection"),
             summary: format!(
-                "left={} right={} mismatch={} first_instruction={} byte={}",
+                "left={} right={} mismatch={} first_virtual_time={} first_virtual_time_node={} first_instruction={} first_instruction_node={} byte={}",
                 divergence.left,
                 divergence.right,
                 divergence.mismatch.label(),
-                divergence.first_different_instruction,
+                divergence
+                    .first_different_virtual_time
+                    .map(|ticks| ticks.to_string())
+                    .unwrap_or_else(|| String::from("unknown")),
+                divergence
+                    .first_different_virtual_time_node
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                divergence
+                    .first_different_instruction
+                    .map(|instruction| instruction.to_string())
+                    .unwrap_or_else(|| String::from("unknown")),
+                divergence
+                    .first_different_instruction_node
+                    .as_deref()
+                    .unwrap_or("unknown"),
                 divergence.first_different_byte
             ),
         });

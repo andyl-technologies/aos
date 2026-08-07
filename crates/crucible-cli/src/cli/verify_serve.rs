@@ -627,13 +627,10 @@ pub(super) fn localize_verify_divergence(
         mismatch,
         first_different_decision,
         first_different_fingerprint_sample: first_different_sample,
-        first_different_instruction: entry
-            .map(|entry| entry.virtual_time_ticks)
-            .or_else(|| sample.map(|sample| sample.instruction))
-            .unwrap_or(first_different_byte as u64),
-        node: entry
-            .map(|entry| entry.node.clone())
-            .or_else(|| sample.map(|sample| sample.node.clone())),
+        first_different_virtual_time: entry.map(|entry| entry.virtual_time_ticks),
+        first_different_virtual_time_node: entry.map(|entry| entry.node.clone()),
+        first_different_instruction: sample.map(|sample| sample.instruction),
+        first_different_instruction_node: sample.map(|sample| sample.node.clone()),
         first_different_byte,
         left_state_digest: verify_witness_state_digest(left),
         right_state_digest: verify_witness_state_digest(right),

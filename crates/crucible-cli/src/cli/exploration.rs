@@ -588,7 +588,7 @@ pub(super) fn replay_to_savepoint_machine_readable_summary(
 pub(super) fn replay_bisect_machine_readable_summary(bisect: &ReplayBisectionReport) -> String {
     match &bisect.divergence {
         Some(divergence) => format!(
-            "path={} status=diverged mismatch={} first_decision={} first_fingerprint_sample={} first_instruction={} node={} byte={} left_state={} right_state={}",
+            "path={} status=diverged mismatch={} first_decision={} first_fingerprint_sample={} first_virtual_time={} first_virtual_time_node={} first_instruction={} first_instruction_node={} byte={} left_state={} right_state={}",
             bisect.other_path.display(),
             divergence.mismatch.label(),
             divergence
@@ -599,8 +599,22 @@ pub(super) fn replay_bisect_machine_readable_summary(bisect: &ReplayBisectionRep
                 .first_different_fingerprint_sample
                 .map(|sample| sample.to_string())
                 .unwrap_or_else(|| String::from("unknown")),
-            divergence.first_different_instruction,
-            divergence.node.as_deref().unwrap_or("unknown"),
+            divergence
+                .first_different_virtual_time
+                .map(|ticks| ticks.to_string())
+                .unwrap_or_else(|| String::from("unknown")),
+            divergence
+                .first_different_virtual_time_node
+                .as_deref()
+                .unwrap_or("unknown"),
+            divergence
+                .first_different_instruction
+                .map(|instruction| instruction.to_string())
+                .unwrap_or_else(|| String::from("unknown")),
+            divergence
+                .first_different_instruction_node
+                .as_deref()
+                .unwrap_or("unknown"),
             divergence.first_different_byte,
             divergence.left_state_digest,
             divergence.right_state_digest

@@ -107,8 +107,10 @@ pub(super) fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts
     assert!(divergence_line.contains("\tmismatch=canonical-log+fingerprint-stream\t"));
     assert!(divergence_line.contains("\tfirst_decision=1\t"));
     assert!(divergence_line.contains("\tfirst_fingerprint_sample=0\t"));
-    assert!(divergence_line.contains("\tfirst_instruction=12\t"));
-    assert!(divergence_line.contains("\tnode=node-b\t"));
+    assert!(divergence_line.contains("\tfirst_virtual_time=12\t"));
+    assert!(divergence_line.contains("\tfirst_virtual_time_node=node-b\t"));
+    assert!(divergence_line.contains("\tfirst_instruction=0\t"));
+    assert!(divergence_line.contains("\tfirst_instruction_node=session\t"));
     assert!(divergence_line.contains("\tbyte="));
     let bisect_line = outcome
         .stdout
@@ -2654,8 +2656,16 @@ pub(super) fn cli_replay_bisects_artifact_divergence() -> Result<(), Box<dyn Err
     );
     assert_eq!(divergence.first_different_decision, Some(1));
     assert_eq!(divergence.first_different_fingerprint_sample, Some(0));
-    assert_eq!(divergence.first_different_instruction, 12);
-    assert_eq!(divergence.node.as_deref(), Some("node-b"));
+    assert_eq!(divergence.first_different_virtual_time, Some(12));
+    assert_eq!(
+        divergence.first_different_virtual_time_node.as_deref(),
+        Some("node-b")
+    );
+    assert_eq!(divergence.first_different_instruction, Some(0));
+    assert_eq!(
+        divergence.first_different_instruction_node.as_deref(),
+        Some("session")
+    );
     assert!(divergence.first_different_byte > 0);
 
     let error = match dispatch(&cli) {
@@ -2666,6 +2676,140 @@ pub(super) fn cli_replay_bisects_artifact_divergence() -> Result<(), Box<dyn Err
     assert_eq!(error.exit_code(), 1);
     assert!(error.to_string().contains("replay --bisect divergence"));
     assert!(error.to_string().contains("first_decision=1"));
+    assert!(error.to_string().contains("first_virtual_time=12"));
+    assert!(error.to_string().contains("first_virtual_time_node=node-b"));
+    assert!(error.to_string().contains("first_instruction=0"));
+    assert!(error.to_string().contains("first_instruction_node=session"));
+
+    let canonical_only = verify_reproduction_artifact_bytes(
+        12,
+        Some(&ResolvedLocalBackend::Double),
+        &scenario,
+        &diverged_entries,
+        &first_samples,
+    )?;
+    let canonical_only_path = temp.path().join("canonical-only.crucible");
+    fs::write(&canonical_only_path, canonical_only)?;
+    let canonical_only_cli = Cli::parse_from([
+        "crucible",
+        "--quiet",
+        "--backend",
+        "double",
+        "replay",
+        left.to_str().unwrap_or("."),
+        "--bisect",
+        canonical_only_path.to_str().unwrap_or("."),
+    ]);
+    let Commands::Replay(canonical_only_args) = &canonical_only_cli.command else {
+        panic!("expected replay command");
+    };
+    let canonical_only_report =
+        replay_reproduction_artifact(&canonical_only_cli, canonical_only_args)?;
+    let canonical_only_divergence = canonical_only_report
+        .bisect
+        .as_ref()
+        .and_then(|bisect| bisect.divergence.as_ref())
+        .expect("canonical-log divergence should be localized");
+    assert_eq!(
+        canonical_only_divergence.mismatch,
+        VerifyMismatchKind::CanonicalLog
+    );
+    assert_eq!(
+        canonical_only_divergence.first_different_virtual_time,
+        Some(12)
+    );
+    assert_eq!(
+        canonical_only_divergence
+            .first_different_virtual_time_node
+            .as_deref(),
+        Some("node-b")
+    );
+    assert_eq!(canonical_only_divergence.first_different_instruction, None);
+    assert_eq!(
+        canonical_only_divergence.first_different_instruction_node,
+        None
+    );
+    let canonical_only_bisect = canonical_only_report
+        .bisect
+        .as_ref()
+        .expect("bisection report");
+    let canonical_only_error =
+        replay_bisect_error(&left, canonical_only_bisect, canonical_only_divergence);
+    assert!(
+        canonical_only_error
+            .to_string()
+            .contains("first_instruction=unknown")
+    );
+    let canonical_only_machine = replay_bisect_machine_readable_summary(canonical_only_bisect);
+    assert!(canonical_only_machine.contains("first_virtual_time=12"));
+    assert!(canonical_only_machine.contains("first_virtual_time_node=node-b"));
+    assert!(canonical_only_machine.contains("first_instruction=unknown"));
+    assert!(canonical_only_machine.contains("first_instruction_node=unknown"));
+    let mut canonical_only_human = Vec::new();
+    write_replay_report_human(&mut canonical_only_human, &canonical_only_report)?;
+    let canonical_only_human = String::from_utf8(canonical_only_human)?;
+    assert!(canonical_only_human.contains("first_virtual_time=12"));
+    assert!(canonical_only_human.contains("first_instruction=unknown"));
+
+    let fingerprint_only = verify_reproduction_artifact_bytes(
+        12,
+        Some(&ResolvedLocalBackend::Double),
+        &scenario,
+        &entries,
+        &second_samples,
+    )?;
+    let fingerprint_only_path = temp.path().join("fingerprint-only.crucible");
+    fs::write(&fingerprint_only_path, fingerprint_only)?;
+    let fingerprint_only_cli = Cli::parse_from([
+        "crucible",
+        "--quiet",
+        "--backend",
+        "double",
+        "replay",
+        left.to_str().unwrap_or("."),
+        "--bisect",
+        fingerprint_only_path.to_str().unwrap_or("."),
+    ]);
+    let Commands::Replay(fingerprint_only_args) = &fingerprint_only_cli.command else {
+        panic!("expected replay command");
+    };
+    let fingerprint_only_report =
+        replay_reproduction_artifact(&fingerprint_only_cli, fingerprint_only_args)?;
+    let fingerprint_only_bisect = fingerprint_only_report
+        .bisect
+        .as_ref()
+        .expect("bisection report");
+    let fingerprint_only_divergence = fingerprint_only_bisect
+        .divergence
+        .as_ref()
+        .expect("fingerprint-stream divergence should be localized");
+    assert_eq!(
+        fingerprint_only_divergence.mismatch,
+        VerifyMismatchKind::FingerprintStream
+    );
+    assert_eq!(
+        fingerprint_only_divergence.first_different_virtual_time,
+        None
+    );
+    assert_eq!(
+        fingerprint_only_divergence.first_different_virtual_time_node,
+        None
+    );
+    assert_eq!(
+        fingerprint_only_divergence.first_different_instruction,
+        Some(0)
+    );
+    assert_eq!(
+        fingerprint_only_divergence
+            .first_different_instruction_node
+            .as_deref(),
+        Some("session")
+    );
+    let fingerprint_only_machine = replay_bisect_machine_readable_summary(fingerprint_only_bisect);
+    assert!(fingerprint_only_machine.contains("first_virtual_time=unknown"));
+    assert!(fingerprint_only_machine.contains("first_virtual_time_node=unknown"));
+    assert!(fingerprint_only_machine.contains("first_instruction=0"));
+    assert!(fingerprint_only_machine.contains("first_instruction_node=session"));
 
     let seed_mismatch = verify_reproduction_artifact_bytes(
         13,
