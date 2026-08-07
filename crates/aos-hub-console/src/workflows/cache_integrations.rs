@@ -19,6 +19,7 @@ use super::cache_stack::RegistryCacheStack;
 use super::registry_catalog::RegistryCatalog;
 use super::registry_configuration::RegistryConfiguration;
 use super::registry_images::RegistryImages;
+use super::registry_mirror::RegistryMirrorWorkflow;
 use super::registry_publication::RegistryPublicationWorkflow;
 use super::resources::UnavailableWorkflow;
 
@@ -44,6 +45,10 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
         .into_any(),
         (ConsoleScope::Registry { path }, page @ ("configuration" | "changes")) => view! {
             <RegistryConfiguration client=client registry_id=path.clone() page=page/>
+        }
+        .into_any(),
+        (ConsoleScope::Registry { path }, "mirror") => view! {
+            <RegistryMirrorWorkflow client=client registry_id=path.clone()/>
         }
         .into_any(),
         (

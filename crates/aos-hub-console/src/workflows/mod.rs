@@ -26,6 +26,7 @@ mod placements;
 mod registry_catalog;
 mod registry_configuration;
 mod registry_images;
+mod registry_mirror;
 mod registry_publication;
 mod resources;
 mod storage_gateways;
