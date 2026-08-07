@@ -49,45 +49,16 @@ where
             let budget = run_plan.max_virtual_time_ticks.ok_or_else(|| {
                 usage_error("save --at virtual-time requires --max-virtual-time <dur>")
             })?;
-            let summary =
-                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
-                    .await?;
-            let boundary = if summary.frontier.ticks < budget {
-                send_save_workflow_command(
-                    client,
-                    created.session,
-                    &mut command_id,
-                    SessionCommand::step(StepMode::Duration(SimDuration {
-                        nanos: budget.saturating_sub(summary.frontier.ticks),
-                    })),
-                    &mut acknowledged_commands,
-                    &mut state_updates,
-                )
-                .await?;
-                let max_attempts = RUN_INTERACTIVE_ACK_QUANTA_BOUND
-                    .saturating_add(budget.saturating_sub(summary.frontier.ticks));
-                wait_for_save_workflow_summary(
-                    client,
-                    created.session,
-                    |candidate| {
-                        candidate.state == LiveStateKind::Paused
-                            && candidate.frontier.ticks >= budget
-                            && candidate.quanta_stepped > summary.quanta_stepped
-                    },
-                    "paused requested remote virtual-time save boundary",
-                    max_attempts,
-                )
-                .await?
-            } else {
-                summary
-            };
-            if boundary.frontier.ticks != budget {
-                return Err(CliError::Identity(format!(
-                    "save remote virtual-time boundary reached {}, expected {}",
-                    boundary.frontier.ticks, budget
-                )));
-            }
-            boundary
+            drive_save_to_virtual_time_boundary(
+                client,
+                created.session,
+                budget,
+                &mut command_id,
+                &mut acknowledged_commands,
+                &mut state_updates,
+                "remote ",
+            )
+            .await?
         }
         SaveAtArg::Property | SaveAtArg::Marker => {
             run_save_selector_to_boundary(
@@ -470,6 +441,63 @@ where
     .await
 }
 
+pub(super) async fn drive_save_to_virtual_time_boundary<C>(
+    client: &C,
+    session: SessionRef,
+    budget: u64,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    state_updates: &mut Vec<String>,
+    route_label: &str,
+) -> Result<crucible_api::SessionSummary, CliError>
+where
+    C: ControlClient + Sync,
+{
+    let mut boundary = wait_for_save_workflow_state(client, session, LiveStateKind::Paused).await?;
+    let mut stagnant_quanta = 0_u64;
+    while boundary.frontier.ticks < budget {
+        let before = boundary;
+        send_save_workflow_command(
+            client,
+            session,
+            command_id,
+            SessionCommand::step(StepMode::Quantum),
+            acknowledged_commands,
+            state_updates,
+        )
+        .await?;
+        boundary = wait_for_save_workflow_summary(
+            client,
+            session,
+            |candidate| {
+                candidate.state == LiveStateKind::Paused
+                    && candidate.quanta_stepped > before.quanta_stepped
+            },
+            "paused requested virtual-time save boundary",
+            RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+        )
+        .await?;
+        if boundary.frontier.ticks <= before.frontier.ticks {
+            stagnant_quanta = stagnant_quanta.saturating_add(1);
+            if stagnant_quanta >= RUN_INTERACTIVE_ACK_QUANTA_BOUND {
+                return Err(save_backend_error(format!(
+                    "save {route_label}virtual-time boundary made no progress from {} after {stagnant_quanta} quanta",
+                    before.frontier.ticks
+                )));
+            }
+        } else {
+            stagnant_quanta = 0;
+        }
+    }
+    if boundary.frontier.ticks != budget {
+        return Err(CliError::Identity(format!(
+            "save {route_label}virtual-time boundary reached {}, expected {}",
+            boundary.frontier.ticks, budget
+        )));
+    }
+    Ok(boundary)
+}
+
 pub(super) async fn wait_for_save_workflow_summary<C>(
     client: &C,
     session: SessionRef,
@@ -498,7 +526,10 @@ where
         if summary.state == LiveStateKind::Stopped {
             return Err(CliError::Outcome(status_from_outcome(summary.outcome)?));
         }
-        tokio::task::yield_now().await;
+        // A local control client can answer ListSessions immediately. A small
+        // observer delay prevents that polling loop from starving the actor
+        // task that must drive the requested boundary.
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     Err(save_backend_error(format!(
         "save workflow did not reach {description}"

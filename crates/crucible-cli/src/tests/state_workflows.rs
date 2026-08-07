@@ -48,9 +48,12 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     assert_eq!(outcome.status, BackendCommandStatus::Passed);
     assert!(outcome.terminal_savepoint.is_some());
     assert!(outcome.savepoint_oracle.is_some());
-    assert!(!outcome.stdout.iter().any(|line| {
-        line.starts_with("run-savepoint\t") || line.starts_with("run-store\t")
-    }));
+    assert!(
+        !outcome
+            .stdout
+            .iter()
+            .any(|line| { line.starts_with("run-savepoint\t") || line.starts_with("run-store\t") })
+    );
     assert!(outcome.stdout.iter().any(|line| {
         line.starts_with("save-oracle\tstatus=fat==thin-passed\tconfiguration=blake3:")
     }));
@@ -229,7 +232,41 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
         String::from("--out"),
         virtual_time_out.display().to_string(),
     ]);
-    dispatch(&virtual_time_cli)?;
+    let Commands::Save(args) = &virtual_time_cli.command else {
+        panic!("expected save command");
+    };
+    let virtual_time_plan =
+        plan_save_invocation(args, temp.path(), &virtual_time_cli.artifact_dir)?;
+    let virtual_time_seed = plan_determinism_ergonomics(
+        &virtual_time_cli,
+        &FakeSeedEnvironment::default(),
+        &mut FakeSeedEntropySource::new(0),
+    )?
+    .expect("save should resolve a seed");
+    let virtual_time_backend =
+        plan_backend_selection(&virtual_time_cli)?.expect("save should require backend");
+    let mut virtual_time_outcome = execute_backend_routed_command(
+        &plan_cli_invocation(&virtual_time_cli),
+        &virtual_time_backend,
+        Some(&virtual_time_seed),
+        Some(&virtual_time_plan.run_plan),
+        None,
+        Some(&virtual_time_plan),
+        &mut NullBackendCommandRunner,
+    )?;
+    export_savepoint_handle(&virtual_time_plan, &mut virtual_time_outcome)?;
+    let step_acks = virtual_time_outcome
+        .canonical_log
+        .iter()
+        .filter(|entry| entry.kind == "interactive_ack" && entry.summary == "step-quantum")
+        .count();
+    assert_eq!(step_acks, 2);
+    assert!(
+        !virtual_time_outcome
+            .canonical_log
+            .iter()
+            .any(|entry| entry.kind == "interactive_ack" && entry.summary == "step-duration")
+    );
     let virtual_time_handle = fs::read_to_string(virtual_time_out)?;
     assert!(virtual_time_handle.contains("label\tat-two-ticks\n"));
     assert!(virtual_time_handle.contains("at\tvirtual-time\n"));

@@ -477,8 +477,10 @@ long-held locks.
   routes explicitly selected local-QEMU saves through the same create-savepoint/
   export/oracle workflow with resolved QEMU/plugin identity metadata, routes
   remote-daemon quiescence and virtual-time saves over the RPC control API and
-  validates them with replay-oracle evidence, routes remote selector proof
-  queries over RPC breakpoint-firing payloads, transfers arbitrary scenario
+  validates them with replay-oracle evidence, drives exact virtual-time saves
+  through individually acknowledged scheduler quanta with bounded tolerance for
+  zero-time boot quanta, rejects stagnation and overshoot, routes remote
+  selector proof queries over RPC breakpoint-firing payloads, transfers arbitrary scenario
   selector sources to remote daemons as form-bearing inline `CreateSession` RPC
   payloads, derives remote guest-marker white-box policy from the transferred
   source form, and fails undeclared property selectors and marker selectors
