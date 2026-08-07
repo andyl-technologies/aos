@@ -161,6 +161,11 @@ the RFC-0010 17a predicate and supports the complete condition vocabulary.
 `goto` on a remote session accepts `vtime:<ticks>` (or a bare tick count) and
 `icount:<node>:<retired>` coordinates.
 
+A rejected coordinate, unavailable reverse history, or guest-introspection
+policy check is returned to that debugger command without terminating the live
+session. Correct the request and retry, or use the original run client to query
+or stop the same session.
+
 A session resumed from a checkpoint closure can use coordinate `goto` and
 instruction reverse-step immediately. Because that closure does not contain the
 pre-checkpoint event log, event, quantum, assertion, timer, and condition-based
