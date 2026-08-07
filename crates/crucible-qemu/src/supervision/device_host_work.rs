@@ -24,9 +24,9 @@ use thiserror::Error;
 
 use crucible::model::{ContentHash, ResolvedBindingAction, ResolvedFaultTarget};
 use crucible_device::block::{
-    BlockDurabilityConfig, BlockFaultState, BlockPersistenceMediaOutcome,
-    BlockPersistenceOpportunity, BlockRetainedRelease, BlockServiceCompletion,
-    ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
+    BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
+    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRetainedRelease,
+    BlockServiceCompletion, ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
 };
 
 use super::block_io_servicer::{
@@ -84,6 +84,8 @@ pub struct QemuLiveBlockHostWorkPool {
 /// Atomic storage opportunities and outcomes observed on the owning worker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLiveBlockStorageEvents {
+    /// Next request ready for exact resolve/persist phase evaluation.
+    pub execution_opportunity: Option<BlockExecutionOpportunity>,
     /// Next physical-media decision opportunity ready at the requested coordinate.
     pub persistence_opportunity: Option<BlockPersistenceOpportunity>,
     /// Completed physical-media mutations drained exactly once.
@@ -556,6 +558,24 @@ impl QemuLiveBlockHostWorkPool {
         self.mutate(StorageMutation::InstallPersistenceMedia(directive))
     }
 
+    /// Installs the complete resolve/persist decision for one staged request.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same worker-state, protocol, and device errors as other
+    /// storage mutations.
+    pub fn install_storage_execution_directive(
+        &mut self,
+        request_sequence: u64,
+        directive: ResolvedBlockFaultDirective,
+    ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
+        self.require_storage_device_bound()?;
+        self.mutate(StorageMutation::InstallExecution {
+            request_sequence,
+            directive,
+        })
+    }
+
     /// Drops exact volatile-cache entries on the worker-owned live device.
     ///
     /// # Errors
@@ -792,6 +812,10 @@ enum StorageMutation {
     LoseVolatile(Vec<u64>),
     LoseController(Vec<u64>),
     InstallPersistenceMedia(ResolvedBlockPersistenceMediaDirective),
+    InstallExecution {
+        request_sequence: u64,
+        directive: ResolvedBlockFaultDirective,
+    },
     ReleaseCompletion {
         request_id: u32,
         release: BlockRetainedRelease,
@@ -847,6 +871,10 @@ fn worker_loop(
                 StorageMutation::InstallPersistenceMedia(directive) => {
                     servicer.install_storage_persistence_media_directive(directive)
                 }
+                StorageMutation::InstallExecution {
+                    request_sequence,
+                    directive,
+                } => servicer.install_storage_execution_directive(request_sequence, directive),
                 StorageMutation::ReleaseCompletion {
                     request_id,
                     release,
@@ -857,6 +885,7 @@ fn worker_loop(
             }
             WorkerCommand::StorageEvents { now_nanos } => {
                 WorkerReply::StorageEvents(QemuLiveBlockStorageEvents {
+                    execution_opportunity: servicer.next_storage_execution_opportunity(now_nanos),
                     persistence_opportunity: servicer
                         .next_storage_persistence_opportunity(now_nanos),
                     persistence_outcomes: servicer.drain_storage_persistence_media_outcomes(),

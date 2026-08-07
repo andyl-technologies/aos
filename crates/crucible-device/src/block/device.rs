@@ -34,9 +34,9 @@ use crate::subnode::{IoCore, IoSubNode, ShmemDeliveryResult, ShmemInboxProcess};
 
 use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, RESPONSE_HEADER_LEN};
 use super::fault::{
-    BlockDurabilityConfig, BlockFaultState, BlockPersistenceMediaOutcome,
-    BlockPersistenceOpportunity, BlockRetainedRelease, ResolvedBlockFaultDirective,
-    ResolvedBlockPersistenceMediaDirective,
+    BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
+    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRetainedRelease,
+    ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
 };
 use super::overlay::{BaseImage, CowOverlay};
 use super::service::BlockServiceCompletion;
@@ -296,6 +296,40 @@ impl BlockDevice {
         Ok(())
     }
 
+    /// Enables fail-closed staged resolve/persist opportunities.
+    ///
+    /// This must be selected before any request or storage mutation enters the
+    /// device so checkpoints never mix direct and staged request semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] unless the block and durability state are pristine.
+    pub fn require_storage_execution_opportunities(&mut self) -> Result<(), DeviceError> {
+        if !self.storage_faults.is_pristine() || self.overlay.page_count() != 0 {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "staged storage execution must be configured before device mutation",
+            });
+        }
+        self.storage_faults.require_execution_opportunities(true);
+        Ok(())
+    }
+
+    /// Enables fail-closed physical-media opportunities before device mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] unless the block and durability state are pristine.
+    pub fn require_storage_persistence_media_opportunities(&mut self) -> Result<(), DeviceError> {
+        if !self.storage_faults.is_pristine() || self.overlay.page_count() != 0 {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "staged physical persistence must be configured before device mutation",
+            });
+        }
+        self.storage_faults
+            .require_persistence_media_directives(true);
+        Ok(())
+    }
+
     /// Installs one fully resolved directive for an exact pending request ID.
     ///
     /// # Errors
@@ -307,6 +341,30 @@ impl BlockDevice {
         directive: ResolvedBlockFaultDirective,
     ) -> Result<(), DeviceError> {
         self.storage_faults.install(request_id, directive)
+    }
+
+    /// Returns the first request ready for resolve/persist evaluation.
+    #[must_use]
+    pub fn next_storage_execution_opportunity(
+        &self,
+        now_nanos: u64,
+    ) -> Option<BlockExecutionOpportunity> {
+        self.storage_faults.next_execution_opportunity(now_nanos)
+    }
+
+    /// Installs one complete resolve/persist decision for a staged request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the decision does not authenticate the live
+    /// opportunity, repeats queue service, or violates storage bounds.
+    pub fn install_storage_execution_directive(
+        &mut self,
+        request_sequence: u64,
+        directive: ResolvedBlockFaultDirective,
+    ) -> Result<(), DeviceError> {
+        self.storage_faults
+            .install_execution_directive(request_sequence, directive)
     }
 
     /// Returns the next physical persistence opportunity ready at `now_nanos`.
@@ -355,10 +413,15 @@ impl BlockDevice {
             .storage_faults
             .next_persistence_deadline_nanos()
             .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
+        let execution = self
+            .storage_faults
+            .next_execution_deadline_nanos()
+            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
         self.core
             .next_exact_local_event()
             .into_iter()
             .chain(service)
+            .chain(execution)
             .chain(persistence)
             .min()
     }
@@ -596,7 +659,13 @@ impl BlockDevice {
         let mut next_faults = self.storage_faults.clone();
         let mut next_overlay = self.overlay.clone();
         let mut next_core = self.core.clone();
-        let released = next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
+        let mut released =
+            next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
+        released.extend(next_faults.resume_execution_to(
+            &self.base,
+            &mut next_overlay,
+            now_nanos,
+        )?);
         for released in released {
             let latency_nanos = self
                 .latency
@@ -627,7 +696,13 @@ impl BlockDevice {
         let mut next_faults = self.storage_faults.clone();
         let mut next_overlay = self.overlay.clone();
         let mut next_core = self.core.clone();
-        let released = next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
+        let mut released =
+            next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
+        released.extend(next_faults.resume_execution_to(
+            &self.base,
+            &mut next_overlay,
+            now_nanos,
+        )?);
         for released in released {
             let base_completion_nanos = released
                 .finished_nanos
@@ -673,7 +748,13 @@ impl BlockDevice {
         let mut next_faults = self.storage_faults.clone();
         let mut next_overlay = self.overlay.clone();
         let mut next_core = self.core.clone();
-        let released = next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
+        let mut released =
+            next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
+        released.extend(next_faults.resume_execution_to(
+            &self.base,
+            &mut next_overlay,
+            now_nanos,
+        )?);
         for released in released {
             let latency_nanos = self
                 .latency
