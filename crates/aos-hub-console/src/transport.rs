@@ -128,6 +128,35 @@ impl ApiClient {
         }
     }
 
+    /// Uploads exact publication bytes to a server-issued same-origin URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the URL escapes the typed publication route, the
+    /// request fails, or the Hub rejects the bytes.
+    pub(crate) async fn put_publication_object(
+        &self,
+        upload_url: &str,
+        file: &web_sys::File,
+    ) -> Result<(), TransportError> {
+        validate_publication_upload_url(upload_url)?;
+        let bearer = self.session_guard().access_token.clone();
+        let mut status = send_publication_upload(upload_url, &bearer, file).await?;
+        if status == 401 {
+            let refreshed = exchange_browser_session(&self.csrf).await?;
+            let bearer = refreshed.access_token.clone();
+            *self.session_guard() = refreshed;
+            status = send_publication_upload(upload_url, &bearer, file).await?;
+        }
+        if !(200..300).contains(&status) {
+            return Err(TransportError::Http {
+                status,
+                detail: "publication upload was rejected".to_string(),
+            });
+        }
+        Ok(())
+    }
+
     fn session_guard(&self) -> MutexGuard<'_, aos_proto_types::BrowserSessionTokenResponse> {
         match self.session.lock() {
             Ok(guard) => guard,
@@ -192,6 +221,53 @@ async fn send_connect(
     Ok((status, body))
 }
 
+async fn send_publication_upload(
+    upload_url: &str,
+    bearer: &str,
+    file: &web_sys::File,
+) -> Result<u16, TransportError> {
+    let response = Request::put(upload_url)
+        .header("authorization", &format!("Bearer {bearer}"))
+        .header("content-type", "application/octet-stream")
+        .body(file.clone())
+        .map_err(|error| TransportError::Request(error.to_string()))?
+        .send()
+        .await
+        .map_err(|error| TransportError::Request(error.to_string()))?;
+    Ok(response.status())
+}
+
+fn validate_publication_upload_url(upload_url: &str) -> Result<(), TransportError> {
+    let parsed =
+        leptos::web_sys::Url::new(upload_url).map_err(|_| TransportError::InvalidUploadUrl)?;
+    let origin = leptos::web_sys::window()
+        .and_then(|window| window.location().origin().ok())
+        .ok_or(TransportError::InvalidUploadUrl)?;
+    let prefix = "/aos.hub.v1.PublishService/UploadObject/";
+    let path = parsed.pathname();
+    let suffix = path.strip_prefix(prefix).unwrap_or_default();
+    let mut segments = suffix.split('/');
+    let publication_id = segments.next().unwrap_or_default();
+    let object_id = segments.next().unwrap_or_default();
+    if parsed.origin() != origin
+        || publication_id.is_empty()
+        || !publication_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || object_id
+            .parse::<i64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .is_none()
+        || segments.next().is_some()
+        || !parsed.search().is_empty()
+        || !parsed.hash().is_empty()
+        || !parsed.username().is_empty()
+        || !parsed.password().is_empty()
+    {
+        return Err(TransportError::InvalidUploadUrl);
+    }
+    Ok(())
+}
+
 /// Failure returned by the browser transport boundary.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TransportError {
@@ -224,6 +300,9 @@ pub enum TransportError {
     /// A list endpoint repeated a non-empty page token.
     #[error("the Hub repeated a pagination token")]
     PaginationCycle,
+    /// A publication upload URL escaped the typed same-origin route.
+    #[error("the publication upload URL is not a typed same-origin URL")]
+    InvalidUploadUrl,
 }
 
 fn is_generated_connect_path(path: &str) -> bool {
