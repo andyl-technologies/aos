@@ -25,7 +25,11 @@ pub(super) fn NetworkBoundaryWorkflow(route: ConsoleRoute, client: ApiClient) ->
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "boundaries") => view! {
-            <OrganizationNetworkBoundaries client=client organization=slug.clone()/>
+            <OrganizationNetworkBoundaries client=client organization=slug.clone() creation_only=false/>
+        }
+        .into_any(),
+        (ConsoleScope::Organization { slug }, "boundaries-new") => view! {
+            <OrganizationNetworkBoundaries client=client organization=slug.clone() creation_only=true/>
         }
         .into_any(),
         _ => view! { <DeliveryEndpointWorkflow route=route client=client/> }.into_any(),
@@ -33,7 +37,11 @@ pub(super) fn NetworkBoundaryWorkflow(route: ConsoleRoute, client: ApiClient) ->
 }
 
 #[component]
-fn OrganizationNetworkBoundaries(client: ApiClient, organization: String) -> impl IntoView {
+fn OrganizationNetworkBoundaries(
+    client: ApiClient,
+    organization: String,
+    creation_only: bool,
+) -> impl IntoView {
     let resolve_client = client.clone();
     let scope = LocalResource::new(move || {
         let client = resolve_client.clone();
@@ -48,7 +56,7 @@ fn OrganizationNetworkBoundaries(client: ApiClient, organization: String) -> imp
                 Suspend::new(async move {
                     match scope.await.as_ref() {
                         Ok(owner_scope_key) => view! {
-                            <NetworkBoundaries client=client owner_scope_key=owner_scope_key.clone()/>
+                            <NetworkBoundaries client=client owner_scope_key=owner_scope_key.clone() organization=Some(organization.clone()) creation_only=creation_only/>
                         }
                         .into_any(),
                         Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
@@ -60,7 +68,12 @@ fn OrganizationNetworkBoundaries(client: ApiClient, organization: String) -> imp
 }
 
 #[component]
-fn NetworkBoundaries(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+fn NetworkBoundaries(
+    client: ApiClient,
+    owner_scope_key: String,
+    #[prop(optional)] organization: Option<String>,
+    #[prop(optional)] creation_only: bool,
+) -> impl IntoView {
     let list_client = client.clone();
     let list_scope = owner_scope_key.clone();
     let inventory = LocalResource::new(move || {
@@ -81,7 +94,7 @@ fn NetworkBoundaries(client: ApiClient, owner_scope_key: String) -> impl IntoVie
         }
     });
     let view_client = client.clone();
-    view! { <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Trust and reachability"</p><h2>"Network boundaries"</h2><p>"Boundaries name verifiable network identity. Immutable revisions hold protected-transport, trusted-ingress, source, and probe policy."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading network boundaries…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(boundaries) if boundaries.is_empty() => view! { <p class="muted">"No network boundaries in this scope."</p> }.into_any(), Ok(boundaries) => view! { <div class="binding-list">{boundaries.iter().cloned().map(|boundary| view! { <NetworkBoundaryCard client=client.clone() boundary=boundary/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section><NetworkBoundaryCreate client=client owner_scope_key=owner_scope_key/></div> }
+    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Trust and reachability"</p><h2>"Network boundaries"</h2><p>"Boundaries name verifiable network identity. Immutable revisions hold protected-transport, trusted-ingress, source, and probe policy."</p></div>{organization.as_ref().map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/network-boundaries/new")>"Create network boundary"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading network boundaries…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(boundaries) if boundaries.is_empty() => view! { <p class="muted">"No network boundaries in this scope."</p> }.into_any(), Ok(boundaries) => view! { <div class="binding-list">{boundaries.iter().cloned().map(|boundary| view! { <NetworkBoundaryCard client=client.clone() boundary=boundary/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <NetworkBoundaryCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
 }
 
 #[component]

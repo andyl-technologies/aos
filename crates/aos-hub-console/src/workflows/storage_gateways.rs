@@ -24,11 +24,15 @@ use super::organization_scope::organization_authorization_scope;
 pub(super) fn StorageGatewayWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
     match (&route.scope, route.page.key) {
         (ConsoleScope::Instance, "gateways") => view! {
-            <StorageGateways client=client scope=GatewayScope::Instance/>
+            <StorageGateways client=client scope=GatewayScope::Instance creation_only=false/>
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "gateways") => view! {
-            <OrganizationStorageGateways client=client organization=slug.clone()/>
+            <OrganizationStorageGateways client=client organization=slug.clone() creation_only=false/>
+        }
+        .into_any(),
+        (ConsoleScope::Organization { slug }, "gateways-new") => view! {
+            <OrganizationStorageGateways client=client organization=slug.clone() creation_only=true/>
         }
         .into_any(),
         _ => view! { <InstanceSettingsWorkflow route=route client=client/> }.into_any(),
@@ -79,7 +83,11 @@ struct GatewayInventory {
 }
 
 #[component]
-fn OrganizationStorageGateways(client: ApiClient, organization: String) -> impl IntoView {
+fn OrganizationStorageGateways(
+    client: ApiClient,
+    organization: String,
+    creation_only: bool,
+) -> impl IntoView {
     let resolve_client = client.clone();
     let resolve_slug = organization.clone();
     let scope = LocalResource::new(move || {
@@ -102,6 +110,7 @@ fn OrganizationStorageGateways(client: ApiClient, organization: String) -> impl 
                                     slug,
                                     owner_scope_key: owner_scope_key.clone(),
                                 }
+                                creation_only=creation_only
                             />
                         }
                         .into_any(),
@@ -114,7 +123,7 @@ fn OrganizationStorageGateways(client: ApiClient, organization: String) -> impl 
 }
 
 #[component]
-fn StorageGateways(client: ApiClient, scope: GatewayScope) -> impl IntoView {
+fn StorageGateways(client: ApiClient, scope: GatewayScope, creation_only: bool) -> impl IntoView {
     let inventory_client = client.clone();
     let inventory_scope = scope.clone();
     let inventory = LocalResource::new(move || {
@@ -124,16 +133,23 @@ fn StorageGateways(client: ApiClient, scope: GatewayScope) -> impl IntoView {
     });
     let view_client = client.clone();
     let create_scope = scope;
+    let create_href = match &create_scope {
+        GatewayScope::Organization { slug, .. } => {
+            Some(format!("/-/org/{slug}/storage-gateways/new"))
+        }
+        GatewayScope::Instance => None,
+    };
 
     view! {
         <div class="workflow-stack">
-            <section class="panel resource-panel">
+            {(!creation_only).then(|| view! { <section class="panel resource-panel">
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">"Direct storage delivery"</p>
                         <h2>"Storage gateways"</h2>
                         <p>"Each gateway exposes one storage binding through an exact endpoint generation and access policy."</p>
                     </div>
+                    {create_href.map(|href| view! { <a class="button" href=href>"Create storage gateway"</a> })}
                 </div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading storage gateways…"</p> }>
                     {move || {
@@ -155,8 +171,8 @@ fn StorageGateways(client: ApiClient, scope: GatewayScope) -> impl IntoView {
                         })
                     }}
                 </Suspense>
-            </section>
-            <GatewayCreate client=client scope=create_scope/>
+            </section> })}
+            {creation_only.then(|| view! { <GatewayCreate client=client scope=create_scope/> })}
         </div>
     }
 }
