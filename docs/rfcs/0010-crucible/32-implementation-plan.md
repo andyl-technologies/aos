@@ -692,7 +692,8 @@ long-held locks.
   `checks.crucible.phase5.cliServeShutdown`: the CLI advertises and enforces
   `serve --read-only` and `serve --max-sessions <n>`, rejects invalid caps before
   binding, requires an explicit trusted-cleartext acknowledgment or complete
-  mutual-TLS credentials on every client route before connection, runs the
+  mutual-TLS credentials on every client route before connection (including a
+  real-binary process regression), runs the
   production HTTP/2 daemon over the shared lifecycle/session
   actor path, rejects state-mutating calls in read-only mode, admits concurrent
   Watch and Query clients while Control drives the same session, propagates
@@ -781,7 +782,11 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   history before their explicit resume floor.
   `T-DBG-9 … T-DBG-12` remain open for the production gateway/live replacement
   gates, complete authorization and peer-credential enforcement, and live
-  guest-channel acceptance.
+  guest-channel acceptance. Manual production testing additionally showed that
+  distinct runtime-coordinate requests may report the same schedule-empty
+  configuration identity and expose no earlier reverse coordinate;
+  T-DBG-10/T-DBG-14 must bind landed runtime evidence and exercise non-empty
+  live reverse history before completion.
 - Failure triage: `T-TRI-1` is green through `checks.crucible.phase6.failureSignature`,
   which implements the recorded-run-only `FailureSignature` tuple for property
   violations and divergence bisection points, binds checked event-log projection

@@ -952,6 +952,13 @@ a plan-only success or claim that `goto`, reverse execution, GDB attachment, or
 guest introspection occurred. Malformed artifact decoding retains exit `5`
 precedence. Local instantiate/replay remains part of open T-DBG-9/T-DBG-10 work.
 
+The live RPC currently returns a target configuration identity after `goto`;
+coordinates that differ only in runtime counters may share that identity when
+no schedule decision separates them. Reverse-step fails explicitly when the
+actor has no earlier recorded schedule/event coordinate. Runtime-coordinate
+evidence and live reverse coverage remain completion work under T-DBG-10 and
+T-DBG-14 rather than being inferred from a repeated configuration hash.
+
 **Exit codes.** `0` = clean debugger exit; `3` = pinned-identity mismatch
 ([HARN-28]); `4` = backend capability, discovery, configuration, or an
 unimplemented local executor (e.g. a backend without `open_gdbstub`, [SESS-32]);

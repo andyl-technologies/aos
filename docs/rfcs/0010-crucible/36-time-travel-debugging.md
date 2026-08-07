@@ -1163,6 +1163,13 @@ artifact/savepoint executor is unavailable and fails with exit `4` stating that
 no debug operation executed. Executed time travel requires a live daemon
 session. Guest exec/PTY/SSH admission is not proof of introspection while the
 shipped fixture does not activate the guest agent on a non-canonical fork.
+An August 2026 live operator pass also confirmed that `goto 0` and `goto 10`
+can return the same target configuration identity when the scenario has no
+intervening schedule decision; every reverse-step grain then reports that no
+earlier recorded coordinate exists. That is not live reverse evidence:
+T-DBG-10/T-DBG-14 remain open until responses bind the landed runtime coordinate
+and live scenarios demonstrate usable schedule/event history in both
+architectures.
 
 ## Implementation checklist
 
@@ -1390,7 +1397,13 @@ complete from model-double evidence.
   selected worlds or nodes until gateway termination is observed; successful
   promotion transfers gateway ownership before revoking the retired world's
   scheduler authority, and cleanup evidence does not claim an unobserved reap.
-  Completion remains open for live end-to-end gates across goto, reverse, and fork.
+  Completion remains open for live end-to-end gates across goto, reverse, and
+  fork. A 2026-08 manual production-daemon pass landed two distinct requested
+  virtual times on the same schedule-empty configuration identity and could not
+  reverse from either event/schedule history. Completion therefore also requires
+  operator-visible landed runtime-coordinate evidence and a live fixture with
+  non-empty recorded reverse history; configuration identity alone is not
+  sufficient proof of a successful distinct landing.
 - [ ] **T-DBG-11** Enforce debugger identities, capability roles, one-controller
   leases, Unix peer authentication, remote HTTP/2+mTLS relay, and explicit trusted
   unauthenticated bind policy in the daemon and CLI. — satisfies [DBG-43], [DBG-44];

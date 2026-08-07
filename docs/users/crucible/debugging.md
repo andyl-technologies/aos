@@ -275,6 +275,12 @@ For example:
   error instead of executing a command.
 - A successful debugger runtime reposition invalidates every active guest
   channel and the next channel poll returns a typed `ClosedChannel` error.
+- `goto` currently reports the target configuration identity, not the requested
+  runtime coordinate. Two virtual-time or instruction-count coordinates can
+  therefore print the same identity when no schedule decision separates them;
+  this does not prove that reverse history exists. Reverse-step requires an
+  earlier recorded schedule or event coordinate and returns exit `4` when none
+  is available, including a branch opened at genesis with an empty schedule.
 - Guest transcripts are operator-owned files. Runtime reposition closes the
   recorded channel; reopen a new channel and choose a new transcript path after
   repositioning.

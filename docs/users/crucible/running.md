@@ -128,6 +128,14 @@ canonical event-log rendering selected by `--format`:
 With `--quiet`, the trace file is still written. For automation, prefer JSONL
 plus exit codes instead of scraping table output.
 
+`--format` and `--trace` apply to commands that produce canonical event or
+report records. `serve` produces no canonical event stream of its own, so it
+does not create a trace file; its startup endpoint is a human diagnostic that
+`--quiet` suppresses. `completions` always writes the requested shell definition
+to standard output and likewise has no trace stream. Completion generation only
+reads the command schema; it does not resolve or validate unrelated runtime
+globals such as `--seed`, `--daemon`, or backend discovery inputs.
+
 State-transition notifications are a monotone live view: if an observer falls
 behind during a long run, Crucible coalesces superseded states and continues from
 the retained tail. Canonical event-log frames are never coalesced; losing one is
