@@ -62,7 +62,8 @@ use crucible::model::ContentHash;
 use crucible_device::block::{
     BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRetainedRelease,
-    BlockServiceCompletion, ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
+    BlockServiceCompletion, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
+    ResolvedBlockPersistenceMediaDirective,
 };
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockSnapshot, DeviceError, IoCore, Request,
@@ -92,6 +93,7 @@ pub struct QemuLiveBlockIoServicer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLiveBlockIoServicerCheckpoint {
     execution_binding: ContentHash,
+    storage_device: Option<ContentHash>,
     region_header: RegionHeaderSnapshot,
     vm_slot: u32,
     size_bytes: u64,
@@ -100,6 +102,18 @@ pub struct QemuLiveBlockIoServicerCheckpoint {
     responses: SpscRingSnapshot,
     frames_processed: usize,
     frames_delivered: usize,
+}
+
+impl QemuLiveBlockIoServicerCheckpoint {
+    /// Records the scenario storage target owned by the host work pool.
+    pub(crate) fn set_storage_device(&mut self, storage_device: Option<ContentHash>) {
+        self.storage_device = storage_device;
+    }
+
+    /// Returns the scenario storage target restored with this continuation.
+    pub(crate) const fn storage_device(&self) -> Option<ContentHash> {
+        self.storage_device
+    }
 }
 
 impl QemuLiveBlockIoServicer {
@@ -256,6 +270,7 @@ impl QemuLiveBlockIoServicer {
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         Ok(QemuLiveBlockIoServicerCheckpoint {
             execution_binding,
+            storage_device: None,
             region_header: self.region.header_snapshot(),
             vm_slot: self.vm_slot,
             size_bytes: self.device.length(),
@@ -415,11 +430,10 @@ impl QemuLiveBlockIoServicer {
     /// stale, repeated, malformed, or belongs to another request.
     pub fn install_storage_execution_directive(
         &mut self,
-        request_sequence: u64,
-        directive: ResolvedBlockFaultDirective,
+        directive: ResolvedBlockExecutionDirective,
     ) -> Result<(), QemuLiveBlockIoServicerError> {
         self.device
-            .install_storage_execution_directive(request_sequence, directive)
+            .install_storage_execution_directive(directive)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 

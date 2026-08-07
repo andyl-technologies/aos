@@ -88,6 +88,17 @@ pub enum DeviceError {
         request_id: u32,
     },
 
+    /// The scheduler attempted to pass an unresolved staged storage boundary.
+    #[error(
+        "cannot advance storage to {requested_nanos}ns past unresolved fault opportunity at {ready_nanos}ns"
+    )]
+    UnresolvedBlockFaultOpportunity {
+        /// Exact coordinate whose decision is still absent.
+        ready_nanos: u64,
+        /// Rejected requested advance coordinate.
+        requested_nanos: u64,
+    },
+
     /// Two unresolved directives attempted to own one request identity.
     #[error("duplicate resolved block fault directive for request {request_id}")]
     DuplicateBlockFaultDirective {

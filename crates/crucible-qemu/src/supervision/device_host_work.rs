@@ -26,7 +26,8 @@ use crucible::model::{ContentHash, ResolvedBindingAction, ResolvedFaultTarget};
 use crucible_device::block::{
     BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRetainedRelease,
-    BlockServiceCompletion, ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
+    BlockServiceCompletion, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
+    ResolvedBlockPersistenceMediaDirective,
 };
 
 use super::block_io_servicer::{
@@ -222,6 +223,7 @@ impl QemuLiveBlockHostWorkPool {
         expected_execution_binding: ContentHash,
         checkpoint: QemuLiveBlockIoServicerCheckpoint,
     ) -> Result<Self, QemuLiveBlockHostWorkPoolError> {
+        let storage_device = checkpoint.storage_device();
         let owned_fd = shmem_fd
             .try_clone_to_owned()
             .map_err(|source| QemuLiveBlockHostWorkPoolError::CloneShmemFd { source })?;
@@ -257,7 +259,7 @@ impl QemuLiveBlockHostWorkPool {
                 pinned: None,
                 in_flight_pin: None,
                 in_flight_storage_fault: false,
-                storage_device: None,
+                storage_device,
             }),
             Ok(Err(source)) => {
                 let _ = worker.join();
@@ -453,9 +455,12 @@ impl QemuLiveBlockHostWorkPool {
             .recv()
             .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?
         {
-            WorkerReply::Checkpoint(result) => {
-                (*result).map_err(|source| QemuLiveBlockHostWorkPoolError::Servicer { source })
-            }
+            WorkerReply::Checkpoint(result) => (*result)
+                .map(|mut checkpoint| {
+                    checkpoint.set_storage_device(self.storage_device);
+                    checkpoint
+                })
+                .map_err(|source| QemuLiveBlockHostWorkPoolError::Servicer { source }),
             WorkerReply::Pinned(_)
             | WorkerReply::Serviced(_)
             | WorkerReply::Mutated(_)
@@ -566,14 +571,10 @@ impl QemuLiveBlockHostWorkPool {
     /// storage mutations.
     pub fn install_storage_execution_directive(
         &mut self,
-        request_sequence: u64,
-        directive: ResolvedBlockFaultDirective,
+        directive: ResolvedBlockExecutionDirective,
     ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
         self.require_storage_device_bound()?;
-        self.mutate(StorageMutation::InstallExecution {
-            request_sequence,
-            directive,
-        })
+        self.mutate(StorageMutation::InstallExecution(directive))
     }
 
     /// Drops exact volatile-cache entries on the worker-owned live device.
@@ -812,10 +813,7 @@ enum StorageMutation {
     LoseVolatile(Vec<u64>),
     LoseController(Vec<u64>),
     InstallPersistenceMedia(ResolvedBlockPersistenceMediaDirective),
-    InstallExecution {
-        request_sequence: u64,
-        directive: ResolvedBlockFaultDirective,
-    },
+    InstallExecution(ResolvedBlockExecutionDirective),
     ReleaseCompletion {
         request_id: u32,
         release: BlockRetainedRelease,
@@ -871,10 +869,9 @@ fn worker_loop(
                 StorageMutation::InstallPersistenceMedia(directive) => {
                     servicer.install_storage_persistence_media_directive(directive)
                 }
-                StorageMutation::InstallExecution {
-                    request_sequence,
-                    directive,
-                } => servicer.install_storage_execution_directive(request_sequence, directive),
+                StorageMutation::InstallExecution(directive) => {
+                    servicer.install_storage_execution_directive(directive)
+                }
                 StorageMutation::ReleaseCompletion {
                     request_id,
                     release,
