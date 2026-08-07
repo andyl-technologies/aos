@@ -108,6 +108,10 @@ Connect the suite's matching `gdb` to the printed loopback address. Use GDB to
 read registers, threads, and memory. GDB `step` advances one deterministic
 scheduler quantum; it is not raw QEMU single-instruction stepping.
 
+After disconnecting GDB, rerun `attach-gdb` when more inspection is needed. The
+gateway restores and validates the private QEMU endpoint before accepting the new
+client, so no `goto` is required merely to reconnect.
+
 Keep canonical inspection read-only. Pass `--allow-mutate fork-debug` only when
 the investigation truly needs a non-canonical branch, and label all resulting
 evidence non-canonical.

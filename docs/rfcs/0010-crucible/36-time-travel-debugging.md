@@ -803,6 +803,13 @@ prepare acknowledgement leaves a discoverable candidate; a lost commit
 acknowledgement permits the same generation to be committed again with the same
 success result. Malformed, truncated, or disconnected control clients close only
 their connection and never terminate the gateway or discard the active backend.
+An operator GDB disconnect retires that RSP transport, reconnects the same private
+QEMU endpoint, verifies its paused stop reply, and replays acknowledged debugger
+state before the listener serves another operator. Recovery failure deactivates
+the backend and fails closed. A disconnect with an outstanding QEMU response or
+scheduler run-control operation is ambiguous and MUST also deactivate rather than
+reconnect. Until explicit runtime replacement promotes a fresh backend, later
+operator RSP requests MUST be rejected.
 
 Production replacement is whole-world and proof-carrying. At each completed
 scheduler boundary, the lifecycle samples every live node's execution fingerprint;
@@ -845,7 +852,10 @@ to QEMU.
   debugger state atomically. Prepare and commit MUST be idempotent across lost
   acknowledgements, and a reconnect MUST be able to query active and prepared
   endpoint/generation identities before recovery. A failed control connection MUST
-  NOT terminate the gateway. *Gate:* `gate:replay-oracle`,
+  NOT terminate the gateway. After an operator disconnect, the gateway MUST
+  reconnect, validate, and hydrate the active private QEMU endpoint before serving
+  another operator, or deactivate it on failure or when any QEMU response or
+  scheduler run-control operation remains unresolved. *Gate:* `gate:replay-oracle`,
   `gate:control-responsive`, `gate:license-boundary`. *Spec:* §36.9.1.
 
 - **[DBG-42]** The gateway MUST parse RSP incrementally with bounded buffering and
@@ -1377,6 +1387,8 @@ complete from model-double evidence.
   define replayable thread/breakpoint state. A process-boundary gate keeps one GDB
   connection across two QEMU Unix RSP backends, including asynchronous console
   output, scheduler-routed `continue`/`step`/`vCont`, and atomic commit barriers.
+  It also proves that dropping one operator connection restores the same private
+  backend before a second operator reads registers.
   Run-control packets are queued across the versioned gateway boundary and consumed
   by the session actor as ordinary session commands, so canonical repositioning still
   rejects forward execution until `fork-debug`; the gateway never forwards them
@@ -1486,8 +1498,10 @@ complete from model-double evidence.
   A 2026-08 manual x86_64 production-daemon exercise additionally connected the
   packaged GDB through the client relay and standalone gateway to live QEMU and
   read registers and thread state. It exposed and fixed missing remote-debug CLI
-  routing plus the distinction between graph coordinates and authoritative QEMU
-  scheduler/event-log/icount evidence. QEMU still rejects GDB's optional
+  routing, a stale-backend failure on consecutive GDB clients, and the distinction
+  between graph coordinates and authoritative QEMU scheduler/event-log/icount
+  evidence. Two consecutive packaged-GDB clients now read identical registers and
+  thread state without an intervening runtime reposition. QEMU still rejects GDB's optional
   trace-status and detach packets. Completion remains open for the full
   controller/gateway atomic replacement, scheduler run-control, fork-time guest
   agent activation, and guest-introspection matrix on both architectures.
