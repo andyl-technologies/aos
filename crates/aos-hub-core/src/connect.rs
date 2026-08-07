@@ -2209,25 +2209,29 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.IdentityService/PlanIssueRegistryToken",
-        plan_issue_registry_token
+        "/aos.hub.v1.IdentityService/PlanIssueAccessToken",
+        plan_issue_access_token
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.IdentityService/IssueRegistryToken",
-        apply_issue_registry_token
+        "/aos.hub.v1.IdentityService/IssueAccessToken",
+        apply_issue_access_token
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.IdentityService/PlanRetireRegistryToken",
-        plan_retire_registry_token
+        "/aos.hub.v1.IdentityService/PlanRetireAccessToken",
+        plan_retire_access_token
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.IdentityService/RetireRegistryToken",
-        apply_retire_registry_token
+        "/aos.hub.v1.IdentityService/RetireAccessToken",
+        apply_retire_access_token
     );
-    r = rpc_route!(r, "/aos.hub.v1.IdentityService/ListTokens", list_tokens);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/ListAccessTokens",
+        list_access_tokens
+    );
     // WebhookService
     r = rpc_route!(r, "/aos.hub.v1.WebhookService/ListWebhooks", list_webhooks);
     r = rpc_route!(

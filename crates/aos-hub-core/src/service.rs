@@ -64,8 +64,8 @@ pub const INTERNAL_UPLOAD_AUTH_TTL_SECS: i64 = 3600;
 
 /// Lifetime of an immutable topology impact plan (15 minutes).
 const TOPOLOGY_PLAN_TTL_SECS: i64 = 15 * 60;
-const REGISTRY_TOKEN_DEFAULT_TTL_SECS: i64 = 30 * 24 * 60 * 60;
-const REGISTRY_TOKEN_MAX_TTL_SECS: i64 = 365 * 24 * 60 * 60;
+const ACCESS_TOKEN_DEFAULT_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+const ACCESS_TOKEN_MAX_TTL_SECS: i64 = 90 * 24 * 60 * 60;
 /// Organization offboarding grace before separately scheduled hard purge.
 const ORGANIZATION_DELETE_GRACE_SECS: i64 = 30 * 24 * 60 * 60;
 
@@ -491,20 +491,21 @@ struct MembershipPlanInput {
     baseline_role: Option<String>,
 }
 
-/// Immutable preconditions for issuing one registry-scoped token generation.
+/// Immutable preconditions for issuing one scoped access-token generation.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RegistryTokenIssuePlanInput {
+struct AccessTokenIssuePlanInput {
     owner_kind: String,
     owner_ref: String,
     owner_id: i64,
     scope: String,
     permissions: Vec<String>,
     ttl_secs: i64,
+    comment: Option<String>,
 }
 
-/// Immutable preconditions for retiring one registry token generation.
+/// Immutable preconditions for retiring one access-token generation.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RegistryTokenRetirementPlanInput {
+struct AccessTokenRetirementPlanInput {
     token_id: String,
 }
 
@@ -1620,28 +1621,6 @@ fn instance_settings_digest(s: &crate::db::InstanceSettings) -> Result<String, R
     let message = instance_settings_to_pb(s);
     let canonical = serde_json::to_vec(&message).map_err(RpcError::internal)?;
     Ok(hex::encode(Sha256::digest(canonical)))
-}
-
-fn registry_token_permission(value: &str) -> Option<Permission> {
-    match value {
-        "registry.read" => Some(Permission::Read),
-        "registry.publish" => Some(Permission::Publish),
-        "registry.manage" => Some(Permission::RegistryConfigure),
-        "registry.admin" => Some(Permission::MembersManage),
-        "registry.owner" => Some(Permission::IamAdmin),
-        _ => None,
-    }
-}
-
-fn registry_token_permission_name(permission: Permission) -> Option<&'static str> {
-    match permission {
-        Permission::Read => Some("registry.read"),
-        Permission::Publish => Some("registry.publish"),
-        Permission::RegistryConfigure => Some("registry.manage"),
-        Permission::MembersManage => Some("registry.admin"),
-        Permission::IamAdmin => Some("registry.owner"),
-        _ => None,
-    }
 }
 
 /// Build the wire [`pb::Webhook`] for a webhook subscription under `org_slug`.
@@ -18615,20 +18594,25 @@ impl RpcService {
         Ok(response)
     }
 
-    /// Persists an immutable plan for issuing a registry token generation.
-    pub async fn plan_issue_registry_token(
+    /// Persists an immutable plan for issuing a scoped access token.
+    pub async fn plan_issue_access_token(
         &self,
         auth: Option<&str>,
-        req: pb::PlanIssueRegistryTokenRequest,
+        req: pb::PlanIssueAccessTokenRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let registry = self.registry_or_not_found(&req.scope).await?;
-        let scope = self.registry_scope(&registry).await?;
-        self.require_permission(&claims, Permission::IamAdmin, &scope)
+        let scope = parse_authorization_scope(&req.scope)?;
+        let context = self
+            .db
+            .authorization_context(scope.as_str())
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("authorization scope"))?;
+        self.require_permission(&claims, Permission::TokensManage, &scope)
             .await?;
-        if req.ttl_secs < 0 || req.ttl_secs > REGISTRY_TOKEN_MAX_TTL_SECS {
+        if req.ttl_secs < 0 || req.ttl_secs > ACCESS_TOKEN_MAX_TTL_SECS {
             return Err(RpcError::invalid(format!(
-                "ttl_secs must be 0 or between 1 and {REGISTRY_TOKEN_MAX_TTL_SECS}"
+                "ttl_secs must be 0 or between 1 and {ACCESS_TOKEN_MAX_TTL_SECS}"
             )));
         }
         let (kind, principal_ref) = req.owner.split_once(':').ok_or_else(|| {
@@ -18644,9 +18628,8 @@ impl RpcService {
         };
         let mut perms = Vec::new();
         for verb in &req.permissions {
-            let perm = registry_token_permission(verb).ok_or_else(|| {
-                RpcError::invalid(format!("unknown registry permission '{verb}'"))
-            })?;
+            let perm = Permission::parse(verb)
+                .ok_or_else(|| RpcError::invalid(format!("unknown permission '{verb}'")))?;
             perms.push(perm);
         }
         // A token can never exceed its owner's authority.
@@ -18655,12 +18638,6 @@ impl RpcService {
             .effective_scopes(owner)
             .await
             .map_err(RpcError::internal)?;
-        let context = self
-            .db
-            .authorization_context(scope.as_str())
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("authorization scope"))?;
         if perms.is_empty()
             || perms
                 .iter()
@@ -18672,12 +18649,8 @@ impl RpcService {
         }
         let mut permissions = perms
             .iter()
-            .map(|permission| {
-                registry_token_permission_name(*permission)
-                    .map(str::to_string)
-                    .ok_or_else(|| RpcError::invalid("permission is not registry-scoped"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|permission| permission.as_str().to_string())
+            .collect::<Vec<_>>();
         permissions.sort();
         permissions.dedup();
         let canonical_grants = grants
@@ -18694,29 +18667,30 @@ impl RpcService {
                 "token-owner grant revision is stale".into(),
             ));
         }
-        let input = RegistryTokenIssuePlanInput {
+        let input = AccessTokenIssuePlanInput {
             owner_kind: kind.to_string(),
             owner_ref: principal_ref.to_string(),
             owner_id,
             scope: scope.as_str().to_string(),
             permissions,
             ttl_secs: if req.ttl_secs == 0 {
-                REGISTRY_TOKEN_DEFAULT_TTL_SECS
+                ACCESS_TOKEN_DEFAULT_TTL_SECS
             } else {
                 req.ttl_secs
             },
+            comment: (!req.comment.trim().is_empty()).then(|| req.comment.trim().to_string()),
         };
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,
         ));
         self.create_control_plan(
             &claims,
-            "issue_registry_token",
+            "issue_access_token",
             &input.scope,
             &input,
             &req.idempotency_key,
             vec![format!(
-                "issue registry token for {}:{}",
+                "issue access token for {}:{}",
                 input.owner_kind, input.owner_ref
             )],
             Vec::new(),
@@ -18725,18 +18699,18 @@ impl RpcService {
         .await
     }
 
-    /// Applies one reviewed registry-token issuance plan exactly once.
-    pub async fn apply_issue_registry_token(
+    /// Applies one reviewed access-token issuance plan exactly once.
+    pub async fn apply_issue_access_token(
         &self,
         auth: Option<&str>,
         req: pb::ApplyTopologyPlanRequest,
-    ) -> Result<pb::RegistryTokenResponse, RpcError> {
-        const PLAN_KIND: &str = "issue_registry_token";
+    ) -> Result<pb::AccessTokenResponse, RpcError> {
+        const PLAN_KIND: &str = "issue_access_token";
         let claims = self
-            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .require_control_plan_permission(auth, &req.plan_id, Permission::TokensManage)
             .await?;
         if let Some(response) = self
-            .replayed_control_result::<pb::RegistryTokenResponse>(
+            .replayed_control_result::<pb::AccessTokenResponse>(
                 auth,
                 &req.plan_id,
                 PLAN_KIND,
@@ -18747,7 +18721,7 @@ impl RpcService {
         {
             if response.secret.is_empty() {
                 return Err(RpcError::FailedPrecondition(
-                    "registry token secret was delivered once and cannot be replayed; retire the token if delivery was interrupted"
+                    "access token secret was delivered once and cannot be replayed; retire the token if delivery was interrupted"
                         .to_string(),
                 ));
             }
@@ -18761,11 +18735,11 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, RegistryTokenIssuePlanInput) = self
+        let (plan, input): (_, AccessTokenIssuePlanInput) = self
             .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
             .await?;
         let scope = parse_authorization_scope(&input.scope)?;
-        self.require_permission(&claims, Permission::IamAdmin, &scope)
+        self.require_permission(&claims, Permission::TokensManage, &scope)
             .await?;
         let owner_id = self
             .resolve_existing_principal_id(&input.owner_kind, &input.owner_ref)
@@ -18784,10 +18758,29 @@ impl RpcService {
             .permissions
             .iter()
             .map(|verb| {
-                registry_token_permission(verb)
+                Permission::parse(verb)
                     .ok_or_else(|| RpcError::invalid(format!("unknown permission '{verb}'")))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let owner_grants = self
+            .db
+            .effective_scopes(owner)
+            .await
+            .map_err(RpcError::internal)?;
+        let context = self
+            .db
+            .authorization_context(scope.as_str())
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("authorization scope"))?;
+        if permissions
+            .iter()
+            .any(|permission| !iam::allow(&owner_grants, *permission, &context))
+        {
+            return Err(RpcError::FailedPrecondition(
+                "token-owner authority changed after planning".into(),
+            ));
+        }
         let expires_at =
             (input.ttl_secs > 0).then_some(clock::now_unix_secs().saturating_add(input.ttl_secs));
         let (token_id, secret) = self
@@ -18796,13 +18789,13 @@ impl RpcService {
                 owner,
                 &input.scope,
                 &permissions,
-                Some("issued through reviewed retained-control plan"),
+                input.comment.as_deref(),
                 expires_at,
             )
             .await
             .map_err(RpcError::internal)?;
-        let response = pb::RegistryTokenResponse { token_id, secret };
-        let persisted = pb::RegistryTokenResponse {
+        let response = pb::AccessTokenResponse { token_id, secret };
+        let persisted = pb::AccessTokenResponse {
             token_id: response.token_id.clone(),
             secret: String::new(),
         };
@@ -18811,11 +18804,11 @@ impl RpcService {
         Ok(response)
     }
 
-    /// Persists an immutable plan for retiring one registry token generation.
-    pub async fn plan_retire_registry_token(
+    /// Persists an immutable plan for retiring one access-token generation.
+    pub async fn plan_retire_access_token(
         &self,
         auth: Option<&str>,
-        req: pb::PlanRetireRegistryTokenRequest,
+        req: pb::PlanRetireAccessTokenRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         let (token_scope, current) = self
@@ -18823,20 +18816,24 @@ impl RpcService {
             .token_scope_and_lifecycle(&req.token_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("registry token"))?;
-        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&token_scope))
-            .await?;
+            .ok_or_else(|| RpcError::not_found("access token"))?;
+        self.require_permission(
+            &claims,
+            Permission::TokensManage,
+            &Scope::parse(&token_scope),
+        )
+        .await?;
         if req.expected_resource_version != current {
             return Err(RpcError::FailedPrecondition(
-                "registry token resource version is stale".into(),
+                "access token resource version is stale".into(),
             ));
         }
         if current != "active" {
             return Err(RpcError::FailedPrecondition(
-                "registry token is not active".into(),
+                "access token is not active".into(),
             ));
         }
-        let input = RegistryTokenRetirementPlanInput {
+        let input = AccessTokenRetirementPlanInput {
             token_id: req.token_id,
         };
         let confirmation_hash = hex::encode(Sha256::digest(
@@ -18844,25 +18841,25 @@ impl RpcService {
         ));
         self.create_control_plan(
             &claims,
-            "retire_registry_token",
+            "retire_access_token",
             &token_scope,
             &input,
             &req.idempotency_key,
-            vec![format!("retire registry token {}", input.token_id)],
+            vec![format!("retire access token {}", input.token_id)],
             Vec::new(),
             Some(confirmation_hash),
         )
         .await
     }
 
-    /// Applies one reviewed registry-token retirement plan exactly once.
-    pub async fn apply_retire_registry_token(
+    /// Applies one reviewed access-token retirement plan exactly once.
+    pub async fn apply_retire_access_token(
         &self,
         auth: Option<&str>,
         req: pb::ApplyTopologyPlanRequest,
-    ) -> Result<pb::RegistryTokenRetirementResponse, RpcError> {
-        const PLAN_KIND: &str = "retire_registry_token";
-        self.require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+    ) -> Result<pb::AccessTokenRetirementResponse, RpcError> {
+        const PLAN_KIND: &str = "retire_access_token";
+        self.require_control_plan_permission(auth, &req.plan_id, Permission::TokensManage)
             .await?;
         if let Some(response) = self
             .replayed_control_result(
@@ -18884,7 +18881,7 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, RegistryTokenRetirementPlanInput) = self
+        let (plan, input): (_, AccessTokenRetirementPlanInput) = self
             .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
             .await?;
         if self
@@ -18896,59 +18893,84 @@ impl RpcService {
             != Some("active")
         {
             return Err(RpcError::FailedPrecondition(
-                "registry token changed after planning".into(),
+                "access token changed after planning".into(),
             ));
         }
         self.db
             .revoke_token(&input.token_id)
             .await
             .map_err(RpcError::internal)?;
-        let response = pb::RegistryTokenRetirementResponse {};
+        let response = pb::AccessTokenRetirementResponse {};
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
         Ok(response)
     }
 
-    /// Lists secret-free token generations at one exact registry scope.
+    /// Lists secret-free token generations at one exact authorization scope.
     ///
     /// # Errors
     ///
     /// [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT;
     /// [`RpcError::Internal`] on database failure.
-    pub async fn list_tokens(
+    pub async fn list_access_tokens(
         &self,
         auth: Option<&str>,
-        req: pb::ListTokensRequest,
-    ) -> Result<pb::ListTokensResponse, RpcError> {
+        req: pb::ListAccessTokensRequest,
+    ) -> Result<pb::ListAccessTokensResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let registry = self.registry_or_not_found(&req.scope).await?;
-        let scope = self.registry_scope(&registry).await?;
-        self.require_permission(&claims, Permission::IamAdmin, &scope)
+        let scope = parse_authorization_scope(&req.scope)?;
+        if self
+            .db
+            .authorization_context(scope.as_str())
+            .await
+            .map_err(RpcError::internal)?
+            .is_none()
+        {
+            return Err(RpcError::not_found("authorization scope"));
+        }
+        self.require_permission(&claims, Permission::TokensManage, &scope)
             .await?;
         let rows = self
             .db
-            .list_registry_token_metadata(scope.as_str())
+            .list_access_token_metadata(scope.as_str())
             .await
             .map_err(RpcError::internal)?;
-        let tokens = rows
-            .into_iter()
-            .map(|token| pb::TokenInfo {
+        let mut tokens = Vec::with_capacity(rows.len());
+        for token in rows {
+            let owner_ref = match token.owner_kind.as_str() {
+                "user" => self
+                    .db
+                    .user_email(token.owner_id)
+                    .await
+                    .map_err(RpcError::internal)?,
+                "service_account" => self
+                    .db
+                    .service_account_reference(token.owner_id)
+                    .await
+                    .map_err(RpcError::internal)?,
+                _ => None,
+            }
+            .unwrap_or_else(|| format!("deleted:{}", token.owner_id));
+            tokens.push(pb::TokenInfo {
                 token_id: token.token_id,
-                owner: format!("{}:{}", token.owner_kind, token.owner_id),
+                owner: format!("{}:{owner_ref}", token.owner_kind),
                 scope: token.scope,
                 permissions: token
                     .permissions
                     .iter()
-                    .filter_map(|permission| registry_token_permission_name(*permission))
-                    .map(str::to_string)
+                    .map(|permission| permission.as_str().to_string())
                     .collect(),
                 created_at: token.created_at,
                 expires_at: token.expires_at.unwrap_or_default(),
                 resource_version: token.resource_version,
-            })
-            .collect();
+                comment: token.comment.unwrap_or_default(),
+                last_used_at: token.last_used_at.unwrap_or_default(),
+                rotated_at: token.rotated_at.unwrap_or_default(),
+                retired_at: token.retired_at.unwrap_or_default(),
+            });
+        }
         let (tokens, next_page_token) = paginate(tokens, req.page_size, &req.page_token)?;
-        Ok(pb::ListTokensResponse {
+        Ok(pb::ListAccessTokensResponse {
             tokens,
             next_page_token,
         })
@@ -31100,7 +31122,11 @@ mod cache_upload_tests {
                     token_id: "holder".into(),
                     owner: Principal::user(user_id),
                     scope: Scope::root(),
-                    permissions: vec![Permission::RegistryConfigure, Permission::Publish],
+                    permissions: vec![
+                        Permission::RegistryConfigure,
+                        Permission::Publish,
+                        Permission::TokensManage,
+                    ],
                 },
                 3600,
             )
@@ -31150,9 +31176,65 @@ mod cache_upload_tests {
         assert_eq!(identity.access_scope, "instance");
         assert_eq!(
             identity.access_permissions,
-            vec!["registry.configure", "publish"]
+            vec!["registry.configure", "publish", "tokens.manage"]
         );
         assert!(identity.access_expires_at > crate::clock::now_unix_secs());
+    }
+
+    #[tokio::test]
+    async fn access_tokens_use_native_permissions_and_stable_scopes() {
+        let (service, _db, _lease, auth) = injected_service(vec![], vec![]).await;
+        let plan = service
+            .plan_issue_access_token(
+                Some(&auth),
+                pb::PlanIssueAccessTokenRequest {
+                    owner: "user:writer@example.test".into(),
+                    scope: "instance".into(),
+                    permissions: vec!["read".into(), "publish".into()],
+                    ttl_secs: 3600,
+                    expected_resource_version: String::new(),
+                    idempotency_key: "plan-access-token-test".into(),
+                    comment: "test publisher".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let issued = service
+            .apply_issue_access_token(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: plan.plan_id,
+                    confirmation_hash: plan.confirmation_hash,
+                    idempotency_key: "apply-access-token-test".into(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(issued.secret.starts_with("aos_"));
+        let listed = service
+            .list_access_tokens(
+                Some(&auth),
+                pb::ListAccessTokensRequest {
+                    scope: "instance".into(),
+                    page_size: 50,
+                    page_token: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let token = listed
+            .tokens
+            .iter()
+            .find(|token| token.token_id == issued.token_id)
+            .unwrap();
+        assert_eq!(token.owner, "user:writer@example.test");
+        assert_eq!(token.scope, "instance");
+        assert_eq!(token.permissions, vec!["publish", "read"]);
+        assert_eq!(token.comment, "test publisher");
+        assert_eq!(token.resource_version, "active");
     }
 
     fn one_signed_raw_image_package() -> aos_registry_surface::manifest::PackageToml {

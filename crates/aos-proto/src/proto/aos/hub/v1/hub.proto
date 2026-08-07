@@ -2569,7 +2569,7 @@ message CacheNarinfoRegistrationResponse {
   int64 registered = 1;
 }
 
-// IAM management: service accounts, scoped role grants, and registry-scoped
+// IAM management: service accounts, scoped role grants, and access tokens
 // tokens — the machine API behind the producer console's settings pages, so the
 // CLI and automation administer identities over the authenticated API instead
 // of direct database access (RFC-0004 ch.14 "manage everything via the API").
@@ -2595,20 +2595,20 @@ service IdentityService {
   rpc PlanSetMembership(PlanSetMembershipRequest) returns (TopologyPlanResponse);
   // Apply one reviewed membership replacement exactly once.
   rpc SetMembership(ApplyTopologyPlanRequest) returns (MembershipResponse);
-  // Plan issuance of a registry-scoped bearer token.
-  rpc PlanIssueRegistryToken(PlanIssueRegistryTokenRequest)
+  // Plan issuance of a scoped bearer token.
+  rpc PlanIssueAccessToken(PlanIssueAccessTokenRequest)
       returns (TopologyPlanResponse);
   // Apply one reviewed token-issuance plan; the secret is returned once.
-  rpc IssueRegistryToken(ApplyTopologyPlanRequest)
-      returns (RegistryTokenResponse);
+  rpc IssueAccessToken(ApplyTopologyPlanRequest)
+      returns (AccessTokenResponse);
   // Plan retirement of one token generation.
-  rpc PlanRetireRegistryToken(PlanRetireRegistryTokenRequest)
+  rpc PlanRetireAccessToken(PlanRetireAccessTokenRequest)
       returns (TopologyPlanResponse);
   // Apply one reviewed token-retirement plan exactly once.
-  rpc RetireRegistryToken(ApplyTopologyPlanRequest)
-      returns (RegistryTokenRetirementResponse);
+  rpc RetireAccessToken(ApplyTopologyPlanRequest)
+      returns (AccessTokenRetirementResponse);
   // List the tokens visible at a scope (metadata only — never the secret).
-  rpc ListTokens(ListTokensRequest) returns (ListTokensResponse);
+  rpc ListAccessTokens(ListAccessTokensRequest) returns (ListAccessTokensResponse);
 }
 
 message WhoAmIRequest {}
@@ -2687,38 +2687,39 @@ message MembershipResponse {
   string resource_version = 5;
 }
 
-message PlanIssueRegistryTokenRequest {
+message PlanIssueAccessTokenRequest {
   // Token owner: "user:<email>" or "service_account:<org_slug>/<name>".
   string owner = 1;
-  // Canonical live registry scope the token is bound to.
+  // Canonical live authorization scope the token is bound to.
   string scope = 2;
-  // Strict registry permission vocabulary: registry.read, registry.publish,
-  // registry.manage, registry.admin, registry.owner. Every requested permission
-  // must be present in the owner's effective authority at `scope`.
+  // Native permission verbs. Every requested permission must be present in the
+  // owner's effective authority at `scope`.
   repeated string permissions = 3;
   // Optional time-to-live in seconds; 0 applies the hub's default policy.
   int64 ttl_secs = 4;
   string expected_resource_version = 5;
   string idempotency_key = 6;
+  // Operator-facing purpose; never secret material.
+  string comment = 7;
 }
 
-message RegistryTokenResponse {
+message AccessTokenResponse {
   // Stable, non-secret token id (used by Revoke/List).
   string token_id = 1;
   // The token secret — returned ONCE; only its hash is persisted.
   string secret = 2;
 }
 
-message PlanRetireRegistryTokenRequest {
+message PlanRetireAccessTokenRequest {
   string token_id = 1;
   string expected_resource_version = 2;
   string idempotency_key = 3;
 }
 
-message RegistryTokenRetirementResponse {}
+message AccessTokenRetirementResponse {}
 
-message ListTokensRequest {
-  // Canonical live registry scope whose token generations to list.
+message ListAccessTokensRequest {
+  // Canonical live authorization scope whose token generations to list.
   string scope = 1;
   uint32 page_size = 2;
   string page_token = 3;
@@ -2735,9 +2736,13 @@ message TokenInfo {
   int64 expires_at = 6;
   // Exact lifecycle revision (`active`, `rotated`, or `retired`).
   string resource_version = 7;
+  string comment = 8;
+  int64 last_used_at = 9;
+  int64 rotated_at = 10;
+  int64 retired_at = 11;
 }
 
-message ListTokensResponse {
+message ListAccessTokensResponse {
   repeated TokenInfo tokens = 1;
   string next_page_token = 2;
 }

@@ -101,6 +101,26 @@ Use the global `--json` flag for scripts:
   --hub https://hub.example.com
 ```
 
+Manage bearer credentials as generic scoped access tokens. Copy a canonical
+scope from `aos hub whoami`, then use native permission verbs rather than
+registry-specific aliases:
+
+```sh
+aos hub access-token list 'registry:0123456789abcdef0123456789abcdef'
+aos hub access-token issue plan \
+  'registry:0123456789abcdef0123456789abcdef' \
+  --owner 'service_account:acme/publisher' \
+  --permission read \
+  --permission publish \
+  --comment 'release publisher' \
+  --idempotency-key 'plan-release-publisher'
+```
+
+Issuance and retirement use the standard reviewed plan/apply flow. The secret
+is printed only by a successful first apply. Tokens default to 30 days and may
+not exceed 90 days; the server rechecks the owner's current role authority when
+applying the plan.
+
 The remote client includes registry, cache, organization, project, binding,
 webhook, instance, audit, changeset, and upload operations. Authorization is
 checked against current server-side grants for every request; approval never

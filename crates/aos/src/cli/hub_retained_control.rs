@@ -350,16 +350,16 @@ pub enum HubMembershipRemoveCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Registry-scoped token inventory and lifecycle commands.
+/// Scoped access-token inventory and lifecycle commands.
 #[derive(Subcommand)]
-pub enum HubRegistryTokenCmd {
+pub enum HubAccessTokenCmd {
     /// List token metadata without secret material.
     List {
         /// Hub connection and authentication.
         #[command(flatten)]
         access: HubAccessArgs,
-        /// Canonical live registry scope.
-        registry: String,
+        /// Canonical live authorization scope.
+        scope: String,
         /// Result pagination.
         #[command(flatten)]
         pagination: HubPaginationArgs,
@@ -367,34 +367,37 @@ pub enum HubRegistryTokenCmd {
     /// Issue a token through immutable review.
     Issue {
         #[command(subcommand)]
-        command: HubRegistryTokenIssueCmd,
+        command: HubAccessTokenIssueCmd,
     },
     /// Retire one token generation through immutable review.
     Retire {
         #[command(subcommand)]
-        command: HubRegistryTokenRetireCmd,
+        command: HubAccessTokenRetireCmd,
     },
 }
 
-/// Explicit plan/apply flow for registry-token issuance.
+/// Explicit plan/apply flow for access-token issuance.
 #[derive(Subcommand)]
-pub enum HubRegistryTokenIssueCmd {
+pub enum HubAccessTokenIssueCmd {
     /// Create and print an immutable token-issuance plan.
     Plan {
         /// Plan request identity and Hub access.
         #[command(flatten)]
         request: HubReviewedPlanArgs,
-        /// Canonical live registry scope.
-        registry: String,
+        /// Canonical live authorization scope.
+        scope: String,
         /// Token owner (`user:EMAIL` or `service_account:ORG/NAME`).
         #[arg(long)]
         owner: String,
-        /// Grant one registry permission; repeat for multiple permissions.
+        /// Grant one native permission verb; repeat for multiple permissions.
         #[arg(long = "permission", required = true)]
         permissions: Vec<String>,
         /// Optional token lifetime in seconds.
         #[arg(long)]
         ttl_secs: Option<i64>,
+        /// Record a non-secret purpose for this token.
+        #[arg(long)]
+        comment: Option<String>,
         /// Require this token-owner grant revision when supplied.
         #[arg(long, value_name = "VERSION")]
         if_version: Option<String>,
@@ -403,9 +406,9 @@ pub enum HubRegistryTokenIssueCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Explicit plan/apply flow for registry-token retirement.
+/// Explicit plan/apply flow for access-token retirement.
 #[derive(Subcommand)]
-pub enum HubRegistryTokenRetireCmd {
+pub enum HubAccessTokenRetireCmd {
     /// Create and print an immutable token-retirement plan.
     Plan {
         /// Plan request identity and Hub access.

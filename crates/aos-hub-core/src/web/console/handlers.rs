@@ -7653,7 +7653,7 @@ async fn registry_settings_section(
     registry_settings_view(&deps, &session, &registry, None, active, started).await
 }
 
-// -- registry tokens --------------------------------------------------------
+// -- registry-scoped access tokens -----------------------------------------
 
 /// `GET /{slug}/-/settings/tokens` — the caller's tokens at the registry.
 pub(crate) async fn tokens(
@@ -7719,6 +7719,7 @@ async fn tokens_create_action(
     if !session.allows(&deps.db, Permission::IamAdmin, &scope).await {
         return (StatusCode::FORBIDDEN, "iam.admin required").into_response();
     }
+    let scope_key = scope.as_str().to_string();
     let bearer = match session.topology_bearer(deps, scope) {
         Ok(bearer) => bearer,
         Err(error) => return internal(error),
@@ -7727,7 +7728,7 @@ async fn tokens_create_action(
         let idempotency_key = console_apply_idempotency_key(&plan_id);
         return match deps
             .topology
-            .apply_registry_token_issue(&bearer, plan_id, confirmation_hash, idempotency_key)
+            .apply_access_token_issue(&bearer, plan_id, confirmation_hash, idempotency_key)
             .await
         {
             Ok(response) => {
@@ -7746,22 +7747,23 @@ async fn tokens_create_action(
     }
     let mut permissions = Vec::new();
     if want_read {
-        permissions.push("registry.read".to_string());
+        permissions.push("read".to_string());
     }
     if want_publish {
-        permissions.push("registry.publish".to_string());
+        permissions.push("publish".to_string());
     }
     let plan = match deps
         .topology
-        .plan_registry_token_issue(
+        .plan_access_token_issue(
             &bearer,
-            aos_proto_types::PlanIssueRegistryTokenRequest {
+            aos_proto_types::PlanIssueAccessTokenRequest {
                 owner: format!("user:{}", session.email),
-                scope: registry.slug.clone(),
+                scope: scope_key,
                 permissions,
                 ttl_secs: 0,
                 expected_resource_version: String::new(),
-                idempotency_key: format!("console-plan-registry-token-{}", uuid::Uuid::new_v4()),
+                idempotency_key: format!("console-plan-access-token-{}", uuid::Uuid::new_v4()),
+                comment: format!("Web console token for {}", registry.slug),
             },
         )
         .await
@@ -7771,7 +7773,7 @@ async fn tokens_create_action(
     };
     Html(console::topology_plan_page(
         &session.email,
-        "Review registry token issuance",
+        "Review access token issuance",
         &format!("/{}/-/settings/tokens", registry.slug),
         &session.csrf(),
         &plan,
@@ -7813,7 +7815,7 @@ async fn tokens_modify_action(
         let idempotency_key = console_apply_idempotency_key(&plan_id);
         return match deps
             .topology
-            .apply_registry_token_retirement(&bearer, plan_id, confirmation_hash, idempotency_key)
+            .apply_access_token_retirement(&bearer, plan_id, confirmation_hash, idempotency_key)
             .await
         {
             Ok(()) => {
@@ -7825,7 +7827,7 @@ async fn tokens_modify_action(
     }
     let plan = match deps
         .topology
-        .plan_registry_token_retirement(
+        .plan_access_token_retirement(
             &bearer,
             token_id.to_string(),
             "active".to_string(),
@@ -7838,7 +7840,7 @@ async fn tokens_modify_action(
     };
     Html(console::topology_plan_page(
         &session.email,
-        "Review registry token retirement",
+        "Review access token retirement",
         &format!("/{}/-/settings/tokens/{token_id}/revoke", registry.slug),
         &session.csrf(),
         &plan,

@@ -15,7 +15,7 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 use super::{
-    HubInstanceSettingsSectionCmd, HubOrgMemberCmd, HubRegistryTokenCmd, HubServiceAccountCmd,
+    HubAccessTokenCmd, HubInstanceSettingsSectionCmd, HubOrgMemberCmd, HubServiceAccountCmd,
     HubSigningKeyCmd,
 };
 
@@ -149,6 +149,11 @@ pub enum HubCmd {
     Whoami {
         #[command(flatten)]
         access: HubAccessArgs,
+    },
+    /// Manage scoped access-token generations
+    AccessToken {
+        #[command(subcommand)]
+        command: HubAccessTokenCmd,
     },
     /// Generate or verify topology cutover artifacts offline
     Topology {
@@ -2596,11 +2601,6 @@ pub enum HubRegistryCmd {
         #[command(subcommand)]
         command: HubChannelCmd,
     },
-    /// Manage registry-scoped bearer-token generations
-    Token {
-        #[command(subcommand)]
-        command: HubRegistryTokenCmd,
-    },
     /// Manage registry publication credentials
     Publish {
         #[command(subcommand)]
@@ -2716,9 +2716,9 @@ mod tests {
     use clap::Parser as _;
 
     use crate::cli::{
-        Cli, Commands, HubCacheCmd, HubCacheRetentionCmd, HubCmd, HubNetworkBoundaryCmd,
-        HubPlacementCmd, HubPlacementDrainCmd, HubRegistryCacheStackCmd, HubRegistryCmd,
-        HubRouteCmd, HubStorageBindingCmd,
+        Cli, Commands, HubAccessTokenCmd, HubAccessTokenIssueCmd, HubCacheCmd,
+        HubCacheRetentionCmd, HubCmd, HubNetworkBoundaryCmd, HubPlacementCmd, HubPlacementDrainCmd,
+        HubRegistryCacheStackCmd, HubRegistryCmd, HubRouteCmd, HubStorageBindingCmd,
     };
 
     fn parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
@@ -3200,6 +3200,40 @@ mod tests {
                 "legacy cache command unexpectedly parsed: {removed}"
             );
         }
+    }
+
+    #[test]
+    fn access_tokens_are_scope_owned_and_registry_token_nesting_is_removed() {
+        let parsed = parse_cli([
+            "aos",
+            "hub",
+            "access-token",
+            "issue",
+            "plan",
+            "registry:0123456789abcdef0123456789abcdef",
+            "--hub",
+            "https://aos.example",
+            "--owner",
+            "service_account:andyl/publisher",
+            "--permission",
+            "publish",
+            "--comment",
+            "release publisher",
+            "--idempotency-key",
+            "plan-release-publisher",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Commands::Hub {
+                command: HubCmd::AccessToken {
+                    command: HubAccessTokenCmd::Issue {
+                        command: HubAccessTokenIssueCmd::Plan { .. }
+                    }
+                }
+            }
+        ));
+        assert!(parse_cli(["aos", "hub", "registry", "token"]).is_err());
     }
 
     #[test]
