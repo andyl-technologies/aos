@@ -76,7 +76,7 @@ left as undocumented Web-only operations:
 | Members, invitations, and roles | `org member`, `org invitation` | `IdentityService` membership and invitation methods |
 | OIDC identity provider | `org identity-provider` | `IdentityService` identity-provider methods |
 | SSO email-domain ownership | `org domain` | `IdentityService` organization-domain methods |
-| Hosted and surface signing keys | `signing-key` | `SigningKeyService` list/enroll/rotate/retire methods |
+| Hosted and surface signing keys | `signing-key`, including `usage show/plan/apply` | `SigningKeyService` key lifecycle plus exact usage get/set methods |
 | Webhooks | `org webhook` | `WebhookService` list plus plan/apply create/delete methods |
 | Audit | `audit` | `AuditService` |
 | Registry CRUD and identity/access | `registry`, `registry identity` | `RegistryService` get/list plus plan/apply create/update/delete methods |

@@ -1406,6 +1406,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
+        "/aos.hub.v1.SigningKeyService/GetSigningKeyUsage",
+        get_signing_key_usage
+    );
+    r = rpc_route!(
+        r,
         "/aos.hub.v1.SigningKeyService/PlanEnrollSigningKey",
         plan_enroll_signing_key
     );

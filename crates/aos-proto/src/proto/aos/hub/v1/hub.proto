@@ -40,6 +40,7 @@ service OrganizationService {
 service SigningKeyService {
   rpc ListSigningKeys(ListSigningKeysRequest) returns (ListSigningKeysResponse);
   rpc GetSigningKey(GetSigningKeyRequest) returns (SigningKeyResponse);
+  rpc GetSigningKeyUsage(GetSigningKeyUsageRequest) returns (SigningKeyUsageResponse);
   rpc PlanEnrollSigningKey(PlanSigningKeyMutationRequest) returns (TopologyPlanResponse);
   rpc EnrollSigningKey(ApplyTopologyPlanRequest) returns (SigningKeyResponse);
   rpc PlanRotateSigningKey(PlanSigningKeyMutationRequest) returns (TopologyPlanResponse);
@@ -796,6 +797,11 @@ message PlanSigningKeyUsageRequest {
 }
 
 message SigningKeyUsageResponse { SigningKeyUsage usage = 1; }
+
+message GetSigningKeyUsageRequest {
+  string consumer_stable_id = 1;
+  string purpose = 2;
+}
 
 // A project: a materialized-path node within an org.
 message Project {
