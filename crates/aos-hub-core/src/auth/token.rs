@@ -66,6 +66,19 @@ pub fn generate_refresh_token() -> (String, String) {
     (secret, hash)
 }
 
+/// Generates a fresh invitation-acceptance secret and its storage hash.
+///
+/// The `aosi_` prefix distinguishes the one-time human invitation ceremony
+/// from access and refresh credentials. The random portion contains 256 bits
+/// from the process CSPRNG. Only the returned hash may be persisted.
+#[must_use]
+pub fn generate_invitation_token() -> (String, String) {
+    let random_bytes: [u8; 32] = rand::rng().random();
+    let secret = format!("aosi_{}", hex::encode(random_bytes));
+    let hash = sha256_hex(&secret);
+    (secret, hash)
+}
+
 /// Computes the lowercase hex SHA-256 digest of `input`.
 ///
 /// This is the one hashing primitive shared by every credential store in
@@ -107,6 +120,14 @@ mod tests {
     fn refresh_token_has_distinct_prefix_and_full_entropy() {
         let (secret, hash) = generate_refresh_token();
         assert!(secret.starts_with("aosr_"));
+        assert_eq!(secret.len(), 69);
+        assert_eq!(hash, sha256_hex(&secret));
+    }
+
+    #[test]
+    fn invitation_token_has_distinct_prefix_and_full_entropy() {
+        let (secret, hash) = generate_invitation_token();
+        assert!(secret.starts_with("aosi_"));
         assert_eq!(secret.len(), 69);
         assert_eq!(hash, sha256_hex(&secret));
     }

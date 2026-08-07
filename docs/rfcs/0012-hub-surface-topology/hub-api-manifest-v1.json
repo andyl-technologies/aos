@@ -19,7 +19,7 @@
       "image"
    ],
    "cli_nested_families" : {
-      "org" : [ "audit", "identity", "project", "webhook" ],
+      "org" : [ "audit", "identity", "invitation", "member", "project", "service-account", "webhook" ],
       "registry" : [ "cache-stack", "channel", "configuration", "mirror", "package", "publish" ]
    },
    "cli_json_schema" : {
@@ -2234,6 +2234,55 @@
          "service" : "IdentityService"
       },
       {
+         "method" : "ListInvitations",
+         "path" : "aos.hub.v1.IdentityService/ListInvitations",
+         "request" : "ListInvitationsRequest",
+         "response" : "ListInvitationsResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "GetInvitation",
+         "path" : "aos.hub.v1.IdentityService/GetInvitation",
+         "request" : "GetInvitationRequest",
+         "response" : "InvitationResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanCreateInvitation",
+         "path" : "aos.hub.v1.IdentityService/PlanCreateInvitation",
+         "request" : "PlanCreateInvitationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "CreateInvitation",
+         "path" : "aos.hub.v1.IdentityService/CreateInvitation",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "InvitationResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanCancelInvitation",
+         "path" : "aos.hub.v1.IdentityService/PlanCancelInvitation",
+         "request" : "PlanCancelInvitationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "CancelInvitation",
+         "path" : "aos.hub.v1.IdentityService/CancelInvitation",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "InvitationResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "AcceptInvitation",
+         "path" : "aos.hub.v1.IdentityService/AcceptInvitation",
+         "request" : "AcceptInvitationRequest",
+         "response" : "AcceptInvitationResponse",
+         "service" : "IdentityService"
+      },
+      {
          "method" : "PlanIssueAccessToken",
          "path" : "aos.hub.v1.IdentityService/PlanIssueAccessToken",
          "request" : "PlanIssueAccessTokenRequest",
@@ -2290,7 +2339,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 320,
+   "rpc_count" : 327,
    "services" : [
       "RegistryService",
       "OrganizationService",

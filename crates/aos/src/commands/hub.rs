@@ -12,7 +12,7 @@ use anyhow::{Context as _, Result};
 
 use aos_core::output::{OutputMode, Printer};
 use aos_remote::hub_rpc as HubTopologyMethod;
-use aos_remote::{HubClient, HubRpc, HubSurfaceRef, Placement, hub_types};
+use aos_remote::{hub_types, HubClient, HubRpc, HubSurfaceRef, Placement};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -23,15 +23,16 @@ use crate::cli::{
     HubCacheIntegrationCmd, HubCacheLeaseCmd, HubCachePopulationCmd, HubCacheRetentionCmd,
     HubCacheRootCmd, HubChannelCmd, HubCmd, HubConfigCmd, HubDomainCertificateCmd, HubDomainCmd,
     HubDomainDnsCmd, HubEndpointCmd, HubGatewayCmd, HubInstanceCmd, HubInstanceSettingsMutationCmd,
-    HubInstanceSettingsSectionCmd, HubInstanceTopologyDefaultsCmd, HubMembershipRemoveCmd,
-    HubMembershipSetRoleCmd, HubMutationArgs, HubNetworkBoundaryCmd, HubNetworkBoundaryRevisionCmd,
-    HubOperationArgs, HubOperationCmd, HubOrgCmd, HubOrgMemberCmd, HubOrgTopologyDefaultsCmd,
-    HubPackageCmd, HubPlacementCmd, HubPlacementDrainCmd, HubPlacementEquivalenceCmd,
-    HubPlacementEvictionCmd, HubPlacementPolicyCmd, HubPlacementPromotionCmd, HubProjectCmd,
-    HubPublishCmd, HubRegistryCacheStackCmd, HubRegistryCmd, HubRegistryMirrorCmd,
-    HubReviewedApplyArgs, HubRouteCmd, HubRouteSpecArgs, HubServiceAccountCmd,
-    HubServiceAccountCreateCmd, HubServiceAccountDeleteCmd, HubServiceAccountUpdateCmd,
-    HubSigningKeyCmd, HubSigningKeyEnrollCmd, HubSigningKeyRetireCmd, HubSigningKeyRotateCmd,
+    HubInstanceSettingsSectionCmd, HubInstanceTopologyDefaultsCmd, HubInvitationCancelCmd,
+    HubInvitationCmd, HubInvitationCreateCmd, HubMembershipRemoveCmd, HubMembershipSetRoleCmd,
+    HubMutationArgs, HubNetworkBoundaryCmd, HubNetworkBoundaryRevisionCmd, HubOperationArgs,
+    HubOperationCmd, HubOrgCmd, HubOrgMemberCmd, HubOrgTopologyDefaultsCmd, HubPackageCmd,
+    HubPlacementCmd, HubPlacementDrainCmd, HubPlacementEquivalenceCmd, HubPlacementEvictionCmd,
+    HubPlacementPolicyCmd, HubPlacementPromotionCmd, HubProjectCmd, HubPublishCmd,
+    HubRegistryCacheStackCmd, HubRegistryCmd, HubRegistryMirrorCmd, HubReviewedApplyArgs,
+    HubRouteCmd, HubRouteSpecArgs, HubServiceAccountCmd, HubServiceAccountCreateCmd,
+    HubServiceAccountDeleteCmd, HubServiceAccountUpdateCmd, HubSigningKeyCmd,
+    HubSigningKeyEnrollCmd, HubSigningKeyRetireCmd, HubSigningKeyRotateCmd,
     HubSigningKeySetUsageCmd, HubStorageBindingCmd, HubStorageBindingCredentialCmd,
     HubStorageBindingWriteRevisionCmd, HubSurfaceCmd, HubTopologyCmd, HubTopologyCutoverCmd,
     HubWebhookCmd,
@@ -210,47 +211,39 @@ mod tests {
           }]
         }"#;
         assert_eq!(parse_pin_resolution_document(valid).unwrap().len(), 1);
-        assert!(
-            parse_pin_resolution_document(
-                br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
-            )
-            .is_err()
-        );
-        assert!(
-            parse_pin_resolution_document(
-                br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
-            )
-            .is_err()
-        );
+        assert!(parse_pin_resolution_document(
+            br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
+        )
+        .is_err());
+        assert!(parse_pin_resolution_document(
+            br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
+        )
+        .is_err());
     }
 
     #[test]
     fn pin_resolution_document_rejects_malformed_duplicate_and_unsealed_actions() {
         assert!(parse_pin_resolution_document(b"not-json").is_err());
-        assert!(
-            parse_pin_resolution_document(
-                br#"{
+        assert!(parse_pin_resolution_document(
+            br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"7"}},
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"8"}}
               ]
             }"#
-            )
-            .is_err()
-        );
-        assert!(
-            parse_pin_resolution_document(
-                br#"{
+        )
+        .is_err());
+        assert!(parse_pin_resolution_document(
+            br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[{
                 "pinId":"pin:one",
                 "release":{"expectedSourceResourceVersion":"0"}
               }]
             }"#
-            )
-            .is_err()
-        );
+        )
+        .is_err());
     }
 
     #[test]
@@ -2309,9 +2302,9 @@ async fn run_coverage_operation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::OperationResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::OperationResponse,
+        > + Copy,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
 ) -> Result<()> {
@@ -3687,6 +3680,7 @@ async fn org(printer: &Printer, command: &HubOrgCmd) -> Result<()> {
         HubOrgCmd::Webhook { command } => webhook(printer, command).await,
         HubOrgCmd::Member { command } => org_member(printer, command).await,
         HubOrgCmd::ServiceAccount { command } => service_account(printer, command).await,
+        HubOrgCmd::Invitation { command } => invitation(printer, command).await,
     }
 }
 
@@ -3856,9 +3850,9 @@ async fn topology_operation_mutation<PlanReq>(
     client: &HubClient,
     plan_method: impl HubRpc<Request = PlanReq, Response = hub_types::TopologyPlanResponse>,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::OperationResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::OperationResponse,
+        > + Copy,
     plan_request: &PlanReq,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
@@ -4104,9 +4098,9 @@ async fn consumer_scope_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyConsumerScopeGrantRequest,
-        Response = hub_types::ConsumerScopeGrantResponse,
-    > + Copy,
+            Request = hub_types::ApplyConsumerScopeGrantRequest,
+            Response = hub_types::ConsumerScopeGrantResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -4148,9 +4142,9 @@ async fn delete_topology_resource(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyDeleteTopologyResourceRequest,
-        Response = hub_types::DeleteTopologyResourceResponse,
-    > + Copy,
+            Request = hub_types::ApplyDeleteTopologyResourceRequest,
+            Response = hub_types::DeleteTopologyResourceResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -5515,9 +5509,9 @@ async fn boundary_lifecycle_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyNetworkBoundaryLifecycleRequest,
-        Response = hub_types::NetworkBoundaryRevisionResponse,
-    > + Copy,
+            Request = hub_types::ApplyNetworkBoundaryLifecycleRequest,
+            Response = hub_types::NetworkBoundaryRevisionResponse,
+        > + Copy,
 ) -> Result<()> {
     let (boundary_id, revision) =
         parse_generation_ref(boundary_revision, "network boundary revision")?;
@@ -6096,7 +6090,7 @@ async fn topology_state_mutation<Resp>(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<Request = hub_types::ApplyDeleteTopologyResourceRequest, Response = Resp>
-    + Copy,
+        + Copy,
 ) -> Result<()>
 where
     Resp: DeserializeOwned + Serialize,
@@ -6377,9 +6371,9 @@ async fn storage_gateway_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyStorageGatewayMutationRequest,
-        Response = hub_types::StorageGatewayResponse,
-    > + Copy,
+            Request = hub_types::ApplyStorageGatewayMutationRequest,
+            Response = hub_types::StorageGatewayResponse,
+        > + Copy,
     request: hub_types::PlanStorageGatewayMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -7018,9 +7012,9 @@ async fn route_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyRouteMutationRequest,
-        Response = hub_types::DeliveryRouteResponse,
-    > + Copy,
+            Request = hub_types::ApplyRouteMutationRequest,
+            Response = hub_types::DeliveryRouteResponse,
+        > + Copy,
     request: hub_types::PlanRouteMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -7198,9 +7192,9 @@ async fn apply_topology_defaults(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplySetTopologyDefaultsRequest,
-        Response = hub_types::TopologyDefaultsResponse,
-    > + Copy,
+            Request = hub_types::ApplySetTopologyDefaultsRequest,
+            Response = hub_types::TopologyDefaultsResponse,
+        > + Copy,
 ) -> Result<()> {
     if let Some(value) = storage_binding {
         defaults.storage_binding_id = value.clone();
@@ -8542,6 +8536,148 @@ async fn service_account(printer: &Printer, command: &HubServiceAccountCmd) -> R
     }
 }
 
+async fn invitation(printer: &Printer, command: &HubInvitationCmd) -> Result<()> {
+    match command {
+        HubInvitationCmd::List {
+            access,
+            org,
+            pagination,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read(
+                printer,
+                &client,
+                HubTopologyMethod::ListInvitations,
+                &hub_types::ListInvitationsRequest {
+                    org_slug: org.clone(),
+                    page_size: pagination.page_size.unwrap_or_default(),
+                    page_token: pagination.page_token.clone().unwrap_or_default(),
+                },
+            )
+            .await
+        }
+        HubInvitationCmd::Show {
+            access,
+            org,
+            invitation_id,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read(
+                printer,
+                &client,
+                HubTopologyMethod::GetInvitation,
+                &hub_types::GetInvitationRequest {
+                    org_slug: org.clone(),
+                    invitation_id: *invitation_id,
+                },
+            )
+            .await
+        }
+        HubInvitationCmd::Create { command } => match command {
+            HubInvitationCreateCmd::Plan {
+                request,
+                org,
+                email,
+                scope,
+                role,
+                ttl,
+            } => {
+                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let mutation = retained_plan_mutation(&request.idempotency_key, None);
+                topology_mutation(
+                    printer,
+                    &client,
+                    HubTopologyMethod::PlanCreateInvitation,
+                    HubTopologyMethod::CreateInvitation,
+                    &hub_types::PlanCreateInvitationRequest {
+                        org_slug: org.clone(),
+                        email: email.clone(),
+                        scope: scope.clone(),
+                        role: role.clone(),
+                        ttl_secs: ttl.unwrap_or_default(),
+                        expected_resource_version: String::new(),
+                        idempotency_key: request.idempotency_key.clone(),
+                    },
+                    &mutation,
+                    apply_topology_plan,
+                )
+                .await
+            }
+            HubInvitationCreateCmd::Apply(apply) => {
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let mutation = retained_apply_mutation(apply);
+                topology_mutation(
+                    printer,
+                    &client,
+                    HubTopologyMethod::PlanCreateInvitation,
+                    HubTopologyMethod::CreateInvitation,
+                    &hub_types::PlanCreateInvitationRequest::default(),
+                    &mutation,
+                    apply_topology_plan,
+                )
+                .await
+            }
+        },
+        HubInvitationCmd::Cancel { command } => match command {
+            HubInvitationCancelCmd::Plan {
+                request,
+                org,
+                invitation_id,
+                if_version,
+            } => {
+                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let mutation = retained_plan_mutation(&request.idempotency_key, Some(if_version));
+                topology_mutation(
+                    printer,
+                    &client,
+                    HubTopologyMethod::PlanCancelInvitation,
+                    HubTopologyMethod::CancelInvitation,
+                    &hub_types::PlanCancelInvitationRequest {
+                        org_slug: org.clone(),
+                        invitation_id: *invitation_id,
+                        expected_resource_version: if_version.clone(),
+                        idempotency_key: request.idempotency_key.clone(),
+                    },
+                    &mutation,
+                    apply_topology_plan,
+                )
+                .await
+            }
+            HubInvitationCancelCmd::Apply(apply) => {
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let mutation = retained_apply_mutation(apply);
+                topology_mutation(
+                    printer,
+                    &client,
+                    HubTopologyMethod::PlanCancelInvitation,
+                    HubTopologyMethod::CancelInvitation,
+                    &hub_types::PlanCancelInvitationRequest::default(),
+                    &mutation,
+                    apply_topology_plan,
+                )
+                .await
+            }
+        },
+        HubInvitationCmd::Accept {
+            access,
+            org,
+            secret,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read(
+                printer,
+                &client,
+                HubTopologyMethod::AcceptInvitation,
+                &hub_types::AcceptInvitationRequest {
+                    org_slug: org.clone(),
+                    secret: secret.clone(),
+                },
+            )
+            .await
+        }
+    }
+}
+
 async fn signing_key(printer: &Printer, command: &HubSigningKeyCmd) -> Result<()> {
     match command {
         HubSigningKeyCmd::List {
@@ -8763,9 +8899,9 @@ async fn apply_signing_key_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::SigningKeyResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::SigningKeyResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
     let mutation = retained_apply_mutation(apply);

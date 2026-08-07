@@ -2613,6 +2613,23 @@ service IdentityService {
   rpc PlanSetMembership(PlanSetMembershipRequest) returns (TopologyPlanResponse);
   // Apply one reviewed membership replacement exactly once.
   rpc SetMembership(ApplyTopologyPlanRequest) returns (MembershipResponse);
+  // List invitation history for one organization.
+  rpc ListInvitations(ListInvitationsRequest) returns (ListInvitationsResponse);
+  // Inspect one invitation without exposing its acceptance secret.
+  rpc GetInvitation(GetInvitationRequest) returns (InvitationResponse);
+  // Plan creation of a pending invitation.
+  rpc PlanCreateInvitation(PlanCreateInvitationRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed invitation-creation plan exactly once.
+  rpc CreateInvitation(ApplyTopologyPlanRequest) returns (InvitationResponse);
+  // Plan cancellation of one pending invitation.
+  rpc PlanCancelInvitation(PlanCancelInvitationRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed invitation cancellation exactly once.
+  rpc CancelInvitation(ApplyTopologyPlanRequest) returns (InvitationResponse);
+  // Accept an invitation as the authenticated user named by it.
+  rpc AcceptInvitation(AcceptInvitationRequest)
+      returns (AcceptInvitationResponse);
   // Plan issuance of a scoped bearer token.
   rpc PlanIssueAccessToken(PlanIssueAccessTokenRequest)
       returns (TopologyPlanResponse);
@@ -2736,6 +2753,75 @@ message MembershipResponse {
   string role = 4;
   // Current role, or `absent` when no direct grant exists.
   string resource_version = 5;
+}
+
+message ListInvitationsRequest {
+  string org_slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListInvitationsResponse {
+  repeated Invitation invitations = 1;
+  string next_page_token = 2;
+}
+
+message GetInvitationRequest {
+  string org_slug = 1;
+  int64 invitation_id = 2;
+}
+
+message PlanCreateInvitationRequest {
+  string org_slug = 1;
+  string email = 2;
+  // Canonical authorization scope granted on acceptance.
+  string scope = 3;
+  // Role name: owner | admin | maintainer | developer | viewer.
+  string role = 4;
+  // Optional lifetime in seconds; zero applies the Hub default.
+  int64 ttl_secs = 5;
+  // Creation requires an empty expected resource version.
+  string expected_resource_version = 6;
+  string idempotency_key = 7;
+}
+
+message PlanCancelInvitationRequest {
+  string org_slug = 1;
+  int64 invitation_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+message AcceptInvitationRequest {
+  string org_slug = 1;
+  // One-time invitation secret delivered out of band.
+  string secret = 2;
+}
+
+message Invitation {
+  int64 invitation_id = 1;
+  string org_slug = 2;
+  string email = 3;
+  string scope = 4;
+  string role = 5;
+  // pending | accepted | cancelled | expired.
+  string state = 6;
+  int64 created_at = 7;
+  int64 accepted_at = 8;
+  int64 cancelled_at = 9;
+  int64 expires_at = 10;
+  string resource_version = 11;
+}
+
+message InvitationResponse {
+  Invitation invitation = 1;
+  // Returned once by CreateInvitation; absent from every read and replay.
+  string secret = 2;
+}
+
+message AcceptInvitationResponse {
+  Invitation invitation = 1;
+  MembershipResponse membership = 2;
 }
 
 message PlanIssueAccessTokenRequest {

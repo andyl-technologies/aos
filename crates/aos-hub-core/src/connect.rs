@@ -2239,6 +2239,41 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
+        "/aos.hub.v1.IdentityService/ListInvitations",
+        list_invitations
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/GetInvitation",
+        get_invitation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanCreateInvitation",
+        plan_create_invitation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/CreateInvitation",
+        apply_create_invitation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanCancelInvitation",
+        plan_cancel_invitation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/CancelInvitation",
+        apply_cancel_invitation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/AcceptInvitation",
+        accept_invitation
+    );
+    r = rpc_route!(
+        r,
         "/aos.hub.v1.IdentityService/PlanIssueAccessToken",
         plan_issue_access_token
     );

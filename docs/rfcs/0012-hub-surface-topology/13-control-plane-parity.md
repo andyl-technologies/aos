@@ -192,6 +192,18 @@ Organization IAM parity also includes membership inventory and replacement,
 invitations, OIDC configuration, and captured email-domain claim, verification,
 and release.
 
+An invitation is a durable pending grant proposal, never a membership alias.
+Administrator creation and cancellation use ordinary immutable plan/apply
+pairs. Creation returns a high-entropy `aosi_` acceptance secret once and stores
+only its SHA-256 digest. The invited user presents the secret through the
+`AcceptInvitation` identity ceremony after authenticating with the exact
+canonical email. That ceremony is the narrow exception to administrator review:
+the secret and matching live identity are its preconditions, and one checked
+transaction both marks the invitation accepted and creates the exact direct
+membership. A conflict rolls both changes back. Pending, accepted, cancelled,
+and time-derived expired states remain inspectable; creation never pre-creates
+a user. Native and Worker deployments use the same service and migration.
+
 ## Settings hierarchy
 
 Every scope root is its first navigation entry and is labeled **Overview**.

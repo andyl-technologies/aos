@@ -495,6 +495,38 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             ),
         )
         .route(
+            "/-/org/{org}/invitations/accept",
+            get(
+                |State(s): State<SharedState>,
+                 h: HeaderMap,
+                 r: RequestStart,
+                 p: Path<_>,
+                 q: Query<_>| {
+                    send_bridge(handlers::invitation_acceptance(from_state(s), h, r, p, q))
+                },
+            )
+            .post(
+                |State(s): State<SharedState>,
+                 h: HeaderMap,
+                 p: Path<_>,
+                 f: axum::extract::Form<_>| {
+                    send_bridge(handlers::accept_invitation(from_state(s), h, p, f))
+                },
+            ),
+        )
+        .route(
+            "/-/org/{org}/members/invitations/{invitation_id}/cancel",
+            post(
+                |State(s): State<SharedState>,
+                 h: HeaderMap,
+                 r: RequestStart,
+                 p: Path<_>,
+                 f: axum::extract::Form<_>| {
+                    send_bridge(handlers::cancel_invitation(from_state(s), h, r, p, f))
+                },
+            ),
+        )
+        .route(
             "/-/org/{org}/members/{principal}/remove",
             post(
                 |State(s): State<SharedState>,

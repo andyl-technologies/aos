@@ -362,6 +362,52 @@ pub trait TopologyConsole: BackendBounds {
         idempotency_key: String,
     ) -> Result<aos_proto_types::MembershipResponse, crate::service::RpcError>;
 
+    /// Lists invitation history visible to an organization member manager.
+    async fn invitations(
+        &self,
+        bearer: &str,
+        org_slug: String,
+    ) -> Result<Vec<aos_proto_types::Invitation>, crate::service::RpcError>;
+
+    /// Plans creation of one pending organization invitation.
+    async fn plan_invitation(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanCreateInvitationRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError>;
+
+    /// Applies one reviewed invitation-creation plan.
+    async fn apply_invitation(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::InvitationResponse, crate::service::RpcError>;
+
+    /// Plans cancellation of one pending organization invitation.
+    async fn plan_invitation_cancellation(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanCancelInvitationRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError>;
+
+    /// Applies one reviewed invitation-cancellation plan.
+    async fn apply_invitation_cancellation(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::InvitationResponse, crate::service::RpcError>;
+
+    /// Accepts one invitation as the authenticated matching user.
+    async fn accept_invitation(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::AcceptInvitationRequest,
+    ) -> Result<aos_proto_types::AcceptInvitationResponse, crate::service::RpcError>;
+
     /// Reads the full effective instance-settings bundle and exact revision.
     async fn instance_settings(
         &self,
@@ -885,6 +931,90 @@ impl TopologyConsole for crate::service::RpcService {
             },
         )
         .await
+    }
+
+    async fn invitations(
+        &self,
+        bearer: &str,
+        org_slug: String,
+    ) -> Result<Vec<aos_proto_types::Invitation>, crate::service::RpcError> {
+        Ok(self
+            .list_invitations(
+                Some(bearer),
+                aos_proto_types::ListInvitationsRequest {
+                    org_slug,
+                    page_size: 1_000,
+                    page_token: String::new(),
+                },
+            )
+            .await?
+            .invitations)
+    }
+
+    async fn plan_invitation(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanCreateInvitationRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError> {
+        reviewed_plan(
+            self.plan_create_invitation(Some(bearer), request).await?,
+            "invitation creation",
+        )
+    }
+
+    async fn apply_invitation(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::InvitationResponse, crate::service::RpcError> {
+        self.apply_create_invitation(
+            Some(bearer),
+            aos_proto_types::ApplyTopologyPlanRequest {
+                plan_id,
+                idempotency_key,
+                confirmation_hash,
+            },
+        )
+        .await
+    }
+
+    async fn plan_invitation_cancellation(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanCancelInvitationRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError> {
+        reviewed_plan(
+            self.plan_cancel_invitation(Some(bearer), request).await?,
+            "invitation cancellation",
+        )
+    }
+
+    async fn apply_invitation_cancellation(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::InvitationResponse, crate::service::RpcError> {
+        self.apply_cancel_invitation(
+            Some(bearer),
+            aos_proto_types::ApplyTopologyPlanRequest {
+                plan_id,
+                idempotency_key,
+                confirmation_hash,
+            },
+        )
+        .await
+    }
+
+    async fn accept_invitation(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::AcceptInvitationRequest,
+    ) -> Result<aos_proto_types::AcceptInvitationResponse, crate::service::RpcError> {
+        crate::service::RpcService::accept_invitation(self, Some(bearer), request).await
     }
 
     async fn instance_settings(

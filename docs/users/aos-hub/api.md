@@ -110,6 +110,16 @@ removes direct memberships atomically, while retained token metadata becomes
 unusable immediately because its owner is no longer live. The former
 `AutomationPrincipal` API names are not served.
 
+Organization invitations use `ListInvitations`, `GetInvitation`, reviewed
+`PlanCreateInvitation`/`CreateInvitation` and
+`PlanCancelInvitation`/`CancelInvitation` pairs, plus the authenticated
+`AcceptInvitation` identity ceremony. Creation returns a 256-bit `aosi_`
+acceptance secret once; only its SHA-256 hash is stored. A pending invitation
+is not a user or membership. Acceptance succeeds only for a live user whose
+canonical email and organization match the invitation, and atomically consumes
+the secret while creating the exact direct membership. History remains visible
+as `pending`, `accepted`, `cancelled`, or time-derived `expired` metadata.
+
 ## Scripting
 
 The remote client covers common calls and provides stable JSON output:

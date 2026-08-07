@@ -29,8 +29,8 @@
 //! inventory and authorized placement lifecycle calls.
 
 use anyhow::{Context, Result};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
@@ -632,6 +632,13 @@ enum HubTopologyMethod {
     GetMembership,
     PlanSetMembership,
     SetMembership,
+    ListInvitations,
+    GetInvitation,
+    PlanCreateInvitation,
+    CreateInvitation,
+    PlanCancelInvitation,
+    CancelInvitation,
+    AcceptInvitation,
     PlanIssueAccessToken,
     IssueAccessToken,
     PlanRetireAccessToken,
@@ -1108,6 +1115,13 @@ impl HubTopologyMethod {
             GetMembership => "aos.hub.v1.IdentityService/GetMembership",
             PlanSetMembership => "aos.hub.v1.IdentityService/PlanSetMembership",
             SetMembership => "aos.hub.v1.IdentityService/SetMembership",
+            ListInvitations => "aos.hub.v1.IdentityService/ListInvitations",
+            GetInvitation => "aos.hub.v1.IdentityService/GetInvitation",
+            PlanCreateInvitation => "aos.hub.v1.IdentityService/PlanCreateInvitation",
+            CreateInvitation => "aos.hub.v1.IdentityService/CreateInvitation",
+            PlanCancelInvitation => "aos.hub.v1.IdentityService/PlanCancelInvitation",
+            CancelInvitation => "aos.hub.v1.IdentityService/CancelInvitation",
+            AcceptInvitation => "aos.hub.v1.IdentityService/AcceptInvitation",
             PlanIssueAccessToken => "aos.hub.v1.IdentityService/PlanIssueAccessToken",
             IssueAccessToken => "aos.hub.v1.IdentityService/IssueAccessToken",
             PlanRetireAccessToken => "aos.hub.v1.IdentityService/PlanRetireAccessToken",
@@ -1474,6 +1488,13 @@ pub mod hub_rpc {
         GetMembership: GetMembershipRequest => MembershipResponse;
         PlanSetMembership: PlanSetMembershipRequest => TopologyPlanResponse;
         SetMembership: ApplyTopologyPlanRequest => MembershipResponse;
+        ListInvitations: ListInvitationsRequest => ListInvitationsResponse;
+        GetInvitation: GetInvitationRequest => InvitationResponse;
+        PlanCreateInvitation: PlanCreateInvitationRequest => TopologyPlanResponse;
+        CreateInvitation: ApplyTopologyPlanRequest => InvitationResponse;
+        PlanCancelInvitation: PlanCancelInvitationRequest => TopologyPlanResponse;
+        CancelInvitation: ApplyTopologyPlanRequest => InvitationResponse;
+        AcceptInvitation: AcceptInvitationRequest => AcceptInvitationResponse;
         PlanIssueAccessToken: PlanIssueAccessTokenRequest => TopologyPlanResponse;
         IssueAccessToken: ApplyTopologyPlanRequest => AccessTokenResponse;
         PlanRetireAccessToken: PlanRetireAccessTokenRequest => TopologyPlanResponse;
@@ -1777,7 +1798,7 @@ fn ensure_trailing_slash(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CONNECT_PROTOCOL_VERSION_HEADER, HubClient, HubSurfaceRef, HubTopologyMethod};
+    use super::{HubClient, HubSurfaceRef, HubTopologyMethod, CONNECT_PROTOCOL_VERSION_HEADER};
     use aos_proto_types::surface_ref::Target;
     use aos_proto_types::{PlanCreatePlacementRequest, PlanUpdatePlacementRequest};
     use std::str::FromStr as _;

@@ -252,9 +252,9 @@
     {
       "service": "IdentityService",
       "audience": "end-user",
-      "cli_families": ["org member", "org service-account", "access-token", "whoami"],
-      "web_workflows": ["identity-access", "memberships", "service-accounts", "access-tokens", "organization-sso"],
-      "methods": ["WhoAmI", "ListServiceAccounts", "GetServiceAccount", "PlanCreateServiceAccount", "CreateServiceAccount", "PlanUpdateServiceAccount", "UpdateServiceAccount", "PlanDeleteServiceAccount", "DeleteServiceAccount", "GetMembership", "PlanSetMembership", "SetMembership", "PlanIssueAccessToken", "IssueAccessToken", "PlanRetireAccessToken", "RetireAccessToken", "ListAccessTokens"]
+      "cli_families": ["org member", "org invitation", "org service-account", "access-token", "whoami"],
+      "web_workflows": ["identity-access", "memberships", "invitations", "service-accounts", "access-tokens", "organization-sso"],
+      "methods": ["WhoAmI", "ListServiceAccounts", "GetServiceAccount", "PlanCreateServiceAccount", "CreateServiceAccount", "PlanUpdateServiceAccount", "UpdateServiceAccount", "PlanDeleteServiceAccount", "DeleteServiceAccount", "GetMembership", "PlanSetMembership", "SetMembership", "ListInvitations", "GetInvitation", "PlanCreateInvitation", "CreateInvitation", "PlanCancelInvitation", "CancelInvitation", "AcceptInvitation", "PlanIssueAccessToken", "IssueAccessToken", "PlanRetireAccessToken", "RetireAccessToken", "ListAccessTokens"]
     }
   ]
 }

@@ -143,6 +143,11 @@ pub const CONSOLE_ROUTES: &[RouteSpec] = &[
     route("/-/org/{org}/members", RouteMethods::Get),
     route("/-/org/{org}/members/invitations/new", RouteMethods::Get),
     route("/-/org/{org}/members/invitations", RouteMethods::Post),
+    route("/-/org/{org}/invitations/accept", RouteMethods::GetAndPost),
+    route(
+        "/-/org/{org}/members/invitations/{invitation_id}/cancel",
+        RouteMethods::Post,
+    ),
     route(
         "/-/org/{org}/members/{principal}/remove",
         RouteMethods::Post,

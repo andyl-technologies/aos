@@ -135,6 +135,23 @@ memberships, and token ownership. `delete plan` removes its direct memberships
 atomically and immediately deadens its owned credentials. Both require the
 `resource_version` returned by list or show.
 
+Manage invitations beneath their owning organization:
+
+```sh
+aos hub org invitation list acme
+aos hub org invitation create plan acme new.member@example.com \
+  --scope 'org:0123456789abcdef0123456789abcdef' \
+  --role developer \
+  --idempotency-key 'invite-new-member'
+aos hub org invitation accept acme --secret "$AOS_INVITATION_SECRET"
+```
+
+Apply the create plan to receive the acceptance secret once. The administrator
+delivers that secret to the exact invited email. `cancel plan` requires the
+invitation `resource_version` returned by list or show. Accepting creates the
+membership atomically; creating an invitation never creates a user or grants
+authority. Use global `--json` for stable machine-readable output.
+
 The remote client includes registry, cache, organization, project, binding,
 webhook, instance, audit, changeset, and upload operations. Authorization is
 checked against current server-side grants for every request; approval never
