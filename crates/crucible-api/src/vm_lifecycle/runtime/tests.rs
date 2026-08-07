@@ -148,6 +148,25 @@ fn production_guest_assets_are_kept_per_architecture() {
     );
 }
 
+#[test]
+fn production_native_aarch64_assets_do_not_create_an_x86_fallback() {
+    let config = ProductionVmLifecycleConfig::new_for_guest_architecture(
+        "qemu-system-aarch64",
+        "plugin",
+        VmArchitecture::Aarch64,
+        "arm-kernel",
+        "arm-root",
+    );
+
+    assert!(!config.guest_assets.contains_key(&VmArchitecture::X86_64));
+    let arm = config
+        .guest_assets
+        .get(&VmArchitecture::Aarch64)
+        .unwrap_or_else(|| panic!("native AArch64 assets should be configured"));
+    assert_eq!(arm.kernel, PathBuf::from("arm-kernel"));
+    assert_eq!(arm.root_image, PathBuf::from("arm-root"));
+}
+
 fn graph_runtime(configuration: ContentHash, reduced_state: ContentHash) -> RuntimeState {
     RuntimeState {
         id: reduced_state,

@@ -291,21 +291,38 @@
           cat > "$out/bin/crucible" <<'EOF'
           #!${bash}/bin/bash
           : "''${CRUCIBLE_QEMU:=${nativeQemuPath}}"
+          : "''${CRUCIBLE_NATIVE_GUEST_ARCHITECTURE:=${
+            if stdenv.hostPlatform.system == "aarch64-linux"
+            then "aarch64"
+            else "x86_64"
+          }}"
           : "''${CRUCIBLE_PLUGIN:=${crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so}"
           : "''${CRUCIBLE_DEBUG_GATEWAY:=${debugGateway}/bin/crucible-debug-gateway}"
           : "''${CRUCIBLE_KERNEL:=${linux-crucible}/boot/vmlinuz-${linux-crucible.version}}"
           : "''${CRUCIBLE_ROOT_IMAGE:=${crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4}"
           : "''${CRUCIBLE_KERNEL_CMDLINE:=${linux-crucible.passthru.crucibleFixtureKernelCmdline} init=/init}"
-          : "''${CRUCIBLE_KERNEL_X86_64:=$CRUCIBLE_KERNEL}"
-          : "''${CRUCIBLE_ROOT_IMAGE_X86_64:=$CRUCIBLE_ROOT_IMAGE}"
-          : "''${CRUCIBLE_KERNEL_CMDLINE_X86_64:=$CRUCIBLE_KERNEL_CMDLINE}"
+          ${lib.optionalString (stdenv.hostPlatform.system == "x86_64-linux") ''
+            : "''${CRUCIBLE_KERNEL_X86_64:=$CRUCIBLE_KERNEL}"
+            : "''${CRUCIBLE_ROOT_IMAGE_X86_64:=$CRUCIBLE_ROOT_IMAGE}"
+            : "''${CRUCIBLE_KERNEL_CMDLINE_X86_64:=$CRUCIBLE_KERNEL_CMDLINE}"
+          ''}
+          ${lib.optionalString (stdenv.hostPlatform.system == "aarch64-linux") ''
+            : "''${CRUCIBLE_KERNEL_AARCH64:=$CRUCIBLE_KERNEL}"
+            : "''${CRUCIBLE_ROOT_IMAGE_AARCH64:=$CRUCIBLE_ROOT_IMAGE}"
+            : "''${CRUCIBLE_KERNEL_CMDLINE_AARCH64:=$CRUCIBLE_KERNEL_CMDLINE}"
+          ''}
           ${lib.optionalString (aarch64Guests != null) ''
             : "''${CRUCIBLE_KERNEL_AARCH64:=${aarch64Linux}/boot/vmlinuz-${aarch64Linux.version}}"
             : "''${CRUCIBLE_ROOT_IMAGE_AARCH64:=${aarch64Fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4}"
             : "''${CRUCIBLE_KERNEL_CMDLINE_AARCH64:=${aarch64Linux.passthru.crucibleFixtureKernelCmdline} init=/init}"
           ''}
-          export CRUCIBLE_QEMU CRUCIBLE_PLUGIN CRUCIBLE_DEBUG_GATEWAY CRUCIBLE_KERNEL CRUCIBLE_ROOT_IMAGE CRUCIBLE_KERNEL_CMDLINE
-          export CRUCIBLE_KERNEL_X86_64 CRUCIBLE_ROOT_IMAGE_X86_64 CRUCIBLE_KERNEL_CMDLINE_X86_64
+          export CRUCIBLE_QEMU CRUCIBLE_NATIVE_GUEST_ARCHITECTURE CRUCIBLE_PLUGIN CRUCIBLE_DEBUG_GATEWAY CRUCIBLE_KERNEL CRUCIBLE_ROOT_IMAGE CRUCIBLE_KERNEL_CMDLINE
+          ${lib.optionalString (stdenv.hostPlatform.system == "x86_64-linux") ''
+            export CRUCIBLE_KERNEL_X86_64 CRUCIBLE_ROOT_IMAGE_X86_64 CRUCIBLE_KERNEL_CMDLINE_X86_64
+          ''}
+          ${lib.optionalString (stdenv.hostPlatform.system == "aarch64-linux") ''
+            export CRUCIBLE_KERNEL_AARCH64 CRUCIBLE_ROOT_IMAGE_AARCH64 CRUCIBLE_KERNEL_CMDLINE_AARCH64
+          ''}
           ${lib.optionalString (aarch64Guests != null) ''
             export CRUCIBLE_KERNEL_AARCH64 CRUCIBLE_ROOT_IMAGE_AARCH64 CRUCIBLE_KERNEL_CMDLINE_AARCH64
           ''}

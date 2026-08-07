@@ -77,6 +77,7 @@ struct ProductionVmDebugConfig {
     node: Option<String>,
     operator_listen: String,
     all_nodes: bool,
+    allow_requested_loopback_listen: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -129,9 +130,27 @@ impl ProductionVmLifecycleConfig {
         kernel: impl Into<PathBuf>,
         root_image: impl Into<PathBuf>,
     ) -> Self {
+        Self::new_for_guest_architecture(
+            executable,
+            plugin,
+            VmArchitecture::X86_64,
+            kernel,
+            root_image,
+        )
+    }
+
+    /// Builds a local-QEMU lifecycle configuration for one native guest architecture.
+    #[must_use]
+    pub fn new_for_guest_architecture(
+        executable: impl Into<PathBuf>,
+        plugin: impl Into<PathBuf>,
+        architecture: VmArchitecture,
+        kernel: impl Into<PathBuf>,
+        root_image: impl Into<PathBuf>,
+    ) -> Self {
         let mut guest_assets = BTreeMap::new();
         guest_assets.insert(
-            VmArchitecture::X86_64,
+            architecture,
             ProductionVmGuestAssets {
                 kernel: kernel.into(),
                 root_image: root_image.into(),
@@ -252,6 +271,7 @@ impl ProductionVmLifecycleConfig {
             node,
             operator_listen: operator_listen.into(),
             all_nodes: false,
+            allow_requested_loopback_listen: false,
         });
         self
     }
@@ -259,14 +279,17 @@ impl ProductionVmLifecycleConfig {
     /// Returns this configuration with mediated gdbstub backends for every node.
     ///
     /// The operator listener is still created lazily for one requested node at
-    /// a time. This mode is intended for a long-lived daemon whose submitted
-    /// scenarios are not known when the server configuration is constructed.
+    /// a time. A caller may select any loopback listener; the configured value
+    /// remains the default used by clients that do not request one explicitly.
+    /// This mode is intended for a long-lived daemon whose submitted scenarios
+    /// are not known when the server configuration is constructed.
     #[must_use]
     pub fn with_debug_gdbstubs_for_all_nodes(mut self, operator_listen: impl Into<String>) -> Self {
         self.debug = Some(ProductionVmDebugConfig {
             node: None,
             operator_listen: operator_listen.into(),
             all_nodes: true,
+            allow_requested_loopback_listen: true,
         });
         self
     }

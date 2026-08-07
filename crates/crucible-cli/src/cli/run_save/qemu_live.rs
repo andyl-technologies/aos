@@ -918,12 +918,18 @@ pub(crate) fn production_qemu_lifecycle_config(
         option_env!("CRUCIBLE_AOS_ROOT_IMAGE"),
         "root image",
     )?;
-    let mut config =
-        production_api::ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image)
-            .with_root_image_format(production_api::ProductionRootImageFormat::Raw)
-            .with_run_ceiling_icount(PRODUCTION_CLI_RUN_CEILING_ICOUNT)
-            .with_quantum_budget(PRODUCTION_CLI_QUANTUM_BUDGET)
-            .with_completion_timeout(PRODUCTION_CLI_COMPLETION_TIMEOUT);
+    let native_guest_architecture = live_qemu_native_guest_architecture()?;
+    let mut config = production_api::ProductionVmLifecycleConfig::new_for_guest_architecture(
+        qemu,
+        plugin,
+        native_guest_architecture,
+        kernel,
+        root_image,
+    )
+    .with_root_image_format(production_api::ProductionRootImageFormat::Raw)
+    .with_run_ceiling_icount(PRODUCTION_CLI_RUN_CEILING_ICOUNT)
+    .with_quantum_budget(PRODUCTION_CLI_QUANTUM_BUDGET)
+    .with_completion_timeout(PRODUCTION_CLI_COMPLETION_TIMEOUT);
     if let Some(kernel_cmdline) = live_qemu_kernel_cmdline() {
         config = config.with_kernel_cmdline_prefix(kernel_cmdline);
     }
