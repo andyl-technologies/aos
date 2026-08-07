@@ -64,7 +64,7 @@ use crate::web::console::ports::{
     PlacementPlanOperation, PlacementUpdateSpec, StorageCredentialAction, TopologySurface,
 };
 use crate::web::console_render as console;
-use crate::web::csrf::{connect_or_csrf_ok, mint_csrf_token};
+use crate::web::csrf::{connect_or_csrf_ok, mint_csrf_token, verify_csrf_token};
 use crate::web::session::resolve_session_from_headers;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
@@ -183,6 +183,121 @@ impl Session {
         )?;
         Ok(format!("Bearer {token}"))
     }
+}
+
+/// Lifetime of a bearer minted from an authenticated browser session.
+pub(crate) const BROWSER_ACCESS_TOKEN_TTL_SECS: i64 = 300;
+
+#[derive(serde::Serialize)]
+struct SessionTokenPrincipal {
+    kind: &'static str,
+    id: i64,
+    email: String,
+}
+
+#[derive(serde::Serialize)]
+struct SessionTokenGrant {
+    scope: String,
+    role: String,
+}
+
+#[derive(serde::Serialize)]
+struct SessionTokenResponse {
+    access_token: String,
+    token_type: &'static str,
+    expires_in: i64,
+    principal: SessionTokenPrincipal,
+    grants: Vec<SessionTokenGrant>,
+}
+
+/// Exchanges an authenticated browser session for a short-lived API bearer.
+///
+/// The ambient session cookie is accepted only with an exact same-origin
+/// `Origin` header and the session-bound `x-aos-csrf` proof. The response is
+/// explicitly non-cacheable, and callers must retain the bearer only in
+/// memory.
+pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => {
+            let mut response = *response;
+            if response.status().is_redirection() {
+                *response.status_mut() = StatusCode::UNAUTHORIZED;
+                response.headers_mut().remove(header::LOCATION);
+            }
+            return response;
+        }
+    };
+    if !request_has_exact_origin(&headers, &deps.external_url) {
+        return (StatusCode::FORBIDDEN, "invalid request origin").into_response();
+    }
+    let csrf = headers
+        .get("x-aos-csrf")
+        .and_then(|value| value.to_str().ok());
+    if !csrf.is_some_and(|token| verify_csrf_token(&session.secret, token)) {
+        return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
+    }
+
+    let grants = match session.grants(&deps.db).await {
+        Ok(grants) => grants,
+        Err(error) => return internal(error),
+    };
+    let auth = crate::db::TokenAuth {
+        token_id: format!("browser-session-{}", session.auth.user_id),
+        owner: session.principal(),
+        scope: Scope::root(),
+        permissions: iam::role_grants(Role::Owner).to_vec(),
+    };
+    let access_token = match deps.jwt_keys.mint(&auth, BROWSER_ACCESS_TOKEN_TTL_SECS) {
+        Ok(token) => token,
+        Err(error) => return internal(error),
+    };
+    let body = SessionTokenResponse {
+        access_token,
+        token_type: "Bearer",
+        expires_in: BROWSER_ACCESS_TOKEN_TTL_SECS,
+        principal: SessionTokenPrincipal {
+            kind: "user",
+            id: session.auth.user_id,
+            email: session.email,
+        },
+        grants: grants
+            .into_iter()
+            .map(|(scope, role)| SessionTokenGrant {
+                scope: scope.as_str().to_string(),
+                role: role.as_str().to_string(),
+            })
+            .collect(),
+    };
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(body),
+    )
+        .into_response()
+}
+
+fn request_has_exact_origin(headers: &HeaderMap, external_url: &str) -> bool {
+    let Some(origin) = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let (Ok(origin), Ok(external)) = (url::Url::parse(origin), url::Url::parse(external_url))
+    else {
+        return false;
+    };
+    origin.scheme() == external.scheme()
+        && origin.host_str() == external.host_str()
+        && origin.port_or_known_default() == external.port_or_known_default()
+        && origin.username().is_empty()
+        && origin.password().is_none()
+        && origin.path() == "/"
+        && origin.query().is_none()
+        && origin.fragment().is_none()
 }
 
 /// Resolves the exact settings-page permissions available in `scope` with one
@@ -9618,7 +9733,9 @@ pub(crate) async fn change_reopen(
 
 #[cfg(test)]
 mod tests {
-    use super::delivery_route_url;
+    use axum::http::{header, HeaderMap, HeaderValue};
+
+    use super::{delivery_route_url, request_has_exact_origin};
 
     #[test]
     fn delivery_route_url_preserves_endpoint_scheme_and_effective_port() {
@@ -9638,5 +9755,26 @@ mod tests {
             delivery_route_url("http", "[2001:db8::1]", 8080, "/"),
             "http://[2001:db8::1]:8080/",
         );
+    }
+
+    #[test]
+    fn session_exchange_requires_the_exact_configured_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://aos.example"),
+        );
+        assert!(request_has_exact_origin(&headers, "https://aos.example/"));
+        assert!(!request_has_exact_origin(
+            &headers,
+            "https://other.example/"
+        ));
+        assert!(!request_has_exact_origin(&headers, "http://aos.example/"));
+
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://aos.example.evil"),
+        );
+        assert!(!request_has_exact_origin(&headers, "https://aos.example/"));
     }
 }

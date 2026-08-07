@@ -119,6 +119,7 @@ pub const CONSOLE_ROUTES: &[RouteSpec] = &[
     route("/auth/oidc/start", RouteMethods::Get),
     route("/auth/oidc/callback", RouteMethods::Get),
     route("/logout", RouteMethods::GetAndPost),
+    route("/-/auth/session-token", RouteMethods::Post),
     route("/-/account", RouteMethods::Get),
     route("/-/account/password", RouteMethods::Post),
     route("/-/reauth", RouteMethods::Post),

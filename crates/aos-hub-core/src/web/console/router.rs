@@ -215,6 +215,12 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             ),
         )
         .route(
+            "/-/auth/session-token",
+            post(|State(s): State<SharedState>, h: HeaderMap| {
+                send_bridge(handlers::session_token(from_state(s), h))
+            }),
+        )
+        .route(
             "/auth/magic",
             get(
                 |State(s): State<SharedState>, r: RequestStart, q: Query<_>| {
