@@ -48,6 +48,32 @@ impl RetentionFields {
         }
     }
 
+    fn from_subscription(subscription: &aos_proto_types::RetentionSubscription) -> Self {
+        let desired = subscription.desired.clone().unwrap_or_default();
+        let selector = desired.selector.unwrap_or_default();
+        let channels = selector.channel_targets.unwrap_or_default();
+        let recent = selector.recent_releases.unwrap_or_default();
+        let semver = selector.semver.unwrap_or_default();
+        Self {
+            registry_id: RwSignal::new(subscription.registry_id.clone()),
+            current_catalog: RwSignal::new(selector.current_catalog),
+            all_channels: RwSignal::new(channels.all),
+            channels: RwSignal::new(channels.names.join(", ")),
+            recent_count: RwSignal::new(
+                (recent.count > 0)
+                    .then(|| recent.count.to_string())
+                    .unwrap_or_default(),
+            ),
+            recent_prereleases: RwSignal::new(recent.include_prereleases),
+            release_tags: RwSignal::new(selector.release_tags.join(", ")),
+            semver: RwSignal::new(semver.requirement),
+            semver_prereleases: RwSignal::new(semver.include_prereleases),
+            all_releases: RwSignal::new(selector.all_releases),
+            removal_grace: RwSignal::new(desired.removal_grace_seconds.to_string()),
+            expected_version: RwSignal::new(subscription.resource_version.clone()),
+        }
+    }
+
     fn desired(self) -> Result<aos_proto_types::RetentionSubscriptionSpec, String> {
         let channel_names = comma_values(&self.channels.get_untracked());
         let release_tags = comma_values(&self.release_tags.get_untracked());
@@ -165,6 +191,7 @@ fn SubscriptionSummary(
     cache_id: String,
     subscription: aos_proto_types::RetentionSubscription,
 ) -> impl IntoView {
+    let edit_subscription = subscription.clone();
     let registry_id = subscription.registry_id.clone();
     let version = subscription.resource_version.clone();
     view! {
@@ -193,13 +220,21 @@ fn SubscriptionSummary(
                     action=SubscriptionActionKind::Refresh
                 />
                 <SubscriptionAction
-                    client=client
-                    cache_id=cache_id
-                    registry_id=registry_id
-                    version=version
+                    client=client.clone()
+                    cache_id=cache_id.clone()
+                    registry_id=registry_id.clone()
+                    version=version.clone()
                     action=SubscriptionActionKind::Delete
                 />
             </div>
+            <details>
+                <summary>"Edit this subscription"</summary>
+                <RetentionEditor
+                    client=client.clone()
+                    cache_id=cache_id.clone()
+                    initial=edit_subscription
+                />
+            </details>
         </article>
     }
 }
@@ -344,8 +379,16 @@ fn SubscriptionAction(
 }
 
 #[component]
-fn RetentionEditor(client: ApiClient, cache_id: String) -> impl IntoView {
-    let fields = RetentionFields::new();
+fn RetentionEditor(
+    client: ApiClient,
+    cache_id: String,
+    #[prop(optional)] initial: Option<aos_proto_types::RetentionSubscription>,
+) -> impl IntoView {
+    let editing = initial.is_some();
+    let fields = initial
+        .as_ref()
+        .map(RetentionFields::from_subscription)
+        .unwrap_or_else(RetentionFields::new);
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -416,7 +459,7 @@ fn RetentionEditor(client: ApiClient, cache_id: String) -> impl IntoView {
     view! {
         <section class="panel resource-panel">
             <div class="section-heading">
-                <div><p class="section-kicker">"Signed release selectors"</p><h2>"Set subscription"</h2></div>
+                <div><p class="section-kicker">"Signed release selectors"</p><h2>{if editing { "Edit subscription" } else { "Create subscription" }}</h2></div>
             </div>
             <form class="editor-form" on:submit=on_submit>
                 <label><span>"Registry stable ID"</span><input required prop:value=move || fields.registry_id.get() on:input=move |event| fields.registry_id.set(event_target_value(&event))/></label>
