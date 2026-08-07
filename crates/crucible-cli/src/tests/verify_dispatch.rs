@@ -66,8 +66,6 @@ pub(super) fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts
         String::from("--quiet"),
         String::from("--backend"),
         String::from("double"),
-        String::from("--seed"),
-        String::from("12"),
         String::from("--artifact-dir"),
         artifact_dir.display().to_string(),
         String::from("verify"),
@@ -84,13 +82,13 @@ pub(super) fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts
         &cli,
         &FakeSeedEnvironment::default(),
         &mut FakeSeedEntropySource::new(0),
-    )?
-    .expect("verify should resolve a seed");
+    )?;
+    assert!(seed_plan.is_none());
 
     let outcome = execute_backend_routed_command(
         &plan_cli_invocation(&cli),
         &plan_backend_selection(&cli)?.expect("verify should require backend selection"),
-        Some(&seed_plan),
+        seed_plan.as_ref(),
         None,
         Some(&verify_plan),
         None,
