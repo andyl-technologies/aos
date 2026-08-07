@@ -491,6 +491,8 @@ pub struct ResolvedBlockFaultDirective {
     pub error_result: Option<BlockFaultResult>,
     /// Dynamic service, latency, stall, and reorder delay.
     pub additional_latency_nanos: u64,
+    /// Strict completion delay contributed by a remotely durable destination.
+    pub remote_durability_wait_nanos: u64,
     /// Canonically contributor-ordered service rules sampled at admission.
     pub service_rules: Vec<ResolvedBlockServiceRule>,
     /// Exact virtual coordinate at which this request resolves in the adapter.
@@ -604,6 +606,7 @@ impl ResolvedBlockFaultDirective {
             reported_capacity_bytes: capacity,
             error_result: None,
             additional_latency_nanos: 0,
+            remote_durability_wait_nanos: 0,
             service_rules: Vec::new(),
             execution_nanos: 0,
             retain_completion: false,
@@ -852,6 +855,14 @@ impl ResolvedBlockFaultDirective {
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "write dispositions require a write request",
+            });
+        }
+        if self.remote_durability_wait_nanos != 0
+            && (self.operation != BlockOp::Write
+                || self.write_disposition != BlockFaultWriteDisposition::Lost)
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "remote durability wait requires a committed external write",
             });
         }
         if self.operation == BlockOp::Discard
@@ -1494,6 +1505,7 @@ impl BlockFaultState {
             || directive.reported_capacity_bytes != prior.reported_capacity_bytes
             || directive.error_result != prior.error_result
             || directive.additional_latency_nanos != prior.additional_latency_nanos
+            || prior.remote_durability_wait_nanos != 0
             || directive.retain_completion != prior.retain_completion
             || directive.retention_timeout_response != prior.retention_timeout_response
             || directive.retention_timeout_nanos != prior.retention_timeout_nanos
@@ -1594,6 +1606,7 @@ impl BlockFaultState {
             || directive.cache_policy != prior.cache_policy
             || directive.persistence_transforms != prior.persistence_transforms
             || directive.persistence_media_rules != prior.persistence_media_rules
+            || directive.remote_durability_wait_nanos != prior.remote_durability_wait_nanos
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "delivery directive identity or earlier phases differ",
@@ -3660,6 +3673,7 @@ impl BlockFaultState {
         let additional_latency_nanos = directive
             .additional_latency_nanos
             .checked_add(persistence_wait_nanos)
+            .and_then(|delay| delay.checked_add(directive.remote_durability_wait_nanos))
             .ok_or(DeviceError::InvalidBlockFaultDirective {
                 reason: "storage persistence and completion latency overflow",
             })?;
@@ -3821,9 +3835,12 @@ impl BlockFaultState {
 
     /// Applies one externally misdirected write without fabricating a guest request.
     ///
-    /// The destination uses its own geometry and normal durability policy. The
-    /// multi-device owner is responsible for executing this method on cloned
-    /// source/destination devices and committing both together.
+    /// The destination uses its own geometry and normal durability policy at
+    /// `admitted_nanos`, the source persistence opportunity's exact coordinate.
+    /// The returned delay is the destination durability horizon that must be
+    /// added to the source completion. The multi-device owner is responsible for
+    /// executing this method on cloned source/destination devices and committing
+    /// both together.
     ///
     /// # Errors
     ///
@@ -3834,11 +3851,17 @@ impl BlockFaultState {
         base: &BaseImage,
         durable: &mut CowOverlay,
         request_id: u32,
+        request_sequence: u64,
+        admitted_nanos: u64,
         destination_offset: u64,
         bytes: Vec<u8>,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<u64, DeviceError> {
         let request = BlockRequest::write(request_id, destination_offset, bytes);
-        let directive = ResolvedBlockFaultDirective::fault_free(&request, self.config.length_bytes);
+        let mut directive =
+            ResolvedBlockFaultDirective::fault_free(&request, self.config.length_bytes);
+        directive.request_sequence = request_sequence;
+        directive.execution_nanos = admitted_nanos;
+        directive.persistence_admitted_nanos = admitted_nanos;
         directive.validate_for(&request, &self.config)?;
         if u64::from(request.count) > self.config.maximum_request_bytes
             || !request_in_capacity(&request, self.config.length_bytes)
@@ -3848,7 +3871,16 @@ impl BlockFaultState {
             });
         }
         match self.apply_write(base, durable, &request, &directive)? {
-            BlockWriteOutcome::Applied(_persistence_wait_nanos) => Ok(()),
+            BlockWriteOutcome::Applied(persistence_wait_nanos) => {
+                let durability_pending = self.config.completion_durability
+                    == BlockCompletionDurability::Durable
+                    && self.actual_durable_frontier < self.next_cache_sequence;
+                Ok(if durability_pending {
+                    persistence_wait_nanos.max(1)
+                } else {
+                    persistence_wait_nanos
+                })
+            }
             BlockWriteOutcome::Rejected(_) => Err(DeviceError::BlockCacheFull {
                 requested_bytes: u64::from(request.count),
                 available_bytes: self

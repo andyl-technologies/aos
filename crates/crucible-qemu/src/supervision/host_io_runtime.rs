@@ -64,7 +64,7 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// progress.
 pub struct QemuLiveHostIoRuntime {
     region: MappedSetupRegion,
-    wake: File,
+    wake: Arc<File>,
     vm_slot: u32,
     poll_interval: Duration,
     advance_wait_deadline: AdvanceWaitDeadline,
@@ -173,7 +173,7 @@ impl QemuLiveHostIoRuntime {
             .map_err(|source| QemuLiveHostIoRuntimeError::CloneWakeFd { source })?;
         Ok(Self {
             region,
-            wake,
+            wake: Arc::new(wake),
             vm_slot,
             poll_interval,
             advance_wait_deadline: AdvanceWaitDeadline::default(),
@@ -188,23 +188,31 @@ impl QemuLiveHostIoRuntime {
     /// advance. With a servicer attached, each advance poll drains newly arrived
     /// block requests and delivers responses due at the guest's observed icount,
     /// so a guest blocked on real block I/O can make progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError`] when the device's remote-mutation
+    /// notification channel is poisoned or was already attached to a runtime.
     #[must_use]
     pub fn with_block_servicer(
         mut self,
         servicer: QemuLiveBlockIoServicer,
         diagnostics: Arc<BlockIoDiagnostics>,
-    ) -> Self {
+    ) -> Result<Self, super::QemuLiveBlockIoServicerError> {
+        servicer
+            .shared_device()
+            .attach_notification_wake(Arc::clone(&self.wake))?;
         self.block = Some(BlockIoServicing {
             servicer,
             diagnostics,
             coordinator: None,
         });
-        self
+        Ok(self)
     }
 
     /// Signals QEMU's plugin wake eventfd with the exact eight-byte counter write.
     fn signal_wake(&self) -> Result<(), QemuAsyncDriverRuntimeError> {
-        let mut wake = &self.wake;
+        let mut wake = self.wake.as_ref();
         wake.write_all(&1_u64.to_ne_bytes()).map_err(|error| {
             QemuAsyncDriverRuntimeError::new("signal plugin wake", error.to_string())
         })

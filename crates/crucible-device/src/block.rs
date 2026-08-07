@@ -449,23 +449,30 @@ mod tests {
         fn stage_persistence(
             source: &mut BlockDevice,
             request: &BlockRequest,
+            request_icount: u64,
+            now_nanos: u64,
         ) -> BlockRequestPersistenceOpportunity {
             ok(source.require_storage_execution_opportunities());
-            let admission = ResolvedBlockFaultDirective::fault_free(request, PAGE_SIZE as u64);
+            let mut admission = ResolvedBlockFaultDirective::fault_free(request, PAGE_SIZE as u64);
+            admission.execution_nanos = now_nanos;
+            admission.persistence_admitted_nanos = now_nanos;
             ok(source.install_storage_fault_directive(request.identity(), admission));
-            ok(source.submit(0, request));
+            ok(source.submit(request_icount, request));
             let opportunity = source
-                .next_storage_execution_opportunity(0)
+                .next_storage_execution_opportunity(now_nanos)
                 .unwrap_or_else(|| panic!("execution opportunity should be available"));
+            let mut execution = opportunity.admission.clone();
+            execution.execution_nanos = opportunity.ready_nanos;
+            execution.persistence_admitted_nanos = opportunity.ready_nanos;
             ok(
                 source.install_storage_execution_directive(ResolvedBlockExecutionDirective {
                     opportunity,
-                    directive: ResolvedBlockFaultDirective::fault_free(request, PAGE_SIZE as u64),
+                    directive: execution,
                 }),
             );
-            ok(source.advance_to(0));
+            ok(source.advance_to(request_icount));
             source
-                .next_storage_request_persistence_opportunity(0)
+                .next_storage_request_persistence_opportunity(now_nanos)
                 .unwrap_or_else(|| panic!("persistence opportunity should be available"))
         }
 
@@ -477,8 +484,11 @@ mod tests {
         destination_config.volatile_cache_bytes = 0;
         destination_config.cache_entries = 0;
         ok(destination.configure_storage_faults(destination_config, false));
+        ok(destination.require_storage_persistence_media_opportunities());
         let request = BlockRequest::write(10, 0, vec![0x5a; 512]);
-        let opportunity = stage_persistence(&mut source, &request);
+        let request_icount = 16;
+        let now_nanos = request_icount << 8;
+        let opportunity = stage_persistence(&mut source, &request, request_icount, now_nanos);
         let mut directive = opportunity.resolved.clone();
         directive.write_disposition = BlockFaultWriteDisposition::Misdirected {
             destination: BlockFaultMisdirectionDestination::ExternalDevice([7; 32]),
@@ -493,9 +503,40 @@ mod tests {
             },
             [7; 32],
         ));
-        ok(source.advance_to(0));
+        ok(source.advance_to(request_icount));
+        let delivery = source
+            .next_storage_delivery_opportunity(now_nanos)
+            .unwrap_or_else(|| panic!("source delivery opportunity should be available"));
+        ok(
+            source.install_storage_delivery_directive(ResolvedBlockDeliveryDirective {
+                directive: delivery.resolved.clone(),
+                opportunity: delivery,
+            }),
+        );
+        ok(source.advance_to(request_icount));
+        let source_deadline = source.next_exact_local_event();
+        assert!(
+            source_deadline.is_some_and(|event| event > request_icount),
+            "source deadline was {source_deadline:?}"
+        );
+        let persistence = destination
+            .next_storage_persistence_opportunity(now_nanos)
+            .unwrap_or_else(|| panic!("destination persistence opportunity should be available"));
+        ok(destination.install_storage_persistence_media_directive(
+            ResolvedBlockPersistenceMediaDirective {
+                opportunity: persistence,
+                flash_rules: Vec::new(),
+            },
+        ));
+        ok(destination.advance_to(request_icount));
         assert_ne!(&source.materialize()[0..512], &[0x5a; 512]);
         assert_eq!(&destination.materialize()[512..1024], &[0x5a; 512]);
+        let outcomes = ok(destination.drain_storage_outcomes());
+        assert!(outcomes.iter().any(|outcome| matches!(
+            outcome,
+            BlockStorageOutcome::Persistence(persistence)
+                if persistence.executed_nanos == now_nanos
+        )));
 
         let mut failing_source = device(PAGE_SIZE);
         let mut failing_destination = device(PAGE_SIZE);
@@ -503,7 +544,8 @@ mod tests {
         let mut too_small = cached_fault_config(PAGE_SIZE as u64);
         too_small.volatile_cache_bytes = 256;
         ok(failing_destination.configure_storage_faults(too_small, false));
-        let opportunity = stage_persistence(&mut failing_source, &request);
+        let opportunity =
+            stage_persistence(&mut failing_source, &request, request_icount, now_nanos);
         let before_source = failing_source.snapshot();
         let before_destination = failing_destination.snapshot();
         let mut directive = opportunity.resolved.clone();
@@ -534,7 +576,8 @@ mod tests {
         destination_config.volatile_cache_bytes = 0;
         destination_config.cache_entries = 0;
         ok(untouched_destination.configure_storage_faults(destination_config, false));
-        let mut opportunity = stage_persistence(&mut stale_source, &request);
+        let mut opportunity =
+            stage_persistence(&mut stale_source, &request, request_icount, now_nanos);
         let mut directive = opportunity.resolved.clone();
         opportunity.request_sequence = opportunity.request_sequence.saturating_add(1);
         let before_source = stale_source.snapshot();

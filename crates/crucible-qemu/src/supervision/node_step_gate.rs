@@ -1194,7 +1194,9 @@ pub(super) fn build_live_node(
             .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
     }
     if let Some(servicer) = block_servicer {
-        runtime = runtime.with_block_servicer(servicer, BlockIoDiagnostics::shared());
+        runtime = runtime
+            .with_block_servicer(servicer, BlockIoDiagnostics::shared())
+            .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
     }
     let qmp = connect_qmp_priming_main_loop(
         &setup,

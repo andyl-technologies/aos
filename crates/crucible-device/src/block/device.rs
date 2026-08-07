@@ -178,7 +178,8 @@ struct PreparedBlockTransportReset {
 /// The destination receives the exact request bytes through its own admitted
 /// geometry and durability state. The source retains the sole guest completion
 /// and executes the request as a locally lost write after both cloned device
-/// states commit together.
+/// states commit together. Its completion carries the destination durability
+/// delay so the guest cannot observe success before the destination horizon.
 ///
 /// # Errors
 ///
@@ -209,14 +210,23 @@ pub fn install_cross_device_misdirected_persistence(
     }
     let mut next_source = source.clone();
     let mut next_destination = destination.clone();
-    next_destination.storage_faults.apply_external_write(
+    let destination_wait_nanos = next_destination.storage_faults.apply_external_write(
         &next_destination.base,
         &mut next_destination.overlay,
         resolved.opportunity.request.request_id,
+        resolved.directive.request_sequence,
+        resolved.opportunity.ready_nanos,
         destination_offset,
         resolved.opportunity.request.data.clone(),
     )?;
     resolved.directive.write_disposition = super::fault::BlockFaultWriteDisposition::Lost;
+    resolved.directive.remote_durability_wait_nanos = resolved
+        .directive
+        .remote_durability_wait_nanos
+        .checked_add(destination_wait_nanos)
+        .ok_or(DeviceError::InvalidBlockFaultDirective {
+            reason: "cross-device destination durability wait overflow",
+        })?;
     next_source.install_storage_request_persistence_directive(resolved)?;
     *source = next_source;
     *destination = next_destination;

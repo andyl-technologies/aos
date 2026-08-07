@@ -310,7 +310,9 @@ pub fn run_qemu_live_block_node_gate(
         return classify(&diagnostics, BlockNodeOutcome::DeviceHorizonStall);
     };
 
-    let runtime = runtime.with_block_servicer(servicer, Arc::clone(&diagnostics));
+    let runtime = runtime
+        .with_block_servicer(servicer, Arc::clone(&diagnostics))
+        .map_err(|source| QemuLiveBlockNodeGateError::BlockServicer { source })?;
     let shmem_config = QemuQuantumShmemConfig::new(node_id(GATE_NODE), GATE_SLOT)
         .with_router(node_id(GATE_ROUTER), SLOT_NET_ROUTER as u32);
     let factory_runtime = QemuNodeFactoryRuntime::new(
