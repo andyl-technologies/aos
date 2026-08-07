@@ -55,7 +55,14 @@ For the repository exercise, use
 `assets/inverted-crash-expectation.scenario.toml`. Its source generator is
 `crates/crucible/examples/crucible-debugger-failing-scenario.rs`; edit the
 generator and regenerate the canonical TOML rather than hand-editing component
-IDs.
+IDs. Build and regenerate it from the repository root with:
+
+```sh
+nix develop -c cargo build --manifest-path crates/Cargo.toml \
+  --example crucible-debugger-failing-scenario
+crates/target/debug/examples/crucible-debugger-failing-scenario \
+  > .codex/skills/crucible-debugger/assets/inverted-crash-expectation.scenario.toml
+```
 
 ## Inspect retained evidence
 
@@ -90,10 +97,10 @@ endpoint, create a paused inline-scenario session, and retain its complete
 
 ```sh
 crucible --daemon http://127.0.0.1:9000 --trusted-unauthenticated-daemon \
-  debug --session ID:EPOCH:SEED --node suspect reverse-step assertion
+  debug --session ID:EPOCH:SEED --node db-0 reverse-step assertion
 
 crucible --daemon http://127.0.0.1:9000 --trusted-unauthenticated-daemon \
-  debug --session ID:EPOCH:SEED --node suspect \
+  debug --session ID:EPOCH:SEED --node db-0 \
   --gdb-listen 127.0.0.1:0 attach-gdb
 ```
 
