@@ -444,7 +444,7 @@ pub(crate) async fn device_authorization(
     }
     let permission_names = form.permission.as_deref().unwrap_or_default();
     let permissions = if permission_names.is_empty() {
-        vec![Permission::Read]
+        iam::role_grants(Role::Owner).to_vec()
     } else {
         let parsed = permission_names
             .split_ascii_whitespace()

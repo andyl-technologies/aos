@@ -107,7 +107,8 @@ aos-hub --root /var/lib/aos-hub \
     --expires-days 30
 ```
 
-Store the token immediately and exchange it for a one-hour access token:
+Store the token immediately. Automation may exchange it through the explicit
+provisioning grant with:
 
 ```sh
 aos hub login \

@@ -15,6 +15,7 @@ pub mod fmt;
 pub mod gc;
 pub mod graph;
 pub mod hub;
+pub(crate) mod hub_auth;
 pub mod hub_cutover_verify;
 pub mod image;
 pub mod lint;

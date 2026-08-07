@@ -19,6 +19,12 @@ const PROVISIONING_GRANT: &str = "urn:aos:params:oauth:grant-type:provisioning-t
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
 async fn seed() -> (axum::Router, Arc<Database>, JwtKeys, String, String, i64) {
+    seed_at("http://127.0.0.1:8420").await
+}
+
+async fn seed_at(
+    external_url: &str,
+) -> (axum::Router, Arc<Database>, JwtKeys, String, String, i64) {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org_id = db.create_org("acme", "Acme").await.unwrap();
     let owner_id = db
@@ -53,7 +59,7 @@ async fn seed() -> (axum::Router, Arc<Database>, JwtKeys, String, String, i64) {
     });
     let state = Arc::new(AppState {
         db: Arc::clone(&db),
-        external_url: "http://127.0.0.1:8420".into(),
+        external_url: external_url.into(),
         ratelimit: auth.ratelimit.clone(),
         trusted_proxy: false,
         auth,
@@ -221,4 +227,49 @@ async fn device_grant_rotates_and_revokes_refresh_credentials() {
         .unwrap();
     let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(error["error"], "invalid_grant");
+}
+
+#[tokio::test]
+async fn remote_oauth_client_matches_the_live_native_http_contract() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let origin = format!("http://{address}");
+    let (app, db, _keys, _secret, scope, owner_id) = seed_at(&origin).await;
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
+
+    let authorization =
+        aos_remote::start_device_authorization(&origin, Some(&scope), &["read", "publish"])
+            .await
+            .unwrap();
+    assert!(db
+        .approve_device(&authorization.user_code, Principal::user(owner_id), &[],)
+        .await
+        .unwrap());
+    let first = match aos_remote::poll_device_token(&origin, &authorization.device_code)
+        .await
+        .unwrap()
+    {
+        aos_remote::DeviceTokenPoll::Granted(grant) => grant,
+        other => panic!("expected a device grant, got {other:?}"),
+    };
+    let first_refresh = first.refresh_token.unwrap();
+    let second = aos_remote::refresh_token(&origin, &first_refresh)
+        .await
+        .unwrap();
+    let second_refresh = second.refresh_token.unwrap();
+    assert_ne!(first_refresh, second_refresh);
+    aos_remote::revoke_refresh_token(&origin, &second_refresh)
+        .await
+        .unwrap();
+    assert!(aos_remote::refresh_token(&origin, &second_refresh)
+        .await
+        .is_err());
+
+    server.abort();
 }
