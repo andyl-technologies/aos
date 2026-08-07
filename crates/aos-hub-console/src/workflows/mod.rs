@@ -32,6 +32,7 @@ mod registry_configuration;
 mod registry_images;
 mod registry_mirror;
 mod registry_publication;
+mod resource_access;
 mod resources;
 mod signing_keys;
 mod storage_gateways;

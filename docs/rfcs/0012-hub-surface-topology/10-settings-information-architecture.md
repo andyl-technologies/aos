@@ -289,6 +289,7 @@ Access & trust
   Members
   SSO
   Signing keys
+  Access tokens
 
 Automation
   Webhooks
@@ -475,7 +476,7 @@ Topology
 Access & trust
   Identity & access
   Signing keys
-  Tokens
+  Access tokens
 
 Publishing
   Upstream mirror
@@ -584,10 +585,11 @@ Owns name/description where SQL-backed, visibility, crawl policy, and access
 impact. Signed registry metadata still changes through Configuration. The UI
 distinguishes the two and never offers competing edits for the same field.
 
-### Signing keys and tokens
+### Signing keys and access tokens
 
-Signing keys own consumer trust and provider-custodied operations. Tokens own Hub API
-and upload credentials. They remain separate pages with cross-links where a
+Signing keys own consumer trust and provider-custodied operations. Access
+tokens own Hub API and upload credentials on the registry's immutable
+authorization scope. They remain separate pages with cross-links where a
 publishing operation needs both.
 
 ### Configuration, channels, change requests, and publish history
@@ -629,7 +631,8 @@ Content
 
 Access & trust
   Identity & access
-  Signing key
+  Signing keys
+  Access tokens
 
 Policy
   Retention
@@ -716,11 +719,14 @@ Placement eviction is linked from this page but edited under Storage &
 replicas. A local tier quota never appears as permission to collect a logically
 live object from the cache namespace.
 
-### Identity & access and Signing key
+### Identity & access, signing keys, and access tokens
 
 Identity & access owns display name, visibility, Nix priority, compression,
-mass-query behavior, and client-compatibility impact. Signing key owns narinfo
-signing trust, rotation, and setup-snippet consequences.
+mass-query behavior, and client-compatibility impact. Signing keys own narinfo
+signing trust, rotation, and setup-snippet consequences. Access tokens own Hub
+API credentials issued on the cache's immutable authorization scope. None of
+these pages duplicates client-facing HTTP authorization, which remains an
+independent property of every simultaneous delivery route.
 
 ## Instance settings
 
@@ -740,6 +746,7 @@ Infrastructure
 
 Access & trust
   Identity & signup
+  Access tokens
 
 Policy
   Resource defaults
@@ -753,11 +760,12 @@ Activity
 
 The instance root is an operational Overview, not the current Signup & identity
 form. Identity & signup owns signup policy, allowed domains, authentication
-methods, and session lifetime. Resource defaults owns new-surface crawl policy,
-upload limits, and anonymous cache discovery defaults. Branding remains its own
-page. Instance infrastructure pages use the same organization components and
-show which organization resources inherit each default, including boundary
-protection revisions, trusted-ingress verification, grants, and endpoint usage.
+methods, and session lifetime. Access tokens owns deployment-scoped Hub API
+credentials. Resource defaults owns new-surface crawl policy, upload limits,
+and anonymous cache discovery defaults. Branding remains its own page. Instance
+infrastructure pages use the same organization components and show which
+organization resources inherit each default, including boundary protection
+revisions, trusted-ingress verification, grants, and endpoint usage.
 The instance Storage
 bindings page represents the one deployment-provisioned default binding: it may
 support origin/credential maintenance, but it cannot create, delete, or swap

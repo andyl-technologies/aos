@@ -1,4 +1,4 @@
-//! Registry-scoped access-token inventory, issuance, and retirement.
+//! Scope-owned access-token inventory, issuance, and retirement.
 //!
 //! Tokens are listed by immutable authorization scope, not registry slug.
 //! Issuance returns the secret once after an explicit reviewed apply; the
@@ -12,29 +12,29 @@ use crate::components::{EmptyState, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
-/// Renders access-token controls for one registry's immutable scope.
+use super::organization_scope::organization_authorization_scope;
+
+/// One console resource whose immutable token scope must be resolved.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum AccessTokenSurface {
+    /// Deployment-wide credentials.
+    Instance,
+    /// Organization-owned credentials.
+    Organization(String),
+    /// Registry-owned credentials.
+    Registry(String),
+    /// Binary-cache-owned credentials.
+    Cache(String),
+}
+
+/// Renders access-token controls for one immutable resource scope.
 #[component]
-pub(super) fn RegistryAccessTokens(client: ApiClient, registry_id: String) -> impl IntoView {
+pub(super) fn AccessTokenWorkflow(client: ApiClient, surface: AccessTokenSurface) -> impl IntoView {
     let read_client = client.clone();
     let scope = LocalResource::new(move || {
         let client = read_client.clone();
-        let registry_id = registry_id.clone();
-        async move {
-            let response = client
-                .call::<_, aos_proto_types::GetRegistryResponse>(
-                    aos_proto_types::REGISTRY_SERVICE_GET_REGISTRY_PATH,
-                    &aos_proto_types::GetRegistryRequest { slug: registry_id },
-                )
-                .await
-                .map_err(|failure| failure.to_string())?;
-            let registry = response
-                .registry
-                .ok_or_else(|| "the Hub omitted the registry".to_string())?;
-            if registry.authorization_scope_key.is_empty() {
-                return Err("the Hub omitted the registry authorization scope".to_string());
-            }
-            Ok(registry.authorization_scope_key)
-        }
+        let surface = surface.clone();
+        async move { resolve_token_scope(&client, surface).await }
     });
     let view_client = client;
 
@@ -54,6 +54,48 @@ pub(super) fn RegistryAccessTokens(client: ApiClient, registry_id: String) -> im
             }}
         </Suspense>
     }
+}
+
+async fn resolve_token_scope(
+    client: &ApiClient,
+    surface: AccessTokenSurface,
+) -> Result<String, String> {
+    let scope = match surface {
+        AccessTokenSurface::Instance => "instance".to_string(),
+        AccessTokenSurface::Organization(slug) => {
+            organization_authorization_scope(client, slug).await?
+        }
+        AccessTokenSurface::Registry(slug) => {
+            let response = client
+                .call::<_, aos_proto_types::GetRegistryResponse>(
+                    aos_proto_types::REGISTRY_SERVICE_GET_REGISTRY_PATH,
+                    &aos_proto_types::GetRegistryRequest { slug },
+                )
+                .await
+                .map_err(|failure| failure.to_string())?;
+            response
+                .registry
+                .ok_or_else(|| "the Hub omitted the registry".to_string())?
+                .authorization_scope_key
+        }
+        AccessTokenSurface::Cache(cache_id) => {
+            let response = client
+                .call::<_, aos_proto_types::BinaryCacheResponse>(
+                    aos_proto_types::BINARY_CACHE_SERVICE_GET_BINARY_CACHE_PATH,
+                    &aos_proto_types::GetBinaryCacheRequest { cache_id },
+                )
+                .await
+                .map_err(|failure| failure.to_string())?;
+            response
+                .cache
+                .ok_or_else(|| "the Hub omitted the binary cache".to_string())?
+                .authorization_scope_key
+        }
+    };
+    if scope.is_empty() {
+        return Err("the Hub omitted the immutable token scope".to_string());
+    }
+    Ok(scope)
 }
 
 #[component]
@@ -94,7 +136,7 @@ fn AccessTokenSettings(client: ApiClient, scope: String) -> impl IntoView {
                         <p class="section-kicker">"Scoped credentials"</p>
                         <h2>"Access tokens"</h2>
                         <p>
-                            "Token authority is bounded by both this registry scope and the owner's current grants."
+                            "Token authority is bounded by both this resource scope and the owner's current grants."
                         </p>
                     </div>
                 </div>
