@@ -12,6 +12,7 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
 use super::cache_manual_roots::ManualRetentionRoots;
+use super::cache_root_reasons::RetentionReasons;
 
 #[derive(Clone, Copy)]
 struct RetentionFields {
@@ -152,7 +153,8 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                 </Suspense>
             </section>
             <RetentionEditor client=client.clone() cache_id=cache_id.clone()/>
-            <ManualRetentionRoots client=client cache_id=cache_id/>
+            <ManualRetentionRoots client=client.clone() cache_id=cache_id.clone()/>
+            <RetentionReasons client=client cache_id=cache_id/>
         </div>
     }
 }
