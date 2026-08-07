@@ -62,7 +62,7 @@ use crucible::ContentHash;
 use crucible_device::block::{
     BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
-    BlockRetainedRelease, BlockServiceCompletion, BlockStorageOutcome,
+    BlockRetainedRelease, BlockRetainedReleaseOutcome, BlockServiceCompletion, BlockStorageOutcome,
     ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
     ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
 };
@@ -964,7 +964,7 @@ impl QemuLiveBlockIoServicer {
         &mut self,
         identity: BlockRequestIdentity,
         release: BlockRetainedRelease,
-    ) -> Result<(), QemuLiveBlockIoServicerError> {
+    ) -> Result<BlockRetainedReleaseOutcome, QemuLiveBlockIoServicerError> {
         self.device
             .release_storage_completion(identity, release)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
@@ -979,9 +979,23 @@ impl QemuLiveBlockIoServicer {
     pub fn release_storage_completions(
         &mut self,
         releases: &[(BlockRequestIdentity, BlockRetainedRelease)],
-    ) -> Result<(), QemuLiveBlockIoServicerError> {
+    ) -> Result<Vec<BlockRetainedReleaseOutcome>, QemuLiveBlockIoServicerError> {
         self.device
             .release_storage_completions(releases)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Predicts a retained-completion release batch without changing the device.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::release_storage_completions`].
+    pub fn preview_storage_completion_releases(
+        &self,
+        releases: &[(BlockRequestIdentity, BlockRetainedRelease)],
+    ) -> Result<Vec<BlockRetainedReleaseOutcome>, QemuLiveBlockIoServicerError> {
+        self.device
+            .preview_storage_completion_releases(releases)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 

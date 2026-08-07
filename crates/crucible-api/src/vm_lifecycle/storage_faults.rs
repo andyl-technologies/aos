@@ -215,6 +215,11 @@ impl ProductionFaultObservationJournal {
 /// Shared owner of the globally sequenced observation journal.
 pub(super) type ProductionStorageObservations = Arc<Mutex<ProductionFaultObservationJournal>>;
 
+struct EvaluatedStoragePhase {
+    actions: Vec<ResolvedBindingAction>,
+    same_coordinate_sequence: u64,
+}
+
 /// Coordinates one live block servicer with the authoritative signal runtime.
 pub(super) struct ProductionBlockFaultCoordinator {
     runtime: Arc<Mutex<ProductionFaultRuntime>>,
@@ -305,7 +310,7 @@ impl ProductionBlockFaultCoordinator {
     fn evaluate_phase(
         &mut self,
         opportunity: &crucible::model::FaultOpportunity,
-    ) -> Result<Vec<ResolvedBindingAction>, QemuAsyncDriverRuntimeError> {
+    ) -> Result<EvaluatedStoragePhase, QemuAsyncDriverRuntimeError> {
         let mut cursor = self.cursor.lock().map_err(|_| {
             storage_error(
                 "sequence block fault opportunity",
@@ -322,13 +327,14 @@ impl ProductionBlockFaultCoordinator {
                 "production fault runtime lock is poisoned",
             )
         })?;
-        let evaluation = match runtime.evaluate_host_opportunity(opportunity, sequence) {
-            Ok(evaluation) => evaluation,
-            Err(error) => {
-                *cursor = cursor_before;
-                return Err(storage_error("evaluate block fault opportunity", error));
-            }
-        };
+        let evaluation =
+            match runtime.evaluate_host_opportunity(opportunity, sequence.same_coordinate) {
+                Ok(evaluation) => evaluation,
+                Err(error) => {
+                    *cursor = cursor_before;
+                    return Err(storage_error("evaluate block fault opportunity", error));
+                }
+            };
         let impulses = runtime.drain_host_impulses();
         if impulses.iter().any(|action| {
             action.target != *opportunity.target() || action.phase != opportunity.phase()
@@ -355,12 +361,15 @@ impl ProductionBlockFaultCoordinator {
                 ));
             }
         };
-        if let Err(error) = observations.append(sequence, evaluation.observations) {
+        if let Err(error) = observations.append(sequence.journal, evaluation.observations) {
             runtime.poison();
             return Err(error);
         }
         drop(runtime);
-        Ok(actions)
+        Ok(EvaluatedStoragePhase {
+            actions,
+            same_coordinate_sequence: sequence.same_coordinate,
+        })
     }
 
     fn persistent_flash_actions(
@@ -486,7 +495,7 @@ impl ProductionBlockFaultCoordinator {
         let mut batches = Vec::with_capacity(observations.len());
         for (nanos, observation) in observations {
             let sequence = match cursor.next_sequence(nanos) {
-                Ok(sequence) => sequence,
+                Ok(sequence) => sequence.journal,
                 Err(error) => {
                     *cursor = cursor_before;
                     return Err(storage_error("sequence storage device outcomes", error));
@@ -548,8 +557,8 @@ impl ProductionBlockFaultCoordinator {
                     observed.request_sequence,
                 )
                 .map_err(|error| storage_error("construct block request opportunity", error))?;
-                let actions = self.evaluate_phase(&opportunity)?;
-                let partial = self.after_evaluation(
+                let evaluation = self.evaluate_phase(&opportunity)?;
+                let mut partial = self.after_evaluation(
                     "resolve block request phase",
                     resolve_block_fault_directive(
                         &self.world,
@@ -558,9 +567,13 @@ impl ProductionBlockFaultCoordinator {
                         observed.request_sequence,
                         &opportunity,
                         self.context,
-                        actions.iter(),
+                        evaluation.actions.iter(),
                     ),
                 )?;
+                bind_recovery_subscription_sequence(
+                    &mut partial,
+                    evaluation.same_coordinate_sequence,
+                );
                 self.after_evaluation(
                     "compose block request phases",
                     merge_block_fault_phase_directive(&mut directive, phase, partial),
@@ -601,8 +614,8 @@ impl ProductionBlockFaultCoordinator {
                         opportunity.request_sequence,
                     )
                     .map_err(|error| storage_error("construct block resolve opportunity", error))?;
-                    let actions = self.evaluate_phase(&fault_opportunity)?;
-                    let partial = self.after_evaluation(
+                    let evaluation = self.evaluate_phase(&fault_opportunity)?;
+                    let mut partial = self.after_evaluation(
                         "resolve block resolve phase",
                         resolve_block_fault_directive(
                             &self.world,
@@ -611,9 +624,13 @@ impl ProductionBlockFaultCoordinator {
                             opportunity.request_sequence,
                             &fault_opportunity,
                             self.context,
-                            actions.iter(),
+                            evaluation.actions.iter(),
                         ),
                     )?;
+                    bind_recovery_subscription_sequence(
+                        &mut partial,
+                        evaluation.same_coordinate_sequence,
+                    );
                     self.after_evaluation(
                         "compose block resolve phase",
                         merge_block_fault_phase_directive(
@@ -650,8 +667,8 @@ impl ProductionBlockFaultCoordinator {
                         coordinate,
                     )
                     .map_err(|error| storage_error("construct block persist opportunity", error))?;
-                    let actions = self.evaluate_phase(&fault_opportunity)?;
-                    let partial = self.after_evaluation(
+                    let evaluation = self.evaluate_phase(&fault_opportunity)?;
+                    let mut partial = self.after_evaluation(
                         "resolve block persist phase",
                         resolve_block_fault_directive(
                             &self.world,
@@ -660,9 +677,13 @@ impl ProductionBlockFaultCoordinator {
                             opportunity.request_sequence,
                             &fault_opportunity,
                             self.context,
-                            actions.iter(),
+                            evaluation.actions.iter(),
                         ),
                     )?;
+                    bind_recovery_subscription_sequence(
+                        &mut partial,
+                        evaluation.same_coordinate_sequence,
+                    );
                     self.after_evaluation(
                         "compose block persist phase",
                         merge_block_fault_phase_directive(
@@ -748,8 +769,8 @@ impl ProductionBlockFaultCoordinator {
                             .map_err(|error| {
                                 storage_error("construct block delivery opportunity", error)
                             })?;
-                    let actions = self.evaluate_phase(&fault_opportunity)?;
-                    let partial = self.after_evaluation(
+                    let evaluation = self.evaluate_phase(&fault_opportunity)?;
+                    let mut partial = self.after_evaluation(
                         "resolve block delivery phase",
                         resolve_block_fault_directive(
                             &self.world,
@@ -758,9 +779,13 @@ impl ProductionBlockFaultCoordinator {
                             opportunity.request_sequence,
                             &fault_opportunity,
                             self.context,
-                            actions.iter(),
+                            evaluation.actions.iter(),
                         ),
                     )?;
+                    bind_recovery_subscription_sequence(
+                        &mut partial,
+                        evaluation.same_coordinate_sequence,
+                    );
                     self.after_evaluation(
                         "compose block delivery phase",
                         merge_block_fault_phase_directive(
@@ -897,19 +922,21 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                 (
                     event.signal.clone(),
                     event.coordinate.virtual_nanos,
+                    event.same_coordinate_sequence,
                     event.evidence,
                 )
             })
             .collect::<Vec<_>>();
         let mut releases = std::collections::BTreeMap::new();
-        for (signal, event_nanos, event_evidence) in recovery_events {
+        for (signal, event_nanos, event_sequence, event_evidence) in recovery_events {
             let signal = crucible::model::FaultObjectId::parse(signal.as_str())
                 .map_err(|error| storage_error("resolve storage recovery event", error))?;
             let key = storage_recovery_event_key(&signal);
-            for identity in servicer
-                .storage_fault_state()
-                .retained_recoveries_for(key, event_nanos)
-            {
+            for identity in servicer.storage_fault_state().retained_recoveries_for(
+                key,
+                event_nanos,
+                event_sequence,
+            ) {
                 let retained = servicer
                     .storage_fault_state()
                     .retained_completion(identity)
@@ -922,13 +949,30 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                 if event_nanos <= retained.timeout_nanos {
                     releases
                         .entry(identity)
-                        .and_modify(|selected: &mut (BlockRetainedRelease, u64, ContentHash)| {
-                            if event_nanos < selected.1 {
-                                *selected =
-                                    (BlockRetainedRelease::Recovery, event_nanos, event_evidence);
-                            }
-                        })
-                        .or_insert((BlockRetainedRelease::Recovery, event_nanos, event_evidence));
+                        .and_modify(
+                            |selected: &mut (BlockRetainedRelease, u64, u64, ContentHash)| {
+                                if (event_nanos, event_sequence) < (selected.1, selected.2) {
+                                    *selected = (
+                                        BlockRetainedRelease::Recovery {
+                                            event_nanos,
+                                            event_sequence,
+                                        },
+                                        event_nanos,
+                                        event_sequence,
+                                        event_evidence,
+                                    );
+                                }
+                            },
+                        )
+                        .or_insert((
+                            BlockRetainedRelease::Recovery {
+                                event_nanos,
+                                event_sequence,
+                            },
+                            event_nanos,
+                            event_sequence,
+                            event_evidence,
+                        ));
                 }
             }
         }
@@ -949,6 +993,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                 (
                     BlockRetainedRelease::Timeout,
                     retained.timeout_nanos,
+                    0,
                     retained_release_evidence(
                         identity,
                         BlockRetainedRelease::Timeout,
@@ -961,8 +1006,11 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         if !releases.is_empty() {
             let device_releases = releases
                 .iter()
-                .map(|(identity, (release, _, _))| (*identity, *release))
+                .map(|(identity, (release, _, _, _))| (*identity, *release))
                 .collect::<Vec<_>>();
+            let release_outcomes = servicer
+                .preview_storage_completion_releases(&device_releases)
+                .map_err(|error| storage_error("preview retained block completions", error))?;
             let mut cursor = self.cursor.lock().map_err(|_| {
                 storage_error(
                     "sequence retained block releases",
@@ -978,12 +1026,19 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
             let mut staged_cursor = *cursor;
             let mut staged_journal = journal.clone();
             let mut batches = Vec::with_capacity(releases.len());
-            for (identity, (release, release_nanos, cause)) in &releases {
+            for ((identity, (release, release_nanos, _release_sequence, cause)), outcome) in
+                releases.iter().zip(&release_outcomes)
+            {
+                if *outcome
+                    == crucible_device::block::BlockRetainedReleaseOutcome::PendingPersistence
+                {
+                    continue;
+                }
                 let sequence = staged_cursor
                     .next_sequence(*release_nanos)
                     .map_err(|error| storage_error("sequence retained block release", error))?;
                 batches.push((
-                    sequence,
+                    sequence.journal,
                     FaultObservation {
                         semantic_version: FAULT_RUNTIME_STATE_VERSION,
                         kind: FaultObservationKind::EffectApplied,
@@ -1006,9 +1061,15 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                 ));
             }
             staged_journal.append_batches(batches)?;
-            servicer
+            let committed_outcomes = servicer
                 .release_storage_completions(&device_releases)
                 .map_err(|error| storage_error("release retained block completions", error))?;
+            if committed_outcomes != release_outcomes {
+                return Err(storage_error(
+                    "release retained block completions",
+                    "release outcome changed between transactional preview and commit",
+                ));
+            }
             *cursor = staged_cursor;
             *journal = staged_journal;
         }
@@ -1051,6 +1112,15 @@ fn absorb_intake(
         .or(intake.computed_completion_icount);
     aggregate.next_completion_icount = intake.next_completion_icount;
     Ok(())
+}
+
+fn bind_recovery_subscription_sequence(
+    directive: &mut crucible_device::block::ResolvedBlockFaultDirective,
+    same_coordinate_sequence: u64,
+) {
+    if directive.retention_recovery_event.is_some() {
+        directive.retention_recovery_after_sequence = Some(same_coordinate_sequence);
+    }
 }
 
 fn absorb_delivery(
@@ -1115,7 +1185,7 @@ fn retained_release_evidence(
     cause: Option<ContentHash>,
 ) -> ContentHash {
     let release = match release {
-        BlockRetainedRelease::Recovery => "recovery",
+        BlockRetainedRelease::Recovery { .. } => "recovery",
         BlockRetainedRelease::Timeout => "timeout",
     };
     ContentHash::from_canonical_material(

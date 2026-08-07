@@ -358,6 +358,9 @@ mod tests {
             BlockErrorCode::Timeout,
         ));
         directive.retention_timeout_nanos = Some(100);
+        directive.retention_recovery_event = Some([7; 32]);
+        directive.retention_recovery_after_nanos = Some(0);
+        directive.retention_recovery_after_sequence = Some(0);
         ok(original.install_storage_fault_directive(flush.identity(), directive));
         ok(original.submit(0, &flush));
 
@@ -366,7 +369,13 @@ mod tests {
         let mut restored = ok(BlockDevice::restore(&exhausted, ramp_base(PAGE_SIZE), None));
         let before = restored.snapshot();
         assert!(matches!(
-            restored.release_storage_completion(flush.identity(), BlockRetainedRelease::Recovery),
+            restored.release_storage_completion(
+                flush.identity(),
+                BlockRetainedRelease::Recovery {
+                    event_nanos: 0,
+                    event_sequence: 1,
+                },
+            ),
             Err(crate::DeviceError::ResponseSequenceOverflow { .. })
         ));
         assert_eq!(restored.snapshot(), before);
@@ -385,6 +394,9 @@ mod tests {
             BlockErrorCode::Timeout,
         ));
         directive.retention_timeout_nanos = Some(100);
+        directive.retention_recovery_event = Some([7; 32]);
+        directive.retention_recovery_after_nanos = Some(0);
+        directive.retention_recovery_after_sequence = Some(0);
         ok(block.install_storage_fault_directive(flush.identity(), directive));
         ok(block.submit(0, &flush));
 
@@ -392,9 +404,39 @@ mod tests {
         let absent = BlockRequestIdentity::new(0, 99);
         assert!(matches!(
             block.release_storage_completions(&[
-                (flush.identity(), BlockRetainedRelease::Recovery),
+                (
+                    flush.identity(),
+                    BlockRetainedRelease::Recovery {
+                        event_nanos: 0,
+                        event_sequence: 1,
+                    },
+                ),
                 (absent, BlockRetainedRelease::Timeout),
             ]),
+            Err(crate::DeviceError::InvalidBlockFaultDirective { .. })
+        ));
+        assert_eq!(block.snapshot(), before);
+    }
+
+    #[test]
+    fn retained_completion_release_rejects_an_early_timeout() {
+        let mut block = device(PAGE_SIZE);
+        ok(block.configure_storage_faults(cached_fault_config(PAGE_SIZE as u64), true));
+        let flush = BlockRequest::flush(2);
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&flush, PAGE_SIZE as u64);
+        directive.flush_disposition = BlockFaultFlushDisposition::Stall;
+        directive.retain_completion = true;
+        directive.retention_timeout_response = Some(BlockResponse::error(
+            flush.request_id,
+            BlockErrorCode::Timeout,
+        ));
+        directive.retention_timeout_nanos = Some(100);
+        ok(block.install_storage_fault_directive(flush.identity(), directive));
+        ok(block.submit(0, &flush));
+
+        let before = block.snapshot();
+        assert!(matches!(
+            block.release_storage_completion(flush.identity(), BlockRetainedRelease::Timeout),
             Err(crate::DeviceError::InvalidBlockFaultDirective { .. })
         ));
         assert_eq!(block.snapshot(), before);

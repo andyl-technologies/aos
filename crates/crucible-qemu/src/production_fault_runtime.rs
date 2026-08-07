@@ -21,6 +21,8 @@ use crate::{ProductionFaultActionSink, QemuNodeSet};
 
 /// Hard bound on recovery-event occurrences retained for device subscriptions.
 const HARD_PRODUCTION_REFERENCED_EVENTS: usize = 262_144;
+/// Hard bound on canonical typed event bytes retained for subscriptions.
+const HARD_PRODUCTION_REFERENCED_EVENT_BYTES: u64 = 268_435_456;
 
 /// Complete resumable state for the production fault runtime.
 #[derive(Clone, Debug)]
@@ -138,6 +140,11 @@ pub enum ProductionFaultRuntimeError {
         "production referenced-event history exceeds {HARD_PRODUCTION_REFERENCED_EVENTS} entries"
     )]
     ReferencedEventLimit,
+    /// Referenced recovery-event values exceeded their retained-byte ceiling.
+    #[error(
+        "production referenced-event history exceeds {HARD_PRODUCTION_REFERENCED_EVENT_BYTES} canonical value bytes"
+    )]
+    ReferencedEventBytesLimit,
 }
 
 /// Owning signal runtime coupled to host devices and live patched QEMU.
@@ -201,6 +208,7 @@ impl ProductionFaultRuntime {
         if checkpoint.emitted_events.len() > HARD_PRODUCTION_REFERENCED_EVENTS {
             return Err(ProductionFaultRuntimeError::ReferencedEventLimit);
         }
+        referenced_event_bytes(&checkpoint.emitted_events)?;
         if checkpoint.identity
             != production_checkpoint_identity(
                 plan.id(),
@@ -294,6 +302,15 @@ impl ProductionFaultRuntime {
             same_coordinate_sequence,
             &mut sink,
         )?;
+        let existing_bytes = referenced_event_bytes(&self.emitted_events)?;
+        let new_bytes = referenced_event_bytes(&evaluation.emitted_events)?;
+        if existing_bytes
+            .checked_add(new_bytes)
+            .is_none_or(|bytes| bytes > HARD_PRODUCTION_REFERENCED_EVENT_BYTES)
+        {
+            runtime.poison();
+            return Err(ProductionFaultRuntimeError::ReferencedEventBytesLimit);
+        }
         self.emitted_events
             .extend(evaluation.emitted_events.iter().cloned());
         Ok(evaluation)
@@ -489,6 +506,29 @@ fn referenced_event_signal_count(plan: &FaultSignalPlan) -> usize {
         })
         .collect::<std::collections::BTreeSet<_>>()
         .len()
+}
+
+fn referenced_event_bytes(
+    events: &[ReferencedSignalEvent],
+) -> Result<u64, ProductionFaultRuntimeError> {
+    let mut total = 0_u64;
+    for event in events {
+        let (evidence, bytes) = event
+            .canonical_value_identity()
+            .map_err(FaultExecutionError::from)?;
+        if evidence != event.evidence {
+            return Err(FaultExecutionError::CheckpointPresence.into());
+        }
+        let bytes = u64::try_from(bytes)
+            .map_err(|_| ProductionFaultRuntimeError::ReferencedEventBytesLimit)?;
+        total = total
+            .checked_add(bytes)
+            .ok_or(ProductionFaultRuntimeError::ReferencedEventBytesLimit)?;
+        if total > HARD_PRODUCTION_REFERENCED_EVENT_BYTES {
+            return Err(ProductionFaultRuntimeError::ReferencedEventBytesLimit);
+        }
+    }
+    Ok(total)
 }
 
 fn production_checkpoint_identity(
