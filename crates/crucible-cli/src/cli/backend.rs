@@ -250,6 +250,11 @@ pub(super) fn plan_backend_selection_with_discovery(
                 "--trusted-unauthenticated-daemon cannot be combined with daemon mutual TLS",
             ));
         }
+        if daemon_security.is_none() && !cli.trusted_unauthenticated_daemon {
+            return Err(usage_error(
+                "cleartext daemon access requires explicit --trusted-unauthenticated-daemon or a complete --daemon-ca/--daemon-cert/--daemon-key mutual-TLS configuration",
+            ));
+        }
         return Ok(Some(BackendSelectionPlan {
             subcommand,
             target: BackendExecutionTarget::RemoteDaemon,

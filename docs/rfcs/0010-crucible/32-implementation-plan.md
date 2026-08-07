@@ -689,7 +689,9 @@ long-held locks.
   `checks.crucible.phase5.cliServeMultiClient`, and
   `checks.crucible.phase5.cliServeShutdown`: the CLI advertises and enforces
   `serve --read-only` and `serve --max-sessions <n>`, rejects invalid caps before
-  binding, runs the production HTTP/2 daemon over the shared lifecycle/session
+  binding, requires an explicit trusted-cleartext acknowledgment or complete
+  mutual-TLS credentials on every client route before connection, runs the
+  production HTTP/2 daemon over the shared lifecycle/session
   actor path, rejects state-mutating calls in read-only mode, admits concurrent
   Watch and Query clients while Control drives the same session, propagates
   shutdown to active Control/Watch streams, maps serve bind/backend failures to

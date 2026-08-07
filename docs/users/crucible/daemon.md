@@ -88,9 +88,11 @@ For an explicitly trusted cleartext endpoint, use:
 --daemon http://127.0.0.1:9000 --trusted-unauthenticated-daemon
 ```
 
-For compatibility, an address without a URI scheme is interpreted as
-`http://`; new scripts should use the explicit trusted spelling so their
-security assumption is visible.
+The trust acknowledgment is mandatory for every cleartext daemon connection;
+without it the CLI exits with usage status `64` before opening the connection.
+An address without a URI scheme is still interpreted as `http://`, but it does
+not bypass the acknowledgment requirement. Use mutual TLS instead on an
+untrusted network.
 
 ## Current remote command coverage
 
