@@ -16,7 +16,7 @@ use crate::transport::ApiClient;
 use super::access_policy::{
     access_policy_name, canonical_path, AccessPolicyFields, AccessPolicySignals,
 };
-use super::resources::UnavailableWorkflow;
+use super::cache_integrations::CacheIntegrationWorkflow;
 
 /// Renders route workflows and delegates unrelated pages onward.
 #[component]
@@ -36,7 +36,7 @@ pub(super) fn DeliveryRouteWorkflow(route: ConsoleRoute, client: ApiClient) -> i
             <DeliveryRoutes client=client surface=cache_surface(&format!("{organization}/{cache}"))/>
         }
         .into_any(),
-        _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
+        _ => view! { <CacheIntegrationWorkflow route=route client=client/> }.into_any(),
     }
 }
 
