@@ -30,6 +30,7 @@
     };
   linuxCrucibleMetadata = import ../../pkgs/kernel/linux-crucible.nix {
     inherit lib;
+    stdenv.hostPlatform.system = pkgs.stdenv.hostPlatform.system;
     linuxWith = linuxWithMetadataProbe;
   };
   linuxCrucibleExtraConfig =
@@ -40,6 +41,22 @@
     if linuxCrucibleMetadata ? passthru && linuxCrucibleMetadata.passthru ? crucibleFixtureKernelCmdline
     then linuxCrucibleMetadata.passthru.crucibleFixtureKernelCmdline
     else throw "crucible phase7 linux-crucible check requires pkgs.linux-crucible.passthru.crucibleFixtureKernelCmdline";
+  linuxCrucibleConsole =
+    if linuxCrucibleMetadata ? passthru && linuxCrucibleMetadata.passthru ? crucibleFixtureConsole
+    then linuxCrucibleMetadata.passthru.crucibleFixtureConsole
+    else "";
+  fixtureConsole =
+    {
+      "x86_64-linux" = "ttyS0";
+      "aarch64-linux" = "ttyAMA0";
+    }.${pkgs.stdenv.hostPlatform.system}
+    or (throw "crucible phase7 linux-crucible check does not support ${pkgs.stdenv.hostPlatform.system}");
+  fixtureSerialConsoleConfig =
+    {
+      "x86_64-linux" = "CONFIG_SERIAL_8250_CONSOLE=y";
+      "aarch64-linux" = "CONFIG_SERIAL_AMBA_PL011_CONSOLE=y";
+    }.${pkgs.stdenv.hostPlatform.system}
+    or (throw "crucible phase7 linux-crucible check does not support ${pkgs.stdenv.hostPlatform.system}");
   linuxCruciblePname = linuxCrucibleMetadata.pname or "(missing)";
   linuxCrucibleFixtureOnly =
     linuxCrucibleMetadata
@@ -149,6 +166,9 @@
     ++ lib.optionals (linuxCrucibleDeterminismMechanism != "host-side-qemu-icount-seeded-entropy") [
       "pkgs.linux-crucible: passthru.crucibleDeterminismMechanism must name the host-side QEMU-seeded entropy mechanism"
     ]
+    ++ lib.optionals (linuxCrucibleConsole != fixtureConsole) [
+      "pkgs.linux-crucible: expected native console ${fixtureConsole}, got ${linuxCrucibleConsole}"
+    ]
     ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
       {
         label = "T-PKG-12 completion note";
@@ -207,7 +227,7 @@
     ++ failuresFor "pkgs.linux-crucible.passthru.crucibleExtraConfig" linuxCrucibleExtraConfig [
       {
         label = "serial console";
-        needle = "CONFIG_SERIAL_8250_CONSOLE=y";
+        needle = fixtureSerialConsoleConfig;
       }
       {
         label = "virtio bus";
@@ -254,7 +274,7 @@
     ++ failuresFor "pkgs.linux-crucible.passthru.crucibleFixtureKernelCmdline" linuxCrucibleCmdline [
       {
         label = "serial console cmdline";
-        needle = "console=ttyS0";
+        needle = "console=${fixtureConsole}";
       }
     ]
     ++ forbiddenFor "pkgs.linux-crucible.passthru.crucibleFixtureKernelCmdline" linuxCrucibleCmdline (
@@ -349,7 +369,7 @@ in
               fi
             }
 
-            require_config '^CONFIG_SERIAL_8250_CONSOLE=y$' 'serial console'
+            require_config '^${fixtureSerialConsoleConfig}$' 'serial console'
             require_config '^CONFIG_VIRTIO=y$' 'virtio bus'
             require_config '^CONFIG_VIRTIO_PCI=y$' 'virtio PCI'
             require_config '^CONFIG_VIRTIO_BLK=y$' 'virtio block'

@@ -1,6 +1,8 @@
 ##! crucible — RFC-0010 Crucible Rust workspace and CLI
 {
   lib,
+  stdenv,
+  guestPackageSets ? {},
   mkDerivation,
   mkCargoPackage,
   fetchCargoDeps,
@@ -17,6 +19,22 @@
   controllerOnly ? false,
 }: let
   version = "0.1.0";
+  nativeQemuSystemBinary =
+    {
+      "x86_64-linux" = "qemu-system-x86_64";
+      "aarch64-linux" = "qemu-system-aarch64";
+    }.${stdenv.hostPlatform.system}
+    or (throw "crucible: unsupported native QEMU system '${stdenv.hostPlatform.system}'");
+  nativeQemuPath = "${qemu-crucible}/bin/${nativeQemuSystemBinary}";
+  aarch64Guests = guestPackageSets."aarch64-linux" or null;
+  aarch64Linux =
+    if aarch64Guests != null
+    then aarch64Guests.linux-crucible
+    else null;
+  aarch64Fixtures =
+    if aarch64Guests != null
+    then aarch64Guests.crucible-fixtures
+    else null;
   cargoDepsHash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   src = import ./_source.nix {inherit lib;};
   packages = import ./_packages.nix;
@@ -261,7 +279,9 @@
     inherit version;
     src = null;
     buildDeps = [bash];
-    runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb];
+    runtimeDeps =
+      [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb]
+      ++ lib.optionals (aarch64Guests != null) [aarch64Linux aarch64Fixtures];
     propagatedDeps = [];
     phases = [
       {
@@ -270,13 +290,25 @@
           mkdir -p "$out/bin" "$out/share/aos/crucible" "$out/share/licenses/crucible"
           cat > "$out/bin/crucible" <<'EOF'
           #!${bash}/bin/bash
-          : "''${CRUCIBLE_QEMU:=${qemu-crucible}/bin/qemu-system-x86_64}"
+          : "''${CRUCIBLE_QEMU:=${nativeQemuPath}}"
           : "''${CRUCIBLE_PLUGIN:=${crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so}"
           : "''${CRUCIBLE_DEBUG_GATEWAY:=${debugGateway}/bin/crucible-debug-gateway}"
           : "''${CRUCIBLE_KERNEL:=${linux-crucible}/boot/vmlinuz-${linux-crucible.version}}"
           : "''${CRUCIBLE_ROOT_IMAGE:=${crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4}"
           : "''${CRUCIBLE_KERNEL_CMDLINE:=${linux-crucible.passthru.crucibleFixtureKernelCmdline} init=/init}"
+          : "''${CRUCIBLE_KERNEL_X86_64:=$CRUCIBLE_KERNEL}"
+          : "''${CRUCIBLE_ROOT_IMAGE_X86_64:=$CRUCIBLE_ROOT_IMAGE}"
+          : "''${CRUCIBLE_KERNEL_CMDLINE_X86_64:=$CRUCIBLE_KERNEL_CMDLINE}"
+          ${lib.optionalString (aarch64Guests != null) ''
+            : "''${CRUCIBLE_KERNEL_AARCH64:=${aarch64Linux}/boot/vmlinuz-${aarch64Linux.version}}"
+            : "''${CRUCIBLE_ROOT_IMAGE_AARCH64:=${aarch64Fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4}"
+            : "''${CRUCIBLE_KERNEL_CMDLINE_AARCH64:=${aarch64Linux.passthru.crucibleFixtureKernelCmdline} init=/init}"
+          ''}
           export CRUCIBLE_QEMU CRUCIBLE_PLUGIN CRUCIBLE_DEBUG_GATEWAY CRUCIBLE_KERNEL CRUCIBLE_ROOT_IMAGE CRUCIBLE_KERNEL_CMDLINE
+          export CRUCIBLE_KERNEL_X86_64 CRUCIBLE_ROOT_IMAGE_X86_64 CRUCIBLE_KERNEL_CMDLINE_X86_64
+          ${lib.optionalString (aarch64Guests != null) ''
+            export CRUCIBLE_KERNEL_AARCH64 CRUCIBLE_ROOT_IMAGE_AARCH64 CRUCIBLE_KERNEL_CMDLINE_AARCH64
+          ''}
           exec ${controller}/bin/crucible "$@"
           EOF
           chmod +x "$out/bin/crucible"
@@ -306,7 +338,7 @@
           controller_path=${controller}
           controller_license=Apache-2.0
           qemu_package=qemu-crucible
-          qemu_path=${qemu-crucible}/bin/qemu-system-x86_64
+          qemu_path=${nativeQemuPath}
           qemu_license=GPL-2.0-only
           qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT
           qemu_combined_work_license=GPL-2.0-only

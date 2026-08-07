@@ -32,7 +32,8 @@
       ]
       ++ lib.optional hostPlatform.isx86_64 "shadowstack",
 }: let
-  system = buildPlatform.system;
+  buildSystem = buildPlatform.system;
+  hostSystem = hostPlatform.system;
   shellPath = "${tc.bash}/bin/bash";
 
   defaultHardeningStr = lib.hardening.effectiveString {
@@ -75,7 +76,7 @@
 
   stdenvDrv = builtins.derivation {
     name = "aos-stdenv";
-    inherit system;
+    system = buildSystem;
     builder = shellPath;
     args = [
       "-c"
@@ -98,7 +99,7 @@
         SETUP_EOF
 
         ${tc.coreutils}/bin/echo "${shellPath}" > $out/shell-path
-        ${tc.coreutils}/bin/echo "${system}" > $out/system
+        ${tc.coreutils}/bin/echo "${buildSystem}" > $out/system
       ''
     ];
   };
@@ -108,7 +109,10 @@
       args
       // {
         buildDeps = (args.buildDeps or []) ++ [ccWrapper] ++ initialPath;
-        system = args.system or system;
+        system = args.system or buildSystem;
+        buildExecutionSystem =
+          args.buildExecutionSystem
+          or "${buildPlatform.constraints.cpu}-${buildPlatform.constraints.os}";
         shell = args.shell or shellPath;
         storeDir = args.storeDir or storeDir;
         stdenv = stdenvDrv;
@@ -146,7 +150,7 @@
       args
       // {
         buildDeps = (args.buildDeps or []) ++ initialPath;
-        system = args.system or system;
+        system = args.system or buildSystem;
         shell = args.shell or shellPath;
       }
     );
@@ -155,7 +159,7 @@
     lib.fetchurl (
       args
       // {
-        system = args.system or system;
+        system = args.system or buildSystem;
         storeDir = args.storeDir or storeDir;
       }
     );
@@ -164,7 +168,7 @@
     lib.fetchgit (
       args
       // {
-        system = args.system or system;
+        system = args.system or buildSystem;
         storeDir = args.storeDir or storeDir;
       }
     );
@@ -176,7 +180,8 @@
       fetchurl
       fetchgit
       ;
-    inherit system storeDir lib;
+    system = hostSystem;
+    inherit buildSystem storeDir lib;
     cc = ccWrapper;
     shell = shellPath;
     stdenv = stdenvDrv;
