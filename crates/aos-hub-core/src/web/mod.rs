@@ -7,7 +7,7 @@
 //! - [`render`] — the transport- and task-local-free HTML builders. The
 //!   masthead brand and the signed-in email ride in an explicit [`PageChrome`]
 //!   rather than a global/task-local, and every page renders from the
-//!   `aos.registry.v1` read shapes, so the module is wasm-clean.
+//!   `aos.hub.v1` read shapes, so the module is wasm-clean.
 //! - [`browse`] — the handler functions that call the
 //!   [`RpcService`](crate::service::RpcService) read methods and render via
 //!   [`render`], returning a [`Rendered`](browse::Rendered) the transport layer

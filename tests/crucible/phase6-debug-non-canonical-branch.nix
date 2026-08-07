@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase6.debugNonCanonicalBranch",
   taskIds ? ["T-DBG-6"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -21,6 +22,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -288,6 +290,7 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
             gate=gate:debug-non-canonical-branch
             branch=non-canonical-visible
             replay_oracle=excluded

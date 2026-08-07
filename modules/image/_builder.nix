@@ -4,8 +4,8 @@
 ##! configuration. The image contains:
 ##!
 ##!   Partition 1 (ESP)    — vfat, sized to its contents x2 (A/B headroom)
-##!                          EFI/BOOT/BOOTX64.EFI              (UEFI fallback)
-##!                          EFI/systemd/systemd-bootx64.efi   (sd-boot canonical)
+##!                          EFI/BOOT/BOOT<ARCH>.EFI           (UEFI fallback)
+##!                          EFI/systemd/systemd-boot<arch>.efi (sd-boot canonical)
 ##!                          EFI/Linux/aos-<version>.efi       (UKI)
 ##!                          loader/loader.conf                (sd-boot config)
 ##!   Partition 2 (root-a) — rootFsType (erofs/ext4), sized to the rootfs image
@@ -26,7 +26,7 @@
 ##!   system — evaluated system configuration (from evalModules)
 ##!   name   — image name slug
 ##!
-##! Output: $out/aos-${name}.img + $out/image-info.json
+##! Output: disk bytes + portable public image-info.json
 {
   pkgs,
   lib,
@@ -81,6 +81,27 @@
     or (throw "no DPS root partition types for ${lib.system}");
   rootGuid = dpsType.root;
   verityGuid = dpsType.verity;
+  efiNames = {
+    x86_64 = {
+      fallback = "BOOTX64.EFI";
+      systemd = "systemd-bootx64.efi";
+    };
+    aarch64 = {
+      fallback = "BOOTAA64.EFI";
+      systemd = "systemd-bootaa64.efi";
+    };
+    i686 = {
+      fallback = "BOOTIA32.EFI";
+      systemd = "systemd-bootia32.efi";
+    };
+    riscv64 = {
+      fallback = "BOOTRISCV64.EFI";
+      systemd = "systemd-bootriscv64.efi";
+    };
+  };
+  efiName =
+    efiNames.${lib.platform.constraints.cpu}
+    or (throw "no UEFI executable names for ${lib.system}");
 
   mkRootfs = import ../../lib/build/rootfs.nix;
   # The image's root filesystem matches the system's declared root fstype, so
@@ -194,6 +215,7 @@
           pkgs.dosfstools # mkfs.vfat
           pkgs.mtools # mcopy
           pkgs.coreutils
+          pkgs.jq
         ]
         ++ lib.optional sb.enable pkgs.sbsigntools; # sbsign for sd-boot
 
@@ -204,6 +226,22 @@
       UKI_MEASUREMENT_PATH = "${ukiA}/${ukiAStoreFilename}.measurement";
       UKI_MEASUREMENT_SIG_PATH = "${ukiA}/${ukiAStoreFilename}.measurement.sig";
       SDBOOT_DIR = "${pkgs.systemd}/lib/systemd/boot/efi";
+      IMAGE_NAME = name;
+      IMAGE_FILENAME = "aos-${name}.img";
+      IMAGE_VERSION = version;
+      IMAGE_ARCHITECTURE = lib.platform.constraints.cpu;
+      IMAGE_PLATFORM = lib.system;
+      IMAGE_KERNEL_PARAMS = kernelParams;
+      IMAGE_ROOT_FS_TYPE = rootFsType;
+      IMAGE_UKI_PATH = "EFI/Linux/${espUkiFilename}";
+      IMAGE_UKI_FILENAME = espUkiFilename;
+      IMAGE_SDBOOT_PATH = "EFI/systemd/${efiName.systemd}";
+      SDBOOT_FILENAME = efiName.systemd;
+      UEFI_FALLBACK_FILENAME = efiName.fallback;
+      UKI_MEASURED =
+        if sb.measuredBoot.enable
+        then "1"
+        else "";
 
       # Secure Boot signing inputs (empty unless enabled). The UKI is
       # already signed by aos-uki; sd-boot is signed here, in place.
@@ -231,6 +269,10 @@
             cp "$ROOT_IMG" root.img
             chmod u+w root.img
             root_bytes=$(cat "$ROOT_SIZE_FILE")
+            if [ $(( root_bytes % 512 )) -ne 0 ]; then
+              echo "root image size must be sector-aligned" >&2
+              exit 1
+            fi
             echo "    root image: $(( root_bytes / 1048576 )) MiB"
 
             # ── 2. ESP tree ─────────────────────────────────────────────
@@ -242,18 +284,18 @@
 
             # sd-boot at both canonical and UEFI fallback paths. Firmware
             # that isn't told about a specific EFI application falls back
-            # to /EFI/BOOT/BOOTX64.EFI (removable-media convention); the
-            # canonical path is /EFI/systemd/systemd-bootx64.efi. Under
+            # to the architecture's /EFI/BOOT/BOOT<ARCH>.EFI removable-media
+            # path; the canonical sd-boot filename is architecture-specific. Under
             # Secure Boot both copies are db-signed (RFC-0006); the UKI is
             # already signed by aos-uki.
             if [ -n "$SB_ENABLE" ]; then
               echo "==> Signing sd-boot for Secure Boot"
               sbsign --key "$SB_KEY" --cert "$SB_CERT" \
-                --output esp/EFI/BOOT/BOOTX64.EFI "$SDBOOT_DIR/systemd-bootx64.efi"
-              cp esp/EFI/BOOT/BOOTX64.EFI esp/EFI/systemd/systemd-bootx64.efi
+                --output "esp/EFI/BOOT/$UEFI_FALLBACK_FILENAME" "$SDBOOT_DIR/$SDBOOT_FILENAME"
+              cp "esp/EFI/BOOT/$UEFI_FALLBACK_FILENAME" "esp/EFI/systemd/$SDBOOT_FILENAME"
             else
-              cp "$SDBOOT_DIR/systemd-bootx64.efi" esp/EFI/BOOT/BOOTX64.EFI
-              cp "$SDBOOT_DIR/systemd-bootx64.efi" esp/EFI/systemd/systemd-bootx64.efi
+              cp "$SDBOOT_DIR/$SDBOOT_FILENAME" "esp/EFI/BOOT/$UEFI_FALLBACK_FILENAME"
+              cp "$SDBOOT_DIR/$SDBOOT_FILENAME" "esp/EFI/systemd/$SDBOOT_FILENAME"
             fi
 
             # UKI auto-discovered by sd-boot from /EFI/Linux/. The ESP filename
@@ -362,6 +404,18 @@
 
             echo "$root_bytes" > root-size-bytes
             echo "$esp_mib" > esp-size-mib
+            echo "$(( ${toString espStartSector} * 512 ))" > esp-offset-bytes
+            echo "$(( esp_sectors * 512 ))" > esp-partition-size-bytes
+            echo "$(( root_start_sector * 512 ))" > root-offset-bytes
+            echo "$(( root_sectors * 512 ))" > root-partition-size-bytes
+            echo "$(( root_b_start_sector * 512 ))" > root-b-offset-bytes
+            echo "$(( root_sectors * 512 ))" > root-b-partition-size-bytes
+            ${lib.optionalString verityEnabled ''
+              echo "$(( hash_start_sector * 512 ))" > hash-offset-bytes
+              echo "$(( hash_sectors * 512 ))" > hash-partition-size-bytes
+              echo "$(( hash_b_start_sector * 512 ))" > hash-b-offset-bytes
+              echo "$(( hash_sectors * 512 ))" > hash-b-partition-size-bytes
+            ''}
             echo "==> Image assembly complete"
           '';
         }
@@ -382,40 +436,113 @@
               cp "$ROOT_HASH_SIG_FILE" $out/root.roothash.p7s
             ''}
 
-            # Image metadata for downstream tooling (sysupdate later).
+            # Image metadata is part of the signed sysroot image catalog's
+            # publication input. Keep it next to the exact disk bytes so apr
+            # can validate both before committing the catalog entry.
             root_size_bytes=$(cat root-size-bytes)
             root_size_mib=$(( root_size_bytes / 1048576 ))
             disk_size_bytes=$(stat -c %s "$out/aos-${name}.img")
             disk_size_mib=$(( disk_size_bytes / 1048576 ))
+            disk_sha256=$(sha256sum "$out/aos-${name}.img" | cut -d ' ' -f1)
+            rootfs_sha256=$(sha256sum "$ROOT_IMG" | cut -d ' ' -f1)
+            uki_size_bytes=$(stat -c %s "$UKI_PATH")
+            uki_sha256=$(sha256sum "$UKI_PATH" | cut -d ' ' -f1)
+            if [ -n "$SB_ENABLE" ]; then uki_signed=true; else uki_signed=false; fi
+            if [ -n "$UKI_MEASURED" ]; then uki_measured=true; else uki_measured=false; fi
             esp_size_mib=$(cat esp-size-mib)
+            esp_offset_bytes=$(cat esp-offset-bytes)
+            esp_partition_size_bytes=$(cat esp-partition-size-bytes)
+            root_offset_bytes=$(cat root-offset-bytes)
+            root_partition_size_bytes=$(cat root-partition-size-bytes)
+            root_b_offset_bytes=$(cat root-b-offset-bytes)
+            root_b_partition_size_bytes=$(cat root-b-partition-size-bytes)
             ${lib.optionalString verityEnabled ''hash_size_mib=$(cat hash-size-mib)''}
-            cat > $out/image-info.json <<META
-            {
-              "name": "${name}",
-              "version": "${version}",
-              "diskSizeMiB": $disk_size_mib,
-              "espSizeMiB": $esp_size_mib,
-              "rootSizeMiB": $root_size_mib,
-              "format": "raw",
-              "partitionTable": "gpt",
-              "kernelParams": "${kernelParams}",
-              "partitions": [
-                { "number": 1, "label": "ESP", "type": "esp", "filesystem": "vfat", "sizeMiB": $esp_size_mib },
-                { "number": 2, "label": "root-a", "type": "root", "filesystem": "${rootFsType}", "sizeMiB": $root_size_mib }${lib.optionalString verityEnabled ''                ,
-                              { "number": 3, "label": "root-a-hash", "type": "verity", "filesystem": "dm-verity", "sizeMiB": $hash_size_mib }''},
-                { "number": ${
+            ${lib.optionalString verityEnabled ''hash_offset_bytes=$(cat hash-offset-bytes)''}
+            ${lib.optionalString verityEnabled ''hash_partition_size_bytes=$(cat hash-partition-size-bytes)''}
+            ${lib.optionalString verityEnabled ''hash_b_offset_bytes=$(cat hash-b-offset-bytes)''}
+            ${lib.optionalString verityEnabled ''hash_b_partition_size_bytes=$(cat hash-b-partition-size-bytes)''}
+            ${pkgs.jq}/bin/jq -S -n \
+              --arg name "$IMAGE_NAME" \
+              --arg version "$IMAGE_VERSION" \
+              --arg architecture "$IMAGE_ARCHITECTURE" \
+              --arg platform "$IMAGE_PLATFORM" \
+              --arg filename "$IMAGE_FILENAME" \
+              --arg mediaType 'application/vnd.aos.disk-image.raw' \
+              --arg sha256 "$disk_sha256" \
+              --arg logicalDiskSha256 "$disk_sha256" \
+              --arg rootfsSha256 "$rootfs_sha256" \
+              --arg objectKey "images/sha256/$disk_sha256/$IMAGE_FILENAME" \
+              --arg ukiFilename "$IMAGE_UKI_FILENAME" \
+              --arg ukiEspPath "$IMAGE_UKI_PATH" \
+              --arg ukiSha256 "$uki_sha256" \
+              --arg kernelParams "$IMAGE_KERNEL_PARAMS" \
+              --arg rootFsType "$IMAGE_ROOT_FS_TYPE" \
+              --arg uki "$IMAGE_UKI_PATH" \
+              --arg sdBoot "$IMAGE_SDBOOT_PATH" \
+              --argjson diskSizeMiB "$disk_size_mib" \
+              --argjson diskSizeBytes "$disk_size_bytes" \
+              --argjson espSizeMiB "$esp_size_mib" \
+              --argjson rootSizeMiB "$root_size_mib" \
+              --argjson espOffsetBytes "$esp_offset_bytes" \
+              --argjson espPartitionSizeBytes "$esp_partition_size_bytes" \
+              --argjson rootOffsetBytes "$root_offset_bytes" \
+              --argjson rootPartitionSizeBytes "$root_partition_size_bytes" \
+              --argjson rootBOffsetBytes "$root_b_offset_bytes" \
+              --argjson rootBPartitionSizeBytes "$root_b_partition_size_bytes" \
+              --argjson ukiSizeBytes "$uki_size_bytes" \
+              --argjson ukiSigned "$uki_signed" \
+              --argjson ukiMeasured "$uki_measured" \
+              ${lib.optionalString verityEnabled ''              --argjson hashSizeMiB "$hash_size_mib" \
+                            --argjson hashOffsetBytes "$hash_offset_bytes" \
+                            --argjson hashPartitionSizeBytes "$hash_partition_size_bytes" \
+                            --argjson hashBOffsetBytes "$hash_b_offset_bytes" \
+                            --argjson hashBPartitionSizeBytes "$hash_b_partition_size_bytes" \
+            ''}'{
+                schemaVersion: 1,
+                name: $name,
+                version: $version,
+                architecture: $architecture,
+                platform: $platform,
+                format: "raw",
+                filename: $filename,
+                objectKey: $objectKey,
+                mediaType: $mediaType,
+                compression: "none",
+                byteSize: $diskSizeBytes,
+                virtualSizeBytes: $diskSizeBytes,
+                sha256: $sha256,
+                logicalDiskSha256: $logicalDiskSha256,
+                rootfsSha256: $rootfsSha256,
+                compatibleTargets: ["bare-metal"],
+                uki: {
+                  filename: $ukiFilename,
+                  espPath: $ukiEspPath,
+                  byteSize: $ukiSizeBytes,
+                  sha256: $ukiSha256,
+                  signed: $ukiSigned,
+                  measured: $ukiMeasured
+                },
+                diskSizeMiB: $diskSizeMiB,
+                espSizeMiB: $espSizeMiB,
+                rootSizeMiB: $rootSizeMiB,
+                partitionTable: "gpt",
+                kernelParams: $kernelParams,
+                partitions: [
+                  {number: 1, label: "ESP", type: "esp", filesystem: "vfat", sizeMiB: $espSizeMiB, offsetBytes: $espOffsetBytes, sizeBytes: $espPartitionSizeBytes},
+                  {number: 2, label: "root-a", type: "root", filesystem: $rootFsType, sizeMiB: $rootSizeMiB, offsetBytes: $rootOffsetBytes, sizeBytes: $rootPartitionSizeBytes},
+                  {number: ${
               if verityEnabled
               then "4"
               else "3"
-            }, "label": "root-b", "type": "root", "filesystem": "${rootFsType}", "sizeMiB": $root_size_mib }${lib.optionalString verityEnabled ''                ,
-                              { "number": 5, "label": "root-b-hash", "type": "verity", "filesystem": "dm-verity", "sizeMiB": $hash_size_mib }''}
-              ],
-              "esp": {
-                "uki": "EFI/Linux/${espUkiFilename}",
-                "sdBoot": "EFI/systemd/systemd-bootx64.efi"
-              }
-            }
-            META
+            }, label: "root-b", type: "root", filesystem: $rootFsType, sizeMiB: $rootSizeMiB, offsetBytes: $rootBOffsetBytes, sizeBytes: $rootBPartitionSizeBytes}
+                ],
+                esp: {uki: $uki, sdBoot: $sdBoot}
+              }${lib.optionalString verityEnabled ''
+              | .partitions += [
+                  {number: 3, label: "root-a-hash", type: "verity", filesystem: "dm-verity", sizeMiB: $hashSizeMiB, offsetBytes: $hashOffsetBytes, sizeBytes: $hashPartitionSizeBytes},
+                  {number: 5, label: "root-b-hash", type: "verity", filesystem: "dm-verity", sizeMiB: $hashSizeMiB, offsetBytes: $hashBOffsetBytes, sizeBytes: $hashBPartitionSizeBytes}
+                ]''}' \
+              > $out/image-info.json
           '';
         }
       ];

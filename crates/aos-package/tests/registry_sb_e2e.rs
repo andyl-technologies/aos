@@ -29,10 +29,54 @@ use tempfile::TempDir;
 use aos_package::registry::sb_certs::{
     self, RevokedSbCert, SbCert, SbCertsToml, effective_cert_revocations,
 };
-use aos_package::types::{SbatEntry, SysrootImageEntry};
+use aos_package::types::{
+    ImageCompression, ImageDelivery, ImageInfoReference, ImageTarget, ImageUkiIdentity,
+    ImageVerificationState, SbatEntry, SysrootImageEntry,
+};
 
 /// A db cert digest fixture (a valid 64-char lowercase hex SHA-256).
 const SIGNER_ACTIVE: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+fn delivery() -> ImageDelivery {
+    let image_sha256 = "0".repeat(64);
+    let info_sha256 = "1".repeat(64);
+    ImageDelivery {
+        schema_version: 1,
+        release: "1.0.0".into(),
+        platform: "x86_64-linux".into(),
+        architecture: "x86_64".into(),
+        logical_image_id: image_sha256.clone(),
+        logical_disk_sha256: image_sha256.clone(),
+        rootfs_sha256: "2".repeat(64),
+        filename: "aos-test.img".into(),
+        object_key: format!("images/sha256/{image_sha256}/aos-test.img"),
+        media_type: "application/vnd.aos.disk-image.raw".into(),
+        compression: ImageCompression::None,
+        byte_size: 1,
+        sha256: image_sha256.clone(),
+        compatible_targets: vec![ImageTarget::BareMetal],
+        uki: ImageUkiIdentity {
+            filename: "aos-test.efi".into(),
+            esp_path: "EFI/Linux/aos-test.efi".into(),
+            byte_size: 1,
+            sha256: "3".repeat(64),
+            verification: ImageVerificationState::Unsigned,
+            signer_cert_sha256: None,
+            sbat: Vec::new(),
+            measured: false,
+            expected_pcr11: None,
+        },
+        image_info: ImageInfoReference {
+            filename: "image-info.json".into(),
+            object_key: format!(
+                "images/sha256/{image_sha256}/metadata/{info_sha256}/image-info.json"
+            ),
+            media_type: "application/vnd.aos.image-info+json".into(),
+            byte_size: 1,
+            sha256: info_sha256,
+        },
+    }
+}
 /// A second db cert digest fixture, used as the retired signer.
 const SIGNER_RETIRED: &str = "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752";
 
@@ -57,6 +101,7 @@ fn signed_image(
         store_path: "/nix/store/deadbeef-aos-image".into(),
         nar_hash: "sha256:abc".into(),
         nar_size: 4096,
+        delivery: delivery(),
         sb_signer_cert_sha256: Some(signer.into()),
         sbat: sbat(sbat_pairs),
         expected_pcr11: pcr11.map(str::to_string),
@@ -82,7 +127,8 @@ fn catalog_accepts(catalog: &SbCertsToml, img: &SysrootImageEntry) -> bool {
 
 /// Phase 4 "publish records facts": a published image entry round-trips
 /// through the package-TOML serde contract carrying all three SB fields,
-/// and an unsigned image omits them entirely (legacy publishes still parse).
+/// while an unsigned image omits only the inapplicable Secure Boot facts and
+/// retains the mandatory direct-delivery contract.
 #[test]
 fn published_image_roundtrips_sb_fields() -> Result<()> {
     let img = signed_image(SIGNER_ACTIVE, &[("aos", 2), ("systemd", 1)], Some("ff00ff"));
@@ -95,14 +141,27 @@ fn published_image_roundtrips_sb_fields() -> Result<()> {
     assert_eq!(parsed.sbat, sbat(&[("aos", 2), ("systemd", 1)]));
     assert_eq!(parsed.expected_pcr11.as_deref(), Some("ff00ff"));
 
-    // An unsigned/legacy image serializes without any SB keys and parses.
-    let legacy: SysrootImageEntry = toml::from_str(
-        "format = \"raw\"\nstore_path = \"/nix/store/x\"\nnar_hash = \"sha256:y\"\nnar_size = 1",
-    )?;
-    assert!(legacy.sb_signer_cert_sha256.is_none());
-    assert!(legacy.sbat.is_empty());
-    let legacy_toml = toml::to_string(&legacy)?;
-    assert!(!legacy_toml.contains("sb_signer_cert_sha256"));
+    let unsigned = SysrootImageEntry {
+        format: "raw".into(),
+        store_path: "/nix/store/x".into(),
+        nar_hash: "sha256:y".into(),
+        nar_size: 1,
+        delivery: delivery(),
+        sb_signer_cert_sha256: None,
+        sbat: Vec::new(),
+        expected_pcr11: None,
+        ukis: Vec::new(),
+        root_image: None,
+        root_verity: None,
+        root_hash: None,
+        root_hash_sig: None,
+    };
+    let unsigned_toml = toml::to_string(&unsigned)?;
+    assert!(!unsigned_toml.contains("sb_signer_cert_sha256"));
+    assert!(unsigned_toml.contains("[delivery]"));
+    let unsigned: SysrootImageEntry = toml::from_str(&unsigned_toml)?;
+    assert!(unsigned.sb_signer_cert_sha256.is_none());
+    assert!(unsigned.sbat.is_empty());
     Ok(())
 }
 

@@ -2834,7 +2834,71 @@ pub use aos_registry_surface::manifest::{
 // (RFC-0004 Phase 5) so the parse path, the `ExposeMeta.images` schema, and the
 // runtime image entry share one type. Re-exported here so
 // `aos_package::types::SysrootImageEntry` is unchanged.
-pub use aos_registry_surface::manifest::{SbatEntry, SysrootImageEntry, SysrootUkiEntry, UkiSlot};
+pub use aos_registry_surface::manifest::{
+    ImageCompression, ImageDelivery, ImageInfoReference, ImageTarget, ImageUkiIdentity,
+    ImageVerificationState, SbatEntry, SysrootImageEntry, SysrootUkiEntry, UkiSlot,
+};
+
+#[cfg(test)]
+pub(crate) fn test_image_delivery(format: &str) -> ImageDelivery {
+    let image_sha256 = "0".repeat(64);
+    let info_sha256 = "1".repeat(64);
+    let (extension, media_type, compatible_targets) = match format {
+        "qcow2" => (
+            "qcow2",
+            "application/vnd.aos.disk-image.qcow2",
+            vec![ImageTarget::QemuKvm, ImageTarget::Openstack],
+        ),
+        "vmdk" => ("vmdk", "application/x-vmdk", vec![ImageTarget::Vmware]),
+        "vhd" => (
+            "vhd",
+            "application/vnd.aos.disk-image.vhd",
+            vec![ImageTarget::HyperV],
+        ),
+        _ => (
+            "img",
+            "application/vnd.aos.disk-image.raw",
+            vec![ImageTarget::BareMetal],
+        ),
+    };
+    let filename = format!("aos-test.{extension}");
+    ImageDelivery {
+        schema_version: 1,
+        release: "1.0.0".into(),
+        platform: "x86_64-linux".into(),
+        architecture: "x86_64".into(),
+        logical_image_id: image_sha256.clone(),
+        logical_disk_sha256: image_sha256.clone(),
+        rootfs_sha256: "2".repeat(64),
+        object_key: format!("images/sha256/{image_sha256}/{filename}"),
+        filename,
+        media_type: media_type.into(),
+        compression: ImageCompression::None,
+        byte_size: 1,
+        sha256: image_sha256.clone(),
+        compatible_targets,
+        uki: ImageUkiIdentity {
+            filename: "aos-test.efi".into(),
+            esp_path: "EFI/Linux/aos-test.efi".into(),
+            byte_size: 1,
+            sha256: "3".repeat(64),
+            verification: ImageVerificationState::Unsigned,
+            signer_cert_sha256: None,
+            sbat: Vec::new(),
+            measured: false,
+            expected_pcr11: None,
+        },
+        image_info: ImageInfoReference {
+            filename: "image-info.json".into(),
+            object_key: format!(
+                "images/sha256/{image_sha256}/metadata/{info_sha256}/image-info.json"
+            ),
+            media_type: "application/vnd.aos.image-info+json".into(),
+            byte_size: 1,
+            sha256: info_sha256,
+        },
+    }
+}
 
 /// The action required to re-activate a config-generation under a (possibly
 /// changed) running image's `module_abi`.
@@ -3743,9 +3807,8 @@ root_owner_signers = ["release-2026"]
 name = "aos-core"
 description = "core registry"
 
-[[caches]]
-url = "https://cache.aos.dev"
-priority = 1000
+[caches]
+endpoint = "https://cache.aos.dev"
 
 [registry.signing]
 public_key = "aos-core:Ed25519:base64keyhere"
@@ -3753,7 +3816,6 @@ public_key = "aos-core:Ed25519:base64keyhere"
         let cfg: RegistryRootConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.registry.name, "aos-core");
         assert_eq!(cfg.registry.description.as_deref(), Some("core registry"));
-        // Legacy `[[caches]]` array still parses via the backward-compat enum.
         let caches = cfg.cache_entries();
         assert_eq!(caches.len(), 1);
         assert_eq!(caches[0].url, "https://cache.aos.dev");
@@ -3879,6 +3941,7 @@ last_update = "2026-02-13T10:30:00Z"
                     store_path: "/var/lib/store/webapproot-webapp-root".into(),
                     nar_hash: "sha256:root".into(),
                     nar_size: 2048,
+                    delivery: test_image_delivery("raw"),
                     sb_signer_cert_sha256: None,
                     sbat: Vec::new(),
                     expected_pcr11: None,
@@ -4813,6 +4876,7 @@ last_update = "2026-02-13T10:30:00Z"
             store_path: "/var/lib/store/verityimage-verity-app-root".into(),
             nar_hash: "sha256:root".into(),
             nar_size: 2048,
+            delivery: test_image_delivery("raw"),
             sb_signer_cert_sha256: None,
             sbat: Vec::new(),
             expected_pcr11: None,

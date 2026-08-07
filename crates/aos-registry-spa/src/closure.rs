@@ -1,7 +1,7 @@
 //! The cache closure-graph view model: turn a flat `CacheClosure` response into
 //! a tree-ordered, cycle-safe row list the SPA renders as an interactive graph.
 //!
-//! The hub's `CacheService.CacheClosure` RPC returns the transitive closure of a
+//! The hub's `BinaryCacheService.CacheClosure` RPC returns the transitive closure of a
 //! store path as a flat node list — each node carrying its direct reference
 //! edges (`refs`) and a `present` flag (a referenced object missing from the
 //! cache appears with `present = false`). The no-JS server page renders that as
@@ -25,9 +25,9 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 
-/// One node of a cache closure, as returned by `CacheService.CacheClosure`.
+/// One node of a cache closure, as returned by `BinaryCacheService.CacheClosure`.
 ///
-/// Mirrors the `aos.registry.v1.CacheClosureNode` proto message. A node that is
+/// Mirrors the `aos.hub.v1.CacheClosureNode` proto message. A node that is
 /// referenced but absent from the cache carries `present = false` and no
 /// meaningful `file_size`/`refs`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

@@ -18,7 +18,12 @@ use crucible_api::{
 #[tokio::test(flavor = "current_thread")]
 async fn serve_process_exits_zero_on_sigterm() -> Result<(), Box<dyn Error>> {
     let child = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args(["serve", "--listen", "127.0.0.1:0"])
+        .args([
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--trusted-unauthenticated-bind",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;

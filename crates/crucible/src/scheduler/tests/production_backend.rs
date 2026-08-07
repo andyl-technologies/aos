@@ -97,6 +97,17 @@ fn admitted_ready_counter_is_the_scheduler_epoch() {
     assert_eq!(scheduler.frontier(), VirtualTime { ticks: 0 });
     assert_eq!(
         scheduler
+            .backend_observation_time(
+                &NodeId {
+                    name: String::from("node-a"),
+                },
+                VirtualTime { ticks: 4_103 },
+            )
+            .unwrap_or_else(|error| panic!("backend observation should project: {error}")),
+        VirtualTime { ticks: 7 }
+    );
+    assert_eq!(
+        scheduler
             .node_time_for_counter(&scheduler.nodes[0], NodeCounter { ticks: 4_103 })
             .unwrap_or_else(|error| panic!("relative node time should project: {error}")),
         SimInstant { nanos: 7 }

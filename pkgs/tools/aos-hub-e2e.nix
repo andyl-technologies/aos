@@ -1,6 +1,6 @@
 ##! aos-hub-e2e — launcher that exercises the native hub against a real Nix client.
 ##!
-##! The sibling `aos-hub-worker-e2e` boots the deployed *Worker* (wasm) under
+##! The sibling `aos-hub-worker-do-e2e` boots the deployed *Worker* (wasm) under
 ##! workerd+miniflare and asserts the cache read surface. This is its **native**
 ##! counterpart: it runs the from-source `aos-hub` binary as a real HTTP server
 ##! and drives the unified cache read path with the actual `nix` client —
@@ -21,17 +21,22 @@
 ##!
 ##! ## Why a launcher (not a pure check)
 ##!
-##! Like `aos-hub-worker-e2e` and the fleet VM tests, this drives a real `nix`
+##! Like `aos-hub-worker-do-e2e` and the fleet VM tests, this drives a real `nix`
 ##! daemon and binds a TCP port, neither of which the hermetic Nix build sandbox
 ##! provides. The derivation builds a launcher in-sandbox (every path it `exec`s
 ##! is a baked store path); the aos test harness / CI runs
 ##! `$out/bin/aos-hub-e2e` on a real host, outside the sandbox.
 {
   mkDerivation,
+  aos,
   aos-hub,
+  aos-system-image-e2e-fixture,
   nix,
   curl,
   coreutils,
+  diffutils,
+  grep,
+  jq,
   bash,
 }:
 mkDerivation {
@@ -40,7 +45,7 @@ mkDerivation {
 
   # The launcher `exec`s these store paths at runtime, so they must survive the
   # scrub phase (which nukes any store ref not reachable from a runtime dep).
-  runtimeDeps = [aos-hub nix curl coreutils bash];
+  runtimeDeps = [aos aos-hub aos-system-image-e2e-fixture nix curl coreutils diffutils grep jq bash];
 
   phases = [
     {
@@ -52,9 +57,9 @@ mkDerivation {
         # Drive the native aos-hub server with a real Nix client. Must run OUTSIDE
         # the Nix sandbox: it needs a nix daemon and a bindable TCP port.
         set -euo pipefail
-        export PATH="${coreutils}/bin:${curl}/bin:${nix}/bin:${aos-hub}/bin:$PATH"
-        NIXFLAGS="--extra-experimental-features nix-command"
+        export PATH="${coreutils}/bin:${diffutils}/bin:${grep}/bin:${jq}/bin:${curl}/bin:${nix}/bin:${aos}/bin:${aos-hub}/bin:$PATH"
         PORT="18420"
+        HUB="http://127.0.0.1:$PORT"
         BASE="http://127.0.0.1:$PORT/e2e-cache"
 
         work="$(mktemp -d)"
@@ -71,65 +76,158 @@ mkDerivation {
         die()  { echo "FAIL $1"; fail=$((fail+1)); }
 
         root="$work/hub"
-        store="$work/storage"
-        mkdir -p "$store"
+        fixture="$work/producer"
+        route_keys="$work/route-reservation-keys.json"
+        probe_signers="$work/domain-probe-signers.json"
+        printf '%s\n' \
+          '{"activeVersion":1,"keys":[{"version":1,"keyBase64":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}]}' \
+          > "$route_keys"
+        printf '%s\n' '[]' > "$probe_signers"
+        chmod 600 "$route_keys" "$probe_signers"
+        export HUB_ROUTE_RESERVATION_KEYS_FILE="$route_keys"
+        export HUB_DOMAIN_PROBE_SIGNER_MANIFEST_FILE="$probe_signers"
+        export HUB_DNS_JSON_ENDPOINT="https://dns.google/resolve"
+        ${aos-system-image-e2e-fixture}/bin/aos-system-image-e2e-fixture "$fixture"
+        export AOS_HUB_E2E_IMAGE_FIXTURE="$fixture"
+        pass "apr release produced the signed raw + QCOW2 static origin"
 
-        # 1. CLI-driven setup: migrate, create org + local_fs binding + public cache.
+        # Start the native server and make the producer output its seed source.
         aos-hub --root "$root" init >/dev/null
-        aos-hub --root "$root" org add acme "Acme" >/dev/null
-        aos-hub --root "$root" binding add acme primary --path "$store" >/dev/null
-        aos-hub --root "$root" cache create e2e-cache --org acme --binding primary \
-          --prefix pc --visibility public --compression none >/dev/null
-        pass "CLI setup (init + org + binding + public cache)"
-
-        # 2. Real Nix produces a valid binary cache for a fresh store path.
-        printf 'andyl-os hub e2e payload\n' > "$work/payload"
-        sp="$(nix-store --add "$work/payload")"
-        nix $NIXFLAGS copy --to "file://$work/seed?compression=none" "$sp"
-        # Lay the produced cache under the binding's prefix (pc/), the layout the
-        # hub serves: pc/<hash>.narinfo + pc/nar/<file>.nar.
-        mkdir -p "$store/pc"
-        cp -r "$work/seed/." "$store/pc/"
-        hash="$(basename "$sp" | cut -d- -f1)"
-        narfile="$(ls "$store/pc/nar" | head -1)"
-        pass "seeded cache surface from real nix copy ($hash.narinfo + nar/$narfile)"
-
-        # 3. Start the native server and wait for readiness.
-        aos-hub --root "$root" serve --listen "127.0.0.1:$PORT" > "$work/serve.log" 2>&1 &
+        aos-hub --root "$root" serve --seed --listen "127.0.0.1:$PORT" > "$work/serve.log" 2>&1 &
         srv_pid=$!
         ready=0
-        for _ in $(seq 1 50); do
-          if curl -fsS "$BASE/nix-cache-info" >/dev/null 2>&1; then ready=1; break; fi
+        for _ in $(seq 1 300); do
+          if curl -fsS "$HUB/demo/cdn/-/images" >/dev/null 2>&1; then ready=1; break; fi
           sleep 0.2
         done
         [ "$ready" = 1 ] && pass "aos-hub serve is reachable" || die "server never became ready"
+        pass "Hub kept staged bytes hidden until signed pointers and rooted all four image objects"
+        if curl -fsS "$HUB/demo/cdn/-/images" | grep -q 'aos-e2e.qcow2'; then
+          pass "Web Images page renders the apr-produced catalog"
+        else die "Web Images page omitted producer output"; fi
+        api_list="$(curl -fsS -X POST \
+          -H 'content-type: application/json' \
+          -H 'connect-protocol-version: 1' \
+          --data '{"slug":"demo/cdn","channel":"stable"}' \
+          "$HUB/aos.hub.v1.ImageService/ListImages")"
+        if printf '%s' "$api_list" | grep -q 'aos-e2e.img' \
+           && printf '%s' "$api_list" | grep -q 'aos-e2e.qcow2'; then
+          pass "Image API lists the complete apr-produced integrity catalog"
+        else die "Image API omitted producer output"; fi
 
-        # 4. nix-cache-info is hub-generated.
-        if curl -fsS "$BASE/nix-cache-info" | grep -q "StoreDir: /nix/store"; then
-          pass "GET nix-cache-info -> StoreDir"
-        else die "nix-cache-info missing StoreDir"; fi
+        # Drive the public API through the real consumer CLI.
+        image_list="$(aos --json image list --hub "$HUB" --registry demo/cdn --channel stable)"
+        if printf '%s' "$image_list" | grep -q '"format":"raw"' \
+           && printf '%s' "$image_list" | grep -q '"format":"qcow2"'; then
+          pass "aos image list discovers signed raw + QCOW2 encodings"
+        else die "aos image list omitted a signed image encoding"; fi
 
-        # 5. narinfo is served (passthrough from the local_fs surface).
-        if curl -fsS "$BASE/$hash.narinfo" | grep -q "StorePath: $sp"; then
-          pass "GET <hash>.narinfo -> StorePath"
-        else die "narinfo missing/incorrect StorePath"; fi
+        # Signed image delivery uses the shared conditional/range kernel in the
+        # native adapter. HEAD ignores Range, ordinary preconditions retain RFC
+        # precedence, and If-Range either serves the interval or the full file.
+        cp "$(cat "$fixture/raw-path")" "$work/expected.raw"
+        raw_url="$(printf '%s' "$image_list" | jq -er \
+          'map(select(.format == "raw" and .channel == "stable")) | .[0].downloadUrl')"
+        raw_sha="$(printf '%s' "$image_list" | jq -er \
+          'map(select(.format == "raw" and .channel == "stable")) | .[0].sha256')"
+        raw_etag="\"sha256:$raw_sha\""
+        head_status="$(curl -sS -I -D "$work/head.headers" -o /dev/null \
+          -H 'Range: bytes=4-11' -w '%{http_code}' "$raw_url")"
+        if [ "$head_status" = 200 ] \
+           && ! grep -qi '^content-range:' "$work/head.headers"; then
+          pass "native image HEAD ignores Range"
+        else die "native image HEAD-with-Range semantics differ"; fi
+        not_modified="$(curl -sS -o /dev/null -w '%{http_code}' \
+          -H "If-None-Match: $raw_etag" "$raw_url")"
+        failed_precondition="$(curl -sS -o /dev/null -w '%{http_code}' \
+          -H 'If-Match: "different"' "$raw_url")"
+        if [ "$not_modified" = 304 ] && [ "$failed_precondition" = 412 ]; then
+          pass "native image entity-tag preconditions follow the shared kernel"
+        else die "native image conditional status mismatch"; fi
+        range_status="$(curl -sS -D "$work/range.headers" -o "$work/range.bytes" \
+          -H 'Range: bytes=4-11' -H "If-Range: $raw_etag" \
+          -w '%{http_code}' "$raw_url")"
+        dd if="$work/expected.raw" of="$work/expected.range" bs=1 skip=4 count=8 status=none
+        stale_status="$(curl -sS -o "$work/stale-range.bytes" \
+          -H 'Range: bytes=4-11' -H 'If-Range: "different"' \
+          -w '%{http_code}' "$raw_url")"
+        if [ "$range_status" = 206 ] \
+           && grep -qi '^content-range: bytes 4-11/' "$work/range.headers" \
+           && cmp -s "$work/expected.range" "$work/range.bytes" \
+           && [ "$stale_status" = 200 ] \
+           && cmp -s "$work/expected.raw" "$work/stale-range.bytes"; then
+          pass "native image If-Range selects exact partial or full bytes"
+        else die "native image If-Range semantics differ"; fi
 
-        # 6. Ranged NAR read -> 206 (the native streaming range path).
-        hdrs="$(curl -fsS -D - -o /dev/null -r 0-3 "$BASE/nar/$narfile")"
-        if printf '%s' "$hdrs" | grep -qi "206 Partial Content" \
-           && printf '%s' "$hdrs" | grep -qi "Content-Range: bytes 0-3/"; then
-          pass "GET nar/<file> Range bytes=0-3 -> 206 + Content-Range"
-        else die "ranged NAR read did not yield 206 + Content-Range"; fi
+        image_show="$(aos --json image show --hub "$HUB" --registry demo/cdn \
+          --channel stable --architecture x86_64 --target qemu-kvm)"
+        if printf '%s' "$image_show" | grep -q '"format":"qcow2"' \
+           && printf '%s' "$image_show" | grep -q '"releaseVerification":"verified"' \
+           && printf '%s' "$image_show" | grep -q '"bootVerification":"signed-unverified"'; then
+          pass "aos image show resolves target to complete integrity metadata"
+        else die "aos image show did not resolve qemu-kvm to QCOW2"; fi
 
-        # 7. THE round-trip: a real nix client copies the path back out of the hub,
-        #    validating the narinfo signature policy (--no-check-sigs) and, crucially,
-        #    re-hashing the streamed NAR against the narinfo NarHash. A serve-path
-        #    corruption (wrong bytes, bad range framing) fails this.
-        if nix $NIXFLAGS copy --no-check-sigs \
-             --from "$BASE" --to "file://$work/dest?compression=none" "$sp" \
-           && [ -f "$work/dest/$hash.narinfo" ]; then
-          pass "nix copy --from http hub -> NAR re-hashed + path materialized"
-        else die "nix copy --from the hub failed (serve-path or NarHash mismatch)"; fi
+        raw_out="$work/downloaded.img"
+        aos image download --hub "$HUB" --registry demo/cdn --channel stable \
+          --format raw --output "$raw_out" >/dev/null
+        if cmp -s "$work/expected.raw" "$raw_out"; then
+          pass "aos image download writes exact raw bytes with checksum verification"
+        else die "raw image download bytes differ"; fi
+
+        # Useful signed filenames are used when --output is omitted.
+        mkdir -p "$work/default-name"
+        (
+          cd "$work/default-name"
+          aos image download --hub "$HUB" --registry demo/cdn --channel stable \
+            --format raw >/dev/null
+        )
+        if cmp -s "$work/expected.raw" "$work/default-name/aos-e2e.img"; then
+          pass "aos image download uses the signed useful filename"
+        else die "default image filename or bytes are incorrect"; fi
+
+        # Resume from the secure descriptor-relative partial filename. A
+        # successful result proves the CLI accepted a 206 with exact range
+        # framing and verified the full-file digest before finalization.
+        qcow_out="$work/resumed.qcow2"
+        printf 'QFI' > "$work/.resumed.qcow2.aos-part"
+        resume_json="$(aos --json image download --hub "$HUB" --registry demo/cdn \
+          --channel stable --format qcow2 --output "$qcow_out")"
+        cp "$(cat "$fixture/qcow2-path")" "$work/expected.qcow2"
+        if cmp -s "$work/expected.qcow2" "$qcow_out" \
+           && printf '%s' "$resume_json" | grep -q '"resumedFrom":3'; then
+          pass "aos image download resumes with Range and verifies exact QCOW2 bytes"
+        else die "resumed QCOW2 download or JSON result is incorrect"; fi
+
+        # 9. Exchange the seed's one-time provisioning secret for a real JWT.
+        #    Anonymous private discovery must fail; org-scoped bearer access
+        #    must list and download the exact private image bytes. Plain HTTP is
+        #    accepted only because the host is an IP-literal loopback address.
+        provisioning=""
+        while IFS= read -r line; do
+          case "$line" in
+            "  token:     "*) provisioning="''${line#  token:     }" ;;
+          esac
+        done < "$work/serve.log"
+        if [ -z "$provisioning" ]; then
+          die "seed did not print its provisioning token"
+        else
+          access="$(aos hub login --hub "$HUB" --provisioning-token "$provisioning" | tail -n 1)"
+          if aos image list --hub "$HUB" --registry demo/private-images >/dev/null 2>&1; then
+            die "private image catalog was anonymously readable"
+          elif private_list="$(aos --json image list --hub "$HUB" --token "$access" \
+            --registry demo/private-images --channel stable --format qcow2)" \
+            && printf '%s' "$private_list" | grep -q 'aos-e2e.qcow2'; then
+            pass "aos image list enforces private auth and accepts bearer access"
+          else die "authenticated private image listing failed"; fi
+
+          private_out="$work/private.qcow2"
+          if aos image download --hub "$HUB" --token "$access" \
+               --registry demo/private-images --channel stable --format qcow2 \
+               --output "$private_out" >/dev/null \
+             && cmp -s "$work/expected.qcow2" "$private_out"; then
+            pass "aos image download serves exact authenticated private bytes"
+          else die "authenticated private image download failed"; fi
+        fi
 
         echo "aos-hub-e2e: $ok ok, $fail fail"
         [ "$fail" = 0 ] || { echo "--- serve.log ---"; tail -20 "$work/serve.log" || true; exit 1; }
@@ -141,8 +239,24 @@ mkDerivation {
   ];
 
   meta = {
-    description = "Launcher: run the native aos-hub server and assert a real nix copy round-trip through the unified cache read path";
+    description = "Launcher: assert native Hub cache and signed system-image end-to-end consumer flows";
     homepage = "https://github.com/andyl/andyl-os";
     license = "MIT";
+  };
+
+  checks = {
+    testing,
+    self,
+    ...
+  }: {
+    live-native-image-topology = testing.mkVMTest {
+      name = "aos-hub-e2e-live";
+      rootfsDeps = [self];
+      memory = 2048;
+      testScript = ''
+        ${nix}/bin/nix-store --load-db < /aos-registration
+        ${self}/bin/aos-hub-e2e
+      '';
+    };
   };
 }

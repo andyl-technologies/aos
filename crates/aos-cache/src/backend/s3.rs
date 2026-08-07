@@ -81,6 +81,8 @@ impl CacheBackend for S3Backend {
             &mut req,
             Some("text/x-nix-narinfo"),
             Some(MUTABLE_CACHE_CONTROL),
+            None,
+            None,
         );
         self.engine
             .execute(req)
@@ -111,6 +113,8 @@ impl CacheBackend for S3Backend {
             &mut req,
             Some("application/x-nix-nar"),
             Some(IMMUTABLE_CACHE_CONTROL),
+            None,
+            None,
         );
         self.engine
             .execute(req)
@@ -154,7 +158,13 @@ impl CacheBackend for S3Backend {
         let mut req = TransferRequest::put(&url, content.into_bytes());
         // The cache marker is rewritten in place (e.g. Priority changes), so
         // keep it revalidatable rather than long-lived.
-        add_static_metadata_headers(&mut req, Some("text/plain"), Some(MUTABLE_CACHE_CONTROL));
+        add_static_metadata_headers(
+            &mut req,
+            Some("text/plain"),
+            Some(MUTABLE_CACHE_CONTROL),
+            None,
+            None,
+        );
         self.engine
             .execute(req)
             .await
@@ -165,7 +175,13 @@ impl CacheBackend for S3Backend {
     async fn put_cache_info(&self, content: &str) -> Result<()> {
         let url = self.s3_url("nix-cache-info");
         let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
-        add_static_metadata_headers(&mut req, Some("text/plain"), Some(MUTABLE_CACHE_CONTROL));
+        add_static_metadata_headers(
+            &mut req,
+            Some("text/plain"),
+            Some(MUTABLE_CACHE_CONTROL),
+            None,
+            None,
+        );
         self.engine
             .execute(req)
             .await
@@ -179,10 +195,18 @@ impl CacheBackend for S3Backend {
         source: &std::path::Path,
         content_type: Option<&str>,
         cache_control: Option<&str>,
+        content_disposition: Option<&str>,
+        sha256: Option<&str>,
     ) -> Result<()> {
         let url = self.s3_url(relative_path);
         let mut req = TransferRequest::put_file(&url, source.to_path_buf());
-        add_static_metadata_headers(&mut req, content_type, cache_control);
+        add_static_metadata_headers(
+            &mut req,
+            content_type,
+            cache_control,
+            content_disposition,
+            sha256,
+        );
         self.engine
             .execute(req)
             .await

@@ -8,18 +8,19 @@
 //! 1. **Humans**: server-rendered browse pages (registry home, packages,
 //!    channels, releases) under the reserved `/-/` namespace, in the
 //!    no-JS "release-engineering paper" design language.
-//! 2. **Machines**: a byte-faithful facade over the registry's machine
-//!    paths (`HEAD`, `info/refs`, `objects/…`, `channels/…`,
-//!    `nix-cache-info`, `*.narinfo`, `nar/…`) with the same
-//!    immutable/mutable cache-header split `apr origin upload` writes.
+//! 2. **Machines**: byte-faithful registry and cache delivery through explicit
+//!    topology endpoints and routes. Registries, caches, placements, storage
+//!    bindings, and URLs remain independent resources rather than being
+//!    inferred from a slug.
 //! 3. **Itself**: a checkpointed indexer that re-walks the surface exactly
 //!    as an `apm` client would — loose-object reads, SSH-Ed25519 tag and
 //!    commit verification, name binding — and never displays unverified
 //!    state.
 //!
-//! The hub is a *control plane over a static data plane*: the registry
-//! surface stays the source of truth, the SQL database holds only
-//! registry registration (system of record) plus a rebuildable index.
+//! The hub is a control plane over a static data plane: signed registry
+//! releases remain the source of truth, while SQL records logical resources,
+//! physical placement, delivery topology, retained control, and rebuildable
+//! indexes.
 //!
 //! # Module map
 //!
@@ -53,16 +54,14 @@
 //!   exchange, anonymous browse/search).
 //! - [`validation`] — presence- and integrity-depth cache consistency
 //!   validation, stack-aware coverage, and repair planning.
-//! - [`compat`] — the machine-path read facade.
-//! - [`facade`] — the machine-path write facade: authenticated surface
-//!   uploads, the publish lease, and index-after-flip.
-//! - [`signing`] — hub-side hosted-key signing: signs release tags and
-//!   channel partitions for opt-in registries, writing surface objects the
-//!   indexer's own verifier accepts.
+//! - [`aos_hub_core::surface_write`] — typed publication writes, leases, and
+//!   index-after-commit coordination.
+//! - [`signing`] — pure release-tag and channel-partition signing primitives;
+//!   custody and consumer bindings are governed by retained control.
 //! - [`gitwrite`] — git-backed configuration change requests: writes a
 //!   draft-signed commit editing a committed file to
 //!   `refs/hub/changes/<change_id>` for a maintainer to review and promote.
-//! - [`rpc`] — the `aos.registry.v1` ConnectRPC read-path services plus the
+//! - [`rpc`] — the `aos.hub.v1` ConnectRPC read-path services plus the
 //!   tenancy and webhook write-path services.
 //! - [`seed`] — dev seed: populates a fresh hub with a browsable, signed demo
 //!   registry, a demo org/user/password, and a sample publish token.
@@ -72,9 +71,11 @@
 //! - [`server`] — axum router assembly tying the above together (including the
 //!   `/healthz` and Prometheus `/metrics` observability endpoints).
 
+#[cfg(all(feature = "test-support", not(debug_assertions)))]
+compile_error!("the aos-hub test-support feature must never be enabled in a release build");
+
 pub mod auth;
 pub mod cloudflare;
-pub mod compat;
 /// Config change-set staging/revert, re-exported from
 /// [`aos_hub_core::config`] (RFC-0004 Phase 5); keeps `crate::config::…` stable.
 pub use aos_hub_core::config;
@@ -86,12 +87,13 @@ pub use aos_hub_core::crawl;
 /// [`aos_hub_core::fetch::SurfaceProvider`]); RFC-0004 Phase 5.
 pub mod coreports;
 pub mod db;
+pub mod egress_gateway;
 /// The tenancy/IAM domain model, re-exported from [`aos_hub_core::domain`]
 /// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::domain::…` stable.
 pub use aos_hub_core::domain;
 pub mod export;
-pub mod facade;
 pub mod fetch;
+pub mod image_snapshot;
 /// Package/release listing filters, re-exported from
 /// [`aos_hub_core::filter`] (RFC-0004 Phase 5); keeps `crate::filter::…` stable.
 pub use aos_hub_core::filter;

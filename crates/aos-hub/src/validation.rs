@@ -27,7 +27,7 @@
 //!
 //! Coverage requirements derive from a registry's cache-stack semantics (see
 //! [`crate::stack`]). [`validate_registry`] probes the stack's distinct
-//! endpoints when a `[cache_stack]` is committed, else the flat `[[caches]]`
+//! endpoints from the committed `[caches]` stack
 //! list. For every `mirror` group in the stack, each member must
 //! *individually* cover the full closure set — a shortfall is a replication
 //! failure reported as a [`ValidationSummary::mirror_shortfall`]. For `try`
@@ -46,11 +46,10 @@
 //! `NarHash` — before writing anything, and constrain the NAR `URL:` to the
 //! conventional `nar/` location. A source is a byte courier, not a trust party.
 //!
-//! For an **http target the hub is authorized to write** — a managed registry
-//! facade URL the hub serves — [`run_repairs`] mints an internal short-lived
-//! Publish token (the same path as [`crate::rpc`]'s `MintUploadCredentials`)
-//! and PUTs the verified narinfo + NAR to the target through the facade with a
-//! Bearer JWT ([`execute_repair_http`]). Targets the hub has *no* credential for
+//! For an **http target the hub is authorized to write** — any ready delivery
+//! route for a managed cache — [`run_repairs`] mints an internal short-lived
+//! cache-scoped JWT and writes the verified narinfo + NAR through the typed
+//! cache upload API ([`execute_repair_http`]). Targets the hub has *no* credential for
 //! (arbitrary external caches) remain plan-only: [`run_repairs`] records them
 //! as `plan_only` repair jobs and never writes to them. Every repair attempt
 //! is recorded in `repair_jobs` (`pending | done | failed | plan_only`).
@@ -68,7 +67,7 @@
 //! Each run is recorded in the database (`validation_runs` plus per-hash
 //! `validation_findings`) and summarized for callers.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -76,7 +75,6 @@ use sha2::{Digest, Sha256};
 
 use crate::db::{Database, FindingStatus, RegistryRecord, ValidationFinding};
 use crate::fetch;
-use crate::stack::StackNode;
 
 /// Maximum store hashes probed per cache per run.
 ///
@@ -153,7 +151,7 @@ pub struct ValidationSummary {
 /// A mirror-group coverage shortfall for one member cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MirrorShortfall {
-    /// Index of the mirror group in [`StackNode::mirror_groups`] order.
+    /// Index of the mirror group in [`crate::stack::StackNode::mirror_groups`] order.
     pub group_index: usize,
     /// Number of closure hashes this member is missing.
     pub missing: u64,
@@ -262,7 +260,7 @@ pub async fn validate_deep(
 ///
 /// The cache set is the registry's committed cache stack's distinct endpoints
 /// when a `[cache_stack]` is committed (see [`Database::registry_cache_stack`]),
-/// else the flat `[[caches]]` list. For every `mirror` group, each member's
+/// committed `[caches]` stack. For every `mirror` group, each member's
 /// per-member coverage is computed and a shortfall is attached to that
 /// member's summary (and recorded as findings).
 ///
@@ -286,22 +284,24 @@ pub async fn validate_registry(
         hashes.truncate(MAX_HASHES_PER_RUN);
     }
 
-    // The cache set and the mirror groups both come from the committed stack
-    // when present, falling back to the flat [[caches]] list otherwise.
-    let stack = db.registry_cache_stack(registry.id).await?;
-    let cache_urls: Vec<String> = match &stack {
-        Some(node) => node.endpoints(),
-        None => db
-            .list_advertised_caches(registry.id)
-            .await?
-            .into_iter()
-            .map(|(u, _)| u)
-            .collect(),
-    };
-    let mirror_groups: Vec<Vec<String>> = stack
-        .as_ref()
-        .map(StackNode::mirror_groups)
-        .unwrap_or_default();
+    // Both validation inputs come from the exact signed-stack projection. A
+    // mirror-group digest is stable across ordering changes and groups entries
+    // that satisfy the same availability requirement.
+    let stack_entries = db.registry_cache_stack_entries(registry.id).await?;
+    let cache_urls: Vec<String> = stack_entries
+        .iter()
+        .map(|entry| entry.committed_url.clone())
+        .collect();
+    let mut grouped = BTreeMap::<String, Vec<String>>::new();
+    for entry in &stack_entries {
+        if let Some(group_id) = &entry.mirror_group_id {
+            grouped
+                .entry(group_id.clone())
+                .or_default()
+                .push(entry.committed_url.clone());
+        }
+    }
+    let mirror_groups: Vec<Vec<String>> = grouped.into_values().collect();
 
     let client = fetch::hardened_client().await;
     let mut summaries = Vec::new();
@@ -514,7 +514,7 @@ async fn read_repair_object(
 /// if present, relative, and under the conventional `nar/` location.
 ///
 /// SECURITY: this mirrors [`crate::mirror`]'s mirror-path constraint (M2). A
-/// repair propagates the named NAR onto a hub-trusted facade (an http PUT) or
+/// repair propagates the named NAR onto a Hub-managed cache or
 /// into a sibling cache (a file copy); constraining the path to a `nar/` prefix
 /// means an attacker-controlled `URL:` cannot steer that write at a pointer file
 /// (`info/refs`, `channels/**`), an off-surface absolute URL (`https://…`), or a
@@ -687,18 +687,18 @@ pub async fn execute_repair(action: &RepairAction, trust_keys: &[String]) -> Res
 /// authorized to write.
 #[derive(Debug, Clone)]
 pub struct RepairCredential {
-    /// The facade base URL to PUT surface paths under (the registry's
-    /// canonical upload URL, e.g. `https://hub.example.com/acme/infra/prod`).
-    pub upload_url: String,
-    /// A Bearer JWT granting `publish` on that registry's scope.
+    /// Hub control-plane origin hosting the typed cache upload API.
+    pub hub_url: String,
+    /// Immutable logical cache identity resolved from the target route.
+    pub cache_id: String,
+    /// A Bearer JWT granting cache write authority on that cache's scope.
     pub bearer_jwt: String,
 }
 
 /// Resolves the upload credential for an http repair target.
 ///
-/// Implemented by the hub server to mint an internal short-lived Publish JWT
-/// for a target that is one of the hub's own managed registry facade URLs (the
-/// same authorization the `MintUploadCredentials` RPC grants a producer). For
+/// Implemented by the hub server to mint an internal short-lived cache JWT
+/// for a target that resolves through one of the hub's ready delivery routes. For
 /// a target the hub does not serve — an arbitrary external cache with no
 /// configured credential — it returns `None`, and [`run_repairs`] records the
 /// repair as `plan_only` rather than writing somewhere it cannot authorize.
@@ -717,7 +717,7 @@ pub trait RepairAuthorizer: Send + Sync {
 /// Execute a repair into an **http** target the hub is authorized to write.
 ///
 /// Reads the `(narinfo, NAR)` object from the source cache (file or http) and,
-/// before propagating any byte onto the hub-trusted facade, runs the **full**
+/// before propagating any byte onto the Hub-managed cache, runs the **full**
 /// mirror-path trust gate (the same contract as [`crate::mirror`]'s
 /// `collect_nix_cache`):
 ///
@@ -734,11 +734,10 @@ pub trait RepairAuthorizer: Send + Sync {
 /// `nar/` location, so [`read_repair_object`] could fetch no NAR bytes) is
 /// **rejected** rather than PUT alone: a narinfo without its verified NAR cannot
 /// complete the trust gate, and serving the pointer without the object would
-/// leave the facade advertising bytes it cannot back. Only an object that passes
-/// both checks is PUT to the target through the registry facade with the
-/// supplied Bearer JWT, exactly as `apr origin upload` would. Surface paths are
-/// written relative to `credential.upload_url` (`<hash>.narinfo` and the
-/// narinfo's `nar/`-constrained `URL:` NAR path).
+/// leave the cache advertising bytes it cannot back. Only an object that passes
+/// both checks is admitted through `CreateCacheObjectUploads` and written using
+/// either its direct-origin capability, authenticated Hub proxy URL, or typed
+/// multipart flow.
 ///
 /// Returns the number of files PUT (2: the narinfo plus its NAR).
 ///
@@ -757,7 +756,7 @@ pub async fn execute_repair_http(
     let object = read_repair_object(client, &action.source_cache_url, &action.store_hash).await?;
 
     // SECURITY (finding #3): a repair propagates the source object onto a
-    // hub-trusted facade, so it must clear the SAME trust gate the mirror path
+    // Hub-managed cache, so it must clear the SAME trust gate the mirror path
     // uses — never a content-hash check alone. First, the narinfo must carry a
     // valid Sig by a key the registry trusts; a self-consistent forged
     // FileHash/NarHash cannot satisfy this without a trusted private key.
@@ -769,7 +768,7 @@ pub async fn execute_repair_http(
     })?;
 
     // A narinfo with no verifiable NAR cannot complete the gate. Reject rather
-    // than PUT the pointer alone onto the facade.
+    // than upload the pointer alone.
     let nar_bytes = match (&object.nar_rel, &object.nar_bytes) {
         (Some(_), Some(bytes)) => bytes,
         _ => anyhow::bail!(
@@ -798,47 +797,186 @@ pub async fn execute_repair_http(
         );
     };
 
-    let base = credential.upload_url.trim_end_matches('/');
-    put_surface_file(
+    upload_repair_object(
         client,
-        &format!("{base}/{}.narinfo", action.store_hash),
-        &credential.bearer_jwt,
-        "text/x-nix-narinfo",
+        credential,
+        &format!("{}.narinfo", action.store_hash),
         object.narinfo.into_bytes(),
     )
     .await
-    .context("PUT narinfo to repair target")?;
+    .context("upload narinfo to repair target")?;
 
-    put_surface_file(
-        client,
-        &format!("{base}/{}", rel.trim_start_matches('/')),
-        &credential.bearer_jwt,
-        "application/x-nix-nar",
-        bytes,
-    )
-    .await
-    .context("PUT NAR to repair target")?;
+    upload_repair_object(client, credential, rel.trim_start_matches('/'), bytes)
+        .await
+        .context("upload NAR to repair target")?;
     Ok(2)
 }
 
-/// PUT one surface file to a facade target with a Bearer JWT.
-async fn put_surface_file(
+/// Uploads one verified repair object through the typed cache API.
+async fn upload_repair_object(
     client: &reqwest::Client,
-    url: &str,
-    bearer_jwt: &str,
-    content_type: &str,
+    credential: &RepairCredential,
+    path: &str,
     body: Vec<u8>,
 ) -> Result<()> {
+    let size = u64::try_from(body.len()).context("repair object size overflow")?;
+    let sha256 = hex::encode(Sha256::digest(&body));
+    let mint_url = format!(
+        "{}/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
+        credential.hub_url
+    );
     let response = client
-        .put(url)
-        .bearer_auth(bearer_jwt)
-        .header(reqwest::header::CONTENT_TYPE, content_type)
-        .body(body)
+        .post(&mint_url)
+        .bearer_auth(&credential.bearer_jwt)
+        .json(&serde_json::json!({
+            "cacheId": credential.cache_id,
+            "path": path,
+            "size": size,
+        }))
         .send()
         .await
-        .with_context(|| format!("PUT {url}"))?;
+        .context("minting repair upload")?;
     if !response.status().is_success() {
-        anyhow::bail!("PUT {url}: HTTP {}", response.status());
+        anyhow::bail!("minting repair upload: HTTP {}", response.status());
+    }
+    let response: serde_json::Value = response.json().await.context("decoding repair upload")?;
+    let upload_url = response
+        .get("uploadUrl")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if !upload_url.is_empty() {
+        let request = client.put(upload_url).body(body);
+        let request = if upload_url.starts_with(&format!(
+            "{}/aos.hub.v1.BinaryCacheService/UploadObject/",
+            credential.hub_url
+        )) {
+            request.bearer_auth(&credential.bearer_jwt)
+        } else {
+            request
+        };
+        let response = request.send().await.context("uploading repair object")?;
+        if !response.status().is_success() {
+            anyhow::bail!("uploading repair object: HTTP {}", response.status());
+        }
+        return Ok(());
+    }
+
+    upload_repair_object_multipart(client, credential, path, size, &sha256, &body).await
+}
+
+async fn upload_repair_object_multipart(
+    client: &reqwest::Client,
+    credential: &RepairCredential,
+    path: &str,
+    size: u64,
+    sha256: &str,
+    body: &[u8],
+) -> Result<()> {
+    let begin_url = format!(
+        "{}/aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
+        credential.hub_url
+    );
+    let response = client
+        .post(&begin_url)
+        .bearer_auth(&credential.bearer_jwt)
+        .json(&serde_json::json!({
+            "cacheId": credential.cache_id,
+            "path": path,
+            "byteSize": size,
+            "sha256": sha256,
+        }))
+        .send()
+        .await
+        .context("beginning repair multipart upload")?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "beginning repair multipart upload: HTTP {}",
+            response.status()
+        );
+    }
+    let response: serde_json::Value = response
+        .json()
+        .await
+        .context("decoding repair multipart admission")?;
+    let upload_id = response
+        .get("uploadId")
+        .and_then(serde_json::Value::as_str)
+        .context("repair multipart admission omitted uploadId")?;
+    let part_size = response
+        .get("partSize")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|size| usize::try_from(size).ok())
+        .context("repair multipart admission omitted a valid partSize")?;
+    anyhow::ensure!(
+        (5 * 1024 * 1024..=16 * 1024 * 1024).contains(&part_size),
+        "repair multipart part size is outside the supported range"
+    );
+    let upload = async {
+        let mut parts = Vec::new();
+        for (index, bytes) in body.chunks(part_size).enumerate() {
+            let part_number = u32::try_from(index + 1).context("too many repair upload parts")?;
+            let url = format!(
+                "{}/aos.hub.v1.BinaryCacheService/UploadPart/{upload_id}/{part_number}",
+                credential.hub_url
+            );
+            let response = client
+                .put(url)
+                .bearer_auth(&credential.bearer_jwt)
+                .body(bytes.to_vec())
+                .send()
+                .await
+                .context("uploading repair part")?;
+            if !response.status().is_success() {
+                anyhow::bail!("uploading repair part: HTTP {}", response.status());
+            }
+            let part: serde_json::Value = response
+                .json()
+                .await
+                .context("decoding repair part response")?;
+            parts.push(part);
+        }
+        let complete_url = format!(
+            "{}/aos.hub.v1.BinaryCacheService/CompleteCacheMultipartUpload",
+            credential.hub_url
+        );
+        let response = client
+            .post(complete_url)
+            .bearer_auth(&credential.bearer_jwt)
+            .json(&serde_json::json!({ "uploadId": upload_id, "parts": parts }))
+            .send()
+            .await
+            .context("completing repair multipart upload")?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "completing repair multipart upload: HTTP {}",
+            response.status()
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    if let Err(error) = upload {
+        let abort_url = format!(
+            "{}/aos.hub.v1.BinaryCacheService/AbortCacheMultipartUpload",
+            credential.hub_url
+        );
+        let abort = client
+            .post(abort_url)
+            .bearer_auth(&credential.bearer_jwt)
+            .json(&serde_json::json!({ "uploadId": upload_id }))
+            .send()
+            .await;
+        return match abort {
+            Ok(response) if response.status().is_success() => {
+                Err(error.context("staged repair upload was aborted"))
+            }
+            Ok(response) => Err(error.context(format!(
+                "repair upload abort returned HTTP {}",
+                response.status()
+            ))),
+            Err(abort_error) => {
+                Err(error.context(format!("repair upload abort also failed: {abort_error:#}")))
+            }
+        };
     }
     Ok(())
 }
@@ -1713,7 +1851,7 @@ async fn http_integrity_ok(
 ///
 /// SECURITY: the URL is gated through [`crate::fetch::is_safe_remote_url`]
 /// before any request is issued. The cache endpoints probed here come from a
-/// registry's committed `[cache_stack]`/`[[caches]]` and are re-checked on
+/// registry's committed `[caches]` stack and are re-checked on
 /// every reindex tick, so a committed literal-IP URL like
 /// `http://169.254.169.254/<hash>.narinfo` must not be reachable: the
 /// [`ValidatingResolver`](crate::fetch) only covers DNS *names*, not literal-IP
@@ -1736,6 +1874,7 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stack::StackNode;
 
     /// Build a signed narinfo for `nar_bytes` and the matching trust roster
     /// key for a fixed test key, returning `(narinfo_text, trust_key_line)`.
@@ -2088,7 +2227,7 @@ mod tests {
     }
 
     /// Build a registry whose index references a single store hash `abc`,
-    /// with the given `[[caches]]` URLs, in a fresh in-memory db.
+    /// with the given committed cache-stack URLs, in a fresh in-memory db.
     async fn registry_with_caches(caches: Vec<(String, u32)>) -> (Database, RegistryRecord) {
         registry_with_caches_and_keys(caches, &[]).await
     }
@@ -2101,7 +2240,7 @@ mod tests {
     ) -> (Database, RegistryRecord) {
         let db = Database::open_in_memory().await.unwrap();
         let id = db
-            .register_registry("demo", "/srv/demo", trust_keys, false)
+            .register_registry("demo", trust_keys, false)
             .await
             .unwrap();
         let package: aos_package::registry::parse::PackageToml = toml::from_str(
@@ -2270,7 +2409,7 @@ mod tests {
     async fn execute_repair_http_rejects_unsigned_source_before_any_put() {
         // SECURITY regression (finding #3): an http repair must verify the
         // source narinfo's Sig against the registry trust roster BEFORE it
-        // propagates any byte onto the hub-trusted facade. Here the source is a
+        // propagates any byte onto the hub-trusted cache. Here the source is a
         // local cache holding a well-formed but UNSIGNED narinfo (its FileHash/
         // NarHash are self-consistent, the forgery the signature check defeats).
         // With an empty roster the signature check fails closed, so the function
@@ -2299,7 +2438,8 @@ mod tests {
         let credential = RepairCredential {
             // Deliberately unroutable: the trust gate must reject before we ever
             // try to reach this.
-            upload_url: "http://203.0.113.1/should-never-be-reached".to_string(),
+            hub_url: "http://203.0.113.1/should-never-be-reached".to_string(),
+            cache_id: "cache:unreachable".to_string(),
             bearer_jwt: "dummy".to_string(),
         };
         let client = fetch::hardened_client().await;

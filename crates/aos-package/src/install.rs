@@ -2118,6 +2118,7 @@ mod tests {
             store_path: store_path.to_string(),
             nar_hash: nar_hash.to_string(),
             nar_size: 1,
+            delivery: crate::types::test_image_delivery("raw"),
             sb_signer_cert_sha256: None,
             sbat: Vec::new(),
             expected_pcr11: None,

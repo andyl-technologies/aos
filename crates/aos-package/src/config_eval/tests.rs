@@ -432,11 +432,8 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
     );
 
     let mut image_runtime = runtime.clone();
-    image_runtime
-        .packages
-        .get_mut("web")
-        .unwrap()
-        .origin = super::runtime::RuntimePackageOrigin::Image;
+    image_runtime.packages.get_mut("web").unwrap().origin =
+        super::runtime::RuntimePackageOrigin::Image;
     enrich_runtime_projection(bundled_output.as_object_mut().unwrap(), &image_runtime)
         .expect("an image-origin pin may reuse its identical image-owned output");
     assert_eq!(bundled_output["ownership"]["storePaths"][output], "@base");

@@ -30,6 +30,45 @@ pub fn now_unix_secs() -> i64 {
     }
 }
 
+/// Suspends the current task for at least `duration` without blocking its
+/// runtime thread.
+///
+/// Native deployments use Tokio's timer. Worker deployments use the host's
+/// `setTimeout`, preserving identical long-poll behavior without assuming a
+/// Tokio reactor in WebAssembly.
+pub async fn sleep(duration: std::time::Duration) {
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::time::sleep(duration).await;
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::{closure::Closure, JsCast as _, JsValue};
+        use wasm_bindgen_futures::JsFuture;
+
+        let millis = duration.as_millis().min(u32::MAX.into()) as u32;
+        let promise = js_sys::Promise::new(&mut |resolve, reject| {
+            let callback = Closure::once_into_js(move || {
+                let _ = resolve.call0(&JsValue::NULL);
+            });
+            let result = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("setTimeout"))
+                .and_then(|value| value.dyn_into::<js_sys::Function>())
+                .and_then(|timer| {
+                    timer
+                        .call2(
+                            &js_sys::global(),
+                            &callback,
+                            &JsValue::from_f64(f64::from(millis)),
+                        )
+                        .map(|_| ())
+                });
+            if let Err(error) = result {
+                let _ = reject.call1(&JsValue::NULL, &error);
+            }
+        });
+        let _ = JsFuture::from(promise).await;
+    }
+}
+
 /// A stopwatch for render timing, abstracted across deployment targets.
 ///
 /// On native this is `std::time::Instant`. On `wasm32-unknown-unknown`

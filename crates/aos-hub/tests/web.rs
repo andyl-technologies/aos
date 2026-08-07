@@ -8,7 +8,7 @@ mod common;
 use std::path::Path;
 use std::sync::Arc;
 
-use aos_hub::db::Database;
+use aos_hub::db::{Database, SurfaceTarget};
 use aos_hub::fetch::LocalFsFetch;
 use aos_hub::indexer::index_and_record;
 use aos_hub::server::{router, AppState};
@@ -26,7 +26,9 @@ async fn get_with_accept(
     uri: &str,
     accept: Option<&str>,
 ) -> (StatusCode, axum::http::HeaderMap, String) {
-    let mut request = Request::builder().uri(uri);
+    let mut request = Request::builder()
+        .uri(uri)
+        .header(header::HOST, "127.0.0.1:8420");
     if let Some(accept) = accept {
         request = request.header(header::ACCEPT, accept);
     }
@@ -46,15 +48,32 @@ async fn get_with_accept(
 /// Register and index a fixture surface, returning the served app + db.
 async fn serve_fixture(surface: &Path, fixture: &common::Fixture) -> (axum::Router, Arc<Database>) {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    db.register_registry(
-        "demo",
-        surface.to_str().unwrap(),
-        std::slice::from_ref(&fixture.trust_key),
-        true,
-    )
-    .await
-    .unwrap();
+    db.register_registry("demo", std::slice::from_ref(&fixture.trust_key), true)
+        .await
+        .unwrap();
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
+    let binding =
+        common::create_instance_local_binding(&db, "fixture-origin", surface.to_str().unwrap())
+            .await;
+    let placement = common::create_ready_placement(
+        &db,
+        SurfaceTarget::Registry(registry.id),
+        binding,
+        "fixture-primary",
+        "",
+    )
+    .await;
+    common::configure_hub_delivery_route(
+        &db,
+        SurfaceTarget::Registry(registry.id),
+        placement.id,
+        &registry.owner_scope_key,
+        "endpoint:web-fixture",
+        "route:web-fixture",
+        "/demo",
+        "git",
+    )
+    .await;
     index_and_record(&db, &LocalFsFetch::new(surface), &registry)
         .await
         .unwrap();
@@ -147,14 +166,14 @@ async fn security_headers_on_every_route_class() {
     let (app, _db) = serve_fixture(&surface, &fixture).await;
 
     for uri in [
-        "/",                                               // instance home
-        "/demo/",                                          // registry page
-        "/demo/-/packages",                                // /-/ page
-        "/demo/HEAD",                                      // machine path
-        "/_assets/style.css",                              // stylesheet
-        "/_assets/jetbrains-mono-regular.woff2",           // embedded font
-        "/aos.registry.v1.RegistryService/ListRegistries", // RPC path
-        "/demo/does-not-exist",                            // 404s carry the headers too
+        "/",                                          // instance home
+        "/demo/",                                     // registry page
+        "/demo/-/packages",                           // /-/ page
+        "/demo/HEAD",                                 // machine path
+        "/_assets/style.css",                         // stylesheet
+        "/_assets/jetbrains-mono-regular.woff2",      // embedded font
+        "/aos.hub.v1.RegistryService/ListRegistries", // RPC path
+        "/demo/does-not-exist",                       // 404s carry the headers too
     ] {
         let (_, headers, _) = get(&app, uri).await;
         // The default CSP now carries `frame-ancestors 'none'` for
@@ -174,7 +193,7 @@ async fn security_headers_on_every_route_class() {
             Some("nosniff"),
             "nosniff missing on {uri}"
         );
-        // Legacy belt-and-braces framing protection alongside frame-ancestors.
+        // Defense-in-depth framing protection alongside frame-ancestors.
         assert_eq!(
             headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
             Some("DENY"),
@@ -296,14 +315,9 @@ async fn anonymous_browse_is_rate_limited_on_flat_and_nested_paths() {
     // resolver rather than the flat route.
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     for slug in ["demo", "acme/infra"] {
-        db.register_registry(
-            slug,
-            surface.to_str().unwrap(),
-            std::slice::from_ref(&fixture.trust_key),
-            true,
-        )
-        .await
-        .unwrap();
+        db.register_registry(slug, std::slice::from_ref(&fixture.trust_key), true)
+            .await
+            .unwrap();
         let registry = db.registry_by_slug(slug).await.unwrap().unwrap();
         index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
             .await
@@ -339,32 +353,21 @@ async fn anonymous_browse_is_rate_limited_on_flat_and_nested_paths() {
 }
 
 #[tokio::test]
-async fn autoindex_lists_channel_partitions() {
+async fn registry_machine_paths_require_a_typed_publication() {
     let dir = tempfile::tempdir().unwrap();
     let surface = dir.path().join("surface");
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
     let (app, _db) = serve_fixture(&surface, &fixture).await;
 
-    let (status, headers, body) = get(&app, "/demo/channels/stable/").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(headers[header::CONTENT_TYPE]
-        .to_str()
-        .unwrap()
-        .starts_with("text/html"));
-    assert!(body.contains("Index of /demo/channels/stable/"), "{body}");
-    assert!(body.contains("<a href=\"../\">../</a>"), "{body}");
-    assert!(body.contains("<a href=\"00\">00</a>"), "{body}");
-    assert!(body.contains("<a href=\"ff\">ff</a>"), "{body}");
-
-    // The bare directory path redirects to the trailing-slash form, and
-    // partition files themselves still serve bytes.
-    let (status, headers, _) = get(&app, "/demo/channels/stable").await;
-    assert_eq!(status, StatusCode::FOUND);
-    assert_eq!(headers[header::LOCATION], "/demo/channels/stable/");
-    let (status, _, body) = get(&app, "/demo/channels/stable/00").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("tag stable"));
+    // Indexing is intentionally not publication. Neither a Git directory nor
+    // a mutable channel pointer becomes servable merely because bytes happen
+    // to exist on a placement; the typed publication transaction must record
+    // exact object presence and atomically advance the current generation.
+    let (status, _, _) = get(&app, "/demo/channels/stable/").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = get(&app, "/demo/channels/stable/00").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -441,20 +444,16 @@ async fn registry_root_content_negotiates() {
     let (status, _, _) = get_with_accept(&app, "/demo/", Some("application/json")).await;
     assert_eq!(status, StatusCode::NOT_ACCEPTABLE);
 
-    // Once the surface ships an index.html, the same request serves it.
+    // A loose index.html on a placement does not replace the Hub-owned Web
+    // surface. Producer files are never an implicit fallback response.
     std::fs::write(surface.join("index.html"), "<!DOCTYPE html>static page\n").unwrap();
-    let (status, _, body) = get_with_accept(&app, "/demo/", Some("application/json")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("static page"));
+    let (status, _, _) = get_with_accept(&app, "/demo/", Some("application/json")).await;
+    assert_eq!(status, StatusCode::NOT_ACCEPTABLE);
 }
 
-/// A web surface generated by `apr web generate` (the no-JS tier) serves
-/// straight through the facade as machine paths: the registry's own bucket
-/// answers `index.html`, `web/index.json`, and `browse/<name>.html` with no
-/// hub in the serving path. This is the producer-emitted floor the hub
-/// serves byte-for-byte.
+/// Generated producer files cannot shadow the Hub-owned registry Web surface.
 #[tokio::test]
-async fn generated_web_surface_serves_through_facade() {
+async fn generated_web_surface_cannot_shadow_hub_browse() {
     use aos_package::registry::webgen::{generate_web_surface, WebConfig};
 
     let dir = tempfile::tempdir().unwrap();
@@ -485,86 +484,29 @@ async fn generated_web_surface_serves_through_facade() {
     .unwrap();
     generate_web_surface(&committed, &surface, WebConfig::default()).unwrap();
 
-    // index.html — a producer-controlled document, served inert: the bytes
-    // are preserved (content type, body), but a `sandbox` CSP plus
-    // `Content-Disposition: attachment` keep the same-origin hub from ever
-    // running producer script in the authenticated origin (sec H3/M5).
-    let (status, headers, body) = get(&app, "/demo/index.html").await;
+    for path in [
+        "/demo/index.html",
+        "/demo/web/index.json",
+        "/demo/browse/curl.html",
+    ] {
+        let (status, _, _) = get(&app, path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "loose producer path {path}");
+    }
+
+    // Indexed metadata is still presented by the canonical Hub renderer.
+    let (status, headers, body) = get(&app, "/demo/-/packages/curl").await;
     assert_eq!(status, StatusCode::OK);
     assert!(headers[header::CONTENT_TYPE]
         .to_str()
         .unwrap()
         .starts_with("text/html"));
-    assert_eq!(
-        headers
-            .get(header::CONTENT_SECURITY_POLICY)
-            .and_then(|v| v.to_str().ok()),
-        Some("sandbox"),
-    );
-    assert_eq!(
-        headers
-            .get(header::CONTENT_DISPOSITION)
-            .and_then(|v| v.to_str().ok()),
-        Some("attachment"),
-    );
     assert!(body.contains("curl"), "{body}");
-    assert!(body.contains("browse/curl.html"), "{body}");
-
-    // web/index.json — a non-document machine path: served verbatim with its
-    // JSON content type, its mutable cache header, and no inert treatment (the
-    // global `default-src 'self'` applies; no per-response sandbox/disposition).
-    let (status, headers, body) = get(&app, "/demo/web/index.json").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(headers[header::CONTENT_TYPE]
-        .to_str()
-        .unwrap()
-        .starts_with("application/json"));
-    // The global layer applies the strict default CSP; the facade adds no
-    // per-response sandbox, and the bytes are not forced to a download.
-    assert_eq!(
-        headers
-            .get(header::CONTENT_SECURITY_POLICY)
-            .and_then(|v| v.to_str().ok()),
-        Some("default-src 'self'; frame-ancestors 'none'"),
-        "data-plane JSON must not be sandboxed",
-    );
-    assert!(
-        headers.get(header::CONTENT_DISPOSITION).is_none(),
-        "data-plane JSON must not be forced to a download",
-    );
-    let snapshot: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(snapshot["packages"][0]["name"], "curl");
-
-    // browse/curl.html — a producer document, likewise inert.
-    let (status, headers, body) = get(&app, "/demo/browse/curl.html").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        headers
-            .get(header::CONTENT_SECURITY_POLICY)
-            .and_then(|v| v.to_str().ok()),
-        Some("sandbox"),
-    );
-    assert_eq!(
-        headers
-            .get(header::CONTENT_DISPOSITION)
-            .and_then(|v| v.to_str().ok()),
-        Some("attachment"),
-    );
     assert!(body.contains("x86_64-linux"), "{body}");
-    assert!(body.contains("/h7j3k8l2m9n4.narinfo"), "{body}");
-
-    // A non-HTML Accept on the registry root serves the generated index.html.
-    let (status, _, body) = get_with_accept(&app, "/demo/", Some("application/json")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("curl"), "{body}");
 }
 
-/// Producer-uploaded JS is served inert, but the immutable data plane the
-/// same surface carries (narinfos, NARs, objects) is untouched — the inert
-/// treatment keys on document kind (provenance), not on a hub allowlist
-/// (sec H3/M5 regression guard).
+/// Loose producer JS and colocated cache objects are not registry capabilities.
 #[tokio::test]
-async fn producer_js_is_inert_but_data_plane_is_verbatim() {
+async fn registry_route_rejects_unpublished_web_and_cache_paths() {
     let dir = tempfile::tempdir().unwrap();
     let surface = dir.path().join("surface");
     std::fs::create_dir_all(&surface).unwrap();
@@ -580,98 +522,29 @@ async fn producer_js_is_inert_but_data_plane_is_verbatim() {
     .unwrap();
     let (app, _db) = serve_fixture(&surface, &fixture).await;
 
-    // Producer JS: a `sandbox` CSP (no script execution, no same-origin
-    // context) and forced to a download. No script-permitting CSP anywhere.
-    let (status, headers, _) = get(&app, "/demo/web/app.js").await;
-    assert_eq!(status, StatusCode::OK);
-    let csp = headers
-        .get(header::CONTENT_SECURITY_POLICY)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    assert_eq!(csp, "sandbox", "producer JS must be sandboxed: {csp}");
-    assert!(!csp.contains("script-src"), "{csp}");
-    assert!(!csp.contains("'self'"), "{csp}");
-    assert_eq!(
-        headers
-            .get(header::CONTENT_DISPOSITION)
-            .and_then(|v| v.to_str().ok()),
-        Some("attachment"),
-    );
+    let (status, _, _) = get(&app, "/demo/web/app.js").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // The narinfo data plane: served verbatim with its wire content type and
-    // immutable/mutable cache header, never sandboxed or forced to a download.
-    let (status, headers, body) = get(&app, "/demo/h7j3k8l2m9n4.narinfo").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(headers[header::CONTENT_TYPE]
-        .to_str()
-        .unwrap()
-        .starts_with("text/x-nix-narinfo"));
-    assert!(
-        headers.get(header::CONTENT_DISPOSITION).is_none(),
-        "narinfo must not be forced to a download",
-    );
-    // The global default CSP applies; the facade never sandboxes data bytes.
-    assert_eq!(
-        headers
-            .get(header::CONTENT_SECURITY_POLICY)
-            .and_then(|v| v.to_str().ok()),
-        Some("default-src 'self'; frame-ancestors 'none'"),
-        "narinfo must not be sandboxed",
-    );
-    assert!(body.contains("StorePath:"), "verbatim narinfo: {body}");
+    // A registry no longer doubles as its associated binary cache. Nix clients
+    // use an explicit cache route. Published byte-faithful delivery and range
+    // behavior are exercised by the signed-image end-to-end suite.
+    let (status, _, _) = get(&app, "/demo/h7j3k8l2m9n4.narinfo").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// Append a NAR length-prefixed, 8-byte-padded string.
-fn nar_put(out: &mut Vec<u8>, s: &[u8]) {
-    out.extend_from_slice(&(s.len() as u64).to_le_bytes());
-    out.extend_from_slice(s);
-    let pad = (8 - (s.len() % 8)) % 8;
-    out.extend(std::iter::repeat(0u8).take(pad));
-}
-
-/// A minimal uncompressed NAR: a directory holding one regular file `hi`.
-fn sample_nar() -> Vec<u8> {
-    let mut n = Vec::new();
-    nar_put(&mut n, b"nix-archive-1");
-    nar_put(&mut n, b"(");
-    nar_put(&mut n, b"type");
-    nar_put(&mut n, b"directory");
-    nar_put(&mut n, b"entry");
-    nar_put(&mut n, b"(");
-    nar_put(&mut n, b"name");
-    nar_put(&mut n, b"hi");
-    nar_put(&mut n, b"node");
-    nar_put(&mut n, b"(");
-    nar_put(&mut n, b"type");
-    nar_put(&mut n, b"regular");
-    nar_put(&mut n, b"contents");
-    nar_put(&mut n, b"hello\n");
-    nar_put(&mut n, b")");
-    nar_put(&mut n, b")");
-    nar_put(&mut n, b")");
-    n
-}
-
-/// The no-JS managed-cache browse surface — home, object list, object page,
-/// closure page, `nix-cache-info`, and the NAR explorer — all over plain HTTP
-/// against the real router, with no JavaScript required (RFC-0004 "11-caches").
+/// The no-JS managed-cache home and protocol surface use the final typed route.
 #[tokio::test]
-async fn cache_browse_and_nar_explorer_over_plain_http() {
+async fn cache_browse_and_uninventoried_nar_fail_closed_over_plain_http() {
     let root = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", root.path().to_str().unwrap())
-        .await
-        .unwrap();
+    let binding =
+        common::create_local_binding(&db, org, "primary", root.path().to_str().unwrap()).await;
     let cache = db
-        .create_cache(
+        .create_binary_cache(
             Some(org),
             "acme-cache",
             "Acme Cache",
-            Some(binding),
-            "cache",
-            None,
             "public",
             40,
             "zstd",
@@ -679,29 +552,35 @@ async fn cache_browse_and_nar_explorer_over_plain_http() {
         )
         .await
         .unwrap();
-    db.upsert_cache_object(&aos_hub_core::db::CacheObject {
-        cache_id: cache,
-        store_hash: "h7j3k8l2m9n4".into(),
-        store_name: "h7j3k8l2m9n4-hello-1.0".into(),
-        nar_url: "nar/test.nar".into(),
-        nar_hash: "sha256:aa".into(),
-        nar_size: 64,
-        file_hash: "aa".into(),
-        file_size: 64,
-        compression: "none".into(),
-        deriver: None,
-        refs: vec![],
-        sig: None,
-        ca: None,
-        uploaded_at: 0,
-        last_accessed_at: None,
-    })
-    .await
-    .unwrap();
-    // Write the (uncompressed) NAR onto the cache surface for the explorer.
+    let placement = common::create_ready_placement(
+        &db,
+        SurfaceTarget::BinaryCache(cache),
+        binding,
+        "primary",
+        "nix_cache",
+    )
+    .await;
+    let owner_scope = db
+        .binary_cache_by_id(cache)
+        .await
+        .unwrap()
+        .unwrap()
+        .owner_scope_key;
+    common::configure_hub_delivery_route(
+        &db,
+        SurfaceTarget::BinaryCache(cache),
+        placement.id,
+        &owner_scope,
+        "endpoint:cache-web-fixture",
+        "route:cache-web-fixture",
+        "/acme-cache",
+        "nix_cache",
+    )
+    .await;
+    // A loose NAR is deliberately not inventory evidence.
     let nar_dir = root.path().join("cache/nar");
     std::fs::create_dir_all(&nar_dir).unwrap();
-    std::fs::write(nar_dir.join("test.nar"), sample_nar()).unwrap();
+    std::fs::write(nar_dir.join("test.nar"), b"unpublished nar bytes").unwrap();
 
     let app = router(Arc::new(
         AppState::new(Arc::clone(&db), "http://127.0.0.1:8420".into()).await,
@@ -716,68 +595,32 @@ async fn cache_browse_and_nar_explorer_over_plain_http() {
         "{home}"
     );
 
-    // Object list: the indexed object's store name shows up.
-    let (status, _, objects) = get(&app, "/acme-cache/-/objects").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(objects.contains("h7j3k8l2m9n4-hello-1.0"), "{objects}");
-
-    // Object page: narinfo metadata + an explore link.
-    let (status, _, object) = get(&app, "/acme-cache/-/objects/h7j3k8l2m9n4").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(object.contains("h7j3k8l2m9n4-hello-1.0"), "{object}");
-
-    // Closure page renders (single-node closure for a refs-less object).
-    let (status, _, closure) = get(&app, "/acme-cache/-/closure/h7j3k8l2m9n4").await;
-    assert_eq!(status, StatusCode::OK, "closure: {closure}");
-
     // nix-cache-info is generated from the cache config.
     let (status, _, info) = get(&app, "/acme-cache/nix-cache-info").await;
     assert_eq!(status, StatusCode::OK);
     assert!(info.contains("StoreDir: /nix/store"), "{info}");
 
-    // NAR explorer: `?explore` lists the archive's file tree instead of the
-    // raw download — the `hi` entry inside the sample NAR appears.
-    let (status, _, explore) = get(&app, "/acme-cache/nar/test.nar?explore").await;
-    assert_eq!(status, StatusCode::OK, "explore: {explore}");
-    assert!(
-        explore.contains("hi"),
-        "NAR explorer lists entries: {explore}"
-    );
-
-    // Without `?explore`, the same path downloads the raw NAR bytes.
+    // Immutable cache objects require exact inventory presence. A file copied
+    // behind the controller's back is not served, with or without a query or
+    // Range header.
+    let (status, _, _) = get(&app, "/acme-cache/nar/test.nar?explore").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, _headers, _) = get(&app, "/acme-cache/nar/test.nar").await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // A `Range:` request is answered `206 Partial Content` with a `Content-Range`
-    // and exactly the requested slice — the shared streaming `cache_serve` path
-    // (the same one the Worker uses) honors ranges.
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .uri("/acme-cache/nar/test.nar")
+                .header(header::HOST, "127.0.0.1:8420")
                 .header(header::RANGE, "bytes=0-3")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
-    let cr = resp
-        .headers()
-        .get(header::CONTENT_RANGE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-    assert!(cr.starts_with("bytes 0-3/"), "content-range: {cr}");
-    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    assert_eq!(
-        body.len(),
-        4,
-        "ranged body is exactly the 4 requested bytes"
-    );
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 /// The unified streaming cache-read path gates a non-public cache: an anonymous
@@ -789,44 +632,37 @@ async fn private_cache_machine_read_is_gated_on_the_streaming_path() {
     let root = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", root.path().to_str().unwrap())
-        .await
-        .unwrap();
+    let binding =
+        common::create_local_binding(&db, org, "primary", root.path().to_str().unwrap()).await;
     let cache = db
-        .create_cache(
-            Some(org),
-            "priv-cache",
-            "Priv",
-            Some(binding),
-            "pc",
-            None,
-            "private",
-            40,
-            "zstd",
-            true,
-        )
+        .create_binary_cache(Some(org), "priv-cache", "Priv", "private", 40, "zstd", true)
         .await
         .unwrap();
-    db.upsert_cache_object(&aos_hub_core::db::CacheObject {
-        cache_id: cache,
-        store_hash: "aaaa".into(),
-        store_name: "aaaa-x-1.0".into(),
-        nar_url: "nar/aa.nar".into(),
-        nar_hash: "sha256:aa".into(),
-        nar_size: 1,
-        file_hash: "aa".into(),
-        file_size: 1,
-        compression: "none".into(),
-        deriver: None,
-        refs: vec![],
-        sig: None,
-        ca: None,
-        uploaded_at: 0,
-        last_accessed_at: None,
-    })
-    .await
-    .unwrap();
+    let placement = common::create_ready_placement(
+        &db,
+        SurfaceTarget::BinaryCache(cache),
+        binding,
+        "primary",
+        "pc",
+    )
+    .await;
+    let owner_scope = db
+        .binary_cache_by_id(cache)
+        .await
+        .unwrap()
+        .unwrap()
+        .owner_scope_key;
+    common::configure_hub_delivery_route(
+        &db,
+        SurfaceTarget::BinaryCache(cache),
+        placement.id,
+        &owner_scope,
+        "endpoint:private-cache-web-fixture",
+        "route:private-cache-web-fixture",
+        "/priv-cache",
+        "nix_cache",
+    )
+    .await;
     // Put the narinfo on the surface too, so a missing gate would actually serve.
     std::fs::create_dir_all(root.path().join("pc")).unwrap();
     std::fs::write(
@@ -846,217 +682,5 @@ async fn private_cache_machine_read_is_gated_on_the_streaming_path() {
         status,
         StatusCode::OK,
         "private cache must gate anonymous reads"
-    );
-}
-
-/// Issue a GET carrying a `Host` header (domain-routed frontend dispatch).
-async fn get_with_host(
-    app: &axum::Router,
-    host: &str,
-    uri: &str,
-) -> (StatusCode, axum::http::HeaderMap, String) {
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(uri)
-                .header(header::HOST, host)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let headers = response.headers().clone();
-    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    (status, headers, String::from_utf8_lossy(&body).into_owned())
-}
-
-/// A request arriving on a serving frontend's domain is dispatched to the bound
-/// cache by `Host` (no slug in the path), and the `serves_cache` subset gate
-/// rejects a frontend that does not advertise the cache surface.
-#[tokio::test]
-async fn frontend_domain_routes_to_bound_cache_and_gates_on_serves_cache() {
-    let root = tempfile::tempdir().unwrap();
-    let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", root.path().to_str().unwrap())
-        .await
-        .unwrap();
-    // A public cache served by its own domain (prefix `pc`).
-    let cache = db
-        .create_cache(
-            Some(org),
-            "ext-cache",
-            "Ext",
-            Some(binding),
-            "pc",
-            None,
-            "public",
-            40,
-            "none",
-            true,
-        )
-        .await
-        .unwrap();
-    std::fs::create_dir_all(root.path().join("pc")).unwrap();
-    std::fs::write(
-        root.path().join("pc/aaaa.narinfo"),
-        b"StorePath: /nix/store/aaaa-x-1.0\n",
-    )
-    .unwrap();
-    // A proxied frontend that serves the cache surface on `cache.example.test`.
-    db.create_cache_frontend(cache, "cache.example.test", "/", "proxied", true, 100, true)
-        .await
-        .unwrap();
-    // A second proxied frontend on `nocache.example.test` that does NOT serve
-    // the cache surface (serves_cache = false).
-    db.create_cache_frontend(
-        cache,
-        "nocache.example.test",
-        "/",
-        "proxied",
-        false,
-        100,
-        true,
-    )
-    .await
-    .unwrap();
-
-    let app = router(Arc::new(
-        AppState::new(Arc::clone(&db), "http://hub.example.test:8420".into()).await,
-    ))
-    .await;
-
-    // Host-routed: the narinfo is served off the frontend domain with no slug in
-    // the path (rewritten internally to `/ext-cache/aaaa.narinfo`).
-    let (status, _, body) = get_with_host(&app, "cache.example.test", "/aaaa.narinfo").await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "frontend domain should serve the cache"
-    );
-    assert!(
-        body.contains("StorePath: /nix/store/aaaa-x-1.0"),
-        "served the bound cache's narinfo: {body}"
-    );
-
-    // The generated nix-cache-info is served off the domain too.
-    let (status, _, body) = get_with_host(&app, "cache.example.test", "/nix-cache-info").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("StoreDir: /nix/store"), "{body}");
-
-    // serves_cache = false: the cache surface is gated (404) on that domain.
-    let (status, _, _) = get_with_host(&app, "nocache.example.test", "/aaaa.narinfo").await;
-    assert_eq!(
-        status,
-        StatusCode::NOT_FOUND,
-        "a frontend that does not serve the cache must 404 its surface"
-    );
-
-    // An unknown host is not a frontend: it falls through to normal slug routing
-    // and is never served the bound cache's bytes (here the single-segment path
-    // hits the `/{slug}` -> `/{slug}/` canonical redirect, i.e. not a 200 serve).
-    let (status, _, body) = get_with_host(&app, "stranger.example.test", "/aaaa.narinfo").await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "unknown host must not serve the cache"
-    );
-    assert!(
-        !body.contains("StorePath: /nix/store/aaaa-x-1.0"),
-        "unknown host must not leak the cache's narinfo"
-    );
-
-    // The domain match is case-insensitive: a frontend created with mixed case
-    // is reached by a lowercase request `Host` (domains are stored lowercased).
-    db.create_cache_frontend(cache, "Mixed.Example.Test", "/", "proxied", true, 100, true)
-        .await
-        .unwrap();
-    let (status, _, _) = get_with_host(&app, "mixed.example.test", "/aaaa.narinfo").await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "domain match must be case-insensitive"
-    );
-
-    // base_path matches on a segment boundary: a frontend at `/v1` does not
-    // capture `/v1x/...`.
-    db.create_cache_frontend(
-        cache,
-        "based.example.test",
-        "/v1",
-        "proxied",
-        true,
-        100,
-        true,
-    )
-    .await
-    .unwrap();
-    let (status, _, body) = get_with_host(&app, "based.example.test", "/v1/aaaa.narinfo").await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "base_path /v1 should serve /v1/<path>"
-    );
-    assert!(body.contains("StorePath"), "{body}");
-    let (status, _, _) = get_with_host(&app, "based.example.test", "/v1x/aaaa.narinfo").await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "base_path /v1 must not capture /v1x/..."
-    );
-}
-
-/// The `serves_*` subset gate classifies on the *decoded* path, so a
-/// percent-encoded token (e.g. `%48EAD` for `HEAD`) cannot dodge the gate and
-/// reach the machine surface a downstream extractor would decode and serve.
-#[tokio::test]
-async fn frontend_subset_gate_resists_percent_encoded_surface_paths() {
-    let dir = tempfile::tempdir().unwrap();
-    let surface = dir.path().join("surface");
-    std::fs::create_dir_all(&surface).unwrap();
-    let fixture = common::standard_registry(&surface);
-    let (app, db) = serve_fixture(&surface, &fixture).await;
-
-    // A web-only frontend over the registry: it serves browse pages but NOT the
-    // git machine surface (serves_git = false, serves_web = true).
-    let reg = db.registry_by_slug("demo").await.unwrap().unwrap();
-    db.create_frontend(
-        reg.id,
-        "reg.example.test",
-        "/",
-        "proxied",
-        false, // serves_git
-        false, // serves_cache
-        true,  // serves_web
-        100,
-        true,
-    )
-    .await
-    .unwrap();
-
-    // Browse home is served (serves_web).
-    let (status, _, _) = get_with_host(&app, "reg.example.test", "/").await;
-    assert_eq!(status, StatusCode::OK, "web-only frontend serves browse");
-
-    // The git surface is gated: `/HEAD` is a machine path → serves_git=false → 404.
-    let (status, _, _) = get_with_host(&app, "reg.example.test", "/HEAD").await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "git surface must be gated");
-
-    // Regression: the same path percent-encoded (`%48EAD`) must STILL be gated —
-    // it must not be misclassified as a web page and bypass `serves_git`.
-    let (status, _, body) = get_with_host(&app, "reg.example.test", "/%48EAD").await;
-    assert_eq!(
-        status,
-        StatusCode::NOT_FOUND,
-        "encoded machine path must not bypass the serves_git gate"
-    );
-    assert!(
-        !body.contains("ref:"),
-        "encoded path must not leak the git HEAD pointer: {body}"
     );
 }

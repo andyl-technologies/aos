@@ -95,6 +95,12 @@ const FENCE_SPECS: &[FenceSpec] = &[
         ],
     },
     FenceSpec {
+        package: "crucible-debug-gateway",
+        root: "src/lib.rs",
+        unsafe_boundary: false,
+        safe_wrapper_contract: &[],
+    },
+    FenceSpec {
         package: "crucible-guest",
         root: "src/lib.rs",
         unsafe_boundary: true,

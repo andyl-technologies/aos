@@ -3,8 +3,8 @@
 //!
 //! A write (a publish, a config change) should commit its durable state fast and
 //! defer the *expensive propagation* — regenerating the machine surface,
-//! rebuilding the global directory projection, invalidating edge-cached read
-//! models, delivering webhooks, re-indexing — to an asynchronous worker. That
+//! rebuilding the global directory projection, delivering webhooks, and
+//! re-indexing — to an asynchronous worker. That
 //! keeps the synchronous write latency low ("writes can be higher latency, but
 //! the durable part is fast") and matches the chapter's split.
 //!
@@ -34,6 +34,8 @@ use crate::backend::BackendBounds;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Job {
+    /// Runs a bounded pass of durable topology-probe operations.
+    RunTopologyProbes,
     /// Regenerate a registry's machine surface (NAR/narinfo pointers) after a
     /// publish.
     RegenerateSurface {
@@ -43,23 +45,16 @@ pub enum Job {
     /// Rebuild the global registry/cache **directory** projection (the instance
     /// home's cached listing — RFC-0004 ch.14 Phase D, `crate::directory`).
     RebuildDirectory,
-    /// Re-index a published registry's surface into D1 (the event-driven
+    /// Re-index a published registry's surface in `HubDb` (the event-driven
     /// counterpart to the Cron indexer).
     Reindex {
         /// The registry to re-index.
         registry_id: i64,
     },
-    /// Invalidate edge-cached read-model keys after the underlying state changed.
-    InvalidateReadModel {
-        /// The cache keys (or URLs) to purge.
-        keys: Vec<String>,
-    },
     /// Deliver a webhook event to a configured endpoint.
     DeliverWebhook {
-        /// The webhook subscription id.
-        webhook_id: i64,
-        /// The event name (e.g. `release.published`).
-        event: String,
+        /// Stable delivery identity; queue retries resolve and claim this row.
+        delivery_id: String,
     },
 }
 
@@ -157,12 +152,17 @@ mod tests {
 
     #[test]
     fn job_json_round_trips() {
-        let job = Job::InvalidateReadModel {
-            keys: vec!["https://hub/andyl/main/".into()],
-        };
+        let job = Job::Reindex { registry_id: 7 };
         let json = serde_json::to_string(&job).unwrap();
-        assert!(json.contains("\"kind\":\"invalidate_read_model\""));
+        assert!(json.contains("\"kind\":\"reindex\""));
         let back: Job = serde_json::from_str(&json).unwrap();
         assert_eq!(back, job);
+
+        let delivery = Job::DeliverWebhook {
+            delivery_id: "delivery_01HZX".into(),
+        };
+        let json = serde_json::to_string(&delivery).unwrap();
+        assert!(!json.contains("webhook_id") && !json.contains("event\""));
+        assert_eq!(serde_json::from_str::<Job>(&json).unwrap(), delivery);
     }
 }

@@ -8,10 +8,10 @@
 //! doorbell frame consumed by the QEMU plugin, and rings the per-architecture
 //! trap instruction selected by the single-source ABI table.
 //!
-//! Module map: the crate root owns CLI argument parsing, guest command
-//! constructors, frame encoding, the transport trait used by tests and the CLI,
-//! and the Linux guest instruction transport. `crucible-protocol` remains the
-//! owner of the wire format and instruction ABI.
+//! Module map: the crate root owns CLI argument parsing, marker construction,
+//! and the Linux doorbell instruction transport; [`guest_introspection_agent`]
+//! owns the argv exec, PTY, resize, and optional SSH-compatible guest service.
+//! `crucible-protocol` remains the owner of every wire format.
 //!
 //! Unsafe boundary discipline: public callers use safe doorbell and marker accessors; private inline
 //! assembly owns the guest/register and shared-region invariants plus reply-bearing mutable frames.
@@ -19,6 +19,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
+
+pub mod guest_introspection_agent;
 
 pub use crucible_protocol::{
     WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
@@ -64,7 +66,7 @@ pub const CRUCIBLE_GUEST_DEFAULT_RANDOM_REQUEST_ID: u32 = 0;
 /// Usage text for the `crucible-guest` command-line emitter.
 #[must_use]
 pub const fn usage() -> &'static str {
-    "usage: crucible-guest <verb> [args]\n\nverbs:\n  always <id> <message> <0|1>\n  sometimes <id> <message> <0|1>\n  reachable <id> <message>\n  unreachable <id> <message>\n  setup-complete\n  test-done\n  event <name> [k=v ...]\n  coverage <point>\n  get-random <width> [tag]"
+    "usage: crucible-guest <verb> [args]\n\nverbs:\n  always <id> <message> <0|1>\n  sometimes <id> <message> <0|1>\n  reachable <id> <message>\n  unreachable <id> <message>\n  setup-complete\n  test-done\n  event <name> [k=v ...]\n  coverage <point>\n  get-random <width> [tag]\n  agent [--max-channels N] [--ssh-program PATH] [--ssh-arg ARG ...]"
 }
 
 /// Error returned while parsing, encoding, or emitting a guest marker command.

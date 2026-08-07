@@ -40,11 +40,11 @@
 
 ## Open questions
 
-1. **Hosted signing keys in v1?** Without them the channel console is
+1. **Provider-custodied signing keys in v1?** Without them the channel console is
    read-only and web config editing is change-request-only; with them
    the hub enters the TCB. Current position: BYO-key first, minimal
-   change requests promoted to phase 3 as the mitigation, hosted keys
-   an explicit org-level opt-in in phase 4.
+   change requests promoted to phase 3 as the mitigation, with immutable
+   secret-provider custody an explicit org-level opt-in in phase 4.
 2. **How much of `aos-package`'s registry code is wasm-clean today?**
    `types.rs` and `registry/parse.rs` look pure; `registry/git.rs`
    shells out to git. The factoring (direct reuse vs a shared no-IO

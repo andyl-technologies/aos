@@ -898,13 +898,16 @@ where
 
     match run_plan.execution_mode {
         RunExecutionMode::ToCompletion => {
-            acknowledge_stream_command(
-                &control,
-                &mut command_id,
-                SessionCommandKind::Continue,
-                &mut acknowledged_commands,
-            )
-            .await?;
+            let probe_boundary = current_remote_resume_summary(client, created.session).await?;
+            if should_continue_after_probe(probe_boundary.state) {
+                acknowledge_stream_command(
+                    &control,
+                    &mut command_id,
+                    SessionCommandKind::Continue,
+                    &mut acknowledged_commands,
+                )
+                .await?;
+            }
         }
         RunExecutionMode::Interactive => match interactive_driver {
             InteractiveCommandDriver::Preparsed(commands) => {
@@ -971,6 +974,10 @@ where
         acknowledged_commands,
         watch_statuses: observation.watch_statuses,
     })
+}
+
+fn should_continue_after_probe(state: LiveStateKind) -> bool {
+    state != LiveStateKind::Stopped
 }
 
 pub(super) async fn drive_interactive_stdin_commands(
@@ -1565,6 +1572,7 @@ pub(super) fn session_command_name(command: SessionCommandKind) -> &'static str 
         SessionCommandKind::DebugReverseStep => "debug-reverse-step",
         SessionCommandKind::DebugReverseContinue => "debug-reverse-continue",
         SessionCommandKind::DebugForkNonCanonical => "debug-fork-non-canonical",
+        SessionCommandKind::GuestIntrospection => "guest-introspection",
     }
 }
 
@@ -1664,3 +1672,14 @@ pub(super) fn backend_canonical_log_entries(
 mod streaming_events;
 
 pub(crate) use streaming_events::*;
+
+#[cfg(test)]
+mod completion_probe_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_fingerprint_probe_does_not_issue_continue() {
+        assert!(!should_continue_after_probe(LiveStateKind::Stopped));
+        assert!(should_continue_after_probe(LiveStateKind::Paused));
+    }
+}

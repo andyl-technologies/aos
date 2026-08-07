@@ -59,9 +59,10 @@ restore-nearest-checkpoint-then-replay); the gdb-protocol client plus the
 operator-supplied DWARF do the *source mapping* (function names, line numbers, local
 variables). Crucible ships **no symbol server** and resolves no DWARF itself
 (§36.7). Read-only inspection is the default and is determinism-preserving down to
-the byte; the instant the operator mutates guest-visible state or takes execution
-under their own control, the session forks a clearly-marked **non-canonical debug
-branch** (§36.5) and the canonical run is never touched.
+the byte. Before the operator can mutate guest-visible state or take execution
+under their own control, they must explicitly create a clearly-marked
+**non-canonical debug branch** with `fork-debug` (§36.5); otherwise the operation is
+rejected and the canonical run is never touched.
 
 The capability is, deliberately, an assembly of five existing mechanisms:
 
@@ -148,11 +149,15 @@ the node's machine, and nothing else.
                          carries NO per-quantum timing, NO frame data, NO order  ([SHM-2])
 ```
 
-Crucible proxies the gdbstub channel: it terminates the QEMU gdbstub on the host
-side and presents a gdb-protocol endpoint (a listening socket the operator points a
-gdb-protocol client at, `--gdb-listen`, §36.6) that the session mediates. Mediation
-is what lets Crucible enforce the read-only/mutation boundary (§36.3, §36.5) and
-serve the time-travel verbs (§36.4) that a raw gdbstub has no concept of.
+Crucible mediates the gdbstub through the standalone GPL-2.0-only
+`crucible-debug-gateway` process. The gateway terminates QEMU's private RSP socket
+and presents the stable gdb-protocol endpoint that the operator points a client at
+(`--gdb-listen`, §36.9). The Apache controller speaks to the gateway only through
+the owned-byte, versioned Unix-socket protocol in `crucible-protocol`; it neither
+links the gateway nor handles QEMU-private objects. Mediation is what lets Crucible
+enforce the read-only/mutation boundary (§36.3, §36.5), keep one GDB connection
+alive while a QEMU runtime is replaced (§36.9.1), and serve time-travel verbs
+(§36.4) that a raw gdbstub has no concept of.
 
 - **[DBG-5]** When a debug session is active, the node MUST open a **fourth,
   out-of-band logical plane** — QEMU's gdbstub — alongside the three roles of
@@ -165,12 +170,14 @@ serve the time-travel verbs (§36.4) that a raw gdbstub has no concept of.
   10 §10.3, [SHM-2].
 
 - **[DBG-6]** Crucible MUST **mediate** the gdbstub channel rather than expose the
-  raw QEMU gdbstub directly: it MUST terminate the QEMU gdbstub host-side and present
-  a gdb-protocol endpoint (a listening socket, `--gdb-listen`, §36.6) that the
-  session proxies, so the session can enforce the read-only/mutation boundary
-  (§36.3, §36.5) and serve the time-travel verbs (§36.4) the raw gdbstub does not
-  define. The operator connects an ordinary gdb-protocol client to this endpoint.
-  *Gate:* `gate:control-responsive`. *Spec:* §36.2.2, §36.6.
+  raw QEMU gdbstub directly. The separate GPL-side debugger gateway MUST terminate
+  QEMU's private RSP socket and present the stable operator endpoint; the Apache
+  controller MUST communicate with that gateway only through the versioned
+  `crucible-protocol` Unix-socket boundary. The gateway and controller MUST remain
+  separate processes and MUST NOT exchange QEMU structures, native pointers, or
+  callback tables. The operator connects an ordinary gdb-protocol client to the
+  gateway endpoint. *Gate:* `gate:control-responsive`, `gate:license-boundary`.
+  *Spec:* §36.2.2, §36.9.1; cross-ref 37.
 
 - **[DBG-7]** A node MAY expose **more than one vCPU** to the debugger as distinct
   gdb threads (§36.8): Crucible's single-threaded round-robin TCG with `-icount`
@@ -243,8 +250,9 @@ gdbstub hardware breakpoints that the CPU model traps without a memory write.
 A breakpoint that is **realizable only by writing guest memory** (a software trap on
 an architecture or address where no hardware/out-of-band mechanism is available)
 MUST be **refused** on a canonical attach, with a clear, typed error telling the
-operator the breakpoint cannot be set without forking a non-canonical branch
-(`--allow-mutate`, §36.5, §36.6). It is never silently downgraded to a memory patch.
+operator the breakpoint cannot be set without first authorizing mutation and issuing
+`fork-debug` (`--allow-mutate`, §36.5, §36.6). It is never silently downgraded to a
+memory patch or used as an implicit fork trigger.
 
 ```text
   breakpoint on a CANONICAL attach (read-only intent):
@@ -254,8 +262,7 @@ operator the breakpoint cannot be set without forking a non-canonical branch
                          → NO guest-visible memory write; canonical run byte-identical
   REFUSED  software trap-instruction patch into guest memory
                          → would mutate S/T; would have to fork (§36.5)
-                         → typed error: "set --allow-mutate to break here (forks a
-                            non-canonical debug branch)"
+                         → typed error: "set --allow-mutate, then run fork-debug"
 ```
 
 - **[DBG-11]** A breakpoint honored on a **canonical** debug attach MUST be realized
@@ -451,11 +458,13 @@ the cadence; only latency does.
 
 Everything above keeps the canonical run pristine. The **one genuinely new rule** in
 this file is what happens when the operator stops merely *observing* and starts
-*acting*: the instant the operator **mutates guest-visible state** (writes a
-register, writes memory, sets a software/memory-patch breakpoint where one is
-required) **or continues execution under their own control** (a free `continue`/step
-that the canonical schedule did not prescribe), the session **forks a clearly-marked
-non-canonical debug branch**, and the **canonical run is never mutated.**
+*acting*: before the operator **mutates guest-visible state** (writes a register,
+writes memory, sets a software/memory-patch breakpoint where one is required) **or
+continues execution under their own control** (a free `continue`/step that the
+canonical schedule did not prescribe), they must issue `fork-debug`. Until that
+explicit operation completes, every mutation and free-control request is rejected.
+The resulting clearly-marked non-canonical debug branch is the only mutable target,
+and the **canonical run is never mutated.**
 
 This is the third category of execution, distinct from both the canonical run and the
 [ADV-33] escape hatch:
@@ -465,8 +474,8 @@ This is the third category of execution, distinct from both the canonical run an
   ──────────────────────────────────────────────────────────────────────────────
   1. canonical run            reduce(def, schedule); the deterministic backbone;
                               the replay oracle's truth (05, 19 §19.5).
-  2. non-canonical debug      THIS FILE: forked the instant the operator mutates or
-     branch                   takes control. STILL inside virtual time + the one
+  2. non-canonical debug      THIS FILE: created only by an explicit `fork-debug`
+     branch                   before mutation or free control. STILL inside virtual time + the one
                               execution path; clearly marked; excluded from the
                               replay oracle; NOT a (seed,scenario,schedule) artifact.
   3. detach-to-live QEMU      [ADV-33]: free-running, host-wall-clock, determinism
@@ -491,11 +500,14 @@ artifact**, and MUST be **visibly distinguished** everywhere it can be seen: in 
 temporal-graph view, in the event-log **fork marker** (19 §19.7 `fork`, flagged
 non-canonical), and in the live mirror / status surface (20 §9).
 
-- **[DBG-21]** The instant the operator **mutates guest-visible state** (writes a
-  register or memory, or sets a breakpoint that requires a guest-memory write,
-  [DBG-12]) **or takes execution under their own control** (a `continue`/step the
-  canonical schedule did not prescribe), the session MUST **fork a clearly-marked
-  non-canonical debug branch** (22 §22.3) and MUST NOT mutate the canonical run. The
+- **[DBG-21]** Before the operator **mutates guest-visible state** (writes a register
+  or memory, or sets a breakpoint that requires a guest-memory write, [DBG-12]) **or
+  takes execution under their own control** (a `continue`/step the canonical schedule
+  did not prescribe), they MUST successfully issue `fork-debug`. The session MUST
+  reject such an action while attached to the canonical run and MUST NOT create a
+  branch as an implicit side effect of the rejected request. `fork-debug` MUST create
+  a clearly-marked non-canonical debug branch (22 §22.3), initially as a whole-world
+  fork, and all subsequent mutable operations MUST target it. The
   canonical configuration and its causal subsequence MUST remain bit-identical to a
   never-debugged run ([DBG-9]). *Gate:* `gate:e2e-determinism`, `gate:replay-oracle`.
   *Spec:* §36.5.1; cross-ref 22 §22.3, 20 §8.
@@ -714,19 +726,27 @@ the CLI catalogue in [`23-cli.md`](23-cli.md)**.
     --node <id>           which node to attach the gdbstub to (multi-vCPU as threads, §36.8)
     --gdb-listen <addr>   the gdb-protocol endpoint to listen on (§36.2)
     --read-only           inspection only; canonical run pristine (DEFAULT)
-    --allow-mutate        permit edits/free control; forks a non-canonical branch (§36.5)
+    --allow-mutate        authorize eligibility for explicit `fork-debug`; never forks implicitly (§36.5)
     --checkpoint-stride <n>  opportunistic fat-checkpoint cadence to bound reverse latency (§36.4.4)
 
   INTERACTIVE VERBS (over the session command set, 20 §4)
     attach-gdb            open/point the gdbstub channel at the current coordinate (§36.2)
+    fork-debug            explicitly create a whole-world non-canonical branch (§36.5)
     goto <coord>          restore-nearest-then-replay to a coordinate (§36.4.1)
     reverse-step <grain>  reverse instruction|quantum|event|assertion|timer (§36.4.2)
     reverse-continue <Condition>  to the latest coord ≤ now where the predicate held (§36.4.2)
+    exec -- <argv...>     run a noninteractive command through the guest agent (§36.9.3)
+    pty [--columns N --rows N] -- <argv...>  bridge a guest PTY (§36.9.3)
+    ssh                   bridge bytes to the agent's configured in-guest SSH server (§36.9.3)
 ```
 
 `--read-only` is the **default**: an attach inspects and time-travels without ever
-mutating the canonical run. `--allow-mutate` opts into the non-canonical debug branch
-(§36.5) — it does **not** mutate the canonical run, it forks. Each interactive verb
+mutating the canonical run. `--allow-mutate` only authorizes the operator to invoke
+`fork-debug`; it neither mutates nor forks by itself. Mutation and free run control
+remain rejected until that explicit whole-world fork completes. Guest exec, PTY,
+resize, and SSH-compatible channels additionally require the closed `shell`
+capability and the current controller lease; `--allow-mutate` is never itself an
+authorization credential. Each interactive verb
 decomposes into existing session operations plus the gdbstub proxy: `attach-gdb` is
 the channel of §36.2; `goto`/`reverse-step`/`reverse-continue` are `instantiate` of a
 resolved coordinate (§36.4) driven through the session as ordinary, boundary-deferred
@@ -736,23 +756,238 @@ commands (20 §5); the CLI holds **no debug state**.
   with the coordinate flags (`--at`, `--at-event`, `--at-failure`, `--at-checkpoint`,
   §36.6), the debug-control flags (`--node`, `--gdb-listen`, `--read-only` *(the
   default)*, `--allow-mutate`, `--checkpoint-stride`), and the interactive verbs
-  `attach-gdb`, `goto`, `reverse-step`, and `reverse-continue`. These MUST also be
+  `attach-gdb`, `fork-debug`, `goto`, `reverse-step`, `reverse-continue`, `exec`,
+  `pty`, and `ssh`. These MUST also be
   reflected in the CLI catalogue of [`23-cli.md`](23-cli.md). *Gate:*
   `gate:control-responsive`. *Spec:* §36.9; cross-ref 23, §36.6.
 
 - **[DBG-34]** `--read-only` MUST be the default and MUST guarantee the canonical run
-  stays bit-identical ([DBG-9]); `--allow-mutate` MUST opt into the **non-canonical
-  debug branch** (§36.5) by forking — it MUST NOT mutate the canonical run. *Gate:*
+  stays bit-identical ([DBG-9]); `--allow-mutate` MUST grant eligibility for an
+  explicit `fork-debug` but MUST NOT itself fork or mutate the canonical run. *Gate:*
   `gate:e2e-determinism`, `gate:replay-oracle`. *Spec:* §36.9, §36.5.
 
 - **[DBG-35]** `crucible debug` MUST be a thin wrapper holding **no debug state of
   its own** (23 [CLI-1], [CLI-2]): each flag and verb MUST decompose into existing
   session commands (20 §4) plus the gdbstub proxy (§36.2) — `attach-gdb` opens the
-  fourth logical plane ([DBG-5]); `goto`/`reverse-step`/`reverse-continue` are
+  fourth logical plane ([DBG-5]); `fork-debug` is the ordinary fork operation with
+  non-canonical metadata (§36.5); `goto`/`reverse-step`/`reverse-continue` are
   `instantiate` of a resolved coordinate (§36.4) driven as ordinary boundary-deferred
   session commands (20 §5). A debug behavior with no corresponding session/proxy
   operation is a layering defect. *Gate:* `gate:control-responsive`. *Spec:* §36.9;
   cross-ref 23 [CLI-1], 20 §4/§5.
+
+### 36.9.1 Stable GDB ownership and atomic runtime replacement
+
+The debugger gateway, not the CLI and not an individual QEMU child, owns the
+operator's GDB connection. Every QEMU child exposes a private Unix RSP socket to the
+gateway. A `goto`, reverse-step, reverse-continue, or scenario fork therefore
+replaces the backend behind one stable GDB connection instead of asking the
+operator to reconnect.
+
+Replacement is a two-phase transaction. The controller first instantiates and
+replays a candidate world while the current world remains paused and usable. The
+gateway connects to the candidate QEMU endpoint with bounded I/O, verifies a paused
+stop reply, and replays acknowledged debugger state (thread selections and
+hardware breakpoints). Only after the controller has verified the candidate's
+configuration, checkpoint, node identity, and opaque gateway generation may the
+gateway promote it. Any prepare, replay, or evidence failure aborts the candidate
+and leaves the old runtime, graph, attach record, and GDB connection unchanged. A
+post-promotion evidence mismatch is an unrecoverable failed lifecycle, never a
+reason to pretend the old runtime is still selected.
+
+Control-socket loss must not make transaction outcome unknowable. Prepare and
+commit are idempotent, and every newly negotiated controller can query the active
+and prepared endpoint/generation identities before retrying or reconciling. A lost
+prepare acknowledgement leaves a discoverable candidate; a lost commit
+acknowledgement permits the same generation to be committed again with the same
+success result. Malformed, truncated, or disconnected control clients close only
+their connection and never terminate the gateway or discard the active backend.
+
+Production replacement is whole-world and proof-carrying. At each completed
+scheduler boundary, the lifecycle samples every live node's execution fingerprint;
+after the temporal graph materializes that boundary, the session seals those
+samples to the exact `RuntimeState` identity, including its node-blob set,
+instruction counters, scheduler state, and event-log offset. A replacement must
+both reproduce that original live evidence and agree with an independently replayed
+candidate before promotion. Coordinate equality alone is insufficient. If a lost
+commit or abort acknowledgement leaves gateway ownership indeterminate, Crucible
+quarantines every possibly selected whole-world or single-node candidate and
+rejects further scheduler/debugger work until gateway process termination is
+observed. Retiring the previous world revokes scheduler and gateway authority
+immediately; cleanup reporting distinguishes observed reap from detached cleanup
+whose process exit was not observed.
+
+The gateway parses RSP as a bounded byte stream: acknowledgements, interrupts,
+split packets, coalesced packets, asynchronous output, and stop packets are not
+modeled as synchronous request/reply frames. Canonical policy is allow-by-exception.
+Known read-only queries and acknowledged hardware breakpoints may reach QEMU;
+memory/register writes, software breakpoints, monitor commands, process control,
+file operations, watchpoints not explicitly supported, and unknown packets fail
+closed. `continue`, `step`, and `vCont` are sent to the session scheduler rather
+than directly to QEMU.
+
+Scheduler run control permits one outstanding operator request. In RSP
+acknowledgement mode, the gateway writes `+` before making that request visible to
+the host, deduplicates retransmission, and binds the request to both a monotone
+request ID and the operator-connection generation. Poll and completion are
+idempotent across control-channel reconnects. Ctrl-C supersedes either a queued or
+in-flight continue, while operator disconnect cancels the request without failing
+the simulation session. Scheduler-produced stop packets retain their encoded bytes
+until GDB acknowledges them; `-` retransmits the same packet and is never forwarded
+to QEMU.
+
+- **[DBG-41]** The standalone GPL debugger gateway MUST own one stable operator GDB
+  connection across QEMU replacement. Replacement MUST use prepare/validate/hydrate
+  then commit, with bounded I/O and the old backend retained until the candidate's
+  paused state, replay oracle, node, endpoint, checkpoint, and gateway generation
+  are verified. Failure before commit MUST preserve the previous runtime and
+  debugger state atomically. Prepare and commit MUST be idempotent across lost
+  acknowledgements, and a reconnect MUST be able to query active and prepared
+  endpoint/generation identities before recovery. A failed control connection MUST
+  NOT terminate the gateway. *Gate:* `gate:replay-oracle`,
+  `gate:control-responsive`, `gate:license-boundary`. *Spec:* §36.9.1.
+
+- **[DBG-42]** The gateway MUST parse RSP incrementally with bounded buffering and
+  MUST enforce canonical policy fail-closed. Raw GDB run control MUST be routed to
+  the scheduler; no packet may advance QEMU outside scheduler order. Unknown or
+  unsupported packets MUST be rejected locally. *Gate:* `gate:layer0-determinism`,
+  `gate:control-responsive`. *Spec:* §36.9.1; cross-ref §36.10.1.
+
+### 36.9.2 Local and remote access, authentication, and leases
+
+Local debugging uses the daemon's Unix socket and authenticated peer credentials.
+Remote debugging uses the existing HTTP/2 control transport with mutual TLS; the
+CLI opens a local loopback listener and relays GDB bytes to the daemon, so ordinary
+GDB still connects to a local target. An unauthenticated mode is permitted only as
+an explicit trusted-network option with an explicit bind address; it is never the
+default and must not silently widen a loopback or Unix-only listener.
+
+Authorization is capability based: `observe`, `control`, `mutate`, `shell`, and
+`admin`. A session admits multiple observers but exactly one controller lease.
+Lease generations make release and reconnect idempotent while rejecting stale
+control. Mutation and shell require an explicit non-canonical debug fork before the
+operation is admitted; possessing a capability does not weaken that invariant.
+
+- **[DBG-43]** Debug access MUST support Unix peer authentication locally and mTLS
+  over the daemon's HTTP/2 transport remotely. Unauthenticated access MUST require
+  an explicit trusted-bind option. Authorization MUST enforce the five debugger
+  capabilities, one controller lease, multiple observers, and stale-generation
+  rejection on every control, mutation, and shell request. *Gate:*
+  `gate:control-responsive`. *Spec:* §36.9.2; cross-ref 21.
+
+- **[DBG-44]** Remote GDB MUST use a client-side loopback relay over the authenticated
+  daemon transport. The CLI remains stateless beyond its live relay connection;
+  session and gateway state remain server-side. *Gate:* `gate:control-responsive`.
+  *Spec:* §36.9.2; cross-ref 23.
+
+### 36.9.3 Guest introspection: exec, PTY, and SSH compatibility
+
+Debugger introspection targets a guest VM, never the Crucible host. A debug-capable
+guest image advertises a versioned guest-agent feature and exposes a deterministic
+virtio-serial-style port implemented through the public shared-memory protocol.
+The ABI carries owned command, stream, resize, exit-status, and close records only;
+it contains no native pointers or process-private objects. Adding this transport is
+an explicit shared-memory ABI version change and must pass ABI conformance on both
+x86_64 and aarch64.
+
+The concrete port reuses the already-attested per-architecture white-box
+doorbell as a deterministic guest rendezvous rather than adding another QEMU
+control plane. The guest supplies one fixed 4,608-byte mutable `CRGX` v1 buffer.
+On each trap the GPL-side plugin validates an optional complete `CRGI` response,
+publishes it to the plugin-to-host ring, dequeues at most one host request, and
+overwrites the same guest buffer with that request or an idle reply. The frame
+has a 16-byte pointer-free header, a bounded complete `CRGI` record, and a
+zero-checked tail. Guest and plugin directions are closed and fail loudly when
+reversed. This makes the port “virtio-serial-style” at the stream API without
+introducing a virtual device or transferring a descriptor across the process
+boundary.
+
+The response exchange is acknowledged. When the fixed 64-entry plugin-to-host
+ring is full, the plugin returns `retry`, retains the guest response sequence,
+and does not dequeue a host request. The guest retries the same complete record
+after a fixed deterministic spin interval. A host request is peeked but not
+committed until the corresponding guest-memory write succeeds. Both directional
+rings start at sequence one and fail closed on gaps, duplicates, stale entries,
+or overflow. The host and plugin validate not only the outer exchange direction
+but also the embedded `CRGI` request/response kind; the reserved feature channel
+can carry only the initial feature advertisement.
+
+The native surface supports argv-based noninteractive exec and an interactive PTY.
+An SSH-compatible byte bridge is also provided for existing operator tooling, but
+it terminates at the guest agent rather than exposing a host shell. Opening any of
+these channels requires the `shell` capability and an explicit whole-world
+non-canonical scenario fork first. Whole-world scope is the initial implementation:
+forking only one node while peers continue on canonical history would create an
+ambiguous network world.
+
+The guest agent launches exec and PTY children directly from argv without shell
+parsing. PTYs use an in-guest pseudoterminal and accept resize records. SSH
+compatibility is advertised only when the image configures an in-guest SSH server
+argv that speaks its protocol over standard input/output; the bridge does not
+assume or discover a host executable.
+
+For an interactive local terminal, the CLI saves its termios state, enters raw
+mode for the byte bridge, restores the saved state when the channel ends, and
+translates `SIGWINCH` into a bounded resize record. Non-terminal stdin, including
+an SSH `ProxyCommand` pipe, is left unchanged.
+
+The agent bounds concurrent channels at 64, its global response backlog at 64
+records, and each output-reader handoff at two 4,096-byte chunks. Full queues
+apply child-pipe backpressure rather than consuming guest memory without bound.
+Channel-local open, capacity, input, and terminal errors return a typed `CRGI`
+terminal error without terminating the agent; the channel is closed and its
+identifier becomes reusable after that record. Reader I/O failures use the same
+terminal path, and terminal records have priority over ordinary output when
+capacity returns. Round-robin channel and per-stream cursors prevent a noisy
+stdout from starving stderr, another channel, or exit status. Transport
+corruption remains fatal. SSH protocol stdout and diagnostic stderr remain
+distinct streams. Every child runs in a private session/process group; PTY
+children additionally acquire the slave as their controlling terminal. Resize
+retains an owned control descriptor, and channel close removes that descriptor
+and sends `SIGHUP` to the PTY process group. Direct-child exit also hangs up
+descendants that retain stream descriptors. Agent shutdown terminates and reaps
+remaining process groups and joins their bounded readers.
+
+An idle agent still has a causal instruction-count cost: it polls only after a
+fixed spin count, but it is not timing-neutral. Therefore an image or daemon MUST
+NOT activate `crucible-guest agent` on canonical execution. Activation belongs
+to the authorized whole-world non-canonical debug fork and is recorded as part
+of that fork's causal configuration. A future interrupt-backed device may remove
+polling, but is not required by this protocol version.
+
+Guest streams are ephemeral by default and excluded from canonical artifacts. An
+operator may explicitly request transcript recording on the non-canonical branch.
+Every runtime reposition closes existing exec, PTY, and SSH streams with a typed
+reason; the operator may reopen them after the new world is committed. No shell
+file-descriptor or guest-agent session is silently transferred between QEMU
+instances.
+
+- **[DBG-45]** Guest exec/PTY/SSH introspection MUST use a capability-advertised,
+  versioned shared-memory guest-agent protocol and MUST target the guest, never the
+  host. The native protocol MUST support argv exec, PTY byte streams and resize,
+  exit status, and close; SSH compatibility MUST be a byte bridge to the same guest
+  agent. *Gate:* `gate:abi-conformance`, `gate:license-boundary`. *Spec:* §36.9.3;
+  cross-ref 13.
+
+- **[DBG-46]** Shell-capable access MUST require an explicit whole-world
+  non-canonical fork. Streams MUST close on reposition and be reopened explicitly.
+  They are ephemeral by default; optional recording belongs only to the
+  non-canonical branch and never changes canonical causal bytes. *Gate:*
+  `gate:e2e-determinism`, `gate:replay-oracle`. *Spec:* §36.9.3; cross-ref §36.5.
+
+### 36.9.4 Toolchain and architecture gates
+
+The shipped suite includes GNU GDB built hermetically from source using AOS
+packages. Live debugger gates first establish the x86_64 path, then require the
+same attach/read/breakpoint/reposition/run-control and guest-introspection contract
+on aarch64. Architecture support is not complete while either required live gate
+uses a model double or fallback.
+
+- **[DBG-47]** The Crucible suite MUST ship a hermetic GNU GDB and MUST pass live
+  x86_64 and aarch64 gates for stable attach, read-only neutrality, scheduler-routed
+  run control, atomic reverse/goto replacement, and guest exec/PTY/SSH transport. The
+  aarch64 gate is required completion, not an optional follow-up. *Gate:*
+  `gate:layer0-determinism`, `gate:abi-conformance`. *Spec:* §36.9.4.
 
 ---
 
@@ -811,9 +1046,10 @@ perturb virtual time.
 
 - **[DBG-38]** The **read-only vs mutating boundary** MUST be **gate-enforced**, not
   documented-and-hoped: a test MUST assert that a read-only debug session leaves the
-  canonical causal subsequence byte-identical ([DBG-9]) and that any mutation or
-  free-control action forks a non-canonical branch ([DBG-21]) rather than touching
-  the canonical run. A path by which a read or an inspection mutates canonical state
+  canonical causal subsequence byte-identical ([DBG-9]), that mutation and
+  free-control are rejected until an explicit `fork-debug`, and that those actions
+  affect only the resulting non-canonical branch ([DBG-21]). A path by which a read
+  or an inspection mutates canonical state
   is a determinism defect. *Gate:* `gate:e2e-determinism`, `gate:replay-oracle`.
   *Spec:* §36.10.2; cross-ref §36.3, §36.5.
 
@@ -858,9 +1094,10 @@ TIME TRAVEL (§36.4): goto(T) = restore-nearest-checkpoint-≤-T + replay to T (
   (by icount) AND whole-world (a prefix, = a fork minus divergence) time travel;
   opportunistic fat-checkpoint cadence bounds reverse latency (perf only).
 
-NON-CANONICAL DEBUG BRANCH (§36.5 — the one new rule): the instant the operator
-  mutates guest-visible state or takes control, the session forks a clearly-marked
-  non-canonical branch; the canonical run is never mutated. Excluded from the oracle,
+NON-CANONICAL DEBUG BRANCH (§36.5 — the one new rule): the operator must issue
+  `fork-debug` before mutating guest-visible state or taking control; otherwise the
+  request is rejected. The explicit operation creates a clearly-marked non-canonical
+  branch; the canonical run is never mutated. Excluded from the oracle,
   not a (seed,scenario,schedule) artifact, visibly marked. STILL inside virtual time
   + one execution path → a THIRD category, distinct from [ADV-33]'s forbidden
   detach-to-free-running-QEMU (which still stands). Decision-expressible edits → 20 §8;
@@ -874,7 +1111,20 @@ MULTI-vCPU (§36.8): vCPUs as gdb threads; round-robin TCG + icount; whole-world
   per-node time travel lands all of a node's vCPUs at the same coordinate.
 
 CLI (§36.9, also in 23): crucible debug … --read-only(default)|--allow-mutate;
-  verbs attach-gdb/goto/reverse-step/reverse-continue; a thin wrapper, no debug state.
+  verbs attach-gdb/fork-debug/goto/reverse-step/reverse-continue; a thin wrapper, no
+  debug state. `--allow-mutate` grants eligibility but never forks implicitly.
+
+GATEWAY + REMOTE (§36.9.1–§36.9.2): a separate GPL process owns the stable GDB
+  connection and atomically swaps verified QEMU backends; RSP is bounded,
+  asynchronous, fail-closed, and scheduler-routed for run control. Local Unix-peer
+  auth, remote HTTP/2+mTLS relay, explicit trusted-bind unauth only; capability roles,
+  one controller lease, multiple observers.
+
+GUEST INTROSPECTION (§36.9.3–§36.9.4): explicit whole-world non-canonical fork,
+  then guest-agent argv exec, PTY, or SSH compatibility over a versioned public
+  shmem protocol — never a host shell. Streams close on reposition, are ephemeral by
+  default, and may be recorded only explicitly. Hermetic GNU GDB; required live
+  x86_64 then aarch64 gates.
 
 SPIKE (§36.10): does attaching/stepping the gdbstub disturb icount or time control?
   Until green: read-only + Crucible-driven step, gdb single-step disabled. Plus:
@@ -885,8 +1135,32 @@ SPIKE (§36.10): does attaching/stepping the gdbstub disturb icount or time cont
 The shape of this file is the shape of the guarantee: a debugger is just another
 consumer of the deterministic substrate. Inspection is free of effect; time travel
 is restore-plus-replay; the only place the operator can break determinism is by
-mutating state — and that, by construction, forks a clearly-marked branch rather than
-touching the canonical run.
+mutating state — and that is possible only after an explicit `fork-debug` creates a
+clearly-marked branch rather than touching the canonical run.
+
+### 36.11 Agent-oriented manual acceptance
+
+The debugger is also an operator tool for automated agents, not merely a set of
+model and package gates. Manual acceptance therefore runs outside Nix checks and
+starts from a purposefully failing scenario with a pinned seed and finite budget.
+The operator MUST retain the failure artifact, use the CLI to inspect the failure
+coordinate and available reverse boundary, attach to a live daemon session when
+executed time travel or persistent GDB inspection is required, and state a
+diagnosis from the assertion, event history, and observed VM state. The exercise
+MUST distinguish an intentionally inverted scenario assertion from a guest crash.
+
+The repository's agent exercise pairs a healthy HTTP workload with an
+`Always(Crashed)` assertion. Success means the operator identifies that assertion
+as the first faulty assumption and reports the exact commands and evidence used.
+It does not mean changing the scenario until it passes. A second agent SHOULD use
+the documented CLI without editing the implementation and report ambiguous output,
+incorrect exit behavior, missing discovery, or operations that only emit a plan as
+usability defects. Accepted defects feed back into the CLI and user documentation.
+
+This exercise does not close T-DBG-9 through T-DBG-14. In particular, a local
+artifact `debug-plan` is not proof that time travel executed, and guest
+exec/PTY/SSH admission is not proof of introspection while the shipped fixture
+does not activate the guest agent on a non-canonical fork.
 
 ## Implementation checklist
 
@@ -896,6 +1170,16 @@ touching the canonical run.
 > They are sequenced strictly after the determinism, save/restore-oracle,
 > control-plane, fork, and event-log foundations they depend on ([ADV-1], [G-5],
 > [PLAN-4]).
+
+The completed entries among T-DBG-1 through T-DBG-8 record graph-model, session
+command, existing one-runtime attach, and the implemented CLI surface. T-DBG-6
+and T-DBG-8 were reopened when the explicit `fork-debug` policy replaced implicit
+forking and were closed after that transition was enforced end to end. These
+entries do **not** by themselves claim stable
+GDB across runtime replacement, authenticated remote access, scheduler-mediated RSP
+run control, guest exec/PTY/SSH, a hermetic GDB client, or live aarch64 parity. Those
+end-to-end claims remain open in T-DBG-9 through T-DBG-14 and MUST NOT be reported
+complete from model-double evidence.
 
 - [x] **T-DBG-1** Implement debug attach as `instantiate` of a resolved checkpoint
   configuration (05 §5, 10 §10.5) and the **fourth out-of-band gdbstub channel**
@@ -990,8 +1274,9 @@ touching the canonical run.
   `thin_replay_until_full_s3` hedge records thin replay checkpoints only and may evict
   existing fat cache entries, while a verified hedge may cache fat checkpoints, with
   eviction falling back to bit-identical replay.
-- [x] **T-DBG-6** Implement the **non-canonical debug branch**: fork on the first
-  guest-state mutation or operator-controlled continue, leaving the canonical run
+- [x] **T-DBG-6** Implement the **non-canonical debug branch**: expose an explicit
+  whole-world `fork-debug` operation and reject guest-state mutation or
+  operator-controlled continue until it succeeds, leaving the canonical run
   bit-identical; exclude it from the replay oracle and from
   `(seed, scenario, schedule)` artifacts; visibly mark it in the graph, the event-log
   `fork` marker, and the live mirror; keep it inside virtual time + the one execution
@@ -1010,7 +1295,9 @@ touching the canonical run.
   temporal-graph view, a causal catalog-kind `fork` event-log marker flagged
   non-canonical, and live status, and keeps the branch inside virtual time plus the
   single execution path while excluding it from replay-oracle and
-  `(seed, scenario, schedule)` artifacts.
+  `(seed, scenario, schedule)` artifacts. Completion remains open until the session
+  and CLI expose the explicit transition and prove that forbidden requests never
+  fork as a side effect.
 - [x] **T-DBG-7** Implement the debug target resolver (`--at`, `--at-event`,
   `--at-failure` = first assertion-violation point, `--at-checkpoint`), accept a
   divergence-bisection `(node, icount, kind)` coordinate directly as a goto target,
@@ -1027,7 +1314,7 @@ touching the canonical run.
 - [x] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
   thin wrapper holding no debug state — coordinate + debug-control flags
   (`--read-only` default, `--allow-mutate`, `--node`, `--gdb-listen`,
-  `--checkpoint-stride`) and verbs attach-gdb/goto/reverse-step/reverse-continue
+  `--checkpoint-stride`) and verbs attach-gdb/fork-debug/goto/reverse-step/reverse-continue
   decomposing into session commands + the gdbstub proxy — expose vCPUs as gdb
   threads with coherent reads/breakpoints/landings, document Crucible-ships-no-symbol-
   server, run the gdbstub-disturbs-icount spike (defaulting read-only + Crucible-
@@ -1045,9 +1332,145 @@ touching the canonical run.
   sessions to the current coordinate, realizes reverse-step through the debug
   reverse-step/goto restore-plus-replay path rather than unsupported forward session
   step modes, proves that the CLI holds no debugger state, defaults to read-only
-  inspection, forks a visibly `NON-CANONICAL` branch before mutation, exposes the no
+  inspection, exposes the no
   symbol server policy, requires coherent multi-vCPU gdb threads, and keeps raw gdb
   single-step disabled. Executing the command also resolves the hermetic
   production backend, boots the packaged QEMU/plugin under TCG, and reports the
   negotiated protocol/ABI plus terminal icount/fingerprint before presenting
-  the thin delegated debug plan.
+  the thin delegated debug plan. The remote unary client now implements an
+  explicit `fork-debug` plus argv `exec`, interactive `pty`, and configured
+  in-guest `ssh` byte bridging. The fork RPC requires the transport-derived
+  controller to hold `control`, `mutate`, and `shell`, records a typed
+  guest-introspection trigger/action on the whole-world branch, and every guest
+  record is rejected while the session remains canonical. Authenticated remote
+  `goto`, `reverse-step`, and `reverse-continue` send only operator intent under
+  the exclusive controller lease. The actor overwrites caller state with its
+  current configuration, checked scheduler-event prefix, and
+  event-to-schedule-prefix map before invoking the existing
+  replay-oracle-checked time-travel path. Each schedule-matching causal decision
+  advances that map to its exact prefix, quantum boundaries bind the completed
+  configuration, and other records retain the deterministic
+  scheduler boundary at which forward stepping would expose them. A per-session
+  operation gate prevents controller release or reassignment between lease
+  authorization and actor completion. Checkpoint-only resume inputs do not carry
+  the historical event log, so reverse event-like operations fail explicitly at
+  the actor's resume-history floor while instruction and coordinate `goto`
+  remain available. The CLI accepts the closed reverse grain set and
+  `quiescent`, `at:<ticks>`, or canonical compact-binary 17a conditions.
+- [ ] **T-DBG-9** Replace the Apache-side one-QEMU proxy with the standalone GPL
+  debugger gateway, a stable asynchronous GDB listener, bounded fail-closed RSP
+  parsing, and scheduler-routed `continue`/`step`/`vCont`. Prove split/coalesced
+  packets, acknowledgements, async output/stops, EOF, and unsupported mutations.
+  — satisfies [DBG-6], [DBG-41], [DBG-42]; spec §36.2.2, §36.9.1.
+  In progress: the standalone gateway and Apache control client now negotiate over
+  the versioned Unix protocol; prepare/commit are reconnect-recoverable and
+  state-epoch checked; semantic `OK` responses, not transport acknowledgements,
+  define replayable thread/breakpoint state. A process-boundary gate keeps one GDB
+  connection across two QEMU Unix RSP backends, including asynchronous console
+  output, scheduler-routed `continue`/`step`/`vCont`, and atomic commit barriers.
+  Run-control packets are queued across the versioned gateway boundary and consumed
+  by the session actor as ordinary session commands, so canonical repositioning still
+  rejects forward execution until `fork-debug`; the gateway never forwards them
+  directly to QEMU. No unauthenticated TCP listener exists by default; the
+  component-only loopback listener requires an explicit trusted-host launch policy.
+  The authenticated daemon relay and live breakpoint/terminal run-control gates
+  remain open, so this task is not complete.
+- [ ] **T-DBG-10** Implement production whole-world candidate instantiate/replay,
+  gateway prepare/hydrate/commit, verified endpoint/generation evidence, rollback
+  before promotion, and stable GDB state across goto/reverse/fork. — satisfies
+  [DBG-14]–[DBG-19], [DBG-41]; spec §36.4, §36.9.1.
+  In progress: the production lifecycle replays two independent whole-world
+  candidates to the exact scheduler/event-log/node-counter target, requires both
+  candidates to agree, and compares the selected candidate with original live
+  fingerprints sealed to the graph's complete `RuntimeState`. The standalone
+  gateway promotes the candidate's private Unix RSP endpoint with reconnect/status
+  reconciliation. Indeterminate prepare/commit/abort outcomes quarantine possibly
+  selected worlds or nodes until gateway termination is observed; successful
+  promotion transfers gateway ownership before revoking the retired world's
+  scheduler authority, and cleanup evidence does not claim an unobserved reap.
+  Completion remains open for live end-to-end gates across goto, reverse, and fork.
+- [ ] **T-DBG-11** Enforce debugger identities, capability roles, one-controller
+  leases, Unix peer authentication, remote HTTP/2+mTLS relay, and explicit trusted
+  unauthenticated bind policy in the daemon and CLI. — satisfies [DBG-43], [DBG-44];
+  spec §36.9.2.
+  In progress: the HTTP/2 daemon now has a mandatory-client-certificate TLS
+  serving path. It derives a stable authenticated principal from the leaf
+  certificate fingerprint and places that identity in each connection's request
+  extensions. The CLI loads matching server-CA/client-certificate/client-key PEM
+  material for authenticated HTTP/2 clients. Cleartext `serve` requires the
+  explicit `--trusted-unauthenticated-bind` policy and cannot be combined with TLS.
+  Per-certificate deny-by-default role mappings now enforce the five closed
+  capabilities; duplicate principals fail configuration. Controller ownership is
+  session-local, generation-guarded, and checked against the transport-derived
+  principal on every operation. Authenticated attach allocates a daemon-loopback
+  stable gateway, and the CLI exposes it through a bounded client-side loopback
+  relay over HTTP/2 while retaining and finally releasing the controller lease.
+  Read-only service cannot acquire, attach, open, or write a debugger relay.
+  Completion remains open for Unix peer credentials, multiple-observer RPC
+  plumbing, and live mTLS/relay conformance evidence.
+- [ ] **T-DBG-12** Version the public shared-memory ABI for the debug guest agent and
+  implement whole-world-forked argv exec, PTY, resize, exit/close, and SSH-compatible
+  byte bridging; close all streams on reposition and keep recording opt-in. —
+  satisfies [DBG-45], [DBG-46], [SHM-47], [SHM-48]; spec §36.9.3, 13 §13.3.9.
+  The independently implementable `crucible-protocol::guest_introspection`
+  codec now freezes the owned `CRGI` v1 record header and closed feature, argv
+  exec, PTY, SSH bridge, input, resize, close, output, and exit vocabulary. It
+  rejects zero channel identities, unknown flags/features, unbounded argv and
+  chunks, malformed UTF-8, invalid terminal sizes, and trailing bytes. ABI v6
+  appends one bounded request ring and one bounded response ring per VM, with
+  checked C and Rust geometry, role-specific host/plugin accessors, full-record
+  validation before publication and consumption, and fail-loud backpressure.
+  The `CRGX` v1 fixed guest-buffer exchange, role-preserving detached plugin
+  ring handle, live QEMU callback adapter, host `QemuNode` request/response
+  methods, and `crucible-guest agent` runtime now connect those rings end to end.
+  The agent advertises capabilities, launches direct argv exec and controlling-
+  terminal PTY children, applies bounded output backpressure, isolates SSH
+  diagnostics, resizes PTYs through owned descriptors, reports typed channel
+  errors and exit status/signal, and optionally bridges to a configured in-guest
+  SSH stdio server. Direction and sequence validation, retry acknowledgement,
+  post-write request commit, and child cleanup are implemented. The
+  scheduler/backend/session boundary now routes node-addressed records, and the
+  authenticated HTTP/2 daemon carries encoded `CRGI` records only after the
+  typed whole-world guest-introspection fork. The CLI exposes argv exec, PTY
+  stdin/stdout, and SSH-compatible byte bridging. The session-owned response
+  broker demultiplexes bounded records by `(node, channel)` and synthesizes typed
+  closure on successful runtime replacement. The CLI enters and restores local
+  raw-terminal mode and forwards `SIGWINCH` dimensions as typed resize records.
+  Transcript recording is explicitly opt-in at the CLI, uses an exclusively
+  created bounded `CRGT` v1 file containing direction-tagged complete `CRGI`
+  records, and remains outside canonical artifacts. Completion remains open for
+  fork-time activation of `crucible-guest agent`, a bounded missing-agent
+  failure, and live x86_64/aarch64 evidence. A 2026-08 manual production-VM
+  exercise confirmed that requests cross the authenticated remote API, session,
+  backend, and shared-memory request ring after the production loop delegates
+  guest-introspection methods; the shipped fixture then produced no response
+  because its canonical init does not run the debug agent. Starting the agent
+  canonically would violate [DBG-44], so activation remains part of the explicit
+  whole-world fork rather than a fixture workaround.
+- [x] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
+  for local/remote GDB, reverse commands, guest exec, PTY, and SSH compatibility. —
+  satisfies [DBG-47]; spec §36.9.4; cross-ref 23, 26.
+  Completed by `checks.crucible.phase7.debuggerPackage`: GNU GDB 17.2 is built
+  from pinned source using only AOS packages, with Python scripting, TUI,
+  compressed debug-section support, and the all-target BFD/GDB configuration.
+  The `crucible` suite exposes the matching `gdb` and `gdbserver`; the package
+  gate executes Python and selects both x86_64 and aarch64 architectures. The
+  local and authenticated remote relay workflows, symbol ownership, reverse
+  commands, and guest exec/PTY/SSH workflows are documented for operators.
+- [ ] **T-DBG-14** Pass live x86_64 and aarch64 gates for read-only neutrality,
+  hardware breakpoints, scheduler run control, atomic runtime replacement, stable
+  GDB, and guest exec/PTY/SSH introspection without model doubles or fallback. Update S14 and the
+  decision register only from captured live evidence. — satisfies [DBG-36],
+  [DBG-41], [DBG-42], [DBG-47]; spec §36.9.4, §36.10.1.
+  In progress: `checks.crucible.phase7.debuggerLiveArchitectures` boots the
+  packaged x86_64 `microvm` and aarch64 `virt` emulators under TCG without a
+  model double, negotiates RSP with the packaged GDB, proves repeated register
+  reads are identical, and exercises insert/remove hardware-breakpoint packets.
+  A 2026-08 manual x86_64 production-daemon exercise additionally connected the
+  packaged GDB through the client relay and standalone gateway to live QEMU and
+  read registers and thread state. It exposed and fixed missing remote-debug CLI
+  routing plus the distinction between graph coordinates and authoritative QEMU
+  scheduler/event-log/icount evidence. QEMU still rejects GDB's optional
+  trace-status and detach packets. Completion remains open for the full
+  controller/gateway atomic replacement, scheduler run-control, fork-time guest
+  agent activation, and guest-introspection matrix on both architectures.
