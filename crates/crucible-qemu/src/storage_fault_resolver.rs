@@ -14,9 +14,10 @@ use crucible::model::{
     ResolvedFaultTarget, ResolvedMappingOutput, SignalValue, StorageAvailabilityState,
     StorageEffectSpecification, StorageFlushKind, StorageMediaState, StoragePolicyArtifactKind,
     StoragePolicyCacheEviction, StoragePolicyDirtyEviction, StoragePolicyDuplicateCompletion,
-    StoragePolicyPersistenceOrdering, StoragePolicyTypedResult, StorageReadMutation,
-    StorageSelection, StorageVolatileCacheLossKind, StorageVolatileCacheLossSelector,
-    StorageWriteDispositionKind, World, WorldCompletionDurability, WorldDiscardSemantics,
+    StoragePolicyPersistenceOrdering, StoragePolicyQueueDiscipline, StoragePolicyServiceClass,
+    StoragePolicyTypedResult, StorageReadMutation, StorageSelection, StorageVolatileCacheLossKind,
+    StorageVolatileCacheLossSelector, StorageWriteDispositionKind, World,
+    WorldCompletionDurability, WorldDiscardSemantics,
 };
 
 /// Scenario-owned entropy used only for keyed storage adapter choices.
@@ -152,10 +153,11 @@ use crucible_device::block::{
     BlockFaultAvailability, BlockFaultByteSpan, BlockFaultCacheEviction, BlockFaultDirtyEviction,
     BlockFaultFlushDisposition, BlockFaultReadTransform, BlockFaultResult, BlockFaultState,
     BlockFaultWriteDisposition, BlockMediaRangeState, BlockOp, BlockPersistenceOpportunity,
-    BlockPersistenceOrdering, BlockRequest, BlockResponse, ResolvedBlockCachePolicy,
-    ResolvedBlockFaultDirective, ResolvedBlockFlashProgramErase, ResolvedBlockFlashReadDisturb,
-    ResolvedBlockFlashRetention, ResolvedBlockFlashRule, ResolvedBlockMediaRule,
-    ResolvedBlockPersistenceMediaDirective, ResolvedBlockPersistenceTransform,
+    BlockPersistenceOrdering, BlockRequest, BlockResponse, BlockServiceDiscipline,
+    ResolvedBlockCachePolicy, ResolvedBlockFaultDirective, ResolvedBlockFlashProgramErase,
+    ResolvedBlockFlashReadDisturb, ResolvedBlockFlashRetention, ResolvedBlockFlashRule,
+    ResolvedBlockMediaRule, ResolvedBlockPersistenceMediaDirective,
+    ResolvedBlockPersistenceTransform, ResolvedBlockServiceClass, ResolvedBlockServiceRule,
 };
 
 /// Resolves persistent flash policy for one exact physical persistence opportunity.
@@ -467,6 +469,7 @@ fn resolve_block_fault_directive_with_capacity<'a>(
 ) -> Result<ResolvedBlockFaultDirective, StorageFaultResolutionError> {
     validate_request_opportunity(target, request, request_sequence, opportunity)?;
     let mut directive = ResolvedBlockFaultDirective::fault_free(request, capacity);
+    directive.request_sequence = request_sequence;
     directive.execution_nanos = opportunity.coordinate().virtual_nanos;
     let mut actions = actions.into_iter().collect::<Vec<_>>();
     actions.sort_by(|left, right| {
@@ -504,6 +507,7 @@ fn resolve_block_fault_directive_with_capacity<'a>(
     directive
         .persistence_media_rules
         .sort_by_key(|rule| rule.contributor);
+    directive.service_rules.sort_by_key(|rule| rule.contributor);
     Ok(directive)
 }
 
@@ -529,6 +533,84 @@ fn apply_effect(
             let length_bytes = mapped_u64(action, MappedEffectParameter::UnsignedCount)?
                 .unwrap_or(length_bytes.get());
             directive.reported_capacity_bytes = directive.reported_capacity_bytes.min(length_bytes);
+        }
+        StorageEffectSpecification::Service {
+            bytes_per_second,
+            iops,
+            queue_depth,
+            service_policy,
+        } => {
+            let policy = storage_policy(
+                world,
+                service_policy,
+                &action.binding,
+                "service",
+                |artifact| match artifact {
+                    StoragePolicyArtifactKind::Service(policy) => Some(policy.clone()),
+                    _ => None,
+                },
+            )?;
+            let mapped = match action.mapping_output.as_ref() {
+                ResolvedMappingOutput::Parameter { parameter, value } => Some((*parameter, value)),
+                _ => None,
+            };
+            let mapped_rate = |parameter: MappedEffectParameter, default: u64| {
+                mapped
+                    .filter(|(actual, _)| *actual == parameter)
+                    .map_or(Ok(default), |_| {
+                        mapped_u64(action, parameter)?.ok_or_else(|| {
+                            StorageFaultResolutionError::MappingOutput {
+                                binding: action.binding.clone(),
+                                expected: parameter,
+                            }
+                        })
+                    })
+            };
+            let bytes_per_second = mapped_rate(
+                MappedEffectParameter::BytesPerSecond,
+                bytes_per_second.get(),
+            )?;
+            let iops = match iops {
+                Some(default) => Some(mapped_rate(
+                    MappedEffectParameter::OperationsPerSecond,
+                    default.get(),
+                )?),
+                None if mapped.is_some_and(|(parameter, _)| {
+                    parameter == MappedEffectParameter::OperationsPerSecond
+                }) =>
+                {
+                    Some(mapped_rate(MappedEffectParameter::OperationsPerSecond, 0)?)
+                }
+                None => None,
+            };
+            let queue_depth = mapped_rate(
+                MappedEffectParameter::UnsignedCount,
+                u64::from(queue_depth.get()),
+            )?;
+            let queue_depth = u32::try_from(queue_depth).map_err(|_error| {
+                StorageFaultResolutionError::InvalidDirective {
+                    binding: action.binding.clone(),
+                    reason: String::from("storage service queue depth exceeds u32"),
+                }
+            })?;
+            let classes = resolve_service_classes(policy.classes)?;
+            directive.service_rules.push(ResolvedBlockServiceRule {
+                contributor: action.id().bytes,
+                bytes_per_second,
+                iops,
+                queue_depth,
+                discipline: match policy.discipline {
+                    StoragePolicyQueueDiscipline::Fifo => BlockServiceDiscipline::Fifo,
+                    StoragePolicyQueueDiscipline::StrictPriority => {
+                        BlockServiceDiscipline::StrictPriority
+                    }
+                    StoragePolicyQueueDiscipline::WeightedRoundRobin => {
+                        BlockServiceDiscipline::WeightedRoundRobin
+                    }
+                },
+                classes,
+                rebuild_shares_service: policy.rebuild_shares_service,
+            });
         }
         StorageEffectSpecification::Latency {
             operations,
@@ -962,6 +1044,32 @@ fn apply_effect(
     Ok(())
 }
 
+fn resolve_service_classes(
+    classes: Vec<StoragePolicyServiceClass>,
+) -> Result<Vec<ResolvedBlockServiceClass>, StorageFaultResolutionError> {
+    let mut resolved = classes
+        .into_iter()
+        .map(|class| {
+            let mut operations = class
+                .operations
+                .as_slice()
+                .iter()
+                .copied()
+                .map(block_op_from_fault_operation)
+                .collect::<Result<Vec<_>, _>>()?;
+            operations.sort_unstable_by_key(|operation| operation.to_wire());
+            Ok(ResolvedBlockServiceClass {
+                class: *blake3::hash(class.class.as_str().as_bytes()).as_bytes(),
+                operations,
+                priority: class.priority,
+                weight: class.weight.get(),
+            })
+        })
+        .collect::<Result<Vec<_>, StorageFaultResolutionError>>()?;
+    resolved.sort_unstable_by_key(|class| class.class);
+    Ok(resolved)
+}
+
 fn availability_max(
     left: BlockFaultAvailability,
     right: BlockFaultAvailability,
@@ -993,6 +1101,19 @@ fn block_fault_operation(operation: BlockOp) -> FaultOperation {
         BlockOp::Flush => FaultOperation::StorageFlush,
         BlockOp::GetLength => FaultOperation::StorageGetLength,
         BlockOp::Discard => FaultOperation::StorageDiscard,
+    }
+}
+
+fn block_op_from_fault_operation(
+    operation: FaultOperation,
+) -> Result<BlockOp, StorageFaultResolutionError> {
+    match operation {
+        FaultOperation::StorageRead => Ok(BlockOp::Read),
+        FaultOperation::StorageWrite => Ok(BlockOp::Write),
+        FaultOperation::StorageFlush => Ok(BlockOp::Flush),
+        FaultOperation::StorageGetLength => Ok(BlockOp::GetLength),
+        FaultOperation::StorageDiscard => Ok(BlockOp::Discard),
+        _ => Err(StorageFaultResolutionError::UnsupportedTarget),
     }
 }
 
@@ -1759,7 +1880,7 @@ mod tests {
     use crucible::model::{
         BindingActionCause, BoundedCount, ContentHash, CountLimit, EFFECT_SEMANTIC_VERSION,
         EffectLifetime, EffectRequest, FaultCoordinate, FaultOperation, FaultPhase, OperationSet,
-        SignalId,
+        PositiveU64, SignalId, StoragePolicyServiceClass,
     };
 
     use super::*;
@@ -1844,6 +1965,52 @@ mod tests {
         action.opportunity = Some(opportunity.id());
         action.cause = BindingActionCause::Opportunity(opportunity.id());
         action
+    }
+
+    #[test]
+    fn service_classes_are_canonical_after_identity_and_operation_conversion() {
+        let classes = vec![
+            StoragePolicyServiceClass {
+                class: id("class-a"),
+                operations: OperationSet::new(vec![
+                    FaultOperation::StorageGetLength,
+                    FaultOperation::StorageDiscard,
+                ])
+                .unwrap_or_else(|error| panic!("service operations should be valid: {error}")),
+                priority: 1,
+                weight: PositiveU64::new("weight", 1)
+                    .unwrap_or_else(|error| panic!("service weight should be valid: {error}")),
+            },
+            StoragePolicyServiceClass {
+                class: id("class-b"),
+                operations: OperationSet::new(vec![FaultOperation::StorageRead])
+                    .unwrap_or_else(|error| panic!("service operations should be valid: {error}")),
+                priority: 0,
+                weight: PositiveU64::new("weight", 2)
+                    .unwrap_or_else(|error| panic!("service weight should be valid: {error}")),
+            },
+        ];
+
+        let resolved = resolve_service_classes(classes)
+            .unwrap_or_else(|error| panic!("service classes should resolve: {error}"));
+
+        assert!(
+            resolved
+                .windows(2)
+                .all(|pair| pair[0].class < pair[1].class)
+        );
+        assert!(resolved.iter().all(|class| {
+            class
+                .operations
+                .windows(2)
+                .all(|pair| pair[0].to_wire() < pair[1].to_wire())
+        }));
+        for class in &resolved {
+            assert!(
+                class.operations.contains(&BlockOp::Discard)
+                    != class.operations.contains(&BlockOp::Read)
+            );
+        }
     }
 
     #[test]

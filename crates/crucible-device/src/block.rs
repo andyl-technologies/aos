@@ -26,6 +26,7 @@ pub mod flash;
 pub mod media;
 pub mod overlay;
 pub mod persistence;
+pub mod service;
 
 pub use codec::{
     BLOCK_ABI_VERSION, BlockCodecError, BlockErrorCode, BlockOp, BlockRequest, BlockResponse,
@@ -41,6 +42,7 @@ pub use persistence::{
     BlockPersistenceReadyKey, BlockPersistenceTransformationEvidence, BlockWriteFragmentId,
     ResolvedBlockPersistenceTransform,
 };
+pub use service::*;
 
 #[cfg(test)]
 mod tests {
@@ -88,6 +90,184 @@ mod tests {
             retained_versions: 64,
             completion_durability: BlockCompletionDurability::VolatileCacheAccepted,
         }
+    }
+
+    fn fifo_service_rule(contributor: u8) -> ResolvedBlockServiceRule {
+        ResolvedBlockServiceRule {
+            contributor: [contributor; 32],
+            bytes_per_second: 1_000_000_000,
+            iops: None,
+            queue_depth: 8,
+            discipline: BlockServiceDiscipline::Fifo,
+            classes: Vec::new(),
+            rebuild_shares_service: true,
+        }
+    }
+
+    fn priority_service_rule(contributor: u8) -> ResolvedBlockServiceRule {
+        ResolvedBlockServiceRule {
+            contributor: [contributor; 32],
+            bytes_per_second: 1_000_000_000,
+            iops: None,
+            queue_depth: 8,
+            discipline: BlockServiceDiscipline::StrictPriority,
+            classes: vec![
+                ResolvedBlockServiceClass {
+                    class: [1; 32],
+                    operations: vec![BlockOp::Read],
+                    priority: 0,
+                    weight: 1,
+                },
+                ResolvedBlockServiceClass {
+                    class: [2; 32],
+                    operations: vec![BlockOp::Write],
+                    priority: 1,
+                    weight: 1,
+                },
+            ],
+            rebuild_shares_service: true,
+        }
+    }
+
+    #[test]
+    fn integrated_service_defers_real_mutation_and_survives_restore() {
+        let core = ok(IoCore::new(0, crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
+        let latency = BlockLatency::new(0, 0, 0, 0, 0);
+        let mut original = BlockDevice::new(core, ramp_base(PAGE_SIZE), latency);
+        ok(original.configure_storage_faults(
+            BlockDurabilityConfig::write_through(PAGE_SIZE as u64),
+            true,
+        ));
+        let request = BlockRequest::write(41, 0, vec![0xa5; 10]);
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
+        directive.request_sequence = 700;
+        directive.service_rules = vec![fifo_service_rule(1)];
+        ok(original.install_storage_fault_directive(request.request_id, directive));
+        ok(original.submit(0, &request));
+
+        assert_eq!(original.overlay().page_count(), 0);
+        assert_eq!(original.next_exact_local_event(), Some(10));
+        let snapshot = original.snapshot();
+        let mut restored = ok(BlockDevice::restore(&snapshot, ramp_base(PAGE_SIZE), None));
+
+        assert_eq!(ok(original.advance_to(9)), 0);
+        assert_eq!(original.overlay().page_count(), 0);
+        assert_eq!(ok(original.advance_to(10)), 1);
+        assert_eq!(ok(restored.advance_to(10)), 1);
+        assert_eq!(original.snapshot(), restored.snapshot());
+        assert_eq!(
+            ok(original.next_response())
+                .unwrap_or_else(|| panic!("service completion should be delivered"))
+                .status,
+            BlockStatus::Ok
+        );
+        assert_eq!(
+            ok(original.overlay().read(original.base(), 0, 10)),
+            vec![0xa5; 10]
+        );
+        let outcomes = original.drain_storage_service_outcomes();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].sequence, 700);
+        assert_eq!(outcomes[0].finished_nanos, 10);
+    }
+
+    #[test]
+    fn admission_failure_bypasses_integrated_service() {
+        let core = ok(IoCore::new(0, crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
+        let latency = BlockLatency::new(0, 0, 0, 0, 0);
+        let mut device = BlockDevice::new(core, ramp_base(PAGE_SIZE), latency);
+        ok(device.configure_storage_faults(
+            BlockDurabilityConfig::write_through(PAGE_SIZE as u64),
+            true,
+        ));
+        let request = BlockRequest::write(42, 0, vec![0xa5; 10]);
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
+        directive.request_sequence = 701;
+        directive.availability = BlockFaultAvailability::Offline;
+        directive.service_rules = vec![fifo_service_rule(1)];
+        ok(device.install_storage_fault_directive(request.request_id, directive));
+
+        ok(device.submit(0, &request));
+
+        assert_eq!(device.next_exact_local_event(), Some(0));
+        assert_eq!(ok(device.advance_to(0)), 1);
+        let response = ok(device.next_response())
+            .unwrap_or_else(|| panic!("admission failure should be delivered immediately"));
+        assert_eq!(response.status, BlockStatus::Error);
+        assert_eq!(ok(response.error_code()), BlockErrorCode::Offline);
+        assert_eq!(device.overlay().page_count(), 0);
+        assert!(device.drain_storage_service_outcomes().is_empty());
+        assert_eq!(device.next_exact_local_event(), None);
+    }
+
+    #[test]
+    fn later_high_priority_admission_cannot_precede_queued_work() {
+        let core = ok(IoCore::new(0, crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
+        let latency = BlockLatency::new(0, 0, 0, 0, 0);
+        let mut device = BlockDevice::new(core, ramp_base(PAGE_SIZE), latency);
+        ok(device.configure_storage_faults(
+            BlockDurabilityConfig::write_through(PAGE_SIZE as u64),
+            true,
+        ));
+        let requests = [
+            (0, BlockRequest::write(50, 0, vec![0xa5; 10]), 800),
+            (1, BlockRequest::write(51, 16, vec![0x5a; 10]), 801),
+            (100, BlockRequest::read(52, 0, 4), 802),
+        ];
+        for (request_icount, request, sequence) in &requests {
+            let mut directive = ResolvedBlockFaultDirective::fault_free(request, PAGE_SIZE as u64);
+            directive.request_sequence = *sequence;
+            directive.execution_nanos = *request_icount;
+            directive.service_rules = vec![priority_service_rule(2)];
+            ok(device.install_storage_fault_directive(request.request_id, directive));
+            ok(device.submit(*request_icount, request));
+        }
+
+        let outcomes = device.drain_storage_service_outcomes();
+        assert_eq!(
+            outcomes
+                .iter()
+                .map(|outcome| (
+                    outcome.sequence,
+                    outcome.started_nanos,
+                    outcome.finished_nanos
+                ))
+                .collect::<Vec<_>>(),
+            vec![(800, 0, 10), (801, 10, 20)]
+        );
+        assert_eq!(device.overlay().page_count(), 1);
+        assert_eq!(ok(device.advance_to(100)), 2);
+        assert_eq!(device.next_exact_local_event(), Some(104));
+        assert!(device.drain_storage_service_outcomes().is_empty());
+    }
+
+    #[test]
+    fn full_service_queue_returns_stable_busy_response() {
+        let core = ok(IoCore::new(0, crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
+        let latency = BlockLatency::new(0, 0, 0, 0, 0);
+        let mut device = BlockDevice::new(core, ramp_base(PAGE_SIZE), latency);
+        ok(device.configure_storage_faults(
+            BlockDurabilityConfig::write_through(PAGE_SIZE as u64),
+            true,
+        ));
+        for (request_icount, request_id, sequence, offset) in [(0, 60, 900, 0), (1, 61, 901, 16)] {
+            let request = BlockRequest::write(request_id, offset, vec![0xa5; 10]);
+            let mut directive = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
+            let mut rule = fifo_service_rule(3);
+            rule.queue_depth = 1;
+            directive.request_sequence = sequence;
+            directive.execution_nanos = request_icount;
+            directive.service_rules = vec![rule];
+            ok(device.install_storage_fault_directive(request.request_id, directive));
+            ok(device.submit(request_icount, &request));
+        }
+
+        assert_eq!(ok(device.advance_to(1)), 1);
+        let response = ok(device.next_response())
+            .unwrap_or_else(|| panic!("full service queue should return Busy"));
+        assert_eq!(ok(response.error_code()), BlockErrorCode::Busy);
+        assert_eq!(device.overlay().page_count(), 0);
+        assert!(device.drain_storage_service_outcomes().is_empty());
     }
 
     // ---- CoW: read / write / copy-up / base-never-mutated (IO-5,6) ----

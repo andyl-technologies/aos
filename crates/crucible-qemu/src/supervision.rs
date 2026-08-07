@@ -32,6 +32,7 @@ pub use block_node_gate::{
 };
 pub use device_host_work::{
     QemuDeviceHostWorkDelay, QemuLiveBlockHostWorkPool, QemuLiveBlockHostWorkPoolError,
+    QemuLiveBlockStorageEvents,
 };
 pub use host_io_runtime::{QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError};
 pub use host_parallel_gate::{

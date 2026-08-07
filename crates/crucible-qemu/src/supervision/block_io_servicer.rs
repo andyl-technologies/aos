@@ -61,8 +61,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use crucible::model::ContentHash;
 use crucible_device::block::{
     BlockDurabilityConfig, BlockFaultState, BlockPersistenceMediaOutcome,
-    BlockPersistenceOpportunity, BlockRetainedRelease, ResolvedBlockFaultDirective,
-    ResolvedBlockPersistenceMediaDirective,
+    BlockPersistenceOpportunity, BlockRetainedRelease, BlockServiceCompletion,
+    ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
 };
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockSnapshot, DeviceError, IoCore, Request,
@@ -207,9 +207,8 @@ impl QemuLiveBlockIoServicer {
             .restore(pair.second.entries, &checkpoint.responses)
             .map_err(DeviceError::from)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
-        pair.node_slot.store_device_completion_deadline_icount(
-            device.core().next_exact_local_event().unwrap_or(0),
-        );
+        pair.node_slot
+            .store_device_completion_deadline_icount(device.next_exact_local_event().unwrap_or(0));
         Ok(Self {
             region,
             device,
@@ -324,7 +323,7 @@ impl QemuLiveBlockIoServicer {
             .count();
         *frames_processed += inbox.processed;
         let computed_completion_icount = (inbox.processed > 0)
-            .then(|| device.core().next_exact_local_event())
+            .then(|| device.next_exact_local_event())
             .flatten();
 
         let delivery = device
@@ -336,7 +335,7 @@ impl QemuLiveBlockIoServicer {
         // time-owning plugin whose guest is blocked on device I/O can idle-jump to
         // it. Zero when nothing is in flight (the pending completion was just
         // delivered), which retracts any stale deadline.
-        let next_completion_icount = device.core().next_exact_local_event();
+        let next_completion_icount = device.next_exact_local_event();
         node_slot.store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
 
         Ok(QemuLiveBlockIoServiceStep {
@@ -426,6 +425,11 @@ impl QemuLiveBlockIoServicer {
         &mut self,
     ) -> Vec<BlockPersistenceMediaOutcome> {
         self.device.drain_storage_persistence_media_outcomes()
+    }
+
+    /// Drains integrated storage-service evidence for durable event recording.
+    pub fn drain_storage_service_outcomes(&mut self) -> Vec<BlockServiceCompletion> {
+        self.device.drain_storage_service_outcomes()
     }
 
     /// Drops exact volatile-cache entries at a scheduler-authorized boundary.
@@ -540,7 +544,6 @@ impl QemuLiveBlockIoServicer {
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
 
         let next_completion_icount = device
-            .core()
             .next_exact_local_event()
             .into_iter()
             .chain(observed.as_ref().map(|request| request.completion_icount))
@@ -571,7 +574,7 @@ impl QemuLiveBlockIoServicer {
     /// must advance to it before the response can be delivered.
     #[must_use]
     pub fn next_completion_icount(&self) -> Option<u64> {
-        self.device.core().next_exact_local_event()
+        self.device.next_exact_local_event()
     }
 
     /// Reads the guest VM node slot's published state from the servicer's mapping.
@@ -617,7 +620,10 @@ pub struct QemuLiveBlockIoObservedRequest {
     pub request_sequence: u64,
     /// Icount carried by the request at observation time.
     pub request_icount: u64,
-    /// Completion icount computed and pinned before host dispatch.
+    /// Fault-free baseline completion used as a pre-dispatch wake horizon.
+    ///
+    /// A resolved storage directive may replace this provisional coordinate
+    /// after admission; it is never reported as that request's final completion.
     pub completion_icount: u64,
     /// Exact decoded request, absent only for a malformed guest frame.
     pub request: Option<BlockRequest>,
@@ -630,7 +636,7 @@ pub struct QemuLiveBlockIoObservedRequest {
 pub struct QemuLiveBlockIoHostWorkPin {
     /// Newly observed head request, when the inbound ring was nonempty.
     pub observed: Option<QemuLiveBlockIoObservedRequest>,
-    /// Earliest pinned completion across observed and already-computed work.
+    /// Earliest safe wake horizon across observed and already-computed work.
     pub next_completion_icount: Option<u64>,
 }
 

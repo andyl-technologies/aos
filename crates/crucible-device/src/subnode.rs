@@ -254,6 +254,24 @@ impl IoCore {
         self.insert_computed_response(delivery_icount, response)
     }
 
+    /// Schedules a fully computed response from an exact virtual-time boundary.
+    ///
+    /// Device-owned service queues use this after real work completes. The
+    /// computed response's dynamic latency and duplicate gaps are applied from
+    /// `base_completion_nanos`, then converted with the core's fixed clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] for invalid response shape, time/sequence
+    /// overflow, or a completion that would be inserted in the past.
+    pub(crate) fn schedule_computed_response_at_nanos(
+        &mut self,
+        base_completion_nanos: u64,
+        computed: ComputedResponse,
+    ) -> Result<(), DeviceError> {
+        self.insert_computed_at_nanos(base_completion_nanos, computed)
+    }
+
     /// Enqueues a request into the inbound ring (the ARRIVE step).
     ///
     /// The request lands at the requester's emit icount; it is COMPUTEd later by

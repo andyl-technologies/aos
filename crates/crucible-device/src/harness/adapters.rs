@@ -91,7 +91,7 @@ impl HarnessDevice for BlockHarness {
     }
 
     fn next_exact_local_event(&self) -> Option<u64> {
-        self.device.core().next_exact_local_event()
+        self.device.next_exact_local_event()
     }
 }
 

@@ -91,6 +91,48 @@ Timeout is a modeled consumer deadline, not host elapsed time. A dropped
 completion retains the resolved internal operation outcome so reset/retry and
 locked replay remain explainable.
 
+### 11.3.1 Integrated service and queue sampling
+
+`storage.service` is real pre-execution service, not completion latency. A
+request does not read or mutate device state until every contributing service
+constraint releases it. The service policy and mapped byte rate, optional IOPS
+rate, and queue depth are sampled atomically at the request's queue-admission
+opportunity. That immutable sampled rule is retained with the queued request.
+A later signal transition creates a new action/contributor identity and affects
+later admissions; it never retroactively rewrites service already consumed by
+an active or queued request.
+
+Each contributor owns an independent non-preemptive server. Simultaneous
+contributors all admit the request atomically, and the request executes at the
+maximum of their release coordinates. Queue overflow at any contributor rejects
+the whole admission without changing any queue and returns the protocol-neutral
+`busy` block result for that stable request/opportunity identity; it is not a
+host adapter failure and is not silently retried. Before admitting a request,
+the device advances every existing service contributor through the request's
+admission coordinate, executes releases, and freezes their evidence. A request
+observed later therefore cannot participate in a queue decision made before it
+was admitted, even when host servicing itself is delayed. Byte and IOPS constraints are
+integrated with checked integer cumulative ledgers over each continuously busy
+epoch; the later of the byte and operation deadlines is authoritative. This
+avoids per-request rounding drift. An idle contributor continuation is removed,
+so obsolete sampled action versions cannot consume the contributor bound.
+
+Queue selection is exact:
+
+| Discipline | Selection rule |
+| --- | --- |
+| `fifo` | Lowest admission coordinate, then adapter request sequence. |
+| `strict_priority` | Lowest numeric class priority, then admission coordinate and request sequence. An active request is never preempted. |
+| `weighted_round_robin` | Canonical class-ID order; each nonempty class releases `weight` complete requests per round. Empty classes are skipped, and admission coordinate then request sequence orders requests within a class. An active request is never preempted. |
+
+The checkpoint contains every request byte, sampled rule, class assignment,
+active start/finish coordinate, pending order, weighted cursor/usage, busy-epoch
+origin and cumulative byte/operation ledgers, and the set of contributors still
+owed by each request. Evidence records contributor identity, request sequence,
+start and finish coordinates, and cumulative busy-epoch counters. Restore
+validates queue bounds, accounting, class assignment, deadlines, and the exact
+request-to-contributor join before execution resumes.
+
 ## 11.4 Volatile cache
 
 A cache entry contains fragment ID, bytes or content reference, logical range,

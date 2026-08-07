@@ -39,6 +39,7 @@ use super::fault::{
     ResolvedBlockPersistenceMediaDirective,
 };
 use super::overlay::{BaseImage, CowOverlay};
+use super::service::BlockServiceCompletion;
 
 mod snapshot;
 pub use snapshot::BlockSnapshot;
@@ -339,6 +340,29 @@ impl BlockDevice {
         self.storage_faults.drain_persistence_media_outcomes()
     }
 
+    /// Drains integrated-service completion evidence in canonical order.
+    pub fn drain_storage_service_outcomes(&mut self) -> Vec<BlockServiceCompletion> {
+        self.storage_faults.drain_service_outcomes()
+    }
+
+    /// Returns the earliest response, service, or persistence event coordinate.
+    pub fn next_exact_local_event(&self) -> Option<u64> {
+        let service = self
+            .storage_faults
+            .next_service_completion_nanos()
+            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
+        let persistence = self
+            .storage_faults
+            .next_persistence_deadline_nanos()
+            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
+        self.core
+            .next_exact_local_event()
+            .into_iter()
+            .chain(service)
+            .chain(persistence)
+            .min()
+    }
+
     /// Drops exact volatile-cache entries selected by their global sequence.
     ///
     /// # Errors
@@ -477,6 +501,7 @@ impl BlockDevice {
         request_icount: u64,
         request: &BlockRequest,
     ) -> Result<(), DeviceError> {
+        self.advance_storage_service_before_admission(request_icount)?;
         let wire = request.encode().map_err(DeviceError::Codec)?;
         let uniform = Request::new(request_icount, request.request_id, wire);
         self.core
@@ -513,14 +538,25 @@ impl BlockDevice {
         inbox_entries: &[FrameEntry],
         producer_slot: &NodeSlot,
     ) -> Result<ShmemInboxProcess, DeviceError> {
-        let mut node = BlockServer {
-            base: &self.base,
-            overlay: &mut self.overlay,
-            storage_faults: &mut self.storage_faults,
-            latency: &self.latency,
+        let mut result = ShmemInboxProcess {
+            processed: 0,
+            request_kinds: Vec::new(),
+            first_request_icount: None,
+            producer_wakes: Vec::new(),
         };
-        self.core
-            .process_shmem_inbox(&mut node, inbox, inbox_entries, producer_slot)
+        loop {
+            let one = self.process_one_shmem_request(inbox, inbox_entries, producer_slot)?;
+            if one.processed == 0 {
+                break;
+            }
+            result.processed += one.processed;
+            result.request_kinds.extend(one.request_kinds);
+            if result.first_request_icount.is_none() {
+                result.first_request_icount = one.first_request_icount;
+            }
+            result.producer_wakes.extend(one.producer_wakes);
+        }
+        Ok(result)
     }
 
     /// Drains and COMPUTEs at most one raw shared-memory block request.
@@ -539,6 +575,9 @@ impl BlockDevice {
         inbox_entries: &[FrameEntry],
         producer_slot: &NodeSlot,
     ) -> Result<ShmemInboxProcess, DeviceError> {
+        if let Some(frame) = inbox.peek(inbox_entries)? {
+            self.advance_storage_service_before_admission(frame.delivery_icount)?;
+        }
         let mut node = BlockServer {
             base: &self.base,
             overlay: &mut self.overlay,
@@ -547,6 +586,34 @@ impl BlockDevice {
         };
         self.core
             .process_one_shmem_request(&mut node, inbox, inbox_entries, producer_slot)
+    }
+
+    fn advance_storage_service_before_admission(
+        &mut self,
+        request_icount: u64,
+    ) -> Result<(), DeviceError> {
+        let now_nanos = icount_to_virtual_ns(request_icount, self.core.shift_bits())?;
+        let mut next_faults = self.storage_faults.clone();
+        let mut next_overlay = self.overlay.clone();
+        let mut next_core = self.core.clone();
+        let released = next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
+        for released in released {
+            let latency_nanos = self
+                .latency
+                .latency_for(released.request.op, released.request.count);
+            let base_completion_nanos = released.finished_nanos.checked_add(latency_nanos).ok_or(
+                DeviceError::CompletionOverflow {
+                    request_icount: released.request_icount,
+                    latency_ns: latency_nanos,
+                },
+            )?;
+            next_core
+                .schedule_computed_response_at_nanos(base_completion_nanos, released.computed)?;
+        }
+        self.storage_faults = next_faults;
+        self.overlay = next_overlay;
+        self.core = next_core;
+        Ok(())
     }
 
     /// Advances the clock to `limit` and DELIVERs every due response ([IO-2]).
@@ -559,10 +626,28 @@ impl BlockDevice {
         let now_nanos = icount_to_virtual_ns(limit, self.core.shift_bits())?;
         let mut next_faults = self.storage_faults.clone();
         let mut next_overlay = self.overlay.clone();
-        next_faults.persist_due(&self.base, &mut next_overlay, now_nanos)?;
-        let delivered = self.core.advance_to(limit)?;
+        let mut next_core = self.core.clone();
+        let released = next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
+        for released in released {
+            let base_completion_nanos = released
+                .finished_nanos
+                .checked_add(
+                    self.latency
+                        .latency_for(released.request.op, released.request.count),
+                )
+                .ok_or(DeviceError::CompletionOverflow {
+                    request_icount: released.request_icount,
+                    latency_ns: self
+                        .latency
+                        .latency_for(released.request.op, released.request.count),
+                })?;
+            next_core
+                .schedule_computed_response_at_nanos(base_completion_nanos, released.computed)?;
+        }
+        let delivered = next_core.advance_to(limit)?;
         self.storage_faults = next_faults;
         self.overlay = next_overlay;
+        self.core = next_core;
         Ok(delivered)
     }
 
@@ -584,6 +669,27 @@ impl BlockDevice {
         outbox_entries: &mut [FrameEntry],
         consumer_slot: &NodeSlot,
     ) -> Result<ShmemDeliveryResult, DeviceError> {
+        let now_nanos = icount_to_virtual_ns(limit, self.core.shift_bits())?;
+        let mut next_faults = self.storage_faults.clone();
+        let mut next_overlay = self.overlay.clone();
+        let mut next_core = self.core.clone();
+        let released = next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
+        for released in released {
+            let latency_nanos = self
+                .latency
+                .latency_for(released.request.op, released.request.count);
+            let base_completion_nanos = released.finished_nanos.checked_add(latency_nanos).ok_or(
+                DeviceError::CompletionOverflow {
+                    request_icount: released.request_icount,
+                    latency_ns: latency_nanos,
+                },
+            )?;
+            next_core
+                .schedule_computed_response_at_nanos(base_completion_nanos, released.computed)?;
+        }
+        self.storage_faults = next_faults;
+        self.overlay = next_overlay;
+        self.core = next_core;
         self.core
             .advance_to_shmem(limit, outbox, outbox_entries, consumer_slot)
     }
@@ -776,6 +882,16 @@ impl BlockDevice {
     pub fn materialize(&self) -> Vec<u8> {
         self.overlay.materialize(&self.base)
     }
+}
+
+fn ceil_nanos_to_valid_icount(target_nanos: u64, shift_bits: u8) -> u64 {
+    debug_assert!(shift_bits < 64);
+    if shift_bits == 0 {
+        return target_nanos;
+    }
+    let quotient = target_nanos >> shift_bits;
+    let mask = (1_u64 << shift_bits) - 1;
+    quotient + u64::from(target_nanos & mask != 0)
 }
 
 /// The detached COMPUTE view a [`BlockDevice`] hands to [`IoCore::process_inbox`].

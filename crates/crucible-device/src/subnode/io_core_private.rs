@@ -3,6 +3,60 @@
 use super::*;
 
 impl IoCore {
+    pub(super) fn insert_computed_at_nanos(
+        &mut self,
+        base_completion_nanos: u64,
+        computed: ComputedResponse,
+    ) -> Result<(), DeviceError> {
+        if computed.primary.is_none() && !computed.additional.is_empty() {
+            return Err(DeviceError::InvalidComputedResponse);
+        }
+        let Some(primary) = computed.primary else {
+            return Ok(());
+        };
+        let primary_nanos = base_completion_nanos
+            .checked_add(computed.additional_latency_nanos)
+            .ok_or(DeviceError::CompletionOverflow {
+                request_icount: self.clock.current_icount(),
+                latency_ns: computed.additional_latency_nanos,
+            })?;
+        let delivery_icount = self.clock.ceil_ns_to_icount(primary_nanos)?;
+        if delivery_icount < self.clock.current_icount() {
+            return Err(DeviceError::DeliveryInPast {
+                delivery_icount,
+                current_icount: self.clock.current_icount(),
+            });
+        }
+        let response_count = u32::try_from(computed.additional.len())
+            .ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or(DeviceError::ResponseSequenceOverflow {
+                sequence: self.next_seq,
+            })?;
+        self.next_seq
+            .checked_add(response_count)
+            .ok_or(DeviceError::ResponseSequenceOverflow {
+                sequence: self.next_seq,
+            })?;
+        let mut prepared = Vec::with_capacity(computed.additional.len() + 1);
+        prepared.push((delivery_icount, primary));
+        for additional in computed.additional {
+            let nanos = primary_nanos.checked_add(additional.gap_nanos).ok_or(
+                DeviceError::CompletionOverflow {
+                    request_icount: self.clock.current_icount(),
+                    latency_ns: computed
+                        .additional_latency_nanos
+                        .saturating_add(additional.gap_nanos),
+                },
+            )?;
+            prepared.push((self.clock.ceil_ns_to_icount(nanos)?, additional.response));
+        }
+        for (delivery_icount, response) in prepared {
+            self.insert_computed_response(delivery_icount, response)?;
+        }
+        Ok(())
+    }
+
     /// COMPUTEs one request and inserts its response in delivery order.
     pub(super) fn compute_request<D>(
         &mut self,
