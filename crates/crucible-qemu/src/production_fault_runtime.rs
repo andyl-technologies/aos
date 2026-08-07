@@ -12,8 +12,7 @@ use crucible::model::{
     BindingEvaluation, ContentHash, EffectKind, FaultAdapterManifests, FaultCapabilityId,
     FaultCapabilityManifest, FaultCoordinate, FaultExecutionError, FaultObjectId, FaultOpportunity,
     FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink, HostFaultActionState,
-    NetworkEffectSpecification, OwnedFaultExecutionRuntime, SignalArtifactProvider,
-    SignalBoundarySnapshot,
+    OwnedFaultExecutionRuntime, SignalArtifactProvider, SignalBoundarySnapshot,
 };
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 
@@ -128,14 +127,6 @@ pub enum ProductionFaultRuntimeError {
     /// Restored live QEMU state differs from the paired fault checkpoint.
     #[error("live QEMU execution fingerprints do not match the fault checkpoint")]
     QemuFingerprintMismatch,
-    /// A recognized host effect selected parameters without production semantics.
-    #[error("fault binding `{binding}` selects an unsupported production parameter: {parameter}")]
-    UnsupportedHostEffectParameter {
-        /// Binding that selected the unsupported parameter.
-        binding: FaultObjectId,
-        /// Stable description of the unsupported parameter.
-        parameter: &'static str,
-    },
 }
 
 /// Owning signal runtime coupled to host devices and live patched QEMU.
@@ -159,7 +150,6 @@ impl ProductionFaultRuntime {
         scenario_seed: ContentHash,
         nodes: &QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
-        admit_host_effect_parameters(&plan)?;
         let manifests = production_manifests(nodes)?;
         let runtime = if plan.programs().is_empty() {
             None
@@ -194,7 +184,6 @@ impl ProductionFaultRuntime {
         checkpoint: ProductionFaultRuntimeCheckpoint,
         nodes: &mut QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
-        admit_host_effect_parameters(&plan)?;
         let manifests = production_manifests(nodes)?;
         if checkpoint.identity
             != production_checkpoint_identity(
@@ -444,102 +433,6 @@ impl ProductionFaultRuntime {
     }
 }
 
-fn admit_host_effect_parameters(plan: &FaultSignalPlan) -> Result<(), ProductionFaultRuntimeError> {
-    for binding in plan.bindings() {
-        let crucible::model::EffectSpecification::Network(
-            NetworkEffectSpecification::Availability {
-                queued_policy,
-                in_flight_policy,
-                ..
-            },
-        ) = binding.effect().specification()
-        else {
-            continue;
-        };
-        if binding.phases().iter().any(|phase| {
-            !matches!(
-                phase,
-                crucible::model::FaultPhase::Admit | crucible::model::FaultPhase::Resolve
-            )
-        }) {
-            return Err(
-                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
-                    binding: binding.id().clone(),
-                    parameter: "network.availability requires admit and/or resolve phases",
-                },
-            );
-        }
-        if binding
-            .selector()
-            .resolved()
-            .targets()
-            .iter()
-            .any(|target| {
-                matches!(
-                    target.kind(),
-                    crucible::model::FaultTargetKind::NetworkQueue
-                        | crucible::model::FaultTargetKind::NetworkPath
-                )
-            })
-        {
-            return Err(
-                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
-                    binding: binding.id().clone(),
-                    parameter: "network.availability target lacks an exact admitted route stage",
-                },
-            );
-        }
-        if binding
-            .phases()
-            .contains(&crucible::model::FaultPhase::Admit)
-            && binding
-                .selector()
-                .resolved()
-                .targets()
-                .iter()
-                .any(|target| {
-                    matches!(
-                        target.kind(),
-                        crucible::model::FaultTargetKind::NetworkAttachment
-                            | crucible::model::FaultTargetKind::NetworkContact
-                    )
-                })
-        {
-            return Err(
-                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
-                    binding: binding.id().clone(),
-                    parameter: "network attachment/contact availability requires resolve phase",
-                },
-            );
-        }
-        if matches!(
-            binding.effect().specification(),
-            crucible::model::EffectSpecification::Network(
-                NetworkEffectSpecification::Availability {
-                    state: crucible::model::NetworkAvailabilityState::ReceiveOnly
-                        | crucible::model::NetworkAvailabilityState::TransmitOnly,
-                    ..
-                }
-            )
-        ) && binding
-            .selector()
-            .resolved()
-            .targets()
-            .iter()
-            .any(|target| target.kind() != crucible::model::FaultTargetKind::NetworkInterface)
-        {
-            return Err(
-                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
-                    binding: binding.id().clone(),
-                    parameter: "receive_only/transmit_only availability requires interface targets",
-                },
-            );
-        }
-        let _ = (queued_policy, in_flight_policy);
-    }
-    Ok(())
-}
-
 fn production_checkpoint_identity(
     plan: ContentHash,
     runtime: Option<&FaultRuntimeCheckpoint>,
@@ -693,6 +586,8 @@ mod tests {
 
     fn availability_plan(
         target: &ResolvedFaultTarget,
+        phase: FaultPhase,
+        state: NetworkAvailabilityState,
         queued_policy: NetworkInFlightPolicy,
         in_flight_policy: NetworkInFlightPolicy,
     ) -> FaultSignalPlan {
@@ -718,7 +613,7 @@ mod tests {
             EFFECT_SEMANTIC_VERSION,
             EffectLifetime::Persistent,
             EffectSpecification::Network(NetworkEffectSpecification::Availability {
-                state: NetworkAvailabilityState::Down,
+                state,
                 queued_policy,
                 in_flight_policy,
             }),
@@ -730,7 +625,7 @@ mod tests {
             BindingSampling::AtBoundary,
             BindingMapping::ActiveWhenTrue { invert: false },
             TargetSelector::Exact(targets),
-            [FaultPhase::Admit].into_iter().collect(),
+            [phase].into_iter().collect(),
             effect,
             None,
             BindingSearchPolicy::Fixed,
@@ -781,6 +676,8 @@ mod tests {
         };
         let plan = availability_plan(
             &target,
+            FaultPhase::Admit,
+            NetworkAvailabilityState::Down,
             NetworkInFlightPolicy::Drop,
             NetworkInFlightPolicy::Drop,
         );
@@ -833,32 +730,79 @@ mod tests {
     }
 
     #[test]
-    fn production_admits_every_availability_transition_policy_pair() {
-        let target = ResolvedFaultTarget::NetworkSegment {
-            segment: object_id("segment-left-right"),
-            direction: FaultDirection::AToB,
-        };
+    fn production_admits_every_availability_target_phase_state_and_policy() {
+        let targets = [
+            ResolvedFaultTarget::NetworkInterface {
+                endpoint: object_id("endpoint-a"),
+                interface: object_id("interface-a"),
+            },
+            ResolvedFaultTarget::NetworkSegment {
+                segment: object_id("segment-left-right"),
+                direction: FaultDirection::AToB,
+            },
+            ResolvedFaultTarget::NetworkMedium {
+                medium: object_id("medium-a"),
+                resource: object_id("channel-a"),
+            },
+            ResolvedFaultTarget::NetworkQueue {
+                owner: object_id("forwarder-a"),
+                queue: object_id("queue-a"),
+            },
+            ResolvedFaultTarget::NetworkForwarder {
+                forwarder: object_id("forwarder-a"),
+            },
+            ResolvedFaultTarget::NetworkPath {
+                path_version: object_id("path-v1"),
+                direction: FaultDirection::AToB,
+            },
+            ResolvedFaultTarget::NetworkAttachment {
+                endpoint: object_id("endpoint-a"),
+                interface: object_id("interface-a"),
+                attachment: object_id("attachment-a"),
+            },
+            ResolvedFaultTarget::NetworkContact {
+                plan: object_id("contact-plan-a"),
+                endpoint_a: object_id("endpoint-a"),
+                endpoint_b: object_id("endpoint-b"),
+                contact: object_id("contact-a"),
+            },
+        ];
         let nodes = QemuNodeSet::new();
-        for queued in [
-            NetworkInFlightPolicy::Preserve,
-            NetworkInFlightPolicy::Reevaluate,
-            NetworkInFlightPolicy::Drop,
-            NetworkInFlightPolicy::TypedError,
-        ] {
-            for in_flight in [
-                NetworkInFlightPolicy::Preserve,
-                NetworkInFlightPolicy::Reevaluate,
-                NetworkInFlightPolicy::Drop,
-                NetworkInFlightPolicy::TypedError,
-            ] {
-                let result = ProductionFaultRuntime::new(
-                    availability_plan(&target, queued, in_flight),
-                    Some(Arc::new(NoArtifacts)),
-                    SignalBoundarySnapshot::default(),
-                    ContentHash::from_bytes(b"availability-policy-matrix"),
-                    &nodes,
-                );
-                assert!(result.is_ok(), "policy pair {queued:?}/{in_flight:?}");
+        for target in targets {
+            for phase in [FaultPhase::Admit, FaultPhase::Resolve] {
+                for state in [
+                    NetworkAvailabilityState::Up,
+                    NetworkAvailabilityState::Down,
+                    NetworkAvailabilityState::ReceiveOnly,
+                    NetworkAvailabilityState::TransmitOnly,
+                ] {
+                    for queued in [
+                        NetworkInFlightPolicy::Preserve,
+                        NetworkInFlightPolicy::Reevaluate,
+                        NetworkInFlightPolicy::Drop,
+                        NetworkInFlightPolicy::TypedError,
+                    ] {
+                        for in_flight in [
+                            NetworkInFlightPolicy::Preserve,
+                            NetworkInFlightPolicy::Reevaluate,
+                            NetworkInFlightPolicy::Drop,
+                            NetworkInFlightPolicy::TypedError,
+                        ] {
+                            let result = ProductionFaultRuntime::new(
+                                availability_plan(&target, phase, state, queued, in_flight),
+                                Some(Arc::new(NoArtifacts)),
+                                SignalBoundarySnapshot::default(),
+                                ContentHash::from_bytes(b"availability-admission-matrix"),
+                                &nodes,
+                            );
+                            assert!(
+                                result.is_ok(),
+                                "target {:?}, phase {phase:?}, state {state:?}, policy pair {queued:?}/{in_flight:?}",
+                                target.kind()
+                            );
+                        }
+                    }
+                }
             }
         }
     }
