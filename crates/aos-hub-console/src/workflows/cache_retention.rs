@@ -103,6 +103,8 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                 .await
         }
     });
+    let view_client = client.clone();
+    let view_cache = cache_id.clone();
 
     view! {
         <div class="workflow-stack">
@@ -117,7 +119,10 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                     </div>
                 </div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading subscriptions…"</p> }>
-                    {move || Suspend::new(async move {
+                    {move || {
+                        let client = view_client.clone();
+                        let cache_id = view_cache.clone();
+                        Suspend::new(async move {
                         match subscriptions.await.as_ref() {
                             Ok(response) if response.subscriptions.is_empty() => view! {
                                 <p class="muted">"No registry retention subscriptions."</p>
@@ -126,7 +131,11 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                             Ok(response) => view! {
                                 <div class="binding-list">
                                     {response.subscriptions.iter().cloned().map(|subscription| view! {
-                                        <SubscriptionSummary subscription=subscription/>
+                                        <SubscriptionSummary
+                                            client=client.clone()
+                                            cache_id=cache_id.clone()
+                                            subscription=subscription
+                                        />
                                     }).collect_view()}
                                 </div>
                             }
@@ -136,7 +145,8 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                             }
                             .into_any(),
                         }
-                    })}
+                        })
+                    }}
                 </Suspense>
             </section>
             <RetentionEditor client=client cache_id=cache_id/>
@@ -145,7 +155,13 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
 }
 
 #[component]
-fn SubscriptionSummary(subscription: aos_proto_types::RetentionSubscription) -> impl IntoView {
+fn SubscriptionSummary(
+    client: ApiClient,
+    cache_id: String,
+    subscription: aos_proto_types::RetentionSubscription,
+) -> impl IntoView {
+    let registry_id = subscription.registry_id.clone();
+    let version = subscription.resource_version.clone();
     view! {
         <article class="revision-card">
             <div class="compact-list-row">
@@ -163,7 +179,162 @@ fn SubscriptionSummary(subscription: aos_proto_types::RetentionSubscription) -> 
                 <div><span>"Resource version"</span><code>{subscription.resource_version}</code></div>
                 <div><span>"Refresh operation"</span><code>{display_or(&subscription.current_refresh_id, "none")}</code></div>
             </div>
+            <div class="form-actions">
+                <SubscriptionAction
+                    client=client.clone()
+                    cache_id=cache_id.clone()
+                    registry_id=registry_id.clone()
+                    version=version.clone()
+                    action=SubscriptionActionKind::Refresh
+                />
+                <SubscriptionAction
+                    client=client
+                    cache_id=cache_id
+                    registry_id=registry_id
+                    version=version
+                    action=SubscriptionActionKind::Delete
+                />
+            </div>
         </article>
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SubscriptionActionKind {
+    Refresh,
+    Delete,
+}
+
+impl SubscriptionActionKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Refresh => "Review refresh",
+            Self::Delete => "Review deletion",
+        }
+    }
+
+    fn button_class(self) -> &'static str {
+        match self {
+            Self::Refresh => "table-action",
+            Self::Delete => "danger-button",
+        }
+    }
+}
+
+#[component]
+fn SubscriptionAction(
+    client: ApiClient,
+    cache_id: String,
+    registry_id: String,
+    version: String,
+    action: SubscriptionActionKind,
+) -> impl IntoView {
+    let pending = RwSignal::new(None::<PendingPlan>);
+    let error = RwSignal::new(None::<String>);
+    let busy = RwSignal::new(false);
+    let plan_client = client.clone();
+    let on_plan = move |_| {
+        let key = idempotency_key(match action {
+            SubscriptionActionKind::Refresh => "retention-refresh",
+            SubscriptionActionKind::Delete => "retention-delete",
+        });
+        error.set(None);
+        pending.set(None);
+        busy.set(true);
+        let client = plan_client.clone();
+        let cache_id = cache_id.clone();
+        let registry_id = registry_id.clone();
+        let version = version.clone();
+        spawn_local(async move {
+            let response = match action {
+                SubscriptionActionKind::Refresh => {
+                    client
+                        .call::<_, aos_proto_types::TopologyPlanResponse>(
+                            aos_proto_types::CACHE_INTEGRATION_SERVICE_PLAN_REFRESH_RETENTION_SUBSCRIPTION_PATH,
+                            &aos_proto_types::PlanRefreshRetentionSubscriptionRequest {
+                                cache_id,
+                                registry_id,
+                                expected_resource_version: version,
+                                idempotency_key: key.clone(),
+                            },
+                        )
+                        .await
+                }
+                SubscriptionActionKind::Delete => {
+                    client
+                        .call::<_, aos_proto_types::TopologyPlanResponse>(
+                            aos_proto_types::CACHE_INTEGRATION_SERVICE_PLAN_DELETE_RETENTION_SUBSCRIPTION_PATH,
+                            &aos_proto_types::PlanDeleteRetentionSubscriptionRequest {
+                                cache_id,
+                                registry_id,
+                                expected_resource_version: version,
+                                idempotency_key: key.clone(),
+                            },
+                        )
+                        .await
+                }
+            };
+            let result = response
+                .map_err(|failure| failure.to_string())
+                .and_then(|response| PendingPlan::from_response(response, key));
+            match result {
+                Ok(reviewed) => pending.set(Some(reviewed)),
+                Err(detail) => error.set(Some(detail)),
+            }
+            busy.set(false);
+        });
+    };
+    let on_apply = Callback::new(move |()| {
+        let Some(reviewed) = pending.get_untracked() else {
+            return;
+        };
+        let client = client.clone();
+        busy.set(true);
+        spawn_local(async move {
+            let result = match action {
+                SubscriptionActionKind::Refresh => client
+                    .call::<_, aos_proto_types::OperationResponse>(
+                        aos_proto_types::CACHE_INTEGRATION_SERVICE_REFRESH_RETENTION_SUBSCRIPTION_PATH,
+                        &reviewed.topology_apply(),
+                    )
+                    .await
+                    .map(|_| ()),
+                SubscriptionActionKind::Delete => client
+                    .call::<_, aos_proto_types::DeleteTopologyResourceResponse>(
+                        aos_proto_types::CACHE_INTEGRATION_SERVICE_DELETE_RETENTION_SUBSCRIPTION_PATH,
+                        &reviewed.cache_apply(),
+                    )
+                    .await
+                    .map(|_| ()),
+            };
+            match result {
+                Ok(()) => reload(),
+                Err(failure) => error.set(Some(failure.to_string())),
+            }
+            busy.set(false);
+        });
+    });
+
+    view! {
+        <div class="subworkflow">
+            <button
+                class=action.button_class()
+                type="button"
+                disabled=move || busy.get()
+                on:click=on_plan
+            >
+                {action.label()}
+            </button>
+            {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
+            {move || pending.get().map(|reviewed| view! {
+                <ReviewedPlanCard
+                    plan=reviewed.plan
+                    applying=busy.get()
+                    on_apply=on_apply
+                    on_cancel=Callback::new(move |()| pending.set(None))
+                />
+            })}
+        </div>
     }
 }
 
