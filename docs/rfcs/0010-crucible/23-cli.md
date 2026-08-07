@@ -1556,7 +1556,9 @@ branch on the verdict without parsing output:
     exact acknowledged decision/frontier coordinate is not a replay recipe.
     Non-interactive startup and initial controls are separate ordered,
     closed-set recipe fields; all resulting acknowledgements are compared with
-    the fresh session.
+    the fresh session. Interactive live-QEMU fork remains usable as a transient
+    inspection session, but reports `status=not-captured` and never emits a
+    partial artifact that production replay could mistake for complete evidence.
   - The CLI rejects v2 in production and has no model-only fallback. It first
     runs the pure reduction preflight, then launches the pinned packaged
     QEMU/plugin pair and compares the terminal status/outcome/configuration,

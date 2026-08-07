@@ -211,11 +211,20 @@ An explicit fork seed and decision overrides are mutually exclusive. Override
 keys and values are interpreted by the decision being replaced; inspect the
 recorded schedule before constructing them.
 
-Fork writes a child `.crucible` artifact below `--artifact-dir`. It is currently
-a local workflow; remote daemon fork is not implemented. An unchanged fork
-records an explicit resume recipe from the retained base. Reseeded and override
-forks record their branch coordinates, and replay forces only decisions owned by
-the post-branch suffix.
+Non-interactive fork writes a child `.crucible` artifact below `--artifact-dir`.
+It is currently a local workflow; remote daemon fork is not implemented. An
+unchanged fork records an explicit resume recipe from the retained base.
+Reseeded and override forks record their branch coordinates, and replay forces
+only decisions owned by the post-branch suffix.
+
+An interactive live-QEMU fork is a transient inspection session. A passing or
+explicitly stopped session can complete with its terminal checkpoint and
+replay-oracle evidence without a post-run artifact-capture error, but emits
+`fork-artifact\tstatus=not-captured` because the current artifact schema cannot
+bind interactive commands to exact decision/frontier coordinates. Failed,
+crashed, and timed-out sessions retain their normal nonzero outcome exits. Use
+a non-interactive fork when a replayable child artifact is required. The CLI
+does not claim that a partial interactive recipe is replayable.
 
 Replaying any of these fork artifacts reconstructs the retained checkpoint and
 uses the same resume lifecycle as the original fork. The replay therefore

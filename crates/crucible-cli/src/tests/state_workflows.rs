@@ -2493,6 +2493,7 @@ pub(super) fn cli_fork_workflow_routes_local_qemu_into_live_guest_configuration(
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let store_root = temp.path().join("store");
+    let artifact_dir = temp.path().join("interactive-artifacts");
     let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;
@@ -2520,6 +2521,8 @@ pub(super) fn cli_fork_workflow_routes_local_qemu_into_live_guest_configuration(
     let cli = Cli::parse_from([
         String::from("crucible"),
         String::from("--quiet"),
+        String::from("--artifact-dir"),
+        artifact_dir.display().to_string(),
         String::from("--backend"),
         String::from("qemu"),
         String::from("--qemu"),
@@ -2546,6 +2549,69 @@ pub(super) fn cli_fork_workflow_routes_local_qemu_into_live_guest_configuration(
         backend_plan.resolved_backend,
         Some(ResolvedLocalBackend::Qemu { .. })
     ));
+    assert!(should_capture_fork_reproduction_artifact(
+        &fork_plan,
+        backend_plan.resolved_backend.as_ref()
+    ));
+    let mut interactive_fork_plan = fork_plan.clone();
+    interactive_fork_plan.execution_mode = RunExecutionMode::Interactive;
+    assert!(!should_capture_fork_reproduction_artifact(
+        &interactive_fork_plan,
+        backend_plan.resolved_backend.as_ref()
+    ));
+    let interactive_report = ForkWorkflowReport {
+        run: RunWorkflowReport {
+            status: BackendCommandStatus::Passed,
+            created_state: String::from("paused"),
+            final_state: String::from("interactive"),
+            outcome: Some(OutcomeKind::Stopped),
+            terminal_savepoint: Some(checkpoint),
+            terminal_configuration: Some(configuration.clone()),
+            final_frontier_ticks: 1,
+            final_quanta: 0,
+            budget_timed_out: false,
+            state_updates: vec![String::from("paused"), String::from("stopped")],
+            streamed_events: Vec::new(),
+            streamed_event_frames: Vec::new(),
+            coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
+            execution_fingerprints: Vec::new(),
+            acknowledged_commands: vec![SessionCommandKind::Query, SessionCommandKind::Stop],
+            watch_statuses: Vec::new(),
+        },
+        source_checkpoint: checkpoint,
+        branch_checkpoint: checkpoint,
+        branch_configuration: checkpoint,
+        terminal_configuration: configuration.clone(),
+        scenario_form: form.clone(),
+        scenario_label: String::from("qemu-fork-source"),
+        label: String::from("qemu-child"),
+        terminal_oracle: SavepointOracleProof {
+            configuration: checkpoint,
+            fat_checkpoint: checkpoint,
+            thin_checkpoint: checkpoint,
+            frontier: VirtualTime { ticks: 1 },
+            schedule: schedule.clone(),
+            store_objects: 0,
+        },
+    };
+    let interactive_outcome = finish_fork_workflow_outcome(
+        &plan_cli_invocation(&cli),
+        &backend_plan,
+        None,
+        &interactive_fork_plan,
+        interactive_report,
+    )?;
+    assert_eq!(interactive_outcome.status, BackendCommandStatus::Passed);
+    assert!(interactive_outcome.stdout.iter().any(|line| {
+        line
+            == "fork-artifact\tstatus=not-captured\treason=interactive-live-controls\treplayable=false"
+    }));
+    assert!(interactive_outcome.canonical_log.iter().any(|entry| {
+        entry.kind == "fork_reproduction_artifact"
+            && entry.summary
+                == "status=not-captured reason=interactive-live-controls replayable=false"
+    }));
+    assert!(!artifact_dir.exists());
     let error =
         run_local_qemu_fork_workflow(&plan_cli_invocation(&cli), &backend_plan, None, &fork_plan)
             .expect_err("fixture QEMU fork must reach live-guest discovery or production launch");
