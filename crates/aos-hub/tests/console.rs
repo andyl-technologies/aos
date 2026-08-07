@@ -58,6 +58,11 @@ const REMOVED_ROUTES: &[RouteSpec] = &[
     },
 ];
 
+fn removed_management_posts() -> Vec<String> {
+    serde_json::from_str(include_str!("fixtures/removed-management-posts-v1.json"))
+        .expect("removed management POST fixture")
+}
+
 struct ResponseParts {
     status: StatusCode,
     matched_console_route: bool,
@@ -229,6 +234,28 @@ async fn removed_management_routes_are_absent_for_every_method() {
                 assert!(!response.matched_console_route, "{method} {path}");
             }
         }
+    }
+}
+
+#[tokio::test]
+async fn every_removed_management_post_is_absent() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let cookie = login(&app, &db, "removed-posts@example.com").await;
+    for path in removed_management_posts() {
+        let response = send(&app, "POST", &path, Some(&cookie), None).await;
+        assert!(
+            matches!(
+                response.status,
+                StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+            ),
+            "removed management POST remained mounted: {path} ({})",
+            response.status
+        );
+        assert!(
+            !response.matched_console_route,
+            "removed POST matched: {path}"
+        );
     }
 }
 
