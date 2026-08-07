@@ -831,8 +831,8 @@ shutdown signal.
 
 ## 16. `triage` — cluster, dedup, and minimize discovered failures
 
-**Purpose.** Turn a pile of discovered failures (the counterexamples a `search`
-or `fuzz` campaign emits, §13) into a deduplicated, minimized, reportable set.
+**Purpose.** Turn a signed findings ledger emitted by a `search` or `fuzz`
+campaign (§13) into a deduplicated, minimized, reportable set.
 `triage` is a **thin driver over the triage engine of
 [`34-failure-triage.md`](34-failure-triage.md)**: it clusters failures by
 signature, picks a representative per cluster, minimizes each representative to a
@@ -843,7 +843,7 @@ its own ([CLI-1]); the clustering/minimization policy lives in 34.
   crucible triage <FINDINGS> [FLAGS]
 
   ARGS
-    <FINDINGS>   A findings directory / corpus of reproduction artifacts (06 §7.1, 34).
+    <FINDINGS>   A signed findings ledger emitted by search or fuzz (34).
 
   FLAGS (subcommand-local; global flags from §2 also apply)
     --policy <coarse|default|fine|exact>     Signature policy to apply (34). Default: default.
@@ -858,8 +858,8 @@ its own ([CLI-1]); the clustering/minimization policy lives in 34.
     --format <jsonl|json|table|markdown>    Report render format (34 §34.5.2). Default: jsonl.
 ```
 
-`triage` reads the findings, computes a failure signature per artifact and
-clusters by it (34), elects a representative per cluster, optionally minimizes
+`triage` reads discovery-time signatures and bound evidence from the signed
+ledger and clusters by them (34), elects a representative per cluster, optionally minimizes
 each representative (34) — each minimized result remaining a self-contained
 reproduction artifact (06 §7.1) that reproduces bit-identically ([CLI-22]) — and
 emits a per-cluster report. Because every representative is an ordinary artifact,
@@ -873,7 +873,9 @@ cluster's minimization failed its signature-preservation assertion or
 
 - **[CLI-26]** `crucible triage <findings>` MUST be a thin driver over the
   triage engine of [`34-failure-triage.md`](34-failure-triage.md): it MUST
-  cluster the findings by failure signature, elect a representative per cluster,
+  require a signed findings ledger carrying engine-owned discovery-time
+  signature evidence, reject a bare artifact or artifact directory instead of
+  fabricating that evidence, cluster the findings by failure signature, elect a representative per cluster,
   optionally minimize each representative (`--minimize`) to a smaller artifact
   that still reproduces the failure bit-identically (06 §7.1, [CLI-22]), and emit
   a per-cluster report (`--report`, `--format`). `--policy` MUST select the

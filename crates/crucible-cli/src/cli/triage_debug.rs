@@ -82,7 +82,7 @@ pub(super) fn run_triage_invocation(
     let ledger = loaded_findings.ledger;
     if ledger.artifact_count() != 0 && ledger.signed_findings().is_empty() {
         return Err(CliError::Artifact(format!(
-            "triage findings ledger contains {} artifact(s), but discovery-time signature evidence is not available in this ledger format",
+            "triage findings input contains {} artifact(s), but discovery-time signature evidence is not available; pass the signed findings ledger emitted by `search` or `fuzz` (use `--findings-out` to select its path)",
             ledger.artifact_count()
         )));
     }
