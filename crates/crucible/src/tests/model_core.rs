@@ -2277,6 +2277,51 @@ fn world_topology_hashes_nodes_and_links_canonically() {
 }
 
 #[test]
+fn live_network_override_coordinates_are_world_bounded() {
+    let world = world_from_nodes_and_links(
+        vec![
+            ready_node(
+                "a",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 1 },
+                },
+            ),
+            ready_node(
+                "b",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 2 },
+                },
+            ),
+        ],
+        vec![link("a", "b")],
+    );
+    let prefixes = live_world_network_override_point_prefixes(&world);
+    assert_eq!(prefixes.len(), 2);
+
+    let decision = OverrideDecision {
+        point: SchedulingPoint {
+            key: format!("{}42/7", prefixes[0]),
+        },
+        choice: ChoiceTag {
+            name: String::from("loss-fire"),
+        },
+    };
+    assert!(is_supported_live_world_network_override(&decision));
+    assert!(live_world_network_override_matches_world(&world, &decision));
+
+    let unknown_link = OverrideDecision {
+        point: SchedulingPoint {
+            key: String::from("live-world-network/not-a-link/a-to-b/42/7"),
+        },
+        choice: decision.choice.clone(),
+    };
+    assert!(!live_world_network_override_matches_world(
+        &world,
+        &unknown_link
+    ));
+}
+
+#[test]
 fn world_topology_rejects_invalid_links() {
     let nodes = vec![
         ready_node(

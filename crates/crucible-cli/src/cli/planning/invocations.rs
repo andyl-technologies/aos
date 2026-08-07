@@ -1191,6 +1191,7 @@ pub(crate) fn plan_fork_invocation(
         .iter()
         .map(|raw| parse_fork_decision_override(raw))
         .collect::<Result<Vec<_>, _>>()?;
+    validate_fork_decision_override_domain(&decision_overrides)?;
     if let Some(duration) = &args.max_virtual_time
         && parse_run_duration_budget_ticks(duration).is_none()
     {
@@ -1296,9 +1297,72 @@ pub(crate) fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOver
         ));
     }
     Ok(ForkDecisionOverride {
-        decision: decision.to_string(),
-        value: pinned_value.to_string(),
+        decision: decode_fork_override_component(decision)?,
+        value: decode_fork_override_component(pinned_value)?,
     })
+}
+
+fn decode_fork_override_component(value: &str) -> Result<String, CliError> {
+    let mut decoded = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        let Some(encoded) = bytes.get(index + 1..index + 3) else {
+            return Err(usage_error(
+                "--override percent escapes must contain two hexadecimal digits",
+            ));
+        };
+        let text = std::str::from_utf8(encoded).map_err(|_| {
+            usage_error("--override percent escapes must contain hexadecimal ASCII")
+        })?;
+        let byte = u8::from_str_radix(text, 16).map_err(|_| {
+            usage_error("--override percent escapes must contain two hexadecimal digits")
+        })?;
+        decoded.push(byte);
+        index += 3;
+    }
+    String::from_utf8(decoded)
+        .map_err(|_| usage_error("--override percent escapes must decode to UTF-8"))
+}
+
+/// Rejects fork override coordinates that the production scheduler cannot consume.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when an override is outside the live World-network
+/// scheduling-point namespace, uses an unsupported choice, or repeats a point.
+pub(crate) fn validate_fork_decision_override_domain(
+    overrides: &[ForkDecisionOverride],
+) -> Result<(), CliError> {
+    let mut points = BTreeSet::new();
+    for override_plan in overrides {
+        let decision = OverrideDecision {
+            point: SchedulingPoint {
+                key: override_plan.decision.clone(),
+            },
+            choice: ChoiceTag {
+                name: override_plan.value.clone(),
+            },
+        };
+        if !crucible::is_supported_live_world_network_override(&decision) {
+            return Err(artifact_error(format!(
+                "fork override `{}`=`{}` is unresolvable; expected a scheduler-recorded `live-world-network/...` point and a canonical loss/duplicate/corrupt choice",
+                override_plan.decision, override_plan.value
+            )));
+        }
+        if !points.insert(override_plan.decision.as_str()) {
+            return Err(artifact_error(format!(
+                "fork override point `{}` was specified more than once",
+                override_plan.decision
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Validates search arguments and constructs the advanced-engine search plan.

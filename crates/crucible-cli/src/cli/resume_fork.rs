@@ -11,6 +11,11 @@ pub(super) fn run_local_double_fork_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     fork_plan: &ForkInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    if !fork_plan.decision_overrides.is_empty() {
+        return Err(artifact_error(
+            "fork overrides require the production QEMU scheduler; the test double cannot prove exact choice consumption",
+        ));
+    }
     let evidence = fork_handle_evidence(fork_plan)?;
     run_local_double_fork_workflow_with_driver(
         thin_plan,
@@ -42,10 +47,25 @@ pub(super) fn run_local_qemu_fork_workflow(
             crucible::Seed::from_u64(seed),
         );
     } else if !override_decisions.is_empty() {
+        let network_choices = override_decisions
+            .iter()
+            .filter_map(|decision| match decision {
+                crucible::Decision::Override(choice) => Some(choice.clone()),
+                _ => None,
+            })
+            .collect();
+        config = config
+            .with_branch_prefix_overrides(
+                evidence.configuration.clone(),
+                evidence.checkpoint.virtual_time,
+                Vec::new(),
+            )
+            .with_branch_network_choices(network_choices);
+    } else {
         config = config.with_branch_prefix_overrides(
             evidence.configuration.clone(),
             evidence.checkpoint.virtual_time,
-            override_decisions,
+            Vec::new(),
         );
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -65,10 +85,20 @@ pub(super) fn run_local_qemu_fork_workflow(
         initial_control_commands: fork_plan.initial_control_commands.clone(),
         accepted_interactive_commands: fork_plan.accepted_interactive_commands.clone(),
     };
-    let resumed = runtime.block_on(run_remote_control_client_resume_workflow_async(
-        &client,
-        &resume_plan,
-    ))?;
+    let interactive_driver = if matches!(fork_plan.execution_mode, RunExecutionMode::Interactive) {
+        ResumeInteractiveCommandDriver::Stdin
+    } else {
+        ResumeInteractiveCommandDriver::Preparsed(&[])
+    };
+    let resumed = runtime.block_on(
+        run_remote_control_client_resume_from_evidence_with_driver_async(
+            &client,
+            &resume_plan,
+            evidence.clone(),
+            interactive_driver,
+            !fork_plan.decision_overrides.is_empty(),
+        ),
+    )?;
     let report = ForkWorkflowReport {
         run: resumed.run,
         source_checkpoint: resumed.source_checkpoint,
@@ -106,6 +136,11 @@ pub(super) fn run_local_double_fork_workflow_with_driver(
     evidence: ResumeHandleEvidence,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
 ) -> Result<BackendCommandOutcome, CliError> {
+    if !fork_plan.decision_overrides.is_empty() {
+        return Err(artifact_error(
+            "fork overrides require the production QEMU scheduler; the test double cannot prove exact choice consumption",
+        ));
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -145,7 +180,40 @@ pub(super) fn resume_handle_evidence(
 pub(super) fn fork_handle_evidence(
     plan: &ForkInvocationPlan,
 ) -> Result<ResumeHandleEvidence, CliError> {
-    savepoint_evidence("fork", &plan.source, &plan.store_root)
+    let evidence = savepoint_evidence("fork", &plan.source, &plan.store_root)?;
+    validate_fork_overrides_for_world(plan, &evidence.scenario_form)?;
+    Ok(evidence)
+}
+
+fn validate_fork_overrides_for_world(
+    plan: &ForkInvocationPlan,
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<(), CliError> {
+    for decision in fork_override_decisions(plan) {
+        let crucible::Decision::Override(override_decision) = decision else {
+            continue;
+        };
+        if !crucible::live_world_network_override_matches_world(
+            scenario.world(),
+            &override_decision,
+        ) {
+            let declared = crucible::live_world_network_override_point_prefixes(scenario.world())
+                .into_iter()
+                .map(|prefix| encode_canonical_summary_value(&prefix))
+                .collect::<Vec<_>>()
+                .join(",");
+            return Err(artifact_error(format!(
+                "fork override point `{}` is not declared by the savepoint scenario; declared point prefixes={}",
+                encode_canonical_summary_value(&override_decision.point.key),
+                if declared.is_empty() {
+                    "none"
+                } else {
+                    &declared
+                }
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn savepoint_evidence(
@@ -1138,7 +1206,7 @@ pub(super) fn validate_resume_property_firing(
     Ok(())
 }
 
-pub(super) fn validate_resume_property_firing_summary(
+pub(super) fn validate_resume_property_suspension_summary(
     breakpoint_id: BreakpointId,
     expected: &crucible::Predicate,
     boundary: &crucible_api::SessionSummary,
@@ -1158,14 +1226,11 @@ pub(super) fn validate_resume_property_firing_summary(
             firing.predicate, expected
         )));
     }
-    match &firing.disposition {
-        BreakpointDisposition::Action(crucible::Action::Fail { reason })
-            if reason == REQUESTED_PROPERTY_VIOLATION_REASON => {}
-        disposition => {
-            return Err(CliError::Identity(format!(
-                "remote resume property breakpoint used unexpected disposition {disposition:?}"
-            )));
-        }
+    if firing.disposition != BreakpointDisposition::Suspend {
+        return Err(CliError::Identity(format!(
+            "remote resume property breakpoint used unexpected disposition {:?}",
+            firing.disposition
+        )));
     }
     if firing.frontier != boundary.frontier {
         return Err(CliError::Identity(format!(
@@ -1230,30 +1295,7 @@ where
         session,
         |summary| summary.state == expected,
         &description,
-        RUN_INTERACTIVE_ACK_QUANTA_BOUND,
-    )
-    .await
-}
-
-pub(super) async fn wait_for_resume_workflow_advanced_paused<C>(
-    client: &C,
-    session: SessionRef,
-    before: &crucible_api::SessionSummary,
-    description: &str,
-) -> Result<crucible_api::SessionSummary, CliError>
-where
-    C: ControlClient + Sync,
-{
-    wait_for_resume_workflow_summary(
-        client,
-        session,
-        |summary| {
-            summary.state == LiveStateKind::Paused
-                && summary.frontier.ticks > before.frontier.ticks
-                && summary.quanta_stepped > before.quanta_stepped
-        },
-        description,
-        RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+        RESUME_WORKFLOW_OBSERVER_TIMEOUT,
     )
     .await
 }
@@ -1263,42 +1305,35 @@ pub(super) async fn wait_for_resume_workflow_summary<C>(
     session: SessionRef,
     mut accepts: impl FnMut(&crucible_api::SessionSummary) -> bool,
     description: &str,
-    max_attempts: u64,
+    timeout: Duration,
 ) -> Result<crucible_api::SessionSummary, CliError>
 where
     C: ControlClient + Sync,
 {
-    let mut last_observed = None;
-    for _ in 0..max_attempts {
-        let sessions = client.list_sessions().await.map_err(control_client_error)?;
-        let Some(summary) = sessions
-            .sessions
-            .iter()
-            .find(|summary| summary.session == session)
-        else {
-            return Err(backend_error("resume workflow session disappeared"));
-        };
-        if accepts(summary) {
-            return Ok(summary.clone());
+    let observation = async {
+        loop {
+            let sessions = client.list_sessions().await.map_err(control_client_error)?;
+            let Some(summary) = sessions
+                .sessions
+                .iter()
+                .find(|summary| summary.session == session)
+            else {
+                return Err(backend_error("resume workflow session disappeared"));
+            };
+            if accepts(summary) {
+                return Ok(summary.clone());
+            }
+            if summary.state == LiveStateKind::Stopped {
+                return Err(CliError::Outcome(status_from_outcome(summary.outcome)?));
+            }
+            // Local ListSessions calls complete immediately. Yield real time so
+            // the actor and live backend can advance without a hot polling loop.
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        if summary.state == LiveStateKind::Stopped {
-            return Err(CliError::Outcome(status_from_outcome(summary.outcome)?));
-        }
-        last_observed = Some(summary.clone());
-        tokio::task::yield_now().await;
-    }
-    let Some(last) = last_observed else {
-        return Err(backend_error(format!(
-            "resume workflow did not observe a session while waiting for {description}"
-        )));
     };
-    Err(backend_error(format!(
-        "resume workflow did not reach {description}: state={} frontier_ticks={} quanta={} outcome={}",
-        format!("{:?}", last.state).to_ascii_lowercase(),
-        last.frontier.ticks,
-        last.quanta_stepped,
-        terminal_outcome_label(last.outcome),
-    )))
+    tokio::time::timeout(timeout, observation)
+        .await
+        .map_err(|_| backend_error(format!("resume workflow did not reach {description}")))?
 }
 
 #[cfg(any(test, feature = "test-double"))]
@@ -1440,6 +1475,13 @@ pub(super) fn finish_fork_workflow_outcome(
         report.run.final_quanta,
         report.run.acknowledged_commands.len()
     ));
+    for decision_override in &fork_plan.decision_overrides {
+        outcome.stdout.push(format!(
+            "fork-override\tpoint={}\tchoice={}\tstatus=recorded",
+            encode_canonical_summary_value(&decision_override.decision),
+            encode_canonical_summary_value(&decision_override.value)
+        ));
+    }
     if let Some(artifact) = &artifact {
         outcome.stdout.push(format!(
             "fork-artifact\tpath={}\tstatus=captured\tdigest={}\tseed={}\tfork_seed={}\tmodel_artifact={}\treplay_state={}\tschedule={}\tfingerprint={}",
@@ -1481,6 +1523,19 @@ pub(super) fn finish_fork_workflow_outcome(
             fork_plan.terminal_condition.label()
         ),
     });
+    for decision_override in &fork_plan.decision_overrides {
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("scheduler"),
+            kind: String::from("fork_override"),
+            summary: format!(
+                "point={} choice={} status=recorded",
+                encode_canonical_summary_value(&decision_override.decision),
+                encode_canonical_summary_value(&decision_override.value)
+            ),
+        });
+    }
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
         virtual_time_ticks: outcome.canonical_log.len() as u64,
@@ -1569,16 +1624,9 @@ pub(super) fn write_fork_reproduction_artifact(
                 seed,
             }
         } else if !plan.decision_overrides.is_empty() {
-            LiveQemuReplayBranch::PrefixOverrides {
+            LiveQemuReplayBranch::Resume {
                 base_decisions: source.configuration.schedule.len() as u64,
                 frontier_ticks: source.checkpoint.virtual_time.ticks,
-                decision_start: source.configuration.schedule.len() as u64,
-                decision_end: source
-                    .configuration
-                    .schedule
-                    .len()
-                    .saturating_add(plan.decision_overrides.len())
-                    as u64,
             }
         } else {
             LiveQemuReplayBranch::Resume {

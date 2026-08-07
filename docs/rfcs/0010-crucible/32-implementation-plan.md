@@ -544,7 +544,12 @@ long-held locks.
   checkpoint closure index, malformed-handle artifact errors, seed/override
   conflict usage errors, handle- and store-backed no-divergence local-double fork
   execution through an independent child session, repeatable post-fork
-  `--override` decision application, explicit post-fork `--seed` execution in
+  `--override` decision application with fail-closed admission to the production
+  scheduler's live World-network point and choice taxonomy, exact-choice
+  consumption enforcement through the scheduler frontier query before cleanup
+  (so an unconsumed choice cannot wedge actor shutdown), and point/choice trace
+  evidence, explicit post-fork
+  `--seed` execution in
   the local double by deriving the child's post-fork decision stream from the
   explicit seed while preserving the requested savepoint prefix, distinct-seed
   terminal-savepoint and exact virtual-time-boundary proof, interactive child

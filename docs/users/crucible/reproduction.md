@@ -235,19 +235,27 @@ Fork creates an independent child from a validated execution prefix:
   --label alternate-seed
 ```
 
-Alternatively, override recorded decisions with repeatable
-`--override decision=value` arguments:
+Alternatively, pin scheduler-recorded live World-network choices with
+repeatable `--override decision=value` arguments:
 
 ```sh
 ./result/bin/crucible \
   fork savepoint.crucible-savepoint \
-  --override 'delivery-order=db-3-first' \
+  --override 'live-world-network/link_endpoint_a_len%3D4%0Alink_endpoint_a%3Ddb-1%0Alink_endpoint_b_len%3D4%0Alink_endpoint_b%3Ddb-2/a-to-b/42/7=loss-fire' \
   --label alternate-delivery
 ```
 
-An explicit fork seed and decision overrides are mutually exclusive. Override
-keys and values are interpreted by the decision being replaced; inspect the
-recorded schedule before constructing them.
+An explicit fork seed and decision overrides are mutually exclusive. Copy the
+exact point and choice from exploration evidence; override points are not
+free-form labels. Crucible rejects unknown namespaces and choice names before
+launch, and a live run fails if the exact scheduler point is never reached.
+The fork checks scheduler-owned pending-choice state before session cleanup, so
+an unreachable point returns an artifact error instead of wedging shutdown.
+Successful fork output and canonical traces include every recorded point and
+choice. Point and choice components use RFC 3986 percent escapes, so the encoded
+point printed by Crucible can be copied directly even when its canonical link
+identity contains `=` or newline bytes. Without an explicit `--seed`, the fork
+inherits the savepoint's seed and does not generate a second run identity.
 
 Non-interactive fork writes a child `.crucible` artifact below `--artifact-dir`.
 It is currently a local workflow; remote daemon fork is not implemented. An

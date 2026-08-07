@@ -3,6 +3,10 @@
 use super::*;
 use crucible_api as production_api;
 
+// Live QEMU quanta can spend most of the backend completion window outside the
+// actor. Polling by yield count races the VM and can report a false timeout.
+pub(super) const RESUME_WORKFLOW_OBSERVER_TIMEOUT: Duration = Duration::from_secs(300);
+
 #[path = "run_save/qemu_live.rs"]
 mod qemu_live;
 pub(super) use qemu_live::*;
@@ -119,7 +123,7 @@ impl SaveBoundaryEvidence {
     }
 }
 
-fn encode_canonical_summary_value(value: &str) -> String {
+pub(super) fn encode_canonical_summary_value(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut encoded = String::new();
     for byte in value.bytes() {
@@ -906,6 +910,7 @@ where
         resume_plan,
         evidence,
         interactive_driver,
+        false,
     )
     .await
 }
@@ -921,6 +926,7 @@ pub(super) async fn run_remote_control_client_resume_from_evidence_with_driver_a
     resume_plan: &ResumeInvocationPlan,
     evidence: ResumeHandleEvidence,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
+    reject_pending_branch_choices: bool,
 ) -> Result<ResumeWorkflowReport, CliError>
 where
     C: ControlClient + Sync,
@@ -955,6 +961,8 @@ where
     let mut watch_statuses = Vec::new();
     let mut command_id = 1;
     let mut property_violation_reached = false;
+    let mut property_suspension = None;
+    let mut expected_virtual_boundary = None;
 
     let boundary = if matches!(resume_plan.execution_mode, RunExecutionMode::Interactive) {
         drive_remote_resume_interactive_commands(
@@ -977,23 +985,40 @@ where
     } else {
         let boundary = match resume_plan.terminal_condition {
             RunTerminalCondition::Quiescence => {
-                let before =
-                    wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
-                        .await?;
                 send_resume_workflow_command(
                     client,
                     resumed.session,
                     &mut command_id,
-                    SessionCommand::step(StepMode::Quantum),
+                    SessionCommand::SetBreakpoint {
+                        spec: BreakpointSpec::suspend_once(crucible::Predicate::quiescent()),
+                        reply: CommandReply::discard(),
+                    },
                     &mut acknowledged_commands,
                     &mut state_updates,
                 )
                 .await?;
-                wait_for_resume_workflow_advanced_paused(
+                wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
+                    .await?;
+                send_resume_workflow_command(
                     client,
                     resumed.session,
-                    &before,
-                    "paused remote quiescence resume boundary",
+                    &mut command_id,
+                    SessionCommand::Continue,
+                    &mut acknowledged_commands,
+                    &mut state_updates,
+                )
+                .await?;
+                wait_for_resume_workflow_summary(
+                    client,
+                    resumed.session,
+                    |candidate| {
+                        matches!(
+                            candidate.state,
+                            LiveStateKind::Paused | LiveStateKind::Stopped
+                        )
+                    },
+                    "quiescent remote resume boundary",
+                    RESUME_WORKFLOW_OBSERVER_TIMEOUT,
                 )
                 .await?
             }
@@ -1001,6 +1026,7 @@ where
                 let budget = resume_plan.max_virtual_time_ticks.ok_or_else(|| {
                     usage_error("resume --until virtual-time requires --max-virtual-time")
                 })?;
+                expected_virtual_boundary = Some(budget);
                 let summary =
                     wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
                         .await?;
@@ -1020,23 +1046,20 @@ where
                         client,
                         resumed.session,
                         |candidate| {
-                            candidate.state == LiveStateKind::Paused
-                                && candidate.frontier.ticks >= budget
+                            matches!(
+                                candidate.state,
+                                LiveStateKind::Paused | LiveStateKind::Stopped
+                            ) && (candidate.frontier.ticks >= budget
+                                || candidate.state == LiveStateKind::Stopped)
                                 && candidate.quanta_stepped > summary.quanta_stepped
                         },
-                        "paused requested remote virtual-time resume boundary",
-                        resume_actor_boundary_yield_budget(summary.frontier.ticks, budget),
+                        "requested remote virtual-time resume boundary",
+                        RESUME_WORKFLOW_OBSERVER_TIMEOUT,
                     )
                     .await?
                 } else {
                     summary
                 };
-                if boundary.frontier.ticks != budget {
-                    return Err(CliError::Identity(format!(
-                        "resume remote virtual-time boundary reached {}, expected {}",
-                        boundary.frontier.ticks, budget
-                    )));
-                }
                 boundary
             }
             RunTerminalCondition::Stopped => {
@@ -1050,10 +1073,7 @@ where
                     resumed.session,
                     &mut command_id,
                     SessionCommand::SetBreakpoint {
-                        spec: BreakpointSpec::fail_once(
-                            predicate.clone(),
-                            "requested property was violated",
-                        ),
+                        spec: BreakpointSpec::suspend_once(predicate.clone()),
                         reply: CommandReply::discard(),
                     },
                     &mut acknowledged_commands,
@@ -1065,54 +1085,31 @@ where
                         "remote resume property breakpoint command returned no breakpoint id",
                     )
                 })?;
-                let before =
-                    wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
-                        .await?;
+                wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
+                    .await?;
                 send_resume_workflow_command(
                     client,
                     resumed.session,
                     &mut command_id,
-                    SessionCommand::step(StepMode::Quantum),
+                    SessionCommand::Continue,
                     &mut acknowledged_commands,
                     &mut state_updates,
                 )
                 .await?;
-                let boundary = wait_for_resume_workflow_advanced_paused(
+                let boundary = wait_for_resume_workflow_summary(
                     client,
                     resumed.session,
-                    &before,
-                    "paused remote property resume boundary",
+                    |candidate| {
+                        matches!(
+                            candidate.state,
+                            LiveStateKind::Paused | LiveStateKind::Stopped
+                        )
+                    },
+                    "property remote resume boundary",
+                    RESUME_WORKFLOW_OBSERVER_TIMEOUT,
                 )
                 .await?;
-                let firings_response = send_resume_workflow_command(
-                    client,
-                    resumed.session,
-                    &mut command_id,
-                    SessionCommand::query_breakpoint_firings(),
-                    &mut acknowledged_commands,
-                    &mut state_updates,
-                )
-                .await?;
-                let firings = match firings_response.query_result {
-                    Some(QueryResult::BreakpointFirings(firings)) => firings,
-                    Some(other) => {
-                        return Err(backend_error(format!(
-                            "remote resume property proof query returned unexpected payload: {other:?}"
-                        )));
-                    }
-                    None => {
-                        return Err(backend_error(
-                            "remote resume property proof query returned no breakpoint firing payload",
-                        ));
-                    }
-                };
-                validate_resume_property_firing_summary(
-                    breakpoint_id,
-                    &predicate,
-                    &boundary,
-                    &firings,
-                )?;
-                property_violation_reached = true;
+                property_suspension = Some((breakpoint_id, predicate));
                 boundary
             }
         };
@@ -1121,6 +1118,84 @@ where
         }
         boundary
     };
+
+    if reject_pending_branch_choices {
+        let response = send_resume_workflow_command(
+            client,
+            resumed.session,
+            &mut command_id,
+            SessionCommand::Query {
+                kind: QueryKind::SearchFrontier,
+                reply: CommandReply::discard(),
+            },
+            &mut acknowledged_commands,
+            &mut state_updates,
+        )
+        .await?;
+        let pending = match response.query_result {
+            Some(QueryResult::SearchFrontier {
+                pending_branch_choices,
+                ..
+            }) => pending_branch_choices,
+            Some(other) => {
+                return Err(backend_error(format!(
+                    "fork override validation returned unexpected query payload: {other:?}"
+                )));
+            }
+            None => {
+                return Err(backend_error(
+                    "fork override validation returned no search-frontier payload",
+                ));
+            }
+        };
+        if pending != 0 {
+            destroy_remote_resume_session_best_effort(client, resumed.session).await;
+            return Err(artifact_error(format!(
+                "fork stopped with {pending} unconsumed override choice(s); the recorded scheduling point was not reached"
+            )));
+        }
+    }
+
+    if let Some(expected) = expected_virtual_boundary
+        && boundary.frontier.ticks != expected
+    {
+        return Err(CliError::Identity(format!(
+            "resume remote virtual-time boundary reached {}, expected {expected}",
+            boundary.frontier.ticks
+        )));
+    }
+
+    if let Some((breakpoint_id, predicate)) = property_suspension {
+        let firings_response = send_resume_workflow_command(
+            client,
+            resumed.session,
+            &mut command_id,
+            SessionCommand::query_breakpoint_firings(),
+            &mut acknowledged_commands,
+            &mut state_updates,
+        )
+        .await?;
+        let firings = match firings_response.query_result {
+            Some(QueryResult::BreakpointFirings(firings)) => firings,
+            Some(other) => {
+                return Err(backend_error(format!(
+                    "remote resume property proof query returned unexpected payload: {other:?}"
+                )));
+            }
+            None => {
+                return Err(backend_error(
+                    "remote resume property proof query returned no breakpoint firing payload",
+                ));
+            }
+        };
+        validate_resume_property_suspension_summary(
+            breakpoint_id,
+            &predicate,
+            &boundary,
+            &firings,
+        )?;
+        property_violation_reached = true;
+    }
 
     let snapshot_response = send_resume_workflow_command(
         client,
@@ -1518,7 +1593,7 @@ where
                         || summary.state == LiveStateKind::Stopped
                 },
                 "remote interactive resume command boundary",
-                RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+                RESUME_WORKFLOW_OBSERVER_TIMEOUT,
             )
             .await
         }

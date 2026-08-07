@@ -1054,6 +1054,7 @@ where
         run_plan,
         InteractiveCommandDriver::Stdin,
         announce_remote_session,
+        false,
     )
     .await
 }
@@ -1068,6 +1069,7 @@ pub(super) async fn run_control_client_workflow_with_interactive_driver<C>(
     run_plan: &RunInvocationPlan,
     interactive_driver: InteractiveCommandDriver<'_>,
     announce_remote_session: bool,
+    reject_pending_branch_choices: bool,
 ) -> Result<RunWorkflowReport, CliError>
 where
     C: ControlClient + Sync,
@@ -1211,6 +1213,16 @@ where
         interactive_terminal_snapshot.as_deref(),
     )
     .await?;
+    if reject_pending_branch_choices {
+        reject_unconsumed_run_branch_choices(
+            client,
+            &control,
+            created.session,
+            &mut command_id,
+            &mut acknowledged_commands,
+        )
+        .await?;
+    }
     if state_updates.last() != Some(&observation.final_state) {
         state_updates.push(observation.final_state.clone());
     }
@@ -1234,6 +1246,54 @@ where
         acknowledged_commands,
         watch_statuses: observation.watch_statuses,
     })
+}
+
+async fn reject_unconsumed_run_branch_choices<C>(
+    client: &C,
+    control: &crucible_api::ClientControlStream,
+    session: crucible_api::SessionRef,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<(), CliError>
+where
+    C: ControlClient + Sync,
+{
+    let response = acknowledge_stream_command_payload(
+        control,
+        command_id,
+        SessionCommand::Query {
+            kind: QueryKind::SearchFrontier,
+            reply: CommandReply::discard(),
+        },
+        acknowledged_commands,
+    )
+    .await?;
+    let pending = match response.query_result {
+        Some(QueryResult::SearchFrontier {
+            pending_branch_choices,
+            ..
+        }) => pending_branch_choices,
+        Some(other) => {
+            return Err(backend_error(format!(
+                "replay branch validation returned unexpected query payload: {other:?}"
+            )));
+        }
+        None => {
+            return Err(backend_error(
+                "replay branch validation returned no search-frontier payload",
+            ));
+        }
+    };
+    if pending == 0 {
+        return Ok(());
+    }
+
+    let _cleanup = client
+        .destroy_session(DestroySessionRequest::new(session).with_expected_epoch(session.epoch))
+        .await;
+    Err(artifact_error(format!(
+        "replay stopped with {pending} unconsumed branch choice(s); the recorded scheduling point was not reached"
+    )))
 }
 
 pub(super) fn canonical_debug_session_ref(session: crucible_api::SessionRef) -> String {

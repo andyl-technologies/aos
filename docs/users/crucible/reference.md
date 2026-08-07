@@ -169,7 +169,7 @@ partial control trail for diagnosis.
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
 | `SAVEPOINT` | Required | Savepoint-handle path or checkpoint content hash. |
-| `--override <decision=value>` | Repeatable; conflicts with global `--seed` | Override a recorded decision at or after the fork point. Keys and values depend on the recorded decision. |
+| `--override <decision=value>` | Repeatable; conflicts with global `--seed` | Pin a scheduler-recorded live World-network choice. The percent-encoded point starts with `live-world-network/`; the value uses the canonical loss/duplicate/corrupt choice vocabulary. |
 | `--until <quiescence\|virtual-time\|property\|stopped>` | Default `quiescence` | Select the child branch's terminal condition. |
 | `--max-virtual-time <dur>` | Required with `--until virtual-time` | Stop with timeout after this virtual-time budget. |
 | `--label <name>` | Optional | Label the forked branch. |

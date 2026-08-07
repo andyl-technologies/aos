@@ -624,7 +624,7 @@ sharing the parent's checkpoints CoW (07 §5).
 
   FLAGS
     --seed <u64|hex>          New root seed for the forked future (06 §5.3).
-    --override <decision=value>  Override a decision at/after the fork point (05 §3). Repeatable.
+    --override <decision=value>  Pin a recorded live-network choice at/after the fork point. Repeatable.
     --until <...>             Terminal condition, as in `run` (§6).
     --label <name>           Label the forked branch.
     --interactive            Drive the forked session interactively.
@@ -634,12 +634,21 @@ sharing the parent's checkpoints CoW (07 §5).
 point (05 §6), and produces an **independent child session** with its own
 mailbox and lifecycle ([SESS-19]); mutating the child does not affect the parent
 (CoW sharing is copy-on-*write*, 07 §5). With `--seed` the child draws all
-post-fork decisions from a new seed; with `--override` it pins specific decisions
-and draws the rest as before. Either way the child is a fully concrete run whose
+post-fork decisions from a new seed; with `--override` it pins specific
+scheduler-emitted live World-network decisions and draws the rest as before.
+Overrides are executable coordinates, not free-form labels: the CLI rejects
+unsupported point namespaces and choice vocabularies, and the fork workflow
+queries scheduler-owned pending-choice state and fails closed if an admitted
+point is not consumed. Successful output and canonical
+trace entries identify the applied point and choice using RFC 3986 percent
+escapes, which are decoded when passed back through `--override`. Without
+explicit `--seed`, fork identity is owned by the savepoint rather than a newly
+generated seed. Either way the child is a fully concrete run whose
 artifact (06 §7.1) reproduces it without reference to the parent ([SPAT-27]).
 
 **Exit codes.** Same outcome→code mapping as `run` (§6); `5` if the fork point is
-malformed/unresolvable; `64` on conflicting `--seed`/`--override` usage.
+malformed/unresolvable, including an unsupported or unconsumed override; `64` on
+conflicting `--seed`/`--override` usage.
 
 - **[CLI-21]** `crucible fork <savepoint>` MUST `instantiate` the prefix
   configuration up to the fork point (05 §6) and produce an independent child
@@ -1276,7 +1285,9 @@ branch on the verdict without parsing output:
   conflicting explicit `--seed` plus `--override`; executes handle-backed
   and store-backed no-divergence local-double forks through an independent child
   session to quiescence, virtual-time, or interactive command boundaries; applies
-  repeatable post-fork `--override` decisions through the session fork path;
+  repeatable post-fork `--override` decisions through the session fork path,
+  rejects free-form coordinates, requires production live-network choices to be
+  consumed at their exact scheduler point, and records their point/choice evidence;
   applies explicit post-fork `--seed` in the local double by deriving the child's
   post-fork decision stream from that seed while preserving the requested
   savepoint prefix, proving distinct explicit seeds produce distinct terminal
