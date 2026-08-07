@@ -96,6 +96,13 @@ pub(crate) fn internal(err: anyhow::Error) -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
 }
 
+/// Converts a normalized service failure into its matching HTTP response.
+fn rpc_error(error: crate::service::RpcError) -> Response {
+    let status = StatusCode::from_u16(error.http_status())
+        .map_or(StatusCode::INTERNAL_SERVER_ERROR, |status| status);
+    (status, error.to_string()).into_response()
+}
+
 /// A resolved session: the secret (for CSRF minting), the user row, and the
 /// user's email.
 ///
@@ -8718,8 +8725,12 @@ pub(crate) async fn org_sso_action(
         Ok(bearer) => bearer,
         Err(error) => return internal(error),
     };
-    let operation = field("op");
     let plan_id = field("plan_id");
+    let operation = if plan_id.is_empty() {
+        field("op")
+    } else {
+        field("operation")
+    };
     if !plan_id.is_empty() {
         let confirmation_hash = field("confirmation_hash").to_string();
         let idempotency_key = console_apply_idempotency_key(plan_id);
@@ -8787,7 +8798,7 @@ pub(crate) async fn org_sso_action(
         };
         return match result {
             Ok(notice) => render_org_sso(&deps, &session, &org_slug, Some(&notice), started).await,
-            Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+            Err(error) => rpc_error(error),
         };
     }
 
@@ -8798,7 +8809,7 @@ pub(crate) async fn org_sso_action(
     {
         Ok(response) => response.identity_provider,
         Err(crate::service::RpcError::NotFound(_)) => None,
-        Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        Err(error) => return rpc_error(error),
     };
     let domains = match deps
         .topology
@@ -8806,7 +8817,7 @@ pub(crate) async fn org_sso_action(
         .await
     {
         Ok(domains) => domains,
-        Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        Err(error) => return rpc_error(error),
     };
     let idempotency_key = format!("console-sso-plan-{}", uuid::Uuid::new_v4());
     let planned = match operation {
@@ -8941,7 +8952,7 @@ pub(crate) async fn org_sso_action(
             started,
         ))
         .into_response(),
-        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        Err(error) => rpc_error(error),
     }
 }
 // -- registry delivery and upstream mirroring -------------------------------
