@@ -1606,7 +1606,7 @@ in {
         git -C "$resume_reg" config user.email "host-command@example.invalid"
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/resume-release-key"
         # Build a small real package registered in this test's Nix store to
-        # release (apr release introspects the store path via `nix path-info`).
+        # release (apr release introspects the store path via `nix-store`).
         cat > "$work/resume-build.sh" << 'SCRIPT'
         set -eu
         @AOS_COREUTILS@/bin/mkdir -p "$out/bin"
