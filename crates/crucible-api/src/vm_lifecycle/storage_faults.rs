@@ -9,20 +9,24 @@ use std::sync::{Arc, Mutex};
 use super::*;
 
 use crucible::model::{
-    ContentHash, EffectSpecification, FaultCoordinate, FaultObservation, FaultPhase,
-    ResolvedBindingAction, ResolvedFaultTarget, StorageEffectSpecification, World, WorldIoNodeKind,
+    ContentHash, EffectSpecification, FAULT_RUNTIME_STATE_VERSION, FaultCoordinate,
+    FaultObservation, FaultObservationKind, FaultPhase, FaultSignalPlan, ResolvedBindingAction,
+    ResolvedFaultTarget, StorageEffectSpecification, World, WorldIoNodeKind,
 };
 use crucible_device::block::{
-    BaseImage, BlockDurabilityConfig, ResolvedBlockExecutionDirective,
+    BaseImage, BlockDurabilityConfig, BlockOp, BlockPersistenceMediaOutcome, BlockRequest,
+    BlockServiceCompletion, ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective,
     ResolvedBlockRequestPersistenceDirective,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, QemuAsyncDriverRuntimeError, QemuBlockFaultCoordinator,
     QemuLiveBlockIoDeliveryStep, QemuLiveBlockIoIntakeStep, QemuLiveBlockIoServiceStep,
-    QemuLiveBlockIoServicer, StorageFaultResolutionContext, block_durability_config,
+    QemuLiveBlockIoServicer, ResolvedVolatileCacheLoss, StorageFaultResolutionContext,
+    VolatileCacheLossReplay, block_delivery_fault_opportunity, block_durability_config,
     block_persistence_fault_opportunity, block_request_fault_opportunity,
     block_request_persistence_fault_opportunity, merge_block_fault_phase_directive,
     resolve_block_fault_directive, resolve_block_persistence_media_directive,
+    resolve_volatile_cache_loss,
 };
 
 /// Maximum phase/device settle transitions performed during one host poll.
@@ -115,6 +119,7 @@ pub(super) struct ProductionBlockFaultCoordinator {
     observations: ProductionStorageObservations,
     world: World,
     target: ResolvedFaultTarget,
+    opportunity_targets: Vec<ResolvedFaultTarget>,
     context: StorageFaultResolutionContext,
     icount_shift: u8,
 }
@@ -127,24 +132,71 @@ impl ProductionBlockFaultCoordinator {
         observations: ProductionStorageObservations,
         world: World,
         target: ResolvedFaultTarget,
+        fault_plan: &FaultSignalPlan,
         scenario_seed: ContentHash,
         icount_shift: u8,
     ) -> Self {
+        let mut opportunity_targets = fault_plan
+            .bindings()
+            .iter()
+            .flat_map(|binding| binding.selector().resolved().targets())
+            .filter(|candidate| block_targets_same_device(&target, candidate))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        opportunity_targets.insert(target.clone());
         Self {
             runtime,
             cursor,
             observations,
             world,
             target,
+            opportunity_targets: opportunity_targets.into_iter().collect(),
             context: StorageFaultResolutionContext::new(scenario_seed),
             icount_shift,
         }
+    }
+
+    fn request_targets(&self, request: &BlockRequest) -> Vec<ResolvedFaultTarget> {
+        self.opportunity_targets
+            .iter()
+            .filter(|target| block_target_intersects_request(target, request))
+            .cloned()
+            .collect()
+    }
+
+    fn range_targets(&self, offset: u64, count: u32) -> Vec<ResolvedFaultTarget> {
+        self.opportunity_targets
+            .iter()
+            .filter(|target| block_target_intersects_range(target, offset, u64::from(count)))
+            .cloned()
+            .collect()
     }
 
     fn virtual_nanos(&self, icount: u64) -> Result<u64, QemuAsyncDriverRuntimeError> {
         icount
             .checked_shl(u32::from(self.icount_shift))
             .ok_or_else(|| storage_error("convert block icount", "virtual time overflow"))
+    }
+
+    fn retired_instructions_at(
+        &self,
+        nanos: u64,
+        observed_guest_icount: u64,
+    ) -> Result<u64, QemuAsyncDriverRuntimeError> {
+        let quantum = 1_u64
+            .checked_shl(u32::from(self.icount_shift))
+            .ok_or_else(|| storage_error("convert block coordinate", "icount shift overflow"))?;
+        let icount = nanos
+            .checked_add(quantum.saturating_sub(1))
+            .map(|rounded| rounded >> self.icount_shift)
+            .ok_or_else(|| storage_error("convert block coordinate", "icount rounding overflow"))?;
+        if icount > observed_guest_icount {
+            return Err(storage_error(
+                "convert block coordinate",
+                "storage opportunity is later than the observed guest frontier",
+            ));
+        }
+        Ok(icount)
     }
 
     fn evaluate_phase(
@@ -175,10 +227,9 @@ impl ProductionBlockFaultCoordinator {
             }
         };
         let impulses = runtime.drain_host_impulses();
-        if impulses
-            .iter()
-            .any(|action| action.target != self.target || action.phase != opportunity.phase())
-        {
+        if impulses.iter().any(|action| {
+            action.target != *opportunity.target() || action.phase != opportunity.phase()
+        }) {
             runtime.poison();
             return Err(storage_error(
                 "evaluate block fault opportunity",
@@ -187,7 +238,7 @@ impl ProductionBlockFaultCoordinator {
         }
         let mut actions = runtime
             .host_state()
-            .matching(&self.target, opportunity.phase())
+            .matching(opportunity.target(), opportunity.phase())
             .cloned()
             .collect::<Vec<_>>();
         actions.extend(impulses);
@@ -219,6 +270,7 @@ impl ProductionBlockFaultCoordinator {
 
     fn persistent_flash_actions(
         &self,
+        target: &ResolvedFaultTarget,
     ) -> Result<Vec<ResolvedBindingAction>, QemuAsyncDriverRuntimeError> {
         let runtime = self.runtime.lock().map_err(|_| {
             storage_error(
@@ -228,7 +280,7 @@ impl ProductionBlockFaultCoordinator {
         })?;
         Ok(runtime
             .host_state()
-            .matching(&self.target, FaultPhase::Persist)
+            .matching(target, FaultPhase::Persist)
             .filter(|action| {
                 matches!(
                     action.effect.specification(),
@@ -237,6 +289,99 @@ impl ProductionBlockFaultCoordinator {
             })
             .cloned()
             .collect())
+    }
+
+    fn after_evaluation<T>(
+        &self,
+        operation: &'static str,
+        result: Result<T, impl std::fmt::Display>,
+    ) -> Result<T, QemuAsyncDriverRuntimeError> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.poison();
+                }
+                Err(storage_error(operation, error))
+            }
+        }
+    }
+
+    fn targets_attached_device(&self, target: &ResolvedFaultTarget) -> bool {
+        let attached = match &self.target {
+            ResolvedFaultTarget::BlockDevice { device }
+            | ResolvedFaultTarget::BlockRange { device, .. } => device,
+            _ => return false,
+        };
+        matches!(
+            target,
+            ResolvedFaultTarget::BlockDevice { device }
+                | ResolvedFaultTarget::BlockRange { device, .. }
+                if device == attached
+        )
+    }
+
+    fn record_device_outcomes(
+        &self,
+        servicer: &mut QemuLiveBlockIoServicer,
+        guest_icount: u64,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let persistence = servicer.drain_storage_persistence_media_outcomes();
+        let service = servicer.drain_storage_service_outcomes();
+        if persistence.is_empty() && service.is_empty() {
+            return Ok(());
+        }
+        let mut observations = Vec::with_capacity(persistence.len().saturating_add(service.len()));
+        for outcome in persistence {
+            observations.push(FaultObservation {
+                semantic_version: FAULT_RUNTIME_STATE_VERSION,
+                kind: FaultObservationKind::EffectApplied,
+                coordinate: FaultCoordinate {
+                    virtual_nanos: outcome.executed_nanos,
+                    retired_instructions: Some(
+                        self.retired_instructions_at(outcome.executed_nanos, guest_icount)?,
+                    ),
+                },
+                binding: None,
+                target: Some(self.target.clone()),
+                opportunity: None,
+                evidence: persistence_media_evidence(&outcome),
+            });
+        }
+        for outcome in service {
+            observations.push(FaultObservation {
+                semantic_version: FAULT_RUNTIME_STATE_VERSION,
+                kind: FaultObservationKind::EffectApplied,
+                coordinate: FaultCoordinate {
+                    virtual_nanos: outcome.finished_nanos,
+                    retired_instructions: Some(
+                        self.retired_instructions_at(outcome.finished_nanos, guest_icount)?,
+                    ),
+                },
+                binding: None,
+                target: Some(self.target.clone()),
+                opportunity: None,
+                evidence: storage_service_evidence(&outcome),
+            });
+        }
+        let mut queued = self.observations.lock().map_err(|_| {
+            storage_error(
+                "record storage device outcomes",
+                "storage observation queue lock is poisoned",
+            )
+        })?;
+        if queued
+            .len()
+            .checked_add(observations.len())
+            .is_none_or(|count| count > HARD_STORAGE_FAULT_OBSERVATIONS)
+        {
+            return Err(storage_error(
+                "record storage device outcomes",
+                "storage observation queue exceeds its hard bound",
+            ));
+        }
+        queued.extend(observations);
+        Ok(())
     }
 
     fn admit_head_request(
@@ -267,33 +412,40 @@ impl ProductionBlockFaultCoordinator {
         directive.request_sequence = observed.request_sequence;
         directive.execution_nanos = request_nanos;
         for phase in [FaultPhase::Admit, FaultPhase::Queue] {
-            let opportunity = block_request_fault_opportunity(
-                self.target.clone(),
-                &request,
-                observed.wire_digest,
-                phase,
-                coordinate,
-                observed.request_sequence,
-            )
-            .map_err(|error| storage_error("construct block request opportunity", error))?;
-            let actions = self.evaluate_phase(&opportunity)?;
-            let partial = resolve_block_fault_directive(
-                &self.world,
-                &self.target,
-                &request,
-                observed.request_sequence,
-                &opportunity,
-                self.context,
-                actions.iter(),
-            )
-            .map_err(|error| storage_error("resolve block request phase", error))?;
-            merge_block_fault_phase_directive(&mut directive, phase, partial)
-                .map_err(|error| storage_error("compose block request phases", error))?;
+            for target in self.request_targets(&request) {
+                let opportunity = block_request_fault_opportunity(
+                    target.clone(),
+                    &request,
+                    observed.wire_digest,
+                    phase,
+                    coordinate,
+                    observed.request_sequence,
+                )
+                .map_err(|error| storage_error("construct block request opportunity", error))?;
+                let actions = self.evaluate_phase(&opportunity)?;
+                let partial = self.after_evaluation(
+                    "resolve block request phase",
+                    resolve_block_fault_directive(
+                        &self.world,
+                        &target,
+                        &request,
+                        observed.request_sequence,
+                        &opportunity,
+                        self.context,
+                        actions.iter(),
+                    ),
+                )?;
+                self.after_evaluation(
+                    "compose block request phases",
+                    merge_block_fault_phase_directive(&mut directive, phase, partial),
+                )?;
+            }
         }
         directive.execution_nanos = request_nanos;
-        servicer
-            .install_storage_fault_directive(request.request_id, directive)
-            .map_err(|error| storage_error("install block admission directive", error))
+        self.after_evaluation(
+            "install block admission directive",
+            servicer.install_storage_fault_directive(request.request_id, directive),
+        )
     }
 
     fn settle_opportunities(
@@ -308,38 +460,51 @@ impl ProductionBlockFaultCoordinator {
             while let Some(opportunity) = servicer.next_storage_execution_opportunity(now_nanos) {
                 let coordinate = FaultCoordinate {
                     virtual_nanos: opportunity.ready_nanos,
-                    retired_instructions: Some(guest_icount),
+                    retired_instructions: Some(
+                        self.retired_instructions_at(opportunity.ready_nanos, guest_icount)?,
+                    ),
                 };
-                let fault_opportunity = block_request_fault_opportunity(
-                    self.target.clone(),
-                    &opportunity.request,
-                    opportunity.wire_digest,
-                    FaultPhase::Resolve,
-                    coordinate,
-                    opportunity.request_sequence,
-                )
-                .map_err(|error| storage_error("construct block resolve opportunity", error))?;
-                let actions = self.evaluate_phase(&fault_opportunity)?;
-                let partial = resolve_block_fault_directive(
-                    &self.world,
-                    &self.target,
-                    &opportunity.request,
-                    opportunity.request_sequence,
-                    &fault_opportunity,
-                    self.context,
-                    actions.iter(),
-                )
-                .map_err(|error| storage_error("resolve block resolve phase", error))?;
                 let mut directive = opportunity.admission.clone();
-                merge_block_fault_phase_directive(&mut directive, FaultPhase::Resolve, partial)
-                    .map_err(|error| storage_error("compose block resolve phase", error))?;
+                for target in self.request_targets(&opportunity.request) {
+                    let fault_opportunity = block_request_fault_opportunity(
+                        target.clone(),
+                        &opportunity.request,
+                        opportunity.wire_digest,
+                        FaultPhase::Resolve,
+                        coordinate,
+                        opportunity.request_sequence,
+                    )
+                    .map_err(|error| storage_error("construct block resolve opportunity", error))?;
+                    let actions = self.evaluate_phase(&fault_opportunity)?;
+                    let partial = self.after_evaluation(
+                        "resolve block resolve phase",
+                        resolve_block_fault_directive(
+                            &self.world,
+                            &target,
+                            &opportunity.request,
+                            opportunity.request_sequence,
+                            &fault_opportunity,
+                            self.context,
+                            actions.iter(),
+                        ),
+                    )?;
+                    self.after_evaluation(
+                        "compose block resolve phase",
+                        merge_block_fault_phase_directive(
+                            &mut directive,
+                            FaultPhase::Resolve,
+                            partial,
+                        ),
+                    )?;
+                }
                 directive.execution_nanos = opportunity.ready_nanos;
-                servicer
-                    .install_storage_execution_directive(ResolvedBlockExecutionDirective {
+                self.after_evaluation(
+                    "install block resolve directive",
+                    servicer.install_storage_execution_directive(ResolvedBlockExecutionDirective {
                         opportunity,
                         directive,
-                    })
-                    .map_err(|error| storage_error("install block resolve directive", error))?;
+                    }),
+                )?;
                 installed = true;
             }
             while let Some(opportunity) =
@@ -347,65 +512,89 @@ impl ProductionBlockFaultCoordinator {
             {
                 let coordinate = FaultCoordinate {
                     virtual_nanos: opportunity.ready_nanos,
-                    retired_instructions: Some(guest_icount),
+                    retired_instructions: Some(
+                        self.retired_instructions_at(opportunity.ready_nanos, guest_icount)?,
+                    ),
                 };
-                let fault_opportunity = block_request_persistence_fault_opportunity(
-                    self.target.clone(),
-                    &opportunity,
-                    coordinate,
-                )
-                .map_err(|error| storage_error("construct block persist opportunity", error))?;
-                let actions = self.evaluate_phase(&fault_opportunity)?;
-                let partial = resolve_block_fault_directive(
-                    &self.world,
-                    &self.target,
-                    &opportunity.request,
-                    opportunity.request_sequence,
-                    &fault_opportunity,
-                    self.context,
-                    actions.iter(),
-                )
-                .map_err(|error| storage_error("resolve block persist phase", error))?;
                 let mut directive = opportunity.resolved.clone();
-                merge_block_fault_phase_directive(&mut directive, FaultPhase::Persist, partial)
-                    .map_err(|error| storage_error("compose block persist phase", error))?;
+                for target in self.request_targets(&opportunity.request) {
+                    let fault_opportunity = block_request_persistence_fault_opportunity(
+                        target.clone(),
+                        &opportunity,
+                        coordinate,
+                    )
+                    .map_err(|error| storage_error("construct block persist opportunity", error))?;
+                    let actions = self.evaluate_phase(&fault_opportunity)?;
+                    let partial = self.after_evaluation(
+                        "resolve block persist phase",
+                        resolve_block_fault_directive(
+                            &self.world,
+                            &target,
+                            &opportunity.request,
+                            opportunity.request_sequence,
+                            &fault_opportunity,
+                            self.context,
+                            actions.iter(),
+                        ),
+                    )?;
+                    self.after_evaluation(
+                        "compose block persist phase",
+                        merge_block_fault_phase_directive(
+                            &mut directive,
+                            FaultPhase::Persist,
+                            partial,
+                        ),
+                    )?;
+                }
                 directive.execution_nanos = opportunity.ready_nanos;
                 if !directive.persistence_transforms.is_empty() {
                     directive.persistence_admitted_nanos = opportunity.ready_nanos;
                 }
-                servicer
-                    .install_storage_request_persistence_directive(
+                self.after_evaluation(
+                    "install block persist directive",
+                    servicer.install_storage_request_persistence_directive(
                         ResolvedBlockRequestPersistenceDirective {
                             opportunity,
                             directive,
                         },
-                    )
-                    .map_err(|error| storage_error("install block persist directive", error))?;
+                    ),
+                )?;
                 installed = true;
             }
             while let Some(opportunity) = servicer.next_storage_persistence_opportunity(now_nanos) {
                 let coordinate = FaultCoordinate {
                     virtual_nanos: opportunity.ready_nanos,
-                    retired_instructions: Some(guest_icount),
+                    retired_instructions: Some(
+                        self.retired_instructions_at(opportunity.ready_nanos, guest_icount)?,
+                    ),
                 };
-                let fault_opportunity = block_persistence_fault_opportunity(
-                    self.target.clone(),
-                    &opportunity,
-                    coordinate,
-                )
-                .map_err(|error| {
-                    storage_error("construct physical persistence opportunity", error)
-                })?;
-                let actions = self.persistent_flash_actions()?;
-                let directive = resolve_block_persistence_media_directive(
-                    &self.world,
-                    &self.target,
-                    &opportunity,
-                    &fault_opportunity,
-                    self.context,
-                    actions.iter(),
-                )
-                .map_err(|error| storage_error("resolve physical persistence", error))?;
+                let mut flash_rules = Vec::new();
+                for target in self.range_targets(opportunity.offset, opportunity.count) {
+                    let fault_opportunity = block_persistence_fault_opportunity(
+                        target.clone(),
+                        &opportunity,
+                        coordinate,
+                    )
+                    .map_err(|error| {
+                        storage_error("construct physical persistence opportunity", error)
+                    })?;
+                    let actions = self.persistent_flash_actions(&target)?;
+                    let mut partial = resolve_block_persistence_media_directive(
+                        &self.world,
+                        &target,
+                        &opportunity,
+                        &fault_opportunity,
+                        self.context,
+                        actions.iter(),
+                    )
+                    .map_err(|error| storage_error("resolve physical persistence", error))?;
+                    flash_rules.append(&mut partial.flash_rules);
+                }
+                flash_rules.sort_by_key(|rule| rule.contributor);
+                let directive = crucible_device::block::ResolvedBlockPersistenceMediaDirective {
+                    opportunity: opportunity.clone(),
+                    flash_rules,
+                };
                 servicer
                     .install_storage_persistence_media_directive(directive)
                     .map_err(|error| {
@@ -417,6 +606,59 @@ impl ProductionBlockFaultCoordinator {
                 .advance_storage_to(guest_icount)
                 .map_err(|error| storage_error("advance coordinated block device", error))?;
             absorb_delivery(aggregate, delivery)?;
+            let mut delivery_installed = false;
+            while let Some(opportunity) = servicer.next_storage_delivery_opportunity(now_nanos) {
+                let coordinate = FaultCoordinate {
+                    virtual_nanos: opportunity.ready_nanos,
+                    retired_instructions: Some(
+                        self.retired_instructions_at(opportunity.ready_nanos, guest_icount)?,
+                    ),
+                };
+                let mut directive = opportunity.resolved.clone();
+                for target in self.request_targets(&opportunity.request) {
+                    let fault_opportunity =
+                        block_delivery_fault_opportunity(target.clone(), &opportunity, coordinate)
+                            .map_err(|error| {
+                                storage_error("construct block delivery opportunity", error)
+                            })?;
+                    let actions = self.evaluate_phase(&fault_opportunity)?;
+                    let partial = self.after_evaluation(
+                        "resolve block delivery phase",
+                        resolve_block_fault_directive(
+                            &self.world,
+                            &target,
+                            &opportunity.request,
+                            opportunity.request_sequence,
+                            &fault_opportunity,
+                            self.context,
+                            actions.iter(),
+                        ),
+                    )?;
+                    self.after_evaluation(
+                        "compose block delivery phase",
+                        merge_block_fault_phase_directive(
+                            &mut directive,
+                            FaultPhase::Deliver,
+                            partial,
+                        ),
+                    )?;
+                }
+                self.after_evaluation(
+                    "install block delivery directive",
+                    servicer.install_storage_delivery_directive(ResolvedBlockDeliveryDirective {
+                        opportunity,
+                        directive,
+                    }),
+                )?;
+                delivery_installed = true;
+                installed = true;
+            }
+            if delivery_installed {
+                let delivery = servicer.advance_storage_to(guest_icount).map_err(|error| {
+                    storage_error("publish coordinated block completion", error)
+                })?;
+                absorb_delivery(aggregate, delivery)?;
+            }
             if !installed {
                 return Ok(());
             }
@@ -429,6 +671,91 @@ impl ProductionBlockFaultCoordinator {
 }
 
 impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
+    fn apply_boundary_actions(
+        &mut self,
+        servicer: &mut QemuLiveBlockIoServicer,
+        _coordinate: FaultCoordinate,
+        actions: &[ResolvedBindingAction],
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let matching = actions
+            .iter()
+            .filter(|action| self.targets_attached_device(&action.target))
+            .collect::<Vec<_>>();
+        let mut staged = servicer.storage_fault_state().clone();
+        let mut selected = Vec::new();
+        let mut observations = Vec::new();
+        for action in matching {
+            match action.effect.specification() {
+                EffectSpecification::Storage(StorageEffectSpecification::VolatileCacheLoss {
+                    ..
+                }) => {
+                    let resolved = resolve_volatile_cache_loss(
+                        &action.target,
+                        &staged,
+                        self.context,
+                        action,
+                        VolatileCacheLossReplay::Record,
+                    )
+                    .map_err(|error| {
+                        storage_error("resolve volatile-cache loss boundary", error)
+                    })?;
+                    staged
+                        .lose_volatile(&resolved.selected_sequences)
+                        .map_err(|error| storage_error("stage volatile-cache loss", error))?;
+                    selected.extend(resolved.selected_sequences.iter().copied());
+                    observations.push(FaultObservation {
+                        semantic_version: FAULT_RUNTIME_STATE_VERSION,
+                        kind: FaultObservationKind::EffectApplied,
+                        coordinate: action.coordinate,
+                        binding: Some(action.binding.clone()),
+                        target: Some(action.target.clone()),
+                        opportunity: action.opportunity,
+                        evidence: volatile_cache_loss_evidence(&resolved),
+                    });
+                }
+                EffectSpecification::Storage(_) => {
+                    return Err(storage_error(
+                        "apply storage boundary action",
+                        format!(
+                            "storage effect `{}` has no block boundary mutation",
+                            action.effect.kind().as_str()
+                        ),
+                    ));
+                }
+                _ => {
+                    return Err(storage_error(
+                        "apply storage boundary action",
+                        "non-storage action crossed the block adapter boundary",
+                    ));
+                }
+            }
+        }
+        if selected.is_empty() && observations.is_empty() {
+            return Ok(());
+        }
+        let mut queued = self.observations.lock().map_err(|_| {
+            storage_error(
+                "record volatile-cache loss boundary",
+                "storage observation queue lock is poisoned",
+            )
+        })?;
+        if queued
+            .len()
+            .checked_add(observations.len())
+            .is_none_or(|count| count > HARD_STORAGE_FAULT_OBSERVATIONS)
+        {
+            return Err(storage_error(
+                "record volatile-cache loss boundary",
+                "storage observation queue exceeds its hard bound",
+            ));
+        }
+        servicer
+            .lose_storage_volatile(&selected)
+            .map_err(|error| storage_error("apply volatile-cache loss boundary", error))?;
+        queued.extend(observations);
+        Ok(())
+    }
+
     fn service_block_io(
         &mut self,
         servicer: &mut QemuLiveBlockIoServicer,
@@ -442,6 +769,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         let mut aggregate = QemuLiveBlockIoServiceStep::default();
         absorb_intake(&mut aggregate, intake)?;
         self.settle_opportunities(servicer, guest_icount, now_nanos, &mut aggregate)?;
+        self.record_device_outcomes(servicer, guest_icount)?;
         Ok(aggregate)
     }
 }
@@ -490,6 +818,124 @@ fn absorb_delivery(
         })?;
     aggregate.next_completion_icount = delivery.next_completion_icount;
     Ok(())
+}
+
+fn block_targets_same_device(left: &ResolvedFaultTarget, right: &ResolvedFaultTarget) -> bool {
+    let device = |target: &ResolvedFaultTarget| match target {
+        ResolvedFaultTarget::BlockDevice { device }
+        | ResolvedFaultTarget::BlockRange { device, .. } => Some(*device),
+        _ => None,
+    };
+    device(left)
+        .zip(device(right))
+        .is_some_and(|(left, right)| left == right)
+}
+
+fn block_target_intersects_request(target: &ResolvedFaultTarget, request: &BlockRequest) -> bool {
+    match request.op {
+        BlockOp::Read | BlockOp::Write | BlockOp::Discard => {
+            block_target_intersects_range(target, request.offset, u64::from(request.count))
+        }
+        BlockOp::Flush | BlockOp::GetLength => matches!(
+            target,
+            ResolvedFaultTarget::BlockDevice { .. } | ResolvedFaultTarget::BlockRange { .. }
+        ),
+    }
+}
+
+fn block_target_intersects_range(target: &ResolvedFaultTarget, offset: u64, length: u64) -> bool {
+    match target {
+        ResolvedFaultTarget::BlockDevice { .. } => true,
+        ResolvedFaultTarget::BlockRange {
+            start_byte,
+            length_bytes,
+            ..
+        } => offset
+            .checked_add(length)
+            .zip(start_byte.checked_add(*length_bytes))
+            .is_some_and(|(end, target_end)| offset < target_end && *start_byte < end),
+        _ => false,
+    }
+}
+
+fn volatile_cache_loss_evidence(resolved: &ResolvedVolatileCacheLoss) -> ContentHash {
+    let list = |values: &[u64]| {
+        values
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    ContentHash::from_canonical_material(
+        "crucible.storage-volatile-cache-loss-evidence.v1",
+        &format!(
+            "entry_set_digest={}\neligible={}\nprotected={}\nselected={}\ndurable_frontier_before={}\ndurable_frontier_after={}",
+            ContentHash {
+                bytes: resolved.entry_set_digest
+            }
+            .to_hex(),
+            list(&resolved.eligible_sequences),
+            list(&resolved.protected_sequences),
+            list(&resolved.selected_sequences),
+            resolved.durable_frontier_before,
+            resolved.durable_frontier_after,
+        ),
+    )
+}
+
+fn persistence_media_evidence(outcome: &BlockPersistenceMediaOutcome) -> ContentHash {
+    let spans = outcome
+        .applied_spans
+        .iter()
+        .map(|span| format!("{}:{}", span.start, span.length))
+        .collect::<Vec<_>>()
+        .join(",");
+    ContentHash::from_canonical_material(
+        "crucible.storage-persistence-media-evidence.v1",
+        &format!(
+            "sequence={}\nrequest_id={}\noperation_sequence={}\noperation={}\nrequest_digest={}\noffset={}\ncount={}\nintended_digest={}\nready_nanos={}\nexecuted_nanos={}\napplied_spans={}\nmedia_failed={}\napplied_digest={}",
+            outcome.opportunity.sequence,
+            outcome.opportunity.request_id,
+            outcome.opportunity.operation_sequence,
+            outcome.opportunity.operation.to_wire(),
+            ContentHash {
+                bytes: outcome.opportunity.request_digest
+            }
+            .to_hex(),
+            outcome.opportunity.offset,
+            outcome.opportunity.count,
+            ContentHash {
+                bytes: outcome.opportunity.intended_digest
+            }
+            .to_hex(),
+            outcome.opportunity.ready_nanos,
+            outcome.executed_nanos,
+            spans,
+            outcome.media_failed,
+            ContentHash {
+                bytes: outcome.applied_digest
+            }
+            .to_hex(),
+        ),
+    )
+}
+
+fn storage_service_evidence(outcome: &BlockServiceCompletion) -> ContentHash {
+    ContentHash::from_canonical_material(
+        "crucible.storage-service-evidence.v1",
+        &format!(
+            "contributor={}\nsequence={}\nstarted_nanos={}\nfinished_nanos={}\nbusy_epoch_bytes={}\nbusy_epoch_operations={}",
+            ContentHash {
+                bytes: outcome.contributor
+            }
+            .to_hex(),
+            outcome.sequence,
+            outcome.started_nanos,
+            outcome.finished_nanos,
+            outcome.busy_epoch_bytes,
+            outcome.busy_epoch_operations,
+        ),
+    )
 }
 
 fn storage_error(

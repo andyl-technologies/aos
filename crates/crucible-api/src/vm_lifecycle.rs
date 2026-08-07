@@ -676,6 +676,7 @@ pub fn build_production_vm_lifecycle_loop(
                     Arc::clone(&storage_fault_observations),
                     source.world().clone(),
                     block.target.clone(),
+                    source.plan().fault_signals(),
                     scenario.id(),
                     first.icount_shift,
                 )),

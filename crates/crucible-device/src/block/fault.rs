@@ -417,6 +417,8 @@ pub struct ResolvedBlockPersistenceMediaDirective {
 pub struct BlockPersistenceMediaOutcome {
     /// Opportunity identity that was consumed.
     pub opportunity: BlockPersistenceOpportunity,
+    /// Exact virtual coordinate at which the physical mutation executed.
+    pub executed_nanos: u64,
     /// Exact program or erase spans applied to durable media.
     pub applied_spans: Vec<BlockFaultByteSpan>,
     /// Whether a flash program or erase rule reported failure after partial application.
@@ -859,6 +861,43 @@ struct BlockRequestPersistencePending {
     persistence: Option<ResolvedBlockFaultDirective>,
 }
 
+/// Exact guest-completion opportunity exposed only after request mutation and
+/// every mandatory durability frontier have completed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockDeliveryOpportunity {
+    /// Adapter-owned request sequence shared by every request phase.
+    pub request_sequence: u64,
+    /// Original request retained byte-for-byte through mutation.
+    pub request: BlockRequest,
+    /// Original requester coordinate.
+    pub request_icount: u64,
+    /// Earliest virtual coordinate at which the completion may be published.
+    pub ready_nanos: u64,
+    /// Digest of the complete immutable request wire payload.
+    pub wire_digest: [u8; 32],
+    /// Exact response produced by the storage mutation.
+    pub response: BlockResponse,
+    /// Complete admit/queue/resolve/persist decision awaiting delivery effects.
+    pub resolved: ResolvedBlockFaultDirective,
+    /// Exclusive durability frontier required before successful publication.
+    pub required_durable_frontier: Option<u64>,
+}
+
+/// Exact delivery decision authenticated to one computed completion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedBlockDeliveryDirective {
+    /// Complete opportunity identity observed before signal evaluation.
+    pub opportunity: BlockDeliveryOpportunity,
+    /// Fully composed directive for that exact completion.
+    pub directive: ResolvedBlockFaultDirective,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BlockDeliveryPending {
+    opportunity: BlockDeliveryOpportunity,
+    delivery: Option<ResolvedBlockFaultDirective>,
+}
+
 /// One request released by integrated storage service and ready for scheduling.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BlockDeferredResponse {
@@ -965,6 +1004,8 @@ pub struct BlockFaultState {
     execution_pending_bytes: u64,
     request_persistence_pending: BTreeMap<u64, BlockRequestPersistencePending>,
     request_persistence_pending_bytes: u64,
+    delivery_pending: BTreeMap<u64, BlockDeliveryPending>,
+    delivery_pending_bytes: u64,
     controller: BTreeMap<u64, BlockControllerEntry>,
     controller_bytes: u64,
     media_queue: BTreeMap<u64, BlockControllerEntry>,
@@ -1007,6 +1048,8 @@ impl BlockFaultState {
             execution_pending_bytes: 0,
             request_persistence_pending: BTreeMap::new(),
             request_persistence_pending_bytes: 0,
+            delivery_pending: BTreeMap::new(),
+            delivery_pending_bytes: 0,
             controller: BTreeMap::new(),
             controller_bytes: 0,
             media_queue: BTreeMap::new(),
@@ -1056,6 +1099,8 @@ impl BlockFaultState {
             execution_pending_bytes: 0,
             request_persistence_pending: BTreeMap::new(),
             request_persistence_pending_bytes: 0,
+            delivery_pending: BTreeMap::new(),
+            delivery_pending_bytes: 0,
             controller: BTreeMap::new(),
             controller_bytes: 0,
             media_queue: BTreeMap::new(),
@@ -1250,6 +1295,93 @@ impl BlockFaultState {
         Ok(())
     }
 
+    /// Returns the first computed completion ready for deliver-phase evaluation.
+    #[must_use]
+    pub fn next_delivery_opportunity(&self, now_nanos: u64) -> Option<BlockDeliveryOpportunity> {
+        self.delivery_pending
+            .values()
+            .filter(|pending| {
+                pending.opportunity.ready_nanos <= now_nanos
+                    && pending.delivery.is_none()
+                    && pending
+                        .opportunity
+                        .required_durable_frontier
+                        .is_none_or(|frontier| self.actual_durable_frontier >= frontier)
+            })
+            .min_by_key(|pending| {
+                (
+                    pending.opportunity.ready_nanos,
+                    pending.opportunity.request_sequence,
+                )
+            })
+            .map(|pending| pending.opportunity.clone())
+    }
+
+    /// Installs the complete deliver-phase decision for one computed completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the opportunity is stale, repeated, or the
+    /// directive changes fields fixed by an earlier request phase.
+    pub fn install_delivery_directive(
+        &mut self,
+        resolved: ResolvedBlockDeliveryDirective,
+    ) -> Result<(), DeviceError> {
+        let sequence = resolved.opportunity.request_sequence;
+        let directive = resolved.directive;
+        let pending = self.delivery_pending.get(&sequence).ok_or(
+            DeviceError::InvalidBlockFaultDirective {
+                reason: "delivery directive has no computed completion opportunity",
+            },
+        )?;
+        directive.validate_for(&pending.opportunity.request, &self.config)?;
+        let prior = &pending.opportunity.resolved;
+        if resolved.opportunity != pending.opportunity
+            || pending.delivery.is_some()
+            || directive.request_sequence != sequence
+            || directive.execution_nanos != prior.execution_nanos
+            || !directive.service_rules.is_empty()
+            || directive.availability != prior.availability
+            || directive.reported_capacity_bytes != prior.reported_capacity_bytes
+            || directive.error_result != prior.error_result
+            || directive.retain_completion != prior.retain_completion
+            || directive.retention_timeout_response != prior.retention_timeout_response
+            || directive.read_transforms != prior.read_transforms
+            || directive.media_rules != prior.media_rules
+            || directive.write_disposition != prior.write_disposition
+            || directive.flush_disposition != prior.flush_disposition
+            || directive.cache_policy != prior.cache_policy
+            || directive.persistence_transforms != prior.persistence_transforms
+            || directive.persistence_media_rules != prior.persistence_media_rules
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "delivery directive identity or earlier phases differ",
+            });
+        }
+        let mut next = self.clone();
+        let next_pending = next.delivery_pending.get_mut(&sequence).ok_or(
+            DeviceError::InvalidBlockFaultDirective {
+                reason: "delivery opportunity disappeared",
+            },
+        )?;
+        next_pending.delivery = Some(directive);
+        next.delivery_pending_bytes =
+            next.delivery_pending
+                .values()
+                .try_fold(0_u64, |total, pending| {
+                    total
+                        .checked_add(delivery_pending_owned_bytes(pending)?)
+                        .filter(|bytes| *bytes <= HARD_PENDING_BLOCK_FAULT_BYTES)
+                        .ok_or(DeviceError::BlockFaultStateLimit {
+                            field: "block_delivery_pending_bytes",
+                            hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES)
+                                .unwrap_or(usize::MAX),
+                        })
+                })?;
+        *self = next;
+        Ok(())
+    }
+
     /// Returns whether no request, mutation, or sequence has entered this state.
     #[must_use]
     pub fn is_pristine(&self) -> bool {
@@ -1263,6 +1395,8 @@ impl BlockFaultState {
             && self.execution_pending_bytes == 0
             && self.request_persistence_pending.is_empty()
             && self.request_persistence_pending_bytes == 0
+            && self.delivery_pending.is_empty()
+            && self.delivery_pending_bytes == 0
             && self.controller.is_empty()
             && self.controller_bytes == 0
             && self.media_queue.is_empty()
@@ -1307,6 +1441,8 @@ impl BlockFaultState {
             || self.execution_pending_bytes > HARD_PENDING_BLOCK_FAULT_BYTES
             || self.request_persistence_pending.len() > super::service::HARD_BLOCK_SERVICE_JOBS
             || self.request_persistence_pending_bytes > HARD_PENDING_BLOCK_FAULT_BYTES
+            || self.delivery_pending.len() > super::service::HARD_BLOCK_SERVICE_JOBS
+            || self.delivery_pending_bytes > HARD_PENDING_BLOCK_FAULT_BYTES
             || self.volatile.len() > HARD_BLOCK_CACHE_ENTRIES
             || self.controller.len() > HARD_BLOCK_CONTROLLER_ENTRIES
             || self.media_queue.len() > HARD_BLOCK_CONTROLLER_ENTRIES
@@ -1406,6 +1542,21 @@ impl BlockFaultState {
                 reason: "restored request-persistence byte accounting differs",
             });
         }
+        let delivery_pending_bytes =
+            self.delivery_pending
+                .values()
+                .try_fold(0_u64, |total, pending| {
+                    total
+                        .checked_add(delivery_pending_owned_bytes(pending)?)
+                        .ok_or(DeviceError::InvalidBlockFaultDirective {
+                            reason: "restored delivery-pending byte accounting overflow",
+                        })
+                })?;
+        if delivery_pending_bytes != self.delivery_pending_bytes {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "restored delivery-pending byte accounting differs",
+            });
+        }
         for (sequence, pending) in &self.execution_pending {
             pending
                 .opportunity
@@ -1471,6 +1622,47 @@ impl BlockFaultState {
                 }
             }
         }
+        for (sequence, pending) in &self.delivery_pending {
+            let opportunity = &pending.opportunity;
+            opportunity
+                .resolved
+                .validate_for(&opportunity.request, &self.config)?;
+            if *sequence != opportunity.request_sequence
+                || opportunity.resolved.request_sequence != *sequence
+                || opportunity.wire_digest != opportunity.resolved.request_digest
+                || opportunity.response.request_id != opportunity.request.request_id
+                || !block_response_fits_transport(&opportunity.response)
+                || opportunity
+                    .required_durable_frontier
+                    .is_some_and(|frontier| frontier > self.next_cache_sequence)
+            {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "restored delivery opportunity is invalid",
+                });
+            }
+            if let Some(delivery) = &pending.delivery {
+                delivery.validate_for(&opportunity.request, &self.config)?;
+                if delivery.request_sequence != *sequence
+                    || delivery.execution_nanos != opportunity.resolved.execution_nanos
+                    || delivery.availability != opportunity.resolved.availability
+                    || delivery.reported_capacity_bytes
+                        != opportunity.resolved.reported_capacity_bytes
+                    || delivery.error_result != opportunity.resolved.error_result
+                    || delivery.read_transforms != opportunity.resolved.read_transforms
+                    || delivery.write_disposition != opportunity.resolved.write_disposition
+                    || delivery.flush_disposition != opportunity.resolved.flush_disposition
+                    || delivery.cache_policy != opportunity.resolved.cache_policy
+                    || delivery.persistence_transforms
+                        != opportunity.resolved.persistence_transforms
+                    || delivery.persistence_media_rules
+                        != opportunity.resolved.persistence_media_rules
+                {
+                    return Err(DeviceError::InvalidBlockFaultDirective {
+                        reason: "restored delivery decision changes an earlier phase",
+                    });
+                }
+            }
+        }
         let expected_service_jobs = self
             .service_pending
             .iter()
@@ -1502,6 +1694,16 @@ impl BlockFaultState {
             .keys()
             .copied()
             .collect::<BTreeSet<_>>();
+        let persistence_sequences = self
+            .request_persistence_pending
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let delivery_sequences = self
+            .delivery_pending
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
         let installed_sequences = self
             .pending
             .values()
@@ -1511,6 +1713,13 @@ impl BlockFaultState {
             || !service_sequences.is_disjoint(&execution_sequences)
             || !service_sequences.is_disjoint(&installed_sequences)
             || !execution_sequences.is_disjoint(&installed_sequences)
+            || !service_sequences.is_disjoint(&persistence_sequences)
+            || !service_sequences.is_disjoint(&delivery_sequences)
+            || !execution_sequences.is_disjoint(&persistence_sequences)
+            || !execution_sequences.is_disjoint(&delivery_sequences)
+            || !persistence_sequences.is_disjoint(&delivery_sequences)
+            || !persistence_sequences.is_disjoint(&installed_sequences)
+            || !delivery_sequences.is_disjoint(&installed_sequences)
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "restored request sequence occupies multiple execution stages",
@@ -1731,6 +1940,7 @@ impl BlockFaultState {
         self.media_queue
             .keys()
             .filter(|sequence| self.persistence.is_ready_at(**sequence, now_nanos))
+            .filter(|sequence| !self.pending_persistence_media.contains_key(sequence))
             .filter_map(|sequence| {
                 self.persistence
                     .writeback_key(*sequence)
@@ -2077,6 +2287,22 @@ impl BlockFaultState {
             .min()
     }
 
+    /// Returns the earliest completion awaiting an exact delivery decision.
+    #[must_use]
+    pub(super) fn next_delivery_deadline_nanos(&self) -> Option<u64> {
+        self.delivery_pending
+            .values()
+            .filter(|pending| {
+                pending.delivery.is_none()
+                    && pending
+                        .opportunity
+                        .required_durable_frontier
+                        .is_none_or(|frontier| self.actual_durable_frontier >= frontier)
+            })
+            .map(|pending| pending.opportunity.ready_nanos)
+            .min()
+    }
+
     /// Returns the earliest dependency-ready physical persistence boundary.
     #[must_use]
     pub(super) fn next_persistence_deadline_nanos(&self) -> Option<u64> {
@@ -2168,7 +2394,6 @@ impl BlockFaultState {
                     .then_some((pending.opportunity.ready_nanos, *sequence))
             })
             .collect::<BTreeSet<_>>();
-        let mut released = Vec::with_capacity(ready.len());
         for (ready_nanos, sequence) in ready {
             let pending = next.execution_pending.remove(&sequence).ok_or(
                 DeviceError::InvalidBlockFaultDirective {
@@ -2201,26 +2426,21 @@ impl BlockFaultState {
                 )?;
                 continue;
             }
-            let computed = next.execute_immediate(
+            next.execute_to_delivery(
                 base,
                 &mut next_durable,
                 &pending.opportunity.request,
                 pending.opportunity.request_icount,
                 directive,
+                ready_nanos,
             )?;
-            released.push(BlockDeferredResponse {
-                finished_nanos: ready_nanos,
-                request: pending.opportunity.request,
-                request_icount: pending.opportunity.request_icount,
-                computed,
-            });
         }
         if !next.persistence_execution_required {
             next.persist_due(base, &mut next_durable, now_nanos)?;
         }
         *self = next;
         *durable = next_durable;
-        Ok(released)
+        Ok(Vec::new())
     }
 
     fn defer_request_persistence(
@@ -2282,7 +2502,6 @@ impl BlockFaultState {
                     .then_some((pending.opportunity.ready_nanos, *sequence))
             })
             .collect::<BTreeSet<_>>();
-        let mut released = Vec::with_capacity(ready.len());
         for (ready_nanos, sequence) in ready {
             let pending = next.request_persistence_pending.remove(&sequence).ok_or(
                 DeviceError::InvalidBlockFaultDirective {
@@ -2300,12 +2519,153 @@ impl BlockFaultState {
                 .ok_or(DeviceError::InvalidBlockFaultDirective {
                     reason: "ready request-persistence opportunity lost its decision",
                 })?;
-            let computed = next.execute_immediate(
+            next.execute_to_delivery(
                 base,
                 &mut next_durable,
                 &pending.opportunity.request,
                 pending.opportunity.request_icount,
                 directive,
+                ready_nanos,
+            )?;
+        }
+        *self = next;
+        *durable = next_durable;
+        Ok(Vec::new())
+    }
+
+    fn execute_to_delivery(
+        &mut self,
+        base: &BaseImage,
+        durable: &mut CowOverlay,
+        request: &BlockRequest,
+        request_icount: u64,
+        directive: ResolvedBlockFaultDirective,
+        mutation_nanos: u64,
+    ) -> Result<(), DeviceError> {
+        if self
+            .delivery_pending
+            .contains_key(&directive.request_sequence)
+            || self.delivery_pending.len() == super::service::HARD_BLOCK_SERVICE_JOBS
+        {
+            return Err(DeviceError::BlockFaultStateLimit {
+                field: "block_delivery_pending",
+                hard: super::service::HARD_BLOCK_SERVICE_JOBS,
+            });
+        }
+        let mut next = self.clone();
+        let mut next_durable = durable.clone();
+        let (response, mut persistence_wait_nanos) =
+            next.execute_wire(base, &mut next_durable, request, &directive)?;
+        if response.status == BlockStatus::Ok
+            && matches!(request.op, BlockOp::Write | BlockOp::Discard)
+            && next.config.completion_durability == BlockCompletionDurability::Durable
+        {
+            persistence_wait_nanos = persistence_wait_nanos.max(next.persist_through(
+                base,
+                &mut next_durable,
+                next.next_cache_sequence,
+                mutation_nanos,
+            )?);
+        }
+        let ready_nanos = mutation_nanos.checked_add(persistence_wait_nanos).ok_or(
+            DeviceError::InvalidBlockFaultDirective {
+                reason: "storage mutation and persistence wait overflow",
+            },
+        )?;
+        let required_durable_frontier = (response.status == BlockStatus::Ok)
+            .then(|| match request.op {
+                BlockOp::Write | BlockOp::Discard
+                    if next.config.completion_durability == BlockCompletionDurability::Durable =>
+                {
+                    matches!(
+                        directive.write_disposition,
+                        BlockFaultWriteDisposition::Apply
+                            | BlockFaultWriteDisposition::Misdirected { .. }
+                    )
+                    .then_some(next.next_cache_sequence)
+                }
+                BlockOp::Flush
+                    if matches!(
+                        directive.flush_disposition,
+                        BlockFaultFlushDisposition::Honest
+                    ) =>
+                {
+                    Some(next.next_cache_sequence)
+                }
+                _ => None,
+            })
+            .flatten();
+        let pending = BlockDeliveryPending {
+            opportunity: BlockDeliveryOpportunity {
+                request_sequence: directive.request_sequence,
+                request: request.clone(),
+                request_icount,
+                ready_nanos,
+                wire_digest: directive.request_digest,
+                response,
+                resolved: directive,
+                required_durable_frontier,
+            },
+            delivery: None,
+        };
+        next.delivery_pending_bytes = next
+            .delivery_pending_bytes
+            .checked_add(delivery_pending_owned_bytes(&pending)?)
+            .filter(|bytes| *bytes <= HARD_PENDING_BLOCK_FAULT_BYTES)
+            .ok_or(DeviceError::BlockFaultStateLimit {
+                field: "block_delivery_pending_bytes",
+                hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES).unwrap_or(usize::MAX),
+            })?;
+        next.delivery_pending
+            .insert(pending.opportunity.request_sequence, pending);
+        *self = next;
+        *durable = next_durable;
+        Ok(())
+    }
+
+    /// Releases every computed completion with an installed deliver decision.
+    pub(super) fn resume_delivery_to(
+        &mut self,
+        now_nanos: u64,
+    ) -> Result<Vec<BlockDeferredResponse>, DeviceError> {
+        let mut next = self.clone();
+        let ready = next
+            .delivery_pending
+            .iter()
+            .filter_map(|(sequence, pending)| {
+                (pending.opportunity.ready_nanos <= now_nanos
+                    && pending.delivery.is_some()
+                    && pending
+                        .opportunity
+                        .required_durable_frontier
+                        .is_none_or(|frontier| next.actual_durable_frontier >= frontier))
+                .then_some((pending.opportunity.ready_nanos, *sequence))
+            })
+            .collect::<BTreeSet<_>>();
+        let mut released = Vec::with_capacity(ready.len());
+        for (ready_nanos, sequence) in ready {
+            let pending = next.delivery_pending.remove(&sequence).ok_or(
+                DeviceError::InvalidBlockFaultDirective {
+                    reason: "ready delivery opportunity disappeared",
+                },
+            )?;
+            next.delivery_pending_bytes = next
+                .delivery_pending_bytes
+                .checked_sub(delivery_pending_owned_bytes(&pending)?)
+                .ok_or(DeviceError::InvalidBlockFaultDirective {
+                    reason: "delivery-pending byte accounting underflow",
+                })?;
+            let directive = pending
+                .delivery
+                .ok_or(DeviceError::InvalidBlockFaultDirective {
+                    reason: "ready delivery opportunity lost its decision",
+                })?;
+            let computed = next.finish_computed_response(
+                &pending.opportunity.request,
+                pending.opportunity.request_icount,
+                pending.opportunity.response,
+                0,
+                &directive,
             )?;
             released.push(BlockDeferredResponse {
                 finished_nanos: ready_nanos,
@@ -2315,7 +2675,6 @@ impl BlockFaultState {
             });
         }
         *self = next;
-        *durable = next_durable;
         Ok(released)
     }
 
@@ -2566,6 +2925,26 @@ impl BlockFaultState {
         let mut next_durable = durable.clone();
         let (response, persistence_wait_nanos) =
             next.execute_wire(base, &mut next_durable, request, &directive)?;
+        let computed = next.finish_computed_response(
+            request,
+            request_icount,
+            response,
+            persistence_wait_nanos,
+            &directive,
+        )?;
+        *self = next;
+        *durable = next_durable;
+        Ok(computed)
+    }
+
+    fn finish_computed_response(
+        &mut self,
+        request: &BlockRequest,
+        request_icount: u64,
+        response: BlockResponse,
+        persistence_wait_nanos: u64,
+        directive: &ResolvedBlockFaultDirective,
+    ) -> Result<ComputedResponse, DeviceError> {
         let additional_latency_nanos = directive
             .additional_latency_nanos
             .checked_add(persistence_wait_nanos)
@@ -2580,7 +2959,7 @@ impl BlockFaultState {
         };
         let primary = Response::new(request.request_id, status, encoded);
         if directive.retain_completion {
-            next.retained_completions.insert(
+            self.retained_completions.insert(
                 request.request_id,
                 BlockRetainedCompletion {
                     request_id: request.request_id,
@@ -2599,7 +2978,7 @@ impl BlockFaultState {
                             directive.flush_disposition,
                             BlockFaultFlushDisposition::Stall
                         ))
-                    .then_some(next.next_cache_sequence),
+                    .then_some(self.next_cache_sequence),
                 },
             );
         }
@@ -2627,14 +3006,11 @@ impl BlockFaultState {
                 })
             })
             .collect::<Result<Vec<_>, DeviceError>>()?;
-        let computed = ComputedResponse {
+        Ok(ComputedResponse {
             primary: (!directive.retain_completion).then_some(primary),
             additional,
             additional_latency_nanos,
-        };
-        *self = next;
-        *durable = next_durable;
-        Ok(computed)
+        })
     }
 
     /// Applies one externally misdirected write without fabricating a guest request.
@@ -3441,6 +3817,10 @@ impl BlockFaultState {
                 .media_queue
                 .keys()
                 .filter(|sequence| self.persistence.is_ready_at(**sequence, now_nanos))
+                .filter(|sequence| {
+                    !self.persistence_execution_required
+                        || self.pending_persistence_media.contains_key(sequence)
+                })
                 .filter_map(|sequence| {
                     self.persistence
                         .writeback_key(*sequence)
@@ -3754,6 +4134,7 @@ impl BlockFaultState {
         self.persistence_media_outcomes
             .push(BlockPersistenceMediaOutcome {
                 opportunity,
+                executed_nanos: now_nanos,
                 applied_spans: flash.spans,
                 media_failed: flash.failed,
                 applied_digest: *blake3::hash(&programmed).as_bytes(),
@@ -4108,6 +4489,33 @@ fn request_persistence_pending_owned_bytes(
         .and_then(|bytes| bytes.checked_add(persistence))
         .ok_or(DeviceError::InvalidBlockFaultDirective {
             reason: "request-persistence byte count overflow",
+        })
+}
+
+fn delivery_pending_owned_bytes(pending: &BlockDeliveryPending) -> Result<u64, DeviceError> {
+    let request = u64::try_from(pending.opportunity.request.data.len()).map_err(|_error| {
+        DeviceError::InvalidBlockFaultDirective {
+            reason: "delivery-pending request length overflow",
+        }
+    })?;
+    let response = u64::try_from(pending.opportunity.response.data.len()).map_err(|_error| {
+        DeviceError::InvalidBlockFaultDirective {
+            reason: "delivery-pending response length overflow",
+        }
+    })?;
+    let resolved = directive_owned_bytes(&pending.opportunity.resolved)?;
+    let delivery = pending
+        .delivery
+        .as_ref()
+        .map(directive_owned_bytes)
+        .transpose()?
+        .unwrap_or(0);
+    request
+        .checked_add(response)
+        .and_then(|bytes| bytes.checked_add(resolved))
+        .and_then(|bytes| bytes.checked_add(delivery))
+        .ok_or(DeviceError::InvalidBlockFaultDirective {
+            reason: "delivery-pending byte count overflow",
         })
 }
 
@@ -5693,10 +6101,122 @@ mod tests {
         let released = storage
             .resume_request_persistence_to(&base, &mut durable, 17)
             .unwrap_or_else(|error| panic!("persist resume should succeed: {error}"));
+        assert!(released.is_empty());
+        let delivery = storage
+            .next_delivery_opportunity(17)
+            .unwrap_or_else(|| panic!("delivery opportunity should be visible"));
+        let delivered = delivery.resolved.clone();
+        storage
+            .install_delivery_directive(ResolvedBlockDeliveryDirective {
+                opportunity: delivery,
+                directive: delivered,
+            })
+            .unwrap_or_else(|error| panic!("delivery directive should install: {error}"));
+        let released = storage
+            .resume_delivery_to(17)
+            .unwrap_or_else(|error| panic!("delivery resume should succeed: {error}"));
         assert_eq!(released.len(), 1);
         assert_eq!(released[0].finished_nanos, 17);
         assert_eq!(durable.read(&base, 4, 5).unwrap_or_default(), b"stage");
         assert!(storage.next_execution_opportunity(u64::MAX).is_none());
+    }
+
+    #[test]
+    fn durable_delivery_waits_for_the_exact_physical_media_decision() {
+        let base = BaseImage::new(vec![0; 32]);
+        let mut durable = CowOverlay::new();
+        let mut storage = state(BlockCompletionDurability::Durable);
+        storage.require_execution_opportunities(true);
+        storage.require_persistence_media_directives(true);
+        let request = BlockRequest::write(63, 0, b"sync".to_vec());
+        let mut admission = ResolvedBlockFaultDirective::fault_free(&request, 32);
+        admission.request_sequence = 902;
+        admission.execution_nanos = 17;
+        storage
+            .install(request.request_id, admission)
+            .unwrap_or_else(|error| panic!("admission directive should install: {error}"));
+        storage
+            .execute(&base, &mut durable, &request, 3)
+            .unwrap_or_else(|error| panic!("request should enter staged execution: {error}"));
+
+        let execution = storage
+            .next_execution_opportunity(17)
+            .unwrap_or_else(|| panic!("execution opportunity should be visible"));
+        storage
+            .install_execution_directive(ResolvedBlockExecutionDirective {
+                directive: execution.admission.clone(),
+                opportunity: execution,
+            })
+            .unwrap_or_else(|error| panic!("execution directive should install: {error}"));
+        storage
+            .resume_execution_to(&base, &mut durable, 17)
+            .unwrap_or_else(|error| panic!("execution should reach persistence: {error}"));
+
+        let persistence = storage
+            .next_request_persistence_opportunity(17)
+            .unwrap_or_else(|| panic!("request persistence should be visible"));
+        let mut persisted = persistence.resolved.clone();
+        persisted.persistence_admitted_nanos = 17;
+        persisted.cache_policy = Some(ResolvedBlockCachePolicy {
+            capacity_bytes: 64,
+            eviction: BlockFaultCacheEviction::WritebackSequence,
+            dirty_eviction: BlockFaultDirtyEviction::Persist,
+            power_loss_protected: false,
+        });
+        persisted
+            .persistence_transforms
+            .push(ResolvedBlockPersistenceTransform {
+                contributor: [7; 32],
+                ordering_group: [6; 32],
+                ordering: crate::block::BlockPersistenceOrdering::Preserve,
+                delay_nanos: 100,
+                preserve_barriers: true,
+            });
+        storage
+            .install_request_persistence_directive(ResolvedBlockRequestPersistenceDirective {
+                opportunity: persistence,
+                directive: persisted,
+            })
+            .unwrap_or_else(|error| panic!("request persistence should install: {error}"));
+        storage
+            .resume_request_persistence_to(&base, &mut durable, 17)
+            .unwrap_or_else(|error| panic!("request mutation should execute: {error}"));
+
+        assert!(storage.next_delivery_opportunity(u64::MAX).is_none());
+        assert_eq!(durable.read(&base, 0, 4).unwrap_or_default(), vec![0; 4]);
+        storage
+            .validate_restore(32)
+            .unwrap_or_else(|error| panic!("pre-media checkpoint should validate: {error}"));
+        let mut media_count = 0;
+        while let Some(media) = storage.next_persistence_opportunity(117) {
+            storage
+                .install_persistence_media_directive(ResolvedBlockPersistenceMediaDirective {
+                    opportunity: media,
+                    flash_rules: Vec::new(),
+                })
+                .unwrap_or_else(|error| panic!("physical persistence should install: {error}"));
+            storage
+                .persist_due(&base, &mut durable, 117)
+                .unwrap_or_else(|error| panic!("physical persistence should execute: {error}"));
+            media_count += 1;
+        }
+        assert_eq!(media_count, 4);
+
+        let delivery = storage
+            .next_delivery_opportunity(117)
+            .unwrap_or_else(|| panic!("delivery should follow actual durability"));
+        storage
+            .install_delivery_directive(ResolvedBlockDeliveryDirective {
+                directive: delivery.resolved.clone(),
+                opportunity: delivery,
+            })
+            .unwrap_or_else(|error| panic!("delivery directive should install: {error}"));
+        let released = storage
+            .resume_delivery_to(117)
+            .unwrap_or_else(|error| panic!("durable completion should publish: {error}"));
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].finished_nanos, 117);
+        assert_eq!(durable.read(&base, 0, 4).unwrap_or_default(), b"sync");
     }
 
     #[test]

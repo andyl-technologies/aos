@@ -851,6 +851,21 @@ pub enum OpportunityPayload {
         /// Digest of write data or immutable typed request fields.
         request_digest: ContentHash,
     },
+    /// Storage completion identity after device mutation and before publication.
+    StorageCompletion {
+        /// Adapter-owned request sequence.
+        request_sequence: u64,
+        /// First addressed byte, when the operation has a range.
+        start_byte: Option<u64>,
+        /// Positive addressed length, when the operation has a range.
+        length_bytes: Option<u64>,
+        /// Digest of the immutable original request.
+        request_digest: ContentHash,
+        /// Closed block response status wire byte.
+        response_status: u8,
+        /// Digest of the complete encoded response, including error or data bytes.
+        response_digest: ContentHash,
+    },
     /// Decoded instruction identity.
     Instruction {
         /// Program counter before the instruction.
@@ -901,6 +916,11 @@ impl OpportunityPayload {
                 return Err(FaultContractError::InvalidPayload);
             }
             Self::StorageRequest {
+                start_byte,
+                length_bytes,
+                ..
+            }
+            | Self::StorageCompletion {
                 start_byte,
                 length_bytes,
                 ..
@@ -969,6 +989,22 @@ impl OpportunityPayload {
                 push_optional_u64(material, *start_byte);
                 push_optional_u64(material, *length_bytes);
                 push_text(material, &request_digest.to_hex());
+            }
+            Self::StorageCompletion {
+                request_sequence,
+                start_byte,
+                length_bytes,
+                request_digest,
+                response_status,
+                response_digest,
+            } => {
+                material.push_str("storage_completion;");
+                push_u64(material, *request_sequence);
+                push_optional_u64(material, *start_byte);
+                push_optional_u64(material, *length_bytes);
+                push_text(material, &request_digest.to_hex());
+                push_u64(material, u64::from(*response_status));
+                push_text(material, &response_digest.to_hex());
             }
             Self::NetworkControl {
                 technology,

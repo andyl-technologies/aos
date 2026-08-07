@@ -60,11 +60,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crucible::model::ContentHash;
 use crucible_device::block::{
-    BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
+    BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
-    BlockRetainedRelease, BlockServiceCompletion, ResolvedBlockExecutionDirective,
-    ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
-    ResolvedBlockRequestPersistenceDirective,
+    BlockRetainedRelease, BlockServiceCompletion, ResolvedBlockDeliveryDirective,
+    ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
+    ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
 };
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockSnapshot, DeviceError, IoCore, Request,
@@ -193,11 +193,12 @@ impl QemuLiveBlockIoServicer {
     /// Returns [`QemuLiveBlockIoServicerError::MapRegion`] when the region cannot
     /// be mapped or [`QemuLiveBlockIoServicerError::Device`] when the device
     /// snapshot is malformed or its deterministic base identity differs.
-    pub fn restore_from_shmem_fd(
+    pub fn restore_from_shmem_fd_with_base(
         shmem_fd: BorrowedFd<'_>,
         region_len: u64,
         expected_execution_binding: ContentHash,
         checkpoint: QemuLiveBlockIoServicerCheckpoint,
+        base: BaseImage,
     ) -> Result<Self, QemuLiveBlockIoServicerError> {
         if checkpoint.execution_binding != expected_execution_binding {
             return Err(QemuLiveBlockIoServicerError::CheckpointBindingMismatch);
@@ -210,7 +211,9 @@ impl QemuLiveBlockIoServicer {
         if !same_region_layout(region.header_snapshot(), checkpoint.region_header) {
             return Err(QemuLiveBlockIoServicerError::CheckpointRegionMismatch);
         }
-        let base = BaseImage::new(deterministic_base_image(checkpoint.size_bytes));
+        if base.len() != checkpoint.size_bytes {
+            return Err(QemuLiveBlockIoServicerError::CheckpointBindingMismatch);
+        }
         let device = BlockDevice::restore(&checkpoint.device, base, None)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         let pair = region
@@ -410,6 +413,14 @@ impl QemuLiveBlockIoServicer {
                         flash_rules: Vec::new(),
                     },
                 )?;
+                installed = true;
+            }
+            while let Some(opportunity) = self.next_storage_delivery_opportunity(now_nanos) {
+                let directive = opportunity.resolved.clone();
+                self.install_storage_delivery_directive(ResolvedBlockDeliveryDirective {
+                    opportunity,
+                    directive,
+                })?;
                 installed = true;
             }
             let delivery = self.advance_storage_to(guest_icount)?;
@@ -624,6 +635,30 @@ impl QemuLiveBlockIoServicer {
     ) -> Result<(), QemuLiveBlockIoServicerError> {
         self.device
             .install_storage_request_persistence_directive(directive)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Returns the next computed completion ready for deliver-phase evaluation.
+    #[must_use]
+    pub fn next_storage_delivery_opportunity(
+        &self,
+        now_nanos: u64,
+    ) -> Option<BlockDeliveryOpportunity> {
+        self.device.next_storage_delivery_opportunity(now_nanos)
+    }
+
+    /// Installs one exact deliver-phase decision for a computed completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] when the decision is
+    /// stale, repeated, malformed, or changes an earlier phase.
+    pub fn install_storage_delivery_directive(
+        &mut self,
+        directive: ResolvedBlockDeliveryDirective,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.device
+            .install_storage_delivery_directive(directive)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 

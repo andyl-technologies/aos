@@ -220,6 +220,17 @@ mod tests {
                 directive: persisted,
             },
         ));
+        assert_eq!(ok(device.advance_to(0)), 0);
+        let delivery = device
+            .next_storage_delivery_opportunity(0)
+            .unwrap_or_else(|| panic!("delivery opportunity should remain live"));
+        let delivered = delivery.resolved.clone();
+        ok(
+            device.install_storage_delivery_directive(ResolvedBlockDeliveryDirective {
+                opportunity: delivery,
+                directive: delivered,
+            }),
+        );
         assert_eq!(ok(device.advance_to(1)), 1);
     }
 

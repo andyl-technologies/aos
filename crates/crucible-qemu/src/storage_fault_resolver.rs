@@ -205,15 +205,66 @@ pub fn block_request_persistence_fault_opportunity(
         persistence.request_sequence,
     )
 }
+
+/// Builds the canonical deliver-phase opportunity for one computed completion.
+///
+/// # Errors
+///
+/// Returns [`FaultContractError`] under the same conditions as
+/// [`block_request_fault_opportunity`]. The response-bearing delivery envelope
+/// is authenticated again when the resolved directive is installed.
+pub fn block_delivery_fault_opportunity(
+    target: ResolvedFaultTarget,
+    delivery: &BlockDeliveryOpportunity,
+    coordinate: FaultCoordinate,
+) -> Result<FaultOpportunity, FaultContractError> {
+    let operation = match delivery.request.op {
+        BlockOp::Read => FaultOperation::StorageRead,
+        BlockOp::Write => FaultOperation::StorageWrite,
+        BlockOp::Flush => FaultOperation::StorageFlush,
+        BlockOp::GetLength => FaultOperation::StorageGetLength,
+        BlockOp::Discard => FaultOperation::StorageDiscard,
+    };
+    let (start_byte, length_bytes) = match delivery.request.op {
+        BlockOp::Read | BlockOp::Write | BlockOp::Discard => (
+            Some(delivery.request.offset),
+            Some(u64::from(delivery.request.count)),
+        ),
+        BlockOp::Flush | BlockOp::GetLength => (None, None),
+    };
+    let response = delivery
+        .response
+        .encode()
+        .map_err(|_error| FaultContractError::InvalidPayload)?;
+    FaultOpportunity::new(
+        target,
+        operation,
+        FaultPhase::Deliver,
+        coordinate,
+        delivery.request_sequence,
+        None,
+        OpportunityPayload::StorageCompletion {
+            request_sequence: delivery.request_sequence,
+            start_byte,
+            length_bytes,
+            request_digest: ContentHash {
+                bytes: delivery.wire_digest,
+            },
+            response_status: delivery.response.status.to_wire(),
+            response_digest: ContentHash::from_bytes(&response),
+        },
+    )
+}
 use crucible_device::block::{
-    BlockCompletionDurability, BlockDiscardSemantics, BlockDuplicatePolicy, BlockDurabilityConfig,
-    BlockFaultAvailability, BlockFaultByteSpan, BlockFaultCacheEviction, BlockFaultDirtyEviction,
-    BlockFaultFlushDisposition, BlockFaultReadTransform, BlockFaultResult, BlockFaultState,
-    BlockFaultWriteDisposition, BlockMediaRangeState, BlockOp, BlockPersistenceOpportunity,
-    BlockPersistenceOrdering, BlockRequest, BlockRequestPersistenceOpportunity, BlockResponse,
-    BlockServiceDiscipline, ResolvedBlockCachePolicy, ResolvedBlockFaultDirective,
-    ResolvedBlockFlashProgramErase, ResolvedBlockFlashReadDisturb, ResolvedBlockFlashRetention,
-    ResolvedBlockFlashRule, ResolvedBlockMediaRule, ResolvedBlockPersistenceMediaDirective,
+    BlockCompletionDurability, BlockDeliveryOpportunity, BlockDiscardSemantics,
+    BlockDuplicatePolicy, BlockDurabilityConfig, BlockFaultAvailability, BlockFaultByteSpan,
+    BlockFaultCacheEviction, BlockFaultDirtyEviction, BlockFaultFlushDisposition,
+    BlockFaultReadTransform, BlockFaultResult, BlockFaultState, BlockFaultWriteDisposition,
+    BlockMediaRangeState, BlockOp, BlockPersistenceOpportunity, BlockPersistenceOrdering,
+    BlockRequest, BlockRequestPersistenceOpportunity, BlockResponse, BlockServiceDiscipline,
+    ResolvedBlockCachePolicy, ResolvedBlockFaultDirective, ResolvedBlockFlashProgramErase,
+    ResolvedBlockFlashReadDisturb, ResolvedBlockFlashRetention, ResolvedBlockFlashRule,
+    ResolvedBlockMediaRule, ResolvedBlockPersistenceMediaDirective,
     ResolvedBlockPersistenceTransform, ResolvedBlockServiceClass, ResolvedBlockServiceRule,
 };
 
@@ -2403,6 +2454,42 @@ mod tests {
         assert_eq!(first.phase(), FaultPhase::Resolve);
         assert_ne!(first.id(), next.id());
         assert_ne!(first.id(), changed_wire.id());
+    }
+
+    #[test]
+    fn delivery_opportunity_binds_the_computed_response() {
+        let request = BlockRequest::read(7, 512, 4);
+        let directive = ResolvedBlockFaultDirective::fault_free(&request, 4096);
+        let delivery = BlockDeliveryOpportunity {
+            request_sequence: 11,
+            request: request.clone(),
+            request_icount: 20,
+            ready_nanos: 40,
+            wire_digest: [3; 32],
+            response: BlockResponse::ok(request.request_id, b"good".to_vec()),
+            resolved: directive,
+            required_durable_frontier: None,
+        };
+        let coordinate = FaultCoordinate {
+            virtual_nanos: 40,
+            retired_instructions: Some(20),
+        };
+        let first = block_delivery_fault_opportunity(target(), &delivery, coordinate)
+            .unwrap_or_else(|error| panic!("delivery opportunity should be valid: {error}"));
+        let mut changed = delivery;
+        changed.response = BlockResponse::ok(request.request_id, b"evil".to_vec());
+        let changed = block_delivery_fault_opportunity(target(), &changed, coordinate)
+            .unwrap_or_else(|error| panic!("changed delivery should be valid: {error}"));
+
+        assert_eq!(first.phase(), FaultPhase::Deliver);
+        assert_ne!(first.id(), changed.id());
+        assert!(matches!(
+            first.payload(),
+            OpportunityPayload::StorageCompletion {
+                response_status: 0,
+                ..
+            }
+        ));
     }
 
     #[test]

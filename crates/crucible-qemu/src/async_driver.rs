@@ -147,6 +147,21 @@ pub enum QemuAsyncDriverOperation {
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Applies storage-targeted actions at one exact scheduler boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when an attached block runtime
+    /// cannot apply its matching actions atomically.
+    #[cfg(target_os = "linux")]
+    fn apply_block_boundary_actions(
+        &mut self,
+        _coordinate: crucible::model::FaultCoordinate,
+        _actions: &[crucible::model::ResolvedBindingAction],
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
     /// Installs the signal-driven coordinator for an attached live block device.
     ///
     /// # Errors
