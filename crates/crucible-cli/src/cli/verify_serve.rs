@@ -273,6 +273,7 @@ pub(super) fn canonical_run_log_entries(
         artifact_digest: content_address_bytes(b"empty"),
         terminal_savepoint: None,
         savepoint_oracle: None,
+        save_boundary_evidence: None,
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
     };
@@ -1222,7 +1223,7 @@ where
     let mut state_updates = Vec::new();
     let mut command_id = 1;
 
-    let boundary = match save_plan.at {
+    let (boundary, breakpoint_firing) = match save_plan.at {
         SaveAtArg::Quiescence => {
             let predicate = crucible::Predicate::quiescent();
             let (boundary, breakpoint_id) = run_save_predicate_to_boundary(
@@ -1244,20 +1245,20 @@ where
                 &mut state_updates,
             )
             .await?;
-            validate_save_breakpoint_firing(
+            let firing = validate_save_breakpoint_firing(
                 "quiescence",
                 &predicate,
                 breakpoint_id,
                 &boundary,
                 &firings,
             )?;
-            boundary
+            (boundary, Some(firing))
         }
         SaveAtArg::VirtualTime => {
             let budget = run_plan.max_virtual_time_ticks.ok_or_else(|| {
                 usage_error("save --at virtual-time requires --max-virtual-time <dur>")
             })?;
-            drive_save_to_virtual_time_boundary(
+            let boundary = drive_save_to_virtual_time_boundary(
                 client,
                 created.session,
                 budget,
@@ -1266,10 +1267,11 @@ where
                 &mut state_updates,
                 "",
             )
-            .await?
+            .await?;
+            (boundary, None)
         }
         SaveAtArg::Property | SaveAtArg::Marker => {
-            run_save_selector_to_boundary(
+            let (boundary, firing) = run_save_selector_to_boundary(
                 client,
                 created.session,
                 save_plan,
@@ -1277,7 +1279,8 @@ where
                 &mut acknowledged_commands,
                 &mut state_updates,
             )
-            .await?
+            .await?;
+            (boundary, Some(firing))
         }
     };
 
@@ -1403,5 +1406,12 @@ where
             watch_statuses: Vec::new(),
         },
         oracle,
+        boundary_evidence: SaveBoundaryEvidence {
+            at: save_plan.at,
+            selector: save_plan.selector.clone(),
+            frontier_ticks: boundary.frontier.ticks,
+            quanta: boundary.quanta_stepped,
+            breakpoint_firing,
+        },
     })
 }

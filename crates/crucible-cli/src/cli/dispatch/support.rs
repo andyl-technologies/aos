@@ -513,6 +513,56 @@ pub(crate) fn savepoint_handle_bytes(
     );
     artifact_line(&mut text, &["frontier", &frontier_ticks.to_string()]);
     artifact_line(&mut text, &["at", plan.at.label()]);
+    match &plan.selector {
+        Some(SaveAtSelector::PropertyViolation { assertion }) => {
+            artifact_line(&mut text, &["selector", "property-violation", assertion])
+        }
+        Some(SaveAtSelector::Marker { name }) => {
+            artifact_line(&mut text, &["selector", "guest-marker", name]);
+        }
+        None => artifact_line(&mut text, &["selector", "none"]),
+    }
+    if let Some(firing) = outcome
+        .save_boundary_evidence
+        .as_ref()
+        .and_then(|evidence| evidence.breakpoint_firing.as_ref())
+    {
+        artifact_line(
+            &mut text,
+            &[
+                "boundary-proof",
+                "breakpoint",
+                &firing.id.to_string(),
+                "suspend",
+                &firing.frontier.ticks.to_string(),
+                &firing.quanta.to_string(),
+            ],
+        );
+        let predicate_payload = firing.predicate.to_compact_binary();
+        artifact_line(
+            &mut text,
+            &[
+                "boundary-predicate",
+                &content_address_bytes(&predicate_payload),
+                &hex_bytes(&predicate_payload),
+            ],
+        );
+    } else {
+        let quanta = outcome
+            .save_boundary_evidence
+            .as_ref()
+            .map_or(0, |evidence| evidence.quanta);
+        artifact_line(
+            &mut text,
+            &[
+                "boundary-proof",
+                "coordinate",
+                &frontier_ticks.to_string(),
+                &quanta.to_string(),
+            ],
+        );
+        artifact_line(&mut text, &["boundary-predicate", "none"]);
+    }
     artifact_line(
         &mut text,
         &[

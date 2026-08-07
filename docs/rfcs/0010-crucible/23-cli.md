@@ -520,6 +520,19 @@ the production backend completion window rather than the short streaming
 acknowledgement yield budget, so a valid long-running QEMU quantum cannot be
 misreported as a missing breakpoint.
 
+The exported `crucible.savepoint-handle.v3` records the selector kind and name
+(`property-violation` or `guest-marker`) plus the exact boundary proof. A
+breakpoint proof carries its actor-assigned ID, suspending disposition, frontier,
+and quantum; a companion content-addressed canonical predicate payload binds
+that proof to the selector. A virtual-time proof carries its exact frontier and
+quantum and no predicate. v3 admission checks selector kind, predicate,
+scenario-declared property identity, terminal condition, and proof shape as one
+consistent boundary claim. The canonical trace emits the same information as a
+`save_boundary_proof` entry so an operator can audit why the save succeeded
+without interpreting generic command acknowledgements. Selector values in that
+space-delimited summary are percent-encoded. Readers continue to accept v2
+handles, which predate selector provenance, but new writes are v3.
+
 **Exit codes.** `0` = savepoint materialized, oracle-validated, and exported;
 `1` = the run hit a non-savepoint terminal outcome before `--at` (the outcome is
 reported); `3` = oracle violation on materialization (07 §6) or backend error;
@@ -1168,7 +1181,9 @@ branch on the verdict without parsing output:
   suspending breakpoints plus breakpoint-firing proof, continues across
   arbitrary non-quiescent scheduler quanta until selector evidence arrives,
   bounds missing selectors with a companion quiescence breakpoint, rejects
-  irrelevant `--max-virtual-time` flags outside virtual-time saves, rejects
+  irrelevant `--max-virtual-time` flags outside virtual-time saves,
+  emits selector identity and exact breakpoint coordinates in v3 handles and
+  canonical traces while retaining v2 read compatibility, rejects
   wrong-marker and no-source marker selectors, routes explicitly selected local-QEMU saves
   through the same create-savepoint/export/oracle workflow with resolved
   QEMU/plugin identity metadata, process-tests real-binary `save --backend qemu`

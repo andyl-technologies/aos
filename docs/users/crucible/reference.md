@@ -143,6 +143,13 @@ option; it is not part of the shipped production interface.
 | `--marker <name>` | Required with `--at marker` | Guest-marker ID whose observation supplies the boundary. |
 | `--out <path>` | Default below `--artifact-dir` | Select the exported savepoint-handle path. |
 
+Savepoint handle schema v3 records the selected property violation or guest
+marker, its exact boundary proof, and a content-addressed canonical predicate
+payload. The reader rejects mismatched selectors, predicates, terminal
+conditions, frontiers, and undeclared property identities. The canonical trace
+exposes the same proof as `save_boundary_proof`, with percent-encoded selector
+values. Older v2 handles remain readable but lack selector provenance.
+
 ### `resume`
 
 | Argument or option | Required/default | Meaning |
