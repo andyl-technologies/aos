@@ -1542,8 +1542,12 @@ branch on the verdict without parsing output:
   - Fork recipes distinguish an unchanged resume from reseed and contiguous
     prefix-override branches. The retained base owns every pre-branch decision;
     only strictly increasing post-branch fault/network choice indices may be
-    forced during child execution. Search recipes also retain the exploration
-    run-ceiling and quantum-budget values that bounded the finding.
+    forced during child execution. Fresh-QEMU replay reconstructs validated
+    checkpoint evidence for that retained base and re-enters the resume
+    lifecycle used by the fork producer; treating a fork artifact as a genesis
+    run changes both boundary commands and their acknowledgement transcript.
+    Search recipes also retain the exploration run-ceiling and quantum-budget
+    values that bounded the finding.
   - Interactive artifact capture fails closed. A command name without its
     exact acknowledged decision/frontier coordinate is not a replay recipe.
     Non-interactive startup and initial controls are separate ordered,
