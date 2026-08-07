@@ -404,6 +404,13 @@ pub const REGISTRY_PAGES: &[PageSpec] = &[
         "registry-images",
     ),
     PageSpec::new(
+        "packages",
+        "Packages",
+        "Publishing",
+        "packages",
+        "registry-packages",
+    ),
+    PageSpec::new(
         "placements",
         "Storage & replicas",
         "Topology",
