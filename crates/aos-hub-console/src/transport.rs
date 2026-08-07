@@ -78,6 +78,10 @@ impl ApiClient {
             *self.session_guard() = refreshed;
             (status, body) = send_connect(path, &bearer, &body).await?;
         }
+        if status == 401 {
+            redirect_to_login()?;
+            return Err(TransportError::SessionExpired);
+        }
         if !(200..300).contains(&status) {
             return Err(TransportError::Http {
                 status,
@@ -147,6 +151,10 @@ impl ApiClient {
             let bearer = refreshed.access_token.clone();
             *self.session_guard() = refreshed;
             status = send_publication_upload(upload_url, &bearer, file).await?;
+        }
+        if status == 401 {
+            redirect_to_login()?;
+            return Err(TransportError::SessionExpired);
         }
         if !(200..300).contains(&status) {
             return Err(TransportError::Http {
@@ -268,6 +276,28 @@ fn validate_publication_upload_url(upload_url: &str) -> Result<(), TransportErro
     Ok(())
 }
 
+fn redirect_to_login() -> Result<(), TransportError> {
+    let window = leptos::web_sys::window().ok_or(TransportError::SessionExpired)?;
+    let location = window.location();
+    let mut next = location
+        .pathname()
+        .map_err(|_| TransportError::SessionExpired)?;
+    next.push_str(
+        &location
+            .search()
+            .map_err(|_| TransportError::SessionExpired)?,
+    );
+    next.push_str(
+        &location
+            .hash()
+            .map_err(|_| TransportError::SessionExpired)?,
+    );
+    let encoded = js_sys::encode_uri_component(&next);
+    location
+        .set_href(&format!("/login?next={encoded}"))
+        .map_err(|_| TransportError::SessionExpired)
+}
+
 /// Failure returned by the browser transport boundary.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TransportError {
@@ -303,6 +333,9 @@ pub enum TransportError {
     /// A publication upload URL escaped the typed same-origin route.
     #[error("the publication upload URL is not a typed same-origin URL")]
     InvalidUploadUrl,
+    /// Both the active bearer and one session refresh were unauthorized.
+    #[error("the browser session expired; sign in again")]
+    SessionExpired,
 }
 
 fn is_generated_connect_path(path: &str) -> bool {

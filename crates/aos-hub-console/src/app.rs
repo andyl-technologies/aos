@@ -170,7 +170,11 @@ struct NavigationGroup {
 
 fn navigation_groups(route: &ConsoleRoute) -> Vec<NavigationGroup> {
     let mut groups = Vec::<NavigationGroup>::new();
-    for page in route.navigation() {
+    for page in route
+        .navigation()
+        .iter()
+        .filter(|page| page.is_navigation_item())
+    {
         match groups.last_mut() {
             Some(group) if group.label == page.group => group.pages.push(page),
             _ => groups.push(NavigationGroup {

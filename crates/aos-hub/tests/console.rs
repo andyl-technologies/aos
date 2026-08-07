@@ -12,6 +12,9 @@ use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::auth::session::COOKIE_NAME;
 use aos_hub::db::Database;
 use aos_hub::server::{router, AppState};
+use aos_hub_core::web::assets::{
+    console_bootstrap_name, console_css_name, console_js_name, console_wasm_name,
+};
 use aos_hub_core::web::console::{route_manifest, ConsoleRouteMatched, RouteMethods, RouteSpec};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -260,7 +263,7 @@ async fn canonical_management_links_serve_one_authenticated_shell() {
         );
         let body = String::from_utf8(response.body).unwrap();
         assert!(body.contains("name=\"aos-session-csrf\""), "{path}");
-        assert!(body.contains("hub-console-bootstrap.js?v="), "{path}");
+        assert!(body.contains(&console_bootstrap_name()), "{path}");
         assert!(
             !body.contains("<form"),
             "management shell contains a legacy form: {path}"
@@ -280,13 +283,14 @@ async fn canonical_management_links_serve_one_authenticated_shell() {
 async fn browser_console_assets_have_explicit_types_and_cache_identity() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let app = router(app_state(db).await).await;
-    for (path, media_type) in [
-        ("/_assets/hub-console.js", "text/javascript"),
-        ("/_assets/hub-console-bootstrap.js", "text/javascript"),
-        ("/_assets/hub-console_bg.wasm", "application/wasm"),
-        ("/_assets/hub-console.css", "text/css"),
+    for (name, media_type) in [
+        (console_js_name(), "text/javascript"),
+        (console_bootstrap_name(), "text/javascript"),
+        (console_wasm_name(), "application/wasm"),
+        (console_css_name(), "text/css"),
     ] {
-        let response = send(&app, "GET", path, None, None).await;
+        let path = format!("/_assets/{name}");
+        let response = send(&app, "GET", &path, None, None).await;
         assert_eq!(response.status, StatusCode::OK, "{path}");
         assert!(
             response
@@ -302,11 +306,23 @@ async fn browser_console_assets_have_explicit_types_and_cache_identity() {
                 .is_some_and(|value| value.contains("immutable")),
             "{path}"
         );
-        if path.ends_with("bootstrap.js") {
+        if name.starts_with("hub-console-bootstrap-") {
             let source = String::from_utf8(response.body).unwrap();
-            assert!(source.contains("hub-console.js?v="));
-            assert!(source.contains("hub-console_bg.wasm?v="));
+            assert!(source.contains(&console_js_name()));
+            assert!(source.contains(&console_wasm_name()));
         }
+    }
+    for legacy in [
+        "/_assets/hub-console.js",
+        "/_assets/hub-console-bootstrap.js",
+        "/_assets/hub-console_bg.wasm",
+        "/_assets/hub-console.css",
+    ] {
+        assert_eq!(
+            send(&app, "GET", legacy, None, None).await.status,
+            StatusCode::NOT_FOUND,
+            "legacy asset path remained mounted: {legacy}"
+        );
     }
 }
 

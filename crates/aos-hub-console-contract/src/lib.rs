@@ -35,6 +35,15 @@ impl PageSpec {
             workflow,
         }
     }
+
+    /// Returns whether the page belongs in persistent scope navigation.
+    ///
+    /// Dedicated creation workflows remain deep-linkable but are reached from
+    /// the corresponding inventory's primary action.
+    #[must_use]
+    pub fn is_navigation_item(&self) -> bool {
+        self.key != "new" && !self.key.ends_with("-new")
+    }
 }
 
 /// Canonical scope resolved from one management deep link.
@@ -100,6 +109,16 @@ impl ConsoleRoute {
         }
         if segments.len() >= 3 && segments[..2] == ["-", "org"] {
             let organization = segments[2].to_string();
+            if segments.get(3..) == Some(&["caches", "new"][..]) {
+                return resolve_page(
+                    ConsoleScope::Organization {
+                        slug: organization.clone(),
+                    },
+                    format!("/-/org/{organization}"),
+                    &segments[3..],
+                    ORGANIZATION_PAGES,
+                );
+            }
             if segments.len() >= 5 && segments[3] == "caches" {
                 let cache = segments[4].to_string();
                 return resolve_page(
@@ -311,6 +330,13 @@ pub const ORGANIZATION_PAGES: &[PageSpec] = &[
         "project-inventory",
     ),
     PageSpec::new(
+        "projects-new",
+        "Create project",
+        "",
+        "projects/new",
+        "project-inventory",
+    ),
+    PageSpec::new(
         "registries",
         "Registries",
         "Resources",
@@ -318,10 +344,24 @@ pub const ORGANIZATION_PAGES: &[PageSpec] = &[
         "registry-inventory",
     ),
     PageSpec::new(
+        "registries-new",
+        "Create registry",
+        "",
+        "registries/new",
+        "registry-inventory",
+    ),
+    PageSpec::new(
         "caches",
         "Binary caches",
         "Resources",
         "caches",
+        "cache-overview",
+    ),
+    PageSpec::new(
+        "caches-new",
+        "Create binary cache",
+        "",
+        "caches/new",
         "cache-overview",
     ),
     PageSpec::new(
@@ -642,8 +682,11 @@ mod tests {
                 &[
                     "overview",
                     "projects",
+                    "projects-new",
                     "registries",
+                    "registries-new",
                     "caches",
+                    "caches-new",
                     "storage",
                     "domains",
                     "boundaries",
@@ -718,7 +761,7 @@ mod tests {
         ] {
             let mut completed = std::collections::BTreeSet::new();
             let mut previous = None;
-            for page in pages {
+            for page in pages.iter().filter(|page| page.is_navigation_item()) {
                 if previous != Some(page.group) {
                     assert!(
                         completed.insert(page.group),

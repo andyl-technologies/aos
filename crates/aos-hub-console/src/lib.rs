@@ -8,9 +8,9 @@
 //! [`aos_proto_types`]. [`app`] renders the shared settings shell.
 //!
 //! The native and Cloudflare Worker deployments consume one content-addressed
-//! build of this crate. Until every management workflow is implemented and the
-//! one-shot route cutover is ready, the bundle is deliberately not mounted by
-//! either runtime.
+//! build of this crate. Both serve the same closed deep links and all resource
+//! management leaves the browser through the canonical API; there is no
+//! server-rendered management fallback.
 
 pub mod route;
 
