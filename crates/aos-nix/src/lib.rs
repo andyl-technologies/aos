@@ -3,7 +3,7 @@
 //! This crate owns the in-process evaluator described by RFC-0007. The
 //! implementation is a safe tree-walk evaluator with persistent,
 //! dependency-traced early-cutoff caching and an optional JIT tier. It is the
-//! production RFC-0011 configuration evaluator behind the
+//! production on-host configuration evaluator behind the
 //! `aos_core::nix::NixEval` seam. Native errors are typed and fail closed; the
 //! production configuration path never falls back to the host or C++ Nix.
 //! Differential checks retain the hermetic AOS-built C++ evaluator solely as

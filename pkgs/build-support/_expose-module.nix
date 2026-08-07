@@ -1,4 +1,4 @@
-##! pkgs/build-support/_expose-module.nix - typed RFC-0011 expose surface.
+##! pkgs/build-support/_expose-module.nix - typed package expose surface.
 ##!
 ##! This module is the schema boundary shared by the legacy expose renderer and
 ##! config-module migration checks.  It deliberately models the package-authored

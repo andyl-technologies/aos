@@ -138,7 +138,7 @@ pub struct RuntimeRealisationPin {
 /// recursively included by [`resolve_multiple`]. Registries without a
 /// published `store/` graph are refused: their narinfo fallback cannot pin and
 /// authenticate every anonymous closure member, so it is insufficient for a
-/// transactional RFC-0011 configuration generation.
+/// transactional configuration generation.
 ///
 /// # Errors
 ///

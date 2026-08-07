@@ -230,19 +230,23 @@ def _wait_system_ready(machines: list[Machine], timeout: float) -> None:
     cannot run the command at all (very early boot, agent crashed) —
     the test body will then surface a more specific failure.
     """
+    if timeout <= 0:
+        log.info("Skipping generic system-ready probe; test supplies readiness checks")
+        return
+
     cmd = (
-        # `|| true` so a `degraded` exit (= 1) doesn't propagate to the
-        # agent's exit_code path; we want to capture and log the actual
-        # final state regardless.
-        "timeout {t:.0f}s systemctl is-system-running --wait; "
-        "systemctl is-system-running"
+        # Bound both calls: PID 1 can still be busy after the blocking probe
+        # expires, and an unbounded follow-up would occupy the single-command
+        # test agent and starve every later assertion.
+        "timeout --kill-after=2s {t:.0f}s systemctl is-system-running --wait || true; "
+        "timeout --kill-after=2s 5s systemctl is-system-running || true"
     ).format(t=timeout)
     for m in machines:
         if not m.expect_agent:
             continue
         log.info("Waiting for %s system to finish booting...", m.name)
         try:
-            exit_code, stdout, _ = m.execute(cmd, timeout=timeout + 10)
+            exit_code, stdout, _ = m.execute(cmd, timeout=timeout + 20)
         except Exception as e:
             log.warning(
                 "[%s] system-ready probe raised %s; continuing",

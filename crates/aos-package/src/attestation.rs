@@ -147,7 +147,7 @@ pub struct AttestationInputs {
 pub struct BaseLibAttInput {
     /// Exact base-library store path consumed by evaluation.
     pub store_path: String,
-    /// `sha256:<hex>` predicted sysinit-phase PCR-11 of the booted UKI
+    /// `sha256:<hex>` predicted ready-phase PCR-11 of the booted UKI
     /// (ties to measured boot). Read from the registry catalog's recorded
     /// `expected_pcr11`, not recomputed (build-spec §1.3).
     pub pcr11_expected: Option<String>,

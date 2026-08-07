@@ -1,8 +1,8 @@
 [Unit]
-After=network-online.target systemd-pcrphase.service nix-overlay-setup.service aos-config-seed.service aos-credential-recovery.service aos-seed-profiles.service aos-host-config-restore.service aos-nix-db.service aos-seed-baked-packages.service
+After=network-online.target systemd-pcrphase.service nix-overlay-setup.service aos-config-seed.service aos-credential-recovery.service aos-seed-profiles.service aos-host-config-restore.service aos-nix-db.service aos-image-measurement-index.service aos-seed-baked-packages.service
 Before=aos-install-baked-packages.service aos-graph-compile.service multi-user.target
 Description=Evaluate host configuration to a converged manifest
-Requires=aos-credential-recovery.service aos-host-config-restore.service aos-firstboot-reeval.service aos-nix-db.service systemd-pcrphase.service aos-seed-baked-packages.service
+Requires=aos-credential-recovery.service aos-host-config-restore.service aos-firstboot-reeval.service aos-nix-db.service systemd-pcrphase.service aos-image-measurement-index.service aos-seed-baked-packages.service
 Wants=network-online.target
 
 [Service]

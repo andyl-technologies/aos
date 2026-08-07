@@ -73,6 +73,7 @@
 /systemd/system/aos-host-config-cache.service 100 120777 1 0 0 0 1.0 /nix/store/<hash>-unit-aos-host-config-cache.service/aos-host-config-cache.service - -
 /systemd/system/aos-host-config-restore.service 100 120777 1 0 0 0 1.0 /nix/store/<hash>-unit-aos-host-config-restore.service/aos-host-config-restore.service - -
 /systemd/system/aos-image-boot-commit.service 100 120777 1 0 0 0 1.0 /nix/store/<hash>-unit-aos-image-boot-commit.service/aos-image-boot-commit.service - -
+/systemd/system/aos-image-measurement-index.service 100 120777 1 0 0 0 1.0 /nix/store/<hash>-unit-aos-image-measurement-index.service/aos-image-measurement-index.service - -
 /systemd/system/aos-install-baked-packages.service 100 120777 1 0 0 0 1.0 /nix/store/<hash>-unit-aos-install-baked-packages.service/aos-install-baked-packages.service - -
 /systemd/system/aos-nix-db.service 100 120777 1 0 0 0 1.0 /nix/store/<hash>-unit-aos-nix-db.service/aos-nix-db.service - -
 /systemd/system/aos-pkg-fetch@.service 100 120777 1 0 0 0 1.0 /nix/store/<hash>-unit-aos-pkg-fetch-.service/aos-pkg-fetch@.service - -
@@ -96,6 +97,7 @@
 /systemd/system/multi-user.target.wants/aos-host-config-cache.service 100 120777 1 0 0 0 1.0 ../aos-host-config-cache.service - -
 /systemd/system/multi-user.target.wants/aos-host-config-restore.service 100 120777 1 0 0 0 1.0 ../aos-host-config-restore.service - -
 /systemd/system/multi-user.target.wants/aos-image-boot-commit.service 100 120777 1 0 0 0 1.0 ../aos-image-boot-commit.service - -
+/systemd/system/multi-user.target.wants/aos-image-measurement-index.service 100 120777 1 0 0 0 1.0 ../aos-image-measurement-index.service - -
 /systemd/system/multi-user.target.wants/aos-install-baked-packages.service 100 120777 1 0 0 0 1.0 ../aos-install-baked-packages.service - -
 /systemd/system/multi-user.target.wants/aos-nix-db.service 100 120777 1 0 0 0 1.0 ../aos-nix-db.service - -
 /systemd/system/multi-user.target.wants/aos-preset.service 100 120777 1 0 0 0 1.0 ../aos-preset.service - -

@@ -1056,7 +1056,7 @@
     "mkDerivation expose.units.${unitName} for package '${packageName}' uses a ${key} command whose executable is not an absolute path and cannot be resolved exactly by generated sandbox wrappers: ${text}"
     command;
 in rec {
-  # Pure normalized schema shared with the generated RFC-0011 companion.
+  # Pure normalized schema shared with the generated configuration companion.
   # Credential build inputs are deliberately excluded; only signed manifest
   # handles may enter config-module source bytes.
   normalizeConfig = packageName: config: let
@@ -1084,7 +1084,7 @@ in rec {
     expose,
   }: let
     # Type-check the complete authored surface with the same module engine used
-    # by RFC-0011 host evaluation.  Keep the original sparse attrset for the
+    # by on-host evaluation. Keep the original sparse attrset for the
     # legacy renderer below: its omitted-vs-present distinctions are part of
     # the signed RFC-0001 manifest contract (notably credential source fields).
     typedExposeContract = builtins.deepSeq (exposeModule.eval expose) true;

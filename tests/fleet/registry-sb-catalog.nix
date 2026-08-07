@@ -28,7 +28,7 @@
 #      floor is raised one above the image's generation. `apm upgrade` must
 #      REFUSE on the floor, again without changing either axis.
 #   4. ACCEPT CATALOG — the floor is lowered to the image's generation. The
-#      Secure Boot catalog validation passes, after which RFC-0011's A/B image
+#      Secure Boot catalog validation passes, after which the A/B image
 #      gate rejects this legacy UKI-only fixture because it has no authenticated
 #      raw OTA payload. Both generation axes remain unchanged.
 #
@@ -118,8 +118,8 @@ in {
           "systemctl is-active aos-nix-db.service", timeout=120
       )
 
-      # Target precondition: image generation 1, no evaluated configuration,
-      # and the signed toplevel absent.
+      # Target precondition: image generation 1 with its initial host-policy
+      # generation committed, and the signed upgrade toplevel absent.
       target.wait_until_succeeds("systemctl is-active aos-nix-db.service", timeout=120)
       image_before = json.loads(
           target.succeed("cat /var/lib/profiles/image/state.json")
@@ -129,12 +129,11 @@ in {
       )
       assert image_before["running"] == 1, image_before
       assert len(image_before["generations"]) == 1, image_before
-      assert config_before == {
-          "current": 0,
-          "next": 1,
-          "generations": [],
-      }, config_before
-      target.fail("test -e /var/lib/profiles/system/current")
+      assert config_before["current"] == 1, config_before
+      assert config_before["next"] == 2, config_before
+      assert len(config_before["generations"]) == 1, config_before
+      assert config_before["generations"][0]["image_gen_parent"] == 1, config_before
+      target.succeed("test -e /var/lib/profiles/system/current")
 
       def assert_generation_axes_unchanged(label):
           image_after = json.loads(
@@ -145,7 +144,7 @@ in {
           )
           assert image_after == image_before, (label, image_before, image_after)
           assert config_after == config_before, (label, config_before, config_after)
-          target.fail("test -e /var/lib/profiles/system/current")
+          target.succeed("test -e /var/lib/profiles/system/current")
       # The miss is intentional; keep nix-store's expected error off the
       # serial console so unexpected warnings remain visible.
       target.fail(
@@ -385,7 +384,7 @@ in {
           f"a valid catalog did not report SB validation:\n{out}"
       )
       assert "no authenticated raw OTA image" in out, (
-          f"a legacy UKI-only payload passed the RFC-0011 A/B image gate:\n{out}"
+          f"a legacy UKI-only payload passed the A/B image gate:\n{out}"
       )
       assert_generation_axes_unchanged("catalog accepted without raw OTA")
       target.succeed("${pkgs.nix}/bin/nix-store --check-validity '${sbTop}'")

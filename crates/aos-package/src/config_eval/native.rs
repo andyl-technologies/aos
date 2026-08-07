@@ -1,4 +1,4 @@
-//! Native RFC-0007 evaluator adapter for RFC-0011 configuration evaluation.
+//! Native evaluator adapter for on-host configuration evaluation.
 //!
 //! [`NativeNixEvaluator`] implements the same [`NixEvaluator`](super::NixEvaluator)
 //! boundary as the P1 stock evaluator. It reuses the exact `entry.nix`
@@ -31,7 +31,7 @@ pub const DEFAULT_MAX_EVAL_DURATION: std::time::Duration = std::time::Duration::
 /// Hard in-engine resident-memory ceiling, below the cgroup `MemoryMax`.
 pub const DEFAULT_MAX_HEAP_BYTES: usize = 1536 * 1024 * 1024;
 
-/// Native, eval-only implementation of the RFC-0011 evaluator seam.
+/// Native, eval-only implementation of the configuration evaluator seam.
 pub struct NativeNixEvaluator {
     root: PathBuf,
     cache_root: PathBuf,

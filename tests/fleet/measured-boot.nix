@@ -107,7 +107,7 @@ in {
       VARDEV = "/dev/disk/by-partlabel/var"
 
       def canonical_json(value):
-          """Encode RFC-11 canonical JSON independently of the AOS CLI."""
+          """Encode canonical attestation JSON independently of the AOS CLI."""
           if value is None:
               return "null"
           if value is True:
@@ -325,10 +325,10 @@ in {
           ]
           calculated_enter_initrd = calculated_phases[0]
           calculated_ready = calculated_phases[-1]
-          assert expected_pcr11 == calculated_enter_initrd, (
-              "early boot image index does not match the booted UKI's "
-              f"enter-initrd measurement: index={expected_pcr11!r}, "
-              f"calculated={calculated_enter_initrd!r}"
+          assert expected_pcr11 == calculated_ready, (
+              "image index does not match the booted UKI's stable ready-phase "
+              f"measurement: index={expected_pcr11!r}, "
+              f"calculated={calculated_ready!r}"
           )
 
           # sd-stub must have materialized this UKI's signed PCR policy. A
@@ -565,7 +565,7 @@ in {
           # require byte-identical canonical output. This is stronger than
           # accepting a self-reported manifest hash: it demonstrates full
           # re-derivation while ignoring JSON object insertion order, which is
-          # deliberately outside the RFC-11 canonical identity.
+          # deliberately outside the canonical attestation identity.
           target.succeed(f"""
               rm -rf /run/rfc0011-attestation-rederive
               mkdir -p /run/rfc0011-attestation-rederive
@@ -615,11 +615,17 @@ in {
           # verifier policy is a separate file even in this single-node test;
           # production callers supply these values from their fleet catalog.
           immutable_top = target.succeed("readlink /aos-toplevel").strip()
+          immutable_top_lower = (
+              "/nix.lower/store/" + immutable_top.removeprefix("/nix/store/")
+          )
           immutable_seed = target.succeed(
-              f"readlink /nix.lower{immutable_top}/package-profile-seed"
+              f"readlink {immutable_top_lower}/package-profile-seed"
           ).strip()
+          immutable_seed_lower = (
+              "/nix.lower/store/" + immutable_seed.removeprefix("/nix/store/")
+          )
           seed_meta_paths = target.succeed(
-              f"ls -1 /nix.lower{immutable_seed}/meta/*.json"
+              f"ls -1 {immutable_seed_lower}/meta/*.json"
           ).splitlines()
           seed_records = [
               json.loads(target.succeed(f"cat {path}")) for path in seed_meta_paths
@@ -644,11 +650,15 @@ in {
                       .get("config_output", {}).get("store_path") == store_path
               ]
               assert len(matches) == 1, (package_name, matches)
-              lower_store_path = "/nix.lower" + store_path
+              lower_store_path = (
+                  "/nix.lower/store/" + store_path.removeprefix("/nix/store/")
+              )
               target.succeed(f"test -e {lower_store_path}")
               actual_nar_hash = "sha256:" + target.succeed(
-                  f"{pkgs.nix}/bin/nix-store --dump {lower_store_path} | sha256sum"
-              ).split()[0]
+                  f"${pkgs.nix}/bin/nix-store --dump {lower_store_path} "
+                  "| ${pkgs.nix}/bin/nix-hash --type sha256 --base32 "
+                  "--flat /dev/stdin"
+              ).strip()
               assert actual_nar_hash == nar_hash, (actual_nar_hash, nar_hash)
               module = matches[0]["apm"]["config_module"]
               owns = sorted(set(item["root"] for item in module["owns_roots"]))
@@ -761,12 +771,33 @@ in {
           "test -e /dev/disk/by-partlabel/aos-provenance-operator-v1"
       )
       target.succeed("test -s /var/lib/aos-provisioning/audit.json")
+      measurement_unit = "aos-image-measurement-index.service"
+      try:
+          target.wait_until_succeeds(
+              f"systemctl is-active {measurement_unit}", timeout=60
+          )
+      except Exception:
+          print(target.succeed(
+              f"systemctl status {measurement_unit} --no-pager 2>&1 || true"
+          ))
+          print(target.succeed(
+              f"journalctl -b -u {measurement_unit} --no-pager 2>&1 || true"
+          ))
+          raise
       for unit in (
           "aos-seed-baked-packages.service",
           "aos-eval.service",
           "aos-graph-compile.service",
           "aos-activate.service",
       ):
+          try:
+              target.wait_until_succeeds(
+                  f"systemctl is-active {unit}", timeout=420
+              )
+          except Exception:
+              print(target.succeed(f"systemctl status {unit} --no-pager 2>&1 || true"))
+              print(target.succeed(f"journalctl -b -u {unit} --no-pager 2>&1 || true"))
+              raise
           state = target.succeed(
               f"systemctl show {unit} -p ActiveState --value"
           ).strip()
@@ -878,10 +909,11 @@ in {
       # ════ 5. Fault injection — failed ready phase must not bless ═══
       target.succeed(f"""
           set -eu
-          mkdir -p /etc/systemd/system/systemd-pcrphase.service.d
-          printf '%s\n' '[Service]' 'ExecStart=' \
+          mkdir -p /var/etc/systemd/system/systemd-pcrphase.service.d
+          printf '%s\n' '[Unit]' 'FailureAction=none' \
+            '[Service]' 'ExecStart=' \
             'ExecStart=${pkgs.coreutils}/bin/false' \
-            > /etc/systemd/system/systemd-pcrphase.service.d/fail.conf
+            > /var/etc/systemd/system/systemd-pcrphase.service.d/fail.conf
           {JQ} '.pending = .running' /var/lib/profiles/image/state.json \
             > /var/lib/profiles/image/.state.json.pcrphase-fault
           mv /var/lib/profiles/image/.state.json.pcrphase-fault \
@@ -892,13 +924,19 @@ in {
       target.wait_until_succeeds(
           "systemctl is-failed systemd-pcrphase.service", timeout=120
       )
-      target.succeed("systemctl show aos-eval.service -p ActiveState --value | grep -F inactive")
-      target.succeed(f"""
-          running=$({JQ} -er '.running' /var/lib/profiles/image/state.json)
-          pending=$({JQ} -er '.pending' /var/lib/profiles/image/state.json)
-          test "$pending" = "$running"
-          test -e /run/aos/image-reeval-required
-      """)
+      target.succeed(
+          'test "$(systemctl show aos-eval.service -p ActiveState --value)" = inactive'
+      )
+      running = target.succeed(
+          f"{JQ} -er '.running' /var/lib/profiles/image/state.json"
+      ).strip()
+      pending = target.succeed(
+          f"{JQ} -er '.pending' /var/lib/profiles/image/state.json"
+      ).strip()
+      assert pending == running, (
+          f"failed ready phase changed pending image: running={running}, pending={pending}"
+      )
+      target.succeed("test -e /run/aos/image-reeval-required")
       target.fail("systemctl is-active aos-image-boot-commit.service")
       print("=== failed PCR 11 ready phase left the image pending and unblessed ===")
     '';

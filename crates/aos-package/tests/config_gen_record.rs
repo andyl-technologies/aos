@@ -1,4 +1,4 @@
-//! RFC-0011 acceptance tests for complete configuration-generation records.
+//! Acceptance tests for complete configuration-generation records.
 
 use serde_json::json;
 

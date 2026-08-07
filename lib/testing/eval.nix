@@ -303,7 +303,7 @@
     then throw "aos-repart.service must run after restricted provisioning evaluation"
     else "ok";
 
-  # RFC-0011: the edge release artifact is an authenticated capability
+  # The edge release artifact is an authenticated capability
   # substrate, while its service and tuning defaults are selected by host.nix.
   edgeImage = mkSystem ../../systems/edge.nix;
   edgeHost = mkSystem [

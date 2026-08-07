@@ -256,6 +256,15 @@
           per boot. Null uses the driver default.
         '';
       };
+      systemReadyTimeout = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        description = ''
+          Per-machine budget (seconds) for the driver's generic systemd
+          readiness probe. Set to zero when the test script supplies its own
+          explicit readiness checks. Null uses the driver default.
+        '';
+      };
     };
   };
 in {

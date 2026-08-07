@@ -1,4 +1,4 @@
-##! Generated RFC-0011 companion for an RFC-0001 expose declaration.
+##! Generated configuration companion for a package expose declaration.
 ##!
 ##! The fixed package builder copies this file as `module.nix` beside an
 ##! authenticated `expose-config.json`. It declares only the package-private
@@ -42,7 +42,7 @@ in {
       type = lib.types.attrs;
       internal = true;
       readOnly = true;
-      description = "Authenticated RFC-0011 expose projection input.";
+      description = "Authenticated package expose projection input.";
     };
   };
 

@@ -1,4 +1,4 @@
-##! RFC-0011 package config-output smoke module.
+##! Package config-output smoke module.
 {
   lib,
   config,

@@ -1,4 +1,4 @@
-##! aos-evaluator-tests — hermetic RFC-0011 native evaluator component gate
+##! aos-evaluator-tests — hermetic native configuration-evaluator component gate
 {
   lib,
   mkCargoPackage,

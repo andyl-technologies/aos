@@ -77,6 +77,12 @@ verification of the generation quote against the live PCR 7/11 values and the
 published image PCR 11. A failed ready transition leaves evaluation and boot
 blessing inactive.
 
+For the initially installed image, the expected ready-phase value comes from a
+build-produced measurement sidecar signed by the PCR-policy key and bound to
+the exact UKI hash. AOS verifies it before importing it into durable image
+state. Later registry images obtain the same authority from their signed
+release catalog; a live PCR reading is never promoted into either source.
+
 ## Verify an image transition
 
 After reboot:

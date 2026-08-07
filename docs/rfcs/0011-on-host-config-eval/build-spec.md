@@ -1889,12 +1889,16 @@ concrete.
   value; a later reactivation or same-ABI rollback always gets a new value.
 - `manifest_hash` — `verify::sha256_stream` over the canonicalized manifest JSON.
   Format `sha256:<hex>` (`verify.rs:55`).
-- `base_lib.pcr11_expected` — read from the **booted UKI's published
-  attestation** (`apr publish --image`, RFC-0006 phase 4): the ukify-predicted
-  stable `ready`-phase PCR-11 quoted during activation. Not recomputed on-host;
-  it is the registry's recorded
-  `expected_pcr11`/`base_lib.pcr11_expected` (`registry-catalog.md:42-52`),
-  reused verbatim — never a parallel value.
+- `base_lib.pcr11_expected` — read from the authenticated image record. For a
+  registry image this is the stable `ready`-phase PCR-11 prediction in the
+  signed release catalog (`registry-catalog.md:42-52`). For the seed image,
+  `aos-uki.nix` computes the prediction from the finalized UKI sections and
+  emits a sidecar signed by the PCR-policy key and bound to the SHA-256 of the
+  exact UKI. The image builder copies those derivation outputs to the ESP by
+  Nix interpolation, and `aos-image-measurement-index.service` verifies the
+  signature, embedded public key, and UKI hash before importing the value into
+  the seed image record. It is never recomputed from, or replaced by, a live
+  TPM reading.
 - `base_lib.abi_hash` — `sha256` over the canonicalized base-lib module option
   schema (the options-only eval surface) concatenated with `module_abi`.
 - `base_lib.module_abi` — parsed from `AOS_MODULE_ABI` in `/etc/os-release`

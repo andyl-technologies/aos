@@ -38,6 +38,12 @@ in
       units = {
         "aos-test-agent.service" = {
           description = "AOS VM test guest agent";
+          # Activation must not interrupt the control channel carrying the
+          # command that initiated it. A later boot naturally starts the unit
+          # using the newly selected definition.
+          restartIfChanged = false;
+          stopOnRemoval = false;
+          unitConfig.RefuseManualStop = true;
           serviceConfig = {
             Type = "simple";
             ExecStart = "${agentBin}/bin/aos-test-agent";
@@ -59,8 +65,8 @@ in
     };
 
     # The fleet control plane is test infrastructure rather than image policy.
-    # Keep its generated expose module usable on both sides of the RFC-0011
-    # ABI-transition acceptance test; config-module-smoke remains the
+    # Keep its generated expose module usable on both sides of the module ABI
+    # transition acceptance test; config-module-smoke remains the
     # deliberately ABI-1-only negative fixture.
     configModule = {
       src = ./_aos-test-agent-config;

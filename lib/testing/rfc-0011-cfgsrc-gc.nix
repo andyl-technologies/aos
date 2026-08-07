@@ -1,4 +1,4 @@
-# RFC-0011 retained-input GC and cross-ABI re-evaluation acceptance gate.
+# Retained-input GC and cross-ABI re-evaluation acceptance gate.
 #
 # This check uses an isolated Nix store rather than the builder's global store.
 # Its root topology is the production topology established by nix-db.nix:
@@ -281,7 +281,7 @@ in
 
           mkdir -p "$out"
           {
-            echo "RFC-0011 cfgsrc GC acceptance: PASS"
+            echo "configuration-source GC acceptance: PASS"
             echo "  apm gc retained cfg/, cfgsrc/, and prior base-lib roots"
             echo "  ABI-1 inputs re-evaluated under ABI 2 without replay"
             echo "  removing only cfgsrc/baselib roots made inputs collectable"

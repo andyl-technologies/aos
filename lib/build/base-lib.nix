@@ -13,15 +13,18 @@
 ##!     here at stage-1 (image build) via `freeze-pkgs.nix`,
 ##!   - `frozen-artifacts.json` — the stage-1 store paths of the image-fixed
 ##!     config artifacts (`aos.config._artifactSources`),
+##!   - `image-manifest.json` — the immutable image's rendered artifact
+##!     baseline, with the base library output linked through Nix's output
+##!     placeholder,
 ##!   - `system-modules.nix` — the variant's module list, and
 ##!   - `default.nix` (from `base-lib-entry.nix`) exporting `evalHostConfig`.
 ##!
-##! `mkBaseLib` runs the same real-`pkgs` `evalModules` the image build runs (so
-##! it is shared, not extra work) purely to read back `_artifactSources`. The
-##! manifest itself is recomputed on-host under a frozen `pkgs`; the eval-only
+##! `mkBaseLib` evaluates the real package set at image-build time to capture
+##! `_artifactSources`, the option schema, and the image artifact baseline. The
+##! candidate manifest is recomputed on-host under a frozen `pkgs`; the eval-only
 ##! core (the engine laziness fixes + the F2-A job-script inversion) is what
 ##! makes that recomputation build-graph-free and byte-identical to this
-##! stage-1 manifest. See `docs/rfcs/0011-on-host-config-eval/eval-only-core.md`.
+##! stage-1 manifest.
 {
   lib,
   pkgs,
@@ -36,27 +39,48 @@
 }: let
   freeze = import ./freeze-pkgs.nix {inherit lib;};
 
-  # Same evaluation the image build performs — forced here only to read back
-  # the registered image-fixed config artifacts.
-  realEval = lib.evalModules {
+  # Evaluate the schema first so the ABI hash is available to the complete
+  # image-baseline evaluation below without introducing a recursive value.
+  schemaEval = lib.evalModules {
     modules = baseModules ++ systemModules;
     inherit pkgs lib;
   };
 
-  # RFC-0011 binds a base library to the complete option schema it exposes,
-  # not to the incidental store path that contains it.  `_optionDecls` is an
+  # A base library is bound to the complete option schema it exposes, not to
+  # the incidental store path that contains it. `_optionDecls` is an
   # options-only projection: reading it never forces a `config` value or a
   # derivation.  Attribute names are already returned in sorted order by the
   # module engine; sort explicitly here so this remains a set identity if the
   # engine's representation changes.
   optionSchema = builtins.sort (a: b: builtins.head a < builtins.head b) (
-    builtins.map (decl: [decl.pathStr decl.typeSig]) realEval._optionDecls
+    builtins.map (decl: [decl.pathStr decl.typeSig]) schemaEval._optionDecls
   );
-  moduleAbi = realEval.config.aos.system.moduleAbi;
+  moduleAbi = schemaEval.config.aos.system.moduleAbi;
   abiHash = "sha256:${builtins.hashString "sha256" (builtins.toJSON {
     abi = moduleAbi;
     schema = optionSchema;
   })}";
+
+  # Capture the artifact baseline produced by the immutable image modules.
+  # Nix replaces the output placeholder with this base library's final store
+  # path while realizing the derivation, so the embedded manifest has the
+  # exact same self-reference as later on-host evaluations.
+  baseLibOut = builtins.placeholder "out";
+  placeholderBaseLibDigest = builtins.hashString "sha256" baseLibOut;
+  realEval = lib.evalModules {
+    modules =
+      baseModules
+      ++ systemModules
+      ++ [
+        {
+          aos.config.evalAtBoot = {
+            baseLib = baseLibOut;
+            baseLibAbiHash = abiHash;
+          };
+        }
+      ];
+    inherit pkgs lib;
+  };
 
   # Root ownership shipped by the image is local system state, just like
   # package-owned roots derived from the exact installed profile. Every root
@@ -92,6 +116,19 @@
 
   frozenPkgsFile = builtins.toFile "frozen-pkgs.json" (freeze.freezeToJSON pkgs);
   frozenArtifactsFile = builtins.toFile "frozen-artifacts.json" (builtins.toJSON frozenArtifacts);
+  rawImageManifest = realEval.config.system.build.configManifest;
+  # Output placeholders acquire their real store-path context only when Nix
+  # realizes this derivation. Add the self-reference explicitly so the
+  # baseline's dependency inventory agrees with an on-host reevaluation.
+  imageManifest = builtins.toJSON (rawImageManifest
+    // {
+      storePaths = lib.unique (rawImageManifest.storePaths ++ [baseLibOut]);
+      ownership = rawImageManifest.ownership
+        // {
+          storePaths = rawImageManifest.ownership.storePaths
+            // {"${baseLibOut}" = "@base";};
+        };
+    });
 
   # The variant's module list, materialized as a Nix expression the bundled
   # entrypoint imports. Paths are rewritten to the bundled `./systems` copy so
@@ -114,6 +151,8 @@
 in
   pkgs.runCommand "aos-base-lib-${systemName}" {
     passthru = {inherit frozenArtifacts optionSchema moduleAbi abiHash;};
+    inherit imageManifest placeholderBaseLibDigest;
+    passAsFile = ["imageManifest"];
   } ''
     mkdir -p "$out"
 
@@ -133,6 +172,10 @@ in
       ${./base-lib-entry.nix} > "$out/default.nix"
     cp ${frozenPkgsFile} "$out/frozen-pkgs.json"
     cp ${frozenArtifactsFile} "$out/frozen-artifacts.json"
+    actual_base_lib_digest=$(printf '%s' "$out" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)
+    ${pkgs.sed}/bin/sed \
+      -e "s|sha256:$placeholderBaseLibDigest|sha256:$actual_base_lib_digest|g" \
+      "$imageManifestPath" > "$out/image-manifest.json"
     cp ${systemModulesFile} "$out/system-modules.nix"
 
     echo ${lib.escapeShellArg systemName} > "$out/system-name"
