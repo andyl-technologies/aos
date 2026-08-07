@@ -13,7 +13,7 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
 use super::cache_gc_jobs::GcDeletionJobs;
-use super::cache_gc_safety::GcSafetyControls;
+use super::cache_gc_safety::{GcPlanDetail, GcSafetyControls};
 
 /// Renders GC policy, planning controls, run history, and deletion jobs.
 #[component]
@@ -44,7 +44,7 @@ pub(super) fn CacheGcWorkflow(client: ApiClient, cache_id: String) -> impl IntoV
                     Suspend::new(async move {
                         match policy.await.as_ref() {
                             Ok(response) => view! {
-                                <GcPolicyEditor client=client cache_id=cache_id policy=response.policy.clone().unwrap_or_default()/>
+                                <GcConfiguredControls client=client cache_id=cache_id response=response.clone()/>
                             }
                             .into_any(),
                             Err(failure) => view! { <section class="panel"><InlineError detail=failure.to_string()/></section> }.into_any(),
@@ -52,11 +52,32 @@ pub(super) fn CacheGcWorkflow(client: ApiClient, cache_id: String) -> impl IntoV
                     })
                 }}
             </Suspense>
-            <GcPlanner client=client.clone() cache_id=cache_id.clone()/>
-            <GcSafetyControls client=client.clone() cache_id=cache_id.clone()/>
             <GcRuns client=client.clone() cache_id=cache_id.clone()/>
             <GcDeletionJobs client=client cache_id=cache_id/>
         </div>
+    }
+}
+
+#[component]
+fn GcConfiguredControls(
+    client: ApiClient,
+    cache_id: String,
+    response: aos_proto_types::GetCacheGcPolicyResponse,
+) -> impl IntoView {
+    let policy = response.policy.unwrap_or_default();
+    let generation = response.generation.unwrap_or_default();
+    let generation_version = generation.resource_version.clone();
+
+    view! {
+        <GcPolicyEditor client=client.clone() cache_id=cache_id.clone() policy=policy/>
+        <section class="panel resource-panel">
+            <div class="compact-list-row">
+                <div><strong>"GC concurrency fence"</strong><code>{generation_version.clone()}</code></div>
+                <StatusBadge state=generation.state positive=generation_version != "0"/>
+            </div>
+        </section>
+        <GcPlanner client=client.clone() cache_id=cache_id.clone() version=generation_version.clone()/>
+        <GcSafetyControls client=client cache_id=cache_id generation_version=generation_version/>
     }
 }
 
@@ -162,7 +183,7 @@ fn GcPolicyEditor(
             match client
                 .call::<_, aos_proto_types::GetCacheGcPolicyResponse>(
                     aos_proto_types::BINARY_CACHE_SERVICE_SET_CACHE_GC_POLICY_PATH,
-                    &reviewed.cache_apply(),
+                    &reviewed.cache_plan_apply(),
                 )
                 .await
             {
@@ -202,25 +223,28 @@ fn GcPolicyEditor(
 }
 
 #[component]
-fn GcPlanner(client: ApiClient, cache_id: String) -> impl IntoView {
-    let version = RwSignal::new(String::new());
+fn GcPlanner(client: ApiClient, cache_id: String, version: String) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
+    let exact_plan = RwSignal::new(None::<aos_proto_types::CacheGcPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let plan_client = client.clone();
+    let plan_version = version.clone();
     let on_plan = move |_| {
         let key = idempotency_key("cache-gc-run");
+        let inspect_cache_id = cache_id.clone();
         let request = aos_proto_types::PlanRunCacheGcRequest {
             cache_id: cache_id.clone(),
-            expected_resource_version: version.get_untracked().trim().to_string(),
+            expected_resource_version: plan_version.clone(),
             idempotency_key: key.clone(),
         };
         let client = plan_client.clone();
         error.set(None);
         pending.set(None);
+        exact_plan.set(None);
         busy.set(true);
         spawn_local(async move {
-            let result = client
+            let planned = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
                     aos_proto_types::BINARY_CACHE_SERVICE_PLAN_RUN_CACHE_GC_PATH,
                     &request,
@@ -228,8 +252,30 @@ fn GcPlanner(client: ApiClient, cache_id: String) -> impl IntoView {
                 .await
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, key));
-            match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+            match planned {
+                Ok(reviewed) => {
+                    let detail = client
+                        .call::<_, aos_proto_types::CacheGcPlanResponse>(
+                            aos_proto_types::BINARY_CACHE_SERVICE_GET_CACHE_GC_PLAN_PATH,
+                            &aos_proto_types::GetCacheGcPlanRequest {
+                                cache_id: inspect_cache_id,
+                                plan_id: reviewed.plan.plan_id.clone(),
+                            },
+                        )
+                        .await;
+                    match detail {
+                        Ok(response) => match response.plan {
+                            Some(plan) => {
+                                exact_plan.set(Some(plan));
+                                pending.set(Some(reviewed));
+                            }
+                            None => error.set(Some("The Hub omitted the exact GC candidate plan".to_string())),
+                        },
+                        Err(failure) => error.set(Some(format!(
+                            "The sweep was not enabled because its exact candidate plan could not be loaded: {failure}"
+                        ))),
+                    }
+                }
                 Err(detail) => error.set(Some(detail)),
             }
             busy.set(false);
@@ -245,7 +291,7 @@ fn GcPlanner(client: ApiClient, cache_id: String) -> impl IntoView {
             match client
                 .call::<_, aos_proto_types::OperationResponse>(
                     aos_proto_types::BINARY_CACHE_SERVICE_RUN_CACHE_GC_PATH,
-                    &reviewed.cache_apply(),
+                    &reviewed.cache_plan_apply(),
                 )
                 .await
             {
@@ -264,9 +310,10 @@ fn GcPlanner(client: ApiClient, cache_id: String) -> impl IntoView {
                     <p>"Planning freezes root, object, topology, policy, and placement inventory versions before review."</p>
                 </div>
             </div>
-            <label><span>"Expected GC resource version"</span><input required prop:value=move || version.get() on:input=move |event| version.set(event_target_value(&event))/></label>
-            <button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Review GC candidates"</button>
+            <div class="compact-list-row"><span>"Bound GC resource version"</span><code>{version}</code></div>
+            <button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Create candidate plan"</button>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
+            {move || exact_plan.get().map(|plan| view! { <GcPlanDetail plan=plan/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
         </section>
     }

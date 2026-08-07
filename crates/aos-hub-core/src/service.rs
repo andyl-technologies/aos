@@ -30541,6 +30541,23 @@ impl RpcService {
         }
     }
 
+    fn cache_gc_generation_message(
+        cache_id: &str,
+        state: &crate::db::CacheGcStateRecord,
+    ) -> pb::CacheGcGeneration {
+        pb::CacheGcGeneration {
+            cache_id: cache_id.to_string(),
+            epoch: state.epoch,
+            state: if state.destructive_enabled {
+                "enabled"
+            } else {
+                "first_sweep_required"
+            }
+            .to_string(),
+            resource_version: state.resource_version.to_string(),
+        }
+    }
+
     fn cache_gc_plan_message(cache_id: &str, plan: &crate::db::CacheGcPlanView) -> pb::CacheGcPlan {
         pb::CacheGcPlan {
             plan_id: plan.plan_id.clone(),
@@ -30600,8 +30617,15 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("cache GC policy"))?;
+        let state = self
+            .db
+            .cache_gc_topology_state(cache.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("cache GC state"))?;
         Ok(pb::GetCacheGcPolicyResponse {
             policy: Some(Self::cache_gc_policy_message(&policy)),
+            generation: Some(Self::cache_gc_generation_message(&cache.slug, &state)),
         })
     }
 
@@ -30730,8 +30754,18 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("cache GC policy"))?;
+        let current_state = self
+            .db
+            .cache_gc_topology_state(cache.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("cache GC state"))?;
         let response = pb::GetCacheGcPolicyResponse {
             policy: Some(Self::cache_gc_policy_message(&current)),
+            generation: Some(Self::cache_gc_generation_message(
+                &cache.slug,
+                &current_state,
+            )),
         };
         self.complete_control_plan(&req.plan_id, &req.idempotency_key, &response)
             .await?;

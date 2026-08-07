@@ -78,6 +78,15 @@ impl PendingPlan {
         }
     }
 
+    /// Builds a cache policy/operation apply envelope for this exact plan.
+    pub(crate) fn cache_plan_apply(&self) -> aos_proto_types::ApplyCachePlanRequest {
+        aos_proto_types::ApplyCachePlanRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
     /// Builds a topology-resource deletion envelope for this exact plan.
     pub(crate) fn delete_apply(&self) -> aos_proto_types::ApplyDeleteTopologyResourceRequest {
         aos_proto_types::ApplyDeleteTopologyResourceRequest {

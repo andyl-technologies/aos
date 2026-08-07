@@ -211,7 +211,7 @@ pub(super) fn CacheIntegrationPreview(client: ApiClient, cache_id: String) -> im
                     >
                         <option value="none">"Do not populate"</option>
                         <option value="optional">"Best effort"</option>
-                        <option value="required">"Required before publication"</option>
+                        <option value="required">"Required coverage target"</option>
                     </select>
                 </label>
                 <label>
@@ -222,7 +222,7 @@ pub(super) fn CacheIntegrationPreview(client: ApiClient, cache_id: String) -> im
                         on:change=move |event| fields.population_trigger.set(event_target_value(&event))
                     >
                         <option value="release">"Release"</option>
-                        <option value="channel">"Channel promotion"</option>
+                        <option value="continuous">"Continuous"</option>
                         <option value="manual">"Manual"</option>
                     </select>
                 </label>
