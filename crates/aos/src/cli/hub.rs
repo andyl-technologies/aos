@@ -449,6 +449,17 @@ pub enum HubChannelCmd {
 
 #[derive(Subcommand)]
 pub enum HubPublishCmd {
+    /// List publication sessions newest first
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        registry: String,
+        /// Filter by an exact publication lifecycle state
+        #[arg(long, value_parser = ["preparing", "writing_pointers", "ready", "failed", "retired"])]
+        state: Option<String>,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
     Upload {
         #[command(flatten)]
         access: HubAccessArgs,

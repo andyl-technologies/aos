@@ -597,7 +597,10 @@ publishing operation needs both.
 - Configuration edits signed registry content and creates/reviews changes.
 - Channels operates rollout targets and partitions.
 - Change requests shows pending/reviewed/applied configuration work.
-- Publish history shows release pipeline executions and their artifacts.
+- Publish history shows every durable release pipeline execution and its
+  artifacts newest first. Operators select an incomplete exact session from
+  this inventory to resume it; they do not need to preserve a publication id
+  outside the Hub.
 
 These pages share publication context but do not combine their forms or audit
 histories into one overloaded panel.

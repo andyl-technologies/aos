@@ -599,6 +599,8 @@ enum HubTopologyMethod {
     ResolveImage,
     /// Selects placement-aware publication admission.
     BeginRegistryPublication,
+    /// Selects paginated registry publication history.
+    ListRegistryPublications,
     /// Selects publication status inspection.
     GetRegistryPublication,
     /// Selects exact publication promotion.
@@ -1121,6 +1123,7 @@ impl HubTopologyMethod {
             GetImage => "aos.hub.v1.ImageService/GetImage",
             ResolveImage => "aos.hub.v1.ImageService/ResolveImage",
             BeginRegistryPublication => "aos.hub.v1.PublishService/BeginRegistryPublication",
+            ListRegistryPublications => "aos.hub.v1.PublishService/ListRegistryPublications",
             GetRegistryPublication => "aos.hub.v1.PublishService/GetRegistryPublication",
             CommitRegistryPublication => "aos.hub.v1.PublishService/CommitRegistryPublication",
             AbortRegistryPublication => "aos.hub.v1.PublishService/AbortRegistryPublication",
@@ -1499,6 +1502,7 @@ pub mod hub_rpc {
         GetImage: GetImageRequest => GetImageResponse;
         ResolveImage: ResolveImageRequest => GetImageResponse;
         BeginRegistryPublication: BeginRegistryPublicationRequest => RegistryPublication;
+        ListRegistryPublications: ListRegistryPublicationsRequest => ListRegistryPublicationsResponse;
         GetRegistryPublication: GetRegistryPublicationRequest => RegistryPublication;
         CommitRegistryPublication: CommitRegistryPublicationRequest => RegistryPublication;
         AbortRegistryPublication: AbortRegistryPublicationRequest => RegistryPublication;
