@@ -2882,6 +2882,14 @@
   },
   {
     "service": "IdentityService",
+    "method": "WhoAmI",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
     "method": "PlanCreateAutomationPrincipal",
     "exposure": "public",
     "durability": "durable",
@@ -2922,39 +2930,39 @@
   },
   {
     "service": "IdentityService",
-    "method": "PlanIssueRegistryToken",
+    "method": "PlanIssueAccessToken",
     "exposure": "public",
     "durability": "durable",
-    "class": { "class": "plan", "pair": "issue_registry_token" },
+    "class": { "class": "plan", "pair": "issue_access_token" },
     "external_effects": false
   },
   {
     "service": "IdentityService",
-    "method": "IssueRegistryToken",
+    "method": "IssueAccessToken",
     "exposure": "public",
     "durability": "durable",
-    "class": { "class": "apply", "pair": "issue_registry_token", "outcome": "immediate" },
+    "class": { "class": "apply", "pair": "issue_access_token", "outcome": "immediate" },
     "external_effects": false
   },
   {
     "service": "IdentityService",
-    "method": "PlanRetireRegistryToken",
+    "method": "PlanRetireAccessToken",
     "exposure": "public",
     "durability": "durable",
-    "class": { "class": "plan", "pair": "retire_registry_token" },
+    "class": { "class": "plan", "pair": "retire_access_token" },
     "external_effects": false
   },
   {
     "service": "IdentityService",
-    "method": "RetireRegistryToken",
+    "method": "RetireAccessToken",
     "exposure": "public",
     "durability": "durable",
-    "class": { "class": "apply", "pair": "retire_registry_token", "outcome": "immediate" },
+    "class": { "class": "apply", "pair": "retire_access_token", "outcome": "immediate" },
     "external_effects": false
   },
   {
     "service": "IdentityService",
-    "method": "ListTokens",
+    "method": "ListAccessTokens",
     "exposure": "public",
     "durability": "read_only",
     "class": {

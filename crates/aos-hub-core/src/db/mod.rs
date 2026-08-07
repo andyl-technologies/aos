@@ -948,23 +948,31 @@ pub struct TokenAuth {
     pub permissions: Vec<crate::domain::Permission>,
 }
 
-/// Secret-free registry-token metadata exposed to authorized administrators.
+/// Secret-free access-token metadata exposed to authorized administrators.
 #[derive(Debug, Clone)]
-pub struct RegistryTokenMetadata {
+pub struct AccessTokenMetadata {
     /// Stable token-generation identity.
     pub token_id: String,
     /// Owning principal kind.
     pub owner_kind: String,
     /// Owning principal database identity.
     pub owner_id: i64,
-    /// Exact registry authorization scope.
+    /// Exact authorization scope.
     pub scope: String,
     /// Parsed capability set.
     pub permissions: Vec<crate::domain::Permission>,
+    /// Operator-facing purpose, never secret material.
+    pub comment: Option<String>,
     /// Creation timestamp.
     pub created_at: i64,
     /// Optional expiration timestamp.
     pub expires_at: Option<i64>,
+    /// Most recent successful use.
+    pub last_used_at: Option<i64>,
+    /// Rotation timestamp when superseded.
+    pub rotated_at: Option<i64>,
+    /// Retirement timestamp when explicitly revoked.
+    pub retired_at: Option<i64>,
     /// Exact lifecycle revision.
     pub resource_version: String,
 }
@@ -16344,7 +16352,7 @@ impl Database {
         Ok(())
     }
 
-    /// Returns the immutable lifecycle revision of a registry token generation.
+    /// Returns the immutable lifecycle revision of an access-token generation.
     ///
     /// The revision is `active`, `rotated`, or `retired`; `None` means the
     /// stable token id does not exist. Callers use this value as an exact
@@ -16361,7 +16369,7 @@ impl Database {
             .map(|(_, lifecycle)| lifecycle))
     }
 
-    /// Returns the exact registry scope and lifecycle revision for one token.
+    /// Returns the exact authorization scope and lifecycle revision for one token.
     ///
     /// # Errors
     ///
@@ -16427,20 +16435,20 @@ impl Database {
         Ok(out)
     }
 
-    /// Lists secret-free token metadata at one exact registry scope.
+    /// Lists secret-free token metadata at one exact authorization scope.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure or malformed stored permissions.
-    pub async fn list_registry_token_metadata(
+    pub async fn list_access_token_metadata(
         &self,
         scope: &str,
-    ) -> Result<Vec<RegistryTokenMetadata>> {
+    ) -> Result<Vec<AccessTokenMetadata>> {
         let rows = self
             .backend
             .query(
-                "SELECT id, owner_kind, owner_id, scope_key, permissions,
-                        created_at, expires_at, revoked_at, rotated_at
+                "SELECT id, owner_kind, owner_id, scope_key, permissions, comment,
+                        created_at, expires_at, last_used_at, rotated_at, revoked_at
                    FROM tokens
                   WHERE scope_key = ?1
                   ORDER BY created_at, id",
@@ -16449,8 +16457,8 @@ impl Database {
             .await?;
         rows.iter()
             .map(|row| {
-                let revoked_at: Option<i64> = row.get(7)?;
-                let rotated_at: Option<i64> = row.get(8)?;
+                let rotated_at: Option<i64> = row.get(9)?;
+                let revoked_at: Option<i64> = row.get(10)?;
                 let resource_version = if revoked_at.is_some() {
                     "retired"
                 } else if rotated_at.is_some() {
@@ -16459,14 +16467,18 @@ impl Database {
                     "active"
                 };
                 let permissions_json: String = row.get(4)?;
-                Ok(RegistryTokenMetadata {
+                Ok(AccessTokenMetadata {
                     token_id: row.get(0)?,
                     owner_kind: row.get(1)?,
                     owner_id: row.get(2)?,
                     scope: row.get(3)?,
                     permissions: parse_permission_names(&permissions_json),
-                    created_at: row.get(5)?,
-                    expires_at: row.get(6)?,
+                    comment: row.get(5)?,
+                    created_at: row.get(6)?,
+                    expires_at: row.get(7)?,
+                    last_used_at: row.get(8)?,
+                    rotated_at,
+                    retired_at: revoked_at,
                     resource_version: resource_version.to_string(),
                 })
             })

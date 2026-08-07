@@ -384,24 +384,24 @@ pub trait TopologyConsole: BackendBounds {
         idempotency_key: String,
     ) -> Result<aos_proto_types::GetInstanceSettingsResponse, crate::service::RpcError>;
 
-    /// Plans issuance of one registry-scoped token generation.
-    async fn plan_registry_token_issue(
+    /// Plans issuance of one scoped access-token generation.
+    async fn plan_access_token_issue(
         &self,
         bearer: &str,
-        request: aos_proto_types::PlanIssueRegistryTokenRequest,
+        request: aos_proto_types::PlanIssueAccessTokenRequest,
     ) -> Result<ReviewedPlan, crate::service::RpcError>;
 
-    /// Applies one reviewed registry-token issuance plan.
-    async fn apply_registry_token_issue(
+    /// Applies one reviewed access-token issuance plan.
+    async fn apply_access_token_issue(
         &self,
         bearer: &str,
         plan_id: String,
         confirmation_hash: String,
         idempotency_key: String,
-    ) -> Result<aos_proto_types::RegistryTokenResponse, crate::service::RpcError>;
+    ) -> Result<aos_proto_types::AccessTokenResponse, crate::service::RpcError>;
 
-    /// Plans retirement of one exact active registry-token generation.
-    async fn plan_registry_token_retirement(
+    /// Plans retirement of one exact active access-token generation.
+    async fn plan_access_token_retirement(
         &self,
         bearer: &str,
         token_id: String,
@@ -409,8 +409,8 @@ pub trait TopologyConsole: BackendBounds {
         idempotency_key: String,
     ) -> Result<ReviewedPlan, crate::service::RpcError>;
 
-    /// Applies one reviewed registry-token retirement plan.
-    async fn apply_registry_token_retirement(
+    /// Applies one reviewed access-token retirement plan.
+    async fn apply_access_token_retirement(
         &self,
         bearer: &str,
         plan_id: String,
@@ -925,26 +925,25 @@ impl TopologyConsole for crate::service::RpcService {
         .await
     }
 
-    async fn plan_registry_token_issue(
+    async fn plan_access_token_issue(
         &self,
         bearer: &str,
-        request: aos_proto_types::PlanIssueRegistryTokenRequest,
+        request: aos_proto_types::PlanIssueAccessTokenRequest,
     ) -> Result<ReviewedPlan, crate::service::RpcError> {
         reviewed_plan(
-            self.plan_issue_registry_token(Some(bearer), request)
-                .await?,
-            "registry token issuance",
+            self.plan_issue_access_token(Some(bearer), request).await?,
+            "access token issuance",
         )
     }
 
-    async fn apply_registry_token_issue(
+    async fn apply_access_token_issue(
         &self,
         bearer: &str,
         plan_id: String,
         confirmation_hash: String,
         idempotency_key: String,
-    ) -> Result<aos_proto_types::RegistryTokenResponse, crate::service::RpcError> {
-        self.apply_issue_registry_token(
+    ) -> Result<aos_proto_types::AccessTokenResponse, crate::service::RpcError> {
+        self.apply_issue_access_token(
             Some(bearer),
             aos_proto_types::ApplyTopologyPlanRequest {
                 plan_id,
@@ -955,7 +954,7 @@ impl TopologyConsole for crate::service::RpcService {
         .await
     }
 
-    async fn plan_registry_token_retirement(
+    async fn plan_access_token_retirement(
         &self,
         bearer: &str,
         token_id: String,
@@ -963,27 +962,27 @@ impl TopologyConsole for crate::service::RpcService {
         idempotency_key: String,
     ) -> Result<ReviewedPlan, crate::service::RpcError> {
         reviewed_plan(
-            self.plan_retire_registry_token(
+            self.plan_retire_access_token(
                 Some(bearer),
-                aos_proto_types::PlanRetireRegistryTokenRequest {
+                aos_proto_types::PlanRetireAccessTokenRequest {
                     token_id,
                     expected_resource_version,
                     idempotency_key,
                 },
             )
             .await?,
-            "registry token retirement",
+            "access token retirement",
         )
     }
 
-    async fn apply_registry_token_retirement(
+    async fn apply_access_token_retirement(
         &self,
         bearer: &str,
         plan_id: String,
         confirmation_hash: String,
         idempotency_key: String,
     ) -> Result<(), crate::service::RpcError> {
-        self.apply_retire_registry_token(
+        self.apply_retire_access_token(
             Some(bearer),
             aos_proto_types::ApplyTopologyPlanRequest {
                 plan_id,

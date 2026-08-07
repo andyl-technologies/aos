@@ -72,7 +72,7 @@ left as undocumented Web-only operations:
 | Webhooks | `org webhook` | `WebhookService` list plus plan/apply create/delete methods |
 | Audit | `audit` | `AuditService` |
 | Registry CRUD and identity/access | `registry`, `registry identity` | `RegistryService` get/list plus plan/apply create/update/delete methods |
-| Registry tokens | `registry token` | `IdentityService` list plus plan/apply issue/retire methods; rotation is explicit issue-then-retire |
+| Scoped access tokens | `access-token` | `IdentityService` list plus plan/apply issue/retire methods; rotation is explicit issue-then-retire |
 | Upstream registry mirror | `registry mirror` | `RegistryMirrorService` |
 | Signed configuration | `registry configuration` | `RegistryConfigurationService` |
 | Change requests | `registry change-request` | `ChangeRequestService` comment/review/close/reopen/apply methods |

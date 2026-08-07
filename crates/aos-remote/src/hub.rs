@@ -626,12 +626,12 @@ enum HubTopologyMethod {
     GetMembership,
     PlanSetMembership,
     SetMembership,
-    PlanIssueRegistryToken,
-    IssueRegistryToken,
-    PlanRetireRegistryToken,
-    RetireRegistryToken,
-    /// Selects the normalized `ListTokens` Connect operation.
-    ListTokens,
+    PlanIssueAccessToken,
+    IssueAccessToken,
+    PlanRetireAccessToken,
+    RetireAccessToken,
+    /// Selects the normalized `ListAccessTokens` Connect operation.
+    ListAccessTokens,
 }
 
 impl HubTopologyMethod {
@@ -1098,11 +1098,11 @@ impl HubTopologyMethod {
             GetMembership => "aos.hub.v1.IdentityService/GetMembership",
             PlanSetMembership => "aos.hub.v1.IdentityService/PlanSetMembership",
             SetMembership => "aos.hub.v1.IdentityService/SetMembership",
-            PlanIssueRegistryToken => "aos.hub.v1.IdentityService/PlanIssueRegistryToken",
-            IssueRegistryToken => "aos.hub.v1.IdentityService/IssueRegistryToken",
-            PlanRetireRegistryToken => "aos.hub.v1.IdentityService/PlanRetireRegistryToken",
-            RetireRegistryToken => "aos.hub.v1.IdentityService/RetireRegistryToken",
-            ListTokens => "aos.hub.v1.IdentityService/ListTokens",
+            PlanIssueAccessToken => "aos.hub.v1.IdentityService/PlanIssueAccessToken",
+            IssueAccessToken => "aos.hub.v1.IdentityService/IssueAccessToken",
+            PlanRetireAccessToken => "aos.hub.v1.IdentityService/PlanRetireAccessToken",
+            RetireAccessToken => "aos.hub.v1.IdentityService/RetireAccessToken",
+            ListAccessTokens => "aos.hub.v1.IdentityService/ListAccessTokens",
         }
     }
 }
@@ -1458,11 +1458,11 @@ pub mod hub_rpc {
         GetMembership: GetMembershipRequest => MembershipResponse;
         PlanSetMembership: PlanSetMembershipRequest => TopologyPlanResponse;
         SetMembership: ApplyTopologyPlanRequest => MembershipResponse;
-        PlanIssueRegistryToken: PlanIssueRegistryTokenRequest => TopologyPlanResponse;
-        IssueRegistryToken: ApplyTopologyPlanRequest => RegistryTokenResponse;
-        PlanRetireRegistryToken: PlanRetireRegistryTokenRequest => TopologyPlanResponse;
-        RetireRegistryToken: ApplyTopologyPlanRequest => RegistryTokenRetirementResponse;
-        ListTokens: ListTokensRequest => ListTokensResponse;
+        PlanIssueAccessToken: PlanIssueAccessTokenRequest => TopologyPlanResponse;
+        IssueAccessToken: ApplyTopologyPlanRequest => AccessTokenResponse;
+        PlanRetireAccessToken: PlanRetireAccessTokenRequest => TopologyPlanResponse;
+        RetireAccessToken: ApplyTopologyPlanRequest => AccessTokenRetirementResponse;
+        ListAccessTokens: ListAccessTokensRequest => ListAccessTokensResponse;
     }
 }
 

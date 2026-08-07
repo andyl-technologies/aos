@@ -26,6 +26,14 @@
       ]
     },
     {
+      "id": "api.registry-token-resource",
+      "category": "api",
+      "symbol": "RegistryToken",
+      "targets": [
+        "crates/aos-proto/src/proto/aos/hub/v1/hub.proto"
+      ]
+    },
+    {
       "id": "api.revert-changeset",
       "category": "api",
       "symbol": "RevertChangeset",
@@ -71,6 +79,16 @@
       "symbol": "HubIdentityCmd",
       "targets": [
         "crates/aos/src/cli/hub.rs",
+        "crates/aos/src/commands/hub.rs"
+      ]
+    },
+    {
+      "id": "cli.registry-token-command",
+      "category": "cli",
+      "symbol": "HubRegistryToken",
+      "targets": [
+        "crates/aos/src/cli/hub.rs",
+        "crates/aos/src/cli/hub_retained_control.rs",
         "crates/aos/src/commands/hub.rs"
       ]
     },

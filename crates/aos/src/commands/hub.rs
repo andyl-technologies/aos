@@ -17,24 +17,23 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{
-    HubAccessPolicyArgs, HubAuditCmd, HubCacheCmd, HubCacheCoverageCmd, HubCacheGcCmd,
-    HubCacheGcFirstSweepCmd, HubCacheGcJobsCmd, HubCacheGcPlanCmd, HubCacheGcPolicyCmd,
-    HubCacheGcRunsCmd, HubCacheIntegrationCmd, HubCacheLeaseCmd, HubCachePopulationCmd,
-    HubCacheRetentionCmd, HubCacheRootCmd, HubChannelCmd, HubCmd, HubConfigCmd,
-    HubDomainCertificateCmd, HubDomainCmd, HubDomainDnsCmd, HubEndpointCmd, HubGatewayCmd,
-    HubInstanceCmd, HubInstanceSettingsMutationCmd, HubInstanceSettingsSectionCmd,
-    HubInstanceTopologyDefaultsCmd, HubMembershipRemoveCmd, HubMembershipSetRoleCmd,
-    HubMutationArgs, HubNetworkBoundaryCmd, HubNetworkBoundaryRevisionCmd, HubOperationArgs,
-    HubOperationCmd, HubOrgCmd, HubOrgMemberCmd, HubOrgTopologyDefaultsCmd, HubPackageCmd,
-    HubPlacementCmd, HubPlacementDrainCmd, HubPlacementEquivalenceCmd, HubPlacementEvictionCmd,
-    HubPlacementPolicyCmd, HubPlacementPromotionCmd, HubProjectCmd, HubPublishCmd,
-    HubRegistryCacheStackCmd, HubRegistryCmd, HubRegistryMirrorCmd, HubRegistryTokenCmd,
-    HubRegistryTokenIssueCmd, HubRegistryTokenRetireCmd, HubReviewedApplyArgs, HubRouteCmd,
-    HubRouteSpecArgs, HubServiceAccountCmd, HubServiceAccountCreateCmd, HubSigningKeyCmd,
-    HubSigningKeyEnrollCmd, HubSigningKeyRetireCmd, HubSigningKeyRotateCmd,
-    HubSigningKeySetUsageCmd, HubStorageBindingCmd, HubStorageBindingCredentialCmd,
-    HubStorageBindingWriteRevisionCmd, HubSurfaceCmd, HubTopologyCmd, HubTopologyCutoverCmd,
-    HubWebhookCmd,
+    HubAccessPolicyArgs, HubAccessTokenCmd, HubAccessTokenIssueCmd, HubAccessTokenRetireCmd,
+    HubAuditCmd, HubCacheCmd, HubCacheCoverageCmd, HubCacheGcCmd, HubCacheGcFirstSweepCmd,
+    HubCacheGcJobsCmd, HubCacheGcPlanCmd, HubCacheGcPolicyCmd, HubCacheGcRunsCmd,
+    HubCacheIntegrationCmd, HubCacheLeaseCmd, HubCachePopulationCmd, HubCacheRetentionCmd,
+    HubCacheRootCmd, HubChannelCmd, HubCmd, HubConfigCmd, HubDomainCertificateCmd, HubDomainCmd,
+    HubDomainDnsCmd, HubEndpointCmd, HubGatewayCmd, HubInstanceCmd, HubInstanceSettingsMutationCmd,
+    HubInstanceSettingsSectionCmd, HubInstanceTopologyDefaultsCmd, HubMembershipRemoveCmd,
+    HubMembershipSetRoleCmd, HubMutationArgs, HubNetworkBoundaryCmd, HubNetworkBoundaryRevisionCmd,
+    HubOperationArgs, HubOperationCmd, HubOrgCmd, HubOrgMemberCmd, HubOrgTopologyDefaultsCmd,
+    HubPackageCmd, HubPlacementCmd, HubPlacementDrainCmd, HubPlacementEquivalenceCmd,
+    HubPlacementEvictionCmd, HubPlacementPolicyCmd, HubPlacementPromotionCmd, HubProjectCmd,
+    HubPublishCmd, HubRegistryCacheStackCmd, HubRegistryCmd, HubRegistryMirrorCmd,
+    HubReviewedApplyArgs, HubRouteCmd, HubRouteSpecArgs, HubServiceAccountCmd,
+    HubServiceAccountCreateCmd, HubSigningKeyCmd, HubSigningKeyEnrollCmd, HubSigningKeyRetireCmd,
+    HubSigningKeyRotateCmd, HubSigningKeySetUsageCmd, HubStorageBindingCmd,
+    HubStorageBindingCredentialCmd, HubStorageBindingWriteRevisionCmd, HubSurfaceCmd,
+    HubTopologyCmd, HubTopologyCutoverCmd, HubWebhookCmd,
 };
 
 const PIN_RESOLUTION_DOCUMENT_SCHEMA: &str = "aos.hub.pin-resolutions.v1";
@@ -482,6 +481,7 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
             )
             .await
         }
+        HubCmd::AccessToken { command } => access_token(printer, command).await,
         HubCmd::Topology { command } => match command {
             HubTopologyCmd::Cutover { command } => match command {
                 HubTopologyCutoverCmd::MaterializeVerifier(args) => {
@@ -7822,7 +7822,6 @@ async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Result<()> {
         HubRegistryCmd::Mirror { command } => registry_mirror(printer, command).await,
         HubRegistryCmd::Package { command } => package(printer, command).await,
         HubRegistryCmd::Channel { command } => channel(printer, command).await,
-        HubRegistryCmd::Token { command } => registry_token(printer, command).await,
         HubRegistryCmd::Publish { command } => publish(printer, command).await,
         HubRegistryCmd::Configuration { command } => config(printer, command).await,
     }
@@ -8818,33 +8817,34 @@ async fn apply_membership(printer: &Printer, apply: &HubReviewedApplyArgs) -> Re
     .await
 }
 
-async fn registry_token(printer: &Printer, command: &HubRegistryTokenCmd) -> Result<()> {
+async fn access_token(printer: &Printer, command: &HubAccessTokenCmd) -> Result<()> {
     match command {
-        HubRegistryTokenCmd::List {
+        HubAccessTokenCmd::List {
             access,
-            registry,
+            scope,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::ListTokensResponse>(
+            topology_read::<_, hub_types::ListAccessTokensResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::ListTokens,
-                &hub_types::ListTokensRequest {
-                    scope: registry.clone(),
+                HubTopologyMethod::ListAccessTokens,
+                &hub_types::ListAccessTokensRequest {
+                    scope: scope.clone(),
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
             )
             .await
         }
-        HubRegistryTokenCmd::Issue { command } => match command {
-            HubRegistryTokenIssueCmd::Plan {
+        HubAccessTokenCmd::Issue { command } => match command {
+            HubAccessTokenIssueCmd::Plan {
                 request,
-                registry,
+                scope,
                 owner,
                 permissions,
                 ttl_secs,
+                comment,
                 if_version,
             } => {
                 let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
@@ -8853,32 +8853,31 @@ async fn registry_token(printer: &Printer, command: &HubRegistryTokenCmd) -> Res
                 topology_mutation::<
                     _,
                     hub_types::ApplyTopologyPlanRequest,
-                    hub_types::RegistryTokenResponse,
+                    hub_types::AccessTokenResponse,
                     _,
                 >(
                     printer,
                     &client,
-                    HubTopologyMethod::PlanIssueRegistryToken,
-                    HubTopologyMethod::IssueRegistryToken,
-                    &hub_types::PlanIssueRegistryTokenRequest {
+                    HubTopologyMethod::PlanIssueAccessToken,
+                    HubTopologyMethod::IssueAccessToken,
+                    &hub_types::PlanIssueAccessTokenRequest {
                         owner: owner.clone(),
-                        scope: registry.clone(),
+                        scope: scope.clone(),
                         permissions: permissions.clone(),
                         ttl_secs: ttl_secs.unwrap_or_default(),
                         expected_resource_version: if_version.clone().unwrap_or_default(),
                         idempotency_key: request.idempotency_key.clone(),
+                        comment: comment.clone().unwrap_or_default(),
                     },
                     &mutation,
                     apply_topology_plan,
                 )
                 .await
             }
-            HubRegistryTokenIssueCmd::Apply(apply) => {
-                apply_registry_token_issue(printer, apply).await
-            }
+            HubAccessTokenIssueCmd::Apply(apply) => apply_access_token_issue(printer, apply).await,
         },
-        HubRegistryTokenCmd::Retire { command } => match command {
-            HubRegistryTokenRetireCmd::Plan {
+        HubAccessTokenCmd::Retire { command } => match command {
+            HubAccessTokenRetireCmd::Plan {
                 request,
                 token_id,
                 if_version,
@@ -8889,14 +8888,14 @@ async fn registry_token(printer: &Printer, command: &HubRegistryTokenCmd) -> Res
                 topology_mutation::<
                     _,
                     hub_types::ApplyTopologyPlanRequest,
-                    hub_types::RegistryTokenRetirementResponse,
+                    hub_types::AccessTokenRetirementResponse,
                     _,
                 >(
                     printer,
                     &client,
-                    HubTopologyMethod::PlanRetireRegistryToken,
-                    HubTopologyMethod::RetireRegistryToken,
-                    &hub_types::PlanRetireRegistryTokenRequest {
+                    HubTopologyMethod::PlanRetireAccessToken,
+                    HubTopologyMethod::RetireAccessToken,
+                    &hub_types::PlanRetireAccessTokenRequest {
                         token_id: token_id.clone(),
                         expected_resource_version: if_version.clone(),
                         idempotency_key: request.idempotency_key.clone(),
@@ -8906,29 +8905,29 @@ async fn registry_token(printer: &Printer, command: &HubRegistryTokenCmd) -> Res
                 )
                 .await
             }
-            HubRegistryTokenRetireCmd::Apply(apply) => {
-                apply_registry_token_retirement(printer, apply).await
+            HubAccessTokenRetireCmd::Apply(apply) => {
+                apply_access_token_retirement(printer, apply).await
             }
         },
     }
 }
 
-async fn apply_registry_token_issue(printer: &Printer, apply: &HubReviewedApplyArgs) -> Result<()> {
+async fn apply_access_token_issue(printer: &Printer, apply: &HubReviewedApplyArgs) -> Result<()> {
     let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
     let mutation = retained_apply_mutation(apply);
-    topology_mutation::<_, hub_types::ApplyTopologyPlanRequest, hub_types::RegistryTokenResponse, _>(
+    topology_mutation::<_, hub_types::ApplyTopologyPlanRequest, hub_types::AccessTokenResponse, _>(
         printer,
         &client,
-        HubTopologyMethod::PlanIssueRegistryToken,
-        HubTopologyMethod::IssueRegistryToken,
-        &hub_types::PlanIssueRegistryTokenRequest::default(),
+        HubTopologyMethod::PlanIssueAccessToken,
+        HubTopologyMethod::IssueAccessToken,
+        &hub_types::PlanIssueAccessTokenRequest::default(),
         &mutation,
         apply_topology_plan,
     )
     .await
 }
 
-async fn apply_registry_token_retirement(
+async fn apply_access_token_retirement(
     printer: &Printer,
     apply: &HubReviewedApplyArgs,
 ) -> Result<()> {
@@ -8937,14 +8936,14 @@ async fn apply_registry_token_retirement(
     topology_mutation::<
         _,
         hub_types::ApplyTopologyPlanRequest,
-        hub_types::RegistryTokenRetirementResponse,
+        hub_types::AccessTokenRetirementResponse,
         _,
     >(
         printer,
         &client,
-        HubTopologyMethod::PlanRetireRegistryToken,
-        HubTopologyMethod::RetireRegistryToken,
-        &hub_types::PlanRetireRegistryTokenRequest::default(),
+        HubTopologyMethod::PlanRetireAccessToken,
+        HubTopologyMethod::RetireAccessToken,
+        &hub_types::PlanRetireAccessTokenRequest::default(),
         &mutation,
         apply_topology_plan,
     )

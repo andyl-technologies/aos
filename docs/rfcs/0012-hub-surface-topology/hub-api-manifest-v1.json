@@ -2192,38 +2192,38 @@
          "service" : "IdentityService"
       },
       {
-         "method" : "PlanIssueRegistryToken",
-         "path" : "aos.hub.v1.IdentityService/PlanIssueRegistryToken",
-         "request" : "PlanIssueRegistryTokenRequest",
+         "method" : "PlanIssueAccessToken",
+         "path" : "aos.hub.v1.IdentityService/PlanIssueAccessToken",
+         "request" : "PlanIssueAccessTokenRequest",
          "response" : "TopologyPlanResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "IssueRegistryToken",
-         "path" : "aos.hub.v1.IdentityService/IssueRegistryToken",
+         "method" : "IssueAccessToken",
+         "path" : "aos.hub.v1.IdentityService/IssueAccessToken",
          "request" : "ApplyTopologyPlanRequest",
-         "response" : "RegistryTokenResponse",
+         "response" : "AccessTokenResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "PlanRetireRegistryToken",
-         "path" : "aos.hub.v1.IdentityService/PlanRetireRegistryToken",
-         "request" : "PlanRetireRegistryTokenRequest",
+         "method" : "PlanRetireAccessToken",
+         "path" : "aos.hub.v1.IdentityService/PlanRetireAccessToken",
+         "request" : "PlanRetireAccessTokenRequest",
          "response" : "TopologyPlanResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "RetireRegistryToken",
-         "path" : "aos.hub.v1.IdentityService/RetireRegistryToken",
+         "method" : "RetireAccessToken",
+         "path" : "aos.hub.v1.IdentityService/RetireAccessToken",
          "request" : "ApplyTopologyPlanRequest",
-         "response" : "RegistryTokenRetirementResponse",
+         "response" : "AccessTokenRetirementResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "ListTokens",
-         "path" : "aos.hub.v1.IdentityService/ListTokens",
-         "request" : "ListTokensRequest",
-         "response" : "ListTokensResponse",
+         "method" : "ListAccessTokens",
+         "path" : "aos.hub.v1.IdentityService/ListAccessTokens",
+         "request" : "ListAccessTokensRequest",
+         "response" : "ListAccessTokensResponse",
          "service" : "IdentityService"
       }
    ],

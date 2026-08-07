@@ -3852,7 +3852,7 @@ pub fn registry_settings_page(
     registry_settings_chrome(email, slug, active, &body, navigation_permissions, started)
 }
 
-/// The per-registry token management page.
+/// The per-registry view of scoped access-token management.
 ///
 /// `tokens` is the caller's own tokens at this registry scope; `can_create`
 /// gates the create form (developer+); `result` is `Some((label, secret))`
