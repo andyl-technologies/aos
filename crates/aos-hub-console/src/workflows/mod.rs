@@ -7,6 +7,7 @@ mod cache_gc_safety;
 mod cache_integration_preview;
 mod cache_integrations;
 mod cache_manual_roots;
+mod cache_objects;
 mod cache_population;
 mod cache_retention;
 mod cache_retention_refresh;
