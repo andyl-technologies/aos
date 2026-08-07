@@ -81,6 +81,7 @@ fn PopulationTargetCard(
     cache_id: String,
     target: aos_proto_types::PopulationTarget,
 ) -> impl IntoView {
+    let edit_target = target.clone();
     let registry_id = target.registry_id.clone();
     let coverage_client = client.clone();
     let coverage_cache = cache_id.clone();
@@ -139,8 +140,12 @@ fn PopulationTargetCard(
                 <PopulationAction client=client.clone() cache_id=cache_id.clone() registry_id=registry_id.clone() version=version.clone() action=PopulationActionKind::Run/>
                 <PopulationAction client=client.clone() cache_id=cache_id.clone() registry_id=registry_id.clone() version=version.clone() action=PopulationActionKind::Validate/>
                 <PopulationAction client=client.clone() cache_id=cache_id.clone() registry_id=registry_id.clone() version=version.clone() action=PopulationActionKind::Repair/>
-                <PopulationAction client=client cache_id=cache_id registry_id=registry_id version=version action=PopulationActionKind::Delete/>
+                <PopulationAction client=client.clone() cache_id=cache_id.clone() registry_id=registry_id.clone() version=version.clone() action=PopulationActionKind::Delete/>
             </div>
+            <details>
+                <summary>"Edit this population target"</summary>
+                <PopulationEditor client=client cache_id=cache_id initial=edit_target/>
+            </details>
         </article>
     }
 }
@@ -283,13 +288,37 @@ fn PopulationAction(
 }
 
 #[component]
-fn PopulationEditor(client: ApiClient, cache_id: String) -> impl IntoView {
-    let registry_id = RwSignal::new(String::new());
-    let trigger = RwSignal::new("release".to_string());
-    let required = RwSignal::new(false);
-    let placement_policy = RwSignal::new(String::new());
-    let validation_gate = RwSignal::new("integrity".to_string());
-    let expected_version = RwSignal::new(String::new());
+fn PopulationEditor(
+    client: ApiClient,
+    cache_id: String,
+    #[prop(optional)] initial: Option<aos_proto_types::PopulationTarget>,
+) -> impl IntoView {
+    let editing = initial.is_some();
+    let desired = initial
+        .as_ref()
+        .and_then(|target| target.desired.clone())
+        .unwrap_or_else(|| aos_proto_types::PopulationTargetSpec {
+            trigger: "release".to_string(),
+            required: false,
+            placement_policy_revision_id: String::new(),
+            validation_gate: "integrity".to_string(),
+        });
+    let registry_id = RwSignal::new(
+        initial
+            .as_ref()
+            .map(|target| target.registry_id.clone())
+            .unwrap_or_default(),
+    );
+    let trigger = RwSignal::new(desired.trigger);
+    let required = RwSignal::new(desired.required);
+    let placement_policy = RwSignal::new(desired.placement_policy_revision_id);
+    let validation_gate = RwSignal::new(desired.validation_gate);
+    let expected_version = RwSignal::new(
+        initial
+            .as_ref()
+            .map(|target| target.resource_version.clone())
+            .unwrap_or_default(),
+    );
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -356,7 +385,7 @@ fn PopulationEditor(client: ApiClient, cache_id: String) -> impl IntoView {
     });
     view! {
         <section class="subworkflow">
-            <h4>"Set population target"</h4>
+            <h4>{if editing { "Edit population target" } else { "Create population target" }}</h4>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Registry stable ID"</span><input required prop:value=move || registry_id.get() on:input=move |event| registry_id.set(event_target_value(&event))/></label>
                 <label><span>"Expected version (empty when creating)"</span><input prop:value=move || expected_version.get() on:input=move |event| expected_version.set(event_target_value(&event))/></label>
