@@ -80,6 +80,19 @@ struct BlockIoServicing {
 /// resulting evidence. The host-I/O runtime supplies only the guest coordinate;
 /// it never invents a fault-free fallback when a coordinator is installed.
 pub trait QemuBlockFaultCoordinator: Send {
+    /// Applies storage-targeted actions at one exact scheduler boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when a matching boundary action
+    /// cannot be resolved, mutated, or recorded atomically.
+    fn apply_boundary_actions(
+        &mut self,
+        servicer: &mut QemuLiveBlockIoServicer,
+        coordinate: crucible::model::FaultCoordinate,
+        actions: &[crucible::model::ResolvedBindingAction],
+    ) -> Result<(), QemuAsyncDriverRuntimeError>;
+
     /// Services one poll of `servicer` at the observed guest coordinate.
     ///
     /// # Errors
@@ -348,6 +361,23 @@ impl QemuLiveHostIoRuntime {
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn apply_block_boundary_actions(
+        &mut self,
+        coordinate: crucible::model::FaultCoordinate,
+        actions: &[crucible::model::ResolvedBindingAction],
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let Some(block) = self.block.as_mut() else {
+            return Ok(());
+        };
+        let Some(coordinator) = block.coordinator.as_mut() else {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "apply block boundary actions",
+                "live block servicer has no signal coordinator",
+            ));
+        };
+        coordinator.apply_boundary_actions(&mut block.servicer, coordinate, actions)
+    }
+
     fn install_block_fault_coordinator(
         &mut self,
         coordinator: Box<dyn QemuBlockFaultCoordinator>,

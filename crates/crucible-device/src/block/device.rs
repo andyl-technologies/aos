@@ -34,10 +34,11 @@ use crate::subnode::{IoCore, IoSubNode, ShmemDeliveryResult, ShmemInboxProcess};
 
 use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, RESPONSE_HEADER_LEN};
 use super::fault::{
-    BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
+    BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
-    BlockRetainedRelease, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
-    ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
+    BlockRetainedRelease, ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective,
+    ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
+    ResolvedBlockRequestPersistenceDirective,
 };
 use super::overlay::{BaseImage, CowOverlay};
 use super::service::BlockServiceCompletion;
@@ -390,6 +391,28 @@ impl BlockDevice {
             .install_request_persistence_directive(directive)
     }
 
+    /// Returns the next computed completion ready for deliver-phase evaluation.
+    #[must_use]
+    pub fn next_storage_delivery_opportunity(
+        &self,
+        now_nanos: u64,
+    ) -> Option<BlockDeliveryOpportunity> {
+        self.storage_faults.next_delivery_opportunity(now_nanos)
+    }
+
+    /// Installs one exact deliver-phase decision for a computed completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the decision is stale, repeated, malformed,
+    /// or changes an earlier phase.
+    pub fn install_storage_delivery_directive(
+        &mut self,
+        directive: ResolvedBlockDeliveryDirective,
+    ) -> Result<(), DeviceError> {
+        self.storage_faults.install_delivery_directive(directive)
+    }
+
     /// Returns the next physical persistence opportunity ready at `now_nanos`.
     #[must_use]
     pub fn next_storage_persistence_opportunity(
@@ -444,12 +467,17 @@ impl BlockDevice {
             .storage_faults
             .next_request_persistence_deadline_nanos()
             .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
+        let delivery = self
+            .storage_faults
+            .next_delivery_deadline_nanos()
+            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
         self.core
             .next_exact_local_event()
             .into_iter()
             .chain(service)
             .chain(execution)
             .chain(request_persistence)
+            .chain(delivery)
             .chain(persistence)
             .min()
     }
@@ -700,6 +728,7 @@ impl BlockDevice {
             &mut next_overlay,
             now_nanos,
         )?);
+        released.extend(next_faults.resume_delivery_to(now_nanos)?);
         for released in released {
             let latency_nanos = self
                 .latency
@@ -743,6 +772,7 @@ impl BlockDevice {
             &mut next_overlay,
             now_nanos,
         )?);
+        released.extend(next_faults.resume_delivery_to(now_nanos)?);
         for released in released {
             let base_completion_nanos = released
                 .finished_nanos
@@ -801,6 +831,7 @@ impl BlockDevice {
             &mut next_overlay,
             now_nanos,
         )?);
+        released.extend(next_faults.resume_delivery_to(now_nanos)?);
         for released in released {
             let latency_nanos = self
                 .latency
@@ -836,6 +867,14 @@ impl BlockDevice {
         if let Some(ready_nanos) = self
             .storage_faults
             .next_request_persistence_deadline_nanos()
+            && ready_nanos < requested_nanos
+        {
+            return Err(DeviceError::UnresolvedBlockFaultOpportunity {
+                ready_nanos,
+                requested_nanos,
+            });
+        }
+        if let Some(ready_nanos) = self.storage_faults.next_delivery_deadline_nanos()
             && ready_nanos < requested_nanos
         {
             return Err(DeviceError::UnresolvedBlockFaultOpportunity {

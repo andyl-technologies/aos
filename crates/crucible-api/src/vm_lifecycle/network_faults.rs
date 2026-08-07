@@ -1347,19 +1347,17 @@ pub(super) struct ProductionFaultEvaluationCursor {
 
 impl ProductionFaultEvaluationCursor {
     pub(super) fn next_sequence(&mut self, coordinate: u64) -> Result<u64, SchedulerError> {
-        if self.coordinate == Some(coordinate) {
+        if self.coordinate.is_some() {
             self.coordinate_sequence =
                 self.coordinate_sequence.checked_add(1).ok_or_else(|| {
                     SchedulerError::BoundaryViolation {
                         message: String::from(
-                            "signal fault same-coordinate sequence space is exhausted",
+                            "signal fault evaluation sequence space is exhausted",
                         ),
                     }
                 })?;
-        } else {
-            self.coordinate = Some(coordinate);
-            self.coordinate_sequence = 0;
         }
+        self.coordinate = Some(coordinate);
         Ok(self.coordinate_sequence)
     }
 }
@@ -1378,6 +1376,20 @@ pub(super) struct ProductionFaultNetworkInterceptor {
 }
 
 impl ProductionFaultNetworkInterceptor {
+    #[cfg(test)]
+    fn new(
+        runtime: ProductionFaultRuntime,
+        topology: crucible::model::WorldFaultTopology,
+        links: Vec<crucible::LinkDef>,
+    ) -> Self {
+        Self::with_shared_runtime(
+            Arc::new(Mutex::new(runtime)),
+            Arc::new(Mutex::new(ProductionFaultEvaluationCursor::default())),
+            topology,
+            links,
+        )
+    }
+
     /// Creates an interceptor sharing one continuation with device coordinators.
     pub(super) fn with_shared_runtime(
         runtime: Arc<Mutex<ProductionFaultRuntime>>,
@@ -1475,12 +1487,19 @@ impl ProductionFaultNetworkInterceptor {
         pending_outputs: &[crucible::BackendNetworkOutput],
         backend: &mut ProductionNodeSet,
     ) -> Result<ProductionFaultRuntimeCheckpoint, SchedulerError> {
-        let cursor = *self
+        let cursor_guard = self
             .cursor
             .lock()
             .map_err(|_| SchedulerError::BoundaryViolation {
                 message: String::from("production fault evaluation cursor lock is poisoned"),
             })?;
+        let runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production fault runtime lock is poisoned"),
+            })?;
+        let cursor = *cursor_guard;
         let effect_state = checkpoint_network_effect_state(
             &self.effect_state,
             pending_outputs,
@@ -1508,11 +1527,7 @@ impl ProductionFaultNetworkInterceptor {
             pending_outputs.to_vec(),
             adapter_state,
         );
-        self.runtime
-            .lock()
-            .map_err(|_| SchedulerError::BoundaryViolation {
-                message: String::from("production fault runtime lock is poisoned"),
-            })?
+        runtime
             .checkpoint_with_network_state(backend, network_checkpoint)
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: format!("capture production fault continuation: {error}"),
@@ -1569,22 +1584,45 @@ impl ProductionFaultNetworkInterceptor {
                     message: String::from("network boundary produced a non-boundary impulse"),
                 });
             }
-            let boundary_actions = evaluation
+            let network_actions = evaluation
                 .actions
+                .iter()
+                .filter(|action| {
+                    matches!(
+                        action.effect.specification(),
+                        EffectSpecification::Network(_)
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut network_boundary_actions = network_actions
                 .iter()
                 .filter(|action| action.phase == FaultPhase::Boundary)
                 .cloned()
-                .chain(impulses)
                 .collect::<Vec<_>>();
+            let mut storage_boundary_actions = Vec::new();
+            for action in impulses {
+                match action.effect.specification() {
+                    EffectSpecification::Network(_) => network_boundary_actions.push(action),
+                    EffectSpecification::Storage(_) => storage_boundary_actions.push(action),
+                    EffectSpecification::Node(_) => {
+                        return Err(SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "node action escaped the QEMU boundary adapter as a host impulse",
+                            ),
+                        });
+                    }
+                }
+            }
             let _custody_release_due = route::apply_network_custody_removals(
                 &mut staged_effect_state,
                 &mut staged_pending,
-                &evaluation.actions,
+                &network_actions,
                 coordinate.virtual_nanos,
             )?;
             let mut boundary_application = staged_effect_state.boundary.apply_actions(
                 coordinate,
-                boundary_actions,
+                network_boundary_actions,
                 &self.topology,
             )?;
             let mut ready_control_events =
@@ -1807,7 +1845,7 @@ impl ProductionFaultNetworkInterceptor {
             }
             let (observations, records) = self.stage_availability_transition_drops(
                 coordinate,
-                &evaluation.actions,
+                &network_actions,
                 &host_before,
                 &mut staged_scheduler,
                 &mut staged_pending,
@@ -1817,7 +1855,7 @@ impl ProductionFaultNetworkInterceptor {
             let backpressure_wakeup = route::apply_network_backpressure_transitions(
                 &mut staged_effect_state,
                 &mut staged_pending,
-                &evaluation.actions,
+                &network_actions,
                 &self.topology,
                 coordinate.virtual_nanos,
             )?;
@@ -1826,6 +1864,11 @@ impl ProductionFaultNetworkInterceptor {
                 earliest_wakeup(boundary_application.next_wakeup_nanos, backpressure_wakeup),
             ))?;
             let append = staged_scheduler.append_fault_observations(evaluation.observations)?;
+            backend
+                .apply_block_boundary_actions(coordinate, &storage_boundary_actions)
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("apply storage fault boundary: {error}"),
+                })?;
             Ok((append, records))
         })();
         let (append, records) = match staged {
@@ -2960,6 +3003,17 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn production_evaluation_sequence_never_reuses_an_a_b_a_coordinate() {
+        let mut cursor = ProductionFaultEvaluationCursor::default();
+        assert_eq!(cursor.next_sequence(10).unwrap_or(u64::MAX), 0);
+        assert_eq!(cursor.next_sequence(20).unwrap_or(u64::MAX), 1);
+        assert_eq!(cursor.next_sequence(10).unwrap_or(u64::MAX), 2);
+        assert_eq!(cursor.coordinate, Some(10));
+        assert_eq!(cursor.coordinate_sequence, 2);
+    }
+
     use crucible::model::{
         BindingActionCause, BindingMapping, BindingObservabilityPolicy, BindingSampling,
         BindingSearchPolicy, EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest,
@@ -3317,6 +3371,8 @@ mod tests {
         .unwrap_or_else(|error| panic!("restored scheduler should build: {error}"));
         let malformed = interceptor
             .runtime
+            .lock()
+            .unwrap_or_else(|error| panic!("test fault runtime lock should be available: {error}"))
             .checkpoint_with_network_state(
                 &mut nodes,
                 ProductionNetworkStateCheckpoint::new(

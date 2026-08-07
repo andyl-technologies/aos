@@ -25,6 +25,27 @@ pub struct QemuNodeSet {
 }
 
 impl QemuNodeSet {
+    /// Applies one batch of storage boundary actions to every live coordinator.
+    ///
+    /// Each coordinator filters the batch by its authenticated World target;
+    /// unmatched nodes are unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when any matching live adapter fails closed.
+    #[cfg(target_os = "linux")]
+    pub fn apply_block_boundary_actions(
+        &mut self,
+        coordinate: crucible::model::FaultCoordinate,
+        actions: &[crucible::model::ResolvedBindingAction],
+    ) -> Result<(), BackendError> {
+        for node in self.nodes.values_mut() {
+            node.apply_block_boundary_actions(coordinate, actions)
+                .map_err(BackendError::from)?;
+        }
+        Ok(())
+    }
+
     /// Builds an empty node set.
     #[must_use]
     pub const fn new() -> Self {

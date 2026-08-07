@@ -12,6 +12,8 @@ use std::os::unix::net::UnixStream;
 use std::process::Child;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use crucible::model::{FaultCoordinate, ResolvedBindingAction};
 use crucible::{
     AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendNetworkOutput,
     BackendSnapshot, Checkpoint, EventLog, ExecutionFingerprint, ExecutionHorizon,
@@ -509,6 +511,24 @@ pub struct QemuNode {
 }
 
 impl QemuNode {
+    /// Applies storage-targeted actions through this node's live block adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the coordinator rejects the boundary.
+    #[cfg(target_os = "linux")]
+    pub fn apply_block_boundary_actions(
+        &mut self,
+        coordinate: FaultCoordinate,
+        actions: &[ResolvedBindingAction],
+    ) -> Result<(), QemuNodeError> {
+        self.host_io_runtime
+            .apply_block_boundary_actions(coordinate, actions)
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })
+    }
+
     /// Installs the production signal coordinator for this node's block device.
     ///
     /// # Errors

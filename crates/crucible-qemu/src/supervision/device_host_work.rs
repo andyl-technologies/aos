@@ -24,7 +24,7 @@ use thiserror::Error;
 
 use crucible::model::{ContentHash, ResolvedBindingAction, ResolvedFaultTarget};
 use crucible_device::block::{
-    BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
+    BaseImage, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
     BlockRetainedRelease, BlockServiceCompletion, ResolvedBlockExecutionDirective,
     ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
@@ -219,11 +219,12 @@ impl QemuLiveBlockHostWorkPool {
     ///
     /// Returns the same descriptor, thread, and servicer errors as
     /// [`Self::from_shmem_fd`].
-    pub fn restore_from_shmem_fd(
+    pub fn restore_from_shmem_fd_with_base(
         shmem_fd: BorrowedFd<'_>,
         region_len: u64,
         expected_execution_binding: ContentHash,
         checkpoint: QemuLiveBlockIoServicerCheckpoint,
+        base: BaseImage,
     ) -> Result<Self, QemuLiveBlockHostWorkPoolError> {
         let storage_device = checkpoint.storage_device();
         let owned_fd = shmem_fd
@@ -235,11 +236,12 @@ impl QemuLiveBlockHostWorkPool {
         let worker = thread::Builder::new()
             .name(String::from("crucible-block-host-work"))
             .spawn(move || {
-                let servicer = QemuLiveBlockIoServicer::restore_from_shmem_fd(
+                let servicer = QemuLiveBlockIoServicer::restore_from_shmem_fd_with_base(
                     owned_fd.as_fd(),
                     region_len,
                     expected_execution_binding,
                     checkpoint,
+                    base,
                 );
                 match servicer {
                     Ok(servicer) => {

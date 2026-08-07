@@ -283,10 +283,11 @@ pub use spawn::{
 };
 pub use storage_fault_resolver::{
     ResolvedVolatileCacheLoss, StorageFaultResolutionContext, StorageFaultResolutionError,
-    VolatileCacheLossReplay, block_durability_config, block_persistence_fault_opportunity,
-    block_request_fault_opportunity, block_request_persistence_fault_opportunity,
-    merge_block_fault_phase_directive, resolve_block_fault_directive,
-    resolve_block_persistence_media_directive, resolve_volatile_cache_loss,
+    VolatileCacheLossReplay, block_delivery_fault_opportunity, block_durability_config,
+    block_persistence_fault_opportunity, block_request_fault_opportunity,
+    block_request_persistence_fault_opportunity, merge_block_fault_phase_directive,
+    resolve_block_fault_directive, resolve_block_persistence_media_directive,
+    resolve_volatile_cache_loss,
 };
 #[cfg(target_os = "linux")]
 pub use supervision::{
