@@ -215,6 +215,12 @@ records an explicit resume recipe from the retained base. Reseeded and override
 forks record their branch coordinates, and replay forces only decisions owned by
 the post-branch suffix.
 
+Replaying any of these fork artifacts reconstructs the retained checkpoint and
+uses the same resume lifecycle as the original fork. The replay therefore
+checks the fork's exact control acknowledgements as well as its terminal
+configuration, event bytes, and terminal fingerprints. A fork artifact is not
+reinterpreted as a new run from genesis.
+
 For `fork --until virtual-time`, the target is measured from the savepoint's
 restored global scheduler frontier. Crucible continues across internal branch
 admission and per-node events until that cross-node frontier reaches the target;

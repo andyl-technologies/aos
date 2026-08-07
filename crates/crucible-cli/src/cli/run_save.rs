@@ -784,6 +784,30 @@ where
     C: ControlClient + Sync,
 {
     let evidence = resume_handle_evidence(resume_plan)?;
+    run_remote_control_client_resume_from_evidence_with_driver_async(
+        client,
+        resume_plan,
+        evidence,
+        interactive_driver,
+    )
+    .await
+}
+
+/// Resumes through a control client from already validated checkpoint evidence.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the remote lifecycle rejects the checkpoint or a
+/// command, or when the observed terminal evidence violates the resume oracle.
+pub(super) async fn run_remote_control_client_resume_from_evidence_with_driver_async<C>(
+    client: &C,
+    resume_plan: &ResumeInvocationPlan,
+    evidence: ResumeHandleEvidence,
+    interactive_driver: ResumeInteractiveCommandDriver<'_>,
+) -> Result<ResumeWorkflowReport, CliError>
+where
+    C: ControlClient + Sync,
+{
     let request = ResumeSessionRequest::new(
         evidence.scenario_form.clone(),
         evidence.schedule.clone(),

@@ -906,6 +906,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
     if let Some(quantum_budget) = contract.lifecycle_quantum_budget {
         config = config.with_quantum_budget(quantum_budget);
     }
+    let mut branch_evidence = None;
     match &contract.branch {
         LiveQemuReplayBranch::None => {}
         LiveQemuReplayBranch::Resume {
@@ -913,6 +914,11 @@ pub(crate) fn run_live_qemu_artifact_replay(
             frontier_ticks,
         } => {
             let base = replay_branch_base(&scenario_def, schedule, *base_decisions)?;
+            branch_evidence = Some(replay_branch_evidence(
+                &scenario,
+                base.clone(),
+                *frontier_ticks,
+            )?);
             config = config.with_branch_prefix_overrides(
                 base,
                 VirtualTime {
@@ -927,6 +933,11 @@ pub(crate) fn run_live_qemu_artifact_replay(
             seed,
         } => {
             let base = replay_branch_base(&scenario_def, schedule, *base_decisions)?;
+            branch_evidence = Some(replay_branch_evidence(
+                &scenario,
+                base.clone(),
+                *frontier_ticks,
+            )?);
             config = config.with_branch_reseed(
                 base,
                 VirtualTime {
@@ -942,6 +953,11 @@ pub(crate) fn run_live_qemu_artifact_replay(
             decision_end,
         } => {
             let base = replay_branch_base(&scenario_def, schedule, *base_decisions)?;
+            branch_evidence = Some(replay_branch_evidence(
+                &scenario,
+                base.clone(),
+                *frontier_ticks,
+            )?);
             let start = usize::try_from(*decision_start).map_err(|_| {
                 artifact_error("live-QEMU replay override start cannot be represented")
             })?;
@@ -990,8 +1006,54 @@ pub(crate) fn run_live_qemu_artifact_replay(
         .build()?;
     let control_plane = production_qemu_control_plane(config, &scenario);
     let client = InProcessLifecycleClient::new(control_plane);
-    let report = runtime.block_on(run_control_client_workflow_async(&client, &run_plan, &[]))?;
+    let report = if contract.producer == "fork" {
+        let evidence = branch_evidence.ok_or_else(|| {
+            artifact_error("live-QEMU fork replay contract requires branch evidence")
+        })?;
+        let resume_plan = ResumeInvocationPlan {
+            savepoint: ResumeSavepointRef::CheckpointHash(evidence.checkpoint.id),
+            store_root: PathBuf::new(),
+            terminal_condition,
+            max_virtual_time: contract
+                .max_virtual_time_ticks
+                .map(|ticks| ticks.to_string()),
+            max_virtual_time_ticks: contract.max_virtual_time_ticks,
+            execution_mode: RunExecutionMode::ToCompletion,
+            watch_streams_live_status: false,
+            startup_commands: vec![SessionCommandKind::Fork, SessionCommandKind::Continue],
+            initial_control_commands: vec![SessionCommandKind::Query],
+            accepted_interactive_commands: Vec::new(),
+        };
+        runtime
+            .block_on(
+                run_remote_control_client_resume_from_evidence_with_driver_async(
+                    &client,
+                    &resume_plan,
+                    evidence,
+                    ResumeInteractiveCommandDriver::Preparsed(&[]),
+                ),
+            )?
+            .run
+    } else {
+        runtime.block_on(run_control_client_workflow_async(&client, &run_plan, &[]))?
+    };
     Ok((run_plan, report))
+}
+
+fn replay_branch_evidence(
+    scenario_form: &crucible::ScenarioDefForm,
+    configuration: crucible::Configuration,
+    frontier_ticks: u64,
+) -> Result<ResumeHandleEvidence, CliError> {
+    let frontier = validate_resume_handle_frontier(&configuration.schedule, frontier_ticks)?;
+    let checkpoint = checkpoint_for_resume_configuration(&configuration, frontier)?;
+    Ok(ResumeHandleEvidence {
+        scenario_form: scenario_form.clone(),
+        scenario: scenario_form.scenario_def(),
+        schedule: configuration.schedule.clone(),
+        configuration,
+        checkpoint,
+    })
 }
 
 fn replay_branch_base(
@@ -1194,4 +1256,45 @@ pub(crate) fn append_qemu_control_plane_execution_proof(
         ),
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fork_replay_reconstructs_resumable_branch_evidence() -> Result<(), Box<dyn Error>> {
+        let scenario = crucible::happy_path_scenario()?.scenario;
+        let schedule = Schedule::from_decisions((1..=2).map(|ticks| {
+            crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks },
+                order: Vec::new(),
+            })
+        }));
+        let base = replay_branch_base(&scenario.scenario_def(), &schedule, 1)?;
+        let evidence = replay_branch_evidence(&scenario, base, 1)?;
+
+        assert_eq!(evidence.schedule.len(), 1);
+        assert_eq!(evidence.checkpoint.virtual_time.ticks, 1);
+        assert_eq!(evidence.configuration.id(), evidence.checkpoint.id);
+        assert_eq!(evidence.scenario_form.id(), scenario.id());
+        Ok(())
+    }
+
+    #[test]
+    fn fork_replay_rejects_frontier_beyond_retained_prefix() -> Result<(), Box<dyn Error>> {
+        let scenario = crucible::happy_path_scenario()?.scenario;
+        let schedule = Schedule::from_decisions([crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        )]);
+        let base = replay_branch_base(&scenario.scenario_def(), &schedule, 1)?;
+        let error = replay_branch_evidence(&scenario, base, 2)
+            .expect_err("unrecorded branch frontier must fail closed");
+
+        assert!(error.to_string().contains("exceeded the latest recorded"));
+        Ok(())
+    }
 }

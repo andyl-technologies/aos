@@ -424,13 +424,29 @@ impl LiveQemuReplayContract {
         }
         validate_controls("startup", &self.startup_controls, |command| {
             matches!(command, "start" | "continue" | "step-quantum")
+                || self.producer == "fork" && command == "fork"
         })?;
         validate_controls("initial", &self.initial_controls, |command| {
             command == "query"
         })?;
+        if self.producer == "fork"
+            && (control_commands(&self.startup_controls) != ["fork", "continue"]
+                || control_commands(&self.initial_controls) != ["query"])
+        {
+            return Err(artifact_error(
+                "live-QEMU fork replay requires startup controls `fork,continue` and one initial `query`",
+            ));
+        }
         validate_controls("acknowledged", &self.controls, known_control_command)?;
         Ok(())
     }
+}
+
+fn control_commands(controls: &[LiveQemuReplayControl]) -> Vec<&str> {
+    controls
+        .iter()
+        .map(|control| control.command.as_str())
+        .collect()
 }
 
 fn encode_controls(text: &mut String, tag: &str, controls: &[LiveQemuReplayControl]) {
@@ -598,7 +614,7 @@ mod tests {
             startup_controls: vec![
                 LiveQemuReplayControl {
                     sequence: 0,
-                    command: String::from("start"),
+                    command: String::from("fork"),
                 },
                 LiveQemuReplayControl {
                     sequence: 1,
@@ -630,6 +646,7 @@ mod tests {
                 contract.branch = LiveQemuReplayBranch::None;
                 contract.fault_choice_indices = vec![1, 4];
                 contract.network_choice_indices = vec![2, 5];
+                contract.startup_controls.clear();
             }
             "fork" => {}
             _ => {
@@ -637,6 +654,7 @@ mod tests {
                 contract.fingerprint_scope = LiveQemuFingerprintScope::FullExecution;
                 contract.fault_choice_indices = vec![1, 4];
                 contract.network_choice_indices = vec![2, 5];
+                contract.startup_controls[0].command = String::from("start");
             }
         }
         contract
@@ -667,6 +685,47 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn live_qemu_replay_contract_restricts_fork_startup_to_fork_producers() {
+        let mut contract = fork_contract();
+        contract.producer = String::from("run");
+        contract.branch = LiveQemuReplayBranch::None;
+        contract.fingerprint_scope = LiveQemuFingerprintScope::FullExecution;
+
+        let error = rejected_contract(
+            &contract,
+            "non-fork producer must reject a fork startup control",
+        );
+        assert!(error.to_string().contains("unsupported startup control"));
+    }
+
+    #[test]
+    fn live_qemu_replay_contract_requires_exact_fork_control_shape() {
+        for startup in [
+            vec!["fork"],
+            vec!["continue", "fork"],
+            vec!["fork", "fork", "continue"],
+            vec!["start", "fork", "continue"],
+        ] {
+            let mut contract = fork_contract();
+            contract.startup_controls = startup
+                .into_iter()
+                .enumerate()
+                .map(|(sequence, command)| LiveQemuReplayControl {
+                    sequence: sequence as u64,
+                    command: command.to_string(),
+                })
+                .collect();
+            let error = rejected_contract(&contract, "invalid fork startup shape must fail");
+            assert!(error.to_string().contains("fork replay requires"));
+        }
+
+        let mut missing_query = fork_contract();
+        missing_query.initial_controls.clear();
+        let error = rejected_contract(&missing_query, "fork initial query is mandatory");
+        assert!(error.to_string().contains("fork replay requires"));
     }
 
     #[test]
