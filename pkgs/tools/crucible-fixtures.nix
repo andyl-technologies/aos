@@ -197,6 +197,10 @@ in
 
           ln -sfn ${bash}/bin/bash rootfs/bin/sh
           ln -sfn ${bash}/bin/bash rootfs/bin/bash
+          ln -sfn ${coreutils}/bin/cat rootfs/bin/cat
+          ln -sfn ${coreutils}/bin/echo rootfs/bin/echo
+          ln -sfn ${coreutils}/bin/true rootfs/bin/true
+          ln -sfn ${coreutils}/bin/uname rootfs/bin/uname
 
           cat > rootfs/etc/passwd <<'PASSWD'
           root:x:0:0:root:/root:/bin/sh

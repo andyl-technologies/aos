@@ -144,6 +144,10 @@
         needle = "rootfs/bin/sh";
       }
       {
+        label = "debug agent direct-argv uname path";
+        needle = "ln -sfn " + "$" + "{coreutils}/bin/uname rootfs/bin/uname";
+      }
+      {
         label = "virtio-9p readonly store mount";
         needle = "mount -t 9p -o trans=virtio,version=9p2000.L,cache=none,ro";
       }
