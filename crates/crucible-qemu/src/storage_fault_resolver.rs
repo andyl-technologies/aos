@@ -453,6 +453,78 @@ pub fn resolve_block_fault_directive<'a>(
     )
 }
 
+/// Merges one independently evaluated request phase into an accumulated directive.
+///
+/// Each `phase` must have been resolved from its own authenticated
+/// [`FaultOpportunity`]. The merge copies only fields owned by that phase, so a
+/// fault-free baseline from a later phase cannot erase an earlier decision.
+/// Resolve- and deliver-phase latency contributions compose by checked sum.
+///
+/// # Errors
+///
+/// Returns [`StorageFaultResolutionError::OpportunityMismatch`] when request
+/// identity differs, or [`StorageFaultResolutionError::PhaseMergeOverflow`]
+/// when latency composition exceeds `u64`.
+pub fn merge_block_fault_phase_directive(
+    accumulated: &mut ResolvedBlockFaultDirective,
+    phase: FaultPhase,
+    partial: ResolvedBlockFaultDirective,
+) -> Result<(), StorageFaultResolutionError> {
+    if accumulated.request_sequence != partial.request_sequence
+        || accumulated.operation != partial.operation
+        || accumulated.offset != partial.offset
+        || accumulated.count != partial.count
+        || accumulated.request_digest != partial.request_digest
+    {
+        return Err(StorageFaultResolutionError::OpportunityMismatch);
+    }
+    match phase {
+        FaultPhase::Admit | FaultPhase::Produce => {
+            accumulated.availability = partial.availability;
+            accumulated.reported_capacity_bytes = partial.reported_capacity_bytes;
+        }
+        FaultPhase::Queue => {
+            accumulated.service_rules = partial.service_rules;
+        }
+        FaultPhase::Resolve => {
+            accumulated.additional_latency_nanos = accumulated
+                .additional_latency_nanos
+                .checked_add(partial.additional_latency_nanos)
+                .ok_or(StorageFaultResolutionError::PhaseMergeOverflow {
+                    field: "additional_latency_nanos",
+                })?;
+            accumulated.execution_nanos = partial.execution_nanos;
+            accumulated.error_result = partial.error_result;
+            accumulated.retain_completion = partial.retain_completion;
+            accumulated.retention_timeout_response = partial.retention_timeout_response;
+            accumulated.read_transforms = partial.read_transforms;
+            accumulated.media_rules.extend(partial.media_rules);
+        }
+        FaultPhase::Persist => {
+            accumulated.execution_nanos = partial.execution_nanos;
+            accumulated.write_disposition = partial.write_disposition;
+            accumulated.flush_disposition = partial.flush_disposition;
+            accumulated.cache_policy = partial.cache_policy;
+            accumulated.persistence_transforms = partial.persistence_transforms;
+            accumulated.persistence_media_rules = partial.persistence_media_rules;
+            accumulated.persistence_admitted_nanos = partial.persistence_admitted_nanos;
+            accumulated.media_rules.extend(partial.media_rules);
+        }
+        FaultPhase::Deliver => {
+            accumulated.additional_latency_nanos = accumulated
+                .additional_latency_nanos
+                .checked_add(partial.additional_latency_nanos)
+                .ok_or(StorageFaultResolutionError::PhaseMergeOverflow {
+                    field: "additional_latency_nanos",
+                })?;
+            accumulated.duplicate_completions = partial.duplicate_completions;
+        }
+        _ => return Err(StorageFaultResolutionError::OpportunityMismatch),
+    }
+    accumulated.media_rules.sort_by_key(|rule| rule.contributor);
+    Ok(())
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "exact storage resolution keeps independently typed world, target, request, time, and evidence inputs explicit"
@@ -1790,6 +1862,12 @@ pub enum StorageFaultResolutionError {
     /// The supplied opportunity does not describe this target and operation.
     #[error("storage opportunity does not match this block request")]
     OpportunityMismatch,
+    /// Independently sampled phase contributions overflowed during composition.
+    #[error("storage phase composition overflowed `{field}`")]
+    PhaseMergeOverflow {
+        /// Overflowed directive field.
+        field: &'static str,
+    },
     /// An action is not bound to the supplied opportunity and phase.
     #[error("storage binding `{binding}` is not bound to this request opportunity")]
     ActionIdentity {
@@ -2565,5 +2643,38 @@ mod tests {
             ),
             Err(StorageFaultResolutionError::ReplayEntrySetMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn independently_sampled_storage_phases_merge_without_erasing_prior_fields() {
+        let request = BlockRequest::write(77, 8, vec![1; 4]);
+        let mut accumulated = ResolvedBlockFaultDirective::fault_free(&request, 4096);
+        accumulated.request_sequence = 1_001;
+
+        let mut admit = accumulated.clone();
+        admit.availability = BlockFaultAvailability::Degraded;
+        admit.reported_capacity_bytes = 2048;
+        merge_block_fault_phase_directive(&mut accumulated, FaultPhase::Admit, admit)
+            .unwrap_or_else(|error| panic!("admit phase should merge: {error}"));
+
+        let mut resolve = ResolvedBlockFaultDirective::fault_free(&request, 4096);
+        resolve.request_sequence = 1_001;
+        resolve.execution_nanos = 31;
+        resolve.additional_latency_nanos = 7;
+        resolve.error_result = Some(BlockFaultResult::IoError);
+        merge_block_fault_phase_directive(&mut accumulated, FaultPhase::Resolve, resolve)
+            .unwrap_or_else(|error| panic!("resolve phase should merge: {error}"));
+
+        let mut deliver = ResolvedBlockFaultDirective::fault_free(&request, 4096);
+        deliver.request_sequence = 1_001;
+        deliver.additional_latency_nanos = 11;
+        merge_block_fault_phase_directive(&mut accumulated, FaultPhase::Deliver, deliver)
+            .unwrap_or_else(|error| panic!("deliver phase should merge: {error}"));
+
+        assert_eq!(accumulated.availability, BlockFaultAvailability::Degraded);
+        assert_eq!(accumulated.reported_capacity_bytes, 2048);
+        assert_eq!(accumulated.execution_nanos, 31);
+        assert_eq!(accumulated.additional_latency_nanos, 18);
+        assert_eq!(accumulated.error_result, Some(BlockFaultResult::IoError));
     }
 }
