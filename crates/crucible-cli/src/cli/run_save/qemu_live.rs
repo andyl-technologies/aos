@@ -819,7 +819,9 @@ pub(crate) fn run_local_qemu_workflow(
     let control_plane = production_qemu_control_plane(config, run_plan.scenario.scenario_form());
     let client = InProcessLifecycleClient::new(control_plane);
     let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
-        runtime.block_on(run_control_client_workflow_stdin_async(&client, &run_plan))?
+        runtime.block_on(run_control_client_workflow_stdin_async(
+            &client, &run_plan, false,
+        ))?
     } else {
         runtime.block_on(run_control_client_workflow_async(&client, &run_plan, &[]))?
     };

@@ -1089,6 +1089,8 @@ branch on the verdict without parsing output:
   as exit 5, starts lifecycle-owned sessions through the API, drives local
   in-process-double and `--daemon` HTTP/2 RPC sessions through the same typed
   control-client workflow, streams non-empty scheduler event/state frames,
+  publishes a remote interactive session's canonical `id:epoch:seed` reference
+  immediately after creation so another CLI process can attach the debugger,
   emits every production VM's initial `started` lifecycle fact at the initial
   admitted scheduler boundary before the first assertion pass, returns that
   boundary without advancing a guest when it produces a terminal verdict, and

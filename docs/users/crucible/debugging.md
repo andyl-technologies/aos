@@ -130,10 +130,13 @@ it prints, and connect from a second terminal:
   -ex 'target remote 127.0.0.1:<port>'
 ```
 
-The session target is the canonical identity printed by the daemon:
-`id:epoch:seed`, where `id` and `epoch` are decimal integers and `seed` is
-exactly 64 lowercase hexadecimal digits. It is not a network address; the
-global `--daemon` option selects the daemon endpoint.
+Start the remote run with `--interactive`. As soon as the daemon creates the
+paused session, that client prints a diagnostic such as
+`crucible: live-session ref=1:1:<seed>` on standard error. Copy the value after
+`ref=` into `debug --session`; the original client may remain open while a
+second process debugs it. The canonical identity uses decimal `id` and `epoch`
+fields plus exactly 64 lowercase hexadecimal seed digits. It is not a network
+address; the global `--daemon` option selects the daemon endpoint.
 
 Crucible does not provide a symbol server. Supply the guest executable and
 DWARF files to GDB locally. The packaged GDB includes Python scripting, TUI,
