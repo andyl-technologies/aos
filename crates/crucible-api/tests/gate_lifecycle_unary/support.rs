@@ -68,6 +68,45 @@ impl QuantumLoop for FailingLoop {
     }
 }
 
+pub(super) struct RuntimeOnlyReplayLoop {
+    frontier: u64,
+    step: u64,
+}
+
+impl RuntimeOnlyReplayLoop {
+    pub(super) const fn new() -> Self {
+        Self {
+            frontier: 0,
+            step: 1,
+        }
+    }
+
+    pub(super) const fn with_step(step: u64) -> Self {
+        Self { frontier: 0, step }
+    }
+}
+
+impl QuantumLoop for RuntimeOnlyReplayLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.frontier = self.frontier.saturating_add(self.step);
+        Ok(QuantumOutcome {
+            configuration: request.configuration,
+            frontier: VirtualTime {
+                ticks: self.frontier,
+            },
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: Default::default(),
+            scheduler_quiescence: None,
+        })
+    }
+}
+
 pub(super) struct DivergentReplayLoop;
 
 impl QuantumLoop for DivergentReplayLoop {

@@ -168,6 +168,10 @@ Resume accepts a savepoint handle or a direct `blake3:<checkpoint>` reference:
 Direct checkpoint hashes require the same `--store` used when the checkpoint
 was created. A savepoint handle carries scenario and schedule evidence, but its
 referenced store objects must still be resolvable when they were not embedded.
+If deterministic execution advanced without making a causal schedule decision,
+the saved configuration can still have genesis identity. Resume uses the fat
+checkpoint frontier as the runtime boundary and replays to that exact coordinate;
+it does not mistake the savepoint for the zero-time baked genesis.
 
 `resume` supports the same `--until`, `--max-virtual-time`, `--interactive`, and
 `--watch` controls as `run`.
