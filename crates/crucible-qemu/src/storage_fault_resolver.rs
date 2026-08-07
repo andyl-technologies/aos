@@ -15,9 +15,12 @@ use crucible::model::{
     StorageEffectSpecification, StorageFlushKind, StorageMediaState, StoragePolicyArtifactKind,
     StoragePolicyCacheEviction, StoragePolicyDirtyEviction, StoragePolicyDuplicateCompletion,
     StoragePolicyPersistenceOrdering, StoragePolicyQueueDiscipline, StoragePolicyServiceClass,
-    StoragePolicyTypedResult, StorageReadMutation, StorageSelection, StorageVolatileCacheLossKind,
-    StorageVolatileCacheLossSelector, StorageWriteDispositionKind, World,
-    WorldCompletionDurability, WorldDiscardSemantics,
+    StoragePolicyTransitionPendingOperation, StoragePolicyTransitionRequestIds,
+    StoragePolicyTransitionResolvedOperation, StoragePolicyTransitionState,
+    StoragePolicyTransitionTopology, StoragePolicyTransitionUnadmitted,
+    StoragePolicyTransitionUndeliveredOperation, StoragePolicyTypedResult, StorageReadMutation,
+    StorageSelection, StorageVolatileCacheLossKind, StorageVolatileCacheLossSelector,
+    StorageWriteDispositionKind, World, WorldCompletionDurability, WorldDiscardSemantics,
 };
 
 /// Scenario-owned entropy used only for keyed storage adapter choices.
@@ -262,9 +265,11 @@ use crucible_device::block::{
     BlockFaultReadTransform, BlockFaultResult, BlockFaultState, BlockFaultWriteDisposition,
     BlockMediaRangeState, BlockOp, BlockPersistenceOpportunity, BlockPersistenceOrdering,
     BlockRequest, BlockRequestPersistenceOpportunity, BlockResponse, BlockServiceDiscipline,
-    ResolvedBlockCachePolicy, ResolvedBlockFaultDirective, ResolvedBlockFlashProgramErase,
-    ResolvedBlockFlashReadDisturb, ResolvedBlockFlashRetention, ResolvedBlockFlashRule,
-    ResolvedBlockMediaRule, ResolvedBlockPersistenceMediaDirective,
+    BlockTransitionPending, BlockTransitionResolved, BlockTransitionState, BlockTransitionTopology,
+    BlockTransitionUnadmitted, BlockTransitionUndelivered, BlockTransportRequestIds,
+    ResolvedBlockCachePolicy, ResolvedBlockControllerTransition, ResolvedBlockFaultDirective,
+    ResolvedBlockFlashProgramErase, ResolvedBlockFlashReadDisturb, ResolvedBlockFlashRetention,
+    ResolvedBlockFlashRule, ResolvedBlockMediaRule, ResolvedBlockPersistenceMediaDirective,
     ResolvedBlockPersistenceTransform, ResolvedBlockServiceClass, ResolvedBlockServiceRule,
 };
 
@@ -920,8 +925,8 @@ fn apply_effect(
                 StoragePolicyDuplicateCompletion::Ignore => BlockDuplicatePolicy::Ignore,
                 StoragePolicyDuplicateCompletion::ProtocolError { result } => {
                     require_block_result(world, result, false, &action.binding)?;
-                    BlockDuplicatePolicy::ProtocolError(BlockResponse::error(
-                        request.request_id,
+                    BlockDuplicatePolicy::ProtocolError(BlockResponse::error_for(
+                        request.identity(),
                         resolve_block_failure(world, result).ok_or_else(|| {
                             StorageFaultResolutionError::PolicyReference {
                                 binding: action.binding.clone(),
@@ -932,16 +937,63 @@ fn apply_effect(
                     ))
                 }
                 StoragePolicyDuplicateCompletion::Reset { transition_policy } => {
-                    require_policy_kind(
-                        world,
-                        transition_policy,
-                        &action.binding,
-                        "controller_transition",
-                        |artifact| {
-                            matches!(artifact, StoragePolicyArtifactKind::ControllerTransition(_))
+                    let transition = world
+                        .fault_topology()
+                        .storage_policy_artifact(transition_policy)
+                        .and_then(|artifact| match &artifact.artifact {
+                            StoragePolicyArtifactKind::ControllerTransition(policy) => Some(policy),
+                            _ => None,
+                        })
+                        .ok_or_else(|| StorageFaultResolutionError::PolicyReference {
+                            binding: action.binding.clone(),
+                            reference: transition_policy.clone(),
+                            expected: "controller_transition",
+                        })?;
+                    let failure_result = resolve_block_failure(world, &transition.failure_result)
+                        .ok_or_else(|| {
+                        StorageFaultResolutionError::PolicyReference {
+                            binding: action.binding.clone(),
+                            reference: transition.failure_result.clone(),
+                            expected: "non-success block typed_result",
+                        }
+                    })?;
+                    BlockDuplicatePolicy::Reset(ResolvedBlockControllerTransition {
+                        failure_result,
+                        unadmitted: match transition.unadmitted {
+                            StoragePolicyTransitionUnadmitted::Reject => {
+                                BlockTransitionUnadmitted::Reject
+                            }
+                            StoragePolicyTransitionUnadmitted::WaitForRecovery => {
+                                BlockTransitionUnadmitted::WaitForRecovery
+                            }
                         },
-                    )?;
-                    BlockDuplicatePolicy::Reset
+                        queued: resolve_transition_pending(transition.queued),
+                        executing: resolve_transition_pending(transition.executing),
+                        resolved: resolve_transition_resolved(transition.resolved),
+                        completed_undelivered: resolve_transition_undelivered(
+                            transition.completed_undelivered,
+                        ),
+                        controller_buffer: resolve_transition_state(transition.controller_buffer),
+                        volatile_cache: resolve_transition_state(transition.volatile_cache),
+                        request_ids: match transition.request_ids {
+                            StoragePolicyTransitionRequestIds::PreserveMonotonic => {
+                                BlockTransportRequestIds::PreserveMonotonic
+                            }
+                            StoragePolicyTransitionRequestIds::NewEpochFromZero => {
+                                BlockTransportRequestIds::NewEpochFromZero
+                            }
+                        },
+                        duplicate_history: resolve_transition_state(transition.duplicate_history),
+                        topology: match transition.topology {
+                            StoragePolicyTransitionTopology::Preserve => {
+                                BlockTransitionTopology::Preserve
+                            }
+                            StoragePolicyTransitionTopology::ReenumerateDeclared => {
+                                BlockTransitionTopology::ReenumerateDeclared
+                            }
+                        },
+                        recovery_nanos: transition.recovery_nanos.get(),
+                    })
                 }
             };
             directive
@@ -1614,6 +1666,58 @@ fn resolve_block_failure(world: &World, reference: &FaultObjectId) -> Option<Blo
     block_failure_from_result(result)
 }
 
+const fn resolve_transition_pending(
+    policy: StoragePolicyTransitionPendingOperation,
+) -> BlockTransitionPending {
+    match policy {
+        StoragePolicyTransitionPendingOperation::Fail => BlockTransitionPending::Fail,
+        StoragePolicyTransitionPendingOperation::RetryPreserveId => {
+            BlockTransitionPending::RetryPreserveId
+        }
+        StoragePolicyTransitionPendingOperation::RetryNewId => BlockTransitionPending::RetryNewId,
+    }
+}
+
+const fn resolve_transition_resolved(
+    policy: StoragePolicyTransitionResolvedOperation,
+) -> BlockTransitionResolved {
+    match policy {
+        StoragePolicyTransitionResolvedOperation::Complete => BlockTransitionResolved::Complete,
+        StoragePolicyTransitionResolvedOperation::Fail => BlockTransitionResolved::Fail,
+        StoragePolicyTransitionResolvedOperation::RetryPreserveId => {
+            BlockTransitionResolved::RetryPreserveId
+        }
+        StoragePolicyTransitionResolvedOperation::RetryNewId => BlockTransitionResolved::RetryNewId,
+    }
+}
+
+const fn resolve_transition_undelivered(
+    policy: StoragePolicyTransitionUndeliveredOperation,
+) -> BlockTransitionUndelivered {
+    match policy {
+        StoragePolicyTransitionUndeliveredOperation::Complete => {
+            BlockTransitionUndelivered::Complete
+        }
+        StoragePolicyTransitionUndeliveredOperation::Fail => BlockTransitionUndelivered::Fail,
+        StoragePolicyTransitionUndeliveredOperation::RetryPreserveId => {
+            BlockTransitionUndelivered::RetryPreserveId
+        }
+        StoragePolicyTransitionUndeliveredOperation::RetryNewId => {
+            BlockTransitionUndelivered::RetryNewId
+        }
+        StoragePolicyTransitionUndeliveredOperation::DropCompletion => {
+            BlockTransitionUndelivered::DropCompletion
+        }
+    }
+}
+
+const fn resolve_transition_state(policy: StoragePolicyTransitionState) -> BlockTransitionState {
+    match policy {
+        StoragePolicyTransitionState::Preserve => BlockTransitionState::Preserve,
+        StoragePolicyTransitionState::Lose => BlockTransitionState::Lose,
+    }
+}
+
 fn block_failure_from_result(
     result: crucible::model::StoragePolicyResult,
 ) -> Option<BlockFaultResult> {
@@ -1633,27 +1737,6 @@ fn block_failure_from_result(
         crucible::model::StoragePolicyResult::NotFound => Some(BlockFaultResult::NotFound),
         crucible::model::StoragePolicyResult::Stale => Some(BlockFaultResult::Stale),
     }
-}
-
-fn require_policy_kind(
-    world: &World,
-    reference: &FaultObjectId,
-    binding: &FaultObjectId,
-    expected: &'static str,
-    predicate: impl FnOnce(&StoragePolicyArtifactKind) -> bool,
-) -> Result<(), StorageFaultResolutionError> {
-    let valid = world
-        .fault_topology()
-        .storage_policy_artifact(reference)
-        .is_some_and(|artifact| predicate(&artifact.artifact));
-    if !valid {
-        return Err(StorageFaultResolutionError::PolicyReference {
-            binding: binding.clone(),
-            reference: reference.clone(),
-            expected,
-        });
-    }
-    Ok(())
 }
 
 fn storage_policy<T>(

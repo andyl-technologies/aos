@@ -569,7 +569,7 @@ impl ProductionBlockFaultCoordinator {
         directive.execution_nanos = request_nanos;
         self.after_evaluation(
             "install block admission directive",
-            servicer.install_storage_fault_directive(request.request_id, directive),
+            servicer.install_storage_fault_directive(request.identity(), directive),
         )
     }
 

@@ -3,7 +3,7 @@
 use crucible::{Checkpoint, ContentHash};
 
 use crate::{
-    QemuBakedGenesisRestoreAdmission, QemuLoadvmCommandAuthorization,
+    QemuBakedGenesisRestoreAdmission, QemuHostIoCheckpoint, QemuLoadvmCommandAuthorization,
     QemuLoadvmRealizationAdmission,
 };
 
@@ -12,6 +12,7 @@ pub struct QemuNodeRestorePlan<'a> {
     pub(super) checkpoint: &'a Checkpoint,
     pub(super) authorization: QemuLoadvmCommandAuthorization,
     pub(super) admission: QemuNodeRestoreAdmission,
+    pub(super) host_io_checkpoint: Option<&'a QemuHostIoCheckpoint>,
 }
 
 /// Admission proof for the VMState snapshot restored before node assembly.
@@ -40,6 +41,7 @@ impl<'a> QemuNodeRestorePlan<'a> {
             checkpoint,
             authorization,
             admission: QemuNodeRestoreAdmission::ReplayOracle(admission),
+            host_io_checkpoint: None,
         }
     }
 
@@ -53,6 +55,7 @@ impl<'a> QemuNodeRestorePlan<'a> {
             checkpoint,
             authorization,
             admission: QemuNodeRestoreAdmission::SnapshotCompletenessProbe,
+            host_io_checkpoint: None,
         }
     }
 
@@ -65,7 +68,15 @@ impl<'a> QemuNodeRestorePlan<'a> {
             admission: QemuNodeRestoreAdmission::BakedGenesis {
                 world_id: admission.world_id(),
             },
+            host_io_checkpoint: None,
         }
+    }
+
+    /// Pairs the QEMU VMState restore with its complete host-I/O continuation.
+    #[must_use]
+    pub const fn with_host_io_checkpoint(mut self, checkpoint: &'a QemuHostIoCheckpoint) -> Self {
+        self.host_io_checkpoint = Some(checkpoint);
+        self
     }
 
     /// Returns the checkpoint whose VMState will be restored.
@@ -84,5 +95,11 @@ impl<'a> QemuNodeRestorePlan<'a> {
     #[must_use]
     pub const fn admission(&self) -> QemuNodeRestoreAdmission {
         self.admission
+    }
+
+    /// Returns the paired host-I/O continuation, when the topology owns one.
+    #[must_use]
+    pub const fn host_io_checkpoint(&self) -> Option<&'a QemuHostIoCheckpoint> {
+        self.host_io_checkpoint
     }
 }

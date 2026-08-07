@@ -29,8 +29,10 @@ pub mod persistence;
 pub mod service;
 
 pub use codec::{
-    BLOCK_ABI_VERSION, BlockCodecError, BlockErrorCode, BlockOp, BlockRequest, BlockResponse,
-    BlockStatus, REQUEST_HEADER_LEN, RESPONSE_HEADER_LEN,
+    BLOCK_ABI_VERSION, BlockCodecError, BlockErrorCode, BlockOp, BlockRequest,
+    BlockRequestIdentity, BlockResponse, BlockStatus, BlockTransportPending,
+    BlockTransportRequestIds, BlockTransportReset, BlockTransportResolved,
+    BlockTransportUnadmitted, BlockTransportUndelivered, REQUEST_HEADER_LEN, RESPONSE_HEADER_LEN,
 };
 pub use device::{BlockDevice, BlockLatency, BlockSnapshot, submit_cross_device_misdirected_write};
 pub use fault::*;
@@ -49,6 +51,7 @@ mod tests {
     use super::*;
     use crate::DeviceError;
     use crate::subnode::IoCore;
+    use crucible_shmem::{FrameEntry, KIND_VM, NodeSlot, RingHeader};
 
     /// Unwraps a result in tests, panicking with the error on failure.
     fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
@@ -143,7 +146,7 @@ mod tests {
         let mut directive = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
         directive.request_sequence = 700;
         directive.service_rules = vec![fifo_service_rule(1)];
-        ok(original.install_storage_fault_directive(request.request_id, directive));
+        ok(original.install_storage_fault_directive(request.identity(), directive));
         ok(original.submit(0, &request));
 
         assert_eq!(original.overlay().page_count(), 0);
@@ -185,7 +188,7 @@ mod tests {
         let request = BlockRequest::write(60, 0, vec![0xa5; 4]);
         let mut admission = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
         admission.request_sequence = 950;
-        ok(device.install_storage_fault_directive(request.request_id, admission));
+        ok(device.install_storage_fault_directive(request.identity(), admission));
         ok(device.submit(0, &request));
 
         assert_eq!(ok(device.advance_to(0)), 0);
@@ -248,7 +251,7 @@ mod tests {
         directive.request_sequence = 701;
         directive.availability = BlockFaultAvailability::Offline;
         directive.service_rules = vec![fifo_service_rule(1)];
-        ok(device.install_storage_fault_directive(request.request_id, directive));
+        ok(device.install_storage_fault_directive(request.identity(), directive));
 
         ok(device.submit(0, &request));
 
@@ -282,7 +285,7 @@ mod tests {
             directive.request_sequence = *sequence;
             directive.execution_nanos = *request_icount;
             directive.service_rules = vec![priority_service_rule(2)];
-            ok(device.install_storage_fault_directive(request.request_id, directive));
+            ok(device.install_storage_fault_directive(request.identity(), directive));
             ok(device.submit(*request_icount, request));
         }
 
@@ -321,7 +324,7 @@ mod tests {
             directive.request_sequence = sequence;
             directive.execution_nanos = request_icount;
             directive.service_rules = vec![rule];
-            ok(device.install_storage_fault_directive(request.request_id, directive));
+            ok(device.install_storage_fault_directive(request.identity(), directive));
             ok(device.submit(request_icount, &request));
         }
 
@@ -341,7 +344,7 @@ mod tests {
         ok(original.configure_storage_faults(cached_fault_config(PAGE_SIZE as u64), true));
         let write = BlockRequest::write(1, 0, vec![0x5a; 512]);
         ok(original.install_storage_fault_directive(
-            write.request_id,
+            write.identity(),
             ResolvedBlockFaultDirective::fault_free(&write, PAGE_SIZE as u64),
         ));
         ok(original.submit(0, &write));
@@ -354,7 +357,7 @@ mod tests {
             flush.request_id,
             BlockErrorCode::Timeout,
         ));
-        ok(original.install_storage_fault_directive(flush.request_id, directive));
+        ok(original.install_storage_fault_directive(flush.identity(), directive));
         ok(original.submit(0, &flush));
 
         let mut exhausted = original.snapshot();
@@ -362,7 +365,7 @@ mod tests {
         let mut restored = ok(BlockDevice::restore(&exhausted, ramp_base(PAGE_SIZE), None));
         let before = restored.snapshot();
         assert!(matches!(
-            restored.release_storage_completion(flush.request_id, BlockRetainedRelease::Recovery),
+            restored.release_storage_completion(flush.identity(), BlockRetainedRelease::Recovery),
             Err(crate::DeviceError::ResponseSequenceOverflow { .. })
         ));
         assert_eq!(restored.snapshot(), before);
@@ -592,6 +595,7 @@ mod tests {
         for data in [Vec::new(), vec![0], vec![1, 2]] {
             let response = BlockResponse {
                 status: BlockStatus::Error,
+                epoch: 0,
                 request_id: 12,
                 data,
             };
@@ -617,11 +621,28 @@ mod tests {
     }
 
     #[test]
+    fn decode_rejects_nonzero_reserved_request_and_response_headers() {
+        let mut request = ok(BlockRequest::read(1, 0, 0).encode());
+        request[2..4].copy_from_slice(&1_u16.to_le_bytes());
+        assert_eq!(
+            BlockRequest::decode(&request),
+            Err(BlockCodecError::NonZeroReserved { reserved: 1 })
+        );
+
+        let mut response = ok(BlockResponse::ok(1, Vec::new()).encode());
+        response[2..4].copy_from_slice(&0x0201_u16.to_le_bytes());
+        assert_eq!(
+            BlockResponse::decode(&response),
+            Err(BlockCodecError::NonZeroReserved { reserved: 0x0201 })
+        );
+    }
+
+    #[test]
     fn decode_rejects_write_count_exceeding_payload() {
         // Encode a valid write, then corrupt the on-wire count field (LE u32 at
-        // offset 16) to exceed the payload, simulating a hostile frame.
+        // offset 24) to exceed the payload, simulating a hostile frame.
         let mut wire = ok(BlockRequest::write(1, 0, vec![0xAA; 8]).encode());
-        wire[16..20].copy_from_slice(&9999u32.to_le_bytes());
+        wire[24..28].copy_from_slice(&9999u32.to_le_bytes());
         assert!(matches!(
             BlockRequest::decode(&wire),
             Err(BlockCodecError::CountExceedsPayload { .. })
@@ -678,6 +699,231 @@ mod tests {
         ok(dev.advance_to(lim3));
         let r = ok(dev.next_response()).unwrap_or_else(|| panic!("expected response"));
         assert_eq!(r.data, vec![0x77; 8]);
+    }
+
+    #[test]
+    fn delivered_transport_reset_rewrites_later_completion_without_aliasing_identity() {
+        let latency = BlockLatency::new(100, 100, 0, 0, 0);
+        let mut dev = device_with_latency(PAGE_SIZE, latency);
+        let trigger = BlockRequest::get_length(41).with_identity(BlockRequestIdentity::new(7, 41));
+        let victim = BlockRequest::read(42, 0, 8).with_identity(BlockRequestIdentity::new(7, 42));
+        let transition = ResolvedBlockControllerTransition {
+            failure_result: BlockFaultResult::IoError,
+            unadmitted: BlockTransitionUnadmitted::WaitForRecovery,
+            queued: BlockTransitionPending::Fail,
+            executing: BlockTransitionPending::RetryPreserveId,
+            resolved: BlockTransitionResolved::Complete,
+            completed_undelivered: BlockTransitionUndelivered::RetryNewId,
+            controller_buffer: BlockTransitionState::Preserve,
+            volatile_cache: BlockTransitionState::Preserve,
+            request_ids: BlockTransportRequestIds::NewEpochFromZero,
+            duplicate_history: BlockTransitionState::Lose,
+            topology: BlockTransitionTopology::Preserve,
+            recovery_nanos: 25,
+        };
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&trigger, PAGE_SIZE as u64);
+        directive.duplicate_completions = vec![ResolvedBlockDuplicateCompletion::Reset {
+            gap_nanos: 10,
+            transition,
+        }];
+        ok(dev.install_storage_fault_directive(trigger.identity(), directive));
+
+        ok(dev.submit(0, &trigger));
+        ok(dev.submit(0, &victim));
+        assert_eq!(ok(dev.advance_to(100)), 3);
+
+        let primary = ok(dev.next_response()).unwrap_or_else(|| panic!("trigger primary"));
+        let reset = ok(dev.next_response()).unwrap_or_else(|| panic!("reset event"));
+        let retried = ok(dev.next_response()).unwrap_or_else(|| panic!("victim disposition"));
+        assert_eq!(primary.identity(), trigger.identity());
+        assert_eq!(reset.status, BlockStatus::TransportReset);
+        assert_eq!(reset.identity(), trigger.identity());
+        assert_eq!(retried.status, BlockStatus::RetryNewId);
+        assert_eq!(retried.identity(), victim.identity());
+    }
+
+    #[test]
+    fn transport_reset_commits_only_after_bounded_shmem_delivery() {
+        let latency = BlockLatency::new(100, 100, 0, 0, 0);
+        let mut dev = device_with_latency(PAGE_SIZE, latency);
+        let trigger = BlockRequest::get_length(41).with_identity(BlockRequestIdentity::new(7, 41));
+        let transition = ResolvedBlockControllerTransition {
+            failure_result: BlockFaultResult::IoError,
+            unadmitted: BlockTransitionUnadmitted::WaitForRecovery,
+            queued: BlockTransitionPending::Fail,
+            executing: BlockTransitionPending::RetryPreserveId,
+            resolved: BlockTransitionResolved::Complete,
+            completed_undelivered: BlockTransitionUndelivered::RetryNewId,
+            controller_buffer: BlockTransitionState::Preserve,
+            volatile_cache: BlockTransitionState::Preserve,
+            request_ids: BlockTransportRequestIds::NewEpochFromZero,
+            duplicate_history: BlockTransitionState::Lose,
+            topology: BlockTransitionTopology::Preserve,
+            recovery_nanos: 25,
+        };
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&trigger, PAGE_SIZE as u64);
+        directive.duplicate_completions = vec![ResolvedBlockDuplicateCompletion::Reset {
+            gap_nanos: 10,
+            transition,
+        }];
+        ok(dev.install_storage_fault_directive(trigger.identity(), directive));
+        ok(dev.submit(0, &trigger));
+
+        let outbox = RingHeader::new();
+        let mut entries = vec![FrameEntry::default(); 1];
+        let consumer = NodeSlot::new(KIND_VM);
+        assert_eq!(
+            ok(dev.advance_to_shmem(100, &outbox, &mut entries, &consumer)).delivered,
+            1
+        );
+        assert_eq!(dev.storage_fault_state().transport_epoch(), Some(7));
+        assert_eq!(dev.storage_fault_state().recovery_until_nanos(), None);
+
+        let primary = ok(outbox.dequeue(&entries)).unwrap_or_else(|| panic!("primary response"));
+        assert_eq!(
+            ok(BlockResponse::decode(ok(primary.payload()))).status,
+            BlockStatus::Ok
+        );
+        assert_eq!(
+            ok(dev.advance_to_shmem(100, &outbox, &mut entries, &consumer)).delivered,
+            1
+        );
+        assert_eq!(dev.storage_fault_state().transport_epoch(), Some(8));
+        assert_eq!(
+            dev.storage_fault_state().recovery_until_nanos(),
+            Some((100_u64 << 8) + 25)
+        );
+        let reset = ok(outbox.dequeue(&entries)).unwrap_or_else(|| panic!("reset response"));
+        assert_eq!(
+            ok(BlockResponse::decode(ok(reset.payload()))).status,
+            BlockStatus::TransportReset
+        );
+    }
+
+    #[test]
+    fn queued_old_epoch_frames_receive_every_reset_disposition_after_backpressure() {
+        let cases = [
+            (BlockTransitionPending::Fail, BlockStatus::Error),
+            (BlockTransitionPending::RetryNewId, BlockStatus::RetryNewId),
+            (
+                BlockTransitionPending::RetryPreserveId,
+                BlockStatus::RetryPreserveId,
+            ),
+        ];
+
+        for (queued, expected_status) in cases {
+            let latency = BlockLatency::new(100, 100, 0, 0, 0);
+            let mut dev = device_with_latency(PAGE_SIZE, latency);
+            let trigger =
+                BlockRequest::get_length(41).with_identity(BlockRequestIdentity::new(7, 41));
+            let victim =
+                BlockRequest::read(42, 0, 8).with_identity(BlockRequestIdentity::new(7, 42));
+            let transition = ResolvedBlockControllerTransition {
+                failure_result: BlockFaultResult::IoError,
+                unadmitted: BlockTransitionUnadmitted::WaitForRecovery,
+                queued,
+                executing: BlockTransitionPending::Fail,
+                resolved: BlockTransitionResolved::Complete,
+                completed_undelivered: BlockTransitionUndelivered::Complete,
+                controller_buffer: BlockTransitionState::Preserve,
+                volatile_cache: BlockTransitionState::Preserve,
+                request_ids: BlockTransportRequestIds::NewEpochFromZero,
+                duplicate_history: BlockTransitionState::Preserve,
+                topology: BlockTransitionTopology::Preserve,
+                recovery_nanos: 25,
+            };
+            let mut directive = ResolvedBlockFaultDirective::fault_free(&trigger, PAGE_SIZE as u64);
+            directive.duplicate_completions = vec![ResolvedBlockDuplicateCompletion::Reset {
+                gap_nanos: 10,
+                transition,
+            }];
+            ok(dev.install_storage_fault_directive(trigger.identity(), directive));
+            ok(dev.submit(0, &trigger));
+
+            let inbox = RingHeader::new();
+            let mut inbox_entries = vec![FrameEntry::default(); 2];
+            let victim_frame = ok(FrameEntry::new(
+                0,
+                0,
+                victim.request_id,
+                &ok(victim.encode()),
+            ));
+            ok(inbox.enqueue(&mut inbox_entries, &victim_frame));
+            let producer = NodeSlot::new(KIND_VM);
+            let outbox = RingHeader::new();
+            let mut outbox_entries = vec![FrameEntry::default(); 1];
+            let consumer = NodeSlot::new(KIND_VM);
+
+            assert_eq!(
+                ok(dev.advance_to_shmem(100, &outbox, &mut outbox_entries, &consumer)).delivered,
+                1
+            );
+            assert_eq!(dev.storage_fault_state().transport_epoch(), Some(7));
+            assert_eq!(ok(inbox.live_len(&inbox_entries)), 1);
+            let primary = ok(outbox.dequeue(&outbox_entries))
+                .unwrap_or_else(|| panic!("trigger primary response"));
+            assert_eq!(
+                ok(BlockResponse::decode(ok(primary.payload()))).status,
+                BlockStatus::Ok
+            );
+
+            assert_eq!(
+                ok(dev.advance_to_shmem(100, &outbox, &mut outbox_entries, &consumer)).delivered,
+                1
+            );
+            assert_eq!(dev.storage_fault_state().transport_epoch(), Some(8));
+            assert_eq!(ok(inbox.live_len(&inbox_entries)), 1);
+            let reset = ok(outbox.dequeue(&outbox_entries))
+                .unwrap_or_else(|| panic!("transport reset response"));
+            assert_eq!(
+                ok(BlockResponse::decode(ok(reset.payload()))).status,
+                BlockStatus::TransportReset
+            );
+
+            let victim_directive =
+                ResolvedBlockFaultDirective::fault_free(&victim, PAGE_SIZE as u64);
+            ok(dev.install_storage_fault_directive(victim.identity(), victim_directive));
+            assert_eq!(
+                ok(dev.process_one_shmem_request(&inbox, &inbox_entries, &producer)).processed,
+                1
+            );
+            assert_eq!(
+                ok(dev.advance_to_shmem(100, &outbox, &mut outbox_entries, &consumer)).delivered,
+                1
+            );
+            let disposition = ok(outbox.dequeue(&outbox_entries))
+                .unwrap_or_else(|| panic!("queued request disposition"));
+            let disposition = ok(BlockResponse::decode(ok(disposition.payload())));
+            assert_eq!(disposition.identity(), victim.identity());
+            assert_eq!(disposition.status, expected_status);
+
+            if queued == BlockTransitionPending::RetryPreserveId {
+                let retry_frame = ok(FrameEntry::new(
+                    101,
+                    0,
+                    victim.request_id,
+                    &ok(victim.encode()),
+                ));
+                ok(inbox.enqueue(&mut inbox_entries, &retry_frame));
+                let retry_directive =
+                    ResolvedBlockFaultDirective::fault_free(&victim, PAGE_SIZE as u64);
+                ok(dev.install_storage_fault_directive(victim.identity(), retry_directive));
+                assert_eq!(
+                    ok(dev.process_one_shmem_request(&inbox, &inbox_entries, &producer)).processed,
+                    1
+                );
+                assert_eq!(
+                    ok(dev.advance_to_shmem(102, &outbox, &mut outbox_entries, &consumer))
+                        .delivered,
+                    1
+                );
+                let completion = ok(outbox.dequeue(&outbox_entries))
+                    .unwrap_or_else(|| panic!("preserved retry completion"));
+                let completion = ok(BlockResponse::decode(ok(completion.payload())));
+                assert_eq!(completion.identity(), victim.identity());
+                assert_eq!(completion.status, BlockStatus::Ok);
+            }
+        }
     }
 
     #[test]

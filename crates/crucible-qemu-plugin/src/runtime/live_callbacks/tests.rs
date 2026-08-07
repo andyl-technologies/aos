@@ -280,11 +280,19 @@ fn every_live_callback_entry_rejects_work_after_quiescence() {
         -1
     );
     assert_eq!(
-        devices::crucible_qemu_plugin_live_block_submit_cb(0, 0, 0, std::ptr::null(), 0, userdata,),
+        devices::crucible_qemu_plugin_live_block_submit_cb(
+            0,
+            0,
+            0,
+            0,
+            std::ptr::null(),
+            0,
+            userdata,
+        ),
         -1
     );
     assert_eq!(
-        devices::crucible_qemu_plugin_live_block_poll_cb(0, std::ptr::null_mut(), 0, userdata,),
+        devices::crucible_qemu_plugin_live_block_poll_cb(0, 0, std::ptr::null_mut(), 0, userdata,),
         -1
     );
     crucible_qemu_plugin_live_block_wait_cb(0, userdata);
@@ -302,6 +310,44 @@ fn every_live_callback_entry_rejects_work_after_quiescence() {
     let after = slot.snapshot();
     assert_eq!(after, before);
     LIVE_VCPU_TIME_STATE.store(std::ptr::null_mut(), Ordering::Release);
+}
+
+#[test]
+fn block_transport_restore_callback_returns_failure_for_invalid_input() {
+    let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 12, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = Box::new(
+        test_live_state(72, 1, 0, 0, &slot)
+            .unwrap_or_else(|error| panic!("live callback state should build: {error}")),
+    );
+    let userdata = std::ptr::from_ref(state.as_ref())
+        .cast_mut()
+        .cast::<c_void>();
+
+    assert_eq!(
+        devices::crucible_qemu_plugin_live_block_transport_restore_cb(
+            std::ptr::null(),
+            1,
+            0,
+            0,
+            userdata,
+        ),
+        -1
+    );
+    assert_eq!(
+        devices::crucible_qemu_plugin_live_block_transport_restore_cb(
+            std::ptr::null(),
+            0,
+            0,
+            0,
+            std::ptr::null_mut(),
+        ),
+        -1
+    );
 }
 
 #[test]
@@ -596,7 +642,7 @@ fn live_time_completion_rejects_missing_or_mismatched_pending_state() {
 }
 
 #[test]
-fn live_pending_advance_rejects_idle_resume_and_reentrant_publication() {
+fn live_pending_advance_rejects_idle_resume_and_allows_read_only_reentrant_publication() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
@@ -635,10 +681,9 @@ fn live_pending_advance_rejects_idle_resume_and_reentrant_publication() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    assert_eq!(
-        state.publish_current_icount(0),
-        Err(LiveVcpuTimeCallbackError::CallbackReentered)
-    );
+    state.publish_current_icount(0).unwrap_or_else(|error| {
+        panic!("read-only publication should use the atomic pending coordinate: {error}")
+    });
     drop(pending_guard);
     assert_eq!(slot.snapshot(), pending_snapshot);
 
@@ -646,6 +691,43 @@ fn live_pending_advance_rejects_idle_resume_and_reentrant_publication() {
         .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 16))
         .unwrap_or_else(|error| panic!("retained pending advance should complete: {error}"));
     assert_eq!(slot.snapshot().current_icount, 8);
+}
+
+#[test]
+fn nested_fault_command_pump_uses_published_scheduler_state() {
+    let slot = NodeSlot::new(KIND_VM);
+    let state = test_live_state(71, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    let bridge_guard = state
+        .fault_commands
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state
+        .fault_command_pump_active
+        .store(true, Ordering::Release);
+
+    state
+        .pump_fault_commands(0)
+        .unwrap_or_else(|error| panic!("nested scheduler query should not repump: {error}"));
+
+    assert!(state.fault_command_pump_active.load(Ordering::Acquire));
+    state
+        .fault_command_pump_active
+        .store(false, Ordering::Release);
+    drop(bridge_guard);
+}
+
+#[test]
+fn nested_newer_icount_publication_supersedes_only_its_older_caller() {
+    assert_eq!(raw_icount_publication_is_superseded(10, 12, 13), Ok(true));
+    assert_eq!(raw_icount_publication_is_superseded(10, 12, 12), Ok(false));
+    assert_eq!(
+        raw_icount_publication_is_superseded(13, 12, 13),
+        Err(LiveVcpuTimeCallbackError::IcountRegressed {
+            previous_icount: 13,
+            current_icount: 12,
+        })
+    );
 }
 
 #[test]
@@ -753,6 +835,15 @@ extern "C" fn test_register_net_tx(
 extern "C" fn test_register_block(
     _submit: Option<crate::QemuBlkSubmitCbFn>,
     _poll: Option<crate::QemuBlkPollCbFn>,
+    _userdata: *mut c_void,
+) {
+}
+
+extern "C" fn test_register_block_event(
+    _poll: Option<crate::QemuBlkEventPollCbFn>,
+    _commit: Option<crate::QemuBlkEventCommitCbFn>,
+    _save: Option<crate::QemuBlkTransportSaveCbFn>,
+    _restore: Option<crate::QemuBlkTransportRestoreCbFn>,
     _userdata: *mut c_void,
 ) {
 }

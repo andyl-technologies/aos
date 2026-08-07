@@ -92,6 +92,8 @@ pub const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL: &str = "qemu_plugin_register_wake
 pub const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL: &str = "qemu_plugin_request_shutdown";
 /// QEMU plugin API symbol used to register shmem block submit/poll callbacks.
 pub const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL: &str = "qemu_plugin_register_blk_cb";
+/// QEMU plugin API symbol used to register asynchronous block transport events.
+pub const QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL: &str = "qemu_plugin_register_blk_event_cb";
 /// QEMU plugin API symbol used to register the blocked-device wait callback.
 pub const QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL: &str = "qemu_plugin_register_blk_wait_cb";
 /// QEMU plugin API symbol used to register shmem 9p burst/submit/poll callbacks.
@@ -132,6 +134,7 @@ const QEMU_PLUGIN_TB_N_INSNS_SYMBOL_C: &[u8] = b"qemu_plugin_tb_n_insns\0";
 const QEMU_PLUGIN_TB_GET_INSN_SYMBOL_C: &[u8] = b"qemu_plugin_tb_get_insn\0";
 const QEMU_PLUGIN_INSN_SIZE_SYMBOL_C: &[u8] = b"qemu_plugin_insn_size\0";
 const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_cb\0";
+const QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_event_cb\0";
 const QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_wait_cb\0";
 const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_9p_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_vcpu_init_cb\0";
@@ -322,14 +325,32 @@ pub type QemuTcgExecCbFn = extern "C" fn(c_uint, u64, *mut c_void);
 /// QEMU TCG-exec callback registration exported by `crucible-plugin-tcg-exec-cb`.
 pub type QemuRegisterTcgExecCbFn = extern "C" fn(Option<QemuTcgExecCbFn>, *mut c_void);
 /// Block submit callback body passed to QEMU's shmem block driver.
-pub type QemuBlkSubmitCbFn = extern "C" fn(u32, u32, u64, *const u8, usize, *mut c_void) -> c_int;
+pub type QemuBlkSubmitCbFn =
+    extern "C" fn(u64, u32, u32, u64, *const u8, usize, *mut c_void) -> c_int;
 /// Block completion poll callback body passed to QEMU's shmem block driver.
-pub type QemuBlkPollCbFn = extern "C" fn(u32, *mut u8, usize, *mut c_void) -> i64;
+pub type QemuBlkPollCbFn = extern "C" fn(u64, u32, *mut u8, usize, *mut c_void) -> i64;
+/// Asynchronous block transport-event poll callback body.
+pub type QemuBlkEventPollCbFn = extern "C" fn(*mut u8, usize, *mut c_void) -> i64;
+/// Commit callback for an event accepted by QEMU after exact validation.
+pub type QemuBlkEventCommitCbFn = extern "C" fn(*mut c_void) -> c_int;
+/// VMState size-query/save callback for the permissive transport continuation.
+pub type QemuBlkTransportSaveCbFn = extern "C" fn(*mut u8, usize, *mut c_void) -> i64;
+/// VMState restore callback paired with QEMU's allocator state.
+pub type QemuBlkTransportRestoreCbFn =
+    extern "C" fn(*const u8, usize, u64, u32, *mut c_void) -> c_int;
 /// Block device-wait callback body passed to QEMU's shmem block driver.
 pub type QemuBlkWaitCbFn = extern "C" fn(u32, *mut c_void);
 /// QEMU shmem block callback registration exported by `crucible-blk-shmem`.
 pub type QemuRegisterBlkCbFn =
     extern "C" fn(Option<QemuBlkSubmitCbFn>, Option<QemuBlkPollCbFn>, *mut c_void);
+/// QEMU asynchronous block event registration export.
+pub type QemuRegisterBlkEventCbFn = extern "C" fn(
+    Option<QemuBlkEventPollCbFn>,
+    Option<QemuBlkEventCommitCbFn>,
+    Option<QemuBlkTransportSaveCbFn>,
+    Option<QemuBlkTransportRestoreCbFn>,
+    *mut c_void,
+);
 /// QEMU shmem block wait registration exported by the device-completion patch.
 pub type QemuRegisterBlkWaitCbFn = extern "C" fn(Option<QemuBlkWaitCbFn>, *mut c_void);
 /// 9p burst callback body passed to QEMU's virtio-9p device.
@@ -1634,6 +1655,35 @@ pub const fn resolve_qemu_register_blk_cb_symbol() -> Option<QemuRegisterBlkCbFn
     None
 }
 
+/// Resolves QEMU's asynchronous block transport-event registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_blk_event_cb_symbol() -> Option<QemuRegisterBlkEventCbFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name. Patch 0062
+    // exports this exact function-pointer ABI and live install fails closed if
+    // the symbol is absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null symbol has the exact patched-QEMU declaration
+        // represented by `QemuRegisterBlkEventCbFn`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterBlkEventCbFn>(symbol) })
+    }
+}
+
+/// Reports that asynchronous block event registration is unavailable off Unix.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_blk_event_cb_symbol() -> Option<QemuRegisterBlkEventCbFn> {
+    None
+}
+
 /// Resolves QEMU's shmem block device-wait registration export.
 #[cfg(unix)]
 #[must_use]
@@ -1958,6 +2008,7 @@ fn install_owned_boundary(
     let net_send = crate::resolve_qemu_net_send_symbol();
     let net_flush = crate::resolve_qemu_net_flush_symbol();
     let register_block = resolve_qemu_register_blk_cb_symbol();
+    let register_block_event = resolve_qemu_register_blk_event_cb_symbol();
     let register_block_wait = resolve_qemu_register_blk_wait_cb_symbol();
     let register_ninep = resolve_qemu_register_9p_cb_symbol();
     let fault_commands = crate::fault_command::QemuFaultCommandApis::resolve()
@@ -2004,6 +2055,7 @@ fn install_owned_boundary(
         net_send,
         net_flush,
         register_block,
+        register_block_event,
         register_block_wait,
         register_ninep,
         fault_commands,

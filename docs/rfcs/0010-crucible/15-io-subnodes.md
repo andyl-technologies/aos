@@ -238,29 +238,34 @@ Block requests and responses ride the SPSC frame rings of
 ```text
 BlockRequest  (VM slot -> SLOT_BLK_IO)
   u8   type        -- 0=read, 1=write, 2=flush, 3=get_length, 4=discard
-  u8   version     -- block wire ABI version (= 3)
+  u8   version     -- block wire ABI version (= 4)
   u16  _reserved   -- zero
-  u32  request_id  -- correlates response to request
+  u64  epoch       -- transport generation
+  u32  request_id  -- correlates response within the epoch
   u64  offset      -- byte offset (read/write/discard)
   u32  count       -- byte count (read/write/discard)
   [count bytes]    -- payload, write only
 
 BlockResponse (SLOT_BLK_IO -> VM slot)
-  u8   status      -- 0=ok, 1=error
-  u8   version     -- block wire ABI version (= 3)
+  u8   status      -- 0=ok, 1=error, 2=reset, 3/4=duplicate, 5/6/7=disposition
+  u8   version     -- block wire ABI version (= 4)
   u16  _reserved   -- zero
-  u32  request_id  -- echoes the request
+  u64  epoch       -- echoes the transport generation
+  u32  request_id  -- echoes the epoch-local request ID
   u32  count       -- response data length
   [count bytes]    -- success data; exactly one typed-result byte on error
 ```
 
-Version 3 defines the closed error payload used by signal-driven storage faults
-and the payload-free discard operation. The one-byte error values and their
+Version 4 defines epoch-scoped identities, the closed error payload used by
+signal-driven storage faults, payload-free discard, reset events, and reset
+dispositions. The one-byte error values and their
 guest-visible errno mapping are listed in
 [`14-block-typed-errors.md`](../0012-signal-driven-fault-model/14-qemu-fault-patches/14-block-typed-errors.md),
 and discard is specified in
 [`15-block-discard.md`](../0012-signal-driven-fault-model/14-qemu-fault-patches/15-block-discard.md).
-Versions 1 and 2 are not accepted by a version 3 endpoint; there is no legacy
+Reset transport is specified in
+[`16-block-transport-reset.md`](../0012-signal-driven-fault-model/14-qemu-fault-patches/16-block-transport-reset.md).
+Versions 1 through 3 are not accepted by a version 4 endpoint; there is no legacy
 decode or silent downgrade path.
 
 - **[IO-8]** The block request/response wire format MUST be a **versioned
@@ -806,7 +811,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   `PluginBlockIo` encodes VM requests into the `(vm slot -> SLOT_BLK_IO)`
   shared-memory ring and polls responses from the `(SLOT_BLK_IO -> vm slot)`
   shared-memory ring. `BlockRequest` and `BlockResponse` use block wire version
-  1, fixed little-endian field order, exact fixed header sizes, and
+  4, fixed little-endian field order, exact fixed header sizes, and
   `MAX_FRAME_DATA` bounds before `FrameEntry` construction; reserved bytes are zero on emit and rejected on decode; unknown operation/status values,
   unsupported versions, short frames, count-over-payload frames, and trailing
   payload bytes all fail as typed `BlockWireError` values without parsing past

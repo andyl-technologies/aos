@@ -346,6 +346,13 @@
         patchName = "0061-crucible-block-discard.patch";
       };
     }
+    {
+      patch = "0062-crucible-block-transport-reset.patch";
+      check = import ./phase1-qemu-block-shmem.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0062-crucible-block-transport-reset.patch";
+      };
+    }
   ];
 
   microtestPatchNames =

@@ -11,7 +11,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::error::DeviceError;
 use crate::request::{AdditionalCompletion, ComputedResponse, Response, ResponseStatus};
 
-use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, BlockStatus};
+use super::codec::{
+    BlockErrorCode, BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse, BlockStatus,
+    BlockTransportPending, BlockTransportRequestIds, BlockTransportReset, BlockTransportResolved,
+    BlockTransportUnadmitted, BlockTransportUndelivered,
+};
 use super::flash::{BlockFlashMutationOutcome, BlockFlashState, ResolvedBlockFlashRule};
 use super::media::{BlockMediaState, ResolvedBlockMediaRule};
 use super::overlay::{BaseImage, CowOverlay};
@@ -44,6 +48,17 @@ pub const HARD_BLOCK_DUPLICATE_COMPLETIONS: usize = 256;
 pub const HARD_BLOCK_RETAINED_COMPLETIONS: usize = 1_048_576;
 /// Hard maximum resolved media-persistence directives and retained outcomes.
 pub const HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS: usize = 1_048_576;
+/// Hard maximum controller epochs whose queued-request reset policy is retained.
+pub const HARD_BLOCK_RETIRED_TRANSPORT_EPOCHS: usize = 65_536;
+/// Hard maximum old-epoch request identities authorized for one preserved retry.
+pub const HARD_BLOCK_RETRY_PRESERVE_AUTHORIZATIONS: usize = 1_048_576;
+
+/// Reset policy retained for requests already published under an older epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BlockRetiredTransportEpoch {
+    queued: BlockTransportPending,
+    failure_result: BlockErrorCode,
+}
 
 /// Availability presented by the block controller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -307,6 +322,8 @@ pub enum ResolvedBlockDuplicateCompletion {
     Reset {
         /// Cumulative delay from the primary completion, in nanoseconds.
         gap_nanos: u64,
+        /// Complete controller transition executed by this first duplicate.
+        transition: ResolvedBlockControllerTransition,
     },
 }
 
@@ -317,8 +334,103 @@ pub enum BlockDuplicatePolicy {
     Ignore,
     /// Every duplicate carries this matching typed protocol error.
     ProtocolError(BlockResponse),
-    /// The first duplicate requires a live guest transport reset.
-    Reset,
+    /// The first duplicate executes this complete live controller transition.
+    Reset(ResolvedBlockControllerTransition),
+}
+
+/// Treatment of requests arriving while a controller transition is active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockTransitionUnadmitted {
+    /// Rejects the request with the transition's typed failure.
+    Reject,
+    /// Holds admission until the exact recovery boundary.
+    WaitForRecovery,
+}
+
+/// Treatment of queued or executing requests at the transition boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockTransitionPending {
+    /// Completes the request with the transition's typed failure.
+    Fail,
+    /// Reissues the request with its existing identity.
+    RetryPreserveId,
+    /// Reissues the request with a newly allocated post-transition identity.
+    RetryNewId,
+}
+
+/// Treatment of resolved requests at the transition boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockTransitionResolved {
+    /// Preserves the resolved result.
+    Complete,
+    /// Replaces the result with the transition's typed failure.
+    Fail,
+    /// Reissues the request with its existing identity.
+    RetryPreserveId,
+    /// Reissues the request with a newly allocated post-transition identity.
+    RetryNewId,
+}
+
+/// Treatment of completed but guest-undelivered requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockTransitionUndelivered {
+    /// Preserves and later delivers the completion.
+    Complete,
+    /// Replaces the completion with the transition's typed failure.
+    Fail,
+    /// Reissues the request with its existing identity.
+    RetryPreserveId,
+    /// Reissues the request with a newly allocated post-transition identity.
+    RetryNewId,
+    /// Discards the completion.
+    DropCompletion,
+}
+
+/// Retention of volatile device state across a controller transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockTransitionState {
+    /// Preserves the complete state.
+    Preserve,
+    /// Loses the complete state.
+    Lose,
+}
+
+/// Namespace and path discovery behavior after recovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockTransitionTopology {
+    /// Preserves the current topology generation.
+    Preserve,
+    /// Re-enumerates the declared namespaces and paths.
+    ReenumerateDeclared,
+}
+
+/// Fully resolved live block-controller reset policy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedBlockControllerTransition {
+    /// Typed result used by every stage configured to fail.
+    pub failure_result: BlockFaultResult,
+    /// Treatment of requests arriving during recovery.
+    pub unadmitted: BlockTransitionUnadmitted,
+    /// Treatment of admitted queued requests.
+    pub queued: BlockTransitionPending,
+    /// Treatment of executing requests.
+    pub executing: BlockTransitionPending,
+    /// Treatment of resolved requests.
+    pub resolved: BlockTransitionResolved,
+    /// Treatment of completed but guest-undelivered requests.
+    pub completed_undelivered: BlockTransitionUndelivered,
+    /// Controller write-buffer retention.
+    pub controller_buffer: BlockTransitionState,
+    /// Volatile write-cache retention.
+    pub volatile_cache: BlockTransitionState,
+    /// Post-reset request-ID allocation.
+    pub request_ids: BlockTransportRequestIds,
+    /// Duplicate-suppression history retention.
+    pub duplicate_history: BlockTransitionState,
+    /// Post-reset namespace/path behavior.
+    pub topology: BlockTransitionTopology,
+    /// Exact recovery duration in virtual nanoseconds.
+    pub recovery_nanos: u64,
 }
 
 impl ResolvedBlockDuplicateCompletion {
@@ -326,7 +438,7 @@ impl ResolvedBlockDuplicateCompletion {
         match self {
             Self::Ignore { gap_nanos }
             | Self::ProtocolError { gap_nanos, .. }
-            | Self::Reset { gap_nanos } => *gap_nanos,
+            | Self::Reset { gap_nanos, .. } => *gap_nanos,
         }
     }
 }
@@ -334,6 +446,8 @@ impl ResolvedBlockDuplicateCompletion {
 /// One fully resolved directive consumed by exactly one block request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedBlockFaultDirective {
+    /// Transport generation containing the exact request.
+    pub request_epoch: u64,
     /// Adapter-owned monotone opportunity sequence for queue identity.
     pub request_sequence: u64,
     /// Expected wire operation; prevents directive/request aliasing.
@@ -447,6 +561,7 @@ impl ResolvedBlockFaultDirective {
     #[must_use]
     pub fn fault_free(request: &BlockRequest, capacity: u64) -> Self {
         Self {
+            request_epoch: request.epoch,
             request_sequence: u64::from(request.request_id),
             operation: request.op,
             offset: request.offset,
@@ -527,6 +642,7 @@ impl ResolvedBlockFaultDirective {
                     if response.request_id != request_id
                         || response.status != BlockStatus::Error
             )
+            || matches!(&policy, BlockDuplicatePolicy::Reset(transition) if transition.recovery_nanos == 0)
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "duplicate completion policy is invalid",
@@ -560,8 +676,14 @@ impl ResolvedBlockFaultDirective {
                         response: response.clone(),
                     }
                 }
-                BlockDuplicatePolicy::Reset => {
-                    ResolvedBlockDuplicateCompletion::Reset { gap_nanos }
+                BlockDuplicatePolicy::Reset(transition) if index == 0 => {
+                    ResolvedBlockDuplicateCompletion::Reset {
+                        gap_nanos,
+                        transition: transition.clone(),
+                    }
+                }
+                BlockDuplicatePolicy::Reset(_) => {
+                    ResolvedBlockDuplicateCompletion::Ignore { gap_nanos }
                 }
             });
         }
@@ -576,7 +698,8 @@ impl ResolvedBlockFaultDirective {
     ) -> Result<(), DeviceError> {
         let device_length = config.length_bytes;
         self.validate_static(request.request_id, config)?;
-        if self.operation != request.op
+        if self.request_epoch != request.epoch
+            || self.operation != request.op
             || self.offset != request.offset
             || self.count != request.count
             || self.request_digest != request_digest(request)
@@ -658,6 +781,7 @@ impl ResolvedBlockFaultDirective {
         for duplicate in &self.duplicate_completions {
             if let ResolvedBlockDuplicateCompletion::ProtocolError { response, .. } = duplicate
                 && (response.request_id != request_id
+                    || response.epoch != self.request_epoch
                     || response.status != BlockStatus::Error
                     || !block_response_fits_transport(response))
             {
@@ -665,13 +789,6 @@ impl ResolvedBlockFaultDirective {
                     reason: "duplicate protocol error is invalid for the request transport",
                 });
             }
-        }
-        if self
-            .duplicate_completions
-            .iter()
-            .any(|duplicate| matches!(duplicate, ResolvedBlockDuplicateCompletion::Reset { .. }))
-        {
-            return Err(DeviceError::BlockDuplicateTransportUnavailable { request_id });
         }
         if self.operation != BlockOp::Read && !self.read_transforms.is_empty() {
             return Err(DeviceError::InvalidBlockFaultDirective {
@@ -989,8 +1106,8 @@ pub struct BlockRetainedVersion {
 /// One protocol-valid completion retained by a stall until recovery or timeout.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockRetainedCompletion {
-    /// Original request identity.
-    pub request_id: u32,
+    /// Original epoch-scoped request identity.
+    pub identity: BlockRequestIdentity,
     /// Complete uniform wire response released on recovery.
     pub recovery_response: Response,
     /// Complete uniform wire response released on timeout.
@@ -1007,8 +1124,13 @@ pub struct BlockRetainedCompletion {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockFaultState {
     config: BlockDurabilityConfig,
+    icount_shift: u8,
+    transport_epoch: Option<u64>,
+    retired_transport_epochs: BTreeMap<u64, BlockRetiredTransportEpoch>,
+    retry_preserve_authorizations: BTreeSet<BlockRequestIdentity>,
+    recovery_until_nanos: Option<u64>,
     execution_required: bool,
-    pending: BTreeMap<u32, ResolvedBlockFaultDirective>,
+    pending: BTreeMap<BlockRequestIdentity, ResolvedBlockFaultDirective>,
     pending_bytes: u64,
     service: BlockServiceState,
     service_pending: BTreeMap<u64, BlockServicePendingRequest>,
@@ -1043,7 +1165,7 @@ pub struct BlockFaultState {
     first_lost_sequence: Option<u64>,
     actual_durable_frontier: u64,
     reported_durable_frontier: u64,
-    retained_completions: BTreeMap<u32, BlockRetainedCompletion>,
+    retained_completions: BTreeMap<BlockRequestIdentity, BlockRetainedCompletion>,
 }
 
 impl BlockFaultState {
@@ -1052,6 +1174,11 @@ impl BlockFaultState {
     pub fn write_through(length_bytes: u64) -> Self {
         Self {
             config: BlockDurabilityConfig::write_through(length_bytes),
+            icount_shift: 0,
+            transport_epoch: None,
+            retired_transport_epochs: BTreeMap::new(),
+            retry_preserve_authorizations: BTreeSet::new(),
+            recovery_until_nanos: None,
             execution_required: false,
             pending: BTreeMap::new(),
             pending_bytes: 0,
@@ -1104,6 +1231,11 @@ impl BlockFaultState {
         )?;
         Ok(Self {
             config,
+            icount_shift: 0,
+            transport_epoch: None,
+            retired_transport_epochs: BTreeMap::new(),
+            retry_preserve_authorizations: BTreeSet::new(),
+            recovery_until_nanos: None,
             execution_required: false,
             pending: BTreeMap::new(),
             pending_bytes: 0,
@@ -1147,6 +1279,12 @@ impl BlockFaultState {
     /// Enables or disables the fail-closed requirement for exact directives.
     pub fn require_directives(&mut self, required: bool) {
         self.execution_required = required;
+    }
+
+    /// Binds request arrival coordinates to the device's virtual-time scale.
+    pub(super) fn set_icount_shift(&mut self, shift_bits: u8) {
+        debug_assert!(shift_bits < 64);
+        self.icount_shift = shift_bits;
     }
 
     /// Enables fail-closed resolve/persist opportunities after queue service.
@@ -1403,7 +1541,11 @@ impl BlockFaultState {
     /// Returns whether no request, mutation, or sequence has entered this state.
     #[must_use]
     pub fn is_pristine(&self) -> bool {
-        self.pending.is_empty()
+        self.transport_epoch.is_none()
+            && self.retired_transport_epochs.is_empty()
+            && self.retry_preserve_authorizations.is_empty()
+            && self.recovery_until_nanos.is_none()
+            && self.pending.is_empty()
             && self.pending_bytes == 0
             && self.service.continuations().is_empty()
             && self.service_pending.is_empty()
@@ -1439,6 +1581,18 @@ impl BlockFaultState {
             && self.reported_durable_frontier == 0
     }
 
+    /// Returns the epoch authenticated by the live block transport, if any.
+    #[must_use]
+    pub const fn transport_epoch(&self) -> Option<u64> {
+        self.transport_epoch
+    }
+
+    /// Returns the exclusive virtual-nanosecond recovery deadline, if active.
+    #[must_use]
+    pub const fn recovery_until_nanos(&self) -> Option<u64> {
+        self.recovery_until_nanos
+    }
+
     /// Validates all checkpointed storage-state invariants against a device.
     ///
     /// # Errors
@@ -1452,6 +1606,8 @@ impl BlockFaultState {
         self.service.validate_restore()?;
         if self.config.length_bytes != device_length
             || self.pending.len() > HARD_PENDING_BLOCK_FAULT_DIRECTIVES
+            || self.retired_transport_epochs.len() > HARD_BLOCK_RETIRED_TRANSPORT_EPOCHS
+            || self.retry_preserve_authorizations.len() > HARD_BLOCK_RETRY_PRESERVE_AUTHORIZATIONS
             || self.pending_bytes > HARD_PENDING_BLOCK_FAULT_BYTES
             || self.service_pending.len() > super::service::HARD_BLOCK_SERVICE_JOBS
             || self.service_pending_bytes > HARD_PENDING_BLOCK_FAULT_BYTES
@@ -1482,6 +1638,29 @@ impl BlockFaultState {
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "restored block fault state violates configured bounds",
+            });
+        }
+        if let Some(transport_epoch) = self.transport_epoch {
+            if self
+                .retired_transport_epochs
+                .keys()
+                .any(|epoch| *epoch >= transport_epoch)
+                || self.retry_preserve_authorizations.iter().any(|identity| {
+                    identity.epoch >= transport_epoch
+                        || !self.retired_transport_epochs.contains_key(&identity.epoch)
+                        || self.retired_transport_epochs[&identity.epoch].queued
+                            != BlockTransportPending::RetryPreserveId
+                })
+            {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "restored retired block transport state is inconsistent",
+                });
+            }
+        } else if !self.retired_transport_epochs.is_empty()
+            || !self.retry_preserve_authorizations.is_empty()
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "restored retired block transport state has no live epoch",
             });
         }
         if self.storage_outcome_order.len()
@@ -1522,8 +1701,13 @@ impl BlockFaultState {
                 reason: "restored pending directive byte accounting differs",
             });
         }
-        for (request_id, directive) in &self.pending {
-            directive.validate_static(*request_id, &self.config)?;
+        for (identity, directive) in &self.pending {
+            directive.validate_static(identity.request_id, &self.config)?;
+            if directive.request_epoch != identity.epoch {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "restored pending directive epoch differs from its key",
+                });
+            }
         }
         for (sequence, pending) in &self.service_pending {
             pending
@@ -1933,10 +2117,10 @@ impl BlockFaultState {
                 reason: "restored actual durable frontier differs from exact pending state",
             });
         }
-        for (request_id, completion) in &self.retained_completions {
-            if *request_id != completion.request_id
-                || completion.recovery_response.request_id != *request_id
-                || completion.timeout_response.request_id != *request_id
+        for (identity, completion) in &self.retained_completions {
+            if *identity != completion.identity
+                || completion.recovery_response.request_id != identity.request_id
+                || completion.timeout_response.request_id != identity.request_id
                 || completion
                     .persist_through_on_recovery
                     .is_some_and(|frontier| frontier > self.next_cache_sequence)
@@ -1953,7 +2137,7 @@ impl BlockFaultState {
                 }
                 let decoded =
                     BlockResponse::decode(&response.payload).map_err(DeviceError::Codec)?;
-                if decoded.request_id != *request_id
+                if decoded.identity() != *identity
                     || (decoded.status == BlockStatus::Ok)
                         != (response.status == ResponseStatus::Ok)
                 {
@@ -2096,18 +2280,25 @@ impl BlockFaultState {
     /// Returns [`DeviceError`] for duplicate IDs or a hard pending-state limit.
     pub fn install(
         &mut self,
-        request_id: u32,
+        identity: BlockRequestIdentity,
         directive: ResolvedBlockFaultDirective,
     ) -> Result<(), DeviceError> {
-        directive.validate_static(request_id, &self.config)?;
+        directive.validate_static(identity.request_id, &self.config)?;
+        if directive.request_epoch != identity.epoch {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "block fault directive epoch differs from its installation identity",
+            });
+        }
         if self.pending.len() == HARD_PENDING_BLOCK_FAULT_DIRECTIVES {
             return Err(DeviceError::BlockFaultStateLimit {
                 field: "pending_directives",
                 hard: HARD_PENDING_BLOCK_FAULT_DIRECTIVES,
             });
         }
-        if self.pending.contains_key(&request_id) {
-            return Err(DeviceError::DuplicateBlockFaultDirective { request_id });
+        if self.pending.contains_key(&identity) {
+            return Err(DeviceError::DuplicateBlockFaultDirective {
+                request_id: identity.request_id,
+            });
         }
         let bytes = directive_owned_bytes(&directive)?;
         let next_bytes =
@@ -2123,7 +2314,7 @@ impl BlockFaultState {
                 hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES).unwrap_or(usize::MAX),
             });
         }
-        self.pending.insert(request_id, directive);
+        self.pending.insert(identity, directive);
         self.pending_bytes = next_bytes;
         Ok(())
     }
@@ -2220,14 +2411,19 @@ impl BlockFaultState {
 
     /// Returns completions waiting for an explicit recovery or timeout event.
     #[must_use]
-    pub const fn retained_completions(&self) -> &BTreeMap<u32, BlockRetainedCompletion> {
+    pub const fn retained_completions(
+        &self,
+    ) -> &BTreeMap<BlockRequestIdentity, BlockRetainedCompletion> {
         &self.retained_completions
     }
 
     /// Returns one retained completion without consuming it.
     #[must_use]
-    pub fn retained_completion(&self, request_id: u32) -> Option<&BlockRetainedCompletion> {
-        self.retained_completions.get(&request_id)
+    pub fn retained_completion(
+        &self,
+        identity: BlockRequestIdentity,
+    ) -> Option<&BlockRetainedCompletion> {
+        self.retained_completions.get(&identity)
     }
 
     /// Resolves a retained completion and applies its recovery-only durability.
@@ -2243,11 +2439,11 @@ impl BlockFaultState {
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
-        request_id: u32,
+        identity: BlockRequestIdentity,
         release: BlockRetainedRelease,
         now_nanos: u64,
     ) -> Result<Response, DeviceError> {
-        let completion = self.retained_completions.get(&request_id).cloned().ok_or(
+        let completion = self.retained_completions.get(&identity).cloned().ok_or(
             DeviceError::InvalidBlockFaultDirective {
                 reason: "storage completion is not retained",
             },
@@ -2267,7 +2463,7 @@ impl BlockFaultState {
             }
             BlockRetainedRelease::Timeout => completion.timeout_response,
         };
-        self.retained_completions.remove(&request_id);
+        self.retained_completions.remove(&identity);
         Ok(response)
     }
 
@@ -2358,6 +2554,155 @@ impl BlockFaultState {
         Ok(())
     }
 
+    /// Applies the host-side portion of a delivered controller reset.
+    ///
+    /// The caller must invoke this only after the corresponding reset response
+    /// has crossed the delivery boundary. Requests removed from a host-owned
+    /// lifecycle stage receive one explicit terminal or retry disposition; the
+    /// returned responses are ordered by request sequence within each lifecycle
+    /// stage and by the stage order queued, executing, resolved, then completed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] if a generated response cannot be encoded or if
+    /// losing controller/cache state violates persistence accounting.
+    pub(super) fn apply_transport_reset(
+        &mut self,
+        reset: BlockTransportReset,
+        delivered_nanos: u64,
+    ) -> Result<Vec<Response>, DeviceError> {
+        let mut next = self.clone();
+        let mut responses = Vec::new();
+
+        let current_epoch = next.transport_epoch.unwrap_or(reset.next_epoch);
+        match reset.request_ids {
+            BlockTransportRequestIds::PreserveMonotonic if reset.next_epoch != current_epoch => {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "preserved block transport reset changed epoch",
+                });
+            }
+            BlockTransportRequestIds::NewEpochFromZero
+                if current_epoch.checked_add(1) != Some(reset.next_epoch) =>
+            {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "block transport reset did not advance exactly one epoch",
+                });
+            }
+            _ => {}
+        }
+        if reset.request_ids == BlockTransportRequestIds::NewEpochFromZero {
+            if next.retired_transport_epochs.len() == HARD_BLOCK_RETIRED_TRANSPORT_EPOCHS {
+                return Err(DeviceError::BlockFaultStateLimit {
+                    field: "retired_transport_epochs",
+                    hard: HARD_BLOCK_RETIRED_TRANSPORT_EPOCHS,
+                });
+            }
+            if next
+                .retired_transport_epochs
+                .insert(
+                    current_epoch,
+                    BlockRetiredTransportEpoch {
+                        queued: reset.queued,
+                        failure_result: reset.failure_result,
+                    },
+                )
+                .is_some()
+            {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "block transport epoch was retired twice",
+                });
+            }
+        }
+        next.transport_epoch = Some(reset.next_epoch);
+        next.recovery_until_nanos = Some(delivered_nanos.checked_add(reset.recovery_nanos).ok_or(
+            DeviceError::InvalidBlockFaultDirective {
+                reason: "block transport recovery deadline overflow",
+            },
+        )?);
+
+        let pending = std::mem::take(&mut next.pending);
+        next.pending_bytes = 0;
+        for (identity, _directive) in pending {
+            responses.push(transport_pending_response(
+                identity,
+                reset.queued,
+                reset.failure_result,
+            )?);
+        }
+
+        let queued = std::mem::take(&mut next.service_pending);
+        next.service_pending_bytes = 0;
+        next.service = BlockServiceState::default();
+        for pending in queued.into_values() {
+            responses.push(transport_pending_response(
+                pending.request.identity(),
+                reset.queued,
+                reset.failure_result,
+            )?);
+        }
+
+        let executing = std::mem::take(&mut next.execution_pending);
+        next.execution_pending_bytes = 0;
+        for pending in executing.into_values() {
+            responses.push(transport_pending_response(
+                pending.opportunity.request.identity(),
+                reset.executing,
+                reset.failure_result,
+            )?);
+        }
+
+        if reset.resolved != BlockTransportResolved::Complete {
+            let persistence = std::mem::take(&mut next.request_persistence_pending);
+            next.request_persistence_pending_bytes = 0;
+            for pending in persistence.into_values() {
+                responses.push(transport_resolved_response(
+                    pending.opportunity.request.identity(),
+                    reset.resolved,
+                    reset.failure_result,
+                )?);
+            }
+
+            let delivery = std::mem::take(&mut next.delivery_pending);
+            next.delivery_pending_bytes = 0;
+            for pending in delivery.into_values() {
+                responses.push(transport_resolved_response(
+                    pending.opportunity.request.identity(),
+                    reset.resolved,
+                    reset.failure_result,
+                )?);
+            }
+        } else {
+            for pending in next.delivery_pending.values_mut() {
+                pending.opportunity.required_durable_frontier = None;
+            }
+        }
+
+        if reset.completed_undelivered != BlockTransportUndelivered::Complete {
+            let retained = std::mem::take(&mut next.retained_completions);
+            for completion in retained.into_values() {
+                let original = BlockResponse::decode(&completion.recovery_response.payload)
+                    .map_err(DeviceError::Codec)?;
+                responses.push(transport_undelivered_response(
+                    original.identity(),
+                    reset.completed_undelivered,
+                    reset.failure_result,
+                )?);
+            }
+        }
+
+        if !reset.preserve_controller_buffer {
+            let sequences = next.controller.keys().copied().collect::<Vec<_>>();
+            next.lose_controller(&sequences)?;
+        }
+        if !reset.preserve_volatile_cache {
+            let sequences = next.volatile.keys().copied().collect::<Vec<_>>();
+            next.lose_volatile(&sequences)?;
+        }
+
+        *self = next;
+        Ok(responses)
+    }
+
     /// Returns the earliest exact integrated-service release coordinate.
     #[must_use]
     pub(super) fn next_service_completion_nanos(&self) -> Option<u64> {
@@ -2444,7 +2789,7 @@ impl BlockFaultState {
                 hard: super::service::HARD_BLOCK_SERVICE_JOBS,
             });
         }
-        if let Some(removed) = self.pending.remove(&request.request_id) {
+        if let Some(removed) = self.pending.remove(&request.identity()) {
             self.pending_bytes = self
                 .pending_bytes
                 .checked_sub(directive_owned_bytes(&removed)?)
@@ -2897,7 +3242,25 @@ impl BlockFaultState {
         request: &BlockRequest,
         request_icount: u64,
     ) -> Result<ComputedResponse, DeviceError> {
-        let mut directive = match self.pending.get(&request.request_id) {
+        let identity = request.identity();
+        let preserved_retry = self.retry_preserve_authorizations.contains(&identity);
+        match self.transport_epoch {
+            Some(epoch) if epoch != request.epoch && !preserved_retry => {
+                return self
+                    .dispose_retired_transport_request_if_needed(identity)?
+                    .ok_or(DeviceError::InvalidBlockFaultDirective {
+                        reason: "stale block request did not produce a reset disposition",
+                    })
+                    .map(|primary| ComputedResponse {
+                        primary: Some(primary),
+                        additional: Vec::new(),
+                        additional_latency_nanos: 0,
+                    });
+            }
+            None => self.transport_epoch = Some(request.epoch),
+            Some(_) => {}
+        }
+        let mut directive = match self.pending.get(&identity) {
             Some(directive) => directive.clone(),
             None if self.execution_required => {
                 return Err(DeviceError::MissingBlockFaultDirective {
@@ -2907,8 +3270,24 @@ impl BlockFaultState {
             None => ResolvedBlockFaultDirective::fault_free(request, self.config.length_bytes),
         };
         directive.validate_for(request, &self.config)?;
+        let arrival_nanos =
+            crucible_shmem::icount_to_virtual_ns(request_icount, self.icount_shift)?;
+        if self
+            .recovery_until_nanos
+            .is_some_and(|deadline| arrival_nanos < deadline)
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "block request crossed the host boundary during controller recovery",
+            });
+        }
+        if self
+            .recovery_until_nanos
+            .is_some_and(|deadline| arrival_nanos >= deadline)
+        {
+            self.recovery_until_nanos = None;
+        }
         if directive.retain_completion
-            && self.retained_completions.contains_key(&request.request_id)
+            && self.retained_completions.contains_key(&request.identity())
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "request identity already owns a retained completion",
@@ -2955,7 +3334,7 @@ impl BlockFaultState {
                 // to consume the directive and return the stable Busy result.
             } else {
                 let mut next = self.clone();
-                if let Some(removed) = next.pending.remove(&request.request_id) {
+                if let Some(removed) = next.pending.remove(&identity) {
                     next.pending_bytes = next
                         .pending_bytes
                         .checked_sub(directive_owned_bytes(&removed)?)
@@ -2994,6 +3373,10 @@ impl BlockFaultState {
                         reason: "storage service request sequence is repeated",
                     });
                 }
+                if preserved_retry {
+                    let removed = next.retry_preserve_authorizations.remove(&identity);
+                    debug_assert!(removed, "accepted preserved retry had authorization");
+                }
                 *self = next;
                 return Ok(ComputedResponse {
                     primary: None,
@@ -3012,6 +3395,10 @@ impl BlockFaultState {
                 directive.execution_nanos,
                 directive,
             )?;
+            if preserved_retry {
+                let removed = next.retry_preserve_authorizations.remove(&identity);
+                debug_assert!(removed, "accepted preserved retry had authorization");
+            }
             *self = next;
             return Ok(ComputedResponse {
                 primary: None,
@@ -3019,7 +3406,59 @@ impl BlockFaultState {
                 additional_latency_nanos: 0,
             });
         }
-        self.execute_immediate(base, durable, request, request_icount, directive)
+        let computed = self.execute_immediate(base, durable, request, request_icount, directive)?;
+        if preserved_retry {
+            let removed = self.retry_preserve_authorizations.remove(&identity);
+            debug_assert!(removed, "accepted preserved retry had authorization");
+        }
+        Ok(computed)
+    }
+
+    pub(super) fn dispose_retired_transport_request_if_needed(
+        &mut self,
+        identity: BlockRequestIdentity,
+    ) -> Result<Option<Response>, DeviceError> {
+        if self.transport_epoch.is_none()
+            || self.transport_epoch == Some(identity.epoch)
+            || self.retry_preserve_authorizations.contains(&identity)
+        {
+            return Ok(None);
+        }
+        let policy = self
+            .retired_transport_epochs
+            .get(&identity.epoch)
+            .copied()
+            .ok_or(DeviceError::InvalidBlockFaultDirective {
+                reason: "block request epoch has no retained reset policy",
+            })?;
+        if policy.queued == BlockTransportPending::RetryPreserveId
+            && self.retry_preserve_authorizations.len() == HARD_BLOCK_RETRY_PRESERVE_AUTHORIZATIONS
+        {
+            return Err(DeviceError::BlockFaultStateLimit {
+                field: "retry_preserve_authorizations",
+                hard: HARD_BLOCK_RETRY_PRESERVE_AUTHORIZATIONS,
+            });
+        }
+
+        let mut next = self.clone();
+        if let Some(removed) = next.pending.remove(&identity) {
+            next.pending_bytes = next
+                .pending_bytes
+                .checked_sub(directive_owned_bytes(&removed)?)
+                .ok_or(DeviceError::InvalidBlockFaultDirective {
+                    reason: "pending directive byte accounting underflow",
+                })?;
+        }
+        if policy.queued == BlockTransportPending::RetryPreserveId
+            && !next.retry_preserve_authorizations.insert(identity)
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "block request already has a preserved-retry authorization",
+            });
+        }
+        let response = transport_pending_response(identity, policy.queued, policy.failure_result)?;
+        *self = next;
+        Ok(Some(response))
     }
 
     fn execute_immediate(
@@ -3031,7 +3470,7 @@ impl BlockFaultState {
         directive: ResolvedBlockFaultDirective,
     ) -> Result<ComputedResponse, DeviceError> {
         let mut next = self.clone();
-        if let Some(removed) = next.pending.remove(&request.request_id) {
+        if let Some(removed) = next.pending.remove(&request.identity()) {
             next.pending_bytes = next
                 .pending_bytes
                 .checked_sub(directive_owned_bytes(&removed)?)
@@ -3077,9 +3516,9 @@ impl BlockFaultState {
         let primary = Response::new(request.request_id, status, encoded);
         if directive.retain_completion {
             self.retained_completions.insert(
-                request.request_id,
+                request.identity(),
                 BlockRetainedCompletion {
-                    request_id: request.request_id,
+                    identity: request.identity(),
                     recovery_response: primary.clone(),
                     timeout_response: block_response_to_uniform(
                         directive.retention_timeout_response.as_ref().ok_or(
@@ -3104,17 +3543,103 @@ impl BlockFaultState {
             .iter()
             .map(|duplicate| {
                 let (gap_nanos, response) = match duplicate {
-                    ResolvedBlockDuplicateCompletion::Ignore { gap_nanos } => {
-                        (*gap_nanos, primary.clone())
-                    }
+                    ResolvedBlockDuplicateCompletion::Ignore { gap_nanos } => (
+                        *gap_nanos,
+                        block_response_to_uniform(&BlockResponse::ignored_duplicate(
+                            request.identity(),
+                        ))?,
+                    ),
                     ResolvedBlockDuplicateCompletion::ProtocolError {
                         gap_nanos,
                         response,
-                    } => (*gap_nanos, block_response_to_uniform(response)?),
-                    ResolvedBlockDuplicateCompletion::Reset { .. } => {
-                        return Err(DeviceError::BlockDuplicateTransportUnavailable {
-                            request_id: request.request_id,
-                        });
+                    } => (
+                        *gap_nanos,
+                        block_response_to_uniform(&BlockResponse::duplicate_protocol_error(
+                            response,
+                        ))?,
+                    ),
+                    ResolvedBlockDuplicateCompletion::Reset {
+                        gap_nanos,
+                        transition,
+                    } => {
+                        let next_epoch = match transition.request_ids {
+                            BlockTransportRequestIds::PreserveMonotonic => request.epoch,
+                            BlockTransportRequestIds::NewEpochFromZero => request
+                                .epoch
+                                .checked_add(1)
+                                .ok_or(DeviceError::InvalidBlockFaultDirective {
+                                    reason: "block transport epoch overflow",
+                                })?,
+                        };
+                        (
+                            *gap_nanos,
+                            block_response_to_uniform(&BlockResponse::transport_reset(
+                                request.identity(),
+                                BlockTransportReset {
+                                    next_epoch,
+                                    recovery_nanos: transition.recovery_nanos,
+                                    request_ids: transition.request_ids,
+                                    reenumerate_declared: matches!(
+                                        transition.topology,
+                                        BlockTransitionTopology::ReenumerateDeclared
+                                    ),
+                                    preserve_duplicate_history: matches!(
+                                        transition.duplicate_history,
+                                        BlockTransitionState::Preserve
+                                    ),
+                                    failure_result: transition.failure_result,
+                                    unadmitted: match transition.unadmitted {
+                                        BlockTransitionUnadmitted::Reject => {
+                                            BlockTransportUnadmitted::Reject
+                                        }
+                                        BlockTransitionUnadmitted::WaitForRecovery => {
+                                            BlockTransportUnadmitted::WaitForRecovery
+                                        }
+                                    },
+                                    queued: transport_pending(transition.queued),
+                                    executing: transport_pending(transition.executing),
+                                    resolved: match transition.resolved {
+                                        BlockTransitionResolved::Complete => {
+                                            BlockTransportResolved::Complete
+                                        }
+                                        BlockTransitionResolved::Fail => {
+                                            BlockTransportResolved::Fail
+                                        }
+                                        BlockTransitionResolved::RetryPreserveId => {
+                                            BlockTransportResolved::RetryPreserveId
+                                        }
+                                        BlockTransitionResolved::RetryNewId => {
+                                            BlockTransportResolved::RetryNewId
+                                        }
+                                    },
+                                    completed_undelivered: match transition.completed_undelivered {
+                                        BlockTransitionUndelivered::Complete => {
+                                            BlockTransportUndelivered::Complete
+                                        }
+                                        BlockTransitionUndelivered::Fail => {
+                                            BlockTransportUndelivered::Fail
+                                        }
+                                        BlockTransitionUndelivered::RetryPreserveId => {
+                                            BlockTransportUndelivered::RetryPreserveId
+                                        }
+                                        BlockTransitionUndelivered::RetryNewId => {
+                                            BlockTransportUndelivered::RetryNewId
+                                        }
+                                        BlockTransitionUndelivered::DropCompletion => {
+                                            BlockTransportUndelivered::DropCompletion
+                                        }
+                                    },
+                                    preserve_controller_buffer: matches!(
+                                        transition.controller_buffer,
+                                        BlockTransitionState::Preserve
+                                    ),
+                                    preserve_volatile_cache: matches!(
+                                        transition.volatile_cache,
+                                        BlockTransitionState::Preserve
+                                    ),
+                                },
+                            ))?,
+                        )
                     }
                 };
                 Ok(AdditionalCompletion {
@@ -3190,7 +3715,7 @@ impl BlockFaultState {
         };
         let error = admission_error.or(directive.error_result).or(media_error);
         if let Some(error) = error {
-            return Ok((BlockResponse::error(request.request_id, error), 0));
+            return Ok((BlockResponse::error_for(request.identity(), error), 0));
         }
         match request.op {
             BlockOp::Read => {
@@ -3208,14 +3733,14 @@ impl BlockFaultState {
                 self.flash
                     .apply_persistent_read(request.offset, &mut bytes)?;
                 apply_read_transforms(&mut bytes, &directive.read_transforms)?;
-                Ok((BlockResponse::ok(request.request_id, bytes), 0))
+                Ok((BlockResponse::ok_for(request.identity(), bytes), 0))
             }
             BlockOp::Write => match self.apply_write(base, durable, request, directive)? {
                 BlockWriteOutcome::Applied(wait) => {
-                    Ok((BlockResponse::ok(request.request_id, Vec::new()), wait))
+                    Ok((BlockResponse::ok_for(request.identity(), Vec::new()), wait))
                 }
                 BlockWriteOutcome::Rejected(result) => {
-                    Ok((BlockResponse::error(request.request_id, result), 0))
+                    Ok((BlockResponse::error_for(request.identity(), result), 0))
                 }
             },
             BlockOp::Discard => self.apply_discard(base, durable, request, directive),
@@ -3238,10 +3763,10 @@ impl BlockFaultState {
                     if self.actual_durable_frontier >= frontier {
                         self.pending_barrier_frontier = None;
                     }
-                    Ok((BlockResponse::ok(request.request_id, Vec::new()), wait))
+                    Ok((BlockResponse::ok_for(request.identity(), Vec::new()), wait))
                 }
                 BlockFaultFlushDisposition::Error(error) => {
-                    Ok((BlockResponse::error(request.request_id, error), 0))
+                    Ok((BlockResponse::error_for(request.identity(), error), 0))
                 }
                 BlockFaultFlushDisposition::Lie => {
                     let frontier = self.next_cache_sequence;
@@ -3250,7 +3775,7 @@ impl BlockFaultState {
                         self.pending_barrier_frontier
                             .map_or(frontier, |existing| existing.max(frontier)),
                     );
-                    Ok((BlockResponse::ok(request.request_id, Vec::new()), 0))
+                    Ok((BlockResponse::ok_for(request.identity(), Vec::new()), 0))
                 }
                 BlockFaultFlushDisposition::Stall => {
                     let frontier = self.next_cache_sequence;
@@ -3258,12 +3783,12 @@ impl BlockFaultState {
                         self.pending_barrier_frontier
                             .map_or(frontier, |existing| existing.max(frontier)),
                     );
-                    Ok((BlockResponse::ok(request.request_id, Vec::new()), 0))
+                    Ok((BlockResponse::ok_for(request.identity(), Vec::new()), 0))
                 }
             },
             BlockOp::GetLength => Ok((
-                BlockResponse::ok(
-                    request.request_id,
+                BlockResponse::ok_for(
+                    request.identity(),
                     directive.reported_capacity_bytes.to_le_bytes().to_vec(),
                 ),
                 0,
@@ -3285,14 +3810,14 @@ impl BlockFaultState {
             || !u64::from(request.count).is_multiple_of(granularity)
         {
             return Ok((
-                BlockResponse::error(request.request_id, BlockErrorCode::InvalidRange),
+                BlockResponse::error_for(request.identity(), BlockErrorCode::InvalidRange),
                 0,
             ));
         }
         if self.config.discard_semantics == BlockDiscardSemantics::ReadsOldData
             && directive.persistence_media_rules.is_empty()
         {
-            return Ok((BlockResponse::ok(request.request_id, Vec::new()), 0));
+            return Ok((BlockResponse::ok_for(request.identity(), Vec::new()), 0));
         }
         let count = usize::try_from(request.count).map_err(|_error| {
             DeviceError::InvalidBlockFaultDirective {
@@ -3314,10 +3839,10 @@ impl BlockFaultState {
         write.data = bytes;
         match self.apply_write(base, durable, &write, directive)? {
             BlockWriteOutcome::Applied(wait) => {
-                Ok((BlockResponse::ok(request.request_id, Vec::new()), wait))
+                Ok((BlockResponse::ok_for(request.identity(), Vec::new()), wait))
             }
             BlockWriteOutcome::Rejected(result) => {
-                Ok((BlockResponse::error(request.request_id, result), 0))
+                Ok((BlockResponse::error_for(request.identity(), result), 0))
             }
         }
     }
@@ -4355,6 +4880,78 @@ impl BlockFaultState {
     }
 }
 
+fn transport_pending_response(
+    identity: BlockRequestIdentity,
+    policy: BlockTransportPending,
+    failure: BlockErrorCode,
+) -> Result<Response, DeviceError> {
+    let response = match policy {
+        BlockTransportPending::Fail => BlockResponse::error_for(identity, failure),
+        BlockTransportPending::RetryPreserveId => {
+            BlockResponse::reset_disposition(identity, BlockStatus::RetryPreserveId)
+        }
+        BlockTransportPending::RetryNewId => {
+            BlockResponse::reset_disposition(identity, BlockStatus::RetryNewId)
+        }
+    };
+    block_response_to_uniform(&response)
+}
+
+fn transport_resolved_response(
+    identity: BlockRequestIdentity,
+    policy: BlockTransportResolved,
+    failure: BlockErrorCode,
+) -> Result<Response, DeviceError> {
+    let response = match policy {
+        BlockTransportResolved::Complete => {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "completed reset policy cannot replace a resolved request",
+            });
+        }
+        BlockTransportResolved::Fail => BlockResponse::error_for(identity, failure),
+        BlockTransportResolved::RetryPreserveId => {
+            BlockResponse::reset_disposition(identity, BlockStatus::RetryPreserveId)
+        }
+        BlockTransportResolved::RetryNewId => {
+            BlockResponse::reset_disposition(identity, BlockStatus::RetryNewId)
+        }
+    };
+    block_response_to_uniform(&response)
+}
+
+fn transport_undelivered_response(
+    identity: BlockRequestIdentity,
+    policy: BlockTransportUndelivered,
+    failure: BlockErrorCode,
+) -> Result<Response, DeviceError> {
+    let response = match policy {
+        BlockTransportUndelivered::Complete => {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "completed reset policy cannot replace an undelivered request",
+            });
+        }
+        BlockTransportUndelivered::Fail => BlockResponse::error_for(identity, failure),
+        BlockTransportUndelivered::RetryPreserveId => {
+            BlockResponse::reset_disposition(identity, BlockStatus::RetryPreserveId)
+        }
+        BlockTransportUndelivered::RetryNewId => {
+            BlockResponse::reset_disposition(identity, BlockStatus::RetryNewId)
+        }
+        BlockTransportUndelivered::DropCompletion => {
+            BlockResponse::reset_disposition(identity, BlockStatus::DropCompletion)
+        }
+    };
+    block_response_to_uniform(&response)
+}
+
+const fn transport_pending(policy: BlockTransitionPending) -> BlockTransportPending {
+    match policy {
+        BlockTransitionPending::Fail => BlockTransportPending::Fail,
+        BlockTransitionPending::RetryPreserveId => BlockTransportPending::RetryPreserveId,
+        BlockTransitionPending::RetryNewId => BlockTransportPending::RetryNewId,
+    }
+}
+
 fn request_in_capacity(request: &BlockRequest, capacity: u64) -> bool {
     match request.op {
         BlockOp::Read | BlockOp::Write | BlockOp::Discard => request
@@ -4856,6 +5453,23 @@ mod tests {
         .unwrap_or_else(|error| panic!("valid test state: {error}"))
     }
 
+    fn reset_transition() -> ResolvedBlockControllerTransition {
+        ResolvedBlockControllerTransition {
+            failure_result: BlockFaultResult::Offline,
+            unadmitted: BlockTransitionUnadmitted::Reject,
+            queued: BlockTransitionPending::Fail,
+            executing: BlockTransitionPending::RetryPreserveId,
+            resolved: BlockTransitionResolved::Complete,
+            completed_undelivered: BlockTransitionUndelivered::Complete,
+            controller_buffer: BlockTransitionState::Preserve,
+            volatile_cache: BlockTransitionState::Preserve,
+            request_ids: BlockTransportRequestIds::NewEpochFromZero,
+            duplicate_history: BlockTransitionState::Lose,
+            topology: BlockTransitionTopology::ReenumerateDeclared,
+            recovery_nanos: 50,
+        }
+    }
+
     fn response(
         state: &mut BlockFaultState,
         base: &BaseImage,
@@ -4866,7 +5480,7 @@ mod tests {
         let mut directive = ResolvedBlockFaultDirective::fault_free(request, base.len());
         mutate(&mut directive);
         state
-            .install(request.request_id, directive)
+            .install(request.identity(), directive)
             .unwrap_or_else(|error| panic!("directive installs: {error}"));
         let computed = state
             .execute(base, durable, request, 0)
@@ -5221,7 +5835,7 @@ mod tests {
             BlockErrorCode::Timeout,
         ));
         state
-            .install(flush.request_id, directive)
+            .install(flush.identity(), directive)
             .unwrap_or_else(|error| panic!("directive installs: {error}"));
         let computed = state
             .execute(&base, &mut durable, &flush, 0)
@@ -5235,8 +5849,8 @@ mod tests {
         );
         assert_eq!(
             checkpoint
-                .retained_completion(flush.request_id)
-                .map(|held| held.request_id),
+                .retained_completion(flush.identity())
+                .map(|held| held.identity.request_id),
             Some(flush.request_id)
         );
         response(
@@ -5250,7 +5864,7 @@ mod tests {
             .resolve_retained_completion(
                 &base,
                 &mut durable,
-                flush.request_id,
+                flush.identity(),
                 BlockRetainedRelease::Recovery,
                 0,
             )
@@ -5286,14 +5900,14 @@ mod tests {
             BlockErrorCode::Timeout,
         ));
         state
-            .install(flush.request_id, directive)
+            .install(flush.identity(), directive)
             .unwrap_or_else(|error| panic!("directive installs: {error}"));
         let computed = state
             .execute(&base, &mut durable, &flush, 99)
             .unwrap_or_else(|error| panic!("flush executes: {error}"));
         assert!(computed.primary.is_none());
         let retained = state
-            .retained_completion(flush.request_id)
+            .retained_completion(flush.identity())
             .unwrap_or_else(|| panic!("completion is retained"));
         assert_eq!(retained.request_icount, 99);
         assert_eq!(retained.persist_through_on_recovery, Some(4));
@@ -5302,7 +5916,7 @@ mod tests {
             .resolve_retained_completion(
                 &base,
                 &mut durable,
-                flush.request_id,
+                flush.identity(),
                 BlockRetainedRelease::Timeout,
                 0,
             )
@@ -5338,7 +5952,7 @@ mod tests {
         let request = BlockRequest::write(1, 0, b"four".to_vec());
         let directive = ResolvedBlockFaultDirective::fault_free(&request, base.len());
         state
-            .install(request.request_id, directive)
+            .install(request.identity(), directive)
             .unwrap_or_else(|error| panic!("directive installs: {error}"));
         let before_durable = durable.clone();
         let computed = state
@@ -5690,7 +6304,7 @@ mod tests {
                 preserve_barriers: true,
             });
         state
-            .install(write.request_id, directive)
+            .install(write.identity(), directive)
             .unwrap_or_else(|error| panic!("write directive: {error}"));
         state
             .execute(&base, &mut durable, &write, 10)
@@ -5700,7 +6314,7 @@ mod tests {
         let mut flush_directive = ResolvedBlockFaultDirective::fault_free(&flush, base.len());
         flush_directive.execution_nanos = 20;
         state
-            .install(flush.request_id, flush_directive)
+            .install(flush.identity(), flush_directive)
             .unwrap_or_else(|error| panic!("flush directive: {error}"));
         let computed = state
             .execute(&base, &mut durable, &flush, 20)
@@ -5730,15 +6344,15 @@ mod tests {
         let mut replacement = original.clone();
         replacement.error_result = Some(BlockFaultResult::IoError);
         state
-            .install(request.request_id, original.clone())
+            .install(request.identity(), original.clone())
             .unwrap_or_else(|error| panic!("first directive installs: {error}"));
         assert_eq!(
-            state.install(request.request_id, replacement),
+            state.install(request.identity(), replacement),
             Err(DeviceError::DuplicateBlockFaultDirective {
                 request_id: request.request_id
             })
         );
-        assert_eq!(state.pending.get(&request.request_id), Some(&original));
+        assert_eq!(state.pending.get(&request.identity()), Some(&original));
     }
 
     #[test]
@@ -5787,22 +6401,38 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_reset_install_fails_before_a_request_can_enter_without_live_transport() {
+    fn duplicate_reset_encodes_the_exact_live_transport_transition() {
         let request = BlockRequest::write(7, 0, b"data".to_vec());
         let mut directive = ResolvedBlockFaultDirective::fault_free(&request, 32);
         directive
-            .configure_duplicate_completions(request.request_id, 1, 11, BlockDuplicatePolicy::Reset)
+            .configure_duplicate_completions(
+                request.request_id,
+                1,
+                11,
+                BlockDuplicatePolicy::Reset(reset_transition()),
+            )
             .unwrap_or_else(|error| panic!("duplicate policy resolves: {error}"));
         let mut state = state(BlockCompletionDurability::Durable);
-        let before_state = state.clone();
-
-        assert_eq!(
-            state.install(request.request_id, directive),
-            Err(DeviceError::BlockDuplicateTransportUnavailable {
-                request_id: request.request_id,
-            })
-        );
-        assert_eq!(state, before_state);
+        state
+            .install(request.identity(), directive)
+            .unwrap_or_else(|error| panic!("reset directive installs: {error}"));
+        let computed = state
+            .execute(
+                &BaseImage::new(vec![0; 32]),
+                &mut CowOverlay::new(),
+                &request,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("reset request executes: {error}"));
+        assert_eq!(computed.additional.len(), 1);
+        let reset = BlockResponse::decode(&computed.additional[0].response.payload)
+            .unwrap_or_else(|error| panic!("reset response decodes: {error}"))
+            .transport_reset_directive()
+            .unwrap_or_else(|error| panic!("reset payload decodes: {error}"));
+        assert_eq!(reset.next_epoch, 1);
+        assert_eq!(reset.recovery_nanos, 50);
+        assert!(reset.reenumerate_declared);
+        assert!(!reset.preserve_duplicate_history);
     }
 
     #[test]
@@ -5821,7 +6451,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("ignore policy resolves: {error}"));
         let mut state = state(BlockCompletionDurability::Durable);
         state
-            .install(request.request_id, directive)
+            .install(request.identity(), directive)
             .unwrap_or_else(|error| panic!("ignore directive installs: {error}"));
         let computed = state
             .execute(&base, &mut durable, &request, 0)
@@ -5832,7 +6462,12 @@ mod tests {
             .unwrap_or_else(|| panic!("primary response should exist"));
         assert_eq!(computed.additional.len(), 1);
         assert_eq!(computed.additional[0].gap_nanos, 11);
-        assert_eq!(&computed.additional[0].response, primary);
+        let ignored = BlockResponse::decode(&computed.additional[0].response.payload)
+            .unwrap_or_else(|error| panic!("ignored duplicate should decode: {error}"));
+        assert_eq!(ignored.status, BlockStatus::DuplicateIgnored);
+        assert_eq!(ignored.identity(), request.identity());
+        assert!(ignored.data.is_empty());
+        assert_ne!(&computed.additional[0].response, primary);
 
         let request = BlockRequest::read(8, 0, 4);
         let mut directive = ResolvedBlockFaultDirective::fault_free(&request, 32);
@@ -5848,13 +6483,16 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("protocol-error policy resolves: {error}"));
         state
-            .install(request.request_id, directive)
+            .install(request.identity(), directive)
             .unwrap_or_else(|error| panic!("protocol-error directive installs: {error}"));
         let computed = state
             .execute(&base, &mut durable, &request, 0)
             .unwrap_or_else(|error| panic!("protocol-error directive executes: {error}"));
         assert_eq!(computed.additional.len(), 1);
         assert_eq!(computed.additional[0].gap_nanos, 17);
+        let protocol_error = BlockResponse::decode(&computed.additional[0].response.payload)
+            .unwrap_or_else(|error| panic!("duplicate protocol error should decode: {error}"));
+        assert_eq!(protocol_error.status, BlockStatus::DuplicateProtocolError);
         assert_eq!(
             computed.additional[0].response.status,
             ResponseStatus::Error
@@ -5866,6 +6504,7 @@ mod tests {
         let request = BlockRequest::flush(9);
         let oversized = BlockResponse {
             status: BlockStatus::Error,
+            epoch: request.epoch,
             request_id: request.request_id,
             data: vec![0; crucible_shmem::MAX_FRAME_DATA],
         };
@@ -5874,7 +6513,7 @@ mod tests {
         retained.retain_completion = true;
         retained.retention_timeout_response = Some(oversized.clone());
         assert!(matches!(
-            state(BlockCompletionDurability::Durable).install(request.request_id, retained),
+            state(BlockCompletionDurability::Durable).install(request.identity(), retained),
             Err(DeviceError::InvalidBlockFaultDirective { .. })
         ));
 
@@ -5892,7 +6531,7 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("duplicate policy resolves before install: {error}"));
         assert!(matches!(
-            state(BlockCompletionDurability::Durable).install(read.request_id, duplicate),
+            state(BlockCompletionDurability::Durable).install(read.identity(), duplicate),
             Err(DeviceError::InvalidBlockFaultDirective { .. })
         ));
     }
@@ -5919,7 +6558,7 @@ mod tests {
         let write = BlockRequest::write(41, 0, vec![0xaa; 4]);
         let directive = ResolvedBlockFaultDirective::fault_free(&write, 32);
         storage
-            .install(write.request_id, directive)
+            .install(write.identity(), directive)
             .unwrap_or_else(|error| panic!("write directive should install: {error}"));
         storage
             .execute(&base, &mut durable, &write, 0)
@@ -6028,7 +6667,7 @@ mod tests {
             },
         }];
         storage
-            .install(discard.request_id, directive)
+            .install(discard.identity(), directive)
             .unwrap_or_else(|error| panic!("discard directive should install: {error}"));
         storage
             .execute(&base, &mut durable, &discard, 0)
@@ -6109,7 +6748,7 @@ mod tests {
             },
         }];
         storage
-            .install(read.request_id, active)
+            .install(read.identity(), active)
             .unwrap_or_else(|error| panic!("active flash read should install: {error}"));
         let changed = storage
             .execute(&base, &mut durable, &read, 0)
@@ -6129,7 +6768,7 @@ mod tests {
         let inactive_read = BlockRequest::read(53, 0, 4);
         storage
             .install(
-                inactive_read.request_id,
+                inactive_read.identity(),
                 ResolvedBlockFaultDirective::fault_free(&inactive_read, 32),
             )
             .unwrap_or_else(|error| panic!("inactive read should install: {error}"));
@@ -6157,7 +6796,7 @@ mod tests {
         admission.request_sequence = 900;
         admission.execution_nanos = 17;
         storage
-            .install(request.request_id, admission)
+            .install(request.identity(), admission)
             .unwrap_or_else(|error| panic!("admission directive should install: {error}"));
 
         let computed = storage
@@ -6253,7 +6892,7 @@ mod tests {
         admission.request_sequence = 902;
         admission.execution_nanos = 17;
         storage
-            .install(request.request_id, admission)
+            .install(request.identity(), admission)
             .unwrap_or_else(|error| panic!("admission directive should install: {error}"));
         storage
             .execute(&base, &mut durable, &request, 3)
@@ -6359,7 +6998,7 @@ mod tests {
             rebuild_shares_service: false,
         }];
         storage
-            .install(request.request_id, admission)
+            .install(request.identity(), admission)
             .unwrap_or_else(|error| panic!("service directive should install: {error}"));
         let queued = storage
             .execute(&base, &mut durable, &request, 1)
@@ -6414,7 +7053,7 @@ mod tests {
         let cached = BlockRequest::write(70, 0, b"data".to_vec());
         storage
             .install(
-                cached.request_id,
+                cached.identity(),
                 ResolvedBlockFaultDirective::fault_free(&cached, 32),
             )
             .unwrap_or_else(|error| panic!("cached write should install: {error}"));
@@ -6436,7 +7075,7 @@ mod tests {
             rebuild_shares_service: false,
         }];
         storage
-            .install(serviced.request_id, directive)
+            .install(serviced.identity(), directive)
             .unwrap_or_else(|error| panic!("serviced read should install: {error}"));
         storage
             .execute(&base, &mut durable, &serviced, 0)

@@ -284,6 +284,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0062-crucible-block-transport-reset.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_register_blk_event_cb"];
+    };
   };
 
   unclassified =

@@ -16,6 +16,7 @@
 //! CRUCIBLE_BLOCK_IO_BUSY_CEILING    icount the single advance drives toward
 //! CRUCIBLE_BLOCK_IO_TIMEOUT_SECS    per-advance host wait bound (seconds)
 //! CRUCIBLE_BLOCK_IO_SECOND_RUN_LOAD "0" disables second-run host load
+//! CRUCIBLE_BLOCK_IO_RESET_PROBE     "1" runs the live reset/errno/IRQ gate
 //! GUEST_KERNEL_APPEND                explicit guest kernel command line
 //! ```
 
@@ -66,7 +67,8 @@ fn run() -> Result<(), String> {
             "CRUCIBLE_BLOCK_IO_TIMEOUT_SECS",
             120,
         )?))
-        .with_second_run_host_load(env_flag("CRUCIBLE_BLOCK_IO_SECOND_RUN_LOAD", true)?);
+        .with_second_run_host_load(env_flag("CRUCIBLE_BLOCK_IO_SECOND_RUN_LOAD", true)?)
+        .with_transport_reset_probe(env_flag("CRUCIBLE_BLOCK_IO_RESET_PROBE", false)?);
     if let Some(size) = env_opt_u64("CRUCIBLE_BLOCK_IO_DEVICE_SIZE")? {
         config = config.with_device_size_bytes(size);
     }
@@ -162,6 +164,12 @@ fn run() -> Result<(), String> {
         "canonical_logs_identical={}",
         report.canonical_logs_identical
     );
+    if let Some(errno) = report.transport_reset_guest_errno {
+        println!("transport_reset_guest_errno={errno}");
+    }
+    if let Some(delta) = report.transport_reset_config_interrupt_delta {
+        println!("transport_reset_config_interrupt_delta={delta}");
+    }
     Ok(())
 }
 

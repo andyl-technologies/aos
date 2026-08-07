@@ -32,7 +32,8 @@
   tPatch12PatchNames =
     if builtins.elem patchName [
       "0060-crucible-block-typed-errors.patch"
-      "0061-crucible-block-discard.patch"
+              "0061-crucible-block-discard.patch"
+              "0062-crucible-block-transport-reset.patch"
     ]
     then [patchName]
     else [
@@ -44,6 +45,7 @@
     if builtins.elem patchName [
       "0060-crucible-block-typed-errors.patch"
       "0061-crucible-block-discard.patch"
+      "0062-crucible-block-transport-reset.patch"
     ]
     then series.patchFiles
     else [
@@ -68,6 +70,8 @@
     then ["T-QEMU-0060"]
     else if patchName == "0061-crucible-block-discard.patch"
     then ["T-QEMU-0061"]
+    else if patchName == "0062-crucible-block-transport-reset.patch"
+    then ["T-QEMU-0062"]
     else ["T-PATCH-12"];
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -145,7 +149,8 @@
         needle = "return -EOVERFLOW";
       }
     ]
-    else [
+    else if patchName == "0061-crucible-block-discard.patch"
+    then [
       {
         label = "discard callback operation";
         needle = "QEMU_PLUGIN_BLK_OP_DISCARD 3u";
@@ -157,6 +162,32 @@
       {
         label = "discard block driver registration";
         needle = ".bdrv_co_pdiscard       = crucible_shmem_co_pdiscard";
+      }
+    ]
+    else [
+      {
+        label = "epoch-scoped block callback ABI";
+        needle = "uint64_t epoch";
+      }
+      {
+        label = "asynchronous reset event callback";
+        needle = "qemu_plugin_register_blk_event_cb";
+      }
+      {
+        label = "transactional reset decoder";
+        needle = "crucible_shmem_apply_reset";
+      }
+      {
+        label = "recovery admission policy";
+        needle = "crucible_shmem_admit_after_recovery";
+      }
+      {
+        label = "retry identity dispositions";
+        needle = "QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID";
+      }
+      {
+        label = "reset state migration";
+        needle = "vmstate_crucible_shmem";
       }
     ];
 
@@ -210,6 +241,52 @@
         label = "payload-free discard exercised";
         needle = "discard_payload_free=true";
       }
+    ]
+    ++ lib.optionals (patchName == "0062-crucible-block-transport-reset.patch") [
+      {
+        label = "transactional reset exercised";
+        needle = "transport_reset_transactional=true";
+      }
+      {
+        label = "exact reset recovery exercised";
+        needle = "transport_reset_recovery_exact=true";
+      }
+      {
+        label = "reset reserved bytes rejected";
+        needle = "transport_reset_reserved_rejected=true";
+      }
+      {
+        label = "declared topology notification exercised";
+        needle = "transport_reset_topology_notified=true";
+      }
+      {
+        label = "event commit rejection exercised transactionally";
+        needle = "transport_reset_commit_rejection_transactional=true";
+      }
+      {
+        label = "paired QEMU/plugin VMState exercised";
+        needle = "transport_reset_vmstate_paired=true";
+      }
+      {
+        label = "closed reset error range exercised";
+        needle = "transport_reset_error_range_exact=true";
+      }
+      {
+        label = "preserved retry recovery admission exercised";
+        needle = "transport_reset_preserve_retry_admitted=true";
+      }
+      {
+        label = "drop-completion sentinel exercised";
+        needle = "transport_reset_drop_sentinel_exact=true";
+      }
+      {
+        label = "dropped requests use a non-restarting queue";
+        needle = "s->dropped_rq = req";
+      }
+      {
+        label = "virtio dropped-request migration has a new closed version";
+        needle = ".minimum_version_id = 3";
+      }
       {
         label = "discard range failure exercised";
         needle = "discard_range_checks_fail_closed=true";
@@ -231,6 +308,10 @@
       {
         label = "discard patch catalog";
         needle = "crucible-block-discard";
+      }
+      {
+        label = "transport reset patch catalog";
+        needle = "crucible-block-transport-reset";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -318,12 +399,13 @@ in
             grep -q '#define QEMU_PLUGIN_BLK_POLL_PENDING (-2)' include/qemu/qemu-plugin.h
             ${lib.optionalString (!(builtins.elem patchName [
               "0060-crucible-block-typed-errors.patch"
-              "0061-crucible-block-discard.patch"
+      "0061-crucible-block-discard.patch"
+      "0062-crucible-block-transport-reset.patch"
             ])) ''
               grep -q 'aio_co_schedule(bdrv_get_aio_context(bs), qemu_coroutine_self())' block/crucible-shmem.c
             ''}
 
-            mkdir -p fixture/include/block fixture/include/qapi fixture/include/qemu fixture/include/qobject fixture/include/system
+            mkdir -p fixture/include/block fixture/include/migration fixture/include/qapi fixture/include/qemu fixture/include/qobject fixture/include/system
             cat > fixture/include/qemu/osdep.h <<'OSDEP_FIXTURE'
             #ifndef QEMU_OSDEP_H
             #define QEMU_OSDEP_H
@@ -339,12 +421,55 @@ in
 
             #define g_autofree
             #define g_assert(condition) do { if (!(condition)) abort(); } while (0)
+            #define G_N_ELEMENTS(array) (sizeof(array) / sizeof((array)[0]))
+            #define MiB (1024 * 1024)
             #define container_of(pointer, type, member) \
                 ((type *)((char *)(pointer) - offsetof(type, member)))
 
             static inline void *g_malloc(size_t size)
             {
                 return malloc(size == 0 ? 1 : size);
+            }
+
+            static inline void *g_try_malloc(size_t size)
+            {
+                return malloc(size == 0 ? 1 : size);
+            }
+
+            static inline void g_free(void *pointer)
+            {
+                free(pointer);
+            }
+
+            static inline uint16_t lduw_le_p(const uint8_t *data)
+            {
+                return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+            }
+
+            static inline uint32_t ldl_le_p(const uint8_t *data)
+            {
+                return (uint32_t)data[0] |
+                       ((uint32_t)data[1] << 8) |
+                       ((uint32_t)data[2] << 16) |
+                       ((uint32_t)data[3] << 24);
+            }
+
+            static inline uint64_t ldq_le_p(const uint8_t *data)
+            {
+                return (uint64_t)ldl_le_p(data) |
+                       ((uint64_t)ldl_le_p(data + 4) << 32);
+            }
+
+            static inline bool buffer_is_zero(const void *data, size_t len)
+            {
+                const uint8_t *bytes = data;
+                size_t index;
+                for (index = 0; index < len; index++) {
+                    if (bytes[index] != 0) {
+                        return false;
+                    }
+                }
+                return true;
             }
 
             #endif
@@ -380,6 +505,63 @@ in
 
             #endif
             THREAD_FIXTURE
+
+            cat > fixture/include/qemu/timer.h <<'TIMER_FIXTURE'
+            #ifndef QEMU_TIMER_H
+            #define QEMU_TIMER_H
+
+            #define QEMU_CLOCK_VIRTUAL 0
+
+            int64_t qemu_clock_get_ns(int clock);
+            void qemu_co_sleep_ns(int clock, int64_t duration);
+
+            #endif
+            TIMER_FIXTURE
+
+            cat > fixture/include/migration/vmstate.h <<'VMSTATE_FIXTURE'
+            #ifndef MIGRATION_VMSTATE_H
+            #define MIGRATION_VMSTATE_H
+
+            typedef void VMStateIf;
+            typedef struct VMStateField { int unused; } VMStateField;
+            typedef struct VMStateDescription {
+                const char *name;
+                int version_id;
+                int minimum_version_id;
+                int (*pre_load)(void *opaque);
+                int (*post_load)(void *opaque, int version_id);
+                int (*pre_save)(void *opaque);
+                const VMStateField *fields;
+            } VMStateDescription;
+
+            #define VMSTATE_UINT64(field, state) { 0 }
+            #define VMSTATE_UINT32(field, state) { 0 }
+            #define VMSTATE_INT64(field, state) { 0 }
+            #define VMSTATE_UINT8(field, state) { 0 }
+            #define VMSTATE_VBUFFER_ALLOC_UINT32(field, state, version, test, size) { 0 }
+            #define VMSTATE_END_OF_LIST() { 0 }
+
+            static inline int vmstate_register_any(
+                VMStateIf *obj, const VMStateDescription *description,
+                void *opaque)
+            {
+                (void)obj;
+                (void)description;
+                (void)opaque;
+                return 0;
+            }
+
+            static inline void vmstate_unregister(
+                VMStateIf *obj, const VMStateDescription *description,
+                void *opaque)
+            {
+                (void)obj;
+                (void)description;
+                (void)opaque;
+            }
+
+            #endif
+            VMSTATE_FIXTURE
 
             cat > fixture/include/system/crucible-plugin-wake.h <<'WAKE_FIXTURE'
             #ifndef SYSTEM_CRUCIBLE_PLUGIN_WAKE_H
@@ -631,9 +813,12 @@ in
                 int (*bdrv_co_pdiscard)(BlockDriverState *bs, int64_t offset,
                                         int64_t bytes);
                 void (*bdrv_refresh_filename)(BlockDriverState *bs);
+                bool (*bdrv_guest_completion_dropped)(BlockDriverState *bs,
+                                                       int error);
             } BlockDriver;
 
             AioContext *bdrv_get_aio_context(BlockDriverState *bs);
+            void bdrv_notify_topology_change(BlockDriverState *bs);
             void bdrv_register(BlockDriver *driver);
 
             #endif
@@ -672,6 +857,17 @@ in
               grep -q '^discard_payload_free=true$' "$out/qemu-block-shmem-microtest"
               grep -q '^discard_range_checks_fail_closed=true$' "$out/qemu-block-shmem-microtest"
             ''}
+            ${lib.optionalString (patchName == "0062-crucible-block-transport-reset.patch") ''
+              grep -q '^transport_reset_transactional=true$' "$out/qemu-block-shmem-microtest"
+              grep -q '^transport_reset_recovery_exact=true$' "$out/qemu-block-shmem-microtest"
+              grep -q '^transport_reset_reserved_rejected=true$' "$out/qemu-block-shmem-microtest"
+              grep -q '^transport_reset_topology_notified=true$' "$out/qemu-block-shmem-microtest"
+              grep -q '^transport_reset_commit_rejection_transactional=true$' "$out/qemu-block-shmem-microtest"
+              grep -q '^transport_reset_vmstate_paired=true$' "$out/qemu-block-shmem-microtest"
+              grep -q '^transport_reset_error_range_exact=true$' "$out/qemu-block-shmem-microtest"
+              grep -q '^transport_reset_preserve_retry_admitted=true$' "$out/qemu-block-shmem-microtest"
+              grep -q '^transport_reset_drop_sentinel_exact=true$' "$out/qemu-block-shmem-microtest"
+            ''}
 
             cp stock-block-negative.err "$out/stock-negative-control.err"
             cp block/crucible-shmem.c "$out/crucible-shmem.c.patched"
@@ -697,6 +893,15 @@ in
             ${lib.optionalString (patchName == "0060-crucible-block-typed-errors.patch") ''typed_error_errno_mapping_exact=true''}
             ${lib.optionalString (patchName == "0061-crucible-block-discard.patch") ''discard_payload_free=true
             discard_range_checks_fail_closed=true''}
+            ${lib.optionalString (patchName == "0062-crucible-block-transport-reset.patch") ''transport_reset_transactional=true
+            transport_reset_recovery_exact=true
+            transport_reset_reserved_rejected=true
+            transport_reset_topology_notified=true
+            transport_reset_commit_rejection_transactional=true
+            transport_reset_vmstate_paired=true
+            transport_reset_error_range_exact=true
+            transport_reset_preserve_retry_admitted=true
+            transport_reset_drop_sentinel_exact=true''}
             apply_clean_patch_fuzz=0
             RESULT
           '';

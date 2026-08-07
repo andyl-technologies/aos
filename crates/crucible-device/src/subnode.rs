@@ -230,6 +230,30 @@ impl IoCore {
         self.inflight.len()
     }
 
+    /// Returns the next computed response without crossing its delivery boundary.
+    #[must_use]
+    pub(crate) fn next_pending_response(&self) -> Option<&PendingResponse> {
+        self.inflight.entries().first()
+    }
+
+    /// Copies the in-flight queue for a device-owned transactional rewrite.
+    pub(crate) fn take_inflight_from_snapshot(&self) -> Vec<PendingResponse> {
+        self.inflight.entries().to_vec()
+    }
+
+    /// Verifies that `count` device-generated responses can receive sequence IDs.
+    pub(crate) fn check_response_sequence_capacity(&self, count: usize) -> Result<(), DeviceError> {
+        let count = u32::try_from(count).map_err(|_| DeviceError::ResponseSequenceOverflow {
+            sequence: self.next_seq,
+        })?;
+        self.next_seq
+            .checked_add(count)
+            .ok_or(DeviceError::ResponseSequenceOverflow {
+                sequence: self.next_seq,
+            })?;
+        Ok(())
+    }
+
     /// Discards every computed response that has not yet been delivered.
     ///
     /// Returns the discarded responses in deterministic delivery order. Crash
@@ -237,6 +261,88 @@ impl IoCore {
     /// the device clock or making any response visible.
     pub fn discard_inflight(&mut self) -> Vec<PendingResponse> {
         self.inflight.drain_all()
+    }
+
+    /// Removes every computed response for a device-owned transactional rewrite.
+    pub(crate) fn take_inflight(&mut self) -> Vec<PendingResponse> {
+        self.inflight.drain_all()
+    }
+
+    /// Reinstalls responses after a device-owned transactional rewrite.
+    pub(crate) fn replace_inflight(
+        &mut self,
+        responses: impl IntoIterator<Item = PendingResponse>,
+    ) {
+        for response in responses {
+            self.inflight.insert(response);
+        }
+    }
+
+    /// Advances the clock and publishes at most one due response locally.
+    ///
+    /// The returned copy identifies the exact response that crossed the
+    /// delivery boundary. `None` means either no response is due or the bounded
+    /// outbox is full; in both cases every unpublished response remains in
+    /// flight unchanged.
+    pub(crate) fn deliver_one(
+        &mut self,
+        limit: u64,
+    ) -> Result<Option<PendingResponse>, DeviceError> {
+        self.clock.advance_to(limit)?;
+        let mut due = self.inflight.drain_due(limit).into_iter();
+        let Some(pending) = due.next() else {
+            return Ok(None);
+        };
+        let observed = pending.clone();
+        if let Err(rejected) = self.outbox.push(pending) {
+            self.inflight.insert(rejected.into_item());
+            self.replace_inflight(due);
+            return Ok(None);
+        }
+        self.replace_inflight(due);
+        Ok(Some(observed))
+    }
+
+    /// Advances the clock and publishes at most one due response to shmem.
+    ///
+    /// The returned response crossed the ring boundary before it is reported.
+    /// A full ring returns `None` without consuming or mutating the response.
+    pub(crate) fn deliver_one_shmem(
+        &mut self,
+        limit: u64,
+        outbox: &RingHeader,
+        outbox_entries: &mut [FrameEntry],
+        _consumer_slot: &NodeSlot,
+    ) -> Result<Option<PendingResponse>, DeviceError> {
+        self.clock.advance_to(limit)?;
+        let mut due = self.inflight.drain_due(limit).into_iter();
+        let Some(pending) = due.next() else {
+            return Ok(None);
+        };
+        let frame = match frame_from_pending_response(&pending) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.inflight.insert(pending);
+                self.replace_inflight(due);
+                return Err(error);
+            }
+        };
+        match outbox.enqueue(outbox_entries, &frame) {
+            Ok(()) => {
+                self.replace_inflight(due);
+                Ok(Some(pending))
+            }
+            Err(SpscRingError::QueueFull { .. }) => {
+                self.inflight.insert(pending);
+                self.replace_inflight(due);
+                Ok(None)
+            }
+            Err(error) => {
+                self.inflight.insert(pending);
+                self.replace_inflight(due);
+                Err(DeviceError::from(error))
+            }
+        }
     }
 
     /// Schedules an externally released response at the current exact icount.

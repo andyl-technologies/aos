@@ -67,7 +67,8 @@ use crucible_device::block::{
     ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
 };
 use crucible_device::{
-    BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockSnapshot, DeviceError, IoCore, Request,
+    BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockRequestIdentity, BlockSnapshot,
+    DeviceError, IoCore, Request,
 };
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
@@ -108,6 +109,12 @@ pub struct QemuLiveBlockIoServicerCheckpoint {
 }
 
 impl QemuLiveBlockIoServicerCheckpoint {
+    /// Returns the QEMU execution checkpoint paired with this host continuation.
+    #[must_use]
+    pub const fn execution_binding(&self) -> ContentHash {
+        self.execution_binding
+    }
+
     /// Records the scenario storage target owned by the host work pool.
     pub(crate) fn set_storage_device(&mut self, storage_device: Option<ContentHash>) {
         self.storage_device = storage_device;
@@ -314,6 +321,120 @@ impl QemuLiveBlockIoServicer {
         })
     }
 
+    /// Atomically restores a paired device and ring continuation in place.
+    ///
+    /// The target device is reconstructed and both ring snapshots are validated
+    /// before live device state changes. If the second ring unexpectedly rejects
+    /// restoration, the first ring is rolled back to its exact prior snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the execution binding, region layout, base image,
+    /// guest boundary, device snapshot, or either ring snapshot does not match.
+    pub fn restore_checkpoint(
+        &mut self,
+        expected_execution_binding: ContentHash,
+        checkpoint: &QemuLiveBlockIoServicerCheckpoint,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.validate_checkpoint(expected_execution_binding, checkpoint)?;
+        let staged_device =
+            BlockDevice::restore(&checkpoint.device, self.device.base().clone(), None)
+                .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let pair = self
+            .region
+            .node_directed_ring_pair_mut(
+                self.vm_slot,
+                self.vm_slot,
+                SLOT_BLK_IO as u32,
+                SLOT_BLK_IO as u32,
+                self.vm_slot,
+            )
+            .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
+        let prior_requests = pair
+            .first
+            .header
+            .snapshot(pair.first.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        pair.first
+            .header
+            .restore(pair.first.entries, &checkpoint.requests)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        if let Err(source) = pair
+            .second
+            .header
+            .restore(pair.second.entries, &checkpoint.responses)
+        {
+            pair.first
+                .header
+                .restore(pair.first.entries, &prior_requests)
+                .map_err(DeviceError::from)
+                .map_err(|rollback| QemuLiveBlockIoServicerError::Device { source: rollback })?;
+            return Err(QemuLiveBlockIoServicerError::Device {
+                source: DeviceError::from(source),
+            });
+        }
+        pair.node_slot.store_device_completion_deadline_icount(
+            staged_device.next_exact_local_event().unwrap_or(0),
+        );
+        self.device = staged_device;
+        self.frames_processed = checkpoint.frames_processed;
+        self.frames_delivered = checkpoint.frames_delivered;
+        Ok(())
+    }
+
+    /// Validates an in-place restore without changing live continuation state.
+    ///
+    /// This is the prepare half of a paired host/QEMU restore transaction. A
+    /// successful return proves that the execution identity, shared-memory
+    /// geometry, current quiescent boundary, ring snapshots, and block-device
+    /// snapshot can all be restored before QMP is allowed to load VMState.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as [`Self::restore_checkpoint`]
+    /// without modifying either shared-memory ring or the live device.
+    pub fn validate_checkpoint(
+        &mut self,
+        expected_execution_binding: ContentHash,
+        checkpoint: &QemuLiveBlockIoServicerCheckpoint,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        if checkpoint.execution_binding != expected_execution_binding {
+            return Err(QemuLiveBlockIoServicerError::CheckpointBindingMismatch);
+        }
+        if checkpoint.region_header.region_size != self.region.header_snapshot().region_size
+            || !same_region_layout(self.region.header_snapshot(), checkpoint.region_header)
+            || checkpoint.vm_slot != self.vm_slot
+            || checkpoint.size_bytes != self.device.length()
+        {
+            return Err(QemuLiveBlockIoServicerError::CheckpointRegionMismatch);
+        }
+        checkpoint
+            .requests
+            .canonical_bytes()
+            .and_then(|_| checkpoint.responses.canonical_bytes())
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let _staged_device =
+            BlockDevice::restore(&checkpoint.device, self.device.base().clone(), None)
+                .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let pair = self
+            .region
+            .node_directed_ring_pair_mut(
+                self.vm_slot,
+                self.vm_slot,
+                SLOT_BLK_IO as u32,
+                SLOT_BLK_IO as u32,
+                self.vm_slot,
+            )
+            .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
+        if pair.node_slot.snapshot().status != STATUS_DONE {
+            return Err(QemuLiveBlockIoServicerError::CheckpointNotQuiescent);
+        }
+        Ok(())
+    }
+
     /// Drains newly arrived requests and delivers responses due at `guest_icount`.
     ///
     /// COMPUTEs every request frame on the VM-to-device ring into an ordered
@@ -378,7 +499,7 @@ impl QemuLiveBlockIoServicer {
                     icount_to_virtual_ns(observed.request_icount, self.device.core().shift_bits())
                         .map_err(DeviceError::from)
                         .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
-                self.install_storage_fault_directive(request.request_id, directive)?;
+                self.install_storage_fault_directive(request.identity(), directive)?;
             }
 
             let intake = self.process_one_storage_request()?;
@@ -553,11 +674,11 @@ impl QemuLiveBlockIoServicer {
     /// transport capability that is not yet bound.
     pub fn install_storage_fault_directive(
         &mut self,
-        request_id: u32,
+        identity: BlockRequestIdentity,
         directive: ResolvedBlockFaultDirective,
     ) -> Result<(), QemuLiveBlockIoServicerError> {
         self.device
-            .install_storage_fault_directive(request_id, directive)
+            .install_storage_fault_directive(identity, directive)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
@@ -787,11 +908,11 @@ impl QemuLiveBlockIoServicer {
     /// retained or its response cannot be scheduled at the current boundary.
     pub fn release_storage_completion(
         &mut self,
-        request_id: u32,
+        identity: BlockRequestIdentity,
         release: BlockRetainedRelease,
     ) -> Result<(), QemuLiveBlockIoServicerError> {
         self.device
-            .release_storage_completion(request_id, release)
+            .release_storage_completion(identity, release)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
@@ -1256,7 +1377,63 @@ pub enum QemuLiveBlockIoServicerError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::fs;
+    #[cfg(unix)]
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::fd::AsFd;
+    #[cfg(unix)]
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[cfg(unix)]
+    use crucible_shmem::{RegionAllocation, RegionConfig, authorize_advance_ceiling};
+
     use super::*;
+
+    #[cfg(unix)]
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(unix)]
+    fn checkpoint_fixture() -> (fs::File, u64, QemuLiveBlockIoServicer) {
+        let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))
+            .unwrap_or_else(|error| panic!("allocate test region: {error}"));
+        let slot = allocation
+            .node_slot(0)
+            .unwrap_or_else(|| panic!("test region must contain slot zero"));
+        let ceiling = authorize_advance_ceiling(0, 0, None)
+            .unwrap_or_else(|error| panic!("authorize test boundary: {error}"));
+        slot.publish_scheduler_ceiling(ceiling)
+            .unwrap_or_else(|error| panic!("publish test ceiling: {error}"));
+        slot.publish_reached_icount(0, 0)
+            .unwrap_or_else(|error| panic!("publish test boundary: {error}"));
+        slot.mark_done();
+        let layout = allocation.layout();
+        let bytes = allocation
+            .setup_region_bytes()
+            .unwrap_or_else(|error| panic!("serialize test region: {error}"));
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "crucible-block-servicer-checkpoint-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap_or_else(|error| panic!("create test region: {error}"));
+        fs::remove_file(&path).unwrap_or_else(|error| panic!("unlink test region: {error}"));
+        file.set_len(layout.region_size)
+            .unwrap_or_else(|error| panic!("size test region: {error}"));
+        file.write_all(&bytes)
+            .unwrap_or_else(|error| panic!("write test region: {error}"));
+        let servicer =
+            QemuLiveBlockIoServicer::from_shmem_fd(file.as_fd(), layout.region_size, 0, 0, 4096)
+                .unwrap_or_else(|error| panic!("map test servicer: {error}"));
+        (file, layout.region_size, servicer)
+    }
 
     #[test]
     fn deterministic_base_image_is_reproducible_and_sized() {
@@ -1317,5 +1494,67 @@ mod tests {
         assert_eq!(snapshot.max_current_icount, 30);
         assert!(!snapshot.last_device_io_active);
         assert_eq!(snapshot.last_idle_wake_icount, 30);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn in_place_checkpoint_restore_reinstates_exact_device_and_ring_state() {
+        let (_file, _region_len, mut servicer) = checkpoint_fixture();
+        let binding = ContentHash::from_bytes(b"execution-checkpoint-a");
+        let mut cached = BlockDurabilityConfig::write_through(4096);
+        cached.atomic_write_bytes = 512;
+        cached.volatile_cache_bytes = 4096;
+        cached.cache_entries = 16;
+        cached.retained_versions = 16;
+        cached.completion_durability =
+            crucible_device::block::BlockCompletionDurability::VolatileCacheAccepted;
+        servicer
+            .configure_storage_faults(cached, true)
+            .unwrap_or_else(|error| panic!("configure storage: {error}"));
+        servicer.frames_processed = 7;
+        servicer.frames_delivered = 5;
+        let checkpoint = servicer
+            .checkpoint(binding)
+            .unwrap_or_else(|error| panic!("capture block checkpoint: {error}"));
+
+        servicer
+            .configure_storage_faults(BlockDurabilityConfig::write_through(4096), false)
+            .unwrap_or_else(|error| panic!("mutate storage configuration: {error}"));
+        servicer.frames_processed = 99;
+        servicer.frames_delivered = 88;
+        servicer
+            .restore_checkpoint(binding, &checkpoint)
+            .unwrap_or_else(|error| panic!("restore block checkpoint: {error}"));
+
+        let restored = servicer
+            .checkpoint(binding)
+            .unwrap_or_else(|error| panic!("recapture restored checkpoint: {error}"));
+        assert_eq!(restored, checkpoint);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejected_in_place_restore_preserves_exact_live_continuation() {
+        let (_file, _region_len, mut servicer) = checkpoint_fixture();
+        let binding = ContentHash::from_bytes(b"execution-checkpoint-a");
+        let checkpoint = servicer
+            .checkpoint(binding)
+            .unwrap_or_else(|error| panic!("capture block checkpoint: {error}"));
+        let before = checkpoint.clone();
+
+        let error = servicer
+            .restore_checkpoint(
+                ContentHash::from_bytes(b"execution-checkpoint-b"),
+                &checkpoint,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            QemuLiveBlockIoServicerError::CheckpointBindingMismatch
+        ));
+        let after = servicer
+            .checkpoint(binding)
+            .unwrap_or_else(|error| panic!("capture state after rejected restore: {error}"));
+        assert_eq!(after, before);
     }
 }

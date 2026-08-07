@@ -147,6 +147,60 @@ pub enum QemuAsyncDriverOperation {
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Captures the complete host-I/O continuation paired with QEMU VMState.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the guest is not quiescent
+    /// or an attached device or shared-memory ring cannot be snapshotted.
+    #[cfg(target_os = "linux")]
+    fn checkpoint_host_io(
+        &mut self,
+        execution_binding: crucible::model::ContentHash,
+    ) -> Result<crate::QemuHostIoCheckpoint, QemuAsyncDriverRuntimeError> {
+        Ok(crate::QemuHostIoCheckpoint::without_block(
+            execution_binding,
+        ))
+    }
+
+    /// Prevalidates a paired host-I/O restore without changing live state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the checkpoint identity or
+    /// live device topology differs. The default runtime accepts only the
+    /// explicit no-block topology.
+    #[cfg(target_os = "linux")]
+    fn validate_host_io_checkpoint(
+        &mut self,
+        execution_binding: crucible::model::ContentHash,
+        checkpoint: &crate::QemuHostIoCheckpoint,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if checkpoint.execution_binding() == execution_binding && checkpoint.block().is_none() {
+            Ok(())
+        } else {
+            Err(QemuAsyncDriverRuntimeError::new(
+                "validate host-I/O checkpoint",
+                "checkpoint identity or device topology does not match this runtime",
+            ))
+        }
+    }
+
+    /// Commits a previously validated host-I/O continuation restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] under the same conditions as
+    /// [`Self::validate_host_io_checkpoint`].
+    #[cfg(target_os = "linux")]
+    fn restore_host_io_checkpoint(
+        &mut self,
+        execution_binding: crucible::model::ContentHash,
+        checkpoint: &crate::QemuHostIoCheckpoint,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.validate_host_io_checkpoint(execution_binding, checkpoint)
+    }
+
     /// Captures the block state needed to roll back one scheduler boundary.
     #[cfg(target_os = "linux")]
     fn checkpoint_block_boundary_state(&self) -> Option<crucible_device::block::BlockFaultState> {

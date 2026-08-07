@@ -135,11 +135,11 @@ fn block_divergence_localizes_first_differing_payload_byte() {
         .unwrap_or_else(|| panic!("expected the perturbed run to diverge"));
     // The read delivers first (lower latency), so it is record index 0. A block
     // record's payload is the full encoded `BlockResponse` wire frame, whose
-    // 12-byte header (status, version, reserved, request_id, count) is identical
-    // for both reads; the first data byte at wire offset 12 is where the read
+    // 20-byte header (status, version, reserved, epoch, request_id, count) is
+    // identical for both reads; the first data byte at wire offset 20 is where the read
     // content differs (0xAB written page vs 0x00 base page).
     assert_eq!(divergence.record_index, 0, "the read delivers first");
-    const RESPONSE_HEADER_LEN: usize = 12;
+    const RESPONSE_HEADER_LEN: usize = 20;
     match divergence.field {
         DivergedField::PayloadByte {
             offset,

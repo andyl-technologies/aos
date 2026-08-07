@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "dbdfc5fa516581d6de1a3d1fd7279e4b97789edb5b20bd76cbf7d7aaf8b2c237";
+  patchBranchBundleSha256 = "cd63fb01e524c88e47c24d282926430f554901a8e13575958a62e700f715f1ae";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "d1609ddc65a8e5917b006267f8c3e090757b8bcb";
+  patchBranchHeadCommit = "63336bd6cf014e08f48f61856d8d8b05ea92d7f1";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -475,6 +475,16 @@ let
       class = "F";
       enforces = "STOR-DISCARD,DET-16,PATCH-26";
       capability = "payload-free block discard transported through the deterministic shmem completion path";
+    }
+    {
+      file = "0062-crucible-block-transport-reset.patch";
+      branchSubject = "crucible: add transactional block transport reset";
+      branchCommit = "63336bd6cf014e08f48f61856d8d8b05ea92d7f1";
+      branchTree = "93aa807c562bf9bb28a4a868d36470f7a953f716";
+      catalogName = "crucible-block-transport-reset";
+      class = "F";
+      enforces = "STOR-RESET,STOR-RESULT,DET-16,PATCH-26";
+      capability = "transactional epoch-scoped block reset, recovery admission, retry dispositions, and declared topology re-enumeration";
     }
   ];
   catalogOnlyCapabilities = [

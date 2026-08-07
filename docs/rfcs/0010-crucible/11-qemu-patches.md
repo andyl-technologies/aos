@@ -217,6 +217,7 @@ DEVICE CO-SIM (shmem transport)                        class  enforces
   crucible-net-flush-api ........ lossless RX inject + flush F    PATCH-32, DET-18, E18
   crucible-block-typed-errors ... exact block result to errno     F    STOR-RESULT, IO-8, PATCH-26
   crucible-block-discard ........ deterministic discard transport F    STOR-DISCARD, DET-16, PATCH-26
+  crucible-block-transport-reset  epoch/recovery/reset transport       F    STOR-RESET, STOR-RESULT, DET-16, PATCH-26
 
 TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-sim-loop-fix ......... single-vCPU loop fixes     D    PATCH-34, DET-1, NG-1

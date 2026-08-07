@@ -27,7 +27,7 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
 
     assert_contains(
         &block_io,
-        "pub fn decode(payload: &[u8]) -> Result<(u32, Self), BlockWireError>",
+        "pub fn decode(payload: &[u8]) -> Result<(BlockRequestIdentity, Self), BlockWireError>",
     );
     assert_contains(&block_io, "UnknownOperation");
     assert_contains(&block_io, "RequestCountExceedsPayload");

@@ -28,13 +28,16 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use crucible::model::ContentHash;
 use crucible_shmem::{
     DequeuedFaultResult, MappedSetupRegion, MappedSetupRegionAccessError, STATUS_DONE,
     SetupRegionMapError, dequeue_fault_result, mmap_setup_region,
 };
 use thiserror::Error;
 
-use super::block_io_servicer::{BlockIoDiagnostics, QemuLiveBlockIoServicer};
+use super::block_io_servicer::{
+    BlockIoDiagnostics, QemuLiveBlockIoServicer, QemuLiveBlockIoServicerCheckpoint,
+};
 use crate::quantum::idle_state_from_snapshot;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuHostIoRuntime};
@@ -71,6 +74,36 @@ struct BlockIoServicing {
     servicer: QemuLiveBlockIoServicer,
     diagnostics: Arc<BlockIoDiagnostics>,
     coordinator: Option<Box<dyn QemuBlockFaultCoordinator>>,
+}
+
+/// Complete host-I/O continuation paired with one QEMU VMState checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuHostIoCheckpoint {
+    execution_binding: ContentHash,
+    block: Option<QemuLiveBlockIoServicerCheckpoint>,
+}
+
+impl QemuHostIoCheckpoint {
+    /// Builds a checkpoint for a runtime with no shared-memory block device.
+    #[must_use]
+    pub const fn without_block(execution_binding: ContentHash) -> Self {
+        Self {
+            execution_binding,
+            block: None,
+        }
+    }
+
+    /// Returns the QEMU VMState identity paired with this host continuation.
+    #[must_use]
+    pub const fn execution_binding(&self) -> ContentHash {
+        self.execution_binding
+    }
+
+    /// Returns the block continuation when the captured runtime owned one.
+    #[must_use]
+    pub const fn block(&self) -> Option<&QemuLiveBlockIoServicerCheckpoint> {
+        self.block.as_ref()
+    }
 }
 
 /// Owns exact signal evaluation around one live block servicing pass.
@@ -362,6 +395,77 @@ impl QemuLiveHostIoRuntime {
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn checkpoint_host_io(
+        &mut self,
+        execution_binding: ContentHash,
+    ) -> Result<QemuHostIoCheckpoint, QemuAsyncDriverRuntimeError> {
+        let block = self
+            .block
+            .as_mut()
+            .map(|block| block.servicer.checkpoint(execution_binding))
+            .transpose()
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new("checkpoint host block I/O", source.to_string())
+            })?;
+        Ok(QemuHostIoCheckpoint {
+            execution_binding,
+            block,
+        })
+    }
+
+    fn validate_host_io_checkpoint(
+        &mut self,
+        execution_binding: ContentHash,
+        checkpoint: &QemuHostIoCheckpoint,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if checkpoint.execution_binding != execution_binding {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "validate host-I/O checkpoint",
+                "host-I/O checkpoint is paired with another QEMU VMState identity",
+            ));
+        }
+        match (self.block.as_mut(), checkpoint.block.as_ref()) {
+            (Some(block), Some(checkpoint)) => block
+                .servicer
+                .validate_checkpoint(execution_binding, checkpoint)
+                .map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "validate host block-I/O checkpoint",
+                        source.to_string(),
+                    )
+                }),
+            (None, None) => Ok(()),
+            _ => Err(QemuAsyncDriverRuntimeError::new(
+                "validate host-I/O checkpoint",
+                "captured block topology does not match the live host-I/O runtime",
+            )),
+        }
+    }
+
+    fn restore_host_io_checkpoint(
+        &mut self,
+        execution_binding: ContentHash,
+        checkpoint: &QemuHostIoCheckpoint,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.validate_host_io_checkpoint(execution_binding, checkpoint)?;
+        match (self.block.as_mut(), checkpoint.block.as_ref()) {
+            (Some(block), Some(checkpoint)) => block
+                .servicer
+                .restore_checkpoint(execution_binding, checkpoint)
+                .map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "restore host block-I/O checkpoint",
+                        source.to_string(),
+                    )
+                }),
+            (None, None) => Ok(()),
+            _ => Err(QemuAsyncDriverRuntimeError::new(
+                "restore host-I/O checkpoint",
+                "validated block topology changed before commit",
+            )),
+        }
+    }
+
     fn checkpoint_block_boundary_state(&self) -> Option<crucible_device::block::BlockFaultState> {
         self.block
             .as_ref()
