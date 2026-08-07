@@ -12,6 +12,7 @@ use crate::error::DeviceError;
 use crate::request::{AdditionalCompletion, ComputedResponse, Response, ResponseStatus};
 
 use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, BlockStatus};
+use super::flash::{BlockFlashProgramOutcome, BlockFlashState, ResolvedBlockFlashRule};
 use super::media::{BlockMediaState, ResolvedBlockMediaRule};
 use super::overlay::{BaseImage, CowOverlay};
 use super::persistence::{
@@ -38,6 +39,8 @@ pub const HARD_BLOCK_WRITE_SPANS: usize = 65_536;
 pub const HARD_BLOCK_DUPLICATE_COMPLETIONS: usize = 256;
 /// Hard maximum stalled completions retained across checkpoints.
 pub const HARD_BLOCK_RETAINED_COMPLETIONS: usize = 1_048_576;
+/// Hard maximum resolved media-persistence directives and retained outcomes.
+pub const HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS: usize = 1_048_576;
 
 /// Availability presented by the block controller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,8 +367,49 @@ pub struct ResolvedBlockFaultDirective {
     pub cache_policy: Option<ResolvedBlockCachePolicy>,
     /// Persistence-DAG transformations resolved for this write.
     pub persistence_transforms: Vec<ResolvedBlockPersistenceTransform>,
+    /// Physical flash rules active at this read or frozen for write persistence.
+    pub persistence_media_rules: Vec<ResolvedBlockFlashRule>,
     /// Exact virtual coordinate at which persistence admission occurs.
     pub persistence_admitted_nanos: u64,
+}
+
+/// Stable identity of one write fragment ready to enter physical media.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockPersistenceOpportunity {
+    /// Global durability sequence.
+    pub sequence: u64,
+    /// Original guest request identity.
+    pub request_id: u32,
+    /// Absolute destination byte offset.
+    pub offset: u64,
+    /// Exact fragment byte count.
+    pub count: u32,
+    /// BLAKE3 digest of the exact intended fragment bytes.
+    pub intended_digest: [u8; 32],
+    /// Earliest virtual coordinate at which persistence may execute.
+    pub ready_nanos: u64,
+}
+
+/// Exact physical-media policy resolved for one persistence opportunity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedBlockPersistenceMediaDirective {
+    /// Opportunity identity authenticated before mutation.
+    pub opportunity: BlockPersistenceOpportunity,
+    /// Canonically contributor-ordered flash rules active at this opportunity.
+    pub flash_rules: Vec<ResolvedBlockFlashRule>,
+}
+
+/// Replay evidence for one completed physical-media persistence opportunity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockPersistenceMediaOutcome {
+    /// Opportunity identity that was consumed.
+    pub opportunity: BlockPersistenceOpportunity,
+    /// Exact program spans applied to durable media.
+    pub programmed_spans: Vec<BlockFaultByteSpan>,
+    /// Whether a flash program rule reported failure after partial application.
+    pub program_failed: bool,
+    /// Digest of the bytes actually applied, including an empty application.
+    pub programmed_digest: [u8; 32],
 }
 
 impl ResolvedBlockFaultDirective {
@@ -391,6 +435,7 @@ impl ResolvedBlockFaultDirective {
             flush_disposition: BlockFaultFlushDisposition::Honest,
             cache_policy: None,
             persistence_transforms: Vec::new(),
+            persistence_media_rules: Vec::new(),
             persistence_admitted_nanos: 0,
         }
     }
@@ -524,6 +569,7 @@ impl ResolvedBlockFaultDirective {
             || self.read_transforms.len() > HARD_BLOCK_WRITE_SPANS
             || self.media_rules.len() > HARD_BLOCK_WRITE_SPANS
             || self.persistence_transforms.len() > HARD_BLOCK_WRITE_SPANS
+            || self.persistence_media_rules.len() > super::flash::HARD_BLOCK_FLASH_RULES
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "directive violates static block bounds",
@@ -602,8 +648,12 @@ impl ResolvedBlockFaultDirective {
                 reason: "volatile-cache admission requires a write request",
             });
         }
-        if !matches!(self.operation, BlockOp::Write | BlockOp::Discard)
-            && !self.persistence_transforms.is_empty()
+        if (!matches!(self.operation, BlockOp::Write | BlockOp::Discard)
+            && !self.persistence_transforms.is_empty())
+            || (!matches!(
+                self.operation,
+                BlockOp::Read | BlockOp::Write | BlockOp::Discard
+            ) && !self.persistence_media_rules.is_empty())
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "persistence transformations require a write request",
@@ -619,6 +669,18 @@ impl ResolvedBlockFaultDirective {
                 &self.persistence_transforms,
                 self.persistence_admitted_nanos,
             )?;
+        }
+        if self
+            .persistence_media_rules
+            .windows(2)
+            .any(|pair| pair[0].contributor >= pair[1].contributor)
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "persistence flash rules are not in canonical contributor order",
+            });
+        }
+        for rule in &self.persistence_media_rules {
+            rule.validate(config.length_bytes)?;
         }
         if self.cache_policy.is_some_and(|policy| {
             policy.capacity_bytes == 0
@@ -759,6 +821,10 @@ pub struct BlockFaultState {
     volatile_bytes: u64,
     retained: BTreeMap<u64, BlockRetainedVersion>,
     media: BlockMediaState,
+    flash: BlockFlashState,
+    persistence_execution_required: bool,
+    pending_persistence_media: BTreeMap<u64, ResolvedBlockPersistenceMediaDirective>,
+    persistence_media_outcomes: Vec<BlockPersistenceMediaOutcome>,
     persistence: BlockPersistenceGraph,
     pending_barrier_frontier: Option<u64>,
     pending_honest_flush_frontier: Option<u64>,
@@ -788,6 +854,10 @@ impl BlockFaultState {
             volatile_bytes: 0,
             retained: BTreeMap::new(),
             media: BlockMediaState::default(),
+            flash: BlockFlashState::default(),
+            persistence_execution_required: false,
+            pending_persistence_media: BTreeMap::new(),
+            persistence_media_outcomes: Vec::new(),
             persistence: BlockPersistenceGraph::new(),
             pending_barrier_frontier: None,
             pending_honest_flush_frontier: None,
@@ -824,6 +894,10 @@ impl BlockFaultState {
             volatile_bytes: 0,
             retained: BTreeMap::new(),
             media: BlockMediaState::default(),
+            flash: BlockFlashState::default(),
+            persistence_execution_required: false,
+            pending_persistence_media: BTreeMap::new(),
+            persistence_media_outcomes: Vec::new(),
             persistence,
             pending_barrier_frontier: None,
             pending_honest_flush_frontier: None,
@@ -855,6 +929,9 @@ impl BlockFaultState {
             && self.volatile_bytes == 0
             && self.retained.is_empty()
             && self.media.rules().is_empty()
+            && self.flash.continuations().is_empty()
+            && self.pending_persistence_media.is_empty()
+            && self.persistence_media_outcomes.is_empty()
             && self.persistence.nodes().is_empty()
             && self.pending_barrier_frontier.is_none()
             && self.pending_honest_flush_frontier.is_none()
@@ -876,6 +953,7 @@ impl BlockFaultState {
     pub fn validate_restore(&self, device_length: u64) -> Result<(), DeviceError> {
         self.config.validate()?;
         self.media.validate_restore(device_length)?;
+        self.flash.validate_restore(device_length)?;
         if self.config.length_bytes != device_length
             || self.pending.len() > HARD_PENDING_BLOCK_FAULT_DIRECTIVES
             || self.pending_bytes > HARD_PENDING_BLOCK_FAULT_BYTES
@@ -885,6 +963,8 @@ impl BlockFaultState {
             || self.media_queue_bytes > HARD_BLOCK_MEDIA_QUEUE_BYTES
             || self.retained.len() > HARD_BLOCK_RETAINED_VERSIONS
             || self.retained_completions.len() > HARD_BLOCK_RETAINED_COMPLETIONS
+            || self.pending_persistence_media.len() > HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS
+            || self.persistence_media_outcomes.len() > HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS
             || self.volatile.len()
                 > usize::try_from(self.config.cache_entries).unwrap_or(usize::MAX)
             || self.controller.len()
@@ -1060,7 +1140,80 @@ impl BlockFaultState {
                 }
             }
         }
+        for (sequence, directive) in &self.pending_persistence_media {
+            if *sequence != directive.opportunity.sequence {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "restored persistence-media directive key differs",
+                });
+            }
+            self.validate_persistence_media_directive(directive)?;
+        }
         Ok(())
+    }
+
+    /// Enables fail-closed resolution at each physical persistence opportunity.
+    pub fn require_persistence_media_directives(&mut self, required: bool) {
+        self.persistence_execution_required = required;
+    }
+
+    /// Returns the first ready physical persistence opportunity in canonical order.
+    #[must_use]
+    pub fn next_persistence_opportunity(
+        &self,
+        now_nanos: u64,
+    ) -> Option<BlockPersistenceOpportunity> {
+        self.media_queue
+            .keys()
+            .filter(|sequence| self.persistence.is_ready_at(**sequence, now_nanos))
+            .filter_map(|sequence| {
+                self.persistence
+                    .writeback_key(*sequence)
+                    .map(|key| (key, *sequence))
+            })
+            .min_by_key(|(key, _sequence)| *key)
+            .and_then(|(_key, sequence)| self.persistence_opportunity(sequence))
+    }
+
+    /// Installs the exact media directive for one ready persistence opportunity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] for stale/mismatched opportunity identity,
+    /// duplicate installation, invalid flash rules, or bounded-state exhaustion.
+    pub fn install_persistence_media_directive(
+        &mut self,
+        directive: ResolvedBlockPersistenceMediaDirective,
+    ) -> Result<(), DeviceError> {
+        self.validate_persistence_media_directive(&directive)?;
+        if self.pending_persistence_media.len() == HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS {
+            return Err(DeviceError::BlockFaultStateLimit {
+                field: "pending_persistence_media",
+                hard: HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS,
+            });
+        }
+        let sequence = directive.opportunity.sequence;
+        if self.pending_persistence_media.contains_key(&sequence) {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "duplicate persistence-media directive",
+            });
+        }
+        let mut next = self.clone();
+        next.flash
+            .register_rules(self.config.length_bytes, &directive.flash_rules)?;
+        next.pending_persistence_media.insert(sequence, directive);
+        *self = next;
+        Ok(())
+    }
+
+    /// Returns checkpointed sparse flash counters and changed-cell state.
+    #[must_use]
+    pub const fn flash_state(&self) -> &BlockFlashState {
+        &self.flash
+    }
+
+    /// Drains completed persistence-media evidence after durable event recording.
+    pub fn drain_persistence_media_outcomes(&mut self) -> Vec<BlockPersistenceMediaOutcome> {
+        std::mem::take(&mut self.persistence_media_outcomes)
     }
 
     /// Installs one directive, keyed by the exact guest request ID.
@@ -1524,6 +1677,17 @@ impl BlockFaultState {
             BlockOp::Read => {
                 let mut bytes =
                     self.read_visible(base, durable, request.offset, request.count, true)?;
+                if !directive.persistence_media_rules.is_empty() {
+                    self.flash.read(
+                        request,
+                        directive.execution_nanos,
+                        self.config.length_bytes,
+                        &directive.persistence_media_rules,
+                        &mut bytes,
+                    )?;
+                }
+                self.flash
+                    .apply_persistent_read(request.offset, &mut bytes)?;
                 apply_read_transforms(&mut bytes, &directive.read_transforms)?;
                 Ok((BlockResponse::ok(request.request_id, bytes), 0))
             }
@@ -1917,6 +2081,49 @@ impl BlockFaultState {
             &directive.persistence_transforms,
             self.pending_barrier_frontier,
         )?;
+        if !directive.persistence_media_rules.is_empty() {
+            self.flash
+                .register_rules(self.config.length_bytes, &directive.persistence_media_rules)?;
+            let next_count = self
+                .pending_persistence_media
+                .len()
+                .checked_add(resolved.len())
+                .ok_or(DeviceError::BlockFaultStateLimit {
+                    field: "pending_persistence_media",
+                    hard: HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS,
+                })?;
+            if next_count > HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS {
+                return Err(DeviceError::BlockFaultStateLimit {
+                    field: "pending_persistence_media",
+                    hard: HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS,
+                });
+            }
+            for (fragment_index, offset, bytes) in &resolved {
+                let sequence = first_sequence
+                    .checked_add(u64::try_from(*fragment_index).unwrap_or(u64::MAX))
+                    .ok_or(DeviceError::InvalidBlockFaultDirective {
+                        reason: "persistence-media sequence overflow",
+                    })?;
+                self.pending_persistence_media.insert(
+                    sequence,
+                    ResolvedBlockPersistenceMediaDirective {
+                        opportunity: BlockPersistenceOpportunity {
+                            sequence,
+                            request_id: request.request_id,
+                            offset: *offset,
+                            count: u32::try_from(bytes.len()).map_err(|_error| {
+                                DeviceError::InvalidBlockFaultDirective {
+                                    reason: "persistence-media fragment exceeds request width",
+                                }
+                            })?,
+                            intended_digest: *blake3::hash(bytes).as_bytes(),
+                            ready_nanos: self.persistence.deadline_nanos(sequence).unwrap_or(0),
+                        },
+                        flash_rules: directive.persistence_media_rules.clone(),
+                    },
+                );
+            }
+        }
 
         for (fragment_index, offset, bytes) in resolved {
             let sequence = first_sequence
@@ -2185,7 +2392,7 @@ impl BlockFaultState {
             let Some(sequence) = sequence else {
                 break;
             };
-            self.persist_sequence(base, durable, sequence)?;
+            self.persist_sequence(base, durable, sequence, now_nanos)?;
         }
         self.recompute_actual_durable_frontier();
         if self
@@ -2344,19 +2551,74 @@ impl BlockFaultState {
         base: &BaseImage,
         durable: &mut CowOverlay,
         sequence: u64,
+        now_nanos: u64,
     ) -> Result<(), DeviceError> {
-        let (offset, bytes) = if let Some(entry) = self.controller.get(&sequence) {
-            (entry.offset, entry.bytes.clone())
+        let (request_id, offset, bytes) = if let Some(entry) = self.controller.get(&sequence) {
+            (entry.request_id, entry.offset, entry.bytes.clone())
         } else if let Some(entry) = self.media_queue.get(&sequence) {
-            (entry.offset, entry.bytes.clone())
+            (entry.request_id, entry.offset, entry.bytes.clone())
         } else if let Some(entry) = self.volatile.get(&sequence) {
-            (entry.offset, entry.bytes.clone())
+            (entry.request_id, entry.offset, entry.bytes.clone())
         } else {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "ready persistence fragment has no owning storage layer",
             });
         };
-        durable.write(base, offset, &bytes)?;
+        let opportunity = self.persistence_opportunity(sequence).ok_or(
+            DeviceError::InvalidBlockFaultDirective {
+                reason: "persistence opportunity disappeared",
+            },
+        )?;
+        let directive = self.pending_persistence_media.remove(&sequence);
+        if self.persistence_execution_required && directive.is_none() {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "missing resolved persistence-media directive",
+            });
+        }
+        let flash = directive.map_or(
+            Ok(BlockFlashProgramOutcome {
+                spans: vec![BlockFaultByteSpan {
+                    start: 0,
+                    length: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                }],
+                failed: false,
+            }),
+            |directive| {
+                let contributors = directive
+                    .flash_rules
+                    .iter()
+                    .map(|rule| rule.contributor)
+                    .collect::<Vec<_>>();
+                let request = BlockRequest::write(request_id, offset, bytes.clone());
+                self.flash.program_registered(
+                    &request,
+                    now_nanos,
+                    self.config.length_bytes,
+                    &contributors,
+                )
+            },
+        )?;
+        let mut programmed = Vec::new();
+        for span in &flash.spans {
+            let start = usize::try_from(span.start).map_err(|_error| {
+                DeviceError::InvalidBlockFaultDirective {
+                    reason: "flash program span start does not fit memory",
+                }
+            })?;
+            let end = usize::try_from(span.end().unwrap_or(u64::MAX)).map_err(|_error| {
+                DeviceError::InvalidBlockFaultDirective {
+                    reason: "flash program span end does not fit memory",
+                }
+            })?;
+            let selected =
+                bytes
+                    .get(start..end)
+                    .ok_or(DeviceError::InvalidBlockFaultDirective {
+                        reason: "flash program span exceeds persistence fragment",
+                    })?;
+            durable.write(base, offset.saturating_add(span.start), selected)?;
+            programmed.extend_from_slice(selected);
+        }
         self.persistence.commit_persisted(sequence)?;
         if let Some(entry) = self.controller.remove(&sequence) {
             self.controller_bytes = self
@@ -2384,7 +2646,68 @@ impl BlockFaultState {
                 reason: "persisted fragment disappeared from its storage layer",
             });
         }
+        if self.persistence_media_outcomes.len() == HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS {
+            return Err(DeviceError::BlockFaultStateLimit {
+                field: "persistence_media_outcomes",
+                hard: HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS,
+            });
+        }
+        self.persistence_media_outcomes
+            .push(BlockPersistenceMediaOutcome {
+                opportunity,
+                programmed_spans: flash.spans,
+                program_failed: flash.failed,
+                programmed_digest: *blake3::hash(&programmed).as_bytes(),
+            });
         self.recompute_actual_durable_frontier();
+        Ok(())
+    }
+
+    fn persistence_opportunity(&self, sequence: u64) -> Option<BlockPersistenceOpportunity> {
+        let entry = self
+            .controller
+            .get(&sequence)
+            .map(|entry| (entry.request_id, entry.offset, entry.bytes.as_slice()))
+            .or_else(|| {
+                self.media_queue
+                    .get(&sequence)
+                    .map(|entry| (entry.request_id, entry.offset, entry.bytes.as_slice()))
+            })
+            .or_else(|| {
+                self.volatile
+                    .get(&sequence)
+                    .map(|entry| (entry.request_id, entry.offset, entry.bytes.as_slice()))
+            })?;
+        Some(BlockPersistenceOpportunity {
+            sequence,
+            request_id: entry.0,
+            offset: entry.1,
+            count: u32::try_from(entry.2.len()).ok()?,
+            intended_digest: *blake3::hash(entry.2).as_bytes(),
+            ready_nanos: self.persistence.deadline_nanos(sequence).unwrap_or(0),
+        })
+    }
+
+    fn validate_persistence_media_directive(
+        &self,
+        directive: &ResolvedBlockPersistenceMediaDirective,
+    ) -> Result<(), DeviceError> {
+        if self
+            .persistence_opportunity(directive.opportunity.sequence)
+            .as_ref()
+            != Some(&directive.opportunity)
+            || directive
+                .flash_rules
+                .windows(2)
+                .any(|pair| pair[0].contributor >= pair[1].contributor)
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "persistence-media directive does not match its live opportunity",
+            });
+        }
+        for rule in &directive.flash_rules {
+            rule.validate(self.config.length_bytes)?;
+        }
         Ok(())
     }
 
@@ -2515,6 +2838,21 @@ fn directive_owned_bytes(directive: &ResolvedBlockFaultDirective) -> Result<u64,
                 reason: "pending directive byte count overflow",
             })?;
     }
+    total = total
+        .checked_add(
+            u64::try_from(
+                directive
+                    .persistence_media_rules
+                    .len()
+                    .saturating_mul(std::mem::size_of::<ResolvedBlockFlashRule>()),
+            )
+            .map_err(|_error| DeviceError::InvalidBlockFaultDirective {
+                reason: "pending flash rule byte count overflow",
+            })?,
+        )
+        .ok_or(DeviceError::InvalidBlockFaultDirective {
+            reason: "pending directive byte count overflow",
+        })?;
     if let Some(response) = &directive.retention_timeout_response {
         total = total
             .checked_add(u64::try_from(response.data.len()).map_err(|_error| {
@@ -3785,5 +4123,160 @@ mod tests {
             state(BlockCompletionDurability::Durable).install(read.request_id, duplicate),
             Err(DeviceError::InvalidBlockFaultDirective { .. })
         ));
+    }
+
+    #[test]
+    fn persistence_opportunity_applies_checkpointed_partial_flash_program() {
+        let base = BaseImage::new(vec![0; 32]);
+        let mut durable = CowOverlay::new();
+        let mut storage = BlockFaultState::new(BlockDurabilityConfig {
+            length_bytes: 32,
+            atomic_write_bytes: 4,
+            maximum_request_bytes: 32,
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
+            volatile_cache_bytes: 32,
+            cache_entries: 8,
+            controller_buffer_bytes: 0,
+            controller_entries: 0,
+            persistence_dependencies: 32,
+            retained_versions: 8,
+            completion_durability: BlockCompletionDurability::VolatileCacheAccepted,
+        })
+        .unwrap_or_else(|error| panic!("flash test state should build: {error}"));
+        let write = BlockRequest::write(41, 0, vec![0xaa; 4]);
+        let directive = ResolvedBlockFaultDirective::fault_free(&write, 32);
+        storage
+            .install(write.request_id, directive)
+            .unwrap_or_else(|error| panic!("write directive should install: {error}"));
+        storage
+            .execute(&base, &mut durable, &write, 0)
+            .unwrap_or_else(|error| panic!("cached write should execute: {error}"));
+        storage
+            .schedule_volatile_persistence(0)
+            .unwrap_or_else(|error| panic!("write should enter media queue: {error}"));
+        storage.require_persistence_media_directives(true);
+        let opportunity = storage
+            .next_persistence_opportunity(0)
+            .unwrap_or_else(|| panic!("persistence opportunity should be ready"));
+        let flash_rule = ResolvedBlockFlashRule {
+            contributor: [3; 32],
+            choice_key: [4; 32],
+            erase_block_bytes: 8,
+            program_page_bytes: 4,
+            endurance_cycles: 10,
+            retention: super::super::flash::ResolvedBlockFlashRetention {
+                minimum_age_nanos: 1,
+                wear_age_nanos: 0,
+                bit_probability_millionths: 0,
+                maximum_changed_bits: 1,
+            },
+            read_disturb: super::super::flash::ResolvedBlockFlashReadDisturb {
+                read_threshold: 10,
+                neighbor_pages: 1,
+                bit_probability_millionths: 0,
+                maximum_changed_bits: 1,
+            },
+            program_erase: super::super::flash::ResolvedBlockFlashProgramErase {
+                program_probability_millionths: 1_000_000,
+                erase_probability_millionths: 0,
+                worn_probability_millionths: 0,
+                partial_program: true,
+                partial_erase: false,
+            },
+        };
+        storage
+            .install_persistence_media_directive(ResolvedBlockPersistenceMediaDirective {
+                opportunity: opportunity.clone(),
+                flash_rules: vec![flash_rule],
+            })
+            .unwrap_or_else(|error| panic!("flash directive should install: {error}"));
+        storage
+            .validate_restore(32)
+            .unwrap_or_else(|error| panic!("pre-persist checkpoint should validate: {error}"));
+        storage
+            .persist_due(&base, &mut durable, 0)
+            .unwrap_or_else(|error| panic!("flash persistence should execute: {error}"));
+        let outcomes = storage.drain_persistence_media_outcomes();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].opportunity, opportunity);
+        assert!(outcomes[0].program_failed);
+        assert_eq!(outcomes[0].programmed_spans.len(), 1);
+        let programmed = outcomes[0].programmed_spans[0].length as usize;
+        let materialized = durable.materialize(&base);
+        assert_eq!(&materialized[..programmed], &vec![0xaa; programmed]);
+        assert_eq!(&materialized[programmed..4], &vec![0; 4 - programmed]);
+    }
+
+    #[test]
+    fn flash_retention_changes_survive_effect_deactivation_and_restore() {
+        let base = BaseImage::new(vec![0; 32]);
+        let mut durable = CowOverlay::new();
+        let mut storage = state(BlockCompletionDurability::Durable);
+        let read = BlockRequest::read(52, 0, 4);
+        let mut active = ResolvedBlockFaultDirective::fault_free(&read, 32);
+        active.execution_nanos = 10;
+        active.persistence_media_rules = vec![ResolvedBlockFlashRule {
+            contributor: [5; 32],
+            choice_key: [6; 32],
+            erase_block_bytes: 8,
+            program_page_bytes: 4,
+            endurance_cycles: 10,
+            retention: super::super::flash::ResolvedBlockFlashRetention {
+                minimum_age_nanos: 1,
+                wear_age_nanos: 0,
+                bit_probability_millionths: 1_000_000,
+                maximum_changed_bits: 1,
+            },
+            read_disturb: super::super::flash::ResolvedBlockFlashReadDisturb {
+                read_threshold: 100,
+                neighbor_pages: 1,
+                bit_probability_millionths: 0,
+                maximum_changed_bits: 1,
+            },
+            program_erase: super::super::flash::ResolvedBlockFlashProgramErase {
+                program_probability_millionths: 0,
+                erase_probability_millionths: 0,
+                worn_probability_millionths: 0,
+                partial_program: false,
+                partial_erase: false,
+            },
+        }];
+        storage
+            .install(read.request_id, active)
+            .unwrap_or_else(|error| panic!("active flash read should install: {error}"));
+        let changed = storage
+            .execute(&base, &mut durable, &read, 0)
+            .unwrap_or_else(|error| panic!("active flash read should execute: {error}"));
+        let changed = BlockResponse::decode(
+            &changed
+                .primary
+                .unwrap_or_else(|| panic!("read should complete"))
+                .payload,
+        )
+        .unwrap_or_else(|error| panic!("read response should decode: {error}"));
+        assert_ne!(changed.data, vec![0; 4]);
+
+        storage
+            .validate_restore(32)
+            .unwrap_or_else(|error| panic!("flash continuation should restore: {error}"));
+        let inactive_read = BlockRequest::read(53, 0, 4);
+        storage
+            .install(
+                inactive_read.request_id,
+                ResolvedBlockFaultDirective::fault_free(&inactive_read, 32),
+            )
+            .unwrap_or_else(|error| panic!("inactive read should install: {error}"));
+        let persisted = storage
+            .execute(&base, &mut durable, &inactive_read, 0)
+            .unwrap_or_else(|error| panic!("inactive read should execute: {error}"));
+        let persisted = BlockResponse::decode(
+            &persisted
+                .primary
+                .unwrap_or_else(|| panic!("read should complete"))
+                .payload,
+        )
+        .unwrap_or_else(|error| panic!("read response should decode: {error}"));
+        assert_eq!(persisted.data, changed.data);
     }
 }

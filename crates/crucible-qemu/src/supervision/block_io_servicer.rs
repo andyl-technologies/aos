@@ -60,7 +60,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crucible::model::ContentHash;
 use crucible_device::block::{
-    BlockDurabilityConfig, BlockFaultState, BlockRetainedRelease, ResolvedBlockFaultDirective,
+    BlockDurabilityConfig, BlockFaultState, BlockPersistenceMediaOutcome,
+    BlockPersistenceOpportunity, BlockRetainedRelease, ResolvedBlockFaultDirective,
+    ResolvedBlockPersistenceMediaDirective,
 };
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockSnapshot, DeviceError, IoCore, Request,
@@ -393,6 +395,37 @@ impl QemuLiveBlockIoServicer {
     #[must_use]
     pub fn storage_fault_state(&self) -> &BlockFaultState {
         self.device.storage_fault_state()
+    }
+
+    /// Returns the next physical persistence opportunity ready at `now_nanos`.
+    #[must_use]
+    pub fn next_storage_persistence_opportunity(
+        &self,
+        now_nanos: u64,
+    ) -> Option<BlockPersistenceOpportunity> {
+        self.device.next_storage_persistence_opportunity(now_nanos)
+    }
+
+    /// Installs a resolved directive for one exact physical-media opportunity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] when the directive is
+    /// stale, malformed, duplicated, or exceeds a hard state bound.
+    pub fn install_storage_persistence_media_directive(
+        &mut self,
+        directive: ResolvedBlockPersistenceMediaDirective,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.device
+            .install_storage_persistence_media_directive(directive)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Drains completed physical-media outcomes for durable event recording.
+    pub fn drain_storage_persistence_media_outcomes(
+        &mut self,
+    ) -> Vec<BlockPersistenceMediaOutcome> {
+        self.device.drain_storage_persistence_media_outcomes()
     }
 
     /// Drops exact volatile-cache entries at a scheduler-authorized boundary.

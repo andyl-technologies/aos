@@ -284,7 +284,8 @@ pub use spawn::{
 pub use storage_fault_resolver::{
     ResolvedVolatileCacheLoss, StorageFaultResolutionContext, StorageFaultResolutionError,
     VolatileCacheLossReplay, block_durability_config, block_request_fault_opportunity,
-    resolve_block_fault_directive, resolve_volatile_cache_loss,
+    resolve_block_fault_directive, resolve_block_persistence_media_directive,
+    resolve_volatile_cache_loss,
 };
 #[cfg(target_os = "linux")]
 pub use supervision::{
