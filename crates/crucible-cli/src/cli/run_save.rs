@@ -1030,7 +1030,7 @@ where
                 let summary =
                     wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
                         .await?;
-                let boundary = if summary.frontier.ticks < budget {
+                if summary.frontier.ticks < budget {
                     send_resume_workflow_command(
                         client,
                         resumed.session,
@@ -1059,8 +1059,7 @@ where
                     .await?
                 } else {
                     summary
-                };
-                boundary
+                }
             }
             RunTerminalCondition::Stopped => {
                 wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)

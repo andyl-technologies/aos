@@ -1318,8 +1318,10 @@ mod tests {
             },
         )]);
         let base = replay_branch_base(&scenario.scenario_def(), &schedule, 1)?;
-        let error = replay_branch_evidence(&scenario, base, 2)
-            .expect_err("unrecorded branch frontier must fail closed");
+        let error = match replay_branch_evidence(&scenario, base, 2) {
+            Ok(_) => panic!("unrecorded branch frontier must fail closed"),
+            Err(error) => error,
+        };
 
         assert!(error.to_string().contains("exceeded the latest recorded"));
         Ok(())

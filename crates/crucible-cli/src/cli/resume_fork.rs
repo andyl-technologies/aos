@@ -1623,11 +1623,6 @@ pub(super) fn write_fork_reproduction_artifact(
                 frontier_ticks: source.checkpoint.virtual_time.ticks,
                 seed,
             }
-        } else if !plan.decision_overrides.is_empty() {
-            LiveQemuReplayBranch::Resume {
-                base_decisions: source.configuration.schedule.len() as u64,
-                frontier_ticks: source.checkpoint.virtual_time.ticks,
-            }
         } else {
             LiveQemuReplayBranch::Resume {
                 base_decisions: source.configuration.schedule.len() as u64,

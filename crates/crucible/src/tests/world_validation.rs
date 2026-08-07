@@ -1186,14 +1186,16 @@ fn serializable_scenario_form_round_trips_and_rejects_host_paths() {
         Err(EngineError::ScenarioSerializedIdMismatch { component, .. })
             if component == "scenario"
     ));
-    let wrong_id_error = ScenarioDefForm::from_canonical_toml(&wrong_id_toml)
-        .expect_err("wrong scenario id must be rejected")
-        .to_string();
+    let wrong_id_error = match ScenarioDefForm::from_canonical_toml(&wrong_id_toml) {
+        Ok(_) => panic!("wrong scenario id must be rejected"),
+        Err(error) => error.to_string(),
+    };
     assert!(wrong_id_error.contains(&format!("blake3:{}", wrong_hash.to_hex())));
     assert!(wrong_id_error.contains(&format!("blake3:{}", form.id().to_hex())));
-    let malformed_id_error = ScenarioDefForm::from_canonical_toml(&malformed_id_toml)
-        .expect_err("non-content-addressed scenario id must be rejected")
-        .to_string();
+    let malformed_id_error = match ScenarioDefForm::from_canonical_toml(&malformed_id_toml) {
+        Ok(_) => panic!("non-content-addressed scenario id must be rejected"),
+        Err(error) => error.to_string(),
+    };
     assert!(malformed_id_error.contains("scenario.id content hash reference"));
     assert!(matches!(
         World::from_canonical_toml(&wrong_empty_world_toml),

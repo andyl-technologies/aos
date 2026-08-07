@@ -3111,10 +3111,10 @@ mod streaming_receiver_tests {
             receiver.push_pending_event(event(sequence));
         }
 
-        let error = receiver
-            .recv_event()
-            .await
-            .expect_err("dropped canonical events must report lag");
+        let error = match receiver.recv_event().await {
+            Ok(_) => panic!("dropped canonical events must report lag"),
+            Err(error) => error,
+        };
         assert!(matches!(
             error,
             ControlClientError::Streaming {
