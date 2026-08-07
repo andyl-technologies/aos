@@ -56,6 +56,14 @@ both divergent reductions carry producer provenance. It records:
 - canonical log and fingerprint evidence; and
 - embedded model-reproduction material where the producer supplied it.
 
+Streamed event summaries retained in run evidence identify the event's original
+sequence, virtual-time and instruction-count coordinate, source, causal class,
+and a bounded set of diagnostic attributes. Fault summaries include their kind,
+tag, targets, and description; assertion summaries include their assertion id
+and state. Guest byte payloads remain redacted and are represented only by their
+length. These coordinates distinguish repeated scheduler boundaries and make a
+fault or violated assertion findable without exposing console or channel data.
+
 In table mode, the failure footer prints copy-pasteable `replay` and `debug`
 commands. JSON/JSONL records the artifact digest in the final outcome but does
 not add the host path to the canonical log; locate the matching `repro-*.crucible`
