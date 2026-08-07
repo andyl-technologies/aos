@@ -18,12 +18,12 @@ if [ ! -e "$profile/state.json" ]; then
     seed_one() {
       case "$1" in
   aos-test-agent)
-  /nix/store/<hash>-coreutils-9.5/bin/ln -sfn /nix/store/<hash>-aos-test-agent-0 "$profile/gen-1/usr/ri7af9743dclplw3vcyh9bv9bdk92in1"
-  /nix/store/<hash>-coreutils-9.5/bin/ln -sfn /nix/store/<hash>-expose-aos-test-agent "$profile/gen-1/expose/31gmvkzk62xxyi983g5zar86rylb0bhr"
-  /nix/store/<hash>-coreutils-9.5/bin/ln -sfn /nix/store/<hash>-aos-test-agent-config-0-config "$profile/gen-1/cfgsrc/xd6lr0mfpzh2sflh1prh60j5i8gvvmdk"
+  /nix/store/<hash>-coreutils-9.5/bin/ln -sfn /nix/store/<hash>-aos-test-agent-0 "$profile/gen-1/usr/<store-identity>"
+  /nix/store/<hash>-coreutils-9.5/bin/ln -sfn /nix/store/<hash>-expose-aos-test-agent "$profile/gen-1/expose/<store-identity>"
+  /nix/store/<hash>-coreutils-9.5/bin/ln -sfn /nix/store/<hash>-aos-test-agent-config-0-config "$profile/gen-1/cfgsrc/<store-identity>"
 
-  /nix/store/<hash>-coreutils-9.5/bin/cp /nix/store/<hash>-aos-package-aos-test-agent-meta.json/ri7af9743dclplw3vcyh9bv9bdk92in1.json "$profile/meta/ri7af9743dclplw3vcyh9bv9bdk92in1.json"
-  /nix/store/<hash>-coreutils-9.5/bin/cp /nix/store/<hash>-aos-package-aos-test-agent-meta.json/ri7af9743dclplw3vcyh9bv9bdk92in1.json "$profile/gen-1/meta/ri7af9743dclplw3vcyh9bv9bdk92in1.json"
+  /nix/store/<hash>-coreutils-9.5/bin/cp /nix/store/<hash>-aos-package-aos-test-agent-meta.json/ri7af9743dclplw3vcyh9bv9bdk92in1.json "$profile/meta/<store-identity>.json"
+  /nix/store/<hash>-coreutils-9.5/bin/cp /nix/store/<hash>-aos-package-aos-test-agent-meta.json/ri7af9743dclplw3vcyh9bv9bdk92in1.json "$profile/gen-1/meta/<store-identity>.json"
   ;;
 
         *)

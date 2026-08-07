@@ -3,8 +3,8 @@
 # Pure-eval characterization (no VM, no host tools) that pins the
 # *deterministic, renderable* outputs of `system.build.toplevel` for a
 # system variant against committed golden fixtures. This is the regression
-# net the render/assemble split runs under: an unexpected
-# byte diff in any snapshotted artifact fails the build.
+# net for system rendering: an unexpected byte diff in any snapshotted
+# artifact fails the build.
 #
 # Snapshotted artifacts (per variant, under
 # `tests/fixtures/system-characterization-goldens/<variant>/`):
@@ -21,14 +21,14 @@
 # subpath. The snapshots therefore pin semantic references such as package
 # names and versions without changing whenever equivalent source edits produce
 # a new store identity. Opaque identities derived from those paths, currently
-# `AOS_BASELIB_DIGEST`, are normalized to a field-specific token for the same
-# reason; their presence and wire format remain characterized.
+# `AOS_BASELIB_DIGEST` and profile-local names derived from store identities,
+# are normalized to field-specific tokens for the same reason; their presence,
+# location, and wire format remain characterized.
 #
-# Job-script normalization (test-plan.md review C2): the C2/F2-A change moves
-# shell-snippet options (`script=`/`preStart=`/…) out of a `writeShellScriptBin`
-# store path and into manifest *text* written to a generation-local path, so the
-# rendered `ExecStart=`/`ExecStartPre=`/… bytes change intentionally. To keep the
-# golden stable across that move, the comparator replaces any `Exec*=` value that
+# Job-script normalization allows shell-snippet options (`script=`/`preStart=`/…)
+# to move between a `writeShellScriptBin` store path and manifest text written
+# to a generation-local path without creating a representation-only diff. The
+# comparator replaces any `Exec*=` value that
 # points at a job-script path with the script's *text*. A path is recognized as a
 # job script when it contains the marker `-unit-script-` (the current
 # `writeShellScriptBin` form) or `/aos-job-scripts/` (the reserved F2 gen-local
@@ -73,9 +73,8 @@
       artifacts and either writes it out (generate mode) or diffs it against a
       committed golden tree (check mode). The job-script normalization is the
       load-bearing piece: it collapses both the current `writeShellScriptBin`
-      store-path form and the reserved F2 generation-local form of a
-      `Exec*=`-referenced job script to the script's text, so the golden is
-      stable across the C2/F2-A move.
+      store-path form and the reserved generation-local form of an
+      `Exec*=`-referenced job script to the script's text.
       """
 
       import argparse
@@ -99,6 +98,10 @@
       BASELIB_DIGEST_RE = re.compile(
           r"(?m)^(AOS_BASELIB_DIGEST=)sha256:[0-9a-f]{64}$"
       )
+      PROFILE_IDENTITY_RE = re.compile(
+          r"(/(?:gen-[0-9]+/)?(?:usr|expose|cfgsrc|meta)/)"
+          r"[0-9abcdfghijklmnpqrsvwxyz]{32}(?=(?:\.json)?(?:/|\"|'|\s|$))"
+      )
       # systemd Exec line special prefixes that precede the executable path.
       EXEC_PREFIX_CHARS = set("@-:+!~")
 
@@ -116,7 +119,8 @@
       def normalize_store_identities(text):
           """Replace volatile Nix identities while retaining semantic names."""
           text = STORE_PATH_RE.sub(r"/nix/store/<hash>-\1", text)
-          return BASELIB_DIGEST_RE.sub(r"\1sha256:<base-lib-digest>", text)
+          text = BASELIB_DIGEST_RE.sub(r"\1sha256:<base-lib-digest>", text)
+          return PROFILE_IDENTITY_RE.sub(r"\1<store-identity>", text)
 
 
       def split_exec_value(value):
@@ -278,6 +282,16 @@
               sys.exit(1)
           if normalized_a == normalize_store_identities(different_version):
               sys.stderr.write("store-path normalization erased a semantic version change\n")
+              sys.exit(1)
+
+          profile_a = '$profile/gen-1/expose/%s' % ("a" * 32)
+          profile_b = '$profile/gen-1/expose/%s' % ("b" * 32)
+          normalized_profile = normalize_store_identities(profile_a)
+          if normalized_profile != normalize_store_identities(profile_b):
+              sys.stderr.write("profile-local store identity normalization self-test FAILED\n")
+              sys.exit(1)
+          if normalized_profile != '$profile/gen-1/expose/<store-identity>':
+              sys.stderr.write("profile-local normalization erased its semantic location\n")
               sys.exit(1)
 
           digest_a = "AOS_BASELIB_DIGEST=sha256:%s\n" % ("1" * 64)

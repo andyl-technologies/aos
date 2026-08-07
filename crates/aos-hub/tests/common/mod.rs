@@ -878,6 +878,7 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
             sb_signer_cert_sha256: None,
             sbat: Vec::new(),
             expected_pcr11: None,
+            ukis: Vec::new(),
             root_image: None,
             root_verity: None,
             root_hash: None,
