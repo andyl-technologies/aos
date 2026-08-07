@@ -2059,6 +2059,7 @@ pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production
         String::from("crucible"),
         String::from("--daemon"),
         daemon,
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("--seed"),
         String::from("7"),
         String::from("run"),
@@ -2390,6 +2391,7 @@ pub(super) fn cli_backend_selection_covers_every_backend_routed_subcommand()
             String::from("crucible"),
             String::from("--daemon"),
             String::from("127.0.0.1:9000"),
+            String::from("--trusted-unauthenticated-daemon"),
         ];
         daemon_args.extend(tail.iter().map(|arg| (*arg).to_string()));
         let daemon_cli = cli_from_owned(daemon_args);

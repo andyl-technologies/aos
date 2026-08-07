@@ -161,6 +161,7 @@ pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without
         String::from("crucible"),
         String::from("--daemon"),
         String::from("127.0.0.1:9000"),
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("--seed"),
         String::from("12"),
         String::from("verify"),
@@ -409,6 +410,7 @@ pub(super) fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Resul
         String::from("crucible"),
         String::from("--daemon"),
         daemon,
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("--seed"),
         String::from("13"),
         String::from("verify"),
@@ -531,6 +533,7 @@ pub(super) fn cli_backend_selection_routes_daemon_over_api_without_local_backend
         "crucible",
         "--daemon",
         "127.0.0.1:9000",
+        "--trusted-unauthenticated-daemon",
         "--backend",
         "qemu",
         "run",
@@ -581,6 +584,29 @@ pub(super) fn cli_backend_selection_routes_daemon_over_api_without_local_backend
 }
 
 #[test]
+pub(super) fn cli_backend_selection_rejects_unacknowledged_cleartext_daemon() {
+    let cli = Cli::parse_from([
+        "crucible",
+        "--daemon",
+        "http://198.51.100.7:9000",
+        "run",
+        TEST_SCENARIO,
+    ]);
+
+    let error = plan_backend_selection(&cli)
+        .expect_err("cleartext daemon access without explicit trust must fail closed");
+
+    assert!(matches!(error, CliError::Usage(_)));
+    assert_eq!(error.exit_code(), 64);
+    assert!(
+        error
+            .to_string()
+            .contains("--trusted-unauthenticated-daemon")
+    );
+    assert!(error.to_string().contains("mutual-TLS"));
+}
+
+#[test]
 pub(super) fn cli_backend_selection_local_and_remote_have_equivalent_canonical_outcome()
 -> Result<(), Box<dyn Error>> {
     let local_cli = Cli::parse_from(["crucible", "--backend", "double", "run", TEST_SCENARIO]);
@@ -590,6 +616,7 @@ pub(super) fn cli_backend_selection_local_and_remote_have_equivalent_canonical_o
         "double",
         "--daemon",
         "127.0.0.1:9000",
+        "--trusted-unauthenticated-daemon",
         "run",
         TEST_SCENARIO,
     ]);
@@ -982,6 +1009,7 @@ pub(super) fn cli_determinism_ergonomics_threads_seed_into_backend_outcome()
         "double",
         "--daemon",
         "127.0.0.1:9000",
+        "--trusted-unauthenticated-daemon",
         "--seed",
         "1",
         "run",
@@ -1216,6 +1244,7 @@ pub(super) fn cli_determinism_ergonomics_rejects_remote_mock_failure_artifact()
         "crucible",
         "--daemon",
         "127.0.0.1:9000",
+        "--trusted-unauthenticated-daemon",
         "--seed",
         "0x55",
         "run",
@@ -3040,6 +3069,7 @@ pub(super) fn cli_replay_rejects_remote_daemon_without_producer_identity()
         "crucible",
         "--daemon",
         "127.0.0.1:9000",
+        "--trusted-unauthenticated-daemon",
         "replay",
         &artifact_arg,
     ]);

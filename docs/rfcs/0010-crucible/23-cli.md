@@ -812,6 +812,12 @@ bounded quantum count ([SESS-3], `gate:control-responsive`). The daemon holds no
 determinism mechanism the in-process path lacks — it is the *same* sessions,
 reached over the API instead of in-process ([CLI-8]).
 
+Every cleartext client route MUST require the explicit
+`--trusted-unauthenticated-daemon` acknowledgment before opening a connection;
+a bare host/port or `http://` URI does not imply trust. Otherwise the client
+MUST present a complete mutual-TLS configuration. The trust acknowledgment and
+mutual-TLS credentials are mutually exclusive.
+
 **Exit codes.** `0` = clean shutdown (signal); `3` = bind/backend error; `4` =
 discovery/config; `64` = usage. While running, the process stays up until a
 shutdown signal.
