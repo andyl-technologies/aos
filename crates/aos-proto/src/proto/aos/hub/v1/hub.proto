@@ -1946,6 +1946,9 @@ message ListOperationsRequest {
   string state = 2;
   uint32 page_size = 3;
   string page_token = 4;
+  // Immutable scope whose complete descendant operation inventory is requested.
+  // Exactly one of target or authorization_scope_key must be set.
+  string authorization_scope_key = 5;
 }
 message ListOperationsResponse {
   repeated OperationDetail operations = 1;

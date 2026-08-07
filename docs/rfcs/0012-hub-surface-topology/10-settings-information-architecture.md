@@ -442,6 +442,15 @@ Operations is live/asynchronous work with progress and retry. Audit log is the
 immutable record of completed and attempted control-plane changes. They are
 adjacent but not combined.
 
+The Operations page is one uniform scope-closure view at instance,
+organization, registry, and cache levels. It resolves the page locator to an
+immutable authorization scope, lists all descendant-owned operations, and
+filters by the closed operation-state vocabulary. Expanded rows expose every
+typed target snapshot, generation/digest evidence, progress, terminal error,
+and exact resource version. Retry and cancellation are version-fenced explicit
+confirmations. Organization Audit remains the durable event history and is not
+folded into this live-work inventory.
+
 ## Registry settings
 
 The registry owns its signed catalog, placements, delivery routes, consumer
@@ -596,6 +605,9 @@ histories into one overloaded panel.
 Combines live operational status only where it is useful to correlate route,
 placement, coverage, and publication failures. It links to durable Audit at the
 organization scope instead of duplicating a second audit system.
+
+The page is backed by the registry's immutable authorization-scope closure,
+not a slug-derived filter or a list of only registry-primary operations.
 
 ## Binary-cache settings
 
