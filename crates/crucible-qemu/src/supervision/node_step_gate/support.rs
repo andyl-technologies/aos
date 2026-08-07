@@ -116,6 +116,7 @@ pub(super) fn prime_guest_off_boot_barrier(
     node_name: &str,
     router_name: &str,
     coverage: QemuLaunchPluginSwitch,
+    mut block: Option<&mut QemuLiveBlockIoServicer>,
 ) -> Result<Vec<crate::QemuNodeEmittedFrame>, QemuLiveNodeStepGateError> {
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuLiveNodeStepGateError::PrimeRegionMap { source })?;
@@ -142,6 +143,11 @@ pub(super) fn prime_guest_off_boot_barrier(
         let current = QemuShmemHotPathChannel::current_icount(&mut hot_path)
             .map_err(|source| QemuLiveNodeStepGateError::prime("poll priming icount", source))?
             .retired;
+        if let Some(servicer) = block.as_deref_mut() {
+            servicer
+                .service_fault_free_initialization(current)
+                .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
+        }
         if current >= PRIME_CEILING_ICOUNT {
             reached = true;
             break;
@@ -226,10 +232,16 @@ pub(super) fn vm_launch_config(
         Some(initrd) => vm.with_initrd(launch_artifact("initrd", initrd)),
         None => vm,
     };
-    match &config.shmem_network_mac {
+    let vm = match &config.shmem_network_mac {
         Some(mac) => {
             vm.with_crucible_shmem_network(CrucibleShmemNetworkDevice::new().with_mac(mac.clone()))
         }
+        None => vm,
+    };
+    match &config.shmem_block {
+        Some(block) => vm.with_crucible_shmem_block(CrucibleShmemBlockDevice::new(
+            block.durability.length_bytes,
+        )),
         None => vm,
     }
 }

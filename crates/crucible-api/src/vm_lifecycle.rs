@@ -21,7 +21,7 @@ use crate::vm_resume::{
 use crucible::model::{FaultCoordinate, SignalArtifactProvider, SignalBoundarySnapshot};
 use crucible::{
     Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, ConditionEvaluationPass,
-    ConditionLeaf, Configuration, ControlOperation, Decision, EventFirings, EventGraph,
+    ConditionLeaf, Configuration, ControlOperation, DagStore, Decision, EventFirings, EventGraph,
     EventGraphState, FingerprintSample, GdbAttachInfo, GdbListen, HostAssertionEvaluator,
     HostAssertionOutcome, HostAssertionOutcomeKind, NodeId, ObservableEvent, QuantumLoop,
     QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RestartPolicy, ScenarioDef,
@@ -63,6 +63,7 @@ pub struct ProductionVmLifecycleConfig {
     branch_effect_choices: Vec<Decision>,
     branch_network_choices: Vec<crucible::OverrideDecision>,
     signal_artifacts: Option<Arc<dyn SignalArtifactProvider>>,
+    world_artifacts: Option<Arc<dyn DagStore>>,
 }
 
 impl std::fmt::Debug for ProductionVmLifecycleConfig {
@@ -87,6 +88,10 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
             .field(
                 "signal_artifacts_configured",
                 &self.signal_artifacts.is_some(),
+            )
+            .field(
+                "world_artifacts_configured",
+                &self.world_artifacts.is_some(),
             )
             .finish()
     }
@@ -149,6 +154,7 @@ impl ProductionVmLifecycleConfig {
             branch_effect_choices: Vec::new(),
             branch_network_choices: Vec::new(),
             signal_artifacts: None,
+            world_artifacts: None,
         }
     }
 
@@ -290,6 +296,17 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
+    /// Returns this configuration with immutable World I/O artifacts.
+    ///
+    /// A World that declares block or 9p nodes is rejected unless this store can
+    /// supply every content-addressed base image or filesystem tree. Production
+    /// execution never substitutes deterministic test bytes.
+    #[must_use]
+    pub fn with_world_artifacts(mut self, artifacts: Arc<dyn DagStore>) -> Self {
+        self.world_artifacts = Some(artifacts);
+        self
+    }
+
     fn for_thin_replay(mut self) -> Self {
         self.debug = None;
         self
@@ -321,6 +338,11 @@ pub struct ProductionVmLifecycleLoop {
     terminal_verdict: Option<QuantumTerminalVerdict>,
     branch: Option<ProductionVmBranchConfig>,
     launch_configs: BTreeMap<NodeId, ProductionLiveNodeStepGateConfig>,
+    block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
+    storage_fault_observations: storage_faults::ProductionStorageObservations,
+    fault_runtime: Arc<std::sync::Mutex<ProductionFaultRuntime>>,
+    fault_evaluation_cursor: network_faults::SharedProductionFaultEvaluationCursor,
+    icount_shift: u8,
     node_indexes: BTreeMap<NodeId, usize>,
     restart_generations: BTreeMap<NodeId, u64>,
     executable: PathBuf,
@@ -341,9 +363,14 @@ mod helpers;
 mod network_faults;
 mod quantum_loop;
 mod runtime;
+mod storage_faults;
 
 use helpers::*;
-use network_faults::ProductionFaultNetworkInterceptor;
+use network_faults::{
+    ProductionFaultEvaluationCursor, ProductionFaultNetworkInterceptor,
+    SharedProductionFaultEvaluationCursor,
+};
+use storage_faults::{ProductionBlockFaultCoordinator, block_binding_for_vm};
 
 /// Derives the production scheduler's initial state-space search frontier.
 ///
@@ -451,6 +478,7 @@ pub fn build_production_vm_lifecycle_loop(
         .map_err(|error| loop_factory_error(format!("create QEMU run directory: {error}")))?;
     let mut backends = ProductionNodeSet::new();
     let mut launch_configs = BTreeMap::new();
+    let mut block_bindings = BTreeMap::new();
     let mut node_indexes = BTreeMap::new();
     let mut initial_ticks = None;
     let scenario_seed = scenario.seed().bytes();
@@ -505,6 +533,12 @@ pub fn build_production_vm_lifecycle_loop(
         }
         if !source.world().links().is_empty() {
             launch = launch.with_shmem_network_mac(crucible::deterministic_node_mac_string(&vm.id));
+        }
+        if let Some(block) =
+            block_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
+        {
+            launch = launch.with_shmem_block(block.base.clone(), block.durability.clone());
+            block_bindings.insert(vm.id.clone(), block);
         }
         if vm.initrd.is_some() && config.initrd.is_none() {
             return Err(loop_factory_error(format!(
@@ -627,13 +661,40 @@ pub fn build_production_vm_lifecycle_loop(
         &backends,
     )
     .map_err(|error| loop_factory_error(format!("admit signal fault runtime: {error}")))?;
+    let fault_runtime = Arc::new(std::sync::Mutex::new(fault_runtime));
+    let fault_evaluation_cursor: SharedProductionFaultEvaluationCursor = Arc::new(
+        std::sync::Mutex::new(ProductionFaultEvaluationCursor::default()),
+    );
+    let storage_fault_observations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    for (node, block) in &block_bindings {
+        backends
+            .install_block_fault_coordinator(
+                node,
+                Box::new(ProductionBlockFaultCoordinator::new(
+                    Arc::clone(&fault_runtime),
+                    Arc::clone(&fault_evaluation_cursor),
+                    Arc::clone(&storage_fault_observations),
+                    source.world().clone(),
+                    block.target.clone(),
+                    scenario.id(),
+                    first.icount_shift,
+                )),
+            )
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "attach signal-driven block coordinator to `{}`: {error}",
+                    node.name
+                ))
+            })?;
+    }
 
     Ok(ProductionVmLifecycleLoop {
         inner: BackendQuantumLoop::with_network_output_interceptor(
             scheduler,
             backends,
-            ProductionFaultNetworkInterceptor::new(
-                fault_runtime,
+            ProductionFaultNetworkInterceptor::with_shared_runtime(
+                Arc::clone(&fault_runtime),
+                Arc::clone(&fault_evaluation_cursor),
                 source.world().fault_topology().clone(),
                 source.world().links().to_vec(),
             ),
@@ -647,6 +708,11 @@ pub fn build_production_vm_lifecycle_loop(
         terminal_verdict: None,
         branch: config.branch.clone(),
         launch_configs,
+        block_bindings,
+        storage_fault_observations,
+        fault_runtime,
+        fault_evaluation_cursor,
+        icount_shift: first.icount_shift,
         node_indexes,
         restart_generations: BTreeMap::new(),
         executable: config.executable.clone(),

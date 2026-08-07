@@ -61,9 +61,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use crucible::model::ContentHash;
 use crucible_device::block::{
     BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
-    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRetainedRelease,
-    BlockServiceCompletion, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
-    ResolvedBlockPersistenceMediaDirective,
+    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
+    BlockRetainedRelease, BlockServiceCompletion, ResolvedBlockExecutionDirective,
+    ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
+    ResolvedBlockRequestPersistenceDirective,
 };
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockSnapshot, DeviceError, IoCore, Request,
@@ -71,7 +72,7 @@ use crucible_device::{
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
     NodeSlotSnapshot, RegionHeaderSnapshot, SLOT_BLK_IO, STATUS_DONE, SetupRegionMapError,
-    SpscRingSnapshot, mmap_setup_region,
+    SpscRingSnapshot, icount_to_virtual_ns, mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -79,6 +80,8 @@ use thiserror::Error;
 const SERVICER_INBOX_CAPACITY: u64 = 16;
 /// In-flight response-queue capacity for the servicer's I/O core.
 const SERVICER_OUTBOX_CAPACITY: u64 = 16;
+/// Hard settle bound for pre-scheduler block initialization.
+const INITIALIZATION_SETTLE_STEPS: usize = 4_096;
 
 /// A production host servicer for one live node's `SLOT_BLK_IO` rings.
 pub struct QemuLiveBlockIoServicer {
@@ -137,6 +140,33 @@ impl QemuLiveBlockIoServicer {
         icount_shift: u8,
         size_bytes: u64,
     ) -> Result<Self, QemuLiveBlockIoServicerError> {
+        Self::from_shmem_fd_with_base(
+            shmem_fd,
+            region_len,
+            vm_slot,
+            icount_shift,
+            BaseImage::new(deterministic_base_image(size_bytes)),
+        )
+    }
+
+    /// Maps the live block transport over one content-authenticated base image.
+    ///
+    /// This is the production constructor for World-declared storage. The base
+    /// bytes are retained read-only by [`BlockDevice`]; all guest mutation lands
+    /// in its checkpointed copy-on-write overlay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::MapRegion`] when shared memory
+    /// cannot be mapped, or [`QemuLiveBlockIoServicerError::Device`] when the
+    /// deterministic I/O core rejects its clock or queue configuration.
+    pub fn from_shmem_fd_with_base(
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        vm_slot: u32,
+        icount_shift: u8,
+        base: BaseImage,
+    ) -> Result<Self, QemuLiveBlockIoServicerError> {
         let region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLiveBlockIoServicerError::MapRegion { source })?;
         let core = IoCore::new(
@@ -146,7 +176,6 @@ impl QemuLiveBlockIoServicer {
             SERVICER_OUTBOX_CAPACITY,
         )
         .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
-        let base = BaseImage::new(deterministic_base_image(size_bytes));
         let device = BlockDevice::new(core, base, BlockLatency::default());
         Ok(Self {
             region,
@@ -299,12 +328,119 @@ impl QemuLiveBlockIoServicer {
         &mut self,
         guest_icount: u64,
     ) -> Result<QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicerError> {
+        let intake = self.process_one_storage_request()?;
+        let delivery = self.advance_storage_to(guest_icount)?;
+        Ok(QemuLiveBlockIoServiceStep {
+            processed: intake.processed,
+            write_frames_processed: intake.write_frames_processed,
+            delivered: delivery.delivered,
+            first_request_icount: intake.first_request_icount,
+            computed_completion_icount: intake.computed_completion_icount,
+            next_completion_icount: delivery.next_completion_icount,
+        })
+    }
+
+    /// Services pre-ready guest discovery with explicit fault-free decisions.
+    ///
+    /// QEMU performs virtio block discovery before the scheduler admits the
+    /// scenario's first fault coordinate. This method drives the same staged
+    /// opportunity machinery as production, but installs explicit fault-free
+    /// decisions because signal time has not started. It must never be called
+    /// after the live coordinator is installed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError`] for malformed initialization
+    /// traffic, stage/clock failures, or failure to settle within the hard bound.
+    pub fn service_fault_free_initialization(
+        &mut self,
+        guest_icount: u64,
+    ) -> Result<QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicerError> {
+        let now_nanos = icount_to_virtual_ns(guest_icount, self.device.core().shift_bits())
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let mut aggregate = QemuLiveBlockIoServiceStep::default();
+        for _ in 0..INITIALIZATION_SETTLE_STEPS {
+            let pin = self.pin_next_request_completion()?;
+            if let Some(observed) = pin.observed {
+                let request = observed
+                    .request
+                    .ok_or(QemuLiveBlockIoServicerError::MalformedInitializationRequest)?;
+                let mut directive = ResolvedBlockFaultDirective::fault_free(
+                    &request,
+                    self.device.storage_fault_state().config().length_bytes,
+                );
+                directive.request_sequence = observed.request_sequence;
+                directive.execution_nanos =
+                    icount_to_virtual_ns(observed.request_icount, self.device.core().shift_bits())
+                        .map_err(DeviceError::from)
+                        .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+                self.install_storage_fault_directive(request.request_id, directive)?;
+            }
+
+            let intake = self.process_one_storage_request()?;
+            aggregate.absorb_intake(intake)?;
+            let mut installed = false;
+            while let Some(opportunity) = self.next_storage_execution_opportunity(now_nanos) {
+                let mut directive = opportunity.admission.clone();
+                directive.execution_nanos = opportunity.ready_nanos;
+                self.install_storage_execution_directive(ResolvedBlockExecutionDirective {
+                    opportunity,
+                    directive,
+                })?;
+                installed = true;
+            }
+            while let Some(opportunity) =
+                self.next_storage_request_persistence_opportunity(now_nanos)
+            {
+                let mut directive = opportunity.resolved.clone();
+                directive.execution_nanos = opportunity.ready_nanos;
+                self.install_storage_request_persistence_directive(
+                    ResolvedBlockRequestPersistenceDirective {
+                        opportunity,
+                        directive,
+                    },
+                )?;
+                installed = true;
+            }
+            while let Some(opportunity) = self.next_storage_persistence_opportunity(now_nanos) {
+                self.install_storage_persistence_media_directive(
+                    ResolvedBlockPersistenceMediaDirective {
+                        opportunity,
+                        flash_rules: Vec::new(),
+                    },
+                )?;
+                installed = true;
+            }
+            let delivery = self.advance_storage_to(guest_icount)?;
+            aggregate.absorb_delivery(delivery)?;
+            if intake.processed == 0 && !installed && delivery.delivered == 0 {
+                return Ok(aggregate);
+            }
+        }
+        Err(QemuLiveBlockIoServicerError::InitializationDidNotSettle)
+    }
+
+    /// Consumes at most one directive-authorized request without advancing time.
+    ///
+    /// Separating intake from [`Self::advance_storage_to`] gives the production
+    /// coordinator an exact seam at which to evaluate resolve/persist phases
+    /// after queue release and before any device mutation becomes visible.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::RegionAccess`] for an inaccessible
+    /// ring pair or [`QemuLiveBlockIoServicerError::Device`] when request intake
+    /// is malformed or lacks its required admission directive.
+    pub fn process_one_storage_request(
+        &mut self,
+    ) -> Result<QemuLiveBlockIoIntakeStep, QemuLiveBlockIoServicerError> {
         let Self {
             region,
             device,
             vm_slot,
             frames_processed,
-            frames_delivered,
+            ..
         } = self;
         let vm_slot = *vm_slot;
         let blk_slot = SLOT_BLK_IO as u32;
@@ -322,11 +458,7 @@ impl QemuLiveBlockIoServicer {
             entries: request_entries,
             ..
         } = first;
-        let MappedDirectedRingMut {
-            header: response_header,
-            entries: response_entries,
-            ..
-        } = second;
+        let _ = second;
 
         let inbox = device
             .process_one_shmem_request(request_header, request_entries, node_slot)
@@ -341,24 +473,57 @@ impl QemuLiveBlockIoServicer {
             .then(|| device.next_exact_local_event())
             .flatten();
 
-        let delivery = device
-            .advance_to_shmem(guest_icount, response_header, response_entries, node_slot)
-            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
-        *frames_delivered += delivery.delivered;
-
-        // Publish the next device-completion deadline to the guest node slot so a
-        // time-owning plugin whose guest is blocked on device I/O can idle-jump to
-        // it. Zero when nothing is in flight (the pending completion was just
-        // delivered), which retracts any stale deadline.
         let next_completion_icount = device.next_exact_local_event();
         node_slot.store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
-
-        Ok(QemuLiveBlockIoServiceStep {
+        Ok(QemuLiveBlockIoIntakeStep {
             processed: inbox.processed,
             write_frames_processed,
-            delivered: delivery.delivered,
             first_request_icount: inbox.first_request_icount,
             computed_completion_icount,
+            next_completion_icount,
+        })
+    }
+
+    /// Advances deterministic storage state and publishes responses due at `guest_icount`.
+    ///
+    /// The production coordinator calls this only after installing every exact
+    /// opportunity decision ready at or before the requested coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::RegionAccess`] for an inaccessible
+    /// response ring or [`QemuLiveBlockIoServicerError::Device`] when time
+    /// regresses, an opportunity remains unresolved, or publication fails.
+    pub fn advance_storage_to(
+        &mut self,
+        guest_icount: u64,
+    ) -> Result<QemuLiveBlockIoDeliveryStep, QemuLiveBlockIoServicerError> {
+        let Self {
+            region,
+            device,
+            vm_slot,
+            frames_delivered,
+            ..
+        } = self;
+        let vm_slot = *vm_slot;
+        let blk_slot = SLOT_BLK_IO as u32;
+        let pair = region
+            .node_directed_ring_pair_mut(vm_slot, vm_slot, blk_slot, blk_slot, vm_slot)
+            .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
+        let delivery = device
+            .advance_to_shmem(
+                guest_icount,
+                pair.second.header,
+                pair.second.entries,
+                pair.node_slot,
+            )
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        *frames_delivered += delivery.delivered;
+        let next_completion_icount = device.next_exact_local_event();
+        pair.node_slot
+            .store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+        Ok(QemuLiveBlockIoDeliveryStep {
+            delivered: delivery.delivered,
             next_completion_icount,
         })
     }
@@ -434,6 +599,31 @@ impl QemuLiveBlockIoServicer {
     ) -> Result<(), QemuLiveBlockIoServicerError> {
         self.device
             .install_storage_execution_directive(directive)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Returns the next resolved request awaiting persist-phase evaluation.
+    #[must_use]
+    pub fn next_storage_request_persistence_opportunity(
+        &self,
+        now_nanos: u64,
+    ) -> Option<BlockRequestPersistenceOpportunity> {
+        self.device
+            .next_storage_request_persistence_opportunity(now_nanos)
+    }
+
+    /// Installs the complete persist decision for one exact request mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] when the decision is
+    /// stale, repeated, malformed, or changes an earlier phase.
+    pub fn install_storage_request_persistence_directive(
+        &mut self,
+        directive: ResolvedBlockRequestPersistenceDirective,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.device
+            .install_storage_request_persistence_directive(directive)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
@@ -660,6 +850,77 @@ pub struct QemuLiveBlockIoServiceStep {
     pub next_completion_icount: Option<u64>,
 }
 
+impl Default for QemuLiveBlockIoServiceStep {
+    fn default() -> Self {
+        Self {
+            processed: 0,
+            write_frames_processed: 0,
+            delivered: 0,
+            first_request_icount: None,
+            computed_completion_icount: None,
+            next_completion_icount: None,
+        }
+    }
+}
+
+impl QemuLiveBlockIoServiceStep {
+    fn absorb_intake(
+        &mut self,
+        intake: QemuLiveBlockIoIntakeStep,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.processed = self
+            .processed
+            .checked_add(intake.processed)
+            .ok_or(QemuLiveBlockIoServicerError::ServiceAccountingOverflow)?;
+        self.write_frames_processed = self
+            .write_frames_processed
+            .checked_add(intake.write_frames_processed)
+            .ok_or(QemuLiveBlockIoServicerError::ServiceAccountingOverflow)?;
+        self.first_request_icount = self.first_request_icount.or(intake.first_request_icount);
+        self.computed_completion_icount = self
+            .computed_completion_icount
+            .or(intake.computed_completion_icount);
+        self.next_completion_icount = intake.next_completion_icount;
+        Ok(())
+    }
+
+    fn absorb_delivery(
+        &mut self,
+        delivery: QemuLiveBlockIoDeliveryStep,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.delivered = self
+            .delivered
+            .checked_add(delivery.delivered)
+            .ok_or(QemuLiveBlockIoServicerError::ServiceAccountingOverflow)?;
+        self.next_completion_icount = delivery.next_completion_icount;
+        Ok(())
+    }
+}
+
+/// Request-intake half of one staged block servicing pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuLiveBlockIoIntakeStep {
+    /// Request frames consumed in this pass (zero or one).
+    pub processed: usize,
+    /// Consumed write frames (zero or one).
+    pub write_frames_processed: usize,
+    /// Submit icount carried by the consumed request.
+    pub first_request_icount: Option<u64>,
+    /// Provisional exact local event after intake.
+    pub computed_completion_icount: Option<u64>,
+    /// Earliest exact local event after intake.
+    pub next_completion_icount: Option<u64>,
+}
+
+/// Delivery half of one staged block servicing pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuLiveBlockIoDeliveryStep {
+    /// Responses published to the guest ring.
+    pub delivered: usize,
+    /// Earliest exact local event remaining after delivery.
+    pub next_completion_icount: Option<u64>,
+}
+
 /// A request observed before its device-side host work is dispatched.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLiveBlockIoObservedRequest {
@@ -862,6 +1123,15 @@ fn same_region_layout(left: RegionHeaderSnapshot, right: RegionHeaderSnapshot) -
 /// Error returned by the live block-I/O servicer.
 #[derive(Debug, Error)]
 pub enum QemuLiveBlockIoServicerError {
+    /// Pre-ready block discovery carried a malformed request frame.
+    #[error("pre-ready block discovery carried a malformed request")]
+    MalformedInitializationRequest,
+    /// Pre-ready staged storage work exceeded its deterministic settle bound.
+    #[error("pre-ready block discovery did not settle within the hard step bound")]
+    InitializationDidNotSettle,
+    /// Per-pass diagnostic accounting exceeded the host integer width.
+    #[error("block-I/O service accounting overflowed")]
+    ServiceAccountingOverflow,
     /// The adapter request sequence no longer fits its stable wire width.
     #[error("block-I/O request sequence exhausted")]
     RequestSequenceOverflow,

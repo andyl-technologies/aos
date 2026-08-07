@@ -22,9 +22,10 @@ pub use block_io_gate::{
     QemuLiveBlockIoReport, run_qemu_live_block_io_gate,
 };
 pub use block_io_servicer::{
-    BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoHostWorkPin,
-    QemuLiveBlockIoObservedRequest, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,
-    QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError,
+    BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoDeliveryStep,
+    QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoIntakeStep, QemuLiveBlockIoObservedRequest,
+    QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer, QemuLiveBlockIoServicerCheckpoint,
+    QemuLiveBlockIoServicerError,
 };
 pub use block_node_gate::{
     BlockNodeOutcome, QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError,
@@ -34,7 +35,9 @@ pub use device_host_work::{
     QemuDeviceHostWorkDelay, QemuLiveBlockHostWorkPool, QemuLiveBlockHostWorkPoolError,
     QemuLiveBlockStorageEvents,
 };
-pub use host_io_runtime::{QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError};
+pub use host_io_runtime::{
+    QemuBlockFaultCoordinator, QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError,
+};
 pub use host_parallel_gate::{
     QemuLiveHostParallelGateError, QemuLiveHostParallelReport, run_qemu_live_host_parallel_gate,
 };

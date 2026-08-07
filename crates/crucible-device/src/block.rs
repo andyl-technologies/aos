@@ -208,6 +208,18 @@ mod tests {
                 directive: execution,
             }),
         );
+        assert_eq!(ok(device.advance_to(0)), 0);
+        let persistence = device
+            .next_storage_request_persistence_opportunity(0)
+            .unwrap_or_else(|| panic!("persist opportunity should remain live"));
+        let mut persisted = persistence.resolved.clone();
+        persisted.execution_nanos = 0;
+        ok(device.install_storage_request_persistence_directive(
+            ResolvedBlockRequestPersistenceDirective {
+                opportunity: persistence,
+                directive: persisted,
+            },
+        ));
         assert_eq!(ok(device.advance_to(1)), 1);
     }
 

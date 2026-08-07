@@ -58,16 +58,17 @@ use crucible::{
     AdvanceOutcome, BasicBlockCoverageConfig, ExecutionFingerprint, Icount, NodeId, SchedulerError,
     SchedulerNodeId, SchedulerSendAuthorization, SchedulerSendAuthorizer,
 };
+use crucible_device::block::{BaseImage, BlockDurabilityConfig};
 use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
 
-use crate::supervision::QemuLiveHostIoRuntime;
+use crate::supervision::{BlockIoDiagnostics, QemuLiveBlockIoServicer, QemuLiveHostIoRuntime};
 use crate::{
-    CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
-    QemuAsyncDriverPolicy, QemuCrashDetector, QemuGdbstubChannelConfig, QemuHostPluginSetupError,
-    QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommandBuilder,
-    QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
-    QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
+    CrucibleShmemBlockDevice, CrucibleShmemNetworkDevice, IcountShiftSetting,
+    LaunchProfileCandidate, LaunchProfileError, QemuAsyncDriverPolicy, QemuCrashDetector,
+    QemuGdbstubChannelConfig, QemuHostPluginSetupError, QemuLaunchAppRandomConfig,
+    QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
+    QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
+    QemuNode, QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
     QemuNodeRestorePlan, QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuRootImageFormat,
     QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QemuWhiteboxSetupError,
     QmpError, build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
@@ -196,11 +197,18 @@ pub struct QemuLiveNodeStepGateConfig {
     app_random: Option<QemuLaunchAppRandomConfig>,
     coverage: QemuLaunchPluginSwitch,
     shmem_network_mac: Option<String>,
+    shmem_block: Option<QemuLiveNodeStepBlockConfig>,
     queue_capacity: u32,
     schedule: QemuLiveNodeStepSchedule,
     completion_timeout: Duration,
     second_run_host_load: bool,
     console_capture: bool,
+}
+
+#[derive(Clone, Debug)]
+struct QemuLiveNodeStepBlockConfig {
+    base: BaseImage,
+    durability: BlockDurabilityConfig,
 }
 
 impl QemuLiveNodeStepGateConfig {
@@ -246,6 +254,7 @@ impl QemuLiveNodeStepGateConfig {
             app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
             shmem_network_mac: None,
+            shmem_block: None,
             queue_capacity: GATE_QUEUE_CAPACITY,
             schedule: QemuLiveNodeStepSchedule::new(),
             completion_timeout: Duration::from_secs(240),
@@ -285,6 +294,7 @@ impl QemuLiveNodeStepGateConfig {
             app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
             shmem_network_mac: None,
+            shmem_block: None,
             queue_capacity: GATE_QUEUE_CAPACITY,
             schedule: QemuLiveNodeStepSchedule::new(),
             completion_timeout: Duration::from_secs(240),
@@ -367,6 +377,17 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub fn with_shmem_network_mac(mut self, mac: impl Into<String>) -> Self {
         self.shmem_network_mac = Some(mac.into());
+        self
+    }
+
+    /// Returns this configuration with one World-backed shared-memory block device.
+    ///
+    /// The immutable base image and durability contract are retained together so
+    /// launch, servicing, checkpoint, and restart cannot accidentally select
+    /// different storage identities.
+    #[must_use]
+    pub fn with_shmem_block(mut self, base: BaseImage, durability: BlockDurabilityConfig) -> Self {
+        self.shmem_block = Some(QemuLiveNodeStepBlockConfig { base, durability });
         self
     }
 
@@ -708,20 +729,40 @@ pub(super) fn build_live_node(
             )
         })?;
 
-    let runtime = QemuLiveHostIoRuntime::from_shmem_fd(
+    let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd(
         setup.shmem_as_fd(),
         setup.wake_as_fd(),
         setup.region().region_len,
         GATE_SLOT,
     )
     .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?;
+    let mut block_servicer = if let Some(block) = &config.shmem_block {
+        let mut servicer = QemuLiveBlockIoServicer::from_shmem_fd_with_base(
+            setup.shmem_as_fd(),
+            setup.region().region_len,
+            GATE_SLOT,
+            config.icount_shift,
+            block.base.clone(),
+        )
+        .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
+        servicer
+            .configure_storage_faults(block.durability.clone(), true)
+            .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
+        Some(servicer)
+    } else {
+        None
+    };
     let priming_network_outputs = prime_guest_off_boot_barrier(
         &setup,
         config.completion_timeout,
         identity.node,
         identity.router,
         config.coverage,
+        block_servicer.as_mut(),
     )?;
+    if let Some(servicer) = block_servicer {
+        runtime = runtime.with_block_servicer(servicer, BlockIoDiagnostics::shared());
+    }
     let qmp = connect_qmp_priming_main_loop(&setup, &qmp_config.socket_path(run_directory))
         .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
 

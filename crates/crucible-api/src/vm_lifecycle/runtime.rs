@@ -269,6 +269,7 @@ impl ProductionVmLifecycleLoop {
             pending_outputs,
         )?;
         let (mut backend, run_directory) = replay.take_replayed_node(node)?;
+        self.install_authoritative_block_coordinator(node, &mut backend)?;
         let observed = SimulationBackend::now(&backend).ticks;
         if self.inner.backend().contains(node) {
             let _ = SimulationBackend::shutdown(&mut backend);
@@ -378,7 +379,7 @@ impl ProductionVmLifecycleLoop {
         if white_box_enabled {
             launch = launch.with_app_random(self.app_random_continuation_config(node)?);
         }
-        let backend = launch_production_live_node(
+        let mut backend = launch_production_live_node(
             &launch,
             &node_directory,
             &node.name,
@@ -388,6 +389,7 @@ impl ProductionVmLifecycleLoop {
         .map_err(|error| SchedulerError::BoundaryViolation {
             message: format!("relaunch QEMU node `{}`: {error}", node.name),
         })?;
+        self.install_authoritative_block_coordinator(node, &mut backend)?;
         let observed = SimulationBackend::now(&backend).ticks;
         if let Some(previous) = self.inner.backend_mut().insert(node.clone(), backend) {
             if let Some(mut installed) = self.inner.backend_mut().take(node) {
@@ -402,6 +404,32 @@ impl ProductionVmLifecycleLoop {
             });
         }
         Ok(observed)
+    }
+
+    fn install_authoritative_block_coordinator(
+        &self,
+        node: &NodeId,
+        backend: &mut ProductionLiveNode,
+    ) -> Result<(), SchedulerError> {
+        let Some(binding) = self.block_bindings.get(node) else {
+            return Ok(());
+        };
+        backend
+            .install_block_fault_coordinator(Box::new(ProductionBlockFaultCoordinator::new(
+                Arc::clone(&self.fault_runtime),
+                Arc::clone(&self.fault_evaluation_cursor),
+                Arc::clone(&self.storage_fault_observations),
+                self.source.world().clone(),
+                binding.target.clone(),
+                self.scenario.id(),
+                self.icount_shift,
+            )))
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "attach authoritative block coordinator to `{}`: {error}",
+                    node.name
+                ),
+            })
     }
 
     fn app_random_continuation_config(

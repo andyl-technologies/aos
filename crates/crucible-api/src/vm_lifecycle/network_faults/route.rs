@@ -17,7 +17,19 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
         pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
         outputs: &mut Vec<crucible::BackendNetworkOutput>,
     ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
-        let cursor_before = (self.coordinate, self.coordinate_sequence);
+        let shared_cursor = Arc::clone(&self.cursor);
+        let mut cursor = shared_cursor
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production fault evaluation cursor lock is poisoned"),
+            })?;
+        let cursor_before = *cursor;
+        let shared_runtime = Arc::clone(&self.runtime);
+        let mut runtime = shared_runtime
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production fault runtime lock is poisoned"),
+            })?;
         let mut staged_scheduler = loop_impl.clone();
         let mut staged_pending = pending_outputs.clone();
         let source_outputs = outputs.clone();
@@ -178,10 +190,9 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     ),
                                 }
                             })?;
-                            let sequence = self.next_sequence(frontier.ticks)?;
-                            let host_before = self.runtime.host_state().clone();
-                            let evaluation = self
-                                .runtime
+                            let sequence = cursor.next_sequence(frontier.ticks)?;
+                            let host_before = runtime.host_state().clone();
+                            let evaluation = runtime
                                 .evaluate_opportunity(&opportunity, sequence, _backend)
                                 .map_err(|error| SchedulerError::BoundaryViolation {
                                     message: format!(
@@ -191,7 +202,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                             runtime_committed = true;
                             next_wakeup_nanos =
                                 earliest_wakeup(next_wakeup_nanos, evaluation.next_wakeup_nanos);
-                            let impulses = self.runtime.drain_host_impulses();
+                            let impulses = runtime.drain_host_impulses();
                             let (transition_observations, records) = self
                                 .stage_availability_transition_drops(
                                     opportunity.coordinate(),
@@ -212,10 +223,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 frontier.ticks,
                                 &mut resolved_effects,
                             )?;
-                            for action in self
-                                .runtime
-                                .host_state()
-                                .matching(opportunity.target(), phase)
+                            for action in runtime.host_state().matching(opportunity.target(), phase)
                             {
                                 if output.fault_continuation.preserves_availability(
                                     &action.binding,
@@ -267,7 +275,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     &mut resolved_effects,
                                     &frame_actions,
                                     &opportunity,
-                                    self.runtime.scenario_seed().ok_or_else(|| {
+                                    runtime.scenario_seed().ok_or_else(|| {
                                         SchedulerError::BoundaryViolation {
                                             message: String::from(
                                                 "production network runtime omitted its scenario seed",
@@ -440,9 +448,9 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
             Ok(appends) => appends,
             Err(error) => {
                 if runtime_committed {
-                    self.runtime.poison();
+                    runtime.poison();
                 } else {
-                    (self.coordinate, self.coordinate_sequence) = cursor_before;
+                    *cursor = cursor_before;
                 }
                 return Err(error);
             }

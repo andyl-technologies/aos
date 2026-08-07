@@ -35,9 +35,9 @@ use crate::subnode::{IoCore, IoSubNode, ShmemDeliveryResult, ShmemInboxProcess};
 use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, RESPONSE_HEADER_LEN};
 use super::fault::{
     BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
-    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRetainedRelease,
-    ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
-    ResolvedBlockPersistenceMediaDirective,
+    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
+    BlockRetainedRelease, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
+    ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
 };
 use super::overlay::{BaseImage, CowOverlay};
 use super::service::BlockServiceCompletion;
@@ -366,6 +366,30 @@ impl BlockDevice {
         self.storage_faults.install_execution_directive(directive)
     }
 
+    /// Returns the next write/discard/flush ready for persist-phase evaluation.
+    #[must_use]
+    pub fn next_storage_request_persistence_opportunity(
+        &self,
+        now_nanos: u64,
+    ) -> Option<BlockRequestPersistenceOpportunity> {
+        self.storage_faults
+            .next_request_persistence_opportunity(now_nanos)
+    }
+
+    /// Installs one exact persist-phase decision for a staged request mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the decision is stale, repeated, malformed,
+    /// or changes an earlier phase.
+    pub fn install_storage_request_persistence_directive(
+        &mut self,
+        directive: ResolvedBlockRequestPersistenceDirective,
+    ) -> Result<(), DeviceError> {
+        self.storage_faults
+            .install_request_persistence_directive(directive)
+    }
+
     /// Returns the next physical persistence opportunity ready at `now_nanos`.
     #[must_use]
     pub fn next_storage_persistence_opportunity(
@@ -416,11 +440,16 @@ impl BlockDevice {
             .storage_faults
             .next_execution_deadline_nanos()
             .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
+        let request_persistence = self
+            .storage_faults
+            .next_request_persistence_deadline_nanos()
+            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
         self.core
             .next_exact_local_event()
             .into_iter()
             .chain(service)
             .chain(execution)
+            .chain(request_persistence)
             .chain(persistence)
             .min()
     }
@@ -666,6 +695,11 @@ impl BlockDevice {
             &mut next_overlay,
             now_nanos,
         )?);
+        released.extend(next_faults.resume_request_persistence_to(
+            &self.base,
+            &mut next_overlay,
+            now_nanos,
+        )?);
         for released in released {
             let latency_nanos = self
                 .latency
@@ -700,6 +734,11 @@ impl BlockDevice {
         let mut released =
             next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
         released.extend(next_faults.resume_execution_to(
+            &self.base,
+            &mut next_overlay,
+            now_nanos,
+        )?);
+        released.extend(next_faults.resume_request_persistence_to(
             &self.base,
             &mut next_overlay,
             now_nanos,
@@ -757,6 +796,11 @@ impl BlockDevice {
             &mut next_overlay,
             now_nanos,
         )?);
+        released.extend(next_faults.resume_request_persistence_to(
+            &self.base,
+            &mut next_overlay,
+            now_nanos,
+        )?);
         for released in released {
             let latency_nanos = self
                 .latency
@@ -782,6 +826,16 @@ impl BlockDevice {
         requested_nanos: u64,
     ) -> Result<(), DeviceError> {
         if let Some(ready_nanos) = self.storage_faults.next_execution_deadline_nanos()
+            && ready_nanos < requested_nanos
+        {
+            return Err(DeviceError::UnresolvedBlockFaultOpportunity {
+                ready_nanos,
+                requested_nanos,
+            });
+        }
+        if let Some(ready_nanos) = self
+            .storage_faults
+            .next_request_persistence_deadline_nanos()
             && ready_nanos < requested_nanos
         {
             return Err(DeviceError::UnresolvedBlockFaultOpportunity {
