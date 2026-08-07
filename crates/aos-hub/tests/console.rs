@@ -335,6 +335,14 @@ async fn login_session_exchange_and_logout_preserve_identity_boundary() {
         .strip_prefix(&format!("{COOKIE_NAME}="))
         .expect("session cookie value");
     let csrf = mint_csrf_token(secret);
+    let user_id = db
+        .user_by_email("browser@example.com")
+        .await
+        .unwrap()
+        .expect("magic login creates a user");
+    db.grant_membership("user", user_id, "instance", "owner")
+        .await
+        .unwrap();
 
     for (origin, proof) in [
         (None, Some(csrf.as_str())),
@@ -370,6 +378,7 @@ async fn login_session_exchange_and_logout_preserve_identity_boundary() {
                 .header(header::COOKIE, &cookie)
                 .header(header::ORIGIN, "http://127.0.0.1:8420")
                 .header("x-aos-csrf", csrf)
+                .header("x-aos-console-route", "/-/instance")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -384,6 +393,13 @@ async fn login_session_exchange_and_logout_preserve_identity_boundary() {
     assert_eq!(value["tokenType"], "Bearer");
     assert_eq!(value["expiresIn"], "300");
     assert!(value["accessToken"].as_str().is_some());
+    let permissions = value["routePermissions"]
+        .as_array()
+        .expect("route permissions are an array");
+    assert!(permissions.iter().any(|permission| permission == "read"));
+    assert!(permissions
+        .iter()
+        .any(|permission| permission == "iam.admin"));
 
     let logout = send(&app, "POST", "/logout", Some(&cookie), Some("")).await;
     assert_eq!(logout.status, StatusCode::FORBIDDEN);

@@ -140,8 +140,13 @@ Connect API. It requires:
 - the session's CSRF proof; and
 - an unexpired user and membership state.
 
-The response is `no-store` and contains a five-minute bearer, principal
-summary, and effective grants. The application holds it only in memory. After
+The request names the current canonical deep link in `x-aos-console-route`.
+The Hub resolves that route to its immutable authorization scope and evaluates
+permissions from live grants; an unknown or mismatched route produces an empty
+permission set. The `no-store` response contains a five-minute bearer,
+principal summary, effective grants, and the evaluated route permissions. The
+application holds it only in memory and filters navigation from those server-
+evaluated capabilities. After
 one API `401`, the application may exchange once and retry once. A second
 failure navigates to `/login?next=<current-deep-link>`.
 

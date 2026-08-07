@@ -44,6 +44,21 @@ impl PageSpec {
     pub fn is_navigation_item(&self) -> bool {
         self.key != "new" && !self.key.ends_with("-new")
     }
+
+    /// Returns the permission required to discover this page in navigation.
+    ///
+    /// Pages default to the baseline `read` permission. Sensitive audit,
+    /// identity-provider, and destructive areas require their narrower live
+    /// capability even though the API remains the final authorization gate.
+    #[must_use]
+    pub fn navigation_permission(&self) -> &'static str {
+        match self.key {
+            "audit" => "audit.read",
+            "danger" | "sso" => "iam.admin",
+            "tokens" => "tokens.self",
+            _ => "read",
+        }
+    }
 }
 
 /// Canonical scope resolved from one management deep link.

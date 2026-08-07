@@ -24,6 +24,14 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
+    #[cfg(test)]
+    pub(crate) fn for_test(session: aos_proto_types::BrowserSessionTokenResponse) -> Self {
+        Self {
+            csrf: "test-csrf".to_string(),
+            session: Arc::new(Mutex::new(session)),
+        }
+    }
+
     /// Exchanges the ambient browser session for one short-lived API bearer.
     ///
     /// # Errors
@@ -45,6 +53,15 @@ impl ApiClient {
     #[must_use]
     pub fn session(&self) -> aos_proto_types::BrowserSessionTokenResponse {
         self.session_guard().clone()
+    }
+
+    /// Returns whether the live route-scoped session grants one permission.
+    #[must_use]
+    pub fn allows(&self, permission: &str) -> bool {
+        self.session_guard()
+            .route_permissions
+            .iter()
+            .any(|candidate| candidate == permission)
     }
 
     /// Invokes one generated Connect-JSON unary method.
@@ -176,8 +193,12 @@ impl ApiClient {
 async fn exchange_browser_session(
     csrf: &str,
 ) -> Result<aos_proto_types::BrowserSessionTokenResponse, TransportError> {
+    let route = leptos::web_sys::window()
+        .and_then(|window| window.location().pathname().ok())
+        .unwrap_or_else(|| "/".to_string());
     let response = Request::post(SESSION_TOKEN_PATH)
         .header("x-aos-csrf", csrf)
+        .header("x-aos-console-route", &route)
         .header("accept", "application/json")
         .body(String::new())
         .map_err(|error| TransportError::Request(error.to_string()))?
