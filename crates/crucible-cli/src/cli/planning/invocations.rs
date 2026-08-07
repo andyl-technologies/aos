@@ -2775,13 +2775,19 @@ fn validate_savepoint_boundary_proof(
         )));
     }
 
-    let shape_is_valid = match (at, proof) {
-        (SaveAtArg::VirtualTime, SavepointBoundaryProof::Coordinate { .. })
-        | (SaveAtArg::Quiescence, SavepointBoundaryProof::Breakpoint { .. })
-        | (SaveAtArg::Property, SavepointBoundaryProof::Breakpoint { .. })
-        | (SaveAtArg::Marker, SavepointBoundaryProof::Breakpoint { .. }) => true,
-        _ => false,
-    };
+    let shape_is_valid = matches!(
+        (at, proof),
+        (
+            SaveAtArg::VirtualTime,
+            SavepointBoundaryProof::Coordinate { .. }
+        ) | (
+            SaveAtArg::Quiescence,
+            SavepointBoundaryProof::Breakpoint { .. }
+        ) | (
+            SaveAtArg::Property,
+            SavepointBoundaryProof::Breakpoint { .. }
+        ) | (SaveAtArg::Marker, SavepointBoundaryProof::Breakpoint { .. })
+    );
     if !shape_is_valid {
         return Err(artifact_error(format!(
             "savepoint boundary proof and selector do not match --at {}",

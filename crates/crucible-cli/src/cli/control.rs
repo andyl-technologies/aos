@@ -315,6 +315,7 @@ where
     Ok((boundary, firing))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_save_predicate_to_boundary<C>(
     client: &C,
     session: SessionRef,
@@ -1324,7 +1325,7 @@ where
     let mut boundary = current_remote_resume_summary(client, session).await?;
     while boundary.state != LiveStateKind::Stopped
         && quantum_budget.is_none_or(|budget| boundary.quanta_stepped < budget)
-        && !virtual_time_budget.is_some_and(|budget| boundary.frontier.ticks >= budget)
+        && virtual_time_budget.is_none_or(|budget| boundary.frontier.ticks < budget)
     {
         if boundary.state != LiveStateKind::Paused {
             boundary = wait_for_save_workflow_summary(

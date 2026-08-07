@@ -2203,6 +2203,7 @@ async fn exchange_guest_record(
     Ok(response)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_remote_guest_channel(
     daemon: &str,
     backend_plan: &BackendSelectionPlan,

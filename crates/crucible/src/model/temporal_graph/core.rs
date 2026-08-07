@@ -1070,7 +1070,7 @@ impl TemporalGraph {
     {
         for index in (0..request.event_log.len()).rev() {
             let entry = &request.event_log[index];
-            if entry.sequence() >= request.current_event_sequence_limit() {
+            if entry.sequence() > request.current_event_sequence_limit() {
                 continue;
             }
             let prefix_entries = request.event_log[..=index].to_vec();

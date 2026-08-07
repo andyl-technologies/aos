@@ -72,10 +72,7 @@ where
     }
 
     fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
-        self.vmstate
-            .activate_debug_guest()
-            .map(|_complete| ())
-            .map_err(QemuNodeChannelError::from)
+        self.vmstate.activate_debug_guest().map(|_complete| ())
     }
 }
 
