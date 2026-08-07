@@ -60,7 +60,7 @@ use rustix::fs::{AtFlags, Mode, OFlags, fchmod, mkdirat, openat, symlinkat, unli
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::runtime::RuntimePackagePin;
+use super::runtime::{RuntimePackageOrigin, RuntimePackagePin};
 use crate::types::ModuleAbiCompat;
 
 /// The runtime directory a materialized job script resolves to once the
@@ -488,7 +488,13 @@ impl ConfigManifest {
             if !self.store_paths.contains(&pin.store_path) {
                 bail!("packageOutputs.{package}.store_path is absent from manifest storePaths");
             }
-            if self.ownership.store_paths.get(&pin.store_path) != Some(package) {
+            if !matches!(
+                self.ownership.store_paths.get(&pin.store_path),
+                Some(owner)
+                    if owner == package
+                        || (owner == "@base"
+                            && pin.origin == RuntimePackageOrigin::Image)
+            ) {
                 bail!("packageOutputs.{package}.store_path is not owned by that package");
             }
             validate_runtime_pin(package, pin)?;

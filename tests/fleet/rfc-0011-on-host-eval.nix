@@ -76,6 +76,7 @@
 
       JQ = "${pkgs.jq}/bin/jq"
       APM = "${pkgs.aos}/bin/apm"
+      CMP = "${pkgs.coreutils}/bin/cmp"
 
 
       def properties(unit, names):
@@ -278,8 +279,8 @@
       # and leave both the durable pointer and live transaction inputs intact.
       conflict_host = """{
         imports = [
-          { aos.security.firewall.forwardPolicy = "accept"; }
-          { aos.security.firewall.forwardPolicy = "drop"; }
+          { aos.firewall.forwardPolicy = "accept"; }
+          { aos.firewall.forwardPolicy = "drop"; }
         ];
       }
       """
@@ -335,7 +336,7 @@
             --module-abi "$module_abi" \
             --out /run/rfc0011-eval-two/manifest.json \
             --eval-root /run/rfc0011-eval-two
-          cmp /run/rfc0011-eval-one/manifest.json /run/rfc0011-eval-two/manifest.json
+          {CMP} /run/rfc0011-eval-one/manifest.json /run/rfc0011-eval-two/manifest.json
       """, timeout=300)
 
       # Create a second same-ABI configuration through `apm switch`, then prove
@@ -421,8 +422,8 @@
       for ca_path in ca_paths:
           runtime.succeed(f"test -f {ca_path}")
           runtime.succeed(f"grep -q MAgwADAAAwIAAA== {ca_path}")
-      runtime.succeed(f"cmp {ca_paths[0]} {ca_paths[1]}")
-      runtime.succeed(f"cmp {ca_paths[0]} {ca_paths[2]}")
+      runtime.succeed(f"{CMP} {ca_paths[0]} {ca_paths[1]}")
+      runtime.succeed(f"{CMP} {ca_paths[0]} {ca_paths[2]}")
       second_manifest = json.loads(runtime.succeed(
           f"cat /var/lib/profiles/system/gen-{second}/manifest.json"
       ))

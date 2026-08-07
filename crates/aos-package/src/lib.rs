@@ -2278,6 +2278,18 @@ fn resolve_default_switch_host(
     Ok((store_path, true))
 }
 
+/// Exits with the evaluator's stable class when an error crossed a CLI boundary.
+fn exit_for_eval_failure(error: &anyhow::Error, verbose: u8) {
+    let Some(failure) = error.downcast_ref::<config_eval::diagnostics::EvalCommandFailure>() else {
+        return;
+    };
+    eprintln!("config-eval.class={} {}", failure.class_tag(), failure);
+    if verbose > 0 {
+        eprintln!("{}", failure.detail());
+    }
+    std::process::exit(failure.exit_code());
+}
+
 /// Main entry point for `aos package` / `apm`.
 ///
 /// Loads the [`config::ApmConfig`] for the scope implied by the command
@@ -2345,15 +2357,8 @@ pub async fn run(
             require_signed_host_nix: *require_signed_host_nix,
             image_default_host: *image_default_host,
         });
-        if let Err(error) = &result
-            && let Some(failure) =
-                error.downcast_ref::<config_eval::diagnostics::EvalCommandFailure>()
-        {
-            eprintln!("config-eval.class={} {}", failure.class_tag(), failure);
-            if verbose > 0 {
-                eprintln!("{}", failure.detail());
-            }
-            std::process::exit(failure.exit_code());
+        if let Err(error) = &result {
+            exit_for_eval_failure(error, verbose);
         }
         return result;
     }
@@ -2499,7 +2504,11 @@ pub async fn run(
             live_manifest: live_manifest.clone(),
             json_out,
         };
-        return config_eval::dry_run::run_switch(&params).await.map(|_| ());
+        let result = config_eval::dry_run::run_switch(&params).await.map(|_| ());
+        if let Err(error) = &result {
+            exit_for_eval_failure(error, verbose);
+        }
+        return result;
     }
 
     // The graph compiler (`aos-graph-compile.service`) drives systemd

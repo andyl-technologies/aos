@@ -50,6 +50,43 @@ fn shared_fixture_inputs_are_exactly_the_five_declared_inputs() {
 }
 
 #[test]
+fn image_runtime_output_may_retain_base_ownership() {
+    let mut value: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+    let output = value["packageOutputs"]["example"]["store_path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    value["packageOutputs"]["example"]["origin"] = serde_json::json!("image");
+    value["ownership"]["storePaths"][&output] = serde_json::json!("@base");
+
+    let manifest: ConfigManifest = serde_json::from_value(value).unwrap();
+    manifest
+        .validate()
+        .expect("an image-authenticated output may remain owned by the immutable base");
+}
+
+#[test]
+fn registry_runtime_output_may_not_claim_base_ownership() {
+    let mut value: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+    let output = value["packageOutputs"]["example"]["store_path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    value["ownership"]["storePaths"][&output] = serde_json::json!("@base");
+
+    let manifest: ConfigManifest = serde_json::from_value(value).unwrap();
+    let error = manifest
+        .validate()
+        .expect_err("a registry output cannot assume immutable base ownership");
+    assert!(
+        error
+            .to_string()
+            .contains("store_path is not owned by that package"),
+        "{error}"
+    );
+}
+
+#[test]
 fn computed_unpinned_store_path_in_emitted_text_is_rejected() {
     let mut value: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
     let store_path = [

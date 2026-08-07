@@ -19,14 +19,14 @@ store hash with the literal token `<hash>`. Package and output names, versions,
 subpaths, unit contents, and scripts remain exact; only the content-addressed
 store identity is excluded from the fixture. `AOS_BASELIB_DIGEST`, which is an
 opaque measured identity derived from the realized base-lib store path, is
-similarly represented as `sha256:<base-lib-digest>`. The snapshot still pins
-the field's presence and algorithm label without turning a Nix store identity
-into a source-controlled golden value.
+similarly represented as `sha256:<base-lib-digest>`. Profile-local link names
+derived from store identities are represented as `<store-identity>`. The
+snapshot still pins each field's presence, location, and format without turning
+a Nix store identity into a source-controlled golden value.
 
-An unexpected diff in any of these is a **caught regression** (the barrier
-pattern). The single intentional change permitted during the P0 render/assemble
-refactor is the documented job-script-text normalization, which the comparator
-already absorbs (see the C2 note in `docs/rfcs/0011-on-host-config-eval/test-plan.md`).
+An unexpected diff in any of these is a **caught regression**. Job-script text
+and content-address-derived identities are normalized by the comparator so the
+baseline records system behavior rather than incidental store allocation.
 
 ## Regenerating the baselines
 

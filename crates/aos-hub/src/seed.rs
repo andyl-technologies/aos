@@ -1007,6 +1007,7 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
             sb_signer_cert_sha256: None,
             sbat: Vec::new(),
             expected_pcr11: None,
+            ukis: Vec::new(),
             root_image: None,
             root_verity: None,
             root_hash: None,
