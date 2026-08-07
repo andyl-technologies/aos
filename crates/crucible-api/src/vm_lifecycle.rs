@@ -14,8 +14,9 @@ use std::time::Duration;
 
 use crate::vm_resume::{
     PRODUCTION_ROOT_OVERLAY_FILE_NAME, ProductionAppRandomConfig, ProductionGdbstubChannelConfig,
-    ProductionLiveNode, ProductionLiveNodeStepGateConfig, ProductionNodeSet,
-    ProductionPluginSwitch, ProductionRootImageFormat, launch_production_live_node,
+    ProductionGuestArchitecture, ProductionLiveNode, ProductionLiveNodeStepGateConfig,
+    ProductionNodeSet, ProductionPluginSwitch, ProductionRootImageFormat,
+    launch_production_live_node,
 };
 use crucible::{
     Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, ConditionEvaluationPass,
@@ -335,64 +336,10 @@ pub struct ProductionVmLifecycleLoop {
 mod helpers;
 mod quantum_loop;
 mod runtime;
+mod search;
 
 use helpers::*;
-
-/// Derives the production scheduler's initial state-space search frontier.
-///
-/// The returned choices come from the same [`SingleScheduler`] construction
-/// used by live QEMU execution. Backend processes are not launched by this
-/// policy-only query; callers must execute every selected branch through
-/// [`build_production_vm_lifecycle_loop`] to obtain runtime evidence.
-///
-/// # Errors
-///
-/// Returns [`LifecycleApiError::LoopFactory`] when the World is empty, VM
-/// shifts differ, time conversion overflows, configured bounds are invalid, or
-/// the authoritative scheduler rejects the scenario.
-pub fn production_vm_search_frontier(
-    scenario: &ScenarioDef,
-    source: &ScenarioDefForm,
-    config: &ProductionVmLifecycleConfig,
-) -> Result<SearchFrontierChoices, LifecycleApiError> {
-    let nodes = source.world().vm_nodes();
-    let first = nodes
-        .first()
-        .ok_or_else(|| loop_factory_error("scenario World has no VM nodes"))?;
-    if nodes
-        .iter()
-        .any(|node| node.icount_shift != first.icount_shift)
-    {
-        return Err(loop_factory_error(
-            "production QEMU lifecycle currently requires one shared icount shift",
-        ));
-    }
-    if config.run_ceiling_icount == 0 || config.quantum_budget == 0 {
-        return Err(loop_factory_error(
-            "production QEMU lifecycle bounds must be nonzero",
-        ));
-    }
-    let shift = Shift::new(first.icount_shift)
-        .map_err(|error| loop_factory_error(format!("validate icount shift: {error}")))?;
-    let time_limit_nanos = config
-        .run_ceiling_icount
-        .checked_shl(u32::from(first.icount_shift))
-        .ok_or_else(|| loop_factory_error("QEMU lifecycle time limit overflow"))?;
-    let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
-        &scenario.id().to_hex(),
-        shift,
-        config.quantum_budget,
-        SimInstant {
-            nanos: time_limit_nanos,
-        },
-        0,
-        source.world(),
-    )
-    .with_scenario_def(scenario.clone());
-    let scheduler = SingleScheduler::new(runtime_scenario)
-        .map_err(|error| loop_factory_error(format!("construct QEMU scheduler: {error}")))?;
-    Ok(scheduler.materialized_scheduler_state().search_frontier)
-}
+pub use search::production_vm_search_frontier;
 
 /// Builds a production local-QEMU lifecycle loop for `scenario`.
 ///
@@ -457,12 +404,6 @@ pub fn build_production_vm_lifecycle_loop(
     launch_seed_bytes.copy_from_slice(&scenario_seed[..8]);
     let launch_seed = u64::from_le_bytes(launch_seed_bytes);
     for (index, vm) in nodes.iter().enumerate() {
-        if vm.arch != crucible::VmArchitecture::X86_64 {
-            return Err(loop_factory_error(format!(
-                "QEMU node `{}` uses unsupported architecture {:?}",
-                vm.id.name, vm.arch
-            )));
-        }
         let node_directory = run_directory.path().join(format!("node-{index}"));
         fs::create_dir_all(&node_directory).map_err(|error| {
             loop_factory_error(format!(
@@ -478,13 +419,15 @@ pub fn build_production_vm_lifecycle_loop(
             _ => vm.cmdline.clone(),
         };
         let whitebox = production_whitebox_switch(vm.white_box);
+        let qemu_executable = production_qemu_executable(&config.executable, vm.arch);
         let mut launch = ProductionLiveNodeStepGateConfig::new_with_root_image(
-            &config.executable,
+            qemu_executable,
             &config.plugin,
             &config.kernel,
             &config.root_image,
             &node_directory,
         )
+        .with_guest_architecture(production_guest_architecture(vm.arch))
         .with_root_image_format(config.root_image_format)
         .with_kernel_cmdline(kernel_cmdline)
         .with_vm_shape(vm.memory_mib, vm.smp_vcpus, vm.icount_shift)

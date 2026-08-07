@@ -25,8 +25,10 @@ use crucible_protocol::guest_introspection_doorbell::{
     GuestIntrospectionDoorbellFrame, GuestIntrospectionDoorbellKind,
 };
 mod error;
+mod failure_mapping;
 
 pub use error::GuestIntrospectionAgentError;
+use failure_mapping::*;
 
 /// Default maximum concurrent guest child processes.
 pub const GUEST_INTROSPECTION_DEFAULT_MAX_CHANNELS: u16 = 8;
@@ -959,66 +961,6 @@ fn exit_record(
         },
     )
     .map_err(protocol_error)
-}
-
-fn process_missing(stream: &'static str) -> GuestIntrospectionAgentError {
-    GuestIntrospectionAgentError::Process {
-        message: format!("spawned guest process did not expose {stream}"),
-    }
-}
-
-fn process_error(operation: &'static str, error: std::io::Error) -> GuestIntrospectionAgentError {
-    GuestIntrospectionAgentError::Process {
-        message: format!("{operation}: {error}"),
-    }
-}
-
-fn protocol_error(error: impl ToString) -> GuestIntrospectionAgentError {
-    GuestIntrospectionAgentError::Protocol {
-        message: error.to_string(),
-    }
-}
-
-fn channel_error_code(
-    error: &GuestIntrospectionAgentError,
-    opening_request: bool,
-) -> GuestIntrospectionFailureCode {
-    match error {
-        GuestIntrospectionAgentError::DuplicateChannel { .. } => {
-            GuestIntrospectionFailureCode::DuplicateChannel
-        }
-        GuestIntrospectionAgentError::UnknownChannel { .. } => {
-            GuestIntrospectionFailureCode::UnknownChannel
-        }
-        GuestIntrospectionAgentError::ChannelLimit { .. } => {
-            GuestIntrospectionFailureCode::ChannelLimit
-        }
-        GuestIntrospectionAgentError::ClosedChannel { .. } => {
-            GuestIntrospectionFailureCode::ClosedChannel
-        }
-        GuestIntrospectionAgentError::NotPty { .. } => GuestIntrospectionFailureCode::NotPty,
-        GuestIntrospectionAgentError::Unsupported { .. } => {
-            GuestIntrospectionFailureCode::Unsupported
-        }
-        GuestIntrospectionAgentError::Process { .. } if opening_request => {
-            GuestIntrospectionFailureCode::OpenFailed
-        }
-        GuestIntrospectionAgentError::Configuration { .. }
-        | GuestIntrospectionAgentError::Protocol { .. }
-        | GuestIntrospectionAgentError::Doorbell(_)
-        | GuestIntrospectionAgentError::Process { .. }
-        | GuestIntrospectionAgentError::ReaderPanic { .. } => {
-            GuestIntrospectionFailureCode::ProcessIo
-        }
-    }
-}
-
-fn bounded_error_message(error: &GuestIntrospectionAgentError) -> String {
-    let mut message = error.to_string();
-    while message.len() > GUEST_INTROSPECTION_MAX_ERROR_BYTES {
-        message.pop();
-    }
-    message
 }
 
 #[cfg(test)]

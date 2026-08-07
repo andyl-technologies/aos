@@ -2,6 +2,90 @@
 
 use super::*;
 
+pub(super) fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+pub(super) fn attribute_wire(value: &OpenSetAttributeValue) -> String {
+    match value {
+        OpenSetAttributeValue::Bool(value) => {
+            format!("bool|{}", if *value { "true" } else { "false" })
+        }
+        OpenSetAttributeValue::Int(value) => format!("int|{value}"),
+        OpenSetAttributeValue::Uint(value) => format!("uint|{value}"),
+        OpenSetAttributeValue::Uint128(value) => format!("uint128|{value}"),
+        OpenSetAttributeValue::Float64Bits(value) => format!("float64bits|{value}"),
+        OpenSetAttributeValue::String(value) => format!("string|{}", hex_encode(value.as_bytes())),
+        OpenSetAttributeValue::Bytes(value) => format!("bytes|{}", hex_encode(value)),
+    }
+}
+
+pub(super) fn state_wire_name(state: LiveStateKind) -> &'static str {
+    match state {
+        LiveStateKind::Loaded => "loaded",
+        LiveStateKind::Paused => "paused",
+        LiveStateKind::Running => "running",
+        LiveStateKind::Stopped => "stopped",
+    }
+}
+
+pub(super) fn lifecycle_state_wire_name(state: LifecycleStateKind) -> &'static str {
+    match state {
+        LifecycleStateKind::Loaded => "loaded",
+        LifecycleStateKind::Paused => "paused",
+        LifecycleStateKind::Running => "running",
+        LifecycleStateKind::Stopped => "stopped",
+    }
+}
+
+pub(super) fn outcome_wire_name(outcome: Option<OutcomeKind>) -> &'static str {
+    match outcome {
+        Some(OutcomeKind::Passed) => "passed",
+        Some(OutcomeKind::Failed) => "failed",
+        Some(OutcomeKind::Timeout) => "timeout",
+        Some(OutcomeKind::Crashed) => "crashed",
+        Some(OutcomeKind::Stopped) => "stopped",
+        None => "none",
+    }
+}
+
+pub(super) fn content_hash_option_wire(hash: Option<ContentHash>) -> String {
+    match hash {
+        Some(hash) => hash.to_hex(),
+        None => String::from("none"),
+    }
+}
+
+pub(super) fn command_name(command: SessionCommandKind) -> String {
+    open_set_command_kind(command).unwrap_or_else(|| {
+        let command_name = API_COMMAND_MAPPINGS
+            .iter()
+            .find(|mapping| mapping.command_kind == command)
+            .map(|mapping| mapping.command_name)
+            .unwrap_or("unknown");
+        format!("crucible.cmd.{command_name}")
+    })
+}
+
+pub(super) fn push_session_ref(output: &mut String, session: SessionRef) {
+    push_wire_line(output, "session-id", &session.id.value.to_string());
+    push_wire_line(output, "epoch", &session.epoch.to_string());
+    push_wire_line(output, "seed", &session.seed.to_hex());
+}
+
+pub(super) fn push_wire_line(output: &mut String, key: &str, value: &str) {
+    output.push_str(key);
+    output.push('=');
+    output.push_str(value);
+    output.push('\n');
+}
+
 pub(super) fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
     let value = parse_wire_line(line, "query=")?;
     let mut fields = value.split('|');

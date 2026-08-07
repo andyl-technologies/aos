@@ -8,7 +8,6 @@ shape-line|crates/crucible-api/src/open_set.rs|929
 shape-line|crates/crucible-api/src/rpc_abi.rs|812
 shape-line|crates/crucible-api/src/server.rs|2980
 shape-line|crates/crucible-api/src/streaming.rs|1299
-shape-line|crates/crucible-api/src/vm_lifecycle.rs|653
 shape-line|crates/crucible-api/src/vm_lifecycle/runtime.rs|1274
 shape-line|crates/crucible-api/tests/gate_control_client/conformance.rs|1318
 shape-line|crates/crucible-api/tests/gate_control_client/contract_tests.rs|1770
@@ -23,10 +22,8 @@ shape-line|crates/crucible-cli/src/cli/artifact.rs|1092
 shape-line|crates/crucible-cli/src/cli/backend.rs|1322
 shape-line|crates/crucible-cli/src/cli/control.rs|1699
 shape-line|crates/crucible-cli/src/cli/planning/invocations.rs|2604
-shape-line|crates/crucible-cli/src/cli/artifact/live_qemu.rs|762
 shape-line|crates/crucible-cli/src/cli/replay.rs|863
 shape-line|crates/crucible-cli/src/cli/planning/verify_seed_render.rs|905
-shape-line|crates/crucible-cli/src/cli/report.rs|615
 shape-line|crates/crucible-cli/src/cli/resume_fork.rs|2086
 shape-line|crates/crucible-cli/src/cli/run_save/qemu_live.rs|1195
 shape-line|crates/crucible-cli/src/cli/run_save/qemu_live/search.rs|815
@@ -225,7 +222,8 @@ qemu-token|crucible-cli|crates/crucible-cli/src/cli/artifact.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/artifact.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/artifact/live_qemu.rs|QEMU
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/artifact/live_qemu.rs|Qemu
-qemu-token|crucible-cli|crates/crucible-cli/src/cli/artifact/live_qemu.rs|qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/artifact/live_qemu/tests.rs|Qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/artifact/live_qemu/tests.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/artifact/reports.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/artifact/reports.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/artifact_capture.rs|QEMU
@@ -240,7 +238,8 @@ qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch/support.rs|QEMU
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch/support.rs|qemu
-qemu-token|crucible-cli|crates/crucible-cli/src/cli/exploration.rs|qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch/support/replay_output.rs|qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/exploration/replay_output.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/report.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/replay.rs|QEMU
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/replay.rs|Qemu
@@ -253,6 +252,8 @@ qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/probe.rs|QEMU
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/probe.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/probe.rs|qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/replay.rs|Qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/replay.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/search.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/search.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/search/failure.rs|qemu
@@ -263,13 +264,16 @@ qemu-token|crucible-cli|crates/crucible-cli/src/main.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/main.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/tests/replay_artifact.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/tests/replay_artifact.rs|qemu
-qemu-token|crucible-cli|crates/crucible-cli/src/tests/state_workflows.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/tests/state_workflows.rs|qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/tests/state_workflows/live_qemu_fork.rs|Qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/tests/state_workflows/live_qemu_fork.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/tests/surface.rs|QEMU
 qemu-token|crucible-cli|crates/crucible-cli/src/tests/surface.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/tests/surface.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/tests/surface/backend_selection.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/tests/surface/backend_selection.rs|qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/tests/surface/debug_execution.rs|Qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/tests/surface/debug_execution.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/tests/verify_dispatch.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/tests/verify_dispatch.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/tests/verify_dispatch/selftest.rs|QEMU
@@ -280,7 +284,7 @@ qemu-token|crucible-harness|crates/crucible-harness/src/replay_oracle.rs|qemu
 qemu-token|crucible-harness|crates/crucible-harness/src/reproduction.rs|qemu
 qemu-token|crucible-session|crates/crucible-session/src/session/engine.rs|qemu
 qemu-token|crucible-session|crates/crucible-session/src/session/actor.rs|qemu
-qemu-token|crucible-session|crates/crucible-session/src/tests/actor_runtime.rs|qemu
+qemu-token|crucible-session|crates/crucible-session/src/tests/actor_runtime/debug_loops.rs|qemu
 qemu-token|crucible|crates/crucible/src/backend.rs|qemu
 qemu-token|crucible|crates/crucible/src/backend/gdb.rs|qemu
 qemu-token|crucible|crates/crucible/src/model/debug.rs|Qemu

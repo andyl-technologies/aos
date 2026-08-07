@@ -63,11 +63,11 @@ use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup
 use crate::supervision::QemuLiveHostIoRuntime;
 use crate::{
     CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
-    QemuAsyncDriverPolicy, QemuCrashDetector, QemuGdbstubChannelConfig, QemuHostPluginSetupError,
-    QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommandBuilder,
-    QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
-    QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
+    LivePluginGuestArchitecture, QemuAsyncDriverPolicy, QemuCrashDetector,
+    QemuGdbstubChannelConfig, QemuHostPluginSetupError, QemuLaunchAppRandomConfig,
+    QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
+    QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
+    QemuNode, QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
     QemuNodeRestorePlan, QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuRootImageFormat,
     QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QemuWhiteboxSetupError,
     QmpError, build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
@@ -178,6 +178,7 @@ impl Default for QemuLiveNodeStepSchedule {
 /// Inputs for one live [`QemuNode`] bounded-step gate run.
 #[derive(Clone, Debug)]
 pub struct QemuLiveNodeStepGateConfig {
+    architecture: LivePluginGuestArchitecture,
     qemu_executable: PathBuf,
     plugin: PathBuf,
     kernel: PathBuf,
@@ -228,6 +229,7 @@ impl QemuLiveNodeStepGateConfig {
         run_directory: impl Into<PathBuf>,
     ) -> Self {
         Self {
+            architecture: LivePluginGuestArchitecture::X86_64,
             qemu_executable: qemu_executable.into(),
             plugin: plugin.into(),
             kernel: kernel.into(),
@@ -267,6 +269,7 @@ impl QemuLiveNodeStepGateConfig {
         run_directory: impl Into<PathBuf>,
     ) -> Self {
         Self {
+            architecture: LivePluginGuestArchitecture::X86_64,
             qemu_executable: qemu_executable.into(),
             plugin: plugin.into(),
             kernel: kernel.into(),
@@ -291,6 +294,16 @@ impl QemuLiveNodeStepGateConfig {
             second_run_host_load: true,
             console_capture: false,
         }
+    }
+
+    /// Returns this configuration with the selected guest architecture.
+    #[must_use]
+    pub const fn with_guest_architecture(
+        mut self,
+        architecture: LivePluginGuestArchitecture,
+    ) -> Self {
+        self.architecture = architecture;
+        self
     }
 
     /// Returns this configuration with the immutable root image's format.
@@ -637,7 +650,7 @@ pub(super) fn build_live_node(
         }
     })?;
 
-    let mut candidate = LaunchProfileCandidate::default()
+    let mut candidate = launch_profile_candidate(config.architecture)
         .with_memory_mib(config.memory_mib)
         .with_smp_vcpus(config.smp_vcpus)
         .with_icount_shift(IcountShiftSetting::Fixed(config.icount_shift))
