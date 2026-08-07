@@ -1167,7 +1167,7 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         let outcome = if let Some(verify_plan) = verify_plan {
             match (&verify_plan.mode, backend) {
                 (VerifyMode::CompareArtifacts { .. }, _) => {
-                    let report = verify_compare_artifacts(verify_plan, Some(backend))?;
+                    let report = verify_compare_artifacts(verify_plan)?;
                     finish_verify_workflow_outcome(
                         thin_plan,
                         backend_plan,

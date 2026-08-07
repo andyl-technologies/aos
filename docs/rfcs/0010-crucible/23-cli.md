@@ -1161,7 +1161,9 @@ branch on the verdict without parsing output:
   decision/sample/byte with a bisection report, emits both-side reproduction
   artifacts on divergence, supports `verify --compare <a> <b>`, maps
   deterministic/divergent outcomes to exit 0/1, and records the resolved
-  QEMU/plugin build identity for local-QEMU verify runs. Bisection reports keep
+  QEMU/plugin build identity for local-QEMU verify runs. Compare mode validates
+  the artifacts' embedded producer identities against each other without
+  requiring that producer backend on the comparison host. Bisection reports keep
   canonical-log virtual time and fingerprint instruction coordinates in
   separate typed fields with independently sourced node identities and render
   an unavailable coordinate or node as `unknown`; byte offsets are never

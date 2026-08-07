@@ -49,7 +49,6 @@ where
 
 pub(super) fn verify_compare_artifacts(
     verify_plan: &VerifyInvocationPlan,
-    backend: Option<&ResolvedLocalBackend>,
 ) -> Result<VerifyWorkflowReport, CliError> {
     let VerifyMode::CompareArtifacts { left, right } = &verify_plan.mode else {
         return Err(backend_error(
@@ -60,9 +59,7 @@ pub(super) fn verify_compare_artifacts(
     let right_bytes = fs::read(right)?;
     let left_artifact = decode_reproduction_artifact(&left_bytes)?;
     let right_artifact = decode_reproduction_artifact(&right_bytes)?;
-    let expected_identity = expected_replay_identity_for_backend(backend);
-    verify_replay_identity(&left_artifact.identity, &expected_identity)?;
-    verify_replay_identity(&right_artifact.identity, &expected_identity)?;
+    verify_replay_identity(&right_artifact.identity, &left_artifact.identity)?;
     verify_compare_artifact_inputs_match("verify --compare", &left_artifact, &right_artifact)?;
     let witnesses = vec![
         verify_witness_from_artifact(verify_plan.reductions[0].clone(), left_artifact, left_bytes)?,
