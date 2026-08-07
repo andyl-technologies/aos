@@ -87,6 +87,10 @@ Fuzzing is currently local. `--daemon` fuzz is rejected.
 
 `triage` is offline: it loads a findings ledger, groups failures by signature,
 optionally minimizes representatives, stores the result, and writes reports.
+The input is the signed ledger itself, not a directory of reproduction
+artifacts and not an individual `.crucible` artifact. Only the ledger retains
+the discovery-time signature and evidence binding needed for deterministic
+clustering and `--recompute-signatures`.
 
 ```sh
 ./result/bin/crucible \

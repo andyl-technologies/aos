@@ -1690,6 +1690,8 @@ pub(super) fn cli_triage_rejects_artifact_only_findings_without_engine_evidence(
             .to_string()
             .contains("discovery-time signature evidence")
     );
+    assert!(error.to_string().contains("signed findings ledger"));
+    assert!(error.to_string().contains("--findings-out"));
 }
 
 #[test]
