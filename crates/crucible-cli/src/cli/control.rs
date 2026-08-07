@@ -847,6 +847,7 @@ pub(super) fn run_terminal_savepoint_for_policy(
 pub(super) async fn run_control_client_workflow_stdin_async<C>(
     client: &C,
     run_plan: &RunInvocationPlan,
+    announce_remote_session: bool,
 ) -> Result<RunWorkflowReport, CliError>
 where
     C: ControlClient + Sync,
@@ -855,6 +856,7 @@ where
         client,
         run_plan,
         InteractiveCommandDriver::Stdin,
+        announce_remote_session,
     )
     .await
 }
@@ -868,6 +870,7 @@ pub(super) async fn run_control_client_workflow_with_interactive_driver<C>(
     client: &C,
     run_plan: &RunInvocationPlan,
     interactive_driver: InteractiveCommandDriver<'_>,
+    announce_remote_session: bool,
 ) -> Result<RunWorkflowReport, CliError>
 where
     C: ControlClient + Sync,
@@ -882,6 +885,12 @@ where
         .create_session(request)
         .await
         .map_err(control_client_error)?;
+    if announce_remote_session {
+        eprintln!(
+            "crucible: live-session\tref={}",
+            canonical_debug_session_ref(created.session)
+        );
+    }
     let mut control = client
         .control_attach(
             AttachRequest::new(created.session)
@@ -1028,6 +1037,15 @@ where
         acknowledged_commands,
         watch_statuses: observation.watch_statuses,
     })
+}
+
+pub(super) fn canonical_debug_session_ref(session: crucible_api::SessionRef) -> String {
+    format!(
+        "{}:{}:{}",
+        session.id.value,
+        session.epoch,
+        session.seed.to_hex()
+    )
 }
 
 fn should_continue_after_probe(state: LiveStateKind) -> bool {

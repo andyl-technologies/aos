@@ -914,7 +914,7 @@ pub(super) async fn run_local_double_workflow_stdin_async(
         |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
     );
     let client = InProcessLifecycleClient::new(control_plane);
-    run_control_client_workflow_stdin_async(&client, run_plan).await
+    run_control_client_workflow_stdin_async(&client, run_plan, false).await
 }
 
 pub(super) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), CliError> {
@@ -1195,6 +1195,7 @@ where
         client,
         run_plan,
         InteractiveCommandDriver::Preparsed(interactive_commands),
+        false,
     )
     .await
 }
