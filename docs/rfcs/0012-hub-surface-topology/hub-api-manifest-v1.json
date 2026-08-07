@@ -1499,6 +1499,13 @@
          "service" : "PublishService"
       },
       {
+         "method" : "ListRegistryPublications",
+         "path" : "aos.hub.v1.PublishService/ListRegistryPublications",
+         "request" : "ListRegistryPublicationsRequest",
+         "response" : "ListRegistryPublicationsResponse",
+         "service" : "PublishService"
+      },
+      {
          "method" : "GetRegistryPublication",
          "path" : "aos.hub.v1.PublishService/GetRegistryPublication",
          "request" : "GetRegistryPublicationRequest",

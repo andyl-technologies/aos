@@ -8130,6 +8130,26 @@ async fn channel(printer: &Printer, command: &HubChannelCmd) -> Result<()> {
 
 async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
     match command {
+        HubPublishCmd::List {
+            access,
+            registry,
+            state,
+            pagination,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read::<_, hub_types::ListRegistryPublicationsResponse>(
+                printer,
+                &client,
+                HubTopologyMethod::ListRegistryPublications,
+                &hub_types::ListRegistryPublicationsRequest {
+                    registry: registry.clone(),
+                    state: state.clone().unwrap_or_default(),
+                    page_size: pagination.page_size.unwrap_or_default(),
+                    page_token: pagination.page_token.clone().unwrap_or_default(),
+                },
+            )
+            .await
+        }
         HubPublishCmd::Upload {
             access,
             registry,

@@ -339,6 +339,8 @@ service ImageService {
 service PublishService {
   rpc BeginRegistryPublication(BeginRegistryPublicationRequest)
       returns (RegistryPublication);
+  rpc ListRegistryPublications(ListRegistryPublicationsRequest)
+      returns (ListRegistryPublicationsResponse);
   rpc GetRegistryPublication(GetRegistryPublicationRequest)
       returns (RegistryPublication);
   rpc CommitRegistryPublication(CommitRegistryPublicationRequest)
@@ -1525,6 +1527,19 @@ message BeginRegistryPublicationRequest {
   string default_commit = 4;
   string parent_publication_id = 5;
   repeated RegistryPublicationObjectInput objects = 6;
+}
+
+message ListRegistryPublicationsRequest {
+  string registry = 1;
+  // Optional exact lifecycle state.
+  string state = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListRegistryPublicationsResponse {
+  repeated RegistryPublication publications = 1;
+  string next_page_token = 2;
 }
 
 message GetRegistryPublicationRequest {

@@ -20,10 +20,14 @@ pub(super) fn RegistryPublicationWorkflow(client: ApiClient, registry_id: String
         <div class="workflow-stack">
             <PublicationBegin
                 client=client.clone()
+                registry_id=registry_id.clone()
+                publication=publication
+            />
+            <PublicationHistory
+                client=client.clone()
                 registry_id=registry_id
                 publication=publication
             />
-            <PublicationLookup client=client.clone() publication=publication/>
             {move || publication.get().map(|value| view! {
                 <PublicationSession client=client.clone() publication=publication value=value/>
             })}
@@ -103,45 +107,76 @@ fn PublicationBegin(
 }
 
 #[component]
-fn PublicationLookup(
+fn PublicationHistory(
     client: ApiClient,
+    registry_id: String,
     publication: RwSignal<Option<aos_proto_types::RegistryPublication>>,
 ) -> impl IntoView {
-    let publication_id = RwSignal::new(String::new());
-    let error = RwSignal::new(None::<String>);
-    let busy = RwSignal::new(false);
-    let on_submit = move |event: SubmitEvent| {
-        event.prevent_default();
-        let id = publication_id.get_untracked().trim().to_string();
-        if id.is_empty() {
-            error.set(Some("Publication ID is required".to_string()));
-            return;
-        }
+    let history = LocalResource::new(move || {
         let client = client.clone();
-        error.set(None);
-        busy.set(true);
-        spawn_local(async move {
-            match client
-                .call::<_, aos_proto_types::RegistryPublication>(
-                    aos_proto_types::PUBLISH_SERVICE_GET_REGISTRY_PUBLICATION_PATH,
-                    &aos_proto_types::GetRegistryPublicationRequest { publication_id: id },
+        let registry = registry_id.clone();
+        async move {
+            client
+                .collect_pages::<_, aos_proto_types::ListRegistryPublicationsResponse, _, _, _>(
+                    aos_proto_types::PUBLISH_SERVICE_LIST_REGISTRY_PUBLICATIONS_PATH,
+                    move |page_token| aos_proto_types::ListRegistryPublicationsRequest {
+                        registry: registry.clone(),
+                        state: String::new(),
+                        page_size: 100,
+                        page_token,
+                    },
+                    |response| (response.publications, response.next_page_token),
                 )
                 .await
-            {
-                Ok(response) => publication.set(Some(response)),
-                Err(failure) => error.set(Some(failure.to_string())),
-            }
-            busy.set(false);
-        });
-    };
+                .map_err(|failure| failure.to_string())
+        }
+    });
     view! {
         <section class="panel resource-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Resume exact session"</p><h2>"Load publication"</h2></div></div>
-            <form class="editor-form" on:submit=on_submit>
-                <label><span>"Publication ID"</span><input required prop:value=move || publication_id.get() on:input=move |event| publication_id.set(event_target_value(&event))/></label>
-                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Load publication"</button>
-            </form>
-            {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
+            <div class="section-heading">
+                <div>
+                    <p class="section-kicker">"Durable transaction inventory"</p>
+                    <h2>"Publish history"</h2>
+                    <p>"Inspect or resume any exact publication without retaining an out-of-band session ID."</p>
+                </div>
+            </div>
+            <Suspense fallback=move || view! { <p class="loading-row">"Loading publication history…"</p> }>
+                {move || Suspend::new(async move {
+                    match history.await.as_ref() {
+                        Ok(records) if records.is_empty() => view! {
+                            <p class="muted">"No publication sessions have been created."</p>
+                        }.into_any(),
+                        Ok(records) => view! {
+                            <div class="binding-list">
+                                {records.iter().cloned().map(|record| {
+                                    let selected = record.clone();
+                                    view! {
+                                        <article class="revision-card">
+                                            <div class="compact-list-row">
+                                                <div>
+                                                    <strong>{record.generation}</strong>
+                                                    <code>{record.publication_id}</code>
+                                                </div>
+                                                <StatusBadge state=record.state.clone() positive=record.state == "ready"/>
+                                            </div>
+                                            <div class="resource-identity">
+                                                <div><span>"Ordinal"</span><strong>{record.ordinal}</strong></div>
+                                                <div><span>"Created"</span><strong>{record.created_at}</strong></div>
+                                                <div><span>"Objects"</span><strong>{record.objects.len()}</strong></div>
+                                                <div><span>"Placements"</span><strong>{record.placements.len()}</strong></div>
+                                            </div>
+                                            <button class="secondary-button" type="button" on:click=move |_| publication.set(Some(selected.clone()))>
+                                                "Inspect publication"
+                                            </button>
+                                        </article>
+                                    }
+                                }).collect_view()}
+                            </div>
+                        }.into_any(),
+                        Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
+                    }
+                })}
+            </Suspense>
         </section>
     }
 }
@@ -156,7 +191,7 @@ fn PublicationSession(
         <section class="panel resource-panel">
             <div class="section-heading">
                 <div><p class="section-kicker">"Placement-aware transaction"</p><h2>{value.generation.clone()}</h2><code>{value.publication_id.clone()}</code></div>
-                <StatusBadge state=value.state.clone() positive=value.state == "committed"/>
+                <StatusBadge state=value.state.clone() positive=value.state == "ready"/>
             </div>
             <div class="resource-identity">
                 <div><span>"Manifest digest"</span><code>{value.manifest_digest.clone()}</code></div>
@@ -167,7 +202,7 @@ fn PublicationSession(
             <h3>"Required placements"</h3>
             <div class="compact-list">
                 {value.placements.iter().cloned().map(|placement| view! {
-                    <div class="compact-list-row"><strong>{placement.name}</strong><StatusBadge state=placement.state positive=!placement.required || value.state == "committed"/></div>
+                    <div class="compact-list-row"><strong>{placement.name}</strong><StatusBadge state=placement.state.clone() positive=!placement.required || placement.state == "ready"/></div>
                 }).collect_view()}
             </div>
             <h3>"Declared objects"</h3>
@@ -246,6 +281,8 @@ fn PublicationLifecycle(
 ) -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let can_commit = value.state == "writing_pointers";
+    let can_abort = matches!(value.state.as_str(), "preparing" | "writing_pointers");
     let commit_client = client.clone();
     let commit_id = value.publication_id.clone();
     let on_commit = move |_| {
@@ -289,8 +326,8 @@ fn PublicationLifecycle(
     };
     view! {
         <div class="form-actions">
-            <button class="button" type="button" disabled=move || busy.get() on:click=on_commit>"Commit verified publication"</button>
-            <button class="danger-button" type="button" disabled=move || busy.get() on:click=on_abort>"Abort publication"</button>
+            <button class="button" type="button" disabled=move || busy.get() || !can_commit on:click=on_commit>"Commit verified publication"</button>
+            <button class="danger-button" type="button" disabled=move || busy.get() || !can_abort on:click=on_abort>"Abort publication"</button>
         </div>
         {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
     }

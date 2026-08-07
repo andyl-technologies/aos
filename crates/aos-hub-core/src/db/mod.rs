@@ -1583,6 +1583,15 @@ pub struct RegistryPublicationRecord {
     pub retired_at: Option<i64>,
 }
 
+/// One keyset-paginated registry publication inventory page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPublicationPage {
+    /// Publications in newest-first ordinal order.
+    pub records: Vec<RegistryPublicationRecord>,
+    /// Exclusive ordinal cursor for the next page.
+    pub next_cursor: Option<i64>,
+}
+
 /// The single authoritative current-publication pointer for a registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryPublicationStateRecord {
@@ -5887,6 +5896,96 @@ impl Database {
                 })
             })
             .transpose()
+    }
+
+    /// Lists one registry's publications in stable newest-first order.
+    ///
+    /// The optional cursor is exclusive and must identify a publication in the
+    /// same registry and state-filtered inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid state or cursor, malformed persisted
+    /// data, or a database failure.
+    pub async fn list_registry_publications_page(
+        &self,
+        registry_id: i64,
+        state: Option<&str>,
+        page_size: u32,
+        before_ordinal: Option<i64>,
+    ) -> Result<RegistryPublicationPage> {
+        let state = state.unwrap_or("");
+        if !state.is_empty()
+            && !matches!(
+                state,
+                "preparing" | "writing_pointers" | "ready" | "failed" | "retired"
+            )
+        {
+            bail!("invalid publication state filter '{state}'");
+        }
+        if let Some(ordinal) = before_ordinal {
+            let belongs = self
+                .backend
+                .query_opt(
+                    "SELECT 1 FROM registry_publications
+                     WHERE registry_id = ?1 AND ordinal = ?2
+                       AND (?3 = '' OR state = ?3)",
+                    &vals![registry_id, ordinal, state],
+                )
+                .await?
+                .is_some();
+            if !belongs {
+                bail!("publication page token does not belong to this inventory");
+            }
+        }
+        let limit = if page_size == 0 {
+            50_i64
+        } else {
+            i64::from(page_size.min(200))
+        };
+        let rows = self
+            .backend
+            .query(
+                "SELECT publication_id, registry_id, ordinal, generation,
+                        manifest_digest, refs_digest, default_commit,
+                        parent_publication_id, state, created_at, completed_at,
+                        retired_at
+                 FROM registry_publications
+                 WHERE registry_id = ?1 AND (?2 = '' OR state = ?2)
+                   AND (?3 IS NULL OR ordinal < ?3)
+                 ORDER BY ordinal DESC LIMIT ?4",
+                &vals![registry_id, state, before_ordinal, limit + 1],
+            )
+            .await?;
+        let mut records = rows
+            .iter()
+            .map(|row| {
+                Ok(RegistryPublicationRecord {
+                    publication_id: row.get(0)?,
+                    registry_id: row.get(1)?,
+                    ordinal: row.get(2)?,
+                    generation: row.get(3)?,
+                    manifest_digest: row.get(4)?,
+                    refs_digest: row.get(5)?,
+                    default_commit: row.get(6)?,
+                    parent_publication_id: row.get(7)?,
+                    state: row.get(8)?,
+                    created_at: row.get(9)?,
+                    completed_at: row.get(10)?,
+                    retired_at: row.get(11)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let next_cursor = if records.len() > limit as usize {
+            records.pop();
+            records.last().map(|record| record.ordinal)
+        } else {
+            None
+        };
+        Ok(RegistryPublicationPage {
+            records,
+            next_cursor,
+        })
     }
 
     /// Lists the exact object manifest declared by a publication.
@@ -27184,6 +27283,54 @@ source_nar_hash = ""
                 None,
                 Some(defaults.resource_version + 1),
             )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn registry_publication_inventory_is_stable_and_filter_bound() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("publication-history", &[], false)
+            .await
+            .unwrap();
+        for ordinal in 1..=3 {
+            db.create_registry_publication(&NewRegistryPublication {
+                publication_id: format!("publication-history-{ordinal}"),
+                registry_id,
+                generation: format!("generation-{ordinal}"),
+                manifest_digest: format!("{ordinal:064x}"),
+                refs_digest: format!("{:064x}", ordinal + 10),
+                default_commit: None,
+                parent_publication_id: None,
+            })
+            .await
+            .unwrap();
+        }
+        db.fail_registry_publication("publication-history-2", unix_now())
+            .await
+            .unwrap();
+
+        let first = db
+            .list_registry_publications_page(registry_id, None, 1, None)
+            .await
+            .unwrap();
+        assert_eq!(first.records[0].ordinal, 3);
+        assert_eq!(first.next_cursor, Some(3));
+        let second = db
+            .list_registry_publications_page(registry_id, None, 1, first.next_cursor)
+            .await
+            .unwrap();
+        assert_eq!(second.records[0].ordinal, 2);
+
+        let failed = db
+            .list_registry_publications_page(registry_id, Some("failed"), 10, None)
+            .await
+            .unwrap();
+        assert_eq!(failed.records.len(), 1);
+        assert_eq!(failed.records[0].publication_id, "publication-history-2");
+        assert!(db
+            .list_registry_publications_page(registry_id, Some("failed"), 10, Some(3))
             .await
             .is_err());
     }

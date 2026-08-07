@@ -163,6 +163,7 @@ The exact grouped labels and ordering are specified in
 /-/org/{org}/sso
 /-/org/{org}/signing-keys
 /-/org/{org}/signing-keys/new
+/-/org/{org}/tokens
 /-/org/{org}/webhooks
 /-/org/{org}/webhooks/new
 /-/org/{org}/operations
@@ -200,12 +201,14 @@ The exact grouped labels and ordering are specified in
 /-/org/{org}/caches/{cache}/garbage-collection/runs/{operation}
 /-/org/{org}/caches/{cache}/garbage-collection/runs/{operation}/jobs/{job}
 /-/org/{org}/caches/{cache}/access
-/-/org/{org}/caches/{cache}/signing-key
+/-/org/{org}/caches/{cache}/signing-keys
+/-/org/{org}/caches/{cache}/tokens
 /-/org/{org}/caches/{cache}/operations
 /-/org/{org}/caches/{cache}/danger
 
 /-/instance
 /-/instance/identity-and-signup
+/-/instance/tokens
 /-/instance/resource-defaults
 /-/instance/branding
 /-/instance/storage-bindings
@@ -407,6 +410,14 @@ operation id and support `--wait`, `--timeout`, and `operation watch`.
 External probes and reconcile/refresh/scan triggers are effects: callers first
 create an immutable plan, then apply it to receive an operation id. Controller
 observations use separate authenticated and generation-fenced controller RPCs.
+
+Registry publication inventory is `aos hub registry publish list <registry>`
+with an optional exact `--state` filter and the common pagination flags.
+`PublishService.ListRegistryPublications` returns newest-first durable sessions;
+its opaque page token is bound to the registry's immutable identity and exact
+state filter. The Publish history Web page exhausts that pagination and opens
+an exact session for inspection, upload continuation, commit, or abort. Manual
+publication-id entry is not the primary discovery mechanism.
 
 Every successful `--json` response is wrapped as
 `{"schema_version":"aos.hub.cli/v1","kind":"...","data":...}`. The

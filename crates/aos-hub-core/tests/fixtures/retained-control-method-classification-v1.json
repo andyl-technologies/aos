@@ -71,6 +71,16 @@
   },
   {
     "service": "PublishService",
+    "method": "ListRegistryPublications",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
     "method": "GetRegistryPublication",
     "exposure": "public",
     "durability": "read_only",
@@ -268,6 +278,14 @@
   {
     "service": "SigningKeyService",
     "method": "GetSigningKey",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "SigningKeyService",
+    "method": "GetSigningKeyUsage",
     "exposure": "public",
     "durability": "read_only",
     "class": { "class": "read" },

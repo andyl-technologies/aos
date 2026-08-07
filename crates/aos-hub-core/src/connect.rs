@@ -2405,6 +2405,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
+        "/aos.hub.v1.PublishService/ListRegistryPublications",
+        list_registry_publications
+    );
+    r = rpc_route!(
+        r,
         "/aos.hub.v1.PublishService/GetRegistryPublication",
         get_registry_publication
     );

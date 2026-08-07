@@ -212,7 +212,7 @@
       "audience": "end-user",
       "cli_families": ["registry publish"],
       "web_workflows": ["registry-publication"],
-      "methods": ["BeginRegistryPublication", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication"]
+      "methods": ["BeginRegistryPublication", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication"]
     },
     {
       "service": "GitService",
