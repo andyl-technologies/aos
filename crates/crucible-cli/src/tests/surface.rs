@@ -2179,16 +2179,16 @@ pub(super) fn cli_thin_wrapper_rejects_canonical_state_or_extra_control_capabili
 }
 
 #[test]
-pub(super) fn cli_qemu_debug_executes_live_admission_before_delegating()
+pub(super) fn cli_qemu_debug_rejects_unavailable_local_execution_before_probe()
 -> Result<(), Box<dyn Error>> {
-    struct StaticProbe(LiveQemuProbeEvidence);
+    struct ForbiddenProbe;
 
-    impl LiveQemuProbeRunner for StaticProbe {
+    impl LiveQemuProbeRunner for ForbiddenProbe {
         fn run_probe(
             &mut self,
             _backend: &ResolvedLocalBackend,
         ) -> Result<LiveQemuProbeEvidence, CliError> {
-            Ok(self.0.clone())
+            panic!("an unavailable local debugger must not launch a generic QEMU probe");
         }
     }
 
@@ -2214,22 +2214,17 @@ pub(super) fn cli_qemu_debug_executes_live_admission_before_delegating()
         panic!("debug command should parse");
     };
     let plan = plan_debug_invocation(&cli, args)?;
-    let mut probe = StaticProbe(LiveQemuProbeEvidence {
-        qemu_build_id: String::from("test-build"),
-        plugin_abi: String::from("test-plugin-abi"),
-        completed_icount: 42,
-        execution_fingerprint: String::from("blake3:test-fingerprint"),
-    });
-    let lines = run_local_qemu_debug_workflow_with_probe(&backend, &plan, &mut probe)?;
-    assert!(lines[0].contains("operation=debug-admission"));
-    assert!(lines[0].contains("icount=42"));
-    assert!(lines[1].contains("target=session:7:12:"));
-    assert!(lines[1].contains("execution=planned-only"));
-    assert!(lines[1].contains("requested_operation=attach-gdb"));
-    assert!(lines[1].contains("coordinate=current"));
-    assert!(lines[1].contains("node=auto"));
-    assert!(lines[1].contains("read_only=true"));
-    assert!(lines[1].contains("raw_gdb_single_step=false"));
+    let error = run_local_qemu_debug_workflow_with_probe(&backend, &plan, &mut ForbiddenProbe)
+        .expect_err("local debugger execution must fail instead of emitting a plan");
+    assert!(matches!(error, CliError::Backend(_)));
+    assert_eq!(error.exit_code(), 4);
+    assert!(
+        error
+            .to_string()
+            .contains("no debug operation was executed")
+    );
+    assert!(error.to_string().contains("requested_operation=attach-gdb"));
+    assert!(error.to_string().contains("target=session:7:12:"));
     Ok(())
 }
 

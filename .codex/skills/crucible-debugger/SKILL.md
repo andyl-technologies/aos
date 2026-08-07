@@ -59,7 +59,8 @@ IDs.
 
 ## Inspect retained evidence
 
-Probe the failure coordinate and request a coarse reverse boundary:
+Confirm that local artifact debugging fails honestly until the runtime executor
+is available:
 
 ```sh
 crucible debug /tmp/crucible-debugger-artifacts/repro-*.crucible --at-failure
@@ -67,10 +68,10 @@ crucible debug /tmp/crucible-debugger-artifacts/repro-*.crucible \
   --at-failure reverse-step assertion
 ```
 
-Artifact-targeted commands currently validate admission and emit a debug plan;
-they do not provide a persistent local time-travel session. Treat a
-`debug-plan execution=planned-only` line as planned work, not proof that a
-reverse operation executed.
+Artifact-targeted commands decode the artifact fields needed to identify the
+failure coordinate, but they do not provide a local time-travel session. They
+therefore exit `4` with `no debug operation was executed`; a zero exit or a
+planned-only success is a bug.
 Use `replay --check`, `verify --bisect`, explicit savepoints, or a live daemon
 session when the retained artifact is insufficient.
 

@@ -1158,10 +1158,11 @@ the documented CLI without editing the implementation and report ambiguous outpu
 incorrect exit behavior, missing discovery, or operations that only emit a plan as
 usability defects. Accepted defects feed back into the CLI and user documentation.
 
-This exercise does not close T-DBG-9 through T-DBG-14. In particular, a local
-artifact `debug-plan` is not proof that time travel executed, and guest
-exec/PTY/SSH admission is not proof of introspection while the shipped fixture
-does not activate the guest agent on a non-canonical fork.
+This exercise does not close T-DBG-9 through T-DBG-14. In particular, the local
+artifact/savepoint executor is unavailable and fails with exit `4` stating that
+no debug operation executed. Executed time travel requires a live daemon
+session. Guest exec/PTY/SSH admission is not proof of introspection while the
+shipped fixture does not activate the guest agent on a non-canonical fork.
 
 ## Implementation checklist
 
@@ -1335,10 +1336,10 @@ complete from model-double evidence.
   step modes, proves that the CLI holds no debugger state, defaults to read-only
   inspection, exposes the no
   symbol server policy, requires coherent multi-vCPU gdb threads, and keeps raw gdb
-  single-step disabled. Executing the command also resolves the hermetic
-  production backend, boots the packaged QEMU/plugin under TCG, and reports the
-  negotiated protocol/ABI plus terminal icount/fingerprint before presenting
-  the thin delegated debug plan. The remote unary client now implements an
+  single-step disabled. The daemonless local route fails with exit `4` before a
+  generic QEMU admission probe because its instantiate/replay executor remains
+  open under T-DBG-9/T-DBG-10; it never returns a successful planned-only result.
+  The remote unary client now implements an
   explicit `fork-debug` plus argv `exec`, interactive `pty`, and configured
   in-guest `ssh` byte bridging. The fork RPC requires the transport-derived
   controller to hold `control`, `mutate`, and `shell`, records a typed

@@ -54,13 +54,11 @@ pub(crate) fn run_local_qemu_debug_workflow(
 }
 
 pub(crate) fn run_local_qemu_debug_workflow_with_probe(
-    backend: &ResolvedLocalBackend,
+    _backend: &ResolvedLocalBackend,
     plan: &DebugInvocationPlan,
-    probe: &mut impl LiveQemuProbeRunner,
+    _probe: &mut impl LiveQemuProbeRunner,
 ) -> Result<Vec<String>, CliError> {
     let artifact_context = artifact_debug_context(plan)?;
-    let evidence = probe.run_probe(backend)?;
-    validate_live_qemu_probe_evidence(backend, &evidence)?;
     let target = match &plan.target {
         DebugPlanTarget::Artifact(path) => {
             format!(
@@ -108,25 +106,9 @@ pub(crate) fn run_local_qemu_debug_workflow_with_probe(
         DebugInteractiveVerbPlan::Pty { .. } => String::from("pty"),
         DebugInteractiveVerbPlan::Ssh => String::from("ssh"),
     };
-    let node = escape_debug_plan_field(plan.node.as_deref().unwrap_or("auto"));
-    let gdb_listen = escape_debug_plan_field(&plan.gdb_listen);
-    Ok(vec![
-        format!(
-            "qemu-live\toperation=debug-admission\tqemu_build_id={}\tplugin_abi={}\ticount={}\tfingerprint={}",
-            evidence.qemu_build_id,
-            evidence.plugin_abi,
-            evidence.completed_icount,
-            evidence.execution_fingerprint
-        ),
-        format!(
-            "debug-plan\texecution=planned-only\trequested_operation={requested_operation}\ttarget={target}\tcoordinate={coordinate}\tnode={}\tgdb_listen={}\tread_only={}\tallow_mutate={}\tdelegated_session_commands={}\traw_gdb_single_step=false",
-            node,
-            gdb_listen,
-            plan.read_only,
-            plan.allow_mutate,
-            plan.session_commands.len(),
-        ),
-    ])
+    Err(backend_error(format!(
+        "local debugger execution is unavailable for requested_operation={requested_operation} target={target} coordinate={coordinate}; no debug operation was executed; use an authenticated live daemon session, or use replay/verify for artifact evidence"
+    )))
 }
 
 struct ArtifactFailureContext {
