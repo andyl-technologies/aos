@@ -428,7 +428,9 @@ long-held locks.
   the QEMU install/version entrypoints; text impersonators are rejected.
   `T-CLI-6` is completed through `checks.crucible.phase5.cliRunWorkflow`, which
   covers canonical scenario file and `blake3:` store-reference parsing,
-  invalid-scenario exit 5, local and daemon lifecycle session creation through
+  invalid-scenario exit 5 with field-specific malformed-ID diagnostics and
+  serialized-versus-recomputed values for stale derived IDs, local and daemon
+  lifecycle session creation through
   the typed control-client workflow, production HTTP/2 RPC serving, control
   attachment, non-empty scheduler event/state stream consumption, parsed
   virtual-time/quanta budget checks from live counters, outcome-derived
