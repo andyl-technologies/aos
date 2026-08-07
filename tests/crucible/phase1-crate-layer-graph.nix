@@ -42,6 +42,11 @@
       inVm = true;
     }
     {
+      package = "crucible-debug-gateway";
+      layer = 2;
+      inVm = false;
+    }
+    {
       package = "crucible-guest";
       layer = 2;
       inVm = true;

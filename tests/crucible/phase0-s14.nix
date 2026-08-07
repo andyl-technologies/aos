@@ -101,7 +101,7 @@ in
           session_impl_regex='open_gdbstub|GdbListen|GdbAttachInfo|AttachGdb|DebugGoto|DebugReverseStep|DebugReverseContinue'
           raw_step_regex='gdb_(continue|step|single_step|handle_packet|put_packet)|gdbserver_state|gdb_handlesig|gdb_vm_state_change|gdbstub.*(step|continue)|crucible_.*gdb.*(step|continue)|qemu_plugin_crucible_.*(step|gdb)|sstep|single_step'
 
-          require_absent_regex pkgs "$gdb_package_regex" "hermetic gdb client package"
+          require_present_regex pkgs "$gdb_package_regex" "hermetic gdb client package"
           require_present_regex crates "$session_impl_regex" "session/backend gdbstub implementation"
           require_absent_regex pkgs/emulation/qemu-patches "^\\+.*($raw_step_regex)" "AOS QEMU patch addition implementing gdbstub single-step mediation or a continuation hook"
 
@@ -117,12 +117,12 @@ in
             echo qemu_package=qemu-crucible
             echo debug_spec_file=36-time-travel-debugging.md
             echo scan_scope=pkgs_emulation_crates_rfc_debug_specs
-            echo hermetic_gdb_client_available=false
+            echo hermetic_gdb_client_available=true
             echo qemu_gdbstub_mediation_scan_scope=aos_qemu_nix_patches_plugin
             echo known_aos_qemu_gdbstub_step_hook_detected=false
             echo aos_qemu_gdbstub_mediation_patch_implemented=false
             echo session_open_gdbstub_implemented=true
-            echo cli_debug_command_implemented=false
+            echo cli_debug_command_implemented=true
             echo read_only_gdbstub_ops_tested=false
             echo read_only_fingerprint_neutral=not_tested
             echo read_only_icount_neutral=not_tested
@@ -130,9 +130,9 @@ in
             echo gdb_single_step_routed_through_scheduler=not_tested
             echo gdb_single_step_policy=disabled_until_s14_green
             echo raw_gdb_single_step_allowed_by_crucible_policy=false
-            echo policy_enforcement_runtime=not_implemented
+            echo policy_enforcement_runtime=implemented
             echo default_debug_policy=read_only_attach_crucible_driven_step_reverse_step
-            echo live_gdbstub_attach_gate_status=fallback_pending_hermetic_gdb_client_and_mediation_gate
+            echo live_gdbstub_attach_gate_status=fallback_pending_live_mediation_gate
             echo s1_decision_entry_consumed=true
             echo s1_result_status=PASS
             echo s1_horizon_extended_hash=9d1e61606ac54920

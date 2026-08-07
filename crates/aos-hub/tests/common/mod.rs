@@ -16,6 +16,421 @@ use aos_hub::surface::object::{
 use aos_hub::surface::sshsig;
 use aos_hub::surface::tag::render_tag_payload;
 use ed25519_dalek::SigningKey;
+use sha2::{Digest as _, Sha256};
+
+/// Creates a final-topology instance-owned local binding for integration tests.
+pub async fn create_instance_local_binding(
+    db: &aos_hub::db::Database,
+    name: &str,
+    path: &str,
+) -> i64 {
+    db.create_topology_storage_binding(
+        None,
+        &uuid::Uuid::new_v4().simple().to_string(),
+        "instance",
+        name,
+        "local_fs",
+        Some(path),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap()
+}
+
+/// Creates a final-topology local binding for integration-test setup.
+pub async fn create_local_binding(
+    db: &aos_hub::db::Database,
+    org_id: i64,
+    name: &str,
+    path: &str,
+) -> i64 {
+    // Local filesystem bindings are instance-owned: accepting an
+    // organization-controlled host path would cross the tenancy boundary.
+    // Creating the instance binding eagerly materializes a grant for every
+    // existing organization, including this fixture's owner.
+    db.org_by_id(org_id).await.unwrap().unwrap();
+    db.create_topology_storage_binding(
+        None,
+        &uuid::Uuid::new_v4().simple().to_string(),
+        "instance",
+        name,
+        "local_fs",
+        Some(path),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap()
+}
+
+/// Creates and reconciles one native Hub delivery endpoint and route.
+pub async fn configure_hub_delivery_route(
+    db: &aos_hub::db::Database,
+    surface: aos_hub::db::SurfaceTarget,
+    placement_id: i64,
+    owner_scope: &str,
+    endpoint_id: &str,
+    route_id: &str,
+    base_path: &str,
+    audience: &str,
+) {
+    use aos_hub::db::{DeliveryEndpointHostInput, DeliveryEndpointRevisionSpec, DeliveryRouteSpec};
+
+    let (org_id, visibility) = match surface {
+        aos_hub::db::SurfaceTarget::Registry(id) => {
+            let registry = db.registry_by_id(id).await.unwrap().unwrap();
+            (registry.org_id, registry.visibility)
+        }
+        aos_hub::db::SurfaceTarget::BinaryCache(id) => {
+            let cache = db.binary_cache_by_id(id).await.unwrap().unwrap();
+            (cache.org_id, cache.visibility)
+        }
+    };
+    let boundary = aos_hub::db::GrantResource::NetworkBoundary {
+        id: "instance:public",
+    };
+    let boundary_grants = db.list_consumer_scope_grants(boundary).await.unwrap();
+    if !boundary_grants
+        .iter()
+        .any(|grant| grant.consumer_scope_key == owner_scope && grant.state == "active")
+    {
+        db.grant_consumer_scope(
+            boundary,
+            owner_scope,
+            "explicit",
+            "test",
+            &format!("request:{endpoint_id}:boundary-grant"),
+        )
+        .await
+        .unwrap();
+    }
+    if db.delivery_endpoint(endpoint_id).await.unwrap().is_none() {
+        db.create_delivery_endpoint(
+            endpoint_id,
+            owner_scope,
+            org_id,
+            "http",
+            &DeliveryEndpointHostInput::Ipv4([127, 0, 0, 1]),
+            8420,
+            "instance:public",
+            &DeliveryEndpointRevisionSpec {
+                boundary_revision: 1,
+                ingress_kind: "hub".to_string(),
+                listener_configuration: format!("listener:{endpoint_id}"),
+                tls_configuration: "{}".to_string(),
+                probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
+            },
+            Some(1),
+            "test",
+            &format!("request:{endpoint_id}"),
+        )
+        .await
+        .unwrap();
+        db.reconcile_delivery_endpoint(endpoint_id, 1, 1, "healthy", true, false, None, 1)
+            .await
+            .unwrap();
+    }
+
+    let access_policy_json = "{}".to_string();
+    let access_policy_digest = hex::encode(Sha256::digest(access_policy_json.as_bytes()));
+    let canonical_url = format!("http://127.0.0.1:8420{base_path}");
+    let endpoint = db.delivery_endpoint(endpoint_id).await.unwrap().unwrap();
+    let endpoint_digest = hex::decode(&endpoint.endpoint_identity_digest).unwrap();
+    let reservation_digest = aos_hub::db::Database::route_reservation_digest(
+        &[9_u8; 32],
+        &endpoint_digest,
+        base_path,
+        &canonical_url,
+    )
+    .unwrap();
+    let (serves_git, serves_cache, serves_web) = match surface {
+        aos_hub::db::SurfaceTarget::Registry(_) => (true, false, true),
+        aos_hub::db::SurfaceTarget::BinaryCache(_) => (false, true, true),
+    };
+    let route = db
+        .create_delivery_route(
+            route_id,
+            surface,
+            &DeliveryRouteSpec {
+                consumer_scope_key: owner_scope.to_string(),
+                endpoint_id: endpoint_id.to_string(),
+                endpoint_generation: 1,
+                endpoint_ingress_kind: "hub".to_string(),
+                base_path: base_path.to_string(),
+                mode: "hub_proxy".to_string(),
+                access_policy_kind: if visibility == "public" {
+                    "public".to_string()
+                } else {
+                    "hub_auth".to_string()
+                },
+                access_policy_json,
+                access_policy_digest: access_policy_digest.clone(),
+                access_boundary_id: None,
+                access_boundary_revision: None,
+                external_provider_kind: None,
+                external_provider_resource_id: None,
+                external_provider_revision: None,
+                storage_gateway_id: None,
+                gateway_generation: None,
+                target_storage_binding_id: None,
+                gateway_client_base_path: None,
+                target_placement_prefix: None,
+                placement_id: Some(placement_id),
+                placement_policy_revision_id: None,
+                serves_git,
+                serves_cache,
+                serves_web,
+                enabled: true,
+            },
+            &canonical_url,
+            1,
+            &reservation_digest,
+            &[(1, reservation_digest.to_vec())],
+            None,
+            "test",
+        )
+        .await
+        .unwrap();
+    db.reconcile_delivery_route(
+        route_id,
+        route.configuration_generation.unwrap(),
+        route.configuration_digest.as_deref().unwrap(),
+        &access_policy_digest,
+        "healthy",
+        "verified",
+        None,
+        None,
+        1,
+    )
+    .await
+    .unwrap();
+    let canonical_audiences: &[&str] = match surface {
+        aos_hub::db::SurfaceTarget::Registry(_) => &["git", "web"],
+        aos_hub::db::SurfaceTarget::BinaryCache(_) => &["nix_cache", "web"],
+    };
+    assert!(canonical_audiences.contains(&audience));
+    for canonical_audience in canonical_audiences {
+        db.set_canonical_route(surface, canonical_audience, route_id, None)
+            .await
+            .unwrap();
+    }
+    let inbound = db
+        .inbound_delivery_routes(
+            &aos_hub::db::InboundEndpointHost::Ipv4(vec![127, 0, 0, 1]),
+            8420,
+            "http",
+            "hub",
+        )
+        .await
+        .unwrap();
+    let configured = inbound
+        .iter()
+        .find(|candidate| candidate.id == route_id)
+        .unwrap();
+    assert!(configured.ready, "fixture delivery route is not ready");
+}
+
+/// Creates and validates the next immutable write-credential generation.
+pub async fn create_valid_write_credential(
+    db: &aos_hub::db::Database,
+    binding_id: i64,
+    secret_ref: &str,
+) -> i64 {
+    let expected = db
+        .current_storage_binding_credential(binding_id, "write")
+        .await
+        .unwrap()
+        .map_or(0, |revision| revision.generation);
+    let revision = db
+        .set_storage_binding_credential_revision(
+            binding_id,
+            "write",
+            secret_ref,
+            expected,
+            &"0".repeat(64),
+            "test",
+        )
+        .await
+        .unwrap();
+    db.validate_storage_binding_credential_revision(
+        binding_id,
+        "write",
+        revision.generation,
+        "valid",
+        None,
+        revision.head_resource_version,
+    )
+    .await
+    .unwrap()
+    .generation
+}
+
+/// Creates and observes one complete, read-enabled placement.
+pub async fn create_ready_placement(
+    db: &aos_hub::db::Database,
+    surface: aos_hub::db::SurfaceTarget,
+    binding_id: i64,
+    name: &str,
+    prefix: &str,
+) -> aos_hub::db::SurfacePlacementRecord {
+    let consumer_scope = match surface {
+        aos_hub::db::SurfaceTarget::Registry(id) => {
+            db.registry_by_id(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .owner_scope_key
+        }
+        aos_hub::db::SurfaceTarget::BinaryCache(id) => {
+            db.binary_cache_by_id(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .owner_scope_key
+        }
+    };
+    let binding = db.storage_binding(binding_id).await.unwrap().unwrap();
+    let resource = aos_hub::db::GrantResource::StorageBinding {
+        id: binding_id,
+        stable_id: &binding.stable_id,
+    };
+    let grants = db.list_consumer_scope_grants(resource).await.unwrap();
+    if !grants
+        .iter()
+        .any(|grant| grant.consumer_scope_key == consumer_scope && grant.state == "active")
+    {
+        db.grant_consumer_scope(
+            resource,
+            &consumer_scope,
+            "explicit",
+            "test",
+            &format!("test-placement-grant-{binding_id}-{name}"),
+        )
+        .await
+        .unwrap();
+    }
+    let placement = db
+        .create_surface_placement(&aos_hub::db::NewSurfacePlacementSpec {
+            surface,
+            name: name.to_string(),
+            storage_binding_id: binding_id,
+            prefix: prefix.to_string(),
+            kind: "complete".to_string(),
+            desired_state: "active".to_string(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 0,
+            requires_conditional_writes: false,
+        })
+        .await
+        .unwrap();
+    db.observe_surface_placement(placement.id, "ready", "complete", 1)
+        .await
+        .unwrap()
+}
+
+/// Configures a ready placement as the reconciled writer for its surface.
+pub async fn configure_write_authority(
+    db: &aos_hub::db::Database,
+    surface: aos_hub::db::SurfaceTarget,
+    binding_id: i64,
+    placement: &aos_hub::db::SurfacePlacementRecord,
+    incarnation_id: &str,
+) {
+    let credential_generation =
+        create_valid_write_credential(db, binding_id, "secret://test/write/v1").await;
+    let revision = db
+        .create_storage_binding_write_revision(&aos_hub::db::NewStorageBindingWriteRevision {
+            storage_binding_id: binding_id,
+            write_credential_generation: credential_generation,
+            writes_supported: true,
+            conditional_writes_supported: true,
+            revision_fingerprint: format!("test-write-revision-{binding_id}"),
+            capability_fingerprint: "test-writes-and-conditional-writes".to_string(),
+        })
+        .await
+        .unwrap();
+    db.observe_storage_binding_write_revision(binding_id, revision.revision, "valid", None, None)
+        .await
+        .unwrap();
+    let state = db
+        .storage_binding_write_state(binding_id)
+        .await
+        .unwrap()
+        .unwrap();
+    db.set_current_storage_binding_write_revision(
+        binding_id,
+        revision.revision,
+        state.resource_version,
+    )
+    .await
+    .unwrap();
+    db.bind_surface_placement_write_capability(placement.id, revision.revision)
+        .await
+        .unwrap();
+    db.create_surface_write_authority(
+        surface,
+        incarnation_id,
+        placement.id,
+        placement.resource_version,
+        placement.write_spec_version,
+        revision.revision,
+    )
+    .await
+    .unwrap();
+}
+
+/// Resolve an organization slug to its canonical stable authorization scope.
+///
+/// Human-readable slugs are resource locators, not authorization scopes. Test
+/// setup should therefore resolve the stable scope exactly as production code
+/// does instead of coupling grants and tokens to a mutable slug.
+pub async fn org_scope(db: &aos_hub::db::Database, slug: &str) -> String {
+    db.org_by_slug(slug)
+        .await
+        .unwrap()
+        .unwrap_or_else(|| panic!("test organization {slug:?} must exist"))
+        .stable_id
+}
+
+/// Resolve a project path to its canonical stable authorization scope.
+pub async fn project_scope(db: &aos_hub::db::Database, org_slug: &str, path: &str) -> String {
+    let org = db
+        .org_by_slug(org_slug)
+        .await
+        .unwrap()
+        .unwrap_or_else(|| panic!("test organization {org_slug:?} must exist"));
+    db.list_projects(org.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|project| project.path == path)
+        .unwrap_or_else(|| panic!("test project {org_slug:?}/{path} must exist"))
+        .scope_key
+}
+
+/// Resolve a registry slug to the exact stable scope which authorizes it.
+pub async fn registry_scope(db: &aos_hub::db::Database, slug: &str) -> String {
+    let registry = db
+        .registry_by_slug(slug)
+        .await
+        .unwrap()
+        .unwrap_or_else(|| panic!("test registry {slug:?} must exist"));
+    db.registry_authorization_scope(registry.id).await.unwrap()
+}
 
 /// A registry fixture being assembled on disk.
 pub struct Fixture {
@@ -25,6 +440,28 @@ pub struct Fixture {
     pub key: SigningKey,
     /// The trust anchor line for the key.
     pub trust_key: String,
+}
+
+/// Complete signed system-image fixture with two direct encodings.
+pub struct SystemImageFixture {
+    /// Signed registry fixture and trust anchor.
+    pub registry: Fixture,
+    /// Canonical raw disk bytes.
+    pub raw: Vec<u8>,
+    /// QCOW2 encoding bytes.
+    pub qcow2: Vec<u8>,
+    /// Raw image object key.
+    pub raw_key: String,
+    /// QCOW2 image object key.
+    pub qcow2_key: String,
+    /// Raw per-format metadata object key.
+    pub raw_info_key: String,
+    /// QCOW2 per-format metadata object key.
+    pub qcow2_info_key: String,
+    /// Commit authenticated by the signed release tag.
+    pub release_commit: Oid,
+    /// Signed release tag object advertised in `info/refs`.
+    pub release_tag: Oid,
 }
 
 impl Fixture {
@@ -360,4 +797,232 @@ pub fn standard_registry_with_commit_message(
     );
     fixture.put_nix_cache();
     fixture
+}
+
+/// Builds a signed sysroot catalog with exact raw and QCOW2 delivery objects.
+#[allow(dead_code)]
+pub fn system_image_registry(root: &Path) -> SystemImageFixture {
+    use aos_registry_surface::manifest::{
+        immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
+        ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget, ImageUkiIdentity,
+        ImageVerificationState,
+    };
+    use sha2::Digest as _;
+
+    let fixture = Fixture::new(root);
+    let release = "1.0.0";
+    let platform = "x86_64-linux";
+    let raw = b"AOS fake raw disk image bytes\n".to_vec();
+    let qcow2 = b"QFI\xfbAOS fake qcow2 disk image bytes\n".to_vec();
+    let raw_info = br#"{"schemaVersion":1,"format":"raw","target":"bare-metal"}"#.to_vec();
+    let qcow2_info =
+        br#"{"schemaVersion":1,"format":"qcow2","targets":["qemu-kvm","openstack"]}"#.to_vec();
+    let raw_sha = hex::encode(sha2::Sha256::digest(&raw));
+    let qcow2_sha = hex::encode(sha2::Sha256::digest(&qcow2));
+    let raw_info_sha = hex::encode(sha2::Sha256::digest(&raw_info));
+    let qcow2_info_sha = hex::encode(sha2::Sha256::digest(&qcow2_info));
+    let raw_key = immutable_image_object_key(&raw_sha, "aos-1.0.0-x86_64.img");
+    let qcow2_key = immutable_image_object_key(&qcow2_sha, "aos-1.0.0-x86_64.qcow2");
+    let raw_info_key = immutable_image_info_object_key(&raw_sha, &raw_info_sha);
+    let qcow2_info_key = immutable_image_info_object_key(&qcow2_sha, &qcow2_info_sha);
+    let uki = ImageUkiIdentity {
+        filename: "aos.efi".to_string(),
+        esp_path: "EFI/Linux/aos.efi".to_string(),
+        byte_size: 8,
+        sha256: "e".repeat(64),
+        verification: ImageVerificationState::Unsigned,
+        signer_cert_sha256: None,
+        sbat: Vec::new(),
+        measured: false,
+        expected_pcr11: None,
+    };
+    let make_image = |format: &str,
+                      filename: &str,
+                      bytes: &[u8],
+                      sha256: &str,
+                      object_key: &str,
+                      info: &[u8],
+                      info_sha256: &str,
+                      info_key: &str,
+                      media_type: &str,
+                      targets: Vec<ImageTarget>| {
+        ImageEntry {
+            format: format.to_string(),
+            store_path: format!("/var/lib/store/{}-image-{format}", &sha256[..32]),
+            nar_hash: format!("sha256:{sha256}"),
+            nar_size: bytes.len() as u64,
+            delivery: ImageDelivery {
+                schema_version: 1,
+                release: release.to_string(),
+                platform: platform.to_string(),
+                architecture: "x86_64".to_string(),
+                logical_image_id: "d".repeat(64),
+                logical_disk_sha256: raw_sha.clone(),
+                rootfs_sha256: "f".repeat(64),
+                filename: filename.to_string(),
+                object_key: object_key.to_string(),
+                media_type: media_type.to_string(),
+                compression: ImageCompression::None,
+                byte_size: bytes.len() as u64,
+                sha256: sha256.to_string(),
+                compatible_targets: targets,
+                uki: uki.clone(),
+                image_info: ImageInfoReference {
+                    filename: "image-info.json".to_string(),
+                    object_key: info_key.to_string(),
+                    media_type: "application/vnd.aos.image-info+json".to_string(),
+                    byte_size: info.len() as u64,
+                    sha256: info_sha256.to_string(),
+                },
+            },
+            sb_signer_cert_sha256: None,
+            sbat: Vec::new(),
+            expected_pcr11: None,
+            root_image: None,
+            root_verity: None,
+            root_hash: None,
+            root_hash_sig: None,
+        }
+    };
+    let images = vec![
+        make_image(
+            "raw",
+            "aos-1.0.0-x86_64.img",
+            &raw,
+            &raw_sha,
+            &raw_key,
+            &raw_info,
+            &raw_info_sha,
+            &raw_info_key,
+            "application/vnd.aos.disk-image.raw",
+            vec![ImageTarget::BareMetal],
+        ),
+        make_image(
+            "qcow2",
+            "aos-1.0.0-x86_64.qcow2",
+            &qcow2,
+            &qcow2_sha,
+            &qcow2_key,
+            &qcow2_info,
+            &qcow2_info_sha,
+            &qcow2_info_key,
+            "application/vnd.aos.disk-image.qcow2",
+            vec![ImageTarget::QemuKvm, ImageTarget::Openstack],
+        ),
+    ];
+    for image in &images {
+        image.validate_delivery(release, platform).unwrap();
+    }
+
+    let registry_toml =
+        fixture.put_blob("[registry]\nname = \"demo\"\ndescription = \"Signed system images\"\n");
+    let keys_toml = fixture.put_blob(&format!(
+        "schema = 1\n\n[[keys]]\nid = \"maintainer\"\nkey = \"{}\"\n",
+        fixture.trust_key,
+    ));
+    let mut package: toml::Value = toml::from_str(
+        "[package]\nname = \"aos-system\"\ndescription = \"AOS system image\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\nsysroot = true\n\n[[versions]]\nversion = \"1.0.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/var/lib/store/aos-system-1.0.0\"\nnar_hash = \"sha256:aa\"\nnar_size = 10\nclosure_size = 20\nsource_drv = \"/var/lib/store/aos-system-1.0.0.drv\"\nsource_nar_hash = \"sha256:bb\"\nreferences = []\n",
+    )
+    .unwrap();
+    package["versions"][0]["platforms"][platform]
+        .as_table_mut()
+        .unwrap()
+        .insert(
+            "images".to_string(),
+            toml::Value::try_from(&images).unwrap(),
+        );
+    let package_toml = fixture.put_blob(&toml::to_string(&package).unwrap());
+    let closure_blob = fixture.put_blob("aossystemhash\n");
+    let bucket = fixture.put_tree(&[("100644", "aos-system.toml", package_toml)]);
+    let packages = fixture.put_tree(&[("40000", "a", bucket)]);
+    let closures = fixture.put_tree(&[("100644", "aossystemhash", closure_blob)]);
+    let root_tree = fixture.put_tree(&[
+        ("100644", "keys.toml", keys_toml),
+        ("100644", "registry.toml", registry_toml),
+        ("40000", "closures", closures),
+        ("40000", "packages", packages),
+    ]);
+    let commit = fixture.put_signed_commit(root_tree, "release system images");
+    let release_tag = fixture.put_release_tag(release, commit);
+    fixture.put_channel("stable", release_tag);
+    fixture.put_refs(
+        "stable",
+        &[("stable", commit)],
+        &[(release, release_tag, commit)],
+    );
+
+    for (key, bytes) in [
+        (&raw_key, raw.as_slice()),
+        (&qcow2_key, qcow2.as_slice()),
+        (&raw_info_key, raw_info.as_slice()),
+        (&qcow2_info_key, qcow2_info.as_slice()),
+    ] {
+        let path = root.join(key);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+    let receipt_objects = images
+        .iter()
+        .flat_map(|image| {
+            [
+                serde_json::json!({
+                    "key": image.delivery.object_key.as_str(),
+                    "role": "disk",
+                    "byteSize": image.delivery.byte_size,
+                    "sha256": image.delivery.sha256.as_str(),
+                }),
+                serde_json::json!({
+                    "key": image.delivery.image_info.object_key.as_str(),
+                    "role": "image-info",
+                    "byteSize": image.delivery.image_info.byte_size,
+                    "sha256": image.delivery.image_info.sha256.as_str(),
+                }),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let catalog_digest = aos_registry_surface::manifest::image_catalog_digest(
+        "demo",
+        images.iter().flat_map(|image| {
+            [
+                (
+                    image.delivery.object_key.as_str(),
+                    "disk",
+                    image.delivery.byte_size,
+                    image.delivery.sha256.as_str(),
+                ),
+                (
+                    image.delivery.image_info.object_key.as_str(),
+                    "image-info",
+                    image.delivery.image_info.byte_size,
+                    image.delivery.image_info.sha256.as_str(),
+                ),
+            ]
+        }),
+    );
+    let receipt_path = root.join(format!("publication-receipts/{}.json", commit.to_hex()));
+    fs::create_dir_all(receipt_path.parent().unwrap()).unwrap();
+    fs::write(
+        receipt_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "commit": commit.to_hex(),
+            "registry": "demo",
+            "catalogDigest": catalog_digest,
+            "objects": receipt_objects,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    SystemImageFixture {
+        registry: fixture,
+        raw,
+        qcow2,
+        raw_key,
+        qcow2_key,
+        raw_info_key,
+        qcow2_info_key,
+        release_commit: commit,
+        release_tag,
+    }
 }

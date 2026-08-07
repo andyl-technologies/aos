@@ -362,6 +362,12 @@
       ];
     }
     {
+      package = "crucible-debug-gateway";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
       package = "crucible-guest";
       root = "src/lib.rs";
       unsafeBoundary = true;

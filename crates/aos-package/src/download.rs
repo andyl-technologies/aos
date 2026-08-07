@@ -9,7 +9,7 @@
 //! The pipeline runs in three stages:
 //!
 //! 1. **Mirror resolution** ([`resolve_mirror`]): pick the cache base URL
-//!    for a registry from its `[[caches]]` entries, falling back to the
+//!    for a registry from its committed `[caches]` stack, falling back to the
 //!    registry URL.
 //! 2. **Narinfo fetch** ([`fetch_narinfos`], [`fetch_narinfo_closure`]):
 //!    fetch narinfos in parallel; the closure variant transitively follows
@@ -58,7 +58,7 @@ pub struct DownloadRequest {
     /// suffix. This is the highest-priority cache; on a narinfo/NAR
     /// not-found (404) it falls through to [`Self::fallback_mirrors`]
     /// (RFC-0004 "Cache stores, stacks, and consistency validation":
-    /// miss-fallthrough, the flattened-`[[caches]]` `try` stack).
+    /// miss-fallthrough, the flattened `[caches]` `try` stack).
     pub mirror_url: String,
     /// Lower-priority cache base URLs, in descending priority, consulted in
     /// order when the primary (and earlier fallbacks) return not-found.
@@ -152,7 +152,7 @@ pub fn narinfo_url(mirror_url: &str, store_path: &str) -> String {
 /// Determine the cache base URL for a registry.
 ///
 /// First checks the local registry clone under `registries_base` for a
-/// `registry.toml` with `[[caches]]` entries (sorted by priority). Falls back
+/// `registry.toml` with a `[caches]` stack (flattened in preference order). Falls back
 /// to the registry URL itself. The returned value is a base — apm appends
 /// `<storeHash>.narinfo` and the narinfo-supplied `URL:` field to it.
 ///

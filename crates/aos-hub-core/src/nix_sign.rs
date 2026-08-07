@@ -1,6 +1,5 @@
 //! Nix binary-cache narinfo signing: the `Sig:` line and `trusted-public-keys`
-//! entry a hub-hosted cache emits for a key-bearing cache (RFC-0004
-//! "11-caches": Ed25519-signed narinfo via the hosted-keys sealer).
+//! entry a cache emits for a retained signing-key generation.
 //!
 //! This is the **Nix** signature scheme — distinct from the SSHSIG armor
 //! [`crate::signing`] uses for git tags/partitions. Nix signs a deterministic
@@ -24,7 +23,7 @@
 
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
-use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer as _, SigningKey, Verifier as _, VerifyingKey};
 
 /// The `name:base64(pubkey)` line a client pins in `trusted-public-keys`.
 ///
@@ -39,9 +38,26 @@ pub fn nix_public_key_line(key_name: &str, key: &VerifyingKey) -> String {
     )
 }
 
-/// Derive the Nix cache public-key line from a hosted key's stored SSH line.
+/// Converts a canonical retained raw public key into Nix's padded key line.
 ///
-/// A hosted key persists its public half as the SSHSIG trusted-key line
+/// # Errors
+///
+/// Returns an error when the public key is not canonical unpadded base64 or
+/// does not contain one valid 32-byte Ed25519 verification key.
+pub fn nix_public_key_from_raw(key_name: &str, public_key: &str) -> Result<String> {
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(public_key)
+        .context("signing-key public key is not canonical base64")?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("signing-key public key is not 32 bytes"))?;
+    let key = VerifyingKey::from_bytes(&bytes).context("signing-key public key is invalid")?;
+    Ok(nix_public_key_line(key_name, &key))
+}
+
+/// Derives the Nix cache public-key line from an SSH trusted-key line.
+///
+/// A signing-key generation may publish its public half as an SSHSIG trusted-key line
 /// `name:Ed25519:<base64 ssh-wire-blob>` (used for git tag/partition
 /// verification). A Nix substituter instead pins `name:<base64 raw-32-byte-key>`.
 /// This converts the former to the latter by parsing the SSH `ssh-ed25519` wire
@@ -162,6 +178,46 @@ fn parse_fields(narinfo: &str) -> Result<NarinfoFields> {
     })
 }
 
+/// Verifies that a narinfo carries a valid signature from one exact public key.
+///
+/// Other producers' `Sig:` lines are ignored. The selected key's line must be
+/// present and must verify over Nix's canonical narinfo fingerprint.
+///
+/// # Errors
+///
+/// Returns an error for malformed narinfo fields, malformed public key or
+/// signature bytes, a missing selected-key signature, or failed verification.
+pub fn verify_narinfo(narinfo: &str, key_name: &str, public_key: &str) -> Result<()> {
+    let public_key = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(public_key)
+        .context("signing-key public key is not canonical base64")?;
+    let public_key: [u8; 32] = public_key
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("signing-key public key is not 32 bytes"))?;
+    let verifying_key =
+        VerifyingKey::from_bytes(&public_key).context("signing-key public key is invalid")?;
+    let fields = parse_fields(narinfo)?;
+    let fingerprint = fingerprint(
+        &fields.store_path,
+        &fields.nar_hash,
+        fields.nar_size,
+        &fields.references,
+    );
+    let prefix = format!("Sig: {key_name}:");
+    let encoded = narinfo
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .context("narinfo is missing the selected signing-key signature")?;
+    let signature = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .context("narinfo signature is not base64")?;
+    let signature = ed25519_dalek::Signature::from_slice(&signature)
+        .context("narinfo signature is not Ed25519")?;
+    verifying_key
+        .verify(fingerprint.as_bytes(), &signature)
+        .context("narinfo signature verification failed")
+}
+
 /// Compute the `Sig: <name>:<base64>` line for a narinfo with `signing_key`.
 ///
 /// # Errors
@@ -214,7 +270,6 @@ pub fn sign_narinfo(narinfo: &str, key_name: &str, signing_key: &SigningKey) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::Verifier as _;
 
     const NARINFO: &str = "StorePath: /nix/store/aaaa-foo-1.0\n\
         URL: nar/bbbb.nar.zst\n\
@@ -292,6 +347,16 @@ mod tests {
     }
 
     #[test]
+    fn selected_public_generation_verifies_narinfo() {
+        let key = test_key();
+        let signed = sign_narinfo(NARINFO, "acme-cache", &key).unwrap();
+        let public_key =
+            base64::engine::general_purpose::STANDARD_NO_PAD.encode(key.verifying_key().to_bytes());
+        verify_narinfo(&signed, "acme-cache", &public_key).unwrap();
+        assert!(verify_narinfo(NARINFO, "acme-cache", &public_key).is_err());
+    }
+
+    #[test]
     fn sign_narinfo_appends_and_is_idempotent_per_key() {
         let key = test_key();
         let signed = sign_narinfo(NARINFO, "acme-cache", &key).unwrap();
@@ -317,7 +382,7 @@ mod tests {
     #[test]
     fn ssh_line_converts_to_the_same_nix_public_key() {
         let key = test_key();
-        // The SSHSIG trusted-key line a hosted key stores...
+        // The SSHSIG trusted-key line for the generation...
         let ssh_line =
             aos_registry_surface::sshsig::trusted_key_line("acme-cache", &key.verifying_key());
         // ...converts to the Nix cache public-key line for the same raw key.
@@ -345,5 +410,11 @@ mod tests {
             .decode(b64)
             .unwrap();
         assert_eq!(decoded.len(), 32, "raw Ed25519 public key is 32 bytes");
+        let retained =
+            base64::engine::general_purpose::STANDARD_NO_PAD.encode(key.verifying_key().to_bytes());
+        assert_eq!(
+            nix_public_key_from_raw("acme-cache", &retained).unwrap(),
+            line
+        );
     }
 }

@@ -38,8 +38,6 @@ pub const DIRECTORY_KEY: &str = "dir:registries";
 pub struct DirectoryEntry {
     /// The registry's canonical slug (the home's link target).
     pub slug: String,
-    /// The registry's source URL (the home's "source" column).
-    pub source_url: String,
     /// The index state token (`fresh`/`empty`/`failed`/…, or `unregistered`
     /// when there is no index-status record).
     pub state: String,
@@ -54,7 +52,7 @@ impl DirectoryEntry {
     /// renderer ([`instance_home`](crate::web::browse_pages::instance_home))
     /// consumes, from the projection.
     ///
-    /// Only the fields the renderer reads (`slug`, `source_url`, and the index
+    /// Only the fields the renderer reads (`slug` and the index
     /// `state`/`name`/`description`) are populated; the rest carry inert
     /// defaults, since the home table never reads them. `state == "unregistered"`
     /// maps to no index-status record (the renderer's `None` arm).
@@ -62,18 +60,19 @@ impl DirectoryEntry {
     pub fn to_row(&self) -> (RegistryRecord, Option<IndexStatus>) {
         let record = RegistryRecord {
             id: 0,
+            stable_id: "registry:00000000000000000000000000000000".to_string(),
+            scope_key: "registry:00000000000000000000000000000000".to_string(),
+            owner_scope_key: "instance".to_string(),
             slug: self.slug.clone(),
-            source_url: self.source_url.clone(),
             trust_keys: Vec::new(),
             require_signatures: false,
             org_id: None,
             project_path: String::new(),
             visibility: "public".to_string(),
-            storage_binding_id: None,
-            prefix: String::new(),
-            hosted_key_id: None,
             crawl_policy: String::new(),
             llms_txt_body: None,
+            resource_version: 1,
+            updated_at: 0,
         };
         let status = if self.state == "unregistered" {
             None
@@ -86,6 +85,8 @@ impl DirectoryEntry {
                 description: self.description.clone(),
                 readme: None,
                 indexed_at: None,
+                generation: 0,
+                content_digest: None,
             })
         };
         (record, status)
@@ -112,7 +113,6 @@ pub async fn rebuild(db: &Database, kv: &dyn KvStore) -> Result<Vec<DirectoryEnt
         let status = db.index_status(registry.id).await.ok().flatten();
         entries.push(DirectoryEntry {
             slug: registry.slug,
-            source_url: registry.source_url,
             state: status
                 .as_ref()
                 .map(|s| s.state.clone())
@@ -145,7 +145,7 @@ pub async fn read(kv: &dyn KvStore) -> Result<Option<Vec<DirectoryEntry>>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read, rebuild, DirectoryEntry};
+    use super::{read, rebuild};
     use crate::db::Database;
     use crate::kv::InMemoryKv;
 
@@ -156,21 +156,19 @@ mod tests {
         // Cold projection reads as None.
         assert_eq!(read(&kv).await.unwrap(), None);
         // Create a public registry, rebuild, and read it back.
-        db.register_registry("andyl/main", "https://example/", &[], false)
+        db.register_registry("andyl/main", &[], false)
             .await
             .unwrap();
         let built = rebuild(&db, &kv).await.unwrap();
         assert_eq!(built.len(), 1);
         assert_eq!(built[0].slug, "andyl/main");
-        assert_eq!(built[0].source_url, "https://example/");
         // A freshly-registered registry has an "empty" index-status record.
         assert_eq!(built[0].state, "empty");
         let read_back = read(&kv).await.unwrap().unwrap();
         assert_eq!(read_back, built);
-        // The reconstructed row carries the slug + source the home renders.
+        // The reconstructed row carries the slug the home renders.
         let (record, status) = built[0].to_row();
         assert_eq!(record.slug, "andyl/main");
-        assert_eq!(record.source_url, "https://example/");
         assert_eq!(status.unwrap().state, "empty");
     }
 }

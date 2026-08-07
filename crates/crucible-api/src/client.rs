@@ -12,15 +12,15 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crucible::{
-    Action, Checkpoint, Configuration, ContentHash, ControlOperationKind, EventLevel,
-    ExecutionFingerprint, FingerprintSample, NodeId, Predicate, Schedule, Seed, SimDuration,
-    VirtualTime,
+    Action, Checkpoint, Configuration, ContentHash, ControlOperationKind, DebugGdbEndpoint,
+    EventLevel, ExecutionFingerprint, FingerprintSample, NodeId, Predicate, Schedule, Seed,
+    SimDuration, VirtualTime,
 };
 use crucible_session::{
-    BreakpointDisposition, BreakpointFiring, BreakpointId, BreakpointPolicy, EngineSnapshot,
-    EngineState, LifecycleStateKind, LiveSnapshot, LiveStateKind, Outcome, OutcomeKind,
-    PauseReason, QueryKind, QueryResult, SavepointInfo, SessionCommand, SessionCommandKind,
-    StepMode,
+    BreakpointDisposition, BreakpointFiring, BreakpointId, BreakpointPolicy, DebugClientId,
+    DebugControllerLease, EngineSnapshot, EngineState, LifecycleStateKind, LiveSnapshot,
+    LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind, QueryResult, SavepointInfo,
+    SessionCommand, SessionCommandKind, StepMode,
 };
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
@@ -914,6 +914,28 @@ pub struct RpcEndpoint {
     protocol: RpcTransportProtocol,
 }
 
+/// PEM material used by an authenticated remote RPC client.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RpcMutualTlsConfig {
+    server_ca_pem: Vec<u8>,
+    client_identity_pem: Vec<u8>,
+}
+
+impl RpcMutualTlsConfig {
+    /// Builds client mutual-TLS material from a server CA and a combined client
+    /// certificate/private-key PEM document.
+    #[must_use]
+    pub fn from_pem(
+        server_ca_pem: impl Into<Vec<u8>>,
+        client_identity_pem: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            server_ca_pem: server_ca_pem.into(),
+            client_identity_pem: client_identity_pem.into(),
+        }
+    }
+}
+
 impl RpcEndpoint {
     /// Builds an HTTP/2 RPC endpoint.
     #[must_use]
@@ -963,6 +985,47 @@ impl RpcControlClient {
     pub fn new(endpoint: RpcEndpoint) -> Result<Self, ControlClientError> {
         let http = reqwest::Client::builder()
             .http2_prior_knowledge()
+            .build()
+            .map_err(|error| ControlClientError::HttpClientBuild {
+                message: error.to_string(),
+            })?;
+        Ok(Self {
+            endpoint,
+            http,
+            wire_model: ControlWireModel::current(),
+        })
+    }
+
+    /// Builds an authenticated HTTPS/2 RPC client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError::HttpClientBuild`] when `endpoint` is not
+    /// HTTPS, either PEM document is invalid, or the HTTP client cannot be
+    /// initialized.
+    pub fn new_mtls(
+        endpoint: RpcEndpoint,
+        tls: RpcMutualTlsConfig,
+    ) -> Result<Self, ControlClientError> {
+        if !endpoint.uri().starts_with("https://") {
+            return Err(ControlClientError::HttpClientBuild {
+                message: String::from("mutual-TLS control endpoints must use https://"),
+            });
+        }
+        let server_ca = reqwest::Certificate::from_pem(&tls.server_ca_pem).map_err(|error| {
+            ControlClientError::HttpClientBuild {
+                message: format!("invalid daemon CA certificate: {error}"),
+            }
+        })?;
+        let identity = reqwest::Identity::from_pem(&tls.client_identity_pem).map_err(|error| {
+            ControlClientError::HttpClientBuild {
+                message: format!("invalid daemon client identity: {error}"),
+            }
+        })?;
+        let http = reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .add_root_certificate(server_ca)
+            .identity(identity)
             .build()
             .map_err(|error| ControlClientError::HttpClientBuild {
                 message: error.to_string(),
@@ -1538,6 +1601,7 @@ fn query_kind_request_wire(kind: &QueryKind) -> String {
         QueryKind::ExecutionFingerprint { node } => {
             format!("execution-fingerprint|{}", hex_encode(node.name.as_bytes()))
         }
+        QueryKind::DebugOperatorEndpoint => String::from("debug-operator-endpoint"),
     }
 }
 
@@ -1584,6 +1648,34 @@ fn decode_list_scenarios_response(
         });
     }
     Ok(ListScenariosResponse { scenarios })
+}
+
+fn decode_debug_controller_acquire_response(
+    body: &[u8],
+) -> Result<DebugControllerLease, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(
+        lines.next(),
+        "crucible.rpc/debug-controller-acquire-response",
+    )?;
+    let client = DebugClientId::new(parse_hex_string_line(lines.next(), "client=")?)
+        .map_err(|error| rpc_decode(format!("invalid debug controller identity: {error}")))?;
+    let generation = parse_u64_line(lines.next(), "generation=")?;
+    reject_trailing(lines.next())?;
+    Ok(DebugControllerLease { client, generation })
+}
+
+fn decode_debug_relay_read_response(
+    body: &[u8],
+) -> Result<crate::DebugRelayChunk, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/debug-relay-read-response")?;
+    let eof = parse_bool_line(lines.next(), "eof=")?;
+    let bytes = parse_hex_bytes(parse_prefixed_line(lines.next(), "data=")?)?;
+    reject_trailing(lines.next())?;
+    Ok(crate::DebugRelayChunk { bytes, eof })
 }
 
 fn decode_create_session_response(
@@ -2869,6 +2961,7 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, ControlClientError> {
     }
     Ok(bytes)
 }
+mod debug;
 mod query_result;
 
 use query_result::*;

@@ -116,7 +116,7 @@
     var lead = v.slice(0, v.length - v.replace(/^\s+/, "").length);
     var trail = v.slice(v.replace(/\s+$/, "").length);
     var cls = null;
-    if (/^".*"$|^'.*'$/.test(core)) cls = "t-s";
+    if (/^\x22.*\x22$|^\x27.*\x27$/.test(core)) cls = "t-s";
     else if (/^(true|false)$/.test(core)) cls = "t-b";
     else if (/^[-+]?[0-9][0-9_.:eE+-]*$/.test(core)) cls = "t-n";
     else if (core.charAt(0) === "[" || core.charAt(0) === "{") cls = "t-a";
@@ -174,7 +174,7 @@
   // values from the `#filter-meta` JSON island). The plain <input> remains a
   // working server `?filter=` submit when this does not run.
   var FILTER_OPS_2 = ["&&", "||", "==", "!=", ">=", "<="];
-  var FILTER_BOUNDARY = /[\s()"'&|!=<>~]/;
+  var FILTER_BOUNDARY = /[\s()\x22\x27&|!=<>~]/;
 
   function initFilterBox(widget) {
     var input = widget.querySelector("input.filter-box");

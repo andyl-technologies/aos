@@ -1,0 +1,5 @@
+{
+  "schema_version": "aos.hub.topology-cutover-evidence/v1",
+  "fixture_only": true,
+  "statement": "Deterministic non-production evidence node for executable contract fixtures."
+}

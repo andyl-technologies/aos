@@ -30,7 +30,7 @@ disabled — the Debian ethos):
   validation gate before the flip.
 - Channel rollout console: advance N partitions with preview, hold,
   floor guard warnings.
-- Key roster management: rotation wizard, hosted-key enrollment.
+- Key roster management: signing-key enrollment, rotation, usage, and retirement.
 - Token management mirroring `aos token` semantics.
 - Configuration: draft → diff review → apply, revision history, revert.
 - Git view: branches, commit log, TOML diffs; change requests
@@ -162,7 +162,7 @@ top-level list (`login`, `activate`, `account`, `new`, `oauth2`,
 /new                                create organization
 /{org}/                             org home — projects, registries, members
 /{org}/-/audit                      org audit feed
-/{org}/-/settings                   IAM · SSO · domains · storage bindings · hosted keys · quotas
+/{org}/-/settings                   IAM · SSO · domains · storage bindings · signing keys · quotas
 /{org}/{proj…}/                     project home (nested)
 /{org}/{proj…}/{registry}/          registry home  ⇄  machine surface root
 /{org}/{proj…}/{registry}/-/
@@ -190,8 +190,8 @@ top-level list (`login`, `activate`, `account`, `new`, `oauth2`,
    to leave the terminal; it *narrates* what the CLI is doing.
 3. **Roll out**: channel page grid → "advance to 50%" → BYO-key orgs
    get a prepared operation with a copy-paste
-   `apr channel advance --from-hub <id>`; hosted-key orgs get the
-   button → the grid updates, floor and staleness in view.
+   `apr channel advance --from-hub <id>`; provider-custodied generations get a
+   reviewed apply action → the grid updates, floor and staleness in view.
 4. **Onboard an org**: create org → create registry (binding picker:
    hub bucket / BYO) → the success page *is* the
    `apr create --remote …` snippet → first publish appears live.
@@ -285,4 +285,3 @@ language it proposes):
 Per-registry theming (`config.json`: logo, accent) selects *within*
 this language, never around it — a tenant can brand a registry, not
 break the system.
-

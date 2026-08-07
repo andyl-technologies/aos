@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
+
 use crate::{
     Checkpoint, CheckpointKind, ContentHash, Decision, Icount, NodeId, ObservableEvent,
     PreemptionDecision, VirtualTime,
@@ -241,6 +243,40 @@ pub trait SimulationBackend {
         let _ = listen;
         Err(BackendError::Unsupported {
             capability: "open_gdbstub",
+        })
+    }
+
+    /// Sends one out-of-band request to a node's debug guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] when guest introspection is unsupported, the
+    /// node is unknown, or the bounded request transport rejects the record.
+    fn send_guest_introspection(
+        &mut self,
+        node: &NodeId,
+        record: GuestIntrospectionRecord,
+    ) -> Result<(), BackendError> {
+        let _ = node;
+        let _ = record;
+        Err(BackendError::Unsupported {
+            capability: "send_guest_introspection",
+        })
+    }
+
+    /// Receives one currently available response from a node's debug guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] when guest introspection is unsupported, the
+    /// node is unknown, or the bounded response transport is malformed.
+    fn receive_guest_introspection(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<GuestIntrospectionRecord>, BackendError> {
+        let _ = node;
+        Err(BackendError::Unsupported {
+            capability: "receive_guest_introspection",
         })
     }
 

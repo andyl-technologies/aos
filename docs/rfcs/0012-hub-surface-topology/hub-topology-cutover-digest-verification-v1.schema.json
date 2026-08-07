@@ -1,0 +1,231 @@
+{
+  "$schema": "https://aos.andyl.org/schemas/aos-cutover-schema-v1.metaschema.json",
+  "$id": "https://aos.andyl.org/schemas/hub-topology-cutover-digest-verification-v1.schema.json",
+  "dialect": "aos-cutover-schema/v1",
+  "type": "object",
+  "required": ["schema_version", "document_kind", "dialect", "bundle_id", "result", "authored_at", "authenticated_documents", "verifier_identity", "schema_validation", "recomputed_topology", "reference_validation", "database_restore_validation", "durable_object_aggregates", "blocker_validation", "transition_validation", "gc_validation", "fixture_validation"],
+  "properties": {
+    "schema_version": { "const": "aos.hub.topology-cutover-verification/v1" },
+    "document_kind": { "const": "cutover_verification" },
+    "dialect": { "const": "aos-cutover-schema/v1" },
+    "bundle_id": { "$ref": "#/$defs/stableId" },
+    "result": { "const": "verified" },
+    "authored_at": { "type": "string", "format": "utc-date-time" },
+    "authenticated_documents": {
+      "type": "object",
+      "required": ["plan", "report"],
+      "properties": {
+        "plan": { "$ref": "#/$defs/authenticatedDocument" },
+        "report": { "$ref": "#/$defs/authenticatedDocument" }
+      },
+      "additionalProperties": false
+    },
+    "verifier_identity": {
+      "type": "object",
+      "required": ["bundle_node_id", "bundle_entry_sha256", "current_exe_sha256", "byte_identity_matches", "trust_basis"],
+      "properties": {
+        "bundle_node_id": { "$ref": "#/$defs/stableId" },
+        "bundle_entry_sha256": { "$ref": "#/$defs/sha256" },
+        "current_exe_sha256": { "$ref": "#/$defs/sha256" },
+        "byte_identity_matches": { "const": true },
+        "trust_basis": { "const": "out_of_band_running_executable" }
+      },
+      "additionalProperties": false
+    },
+    "schema_validation": {
+      "type": "object",
+      "required": ["dialect", "metaschema_node_id", "validated_schema_node_ids", "validated_document_node_ids", "unsupported_keyword_count", "result"],
+      "properties": {
+        "dialect": { "const": "aos-cutover-schema/v1" },
+        "metaschema_node_id": { "$ref": "#/$defs/stableId" },
+        "validated_schema_node_ids": { "type": "array", "minItems": 8, "uniqueItems": true, "items": { "$ref": "#/$defs/stableId" } },
+        "validated_document_node_ids": { "type": "array", "minItems": 3, "uniqueItems": true, "items": { "$ref": "#/$defs/stableId" } },
+        "unsupported_keyword_count": { "const": 0 },
+        "result": { "const": "pass" }
+      },
+      "additionalProperties": false
+    },
+    "recomputed_topology": { "$ref": "#/$defs/recomputedTopology" },
+    "reference_validation": { "$ref": "#/$defs/referenceValidation" },
+    "database_restore_validation": { "$ref": "#/$defs/databaseRestoreValidation" },
+    "durable_object_aggregates": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/durableObjectAggregate" } },
+    "blocker_validation": { "$ref": "#/$defs/setValidation" },
+    "transition_validation": { "$ref": "#/$defs/transitionValidation" },
+    "gc_validation": { "$ref": "#/$defs/gcValidation" },
+    "fixture_validation": { "$ref": "#/$defs/fixtureValidation" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "stableId": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+    "authenticatedDocument": {
+      "type": "object",
+      "required": ["payload_node_id", "canonical_payload_sha256", "signature_node_id", "signature_sha256"],
+      "properties": {
+        "payload_node_id": { "$ref": "#/$defs/stableId" },
+        "canonical_payload_sha256": { "$ref": "#/$defs/sha256" },
+        "signature_node_id": { "$ref": "#/$defs/stableId" },
+        "signature_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "setValidation": {
+      "type": "object",
+      "required": ["expected_count", "actual_count", "expected_set_sha256", "actual_set_sha256", "missing_count", "unexpected_count", "duplicate_count", "result"],
+      "properties": {
+        "expected_count": { "type": "integer", "minimum": 0 },
+        "actual_count": { "type": "integer", "minimum": 0 },
+        "expected_set_sha256": { "$ref": "#/$defs/sha256" },
+        "actual_set_sha256": { "$ref": "#/$defs/sha256" },
+        "missing_count": { "const": 0 },
+        "unexpected_count": { "const": 0 },
+        "duplicate_count": { "const": 0 },
+        "result": { "const": "pass" }
+      },
+      "additionalProperties": false
+    },
+    "sourceCardinality": {
+      "type": "object",
+      "required": ["source_node_id", "expected_mapping_edge_count", "actual_mapping_edge_count", "edge_set_sha256"],
+      "properties": {
+        "source_node_id": { "$ref": "#/$defs/stableId" },
+        "expected_mapping_edge_count": { "type": "integer", "minimum": 1 },
+        "actual_mapping_edge_count": { "type": "integer", "minimum": 1 },
+        "edge_set_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "recomputedTopology": {
+      "type": "object",
+      "required": ["source_nodes", "mapping_edges", "target_nodes", "source_cardinalities", "one_to_many_source_count", "result"],
+      "properties": {
+        "source_nodes": { "$ref": "#/$defs/setValidation" },
+        "mapping_edges": { "$ref": "#/$defs/setValidation" },
+        "target_nodes": { "$ref": "#/$defs/setValidation" },
+        "source_cardinalities": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/sourceCardinality" } },
+        "one_to_many_source_count": { "type": "integer", "minimum": 1 },
+        "result": { "const": "pass" }
+      },
+      "additionalProperties": false
+    },
+    "referenceCategory": {
+      "type": "object",
+      "required": ["category", "checked_count", "invalid_count", "result"],
+      "properties": {
+        "category": { "enum": ["mapping", "route_configuration", "route_placement", "credential_generation", "binding_revision", "write_authority", "inventory_manifest", "domain_route", "retention_source", "storage_default", "publication", "population", "evidence_node"] },
+        "checked_count": { "type": "integer", "minimum": 0 },
+        "invalid_count": { "const": 0 },
+        "result": { "const": "pass" }
+      },
+      "additionalProperties": false
+    },
+    "referenceValidation": {
+      "type": "object",
+      "required": ["categories", "result"],
+      "properties": {
+        "categories": { "type": "array", "minItems": 13, "maxItems": 13, "uniqueItems": true, "items": { "$ref": "#/$defs/referenceCategory" } },
+        "result": { "const": "pass" }
+      },
+      "additionalProperties": false
+    },
+    "databaseRestoreProof": {
+      "type": "object",
+      "required": ["database_stable_id", "database_kind", "backup_artifact_node_id", "expected_source_digest", "expected_source_row_count", "status", "restored_digest", "restored_row_count", "verification_query_set_node_id", "evidence_node_id", "result"],
+      "properties": {
+        "database_stable_id": { "$ref": "#/$defs/stableId" },
+        "database_kind": { "enum": ["sqlite", "d1", "durable_object_sqlite", "postgres", "mysql"] },
+        "backup_artifact_node_id": { "$ref": "#/$defs/stableId" },
+        "expected_source_digest": { "$ref": "#/$defs/sha256" },
+        "expected_source_row_count": { "type": "integer", "minimum": 0 },
+        "status": { "enum": ["pass", "failed", "not_run"] },
+        "restored_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "restored_row_count": { "type": ["integer", "null"], "minimum": 0 },
+        "verification_query_set_node_id": { "$ref": "#/$defs/stableId" },
+        "evidence_node_id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+        "result": { "const": "pass" }
+      },
+      "additionalProperties": false
+    },
+    "databaseRestoreValidation": {
+      "type": "object",
+      "required": ["planned_database_count", "proofs", "missing_count", "unexpected_count", "result"],
+      "properties": {
+        "planned_database_count": { "type": "integer", "minimum": 1 },
+        "proofs": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/databaseRestoreProof" } },
+        "missing_count": { "const": 0 },
+        "unexpected_count": { "const": 0 },
+        "result": { "const": "pass" }
+      },
+      "additionalProperties": false
+    },
+    "durableObjectManifest": {
+      "type": "object",
+      "required": ["object_stable_id", "schema_revision", "row_count", "logical_digest"],
+      "properties": {
+        "object_stable_id": { "$ref": "#/$defs/stableId" },
+        "schema_revision": { "$ref": "#/$defs/stableId" },
+        "row_count": { "type": "integer", "minimum": 0 },
+        "logical_digest": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "durableObjectAggregate": {
+      "type": "object",
+      "required": ["database_stable_id", "object_manifests", "recomputed_object_count", "recomputed_row_count", "object_set_sha256", "aggregate_sha256", "result"],
+      "properties": {
+        "database_stable_id": { "$ref": "#/$defs/stableId" },
+        "object_manifests": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/durableObjectManifest" } },
+        "recomputed_object_count": { "type": "integer", "minimum": 1 },
+        "recomputed_row_count": { "type": "integer", "minimum": 0 },
+        "object_set_sha256": { "$ref": "#/$defs/sha256" },
+        "aggregate_sha256": { "$ref": "#/$defs/sha256" },
+        "result": { "const": "pass" }
+      },
+      "additionalProperties": false
+    },
+    "transitionValidation": {
+      "type": "object",
+      "required": ["attempt_id", "attempt_ordinal", "predecessor_chain_valid", "idempotency_key_matches", "transition_count", "terminal_state", "chronology_valid", "write_open_transition_count", "admitted_target_write_count", "result"],
+      "properties": {
+        "attempt_id": { "$ref": "#/$defs/stableId" },
+        "attempt_ordinal": { "type": "integer", "minimum": 1 },
+        "predecessor_chain_valid": { "const": true },
+        "idempotency_key_matches": { "const": true },
+        "transition_count": { "type": "integer", "minimum": 1 },
+        "terminal_state": { "enum": ["closed", "rolled_back", "failed_closed"] },
+        "chronology_valid": { "const": true },
+        "write_open_transition_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "admitted_target_write_count": { "const": 0 },
+        "result": { "const": "pass" }
+      },
+      "additionalProperties": false
+    },
+    "gcValidation": {
+      "type": "object",
+      "required": ["cutover_checks", "post_cutover_checks", "outstanding_checks", "partition_overlap_count", "undeclared_outstanding_count", "destructive_gc_disabled", "result"],
+      "properties": {
+        "cutover_checks": { "$ref": "#/$defs/setValidation" },
+        "post_cutover_checks": { "$ref": "#/$defs/setValidation" },
+        "outstanding_checks": { "$ref": "#/$defs/setValidation" },
+        "partition_overlap_count": { "const": 0 },
+        "undeclared_outstanding_count": { "const": 0 },
+        "destructive_gc_disabled": { "const": true },
+        "result": { "const": "pass" }
+      },
+      "additionalProperties": false
+    },
+    "fixtureValidation": {
+      "type": "object",
+      "required": ["manifest_node_id", "case_count", "passed_count", "failed_count", "native_zero_do_case_passed", "result"],
+      "properties": {
+        "manifest_node_id": { "$ref": "#/$defs/stableId" },
+        "case_count": { "type": "integer", "minimum": 1 },
+        "passed_count": { "type": "integer", "minimum": 1 },
+        "failed_count": { "const": 0 },
+        "native_zero_do_case_passed": { "const": true },
+        "result": { "const": "pass" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

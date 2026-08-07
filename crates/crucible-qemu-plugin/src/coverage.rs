@@ -502,13 +502,10 @@ impl LiveCoverageShmemProducer {
     fn drain(&mut self) -> Result<Vec<CoverageObservation>, CoverageSinkError> {
         let (header, entries) = self.ring_parts();
         let mut observations = Vec::new();
-        loop {
-            let Some(entry) = header
-                .dequeue_coverage(entries)
-                .map_err(|error| CoverageSinkError::new(error.to_string()))?
-            else {
-                break;
-            };
+        while let Some(entry) = header
+            .dequeue_coverage(entries)
+            .map_err(|error| CoverageSinkError::new(error.to_string()))?
+        {
             let entry = entry
                 .validate()
                 .map_err(|error| CoverageSinkError::new(error.to_string()))?;

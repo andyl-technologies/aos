@@ -36,6 +36,10 @@ pub(super) fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, Str
                 node: NodeId { name: node },
             })
         }
+        "debug-operator-endpoint" => {
+            reject_extra_query_field(fields.next())?;
+            Ok(QueryKind::DebugOperatorEndpoint)
+        }
         kind => Err(format!("unknown query kind `{kind}`")),
     }
 }
@@ -85,6 +89,14 @@ pub(super) fn query_result_wire(result: Option<&QueryResult>) -> String {
             sample.at.ticks,
             sample.fingerprint.hash.to_hex()
         ),
+        Some(QueryResult::DebugOperatorEndpoint(Some((node, endpoint)))) => format!(
+            "debug-operator-endpoint|{}|{}",
+            hex_encode(node.name.as_bytes()),
+            hex_encode(endpoint.as_str().as_bytes())
+        ),
+        Some(QueryResult::DebugOperatorEndpoint(None)) => {
+            String::from("debug-operator-endpoint|none")
+        }
         Some(QueryResult::Snapshot(snapshot)) => {
             let terminal = snapshot
                 .terminal_savepoint

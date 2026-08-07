@@ -19,6 +19,10 @@ where
         validate_resume_checkpoint_closure(&target, &request.checkpoint)?;
 
         let graph = graph_with_baked_genesis(&scenario)?;
+        let debug_genesis = Some(debug_genesis_checkpoint(
+            &Configuration::genesis(scenario.clone()),
+            &request.scenario,
+        )?);
         let loop_instance = (self.loop_factory)(&scenario, Some(&request.scenario), request.seed)?;
         let white_box_policies =
             self.white_box_policies_for_source(Some(&request.scenario), &scenario);
@@ -39,6 +43,9 @@ where
             event_log,
             reproduction_log,
             state_transitions,
+            debug_access: DebugCoordinator::new(),
+            debug_operation_gate: Arc::new(Mutex::new(())),
+            debug_genesis,
             actor_task,
         };
 

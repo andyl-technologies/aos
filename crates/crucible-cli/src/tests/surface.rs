@@ -1131,6 +1131,7 @@ pub(super) fn backend_routed_subcommand_cases() -> Vec<(CliSubcommand, Vec<&'sta
         (CliSubcommand::Replay, vec!["replay", "case.crucible"]),
         (CliSubcommand::Search, vec!["search", TEST_SCENARIO]),
         (CliSubcommand::Fuzz, vec!["fuzz", "builtin:fault-campaign"]),
+        (CliSubcommand::Debug, vec!["debug", "case.crucible"]),
         (
             CliSubcommand::Serve,
             vec!["serve", "--listen", "127.0.0.1:9000"],
@@ -1594,8 +1595,18 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
         ),
         (
             "serve",
-            &["listen", "max_sessions", "read_only"][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nread_only=Accept only read-only API calls (query/watch); no mutate\n",
+            &[
+                "listen",
+                "max_sessions",
+                "production_qemu",
+                "read_only",
+                "tls_cert",
+                "tls_key",
+                "client_ca",
+                "trusted_unauthenticated_bind",
+                "debug_role",
+            ][..],
+            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\n",
         ),
         (
             "debug",
@@ -1611,8 +1622,9 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "read_only",
                 "allow_mutate",
                 "checkpoint_stride",
+                "record_transcript",
             ][..],
-            "about=Open the time-travel debugger\nusage=Usage: crucible debug [OPTIONS] <ARTIFACT|SAVEPOINT|--session <ADDR>> [COMMAND]\ntarget=Attach to this artifact or savepoint\nsession=Attach to a running session\nat=Open at a virtual-time or node-icount coordinate\nat_event=Open at this event-log sequence\nat_failure=Open at the recorded failure point\nat_checkpoint=Open at this checkpoint content address\nnode=Attach this node's gdbstub\ngdb_listen=Listen for gdb-protocol clients here\nread_only=Keep the canonical run read-only\nallow_mutate=Fork a non-canonical branch for mutation\ncheckpoint_stride=Bound reverse-step replay distance\ncommand.attach-gdb=Open the mediated gdbstub channel\ncommand.goto=Move to another debug coordinate\ncommand.reverse-step=Step backward by one deterministic grain\ncommand.reverse-continue=Continue backward to a matching condition\n",
+            "about=Open the time-travel debugger\nusage=Usage: crucible debug [OPTIONS] <ARTIFACT|SAVEPOINT|--session <ADDR>> [COMMAND]\ntarget=Attach to this artifact or savepoint\nsession=Attach to a running session\nat=Open at a virtual-time or node-icount coordinate\nat_event=Open at this event-log sequence\nat_failure=Open at the recorded failure point\nat_checkpoint=Open at this checkpoint content address\nnode=Attach this node's gdbstub\ngdb_listen=Listen for gdb-protocol clients here\nread_only=Keep the canonical run read-only\nallow_mutate=Authorize an explicit non-canonical debug fork\ncheckpoint_stride=Bound reverse-step replay distance\nrecord_transcript=Record the non-canonical guest channel to a new transcript file\ncommand.attach-gdb=Open the mediated gdbstub channel\ncommand.fork-debug=Explicitly fork a non-canonical whole-world debug branch\ncommand.goto=Move to another debug coordinate\ncommand.reverse-step=Step backward by one deterministic grain\ncommand.reverse-continue=Continue backward to a matching condition\ncommand.exec=Execute an argv-based command through the guest debug agent\ncommand.pty=Open an interactive command on a guest PTY\ncommand.ssh=Bridge stdin/stdout to the guest agent's configured SSH server\n",
         ),
     ];
 
@@ -1899,6 +1911,7 @@ pub(super) fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
         "127.0.0.1:0",
         "--max-sessions",
         "1",
+        "--trusted-unauthenticated-bind",
     ]);
     let Commands::Serve(args) = &clean_shutdown.command else {
         panic!("expected serve command");
@@ -1911,8 +1924,14 @@ pub(super) fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
         ))
         .unwrap_or_else(|error| panic!("injected serve shutdown should exit cleanly: {error}"));
 
-    let shutdown_error_cli =
-        Cli::parse_from(["crucible", "--quiet", "serve", "--listen", "127.0.0.1:0"]);
+    let shutdown_error_cli = Cli::parse_from([
+        "crucible",
+        "--quiet",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+    ]);
     let Commands::Serve(args) = &shutdown_error_cli.command else {
         panic!("expected serve command");
     };
@@ -1928,7 +1947,13 @@ pub(super) fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
     assert_eq!(error.exit_code(), 3);
     assert!(error.to_string().contains("serve shutdown signal error"));
 
-    let bind_error = Cli::parse_from(["crucible", "serve", "--listen", "127.0.0.1:70000"]);
+    let bind_error = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:70000",
+        "--trusted-unauthenticated-bind",
+    ]);
     let Commands::Serve(args) = &bind_error.command else {
         panic!("expected serve command");
     };
@@ -2147,7 +2172,14 @@ pub(super) fn cli_qemu_debug_executes_live_admission_before_delegating()
         qemu_source: QemuDiscoverySource::Flag,
         plugin_source: QemuDiscoverySource::Flag,
     };
-    let cli = Cli::parse_from(["crucible", "--backend", "qemu", "debug", "failure.crucible"]);
+    let cli = Cli::parse_from([
+        "crucible",
+        "--backend",
+        "qemu",
+        "debug",
+        "--session",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    ]);
     let Commands::Debug(args) = &cli.command else {
         panic!("debug command should parse");
     };
@@ -2161,9 +2193,56 @@ pub(super) fn cli_qemu_debug_executes_live_admission_before_delegating()
     let lines = run_local_qemu_debug_workflow_with_probe(&backend, &plan, &mut probe)?;
     assert!(lines[0].contains("operation=debug-admission"));
     assert!(lines[0].contains("icount=42"));
-    assert!(lines[1].contains("target=artifact:failure.crucible"));
+    assert!(lines[1].contains("target=session:7:12:"));
+    assert!(lines[1].contains("execution=planned-only"));
+    assert!(lines[1].contains("requested_operation=attach-gdb"));
+    assert!(lines[1].contains("coordinate=current"));
+    assert!(lines[1].contains("node=auto"));
     assert!(lines[1].contains("read_only=true"));
     assert!(lines[1].contains("raw_gdb_single_step=false"));
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_qemu_debug_rejects_missing_artifact_before_live_probe()
+-> Result<(), Box<dyn Error>> {
+    struct ForbiddenProbe;
+
+    impl LiveQemuProbeRunner for ForbiddenProbe {
+        fn run_probe(
+            &mut self,
+            _backend: &ResolvedLocalBackend,
+        ) -> Result<LiveQemuProbeEvidence, CliError> {
+            panic!("artifact validation must precede the live QEMU probe");
+        }
+    }
+
+    let backend = ResolvedLocalBackend::Qemu {
+        qemu: PathBuf::from("/test/qemu"),
+        plugin: PathBuf::from("/test/plugin"),
+        qemu_build_id: String::from("test-build"),
+        qemu_patch_series_hash: String::from("test-patches"),
+        plugin_abi: String::from("test-plugin-abi"),
+        shmem_abi_version: String::from("test-shmem-abi"),
+        qemu_source: QemuDiscoverySource::Flag,
+        plugin_source: QemuDiscoverySource::Flag,
+    };
+    let missing = TempDir::new()?.path().join("missing.crucible");
+    let cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("qemu"),
+        String::from("debug"),
+        missing.display().to_string(),
+    ]);
+    let Commands::Debug(args) = &cli.command else {
+        panic!("debug command should parse");
+    };
+    let plan = plan_debug_invocation(&cli, args)?;
+    let error = run_local_qemu_debug_workflow_with_probe(&backend, &plan, &mut ForbiddenProbe)
+        .expect_err("a missing artifact must fail before live probing");
+
+    assert!(matches!(error, CliError::Artifact(_)));
     Ok(())
 }
 

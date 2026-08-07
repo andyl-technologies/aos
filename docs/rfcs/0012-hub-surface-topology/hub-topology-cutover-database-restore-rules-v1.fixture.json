@@ -1,0 +1,5 @@
+{
+  "schema_version": "aos.hub.topology-cutover-database-restore-rules/v1",
+  "fixture_only": true,
+  "checks": ["integrity", "logical_digest", "row_count"]
+}

@@ -2955,7 +2955,157 @@ pub(super) fn cli_debug_surface_parses_full_t_dbg_8_flags_and_verbs() -> Result<
 }
 
 #[test]
-pub(super) fn cli_debug_surface_supports_session_checkpoint_and_allow_mutate()
+pub(super) fn cli_remote_debug_selects_the_daemon_backend_route() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse_from([
+        "crucible",
+        "--daemon",
+        "http://127.0.0.1:9000",
+        "--trusted-unauthenticated-daemon",
+        "debug",
+        "--session",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "--node",
+        "node-a",
+        "attach-gdb",
+    ]);
+
+    let plan = plan_backend_selection(&cli)?.ok_or("debug must select a backend route")?;
+
+    assert_eq!(plan.target, BackendExecutionTarget::RemoteDaemon);
+    assert_eq!(plan.reason, BackendSelectionReason::RemoteDaemon);
+    assert_eq!(plan.daemon.as_deref(), Some("http://127.0.0.1:9000"));
+    assert!(plan.remote_uses_control_api);
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_debug_reverse_condition_parser_accepts_documented_forms() {
+    assert_eq!(
+        parse_debug_reverse_condition("quiescent")
+            .unwrap_or_else(|error| panic!("quiescent condition must parse: {error}")),
+        crucible::Predicate::quiescent()
+    );
+    assert_eq!(
+        parse_debug_reverse_condition("at:42")
+            .unwrap_or_else(|error| panic!("at condition must parse: {error}")),
+        crucible::Predicate::at(crucible::VirtualTime { ticks: 42 })
+    );
+    let predicate = crucible::Predicate::quiescent();
+    let encoded = predicate
+        .to_compact_binary()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        parse_debug_reverse_condition(&format!("hex:{encoded}"))
+            .unwrap_or_else(|error| panic!("compact condition must parse: {error}")),
+        predicate
+    );
+    assert!(parse_debug_reverse_condition("unknown").is_err());
+}
+
+#[test]
+pub(super) fn cli_debug_guest_channels_require_mutation_authorization_and_preserve_argv()
+-> Result<(), Box<dyn Error>> {
+    let denied = Cli::try_parse_from([
+        "crucible",
+        "debug",
+        "--session",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "--node",
+        "node-a",
+        "exec",
+        "--",
+        "/bin/echo",
+        "hello world",
+    ])?;
+    let Commands::Debug(denied_args) = &denied.command else {
+        panic!("expected debug command");
+    };
+    assert!(plan_debug_invocation(&denied, denied_args).is_err());
+
+    let allowed = Cli::parse_from([
+        "crucible",
+        "debug",
+        "--session",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "--node",
+        "node-a",
+        "--allow-mutate",
+        "--record-transcript",
+        "guest.crgt",
+        "exec",
+        "--",
+        "/bin/echo",
+        "hello world",
+    ]);
+    let Commands::Debug(args) = &allowed.command else {
+        panic!("expected debug command");
+    };
+    let plan = plan_debug_invocation(&allowed, args)?;
+    assert!(!plan.read_only);
+    assert_eq!(
+        plan.record_transcript.as_deref(),
+        Some(Path::new("guest.crgt"))
+    );
+    assert!(matches!(
+        plan.verb,
+        DebugInteractiveVerbPlan::Exec { ref argv }
+            if argv == &[String::from("/bin/echo"), String::from("hello world")]
+    ));
+    assert!(
+        plan.engine_operations
+            .contains(&DebugEngineOperation::GuestIntrospection)
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+pub(super) async fn cli_guest_transcript_is_versioned_directional_and_exclusive()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let path = temp.path().join("guest.crgt");
+    let request = crucible_api::GuestIntrospectionRecord::new(
+        7,
+        crucible_api::GuestIntrospectionMessage::Input(vec![0, 1, 2]),
+    )?;
+    let response = crucible_api::GuestIntrospectionRecord::new(
+        7,
+        crucible_api::GuestIntrospectionMessage::Output {
+            stream: crucible_api::GuestOutputStream::Stdout,
+            bytes: vec![3, 4],
+        },
+    )?;
+    let mut writer = GuestTranscriptWriter::create(&path).await?;
+    writer
+        .record(GuestTranscriptDirection::HostToGuest, &request)
+        .await?;
+    writer
+        .record(GuestTranscriptDirection::GuestToHost, &response)
+        .await?;
+    writer.finish().await?;
+
+    let bytes = fs::read(&path)?;
+    assert_eq!(&bytes[..8], GUEST_TRANSCRIPT_HEADER);
+    let mut offset = 8;
+    for (direction, expected) in [(1_u8, request), (2_u8, response)] {
+        assert_eq!(bytes[offset], direction);
+        assert_eq!(&bytes[offset + 1..offset + 4], &[0, 0, 0]);
+        let length = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into()?) as usize;
+        offset += 8;
+        let decoded = crucible_api::GuestIntrospectionRecord::decode(
+            &bytes[offset..offset.saturating_add(length)],
+        )?;
+        assert_eq!(decoded, expected);
+        offset += length;
+    }
+    assert_eq!(offset, bytes.len());
+    assert!(GuestTranscriptWriter::create(&path).await.is_err());
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_debug_surface_requires_explicit_fork_for_allow_mutate()
 -> Result<(), Box<dyn Error>> {
     let checkpoint = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
     let cli = Cli::parse_from([
@@ -2966,8 +3116,7 @@ pub(super) fn cli_debug_surface_supports_session_checkpoint_and_allow_mutate()
         "--at-checkpoint",
         checkpoint,
         "--allow-mutate",
-        "goto",
-        "vtime:7",
+        "fork-debug",
     ]);
     let Commands::Debug(args) = &cli.command else {
         panic!("expected debug command");
@@ -2980,12 +3129,7 @@ pub(super) fn cli_debug_surface_supports_session_checkpoint_and_allow_mutate()
         &plan.coordinate,
         DebugPlanCoordinate::AtCheckpoint(_)
     ));
-    assert!(matches!(
-        &plan.verb,
-        DebugInteractiveVerbPlan::Goto(crucible::DebugCoordinate::VirtualTime(
-            crucible::VirtualTime { ticks: 7 }
-        ))
-    ));
+    assert!(matches!(&plan.verb, DebugInteractiveVerbPlan::ForkDebug));
     assert!(plan.allow_mutate);
     assert!(!plan.read_only);
     assert_eq!(
@@ -3000,6 +3144,36 @@ pub(super) fn cli_debug_surface_supports_session_checkpoint_and_allow_mutate()
         plan.engine_operations
             .contains(&DebugEngineOperation::NonCanonicalBranchFork)
     );
+    assert!(plan.proves_t_dbg_8());
+
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_debug_allow_mutate_does_not_fork_implicitly() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse_from([
+        "crucible",
+        "debug",
+        "--session",
+        "127.0.0.1:7000",
+        "--allow-mutate",
+        "goto",
+        "vtime:7",
+    ]);
+    let Commands::Debug(args) = &cli.command else {
+        panic!("expected debug command");
+    };
+
+    let plan = plan_debug_invocation(&cli, args)?;
+
+    assert!(plan.allow_mutate);
+    assert!(plan.read_only);
+    assert!(
+        !plan
+            .session_commands
+            .contains(&SessionCommand::fork_current())
+    );
+    assert!(plan.non_canonical_branch_label.is_none());
     assert!(plan.proves_t_dbg_8());
 
     Ok(())
@@ -3028,6 +3202,14 @@ pub(super) fn cli_debug_surface_rejects_conflicts_and_backend_without_gdbstub() 
         ])
         .is_err()
     );
+
+    let cli = Cli::parse_from(["crucible", "debug", "case.crucible", "fork-debug"]);
+    let Commands::Debug(args) = &cli.command else {
+        panic!("expected debug command");
+    };
+    let error = plan_debug_invocation(&cli, args)
+        .expect_err("fork-debug must require explicit mutation authorization");
+    assert!(error.to_string().contains("requires --allow-mutate"));
 
     let cli = Cli::parse_from(["crucible", "--backend", "double", "debug", "case.crucible"]);
     let Commands::Debug(args) = &cli.command else {
@@ -3071,6 +3253,21 @@ pub(super) fn cli_debug_surface_rejects_conflicts_and_backend_without_gdbstub() 
     assert!(matches!(error, CliError::Usage(_)));
     assert_eq!(error.exit_code(), 64);
     assert!(error.to_string().contains("--node"));
+
+    let cli = Cli::parse_from([
+        "crucible",
+        "debug",
+        "case.crucible",
+        "--record-transcript",
+        "guest.crgt",
+        "attach-gdb",
+    ]);
+    let Commands::Debug(args) = &cli.command else {
+        panic!("expected debug command");
+    };
+    let error = plan_debug_invocation(&cli, args)
+        .expect_err("transcript recording must be limited to guest channels");
+    assert!(error.to_string().contains("exec, pty, or ssh"));
 }
 
 #[test]

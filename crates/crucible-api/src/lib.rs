@@ -17,7 +17,9 @@
 //! HTTP/2 daemon transport; [`open_set`] owns the dotted-kind plus
 //! typed-attribute payload model; [`vm_lifecycle`] owns production local-VM
 //! loop construction; [`vm_resume`] owns the process-local VM resume realization
-//! bridge used by thin CLI callers.
+//! bridge used by thin CLI callers; [`debug_gateway`] owns the Apache-side Unix
+//! control client for the separate GPL debugger gateway process;
+//! [`transport_security`] owns remote mutual-TLS authentication.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -25,6 +27,9 @@
 
 pub mod client;
 pub mod control_responsive;
+pub mod debug_access;
+pub mod debug_gateway;
+pub mod debug_relay;
 pub mod event_log_stream;
 pub mod lifecycle;
 pub mod open_set;
@@ -32,6 +37,7 @@ pub mod rpc_abi;
 pub mod server;
 pub mod session_mapping;
 pub mod streaming;
+pub mod transport_security;
 pub mod vm_lifecycle;
 #[path = "vm_resume.rs"]
 pub mod vm_resume;
@@ -40,7 +46,7 @@ pub use client::{
     ClientControlStream, ClientWatchStream, ControlClient, ControlClientError, ControlClientFuture,
     ControlTransportKind, ControlWireModel, HelloRequest, HelloResponse, InProcessControlClient,
     InProcessLifecycleControlStream, RpcControlClient, RpcControlStream, RpcEndpoint,
-    RpcTransportProtocol, RpcWatchStream, assert_shared_wire_model,
+    RpcMutualTlsConfig, RpcTransportProtocol, RpcWatchStream, assert_shared_wire_model,
 };
 pub use control_responsive::{
     CONTROL_RESPONSIVE_QUANTUM_BOUND, CONTROL_RESPONSIVE_REQUIRED_OPERATIONS,
@@ -48,15 +54,23 @@ pub use control_responsive::{
     ControlResponsiveReport, ControlResponsiveSessionProbe, ControlResponsivenessError,
     ControlSessionState, validate_control_responsiveness,
 };
+pub use debug_access::{DebugAuthorizationPolicy, DebugAuthorizationPolicyError};
+pub use debug_gateway::{
+    DEBUG_GATEWAY_STARTUP_TIMEOUT, DEBUG_GATEWAY_V1_CAPABILITY, DebugGatewayClientError,
+    DebugGatewayControlClient, DebugGatewayProcess,
+};
+pub use debug_relay::{
+    DEBUG_RELAY_CHUNK_MAX_BYTES, DebugRelayChunk, DebugRelayError, DebugRelayId,
+};
 pub use event_log_stream::{
     ControlPlaneEventLog, EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY,
     SESSION_EVENT_LOG_REPLAY_BATCH_SIZE, SessionEventLogFrame, SessionEventLogHub,
     SessionEventLogSnapshot, SessionEventLogStream, SessionEventLogStreamError,
 };
 pub use lifecycle::{
-    CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DestroySessionRequest,
-    DestroySessionResponse, GetReproductionRequest, GetReproductionResponse,
-    InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
+    CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DebugRepositionDispatch,
+    DestroySessionRequest, DestroySessionResponse, GetReproductionRequest, GetReproductionResponse,
+    GuestIntrospectionDispatch, InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
     LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
     LifecycleLoopFactory, ListScenariosResponse, ListSessionsResponse, QuiescentLifecycleLoop,
     ReproductionCommandPayload, ReproductionCommandRecord, ReproductionCommandResult,
@@ -92,11 +106,16 @@ pub use vm_lifecycle::{
 // (control-plane boundary): the CLI depends on `crucible-api`, which legally
 // depends on `crucible-protocol`.
 pub use crucible_protocol::CONTROL_PROTOCOL_VERSION;
+pub use crucible_protocol::guest_introspection::{
+    GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream,
+};
 // Re-exported with backend-neutral names so process-local control clients can
 // launch and attest the production backend without depending on its
 // implementation crate directly.
 pub use server::{
-    LifecycleServerMode, serve_lifecycle_http2, serve_lifecycle_http2_with_mode,
+    LifecycleServerMode, serve_lifecycle_http2,
+    serve_lifecycle_http2_mtls_with_mode_until_shutdown,
+    serve_lifecycle_http2_with_debug_policy_until_shutdown, serve_lifecycle_http2_with_mode,
     serve_lifecycle_http2_with_mode_until_shutdown,
 };
 pub use session_mapping::{
@@ -112,6 +131,9 @@ pub use streaming::{
     StreamingCapabilitySet, StreamingCommandCapability, StreamingEquivalenceError,
     StreamingEquivalenceReport, StreamingEventFrame, StreamingFrame, StreamingStateUpdateFrame,
     WatchStream, validate_control_watch_send_equivalence,
+};
+pub use transport_security::{
+    DebugTransportIdentity, MutualTlsServerConfigError, mutual_tls_acceptor_from_pem,
 };
 pub use vm_resume::{
     ModelCheckpointVmResumeRealizationProof, VmResumeRealizationError,

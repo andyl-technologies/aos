@@ -19,13 +19,13 @@
 //! - The **Cloudflare Worker** *defers* re-indexing to its Cron-trigger indexer,
 //!   which already re-walks every registry's R2 surface on a schedule
 //!   (`index_all`). The Worker's single-registry indexer is tightly coupled to
-//!   its concrete D1/R2/`model::Registry` types and is not cleanly callable from
+//!   its concrete HubDb/R2/`model::Registry` types and is not cleanly callable from
 //!   a core port over a [`RegistryRecord`], so the Worker's [`Reindexer`] is a
 //!   no-op that logs the deferral and returns `Ok(None)` (no inline commit).
 //!   **Consistency implication:** a Worker publish
 //!   becomes browse-visible only at the next Cron run, not synchronously on the
 //!   final `PUT` (the read *facade* is already fresh — it streams the new bytes
-//!   straight from R2 — only the derived D1 index lags). The native hub keeps the
+//!   straight from R2 — only the derived HubDb index lags). The native hub keeps the
 //!   synchronous guarantee; the Worker is eventually consistent on the index.
 //!
 //! The port carries the same target-conditional bound as the rest of the core
@@ -55,7 +55,7 @@ pub trait Reindexer: BackendBounds {
     ///
     /// A synchronous implementation (the native hub) returns `Some(commit)`, the
     /// oid the fresh index was built from — used to cross-reference the audit row
-    /// a hosted-key [`advance_channel`](crate::signing::advance_channel) records.
+    /// for the publication operation that triggered the re-index.
     /// A *deferring* implementation (the Worker) returns `Ok(None)`: the index is
     /// reconciled later by the Cron indexer, so no commit is available inline and
     /// the deferred-advance audit row carries no index commit reference.

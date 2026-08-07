@@ -38,14 +38,23 @@ pub(super) fn production_app_random_launch_config(
     config
 }
 
-pub(super) fn reserve_backend_gdbstub_endpoint() -> Result<String, LifecycleApiError> {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|error| loop_factory_error(format!("reserve QEMU gdbstub endpoint: {error}")))?;
-    let address = listener
-        .local_addr()
-        .map_err(|error| loop_factory_error(format!("inspect QEMU gdbstub endpoint: {error}")))?;
-    drop(listener);
-    Ok(format!("tcp:{address}"))
+pub(super) fn private_backend_gdbstub_path(node_directory: &Path) -> PathBuf {
+    node_directory.join("debug-rsp.sock")
+}
+
+pub(super) fn qemu_unix_gdbstub_endpoint(path: &Path) -> Result<String, LifecycleApiError> {
+    let path = path.to_str().ok_or_else(|| {
+        loop_factory_error(format!(
+            "QEMU gdbstub path is not valid UTF-8: {}",
+            path.display()
+        ))
+    })?;
+    if path.contains([',', '\n', '\0']) {
+        return Err(loop_factory_error(format!(
+            "QEMU gdbstub path contains unsupported syntax: {path}"
+        )));
+    }
+    Ok(format!("unix:{path},server=on,wait=off"))
 }
 
 pub(super) fn no_named_trigger_leaf(_leaf: ConditionLeaf<'_>) -> bool {
@@ -197,6 +206,30 @@ mod tests {
             production_whitebox_switch(crucible::WhiteBoxPolicy::Enabled),
             ProductionPluginSwitch::On
         );
+    }
+
+    #[test]
+    fn private_gdbstub_endpoint_uses_the_node_run_directory() {
+        let directory = Path::new("/tmp/crucible-node");
+        let path = private_backend_gdbstub_path(directory);
+
+        assert_eq!(path, directory.join("debug-rsp.sock"));
+        let Ok(endpoint) = qemu_unix_gdbstub_endpoint(&path) else {
+            panic!("ordinary private socket path must be accepted");
+        };
+        assert_eq!(
+            endpoint,
+            "unix:/tmp/crucible-node/debug-rsp.sock,server=on,wait=off"
+        );
+    }
+
+    #[test]
+    fn private_gdbstub_endpoint_rejects_qemu_option_delimiters() {
+        let Err(error) = qemu_unix_gdbstub_endpoint(Path::new("/tmp/node,server=off")) else {
+            panic!("comma must not enter the QEMU character-device syntax");
+        };
+
+        assert!(error.to_string().contains("unsupported syntax"));
     }
 
     #[test]

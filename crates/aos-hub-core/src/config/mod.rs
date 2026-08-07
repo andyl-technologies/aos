@@ -6,7 +6,7 @@
 //! visibility, and storage bindings — is the SQL system of record. This
 //! module is the engine that makes *every* SQL-backed mutation a reviewed,
 //! revertible **change-set**, recorded in the append-only
-//! `config_changesets` / `config_revisions` / `audit_log` tables (see the
+//! `change_requests` / `change_request_revisions` / `audit_log` tables (see the
 //! [`crate::db`] module docs for the schema).
 //!
 //! # The change-set lifecycle
@@ -22,9 +22,9 @@
 //!    one [`crate::db::Database::record_audit`] row carrying the
 //!    `change_id`.
 //!
-//! [`change_registry_visibility`] and [`change_membership`] are the real
-//! consumers that wire actual hub mutations through this engine, so the
-//! audit log carries genuine entries.
+//! [`change_membership`] is a direct consumer that wires identity mutations
+//! through this engine. Topology resources use their resource-specific sealed
+//! plan/apply transactions instead.
 //!
 //! # Revert
 //!
@@ -60,7 +60,7 @@ use crate::domain::{Principal, PrincipalKind, Role, Scope};
 
 /// A stable change-set identifier (a UUID v4 string).
 ///
-/// The single join key across `config_changesets`, `config_revisions`, and
+/// The single join key across `change_requests`, `change_request_revisions`, and
 /// `audit_log`. Construct fresh ids with [`ChangeId::new`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ChangeId(pub String);
@@ -103,7 +103,7 @@ pub enum ConfigOp {
 }
 
 impl ConfigOp {
-    /// Returns the snake-case wire name stored in `config_revisions.op`.
+    /// Returns the snake-case wire name stored in `change_request_revisions.op`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -600,122 +600,6 @@ fn invitation_from_membership(old: Option<&Value>) -> Value {
 
 // -- real consumers: mutations that flow through the engine -----------------
 
-/// Changes a registry's visibility through a one-revision change-set.
-///
-/// Opens a draft, stages a single `update` revision recording the old and
-/// new visibility, and applies it — the apply step calls
-/// [`Database::set_registry_visibility`](crate::db::Database::set_registry_visibility)
-/// to mutate the live registry, and one audit row is written. Returns the
-/// applied change-set's id.
-///
-/// This is a real engine consumer (not a demo): the visibility flip is the
-/// confirmation-gated change-set the RFC's access matrix requires, and it
-/// gives the audit log a genuine entry.
-///
-/// # Errors
-///
-/// Returns an error when `registry_id` names no registry, and on database
-/// failure (the change-set is rolled back on a failed apply).
-pub async fn change_registry_visibility(
-    db: &Database,
-    actor: &Principal,
-    actor_label: &str,
-    registry_id: i64,
-    new_visibility: &str,
-) -> Result<ChangeId> {
-    // Resolve the registry to read its slug (the object id / scope) and old
-    // visibility.
-    let record = registry_record(db, registry_id).await?;
-    let old_visibility = record.visibility.clone();
-    let scope = Scope::parse(&record.slug);
-    let summary = format!(
-        "set {} visibility {old_visibility} -> {new_visibility}",
-        record.slug
-    );
-    let change_id = open_draft(db, actor, actor_label, &scope, &summary).await?;
-    stage(
-        db,
-        &change_id,
-        "registry",
-        &record.slug,
-        ConfigOp::Update,
-        Some(serde_json::json!({ "visibility": old_visibility.clone() })),
-        Some(serde_json::json!({ "visibility": new_visibility })),
-    )
-    .await?;
-    apply(db, &change_id, "registry.visibility", |_rev| async move {
-        db.set_registry_visibility(registry_id, new_visibility)
-            .await
-    })
-    .await?;
-
-    // Notify subscribers of the visibility flip. Additive and non-fatal: the
-    // change is already applied and audited; a webhook failure must not undo it.
-    if let Some(org_id) = record.org_id {
-        // Cross-platform clock — `SystemTime::now()` panics on the Worker (wasm32).
-        let now = crate::clock::now_unix_secs();
-        let event = crate::webhook::WebhookEvent::VisibilityChanged {
-            registry: record.slug.clone(),
-            old: old_visibility,
-            new: new_visibility.to_string(),
-            at: now,
-        };
-        if let Err(err) = crate::webhook::dispatch(db, org_id, &event).await {
-            tracing::warn!(slug = %record.slug, error = %format!("{err:#}"), "dispatching registry.visibility_changed webhook");
-        }
-    }
-    Ok(change_id)
-}
-
-/// Changes a registry's crawl policy through a one-revision change-set.
-///
-/// Opens a draft, stages a single `update` revision recording the old and new
-/// crawl policy, and applies it — the apply step calls
-/// [`Database::set_registry_crawl_policy`](crate::db::Database::set_registry_crawl_policy)
-/// to mutate the live registry, and one audit row is written. Returns the
-/// applied change-set's id.
-///
-/// Mirrors [`change_registry_visibility`]: the crawl-policy flip is a
-/// confirmation-gated, audited change so the RFC's access matrix and audit feed
-/// cover it. `new_policy` is the wire string of a
-/// [`CrawlPolicy`](crate::crawl::CrawlPolicy); the caller validates it before
-/// calling.
-///
-/// # Errors
-///
-/// Returns an error when `registry_id` names no registry, and on database
-/// failure (the change-set is rolled back on a failed apply).
-pub async fn change_registry_crawl_policy(
-    db: &Database,
-    actor: &Principal,
-    actor_label: &str,
-    registry_id: i64,
-    new_policy: &str,
-) -> Result<ChangeId> {
-    let record = registry_record(db, registry_id).await?;
-    let old_policy = record.crawl_policy.clone();
-    let slug = record.slug.clone();
-    let scope = Scope::parse(&slug);
-    let summary = format!("set {slug} crawl policy {old_policy} -> {new_policy}");
-    let change_id = open_draft(db, actor, actor_label, &scope, &summary).await?;
-    stage(
-        db,
-        &change_id,
-        "registry",
-        &slug,
-        ConfigOp::Update,
-        Some(serde_json::json!({ "crawl_policy": old_policy })),
-        Some(serde_json::json!({ "crawl_policy": new_policy })),
-    )
-    .await?;
-    apply(db, &change_id, "registry.crawl_policy", move |_rev| {
-        let slug = slug.clone();
-        async move { db.set_registry_crawl_policy(&slug, new_policy).await }
-    })
-    .await?;
-    Ok(change_id)
-}
-
 /// Whether a [`change_membership`] grants or revokes a role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MembershipChange {
@@ -729,18 +613,22 @@ pub enum MembershipChange {
 ///
 /// A grant inherits downward (a grant at an ancestor scope covers `scope`),
 /// so this scans every `(grant_scope, role)` the actor holds and takes the
-/// maximum [`Role::rank`] among those whose `grant_scope` contains `scope`.
+/// maximum [`Role::rank`] among those present in the target's persisted
+/// ancestor closure.
 /// Returns `None` when the actor holds no covering grant.
 ///
 /// # Errors
 ///
 /// Returns an error on database failure.
 async fn actor_max_rank(db: &Database, actor: &Principal, scope: &Scope) -> Result<Option<u8>> {
+    let Some(context) = db.authorization_context(scope.as_str()).await? else {
+        return Ok(None);
+    };
     Ok(db
         .effective_scopes(*actor)
         .await?
         .into_iter()
-        .filter(|(grant_scope, _)| grant_scope.contains(scope))
+        .filter(|(grant_scope, _)| context.is_covered_by(grant_scope))
         .map(|(_, role)| role.rank())
         .max())
 }
@@ -897,7 +785,7 @@ pub async fn change_membership(
 /// sign the partition tags locally, and push. The preparation is audited.
 ///
 /// Returns the new [`ChangeId`]; the change-set stays in `draft` status (it
-/// is never applied server-side without a hosted key).
+/// is never applied by the generic draft-change mechanism).
 ///
 /// # Errors
 ///
@@ -911,7 +799,11 @@ pub async fn prepare_channel_advance(
     release: &str,
     partitions: u16,
 ) -> Result<ChangeId> {
-    let scope = Scope::parse(registry_slug);
+    let registry = db
+        .registry_by_slug(registry_slug)
+        .await?
+        .with_context(|| format!("registry '{registry_slug}' does not exist"))?;
+    let scope = Scope::parse(&db.registry_authorization_scope(registry.id).await?);
     let summary = format!("advance {channel} to {release} ({partitions} partitions)");
     let change_id = open_draft(db, actor, actor_label, &scope, &summary).await?;
     let object_id = format!("{registry_slug}:{channel}");
@@ -959,17 +851,6 @@ pub fn advance_command(registry_url: &str, change_id: &ChangeId) -> String {
         "apr channel advance --registry {} --from-hub {change_id}",
         registry_url.trim_end_matches('/'),
     )
-}
-
-/// Resolves a registry record by id (slug + visibility), or an error when
-/// absent.
-async fn registry_record(db: &Database, registry_id: i64) -> Result<crate::db::RegistryRecord> {
-    for record in db.list_registries().await? {
-        if record.id == registry_id {
-            return Ok(record);
-        }
-    }
-    bail!("no registry with id {registry_id}")
 }
 
 /// Maps a JWT/owner principal kind string to a [`Principal`], if known.

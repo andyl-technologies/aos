@@ -2,8 +2,9 @@
 //!
 //! The fixture surface is served by an actual TCP listener inside the
 //! test, the hub indexes it through [`HttpFetch`] exactly as it would a
-//! public CDN, and the facade answers machine paths with redirects so
-//! bulk bytes never transit the hub.
+//! public CDN. Indexing an external source does not implicitly create a
+//! delivery route; byte delivery remains unavailable until topology declares
+//! an endpoint and route explicitly.
 
 mod common;
 
@@ -33,7 +34,7 @@ async fn serve_file(State(root): State<Arc<PathBuf>>, AxPath(path): AxPath<Strin
 }
 
 #[tokio::test]
-async fn http_source_indexes_and_facade_redirects() {
+async fn http_source_indexes_without_creating_an_implicit_route() {
     let dir = tempfile::tempdir().unwrap();
     let surface = dir.path().join("surface");
     std::fs::create_dir_all(&surface).unwrap();
@@ -51,14 +52,9 @@ async fn http_source_indexes_and_facade_redirects() {
 
     // Index over HTTP, fail-closed, with full verification.
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    db.register_registry(
-        "demo",
-        &upstream_url,
-        std::slice::from_ref(&fixture.trust_key),
-        true,
-    )
-    .await
-    .unwrap();
+    db.register_registry("demo", std::slice::from_ref(&fixture.trust_key), true)
+        .await
+        .unwrap();
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     let fetch = HttpFetch::new(&upstream_url).await;
     let outcome = index_and_record(&db, &fetch, &registry).await.unwrap();
@@ -69,7 +65,8 @@ async fn http_source_indexes_and_facade_redirects() {
         "fresh"
     );
 
-    // The facade redirects machine paths to the upstream.
+    // Registration and indexing never manufacture an implicit slug route to
+    // the upstream. Operators must model that delivery topology explicitly.
     let app = router(Arc::new(
         AppState::new(db, "http://127.0.0.1:8420".into()).await,
     ))
@@ -79,22 +76,20 @@ async fn http_source_indexes_and_facade_redirects() {
         .oneshot(
             Request::builder()
                 .uri("/demo/HEAD")
+                .header(header::HOST, "127.0.0.1:8420")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::FOUND);
-    assert_eq!(
-        response.headers()[header::LOCATION],
-        format!("{upstream_url}/HEAD"),
-    );
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     // Human pages still render locally from the index.
     let response = app
         .oneshot(
             Request::builder()
                 .uri("/demo/-/packages")
+                .header(header::HOST, "127.0.0.1:8420")
                 .body(Body::empty())
                 .unwrap(),
         )

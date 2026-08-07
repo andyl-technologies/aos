@@ -1,0 +1,21 @@
+[package]
+name = "crucible-debug-gateway"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+crucible-protocol = { path = "../crucible-protocol" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+crucible-api = { path = "../crucible-api" }
+tempfile = { workspace = true }
+
+[[bin]]
+name = "crucible-debug-gateway"
+path = "src/main.rs"

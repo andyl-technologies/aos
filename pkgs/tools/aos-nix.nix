@@ -9,8 +9,7 @@
   pkg-config,
   zlib,
   zstd,
-}:
-let
+}: let
   version = "0.1.0";
   src = builtins.path {
     path = ../../crates;
@@ -28,7 +27,7 @@ in
     cargoDeps = fetchCargoVendor {
       inherit src;
       name = "aos-nix-vendor-${version}";
-      hash = "sha256-fWBTuyTXJ+/0BiVbB5WAtCqVwufg04NH4BJdocT+moU=";
+      hash = "sha256-byK2knHIciv8rLm+TLiOfTXNU9m/u7idWbSsvG6mIys=";
     };
     buildDeps = [perl pkg-config openssl cmake libssh2];
     runtimeDeps = [openssl libssh2 zlib zstd];

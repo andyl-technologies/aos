@@ -34,10 +34,13 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 pub mod app_random_transport;
 mod codec_fuzz;
+pub mod debug_gateway;
 mod doorbell_abi;
 mod doorbell_frame;
 mod doorbell_marker;
 mod golden_vectors;
+pub mod guest_introspection;
+pub mod guest_introspection_doorbell;
 mod preemption;
 
 use std::io::{ErrorKind, Read, Write};

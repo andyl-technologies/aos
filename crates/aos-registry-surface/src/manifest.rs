@@ -27,12 +27,42 @@
 //! source_nar_hash = "sha256:…"
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+
+/// Computes the deterministic identity of a registry's signed image catalog.
+///
+/// The digest is domain-separated and length-frames every field, so it cannot
+/// be replayed across registry identities or reinterpreted through ambiguous
+/// concatenation. Object order does not affect the result.
+#[must_use]
+pub fn image_catalog_digest<'a, I>(registry: &str, objects: I) -> String
+where
+    I: IntoIterator<Item = (&'a str, &'a str, u64, &'a str)>,
+{
+    let mut objects = objects.into_iter().collect::<Vec<_>>();
+    objects.sort_unstable();
+    let mut hasher = Sha256::new();
+    hash_catalog_field(&mut hasher, b"aos.signed-image-catalog.v1");
+    hash_catalog_field(&mut hasher, registry.as_bytes());
+    for (key, role, byte_size, sha256) in objects {
+        hash_catalog_field(&mut hasher, key.as_bytes());
+        hash_catalog_field(&mut hasher, role.as_bytes());
+        hasher.update(byte_size.to_be_bytes());
+        hash_catalog_field(&mut hasher, sha256.as_bytes());
+    }
+    hex::encode(hasher.finalize())
+}
+
+fn hash_catalog_field(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
 
 /// Top-level package TOML file from a registry.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageToml {
     /// The `[package]` header with name and descriptive metadata.
@@ -43,7 +73,7 @@ pub struct PackageToml {
 }
 
 /// The `[package]` header section of a package TOML file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageHeader {
     /// Package name; must match the TOML file's basename.
@@ -63,7 +93,7 @@ pub struct PackageHeader {
 }
 
 /// One `[[versions]]` entry of a package TOML file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VersionEntry {
     /// Version string; semver when possible, calver otherwise.
@@ -78,7 +108,7 @@ pub struct VersionEntry {
 }
 
 /// A `[versions.platforms.<platform>]` artifact entry.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformEntry {
     /// Absolute store path of the built output.
@@ -276,8 +306,8 @@ pub struct SysrootUkiEntry {
 /// A pre-compiled image entry within a platform entry.
 ///
 /// The trailing Secure Boot fields (RFC-0006) are populated only for signed
-/// UKIs/images and are optional so legacy/unsigned publishes still parse.
-#[derive(Debug, Clone, Deserialize)]
+/// UKIs/images and are optional for unsigned publishes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageEntry {
     /// Image format identifier (e.g. `qcow2`).
@@ -288,6 +318,16 @@ pub struct ImageEntry {
     pub nar_hash: String,
     /// Uncompressed NAR size of the image in bytes.
     pub nar_size: u64,
+    /// Immutable direct-download contract signed with the containing release.
+    ///
+    /// Catalog entries written before schema v1 omit this field. They remain
+    /// installable through their signed NAR/store metadata, but are not eligible
+    /// for direct disk-byte discovery until republished with delivery metadata.
+    #[serde(
+        default = "ImageDelivery::store_only",
+        skip_serializing_if = "ImageDelivery::is_store_only"
+    )]
+    pub delivery: ImageDelivery,
     /// Lowercase hex SHA-256 of the signer leaf cert, when signed.
     #[serde(default)]
     pub sb_signer_cert_sha256: Option<String>,
@@ -312,6 +352,734 @@ pub struct ImageEntry {
     /// Relative path inside `store_path` to the PKCS#7 root-hash signature.
     #[serde(default)]
     pub root_hash_sig: Option<String>,
+}
+
+impl ImageEntry {
+    /// Validates this image's immutable direct-delivery contract against its
+    /// signed containing release and platform.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the contract is incomplete, internally
+    /// inconsistent, path-unsafe, or does not match its signed parent.
+    pub fn validate_delivery(&self, release: &str, platform: &str) -> anyhow::Result<()> {
+        let delivery = &self.delivery;
+        anyhow::ensure!(
+            !delivery.is_store_only(),
+            "legacy store-only image has no direct-delivery contract"
+        );
+        delivery.validate(&self.format, release, platform)?;
+        anyhow::ensure!(
+            self.sb_signer_cert_sha256 == delivery.uki.signer_cert_sha256,
+            "top-level and delivery UKI signer facts disagree"
+        );
+        anyhow::ensure!(
+            self.sbat == delivery.uki.sbat,
+            "top-level and delivery SBAT facts disagree"
+        );
+        anyhow::ensure!(
+            self.expected_pcr11 == delivery.uki.expected_pcr11,
+            "top-level and delivery PCR-11 facts disagree"
+        );
+        Ok(())
+    }
+}
+
+/// Immutable direct-delivery metadata signed inside an [`ImageEntry`].
+///
+/// The containing version and platform remain authoritative. The duplicated
+/// identity fields below make resolved API objects self-describing and are
+/// required to match their parents. Mutable channel membership is deliberately
+/// not included: a signed channel payload resolves to the signed release.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageDelivery {
+    /// Delivery contract version.
+    pub schema_version: u32,
+    /// Signed logical release identity, equal to the containing version.
+    pub release: String,
+    /// Complete platform triple, equal to the containing platform key.
+    pub platform: String,
+    /// Architecture component derived from [`ImageDelivery::platform`].
+    pub architecture: String,
+    /// Stable identity shared by every encoding of the same logical disk.
+    pub logical_image_id: String,
+    /// SHA-256 of the canonical raw logical disk shared by all encodings.
+    pub logical_disk_sha256: String,
+    /// SHA-256 of the root filesystem payload embedded in the logical disk.
+    pub rootfs_sha256: String,
+    /// Exact useful filename returned by direct downloads.
+    pub filename: String,
+    /// Content-addressed immutable object key for the disk bytes.
+    pub object_key: String,
+    /// Media type of the bytes at [`ImageDelivery::object_key`].
+    pub media_type: String,
+    /// Compression applied to the disk-image encoding.
+    pub compression: ImageCompression,
+    /// Exact number of bytes served by a complete download.
+    pub byte_size: u64,
+    /// Lowercase hexadecimal SHA-256 of the served disk-image bytes.
+    pub sha256: String,
+    /// End-user targets compatible with this image encoding.
+    pub compatible_targets: Vec<ImageTarget>,
+    /// Immutable identity of the UKI embedded in this logical disk.
+    pub uki: ImageUkiIdentity,
+    /// Separately content-bound canonical producer metadata.
+    pub image_info: ImageInfoReference,
+}
+
+impl ImageDelivery {
+    /// Returns the internal marker used when reading pre-delivery catalogs.
+    ///
+    /// This value is never a valid direct-download contract and is omitted
+    /// again when serialized. Producers must emit schema v1 metadata.
+    #[must_use]
+    pub fn store_only() -> Self {
+        Self {
+            schema_version: 0,
+            release: String::new(),
+            platform: String::new(),
+            architecture: String::new(),
+            logical_image_id: String::new(),
+            logical_disk_sha256: String::new(),
+            rootfs_sha256: String::new(),
+            filename: String::new(),
+            object_key: String::new(),
+            media_type: String::new(),
+            compression: ImageCompression::None,
+            byte_size: 0,
+            sha256: String::new(),
+            compatible_targets: Vec::new(),
+            uki: ImageUkiIdentity {
+                filename: String::new(),
+                esp_path: String::new(),
+                byte_size: 0,
+                sha256: String::new(),
+                verification: ImageVerificationState::Unsigned,
+                signer_cert_sha256: None,
+                sbat: Vec::new(),
+                measured: false,
+                expected_pcr11: None,
+            },
+            image_info: ImageInfoReference {
+                filename: String::new(),
+                object_key: String::new(),
+                media_type: String::new(),
+                byte_size: 0,
+                sha256: String::new(),
+            },
+        }
+    }
+
+    /// Returns whether this value represents a pre-delivery store-only entry.
+    #[must_use]
+    pub fn is_store_only(&self) -> bool {
+        self.schema_version == 0
+    }
+}
+
+impl ImageDelivery {
+    /// Validates the complete contract against its signed parent identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unknown format mappings, unsafe paths, invalid
+    /// digests or sizes, target/media mismatches, or parent identity drift.
+    pub fn validate(&self, format: &str, release: &str, platform: &str) -> anyhow::Result<()> {
+        use anyhow::{bail, ensure};
+
+        ensure!(
+            self.schema_version == 1,
+            "unsupported image delivery schema"
+        );
+        ensure!(
+            self.release == release,
+            "image release does not match containing version"
+        );
+        ensure!(
+            self.platform == platform,
+            "image platform does not match containing platform"
+        );
+        let architecture = platform
+            .split_once('-')
+            .map(|(architecture, _)| architecture)
+            .filter(|architecture| !architecture.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("image platform has no architecture component"))?;
+        ensure!(
+            self.architecture == architecture,
+            "image architecture does not match containing platform"
+        );
+        validate_image_filename(&self.filename)?;
+        validate_sha256(&self.logical_image_id, "logical image")?;
+        validate_sha256(&self.logical_disk_sha256, "logical disk")?;
+        validate_sha256(&self.rootfs_sha256, "root filesystem")?;
+        validate_sha256(&self.sha256, "image")?;
+        ensure!(self.byte_size > 0, "image byte size must be non-zero");
+        ensure!(
+            self.object_key == immutable_image_object_key(&self.sha256, &self.filename),
+            "image object key is not the canonical content-addressed key"
+        );
+        ensure!(
+            self.compression == ImageCompression::None,
+            "image compression is not supported by this delivery contract version"
+        );
+
+        let (extension, media_type, targets): (&str, &str, &[ImageTarget]) = match format {
+            "raw" => (
+                "img",
+                "application/vnd.aos.disk-image.raw",
+                &[ImageTarget::BareMetal],
+            ),
+            "qcow2" => (
+                "qcow2",
+                "application/vnd.aos.disk-image.qcow2",
+                &[ImageTarget::QemuKvm, ImageTarget::Openstack],
+            ),
+            "vmdk" => ("vmdk", "application/x-vmdk", &[ImageTarget::Vmware]),
+            "vhd" => (
+                "vhd",
+                "application/vnd.aos.disk-image.vhd",
+                &[ImageTarget::HyperV],
+            ),
+            _ => bail!("unsupported direct image format '{format}'"),
+        };
+        if format == "raw" {
+            ensure!(
+                self.logical_disk_sha256 == self.sha256,
+                "raw image must be the canonical logical disk encoding"
+            );
+        }
+        ensure!(
+            self.filename.ends_with(&format!(".{extension}")),
+            "image filename extension does not match format"
+        );
+        ensure!(
+            self.media_type == media_type,
+            "image media type does not match format"
+        );
+        ensure!(
+            self.compatible_targets.as_slice() == targets,
+            "image compatible targets do not match format"
+        );
+        self.uki.validate()?;
+        self.image_info.validate(&self.sha256)
+    }
+}
+
+/// Immutable boot payload identity shared by all encodings of one image.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageUkiIdentity {
+    /// Portable basename of the UKI file.
+    pub filename: String,
+    /// Portable relative path at which the UKI is installed in the ESP.
+    pub esp_path: String,
+    /// Exact UKI byte length.
+    pub byte_size: u64,
+    /// Lowercase hexadecimal SHA-256 of the UKI bytes.
+    pub sha256: String,
+    /// Secure Boot verification state, separate from registry release trust.
+    pub verification: ImageVerificationState,
+    /// Lowercase hexadecimal SHA-256 of the Authenticode signer certificate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_cert_sha256: Option<String>,
+    /// SBAT component generations extracted from the exact embedded UKI.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sbat: Vec<SbatEntry>,
+    /// Whether the UKI declares measured-boot policy.
+    #[serde(default)]
+    pub measured: bool,
+    /// Predicted PCR-11 for the exact embedded UKI when measured boot is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_pcr11: Option<String>,
+}
+
+impl ImageUkiIdentity {
+    fn validate(&self) -> anyhow::Result<()> {
+        validate_image_filename(&self.filename)?;
+        anyhow::ensure!(
+            self.filename.ends_with(".efi"),
+            "UKI filename must end in .efi"
+        );
+        anyhow::ensure!(self.byte_size > 0, "UKI byte size must be non-zero");
+        validate_sha256(&self.sha256, "UKI")?;
+        validate_portable_image_path(&self.esp_path, "UKI ESP path")?;
+        anyhow::ensure!(
+            self.esp_path.ends_with(&format!("/{}", self.filename)),
+            "UKI ESP path does not end in its filename"
+        );
+        match self.verification {
+            ImageVerificationState::Unsigned => {
+                anyhow::ensure!(
+                    self.signer_cert_sha256.is_none() && self.sbat.is_empty(),
+                    "unsigned UKI must not carry signer or SBAT facts"
+                );
+            }
+            ImageVerificationState::SignedUnverified | ImageVerificationState::PolicyVerified => {
+                let signer = self
+                    .signer_cert_sha256
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("signed UKI must carry a signer digest"))?;
+                validate_sha256(signer, "UKI signer certificate")?;
+                anyhow::ensure!(
+                    !self.sbat.is_empty(),
+                    "signed UKI must carry SBAT generations"
+                );
+                let mut components = HashSet::new();
+                anyhow::ensure!(
+                    self.sbat.iter().all(|entry| {
+                        !entry.component.is_empty()
+                            && entry.component.is_ascii()
+                            && entry.generation > 0
+                            && components.insert(entry.component.as_str())
+                    }),
+                    "UKI SBAT components must be unique, non-empty ASCII with non-zero generations"
+                );
+            }
+        }
+        if self.measured {
+            let pcr = self
+                .expected_pcr11
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("measured UKI must carry expected PCR-11"))?;
+            validate_sha256(pcr, "UKI expected PCR-11")?;
+        } else {
+            anyhow::ensure!(
+                self.expected_pcr11.is_none(),
+                "unmeasured UKI must not carry expected PCR-11"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Verification state of an image's boot payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageVerificationState {
+    /// The UKI carries no Authenticode signature.
+    Unsigned,
+    /// The UKI is signed, but no committed active-certificate policy verified it.
+    SignedUnverified,
+    /// The UKI was verified against the committed active-certificate policy.
+    PolicyVerified,
+}
+
+/// Compression applied to directly served disk-image bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageCompression {
+    /// No outer compression; the object bytes are the named disk encoding.
+    None,
+}
+
+/// End-user execution or installation target for an AOS system image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageTarget {
+    /// A physical disk written directly from a raw image.
+    BareMetal,
+    /// QEMU or KVM virtual machines.
+    QemuKvm,
+    /// OpenStack virtual machines.
+    Openstack,
+    /// VMware or vSphere virtual machines.
+    Vmware,
+    /// Microsoft Hyper-V virtual machines.
+    HyperV,
+}
+
+/// Content-bound reference to the producer's `image-info.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageInfoReference {
+    /// Exact metadata filename.
+    pub filename: String,
+    /// Content-addressed immutable object key for the metadata bytes.
+    pub object_key: String,
+    /// Media type of the metadata document.
+    pub media_type: String,
+    /// Exact metadata byte length.
+    pub byte_size: u64,
+    /// Lowercase hexadecimal SHA-256 of the metadata bytes.
+    pub sha256: String,
+}
+
+impl ImageInfoReference {
+    fn validate(&self, image_sha256: &str) -> anyhow::Result<()> {
+        use anyhow::ensure;
+
+        ensure!(
+            self.filename == "image-info.json",
+            "invalid image-info filename"
+        );
+        ensure!(
+            self.media_type == "application/vnd.aos.image-info+json",
+            "invalid image-info media type"
+        );
+        ensure!(self.byte_size > 0, "image-info byte size must be non-zero");
+        validate_sha256(&self.sha256, "image-info")?;
+        ensure!(
+            self.object_key == immutable_image_info_object_key(image_sha256, &self.sha256),
+            "image-info object key is not the canonical content-addressed key"
+        );
+        Ok(())
+    }
+}
+
+/// Returns the canonical immutable object key for direct disk-image bytes.
+pub fn immutable_image_object_key(sha256: &str, filename: &str) -> String {
+    format!("images/sha256/{sha256}/{filename}")
+}
+
+/// Returns the canonical immutable object key for an image metadata document.
+pub fn immutable_image_info_object_key(image_sha256: &str, info_sha256: &str) -> String {
+    format!("images/sha256/{image_sha256}/metadata/{info_sha256}/image-info.json")
+}
+
+fn validate_sha256(value: &str, label: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "{label} SHA-256 must be 64 lowercase hexadecimal characters"
+    );
+    Ok(())
+}
+
+fn validate_image_filename(filename: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !filename.is_empty() && filename.len() <= 128,
+        "image filename must contain between 1 and 128 ASCII bytes"
+    );
+    anyhow::ensure!(
+        filename.is_ascii()
+            && filename
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+            && filename
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && !filename.contains(".."),
+        "image filename must be a portable ASCII basename"
+    );
+    let stem = filename.split('.').next().unwrap_or_default();
+    anyhow::ensure!(
+        !matches!(
+            stem.to_ascii_uppercase().as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        ),
+        "image filename uses a reserved portable basename"
+    );
+    Ok(())
+}
+
+fn validate_portable_image_path(path: &str, label: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !path.is_empty() && path.len() <= 256 && path.is_ascii() && !path.contains('\\'),
+        "{label} must be a portable relative path"
+    );
+    for component in path.split('/') {
+        anyhow::ensure!(
+            !component.is_empty()
+                && component != "."
+                && component != ".."
+                && component.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+')
+                }),
+            "{label} must be a portable relative path"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod image_delivery_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_digest_binds_registry_and_is_order_independent() {
+        let first = [
+            ("images/b", "disk", 2, "b"),
+            ("images/a", "image-info", 1, "a"),
+        ];
+        let reversed = [first[1], first[0]];
+        let digest = image_catalog_digest("andyl", first);
+        assert_eq!(digest, image_catalog_digest("andyl", reversed));
+        assert_ne!(digest, image_catalog_digest("another", first));
+        assert_ne!(
+            digest,
+            image_catalog_digest("andyl", [("images/b", "disk", 3, "b"), first[1]])
+        );
+    }
+
+    fn delivery(format: &str) -> ImageDelivery {
+        let image_sha256 = "a".repeat(64);
+        let info_sha256 = "b".repeat(64);
+        let (extension, media_type, targets) = match format {
+            "raw" => (
+                "img",
+                "application/vnd.aos.disk-image.raw",
+                vec![ImageTarget::BareMetal],
+            ),
+            "qcow2" => (
+                "qcow2",
+                "application/vnd.aos.disk-image.qcow2",
+                vec![ImageTarget::QemuKvm, ImageTarget::Openstack],
+            ),
+            "vmdk" => ("vmdk", "application/x-vmdk", vec![ImageTarget::Vmware]),
+            "vhd" => (
+                "vhd",
+                "application/vnd.aos.disk-image.vhd",
+                vec![ImageTarget::HyperV],
+            ),
+            other => panic!("unsupported fixture format {other}"),
+        };
+        let filename = format!("aos-server.{extension}");
+        ImageDelivery {
+            schema_version: 1,
+            release: "2026.08".to_string(),
+            platform: "x86_64-linux".to_string(),
+            architecture: "x86_64".to_string(),
+            logical_image_id: "c".repeat(64),
+            logical_disk_sha256: image_sha256.clone(),
+            rootfs_sha256: "f".repeat(64),
+            filename: filename.clone(),
+            object_key: immutable_image_object_key(&image_sha256, &filename),
+            media_type: media_type.to_string(),
+            compression: ImageCompression::None,
+            byte_size: 4096,
+            sha256: image_sha256.clone(),
+            compatible_targets: targets,
+            uki: ImageUkiIdentity {
+                filename: "aos-server.efi".to_string(),
+                esp_path: "EFI/Linux/aos-server.efi".to_string(),
+                byte_size: 1024,
+                sha256: "d".repeat(64),
+                verification: ImageVerificationState::Unsigned,
+                signer_cert_sha256: None,
+                sbat: Vec::new(),
+                measured: false,
+                expected_pcr11: None,
+            },
+            image_info: ImageInfoReference {
+                filename: "image-info.json".to_string(),
+                object_key: immutable_image_info_object_key(&image_sha256, &info_sha256),
+                media_type: "application/vnd.aos.image-info+json".to_string(),
+                byte_size: 512,
+                sha256: info_sha256,
+            },
+        }
+    }
+
+    fn package_with_images(images: &str) -> String {
+        format!(
+            r#"[package]
+name = "server"
+description = "test"
+license = "MIT"
+maintainer = "test"
+sysroot = true
+
+[[versions]]
+version = "2026.08"
+
+[versions.platforms.x86_64-linux]
+store_path = "/aos/store/server"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+{images}
+"#
+        )
+    }
+
+    fn raw_image_block(with_delivery: bool) -> String {
+        #[derive(Serialize)]
+        struct DeliveryWrapper<'a> {
+            delivery: &'a ImageDelivery,
+        }
+        let image = delivery("raw");
+        let base = r#"
+[[versions.platforms.x86_64-linux.images]]
+format = "raw"
+store_path = "/aos/store/server-raw"
+nar_hash = "sha256:nar"
+nar_size = 1
+"#;
+        if with_delivery {
+            let encoded = toml::to_string(&DeliveryWrapper { delivery: &image })
+                .unwrap()
+                .replace(
+                    "[delivery]",
+                    "[versions.platforms.x86_64-linux.images.delivery]",
+                )
+                .replace(
+                    "[delivery.uki]",
+                    "[versions.platforms.x86_64-linux.images.delivery.uki]",
+                )
+                .replace(
+                    "[delivery.image_info]",
+                    "[versions.platforms.x86_64-linux.images.delivery.image_info]",
+                );
+            format!("{base}\n{}", encoded)
+        } else {
+            base.to_string()
+        }
+    }
+
+    #[test]
+    fn every_supported_format_has_one_canonical_target_mapping() {
+        for format in ["raw", "qcow2", "vmdk", "vhd"] {
+            delivery(format)
+                .validate(format, "2026.08", "x86_64-linux")
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn delivery_contract_round_trips_without_losing_integrity_fields() {
+        let original = delivery("qcow2");
+        let encoded = toml::to_string(&original).unwrap();
+        let decoded: ImageDelivery = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn delivery_contract_rejects_path_traversal_and_tampering() {
+        let mut traversal = delivery("raw");
+        traversal.filename = "../server.img".to_string();
+        assert!(traversal
+            .validate("raw", "2026.08", "x86_64-linux")
+            .is_err());
+
+        let mut tampered = delivery("raw");
+        tampered.sha256 = "A".repeat(64);
+        assert!(tampered.validate("raw", "2026.08", "x86_64-linux").is_err());
+
+        let mut wrong_target = delivery("qcow2");
+        wrong_target.compatible_targets = vec![ImageTarget::BareMetal];
+        assert!(wrong_target
+            .validate("qcow2", "2026.08", "x86_64-linux")
+            .is_err());
+    }
+
+    #[test]
+    fn delivery_contract_rejects_parent_identity_drift() {
+        let contract = delivery("vmdk");
+        assert!(contract
+            .validate("vmdk", "2026.09", "x86_64-linux")
+            .is_err());
+        assert!(contract
+            .validate("vmdk", "2026.08", "aarch64-linux")
+            .is_err());
+    }
+
+    #[test]
+    fn uki_verification_facts_are_closed_and_state_dependent() {
+        let mut contract = delivery("raw");
+        contract.uki.verification = ImageVerificationState::SignedUnverified;
+        assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_err());
+
+        contract.uki.signer_cert_sha256 = Some("9".repeat(64));
+        contract.uki.sbat = vec![SbatEntry {
+            component: "aos".to_string(),
+            generation: 1,
+        }];
+        assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_ok());
+
+        contract.uki.measured = true;
+        assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_err());
+        contract.uki.expected_pcr11 = Some("8".repeat(64));
+        assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_ok());
+
+        contract.uki.verification = ImageVerificationState::Unsigned;
+        assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_err());
+    }
+
+    #[test]
+    fn shared_parser_accepts_store_only_entries_but_rejects_duplicate_formats() {
+        let without_delivery = raw_image_block(false);
+        let legacy = package_with_images(&without_delivery);
+        let parsed = parse_package_file(&legacy).unwrap();
+        let image = &parsed.versions[0].platforms["x86_64-linux"].images[0];
+        assert!(image.delivery.is_store_only());
+        assert!(!toml::to_string(&parsed).unwrap().contains("delivery"));
+
+        let duplicate = package_with_images(&format!("{without_delivery}{without_delivery}"));
+        assert!(parse_package_file(&duplicate).is_err());
+
+        let direct = raw_image_block(true);
+        let mixed = package_with_images(&format!("{without_delivery}{direct}"));
+        assert!(parse_package_file(&mixed).is_err());
+    }
+
+    #[test]
+    fn shared_parser_requires_one_logical_identity_across_encodings() {
+        let raw = raw_image_block(true);
+        let qcow2 = raw_image_block(true)
+            .replace("format = \"raw\"", "format = \"qcow2\"")
+            .replace("server-raw", "server-qcow2")
+            .replace("aos-server.img", "aos-server.qcow2")
+            .replace(
+                "application/vnd.aos.disk-image.raw",
+                "application/vnd.aos.disk-image.qcow2",
+            )
+            .replace(
+                "compatible_targets = [\"bare-metal\"]",
+                "compatible_targets = [\"qemu-kvm\", \"openstack\"]",
+            );
+        assert!(parse_package_file(&package_with_images(&format!("{raw}{qcow2}"))).is_ok());
+
+        let drifted = qcow2.replace(
+            &format!("logical_image_id = \"{}\"", "c".repeat(64)),
+            &format!("logical_image_id = \"{}\"", "e".repeat(64)),
+        );
+        let error =
+            parse_package_file(&package_with_images(&format!("{raw}{drifted}"))).unwrap_err();
+        assert!(format!("{error:#}").contains("different logical identities"));
+    }
+
+    #[test]
+    fn filename_policy_rejects_header_and_url_ambiguity() {
+        for filename in [
+            "server%2fescape.img",
+            "server;attachment.img",
+            "server?.img",
+            "server#.img",
+            "server\".img",
+            "sérver.img",
+            "CON.img",
+        ] {
+            let mut contract = delivery("raw");
+            contract.filename = filename.to_string();
+            contract.object_key = immutable_image_object_key(&contract.sha256, filename);
+            assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_err());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -341,10 +1109,9 @@ fn has_system_location_prefix(path: &str) -> bool {
 
 /// A pre-compiled image format entry within a sysroot package version.
 ///
-/// The trailing Secure Boot fields are populated only for signed UKIs/images
-/// (see RFC-0006 phase 4). They are optional so that legacy and unsigned
-/// publishes continue to parse: an entry with none of them set is treated as
-/// "no Secure Boot claims recorded" and skips download-time SB validation.
+/// The direct-delivery contract is mandatory after the topology cutover. The
+/// trailing Secure Boot compatibility fields mirror the exact nested UKI
+/// identity and remain optional only when that identity makes no such claim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SysrootImageEntry {
@@ -357,9 +1124,15 @@ pub struct SysrootImageEntry {
     pub nar_hash: String,
     /// Size of the image's uncompressed NAR in bytes.
     pub nar_size: u64,
+    /// Immutable direct-download contract from the signed image catalog.
+    #[serde(
+        default = "ImageDelivery::store_only",
+        skip_serializing_if = "ImageDelivery::is_store_only"
+    )]
+    pub delivery: ImageDelivery,
     /// Lowercase hex SHA-256 of the signer leaf certificate found in the
     /// PE's Authenticode certificate table; the db cert this image must
-    /// chain to. `None` for unsigned/legacy images.
+    /// chain to. `None` for unsigned images.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sb_signer_cert_sha256: Option<String>,
     /// SBAT component/generation pairs read from the PE `.sbat` section.
@@ -942,69 +1715,56 @@ pub struct RegistryRootConfig {
     /// The committed `[caches]` cache stack: the binary caches every consumer
     /// of this registry should use, in preference order.
     ///
-    /// Absent when the registry advertises no caches. Carried as a
-    /// [`CachesConfig`] so a `[caches]` stack table and a legacy `[[caches]]`
-    /// array of `{ url, priority }` entries both parse; resolve the effective
-    /// list with [`RegistryRootConfig::cache_entries`].
+    /// Absent when the registry advertises no caches. The hard-cutover schema
+    /// accepts only the `[caches]` stack table; array-shaped cache lists are a
+    /// schema error. Resolve the effective list with
+    /// [`RegistryRootConfig::cache_entries`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caches: Option<CachesConfig>,
 }
 
-/// The committed `[caches]` value: either the unified cache stack or the
-/// legacy flat list.
+/// The committed `[caches]` stack table.
 ///
-/// Untagged so serde tries each form in order: a `[[caches]]` array of
-/// `{ url, priority }` entries matches [`CachesConfig::List`] first, while a
-/// `[caches]` table (a bare endpoint or a `kind`/`members` stack node) falls
-/// through to [`CachesConfig::Stack`]. New tooling writes the [`Stack`] form;
-/// the [`List`] form keeps older committed configs parsing unchanged.
-///
-/// [`Stack`]: CachesConfig::Stack
-/// [`List`]: CachesConfig::List
+/// The table-only representation deliberately rejects an array during TOML
+/// deserialization. There is no legacy list branch after the topology cutover.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum CachesConfig {
-    /// Legacy `[[caches]]` array of explicit `{ url, priority }` entries.
-    List(Vec<CacheEntry>),
-    /// The unified `[caches]` cache-stack node, carried as a raw
-    /// [`toml::Value`] so stack-unaware tooling round-trips it untouched while
-    /// the hub parses it into its [`StackNode`] model.
-    Stack(toml::Value),
-}
+#[serde(transparent)]
+pub struct CachesConfig(pub toml::map::Map<String, toml::Value>);
 
 impl RegistryRootConfig {
     /// Returns the flattened `(url, priority)` list consumers resolve.
     ///
-    /// For a [`CachesConfig::Stack`] the stack is parsed and flattened with
-    /// [`stack::to_priority_caches`] (priority descending by depth-first
-    /// order, base `100`); for a legacy [`CachesConfig::List`] the entries are
-    /// returned as committed. A malformed stack yields an empty list rather
-    /// than panicking — callers log the omission.
+    /// The stack is parsed and flattened with [`stack::to_priority_caches`]
+    /// (priority descending by depth-first order, base `100`). A malformed
+    /// stack yields an empty list rather than panicking — callers log the
+    /// omission.
     #[must_use]
     pub fn cache_entries(&self) -> Vec<CacheEntry> {
         match &self.caches {
             None => Vec::new(),
-            Some(CachesConfig::List(entries)) => entries.clone(),
-            Some(CachesConfig::Stack(value)) => match stack::parse_cache_stack(value.clone()) {
-                Ok(node) => stack::to_priority_caches(&node, default_cache_priority())
-                    .into_iter()
-                    .map(|(url, priority)| CacheEntry { url, priority })
-                    .collect(),
-                Err(_) => Vec::new(),
-            },
+            Some(CachesConfig(value)) => {
+                match stack::parse_cache_stack(toml::Value::Table(value.clone())) {
+                    Ok(node) => stack::to_priority_caches(&node, default_cache_priority())
+                        .into_iter()
+                        .map(|(url, priority)| CacheEntry { url, priority })
+                        .collect(),
+                    Err(_) => Vec::new(),
+                }
+            }
         }
     }
 
     /// Returns the parsed cache stack when `[caches]` is in stack form.
     ///
-    /// `None` for a legacy [`CachesConfig::List`] (which has no nestable
-    /// structure to validate), for an absent `[caches]`, or for a malformed
-    /// stack — mirror validation treats a missing or unparseable stack as
-    /// "no mirror groups to enforce" rather than panicking.
+    /// `None` for an absent or malformed stack — mirror validation treats a
+    /// missing or unparseable stack as "no mirror groups to enforce" rather
+    /// than panicking.
     #[must_use]
     pub fn cache_stack(&self) -> Option<StackNode> {
         match &self.caches {
-            Some(CachesConfig::Stack(value)) => stack::parse_cache_stack(value.clone()).ok(),
+            Some(CachesConfig(value)) => {
+                stack::parse_cache_stack(toml::Value::Table(value.clone())).ok()
+            }
             _ => None,
         }
     }
@@ -1183,6 +1943,61 @@ pub fn package_name_bucket(name: &str) -> String {
 pub fn parse_package_file(content: &str) -> Result<PackageToml> {
     let toml: PackageToml = toml::from_str(content).context("invalid package TOML")?;
     validate_package_name(&toml.package.name)?;
+    for version in &toml.versions {
+        for (platform, entry) in &version.platforms {
+            let mut formats = HashSet::new();
+            for image in &entry.images {
+                if !formats.insert(image.format.as_str()) {
+                    bail!(
+                        "release '{}' platform '{}' contains duplicate '{}' image encodings",
+                        version.version,
+                        platform,
+                        image.format
+                    );
+                }
+                if !image.delivery.is_store_only() {
+                    image
+                        .validate_delivery(&version.version, platform)
+                        .with_context(|| {
+                            format!(
+                                "validating image '{}' for release '{}' platform '{}'",
+                                image.format, version.version, platform
+                            )
+                        })?;
+                }
+            }
+            let direct_images = entry
+                .images
+                .iter()
+                .filter(|image| !image.delivery.is_store_only())
+                .collect::<Vec<_>>();
+            if !direct_images.is_empty() {
+                let Some(first_image) = direct_images.first().copied() else {
+                    continue;
+                };
+                let first = &first_image.delivery;
+                for image in direct_images.iter().skip(1).copied() {
+                    let delivery = &image.delivery;
+                    anyhow::ensure!(
+                        delivery.logical_image_id == first.logical_image_id,
+                        "release '{}' platform '{}' image encodings have different logical identities",
+                        version.version,
+                        platform
+                    );
+                    anyhow::ensure!(
+                        delivery.uki == first.uki
+                            && image.sb_signer_cert_sha256
+                                == first_image.sb_signer_cert_sha256
+                            && image.sbat == first_image.sbat
+                            && image.expected_pcr11 == first_image.expected_pcr11,
+                        "release '{}' platform '{}' image encodings have different UKI or Secure Boot facts",
+                        version.version,
+                        platform
+                    );
+                }
+            }
+        }
+    }
     Ok(toml)
 }
 
@@ -1196,27 +2011,10 @@ mod root_config_tests {
     "#;
 
     #[test]
-    fn legacy_caches_array_parses_and_flattens() {
-        let src = format!(
-            "{META}\n[[caches]]\nurl = \"https://c1\"\n[[caches]]\nurl = \"https://c2\"\npriority = 50\n"
-        );
-        let cfg: RegistryRootConfig = toml::from_str(&src).unwrap();
-        assert!(matches!(cfg.caches, Some(CachesConfig::List(_))));
-        let entries = cfg.cache_entries();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].url, "https://c1");
-        assert_eq!(entries[0].priority, 100); // schema default
-        assert_eq!(entries[1].url, "https://c2");
-        assert_eq!(entries[1].priority, 50);
-        // A legacy list has no nestable structure for mirror validation.
-        assert!(cfg.cache_stack().is_none());
-    }
-
-    #[test]
     fn single_endpoint_stack_parses_and_flattens() {
         let src = format!("{META}\n[caches]\nendpoint = \"https://only\"\n");
         let cfg: RegistryRootConfig = toml::from_str(&src).unwrap();
-        assert!(matches!(cfg.caches, Some(CachesConfig::Stack(_))));
+        assert!(matches!(cfg.caches, Some(CachesConfig(_))));
         let entries = cfg.cache_entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].url, "https://only");
@@ -1252,6 +2050,13 @@ mod root_config_tests {
         assert!(cfg.caches.is_none());
         assert!(cfg.cache_entries().is_empty());
         assert!(cfg.cache_stack().is_none());
+    }
+
+    #[test]
+    fn array_shaped_caches_are_rejected_at_the_schema_boundary() {
+        let source =
+            format!("{META}\n[[caches]]\nurl = \"https://removed.example\"\npriority = 100\n");
+        assert!(toml::from_str::<RegistryRootConfig>(&source).is_err());
     }
 }
 

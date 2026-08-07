@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::net::TcpListener;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -19,16 +19,19 @@ use crate::vm_resume::{
 };
 use crucible::{
     Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, ConditionEvaluationPass,
-    ConditionLeaf, Configuration, ControlOperation, Decision, EventFirings, EventGraph,
-    EventGraphState, FingerprintSample, GdbAttachInfo, GdbListen, HostAssertionEvaluator,
-    HostAssertionOutcome, HostAssertionOutcomeKind, NodeId, ObservableEvent, QuantumLoop,
-    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RestartPolicy, ScenarioDef,
+    ConditionLeaf, Configuration, ContentHash, ControlOperation, DebugGdbEndpoint,
+    DebugRetiredWorldCleanup, DebugRuntimeRepositionReport, DebugRuntimeRepositionRequest,
+    Decision, EventFirings, EventGraph, EventGraphState, EventLogOffset, FingerprintSample,
+    GdbAttachInfo, GdbListen, HostAssertionEvaluator, HostAssertionOutcome,
+    HostAssertionOutcomeKind, Icount, NodeId, ObservableEvent, QuantumLoop, QuantumOutcome,
+    QuantumRequest, QuantumTerminalVerdict, RestartPolicy, RuntimeState, ScenarioDef,
     ScenarioDefForm, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
-    SchedulerLivenessScenario, SearchFrontierChoices, Seed, Shift, SimInstant, SimulationBackend,
-    SingleScheduler, VirtualTime, World,
+    SchedulerLivenessScenario, SchedulerState, SearchFrontierChoices, Seed, Shift, SimInstant,
+    SimulationBackend, SingleScheduler, VirtualTime, World,
 };
 
 use crate::LifecycleApiError;
+use crate::debug_gateway::DebugGatewayProcess;
 
 /// Default final icount available to one production CLI lifecycle session.
 const DEFAULT_RUN_CEILING_ICOUNT: u64 = 16_000_000;
@@ -53,6 +56,7 @@ pub struct ProductionVmLifecycleConfig {
     quantum_budget: u64,
     completion_timeout: Duration,
     coverage: ProductionPluginSwitch,
+    debug_gateway_executable: Option<PathBuf>,
     debug: Option<ProductionVmDebugConfig>,
     branch: Option<ProductionVmBranchConfig>,
     branch_fault_choices: Vec<Decision>,
@@ -72,6 +76,24 @@ struct ProductionVmBranchConfig {
     frontier: VirtualTime,
     decisions: Vec<Decision>,
     seed: Option<Seed>,
+}
+
+/// Original live-execution evidence sampled at one scheduler boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProductionVmDebugRuntimeEvidence {
+    configuration: ContentHash,
+    event_log: EventLogOffset,
+    scheduler: SchedulerState,
+    node_icounts: BTreeMap<NodeId, Icount>,
+    fingerprints: BTreeMap<NodeId, FingerprintSample>,
+    graph_runtimes: Vec<RuntimeState>,
+    runtime: Option<RuntimeState>,
+}
+
+/// Single-node replacement retained while gateway ownership is indeterminate.
+struct ProductionVmQuarantinedBackend {
+    backend: ProductionLiveNode,
+    run_directory: Option<tempfile::TempDir>,
 }
 
 #[derive(Clone, Debug)]
@@ -110,6 +132,7 @@ impl ProductionVmLifecycleConfig {
             quantum_budget: DEFAULT_QUANTUM_BUDGET,
             completion_timeout: Duration::from_secs(240),
             coverage: ProductionPluginSwitch::Off,
+            debug_gateway_executable: None,
             debug: None,
             branch: None,
             branch_fault_choices: Vec::new(),
@@ -163,6 +186,17 @@ impl ProductionVmLifecycleConfig {
     #[must_use]
     pub const fn with_coverage(mut self, coverage: ProductionPluginSwitch) -> Self {
         self.coverage = coverage;
+        self
+    }
+
+    /// Returns this configuration with the standalone debugger gateway executable.
+    ///
+    /// The executable remains a separate GPL-side process. The production
+    /// lifecycle communicates with it only through the versioned Unix control
+    /// protocol owned by `crucible-protocol`.
+    #[must_use]
+    pub fn with_debug_gateway(mut self, executable: impl Into<PathBuf>) -> Self {
+        self.debug_gateway_executable = Some(executable.into());
         self
     }
 
@@ -245,8 +279,7 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
-    fn for_thin_replay(mut self) -> Self {
-        self.debug = None;
+    fn for_thin_replay(self) -> Self {
         self
     }
 
@@ -285,6 +318,13 @@ pub struct ProductionVmLifecycleLoop {
     checkpoint_targets: BTreeMap<NodeId, ProductionVmCheckpointReplayTarget>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
     prelaunched_restarts: BTreeMap<NodeId, (RestartPolicy, u64)>,
+    debug_backend_paths: BTreeMap<NodeId, PathBuf>,
+    debug_gateway: Option<DebugGatewayProcess>,
+    debug_attach: Option<GdbAttachInfo>,
+    debug_gateway_teardown_required: bool,
+    indeterminate_debug_candidate: Option<Box<ProductionVmLifecycleLoop>>,
+    indeterminate_debug_backend: Option<ProductionVmQuarantinedBackend>,
+    debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,
     retained_replay_directories: Vec<tempfile::TempDir>,
     reconciled_crashes: usize,
     reconciled_restarts: usize,
@@ -398,12 +438,18 @@ pub fn build_production_vm_lifecycle_loop(
             debug.node.as_deref().unwrap_or_default()
         )));
     }
+    if config.debug.is_some() && config.debug_gateway_executable.is_none() {
+        return Err(loop_factory_error(
+            "production QEMU debugging requires a standalone debugger gateway executable",
+        ));
+    }
 
     let run_directory = tempfile::TempDir::new()
         .map_err(|error| loop_factory_error(format!("create QEMU run directory: {error}")))?;
     let mut backends = ProductionNodeSet::new();
     let mut launch_configs = BTreeMap::new();
     let mut node_indexes = BTreeMap::new();
+    let mut debug_backend_paths = BTreeMap::new();
     let mut initial_ticks = None;
     let scenario_seed = scenario.seed().bytes();
     let mut launch_seed_bytes = [0_u8; 8];
@@ -476,13 +522,15 @@ pub fn build_production_vm_lifecycle_loop(
             let debug = config.debug.as_ref().ok_or_else(|| {
                 loop_factory_error("debug configuration disappeared during QEMU launch")
             })?;
-            let backend_listen = reserve_backend_gdbstub_endpoint()?;
+            let backend_path = private_backend_gdbstub_path(&node_directory);
+            let backend_listen = qemu_unix_gdbstub_endpoint(&backend_path)?;
             let gdbstub =
                 ProductionGdbstubChannelConfig::new(backend_listen, debug.operator_listen.clone())
                     .map_err(|error| {
                         loop_factory_error(format!("configure QEMU gdbstub: {error}"))
                     })?;
             launch = launch.with_gdbstub(gdbstub);
+            debug_backend_paths.insert(vm.id.clone(), backend_path);
         }
         launch_configs.insert(vm.id.clone(), launch.clone());
         node_indexes.insert(vm.id.clone(), index);
@@ -562,7 +610,7 @@ pub fn build_production_vm_lifecycle_loop(
         .map_err(|error| loop_factory_error(format!("lower scenario trigger plan: {error}")))?
         .into_event_graph();
 
-    Ok(ProductionVmLifecycleLoop {
+    let mut lifecycle = ProductionVmLifecycleLoop {
         inner: BackendQuantumLoop::new(scheduler, backends),
         trigger_graph,
         trigger_state: EventGraphState::default(),
@@ -583,9 +631,23 @@ pub fn build_production_vm_lifecycle_loop(
         checkpoint_targets: BTreeMap::new(),
         recorded_controls: Vec::new(),
         prelaunched_restarts: BTreeMap::new(),
+        debug_backend_paths,
+        debug_gateway: None,
+        debug_attach: None,
+        debug_gateway_teardown_required: false,
+        indeterminate_debug_candidate: None,
+        indeterminate_debug_backend: None,
+        debug_runtime_evidence: Vec::new(),
         retained_replay_directories: Vec::new(),
         reconciled_crashes: 0,
         reconciled_restarts: 0,
         _run_directory: run_directory,
-    })
+    };
+    if let Err(error) = lifecycle.capture_debug_runtime_evidence() {
+        let _ = lifecycle.inner.shutdown();
+        return Err(loop_factory_error(format!(
+            "capture initial debugger runtime evidence: {error}"
+        )));
+    }
+    Ok(lifecycle)
 }

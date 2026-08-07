@@ -1,0 +1,6 @@
+{
+  "schema_version": "aos.hub.topology-cutover-source-export/v1",
+  "fixture_only": true,
+  "deployment_revision": "source-abcdef0",
+  "redacted": true
+}

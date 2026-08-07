@@ -912,12 +912,18 @@ fn command_with_reply_observer(
                 Some(CommandReplyObserver::Query(receiver)),
             )
         }
-        SessionCommand::AttachGdb { node, listen, .. } => {
+        SessionCommand::AttachGdb {
+            node,
+            listen,
+            debug_genesis,
+            ..
+        } => {
             let (reply, receiver) = CommandReply::channel();
             (
                 SessionCommand::AttachGdb {
                     node,
                     listen,
+                    debug_genesis,
                     reply,
                 },
                 Some(CommandReplyObserver::DebugAttach(receiver)),
@@ -992,9 +998,9 @@ fn session_error_rejection_kind(error: &SessionError) -> CommandRejectionKind {
         SessionError::InvalidTransition { .. }
         | SessionError::InvalidEngineState { .. }
         | SessionError::DebugAttachRequired { .. }
-        | SessionError::DebugNonCanonicalBranchRequired { .. } => {
-            CommandRejectionKind::InvalidState
-        }
+        | SessionError::DebugNonCanonicalBranchRequired { .. }
+        | SessionError::GuestIntrospectionNotAuthorized { .. }
+        | SessionError::DebugHistoryUnavailable { .. } => CommandRejectionKind::InvalidState,
         SessionError::BreakpointNotFound { .. } => CommandRejectionKind::NotFound,
         SessionError::BreakpointConditionPrefix { .. } => CommandRejectionKind::InvalidArgument,
         SessionError::UnsupportedBreakpointAction { .. }
@@ -1007,7 +1013,8 @@ fn session_error_rejection_kind(error: &SessionError) -> CommandRejectionKind {
         | SessionError::ControlReplayBoundaryMismatch { .. }
         | SessionError::ControlReplayFrontierMismatch { .. }
         | SessionError::ControlReplayBatchMismatch { .. }
-        | SessionError::ControlReplayFinalSnapshotMismatch { .. } => CommandRejectionKind::Internal,
+        | SessionError::ControlReplayFinalSnapshotMismatch { .. }
+        | SessionError::DebugRuntimeRepositionMismatch(_) => CommandRejectionKind::Internal,
     }
 }
 

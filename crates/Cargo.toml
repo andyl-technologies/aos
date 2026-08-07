@@ -35,6 +35,7 @@ members = [
     "crucible-shmem",
     "crucible-protocol",
     "crucible-device",
+    "crucible-debug-gateway",
     "crucible-qemu",
     "crucible-qemu-plugin",
     "crucible-guest",
@@ -61,7 +62,7 @@ bincode = "1.3.3"
 # axum 0.8's `Form` extractor uses, so hand-routing a form body to a shared
 # handler reproduces axum's parsing exactly.
 serde_urlencoded = "0.7"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "process", "signal", "macros", "net", "io-util", "fs", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "process", "signal", "macros", "net", "io-util", "io-std", "fs", "time"] }
 sha2 = "0.10"
 sha1 = "0.10"
 md-5 = "0.11"
@@ -70,6 +71,7 @@ ring = "0.17"
 hmac = "0.12"
 base64 = "0.22"
 aes-gcm = "0.10"
+zeroize = "1"
 regex = "1"
 stacker = "0.1.24"
 smallvec = "1"
@@ -88,9 +90,11 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 # HTTP / networking
 bytes = "1"
+http-body-util = "0.1"
 http = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 url = "2"
+unicode-normalization = "0.1"
 async-trait = "0.1"
 futures-util = "0.3"
 
@@ -197,6 +201,8 @@ connectrpc = { version = "0.3", features = ["server", "client", "client-tls", "a
 buffa = "0.3"
 prost = "0.13"
 prost-build = "0.13"
+pbjson = "0.7"
+pbjson-build = "0.7"
 futures = "0.3"
 webpki-roots = "1"
 rustls-native-certs = "0.8"
@@ -241,3 +247,10 @@ disallowed_types = "deny"
 expect_used = "deny"
 float_arithmetic = "deny"
 unwrap_used = "deny"
+
+# The topology-cutover E2E authenticates and bundles the actual `aos` test
+# executable. Full dependency debug information makes that binary hundreds of
+# MiB and unlike the release artifact operators deploy; tests keep assertions
+# and backtraces while omitting linked DWARF from the executable under test.
+[profile.test]
+debug = 0

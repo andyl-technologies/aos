@@ -90,7 +90,7 @@
     ++ forbiddenFailuresFor "crates/crucible-session/src/lib.rs" sessionLib [
       {
         label = "wall-clock lifecycle timeout type";
-        needle = "tokio::time";
+        needle = "LifecycleWallClockTimeout";
       }
     ]
     ++ failuresFor "crates/crucible-session/tests/gate_exploration_lifecycle.rs" lifecycleGateTest [

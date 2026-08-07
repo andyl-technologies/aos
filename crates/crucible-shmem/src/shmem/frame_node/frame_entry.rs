@@ -37,23 +37,22 @@ pub const FRAME_ENTRY_SIZE: usize = core::mem::size_of::<FrameEntry>();
 /// Wire alignment of one [`FrameEntry`].
 pub const FRAME_ENTRY_ALIGN: usize = core::mem::align_of::<FrameEntry>();
 
-pub(super) const _: () = assert!(FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET == 0);
-pub(super) const _: () = assert!(FRAME_ENTRY_SRC_NODE_OFFSET == 8);
-pub(super) const _: () = assert!(FRAME_ENTRY_SEQ_OFFSET == 12);
-pub(super) const _: () = assert!(FRAME_ENTRY_LEN_OFFSET == 16);
-pub(super) const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 18);
-pub(super) const _: () = assert!(FRAME_ENTRY_DATA_OFFSET == 24);
-pub(super) const _: () = assert!(FRAME_ENTRY_SIZE == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
-pub(super) const _: () = assert!(FRAME_ENTRY_ALIGN == 8);
-pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, delivery_icount) == 0);
-pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, src_node) == 8);
-pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, seq) == 12);
-pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, len) == 16);
-pub(super) const _: () =
-    assert!(core::mem::offset_of!(FrameEntry, data) == FRAME_ENTRY_DATA_OFFSET);
+const _: () = assert!(FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET == 0);
+const _: () = assert!(FRAME_ENTRY_SRC_NODE_OFFSET == 8);
+const _: () = assert!(FRAME_ENTRY_SEQ_OFFSET == 12);
+const _: () = assert!(FRAME_ENTRY_LEN_OFFSET == 16);
+const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 18);
+const _: () = assert!(FRAME_ENTRY_DATA_OFFSET == 24);
+const _: () = assert!(FRAME_ENTRY_SIZE == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
+const _: () = assert!(FRAME_ENTRY_ALIGN == 8);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, delivery_icount) == 0);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, src_node) == 8);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, seq) == 12);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, len) == 16);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == FRAME_ENTRY_DATA_OFFSET);
 #[rustfmt::skip]
-pub(super) const _: () = assert!(core::mem::size_of::<FrameEntry>() == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
-pub(super) const _: () = assert!(core::mem::align_of::<FrameEntry>() == 8);
+ const _: () = assert!(core::mem::size_of::<FrameEntry>() == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
+const _: () = assert!(core::mem::align_of::<FrameEntry>() == 8);
 
 impl FrameEntry {
     /// Builds a frame entry with an in-band delivery icount.
