@@ -253,6 +253,16 @@ nondeterminism the injection contract bans ([DET-13]). The doorbell has no such
 race because servicing is synchronous with the guest instruction; there is nothing
 to drain.
 
+[GHC-14] governs marker and guest-introspection **data** channels. RFC 36
+[DBG-45A] permits one narrower host-to-guest control edge after an explicit
+non-canonical debugger fork: a typed QMP operation may hot-add an activation-only
+port and send one fixed versioned token to an event-driven guest bootstrap. That
+port is absent during canonical execution, carries no marker, `CRGX`, `CRGI`,
+credential, command, or stream payload, and is discarded with the forked runtime.
+It is not a fallback when the shared-memory rings are full. Any bidirectional,
+payload-bearing, pre-fork, or operator-selected use remains forbidden by
+[GHC-14].
+
 Implementation caveat: on Linux x86_64, architectural port I/O is privileged.
 The userspace `crucible-guest` emitter therefore requests permission for the
 single reserved port with `ioperm(2)` before executing `out 0xe7,al`, and fails

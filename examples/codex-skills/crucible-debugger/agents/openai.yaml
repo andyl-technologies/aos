@@ -1,0 +1,4 @@
+interface:
+  display_name: "Crucible Debugger"
+  short_description: "Debug failing deterministic VM scenarios"
+  default_prompt: "Use $crucible-debugger to reproduce and inspect a failing Crucible scenario."
