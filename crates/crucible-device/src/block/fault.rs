@@ -12,6 +12,7 @@ use crate::error::DeviceError;
 use crate::request::{AdditionalCompletion, ComputedResponse, Response, ResponseStatus};
 
 use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, BlockStatus};
+use super::media::{BlockMediaState, ResolvedBlockMediaRule};
 use super::overlay::{BaseImage, CowOverlay};
 use super::persistence::{
     BlockPersistenceGraph, BlockWriteFragmentId, ResolvedBlockPersistenceTransform,
@@ -334,6 +335,8 @@ pub struct ResolvedBlockFaultDirective {
     pub duplicate_completions: Vec<ResolvedBlockDuplicateCompletion>,
     /// Ordered read transformations.
     pub read_transforms: Vec<BlockFaultReadTransform>,
+    /// Stateful physical-media overlays evaluated at the real media opportunity.
+    pub media_rules: Vec<ResolvedBlockMediaRule>,
     /// Write persistence disposition.
     pub write_disposition: BlockFaultWriteDisposition,
     /// Flush disposition.
@@ -364,6 +367,7 @@ impl ResolvedBlockFaultDirective {
             retention_timeout_response: None,
             duplicate_completions: Vec::new(),
             read_transforms: Vec::new(),
+            media_rules: Vec::new(),
             write_disposition: BlockFaultWriteDisposition::Apply,
             flush_disposition: BlockFaultFlushDisposition::Honest,
             cache_policy: None,
@@ -499,6 +503,7 @@ impl ResolvedBlockFaultDirective {
             || self.reported_capacity_bytes > config.length_bytes
             || self.duplicate_completions.len() > HARD_BLOCK_DUPLICATE_COMPLETIONS
             || self.read_transforms.len() > HARD_BLOCK_WRITE_SPANS
+            || self.media_rules.len() > HARD_BLOCK_WRITE_SPANS
             || self.persistence_transforms.len() > HARD_BLOCK_WRITE_SPANS
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
@@ -644,6 +649,15 @@ impl ResolvedBlockFaultDirective {
                 BlockFaultReadTransform::Replace { .. } => {}
             }
         }
+        let mut media_contributors = BTreeSet::new();
+        for rule in &self.media_rules {
+            rule.validate(config.length_bytes)?;
+            if !media_contributors.insert(rule.contributor) {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "media contributor is repeated in one directive",
+                });
+            }
+        }
         Ok(())
     }
 }
@@ -720,6 +734,7 @@ pub struct BlockFaultState {
     volatile: BTreeMap<u64, BlockVolatileEntry>,
     volatile_bytes: u64,
     retained: BTreeMap<u64, BlockRetainedVersion>,
+    media: BlockMediaState,
     persistence: BlockPersistenceGraph,
     pending_barrier_frontier: Option<u64>,
     pending_honest_flush_frontier: Option<u64>,
@@ -748,6 +763,7 @@ impl BlockFaultState {
             volatile: BTreeMap::new(),
             volatile_bytes: 0,
             retained: BTreeMap::new(),
+            media: BlockMediaState::default(),
             persistence: BlockPersistenceGraph::new(),
             pending_barrier_frontier: None,
             pending_honest_flush_frontier: None,
@@ -783,6 +799,7 @@ impl BlockFaultState {
             volatile: BTreeMap::new(),
             volatile_bytes: 0,
             retained: BTreeMap::new(),
+            media: BlockMediaState::default(),
             persistence,
             pending_barrier_frontier: None,
             pending_honest_flush_frontier: None,
@@ -813,6 +830,7 @@ impl BlockFaultState {
             && self.volatile.is_empty()
             && self.volatile_bytes == 0
             && self.retained.is_empty()
+            && self.media.rules().is_empty()
             && self.persistence.nodes().is_empty()
             && self.pending_barrier_frontier.is_none()
             && self.pending_honest_flush_frontier.is_none()
@@ -833,6 +851,7 @@ impl BlockFaultState {
     /// out-of-range entries, exhausted bounds, or malformed retained responses.
     pub fn validate_restore(&self, device_length: u64) -> Result<(), DeviceError> {
         self.config.validate()?;
+        self.media.validate_restore(device_length)?;
         if self.config.length_bytes != device_length
             || self.pending.len() > HARD_PENDING_BLOCK_FAULT_DIRECTIVES
             || self.pending_bytes > HARD_PENDING_BLOCK_FAULT_BYTES
@@ -1138,6 +1157,12 @@ impl BlockFaultState {
         &self.retained
     }
 
+    /// Returns checkpointed media overlays and activation counters.
+    #[must_use]
+    pub const fn media_state(&self) -> &BlockMediaState {
+        &self.media
+    }
+
     /// Returns completions waiting for an explicit recovery or timeout event.
     #[must_use]
     pub const fn retained_completions(&self) -> &BTreeMap<u32, BlockRetainedCompletion> {
@@ -1440,7 +1465,7 @@ impl BlockFaultState {
         request: &BlockRequest,
         directive: &ResolvedBlockFaultDirective,
     ) -> Result<(BlockResponse, u64), DeviceError> {
-        let error = directive.error_result.or_else(|| {
+        let admission_error = directive.error_result.or_else(|| {
             (directive.availability == BlockFaultAvailability::Offline)
                 .then_some(BlockErrorCode::Offline)
                 .or_else(|| {
@@ -1457,6 +1482,17 @@ impl BlockFaultState {
                         .then_some(BlockErrorCode::InvalidRange)
                 })
         });
+        let media_error = if admission_error.is_none() {
+            self.media.apply(
+                request,
+                directive.execution_nanos,
+                self.config.length_bytes,
+                &directive.media_rules,
+            )?
+        } else {
+            None
+        };
+        let error = admission_error.or(media_error);
         if let Some(error) = error {
             return Ok((BlockResponse::error(request.request_id, error), 0));
         }
@@ -2392,6 +2428,22 @@ fn directive_owned_bytes(directive: &ResolvedBlockFaultDirective) -> Result<u64,
                 })?;
         }
     }
+    for rule in &directive.media_rules {
+        total = total
+            .checked_add(
+                u64::try_from(
+                    rule.operations
+                        .len()
+                        .saturating_mul(std::mem::size_of::<BlockOp>()),
+                )
+                .map_err(|_error| DeviceError::InvalidBlockFaultDirective {
+                    reason: "pending media operation-set length overflow",
+                })?,
+            )
+            .ok_or(DeviceError::InvalidBlockFaultDirective {
+                reason: "pending directive byte count overflow",
+            })?;
+    }
     if let Some(response) = &directive.retention_timeout_response {
         total = total
             .checked_add(u64::try_from(response.data.len()).map_err(|_error| {
@@ -2640,6 +2692,39 @@ mod tests {
             |_| {},
         )
         .data
+    }
+
+    #[test]
+    fn latent_media_failure_changes_future_real_request_results() {
+        let base = BaseImage::new(vec![0x5a; 32]);
+        let mut durable = CowOverlay::new();
+        let mut state = state(BlockCompletionDurability::Durable);
+        let rule = ResolvedBlockMediaRule {
+            contributor: [0x31; 32],
+            start: 8,
+            length: 8,
+            state: crate::block::BlockMediaRangeState::Latent,
+            operations: vec![BlockOp::Read],
+            count_threshold: Some(2),
+            time_threshold_nanos: None,
+        };
+
+        let first = BlockRequest::read(40, 8, 4);
+        let first_response = response(&mut state, &base, &mut durable, &first, |directive| {
+            directive.media_rules.push(rule.clone());
+        });
+        assert_eq!(first_response.status, BlockStatus::Ok);
+
+        let second = BlockRequest::read(41, 8, 4);
+        let second_response = response(&mut state, &base, &mut durable, &second, |directive| {
+            directive.media_rules.push(rule);
+        });
+        assert_eq!(second_response.status, BlockStatus::Error);
+        assert_eq!(
+            second_response.error_code(),
+            Ok(BlockErrorCode::MediumError)
+        );
+        assert_eq!(state.media_state().rules()[&[0x31; 32]].access_count, 2);
     }
 
     #[test]

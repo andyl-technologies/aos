@@ -22,6 +22,7 @@
 pub mod codec;
 pub mod device;
 pub mod fault;
+pub mod media;
 pub mod overlay;
 pub mod persistence;
 
@@ -31,6 +32,7 @@ pub use codec::{
 };
 pub use device::{BlockDevice, BlockLatency, BlockSnapshot, submit_cross_device_misdirected_write};
 pub use fault::*;
+pub use media::*;
 pub use overlay::{BaseImage, CowOverlay, OverlayDelta, PAGE_SIZE};
 pub use persistence::{
     BlockPersistenceGraph, BlockPersistenceNode, BlockPersistenceOrdering,

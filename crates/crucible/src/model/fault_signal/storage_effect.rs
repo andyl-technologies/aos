@@ -464,6 +464,18 @@ impl StorageEffectSpecification {
                     effect: self.kind(),
                 })
             }
+            Self::MediaRange {
+                state,
+                count_threshold,
+                time_threshold_nanos,
+                ..
+            } if *state != StorageMediaState::Latent
+                && (count_threshold.is_some() || time_threshold_nanos.is_some()) =>
+            {
+                Err(FaultContractError::InvalidEffectParameters {
+                    effect: self.kind(),
+                })
+            }
             Self::NinePResult {
                 kind,
                 errno,
