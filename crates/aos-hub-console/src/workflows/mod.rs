@@ -29,6 +29,7 @@ mod registry_images;
 mod registry_mirror;
 mod registry_publication;
 mod resources;
+mod signing_keys;
 mod storage_gateways;
 
 pub(crate) use resources::ResourceWorkflow;

@@ -22,6 +22,7 @@ use super::registry_images::RegistryImages;
 use super::registry_mirror::RegistryMirrorWorkflow;
 use super::registry_publication::RegistryPublicationWorkflow;
 use super::resources::UnavailableWorkflow;
+use super::signing_keys::{SigningKeyTarget, SigningKeyWorkflow};
 
 /// Renders registry/cache integration pages and delegates unrelated routes.
 #[component]
@@ -49,6 +50,33 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
         .into_any(),
         (ConsoleScope::Registry { path }, "mirror") => view! {
             <RegistryMirrorWorkflow client=client registry_id=path.clone()/>
+        }
+        .into_any(),
+        (ConsoleScope::Organization { slug }, "signing") => view! {
+            <SigningKeyWorkflow
+                client=client
+                target=SigningKeyTarget::Organization(slug.clone())
+            />
+        }
+        .into_any(),
+        (ConsoleScope::Registry { path }, "signing") => view! {
+            <SigningKeyWorkflow
+                client=client
+                target=SigningKeyTarget::Registry(path.clone())
+            />
+        }
+        .into_any(),
+        (
+            ConsoleScope::Cache {
+                organization,
+                cache,
+            },
+            "signing",
+        ) => view! {
+            <SigningKeyWorkflow
+                client=client
+                target=SigningKeyTarget::Cache(format!("{organization}/{cache}"))
+            />
         }
         .into_any(),
         (
