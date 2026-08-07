@@ -50,7 +50,10 @@
   gnumake,
   bash,
 }: let
-  version = "wrangler-4.20.0+miniflare-3.20240909.0";
+  # Wrangler 4.36.0 introduced Worker Rate Limiting binding uploads. Older
+  # releases accept `[[ratelimits]]` but omit those bindings at deploy time,
+  # leaving the Hub runtime unable to serve application requests.
+  version = "wrangler-4.119.0+miniflare-3.20240909.0";
 
   # The committed manifest + lockfile live next to this file. Filter the source
   # to just those two inputs so unrelated edits (e.g. to this .nix) don't churn
@@ -68,7 +71,7 @@
     name = "miniflare-tooling-node-modules";
     src = npmSrc;
     # Iterate: fakeHash → real hash from the mismatch error.
-    hash = "sha256-CytbqZxHAt8pTDp0auifMGiBUbc0BTLH3vL8Z59uTdY=";
+    hash = "sha256-RXKP78tXoES9TA9m7Y7lGic+BgicQW1mXzXck7vXy2k=";
   };
 in
   mkDerivation {

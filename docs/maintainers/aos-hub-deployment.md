@@ -20,6 +20,7 @@ values:
 | Worker | `aos-hub-staging` | `aos-hub` |
 | R2 bucket | `aos-hub-staging-surfaces` | `aos-hub-surfaces` |
 | KV namespace title | `aos-hub-staging-sessions` | `aos-hub-sessions` |
+| Deferred-jobs Queue | `aos-hub-staging-jobs` | `aos-hub-jobs` |
 | Durable Object state | Owned by the staging Worker | Owned by the production Worker |
 | Rate-limit namespace IDs | `2001` through `2003` | `1001` through `1003` |
 

@@ -219,8 +219,9 @@ struct WorkerArgs {
     #[arg(long, value_enum, default_value_t = Provider::Cloudflare)]
     provider: Provider,
     /// The Worker name. Also the default stem for the provisioned resource names
-    /// (R2 bucket, KV namespace, and Durable Object), so one `--name` namespaces a whole
-    /// install — important because those names are unique per Cloudflare account.
+    /// (R2 bucket, KV namespace, Queue, and Durable Object), so one `--name`
+    /// namespaces a whole install — important because those names are unique per
+    /// Cloudflare account.
     #[arg(long, default_value = "aos-hub")]
     name: String,
     /// The R2 bucket holding the registry surfaces (default: `<name>-surfaces`).
@@ -231,6 +232,9 @@ struct WorkerArgs {
     /// The KV namespace title for sessions (default: `<name>-sessions`).
     #[arg(long)]
     kv_title: Option<String>,
+    /// The deferred-jobs Queue name (default: `<name>-jobs`).
+    #[arg(long)]
+    queue: Option<String>,
     /// Base for three account-unique rate-limit namespace IDs.
     #[arg(long, default_value_t = 1000)]
     rate_limit_namespace_base: u32,
@@ -334,6 +338,13 @@ impl WorkerArgs {
         self.kv_title
             .clone()
             .unwrap_or_else(|| format!("{}-sessions", self.name))
+    }
+
+    /// The deferred-jobs Queue name, defaulting to `<name>-jobs`.
+    fn queue(&self) -> String {
+        self.queue
+            .clone()
+            .unwrap_or_else(|| format!("{}-jobs", self.name))
     }
 }
 
@@ -1075,6 +1086,7 @@ async fn provision_worker(
         &args.name,
         &args.bucket(),
         &args.kv_title(),
+        &args.queue(),
         args.egress_gateway_url.as_deref(),
         &external_url,
         args.deployment_id.as_deref(),
