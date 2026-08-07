@@ -11,6 +11,8 @@ use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
+use super::cache_manual_roots::ManualRetentionRoots;
+
 #[derive(Clone, Copy)]
 struct RetentionFields {
     registry_id: RwSignal<String>,
@@ -149,7 +151,8 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                     }}
                 </Suspense>
             </section>
-            <RetentionEditor client=client cache_id=cache_id/>
+            <RetentionEditor client=client.clone() cache_id=cache_id.clone()/>
+            <ManualRetentionRoots client=client cache_id=cache_id/>
         </div>
     }
 }

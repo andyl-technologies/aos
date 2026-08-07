@@ -3,6 +3,7 @@
 mod access_policy;
 mod cache_integration_preview;
 mod cache_integrations;
+mod cache_manual_roots;
 mod cache_retention;
 mod cache_stack;
 mod delivery_endpoints;
