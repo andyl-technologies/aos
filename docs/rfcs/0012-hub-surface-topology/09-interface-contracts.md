@@ -77,7 +77,7 @@ left as undocumented Web-only operations:
 | OIDC identity provider | `org identity-provider` | `IdentityService` identity-provider methods |
 | SSO email-domain ownership | `org domain` | `IdentityService` organization-domain methods |
 | Hosted and surface signing keys | `signing-key`, including `usage show/plan/apply` | `SigningKeyService` key lifecycle plus exact usage get/set methods |
-| Webhooks | `org webhook` | `WebhookService` list plus plan/apply create/delete methods |
+| Webhooks | `org webhook` | `WebhookService` inventory with the closed event taxonomy plus plan/apply create/delete methods |
 | Audit | `audit` | `AuditService` |
 | Registry CRUD and identity/access | `registry`, `registry identity` | `RegistryService` get/list plus plan/apply create/update/delete methods |
 | Scoped access tokens | `access-token` | `IdentityService` list plus plan/apply issue/retire methods; rotation is explicit issue-then-retire |

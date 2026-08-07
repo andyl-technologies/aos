@@ -1628,6 +1628,8 @@ message ListWebhooksRequest {
 message ListWebhooksResponse {
   repeated Webhook webhooks = 1;
   string next_page_token = 2;
+  // Closed event taxonomy accepted by PlanCreateWebhook.
+  repeated string supported_event_types = 3;
 }
 
 message PlanDeleteWebhookRequest {

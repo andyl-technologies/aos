@@ -21,6 +21,7 @@ mod instance_settings;
 mod network_boundaries;
 mod networking;
 mod organization_identity;
+mod organization_activity;
 mod organization_sso;
 mod placement_policies;
 mod placements;
