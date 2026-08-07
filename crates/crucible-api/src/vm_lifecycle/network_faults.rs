@@ -1369,6 +1369,7 @@ pub(super) type SharedProductionFaultEvaluationCursor = Arc<Mutex<ProductionFaul
 pub(super) struct ProductionFaultNetworkInterceptor {
     runtime: Arc<Mutex<ProductionFaultRuntime>>,
     cursor: SharedProductionFaultEvaluationCursor,
+    observations: super::storage_faults::ProductionStorageObservations,
     topology: crucible::model::WorldFaultTopology,
     links: Vec<crucible::LinkDef>,
     transition_ledger: BTreeMap<ContentHash, NetworkAvailabilityTransitionRecord>,
@@ -1385,6 +1386,9 @@ impl ProductionFaultNetworkInterceptor {
         Self::with_shared_runtime(
             Arc::new(Mutex::new(runtime)),
             Arc::new(Mutex::new(ProductionFaultEvaluationCursor::default())),
+            Arc::new(Mutex::new(
+                super::storage_faults::ProductionFaultObservationJournal::default(),
+            )),
             topology,
             links,
         )
@@ -1394,12 +1398,14 @@ impl ProductionFaultNetworkInterceptor {
     pub(super) fn with_shared_runtime(
         runtime: Arc<Mutex<ProductionFaultRuntime>>,
         cursor: SharedProductionFaultEvaluationCursor,
+        observations: super::storage_faults::ProductionStorageObservations,
         topology: crucible::model::WorldFaultTopology,
         links: Vec<crucible::LinkDef>,
     ) -> Self {
         Self {
             runtime,
             cursor,
+            observations,
             topology,
             links,
             transition_ledger: BTreeMap::new(),
@@ -1428,6 +1434,7 @@ impl ProductionFaultNetworkInterceptor {
         links: Vec<crucible::LinkDef>,
         scheduler: &mut SingleScheduler,
         pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
+        observations: super::storage_faults::ProductionStorageObservations,
     ) -> Result<Self, SchedulerError> {
         let staged = stage_network_restore(&checkpoint, scheduler)?;
         staged
@@ -1465,6 +1472,7 @@ impl ProductionFaultNetworkInterceptor {
                 coordinate: staged.adapter.coordinate,
                 coordinate_sequence: staged.adapter.coordinate_sequence,
             })),
+            observations,
             topology,
             links,
             transition_ledger: BTreeMap::new(),
@@ -1499,6 +1507,19 @@ impl ProductionFaultNetworkInterceptor {
             .map_err(|_| SchedulerError::BoundaryViolation {
                 message: String::from("production fault runtime lock is poisoned"),
             })?;
+        let observations =
+            self.observations
+                .lock()
+                .map_err(|_| SchedulerError::BoundaryViolation {
+                    message: String::from("production fault observation journal lock is poisoned"),
+                })?;
+        if !observations.is_empty() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production fault checkpoint requires a drained observation journal",
+                ),
+            });
+        }
         let cursor = *cursor_guard;
         let effect_state = checkpoint_network_effect_state(
             &self.effect_state,
@@ -1863,12 +1884,88 @@ impl ProductionFaultNetworkInterceptor {
                 evaluation.next_wakeup_nanos,
                 earliest_wakeup(boundary_application.next_wakeup_nanos, backpressure_wakeup),
             ))?;
-            let append = staged_scheduler.append_fault_observations(evaluation.observations)?;
-            backend
-                .apply_block_boundary_actions(coordinate, &storage_boundary_actions)
-                .map_err(|error| SchedulerError::BoundaryViolation {
+            {
+                let mut journal =
+                    self.observations
+                        .lock()
+                        .map_err(|_| SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "production fault observation journal lock is poisoned",
+                            ),
+                        })?;
+                if journal.contains_sequence(sequence) {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "fault observation sequence {sequence} was reused at a scheduler boundary"
+                        ),
+                    });
+                }
+                journal
+                    .append(sequence, evaluation.observations)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: error.to_string(),
+                    })?;
+            }
+            let block_rollback = backend.checkpoint_block_boundary_state();
+            if let Err(error) = backend.apply_block_boundary_actions(
+                coordinate,
+                sequence,
+                &storage_boundary_actions,
+            ) {
+                self.observations
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "production fault observation journal lock is poisoned",
+                        ),
+                    })?
+                    .rollback_sequence(sequence)
+                    .map_err(|rollback_error| SchedulerError::BoundaryViolation {
+                        message: rollback_error.to_string(),
+                    })?;
+                return Err(SchedulerError::BoundaryViolation {
                     message: format!("apply storage fault boundary: {error}"),
-                })?;
+                });
+            }
+            let journal_commit = (|| {
+                let mut journal =
+                    self.observations
+                        .lock()
+                        .map_err(|_| SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "production fault observation journal lock is poisoned",
+                            ),
+                        })?;
+                let append = staged_scheduler.append_fault_observations(journal.snapshot())?;
+                journal.clear();
+                Ok(append)
+            })();
+            let append = match journal_commit {
+                Ok(append) => append,
+                Err(error) => {
+                    let block_rollback_error =
+                        backend.restore_block_boundary_state(block_rollback).err();
+                    self.observations
+                        .lock()
+                        .map_err(|_| SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "production fault observation journal lock is poisoned",
+                            ),
+                        })?
+                        .rollback_sequence(sequence)
+                        .map_err(|rollback_error| SchedulerError::BoundaryViolation {
+                            message: rollback_error.to_string(),
+                        })?;
+                    if let Some(rollback_error) = block_rollback_error {
+                        return Err(SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "storage boundary failed and its exact rollback failed: {error}; {rollback_error}"
+                            ),
+                        });
+                    }
+                    return Err(error);
+                }
+            };
             Ok((append, records))
         })();
         let (append, records) = match staged {
@@ -3351,6 +3448,43 @@ mod tests {
         assert_eq!(pending_outputs[0].source, destination);
         assert_eq!(pending_outputs[0].destination, source);
         assert!(pending_outputs[0].route.is_some());
+        interceptor
+            .observations
+            .lock()
+            .unwrap_or_else(|error| panic!("test observation journal should lock: {error}"))
+            .append(
+                7,
+                vec![FaultObservation {
+                    semantic_version: FAULT_RUNTIME_STATE_VERSION,
+                    kind: FaultObservationKind::EffectApplied,
+                    coordinate: FaultCoordinate {
+                        virtual_nanos: 0,
+                        retired_instructions: None,
+                    },
+                    binding: None,
+                    target: None,
+                    opportunity: None,
+                    evidence: ContentHash::from_bytes(b"undrained-observation"),
+                }],
+            )
+            .unwrap_or_else(|error| panic!("test observation should append: {error}"));
+        let undrained_error = interceptor
+            .checkpoint(&scheduler, &pending_outputs, &mut nodes)
+            .err()
+            .unwrap_or_else(|| panic!("checkpoint should reject an undrained journal"));
+        assert!(
+            undrained_error
+                .to_string()
+                .contains("drained observation journal")
+        );
+        let mut journal = interceptor
+            .observations
+            .lock()
+            .unwrap_or_else(|error| panic!("test observation journal should lock: {error}"));
+        let drained = journal.snapshot();
+        journal.clear();
+        assert_eq!(drained.len(), 1);
+        drop(journal);
         let checkpoint = interceptor
             .checkpoint(&scheduler, &pending_outputs, &mut nodes)
             .unwrap_or_else(|error| panic!("network checkpoint should encode: {error}"));
@@ -3399,6 +3533,9 @@ mod tests {
             world.links().to_vec(),
             &mut restored_scheduler,
             &mut rejected_pending,
+            Arc::new(Mutex::new(
+                super::storage_faults::ProductionFaultObservationJournal::default(),
+            )),
         )
         .err()
         .unwrap_or_else(|| panic!("malformed adapter checkpoint should fail closed"));
@@ -3421,6 +3558,9 @@ mod tests {
             world.links().to_vec(),
             &mut restored_scheduler,
             &mut restored_pending,
+            Arc::new(Mutex::new(
+                super::storage_faults::ProductionFaultObservationJournal::default(),
+            )),
         )
         .unwrap_or_else(|error| panic!("network continuation should restore: {error}"));
         let restored_checkpoint = restored_interceptor

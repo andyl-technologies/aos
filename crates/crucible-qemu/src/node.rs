@@ -511,6 +511,33 @@ pub struct QemuNode {
 }
 
 impl QemuNode {
+    /// Captures block state for rollback of an uncommitted scheduler boundary.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn checkpoint_block_boundary_state(
+        &self,
+    ) -> Option<crucible_device::block::BlockFaultState> {
+        self.host_io_runtime.checkpoint_block_boundary_state()
+    }
+
+    /// Restores block state captured before an uncommitted scheduler boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the host-I/O runtime cannot restore the
+    /// captured topology and state exactly.
+    #[cfg(target_os = "linux")]
+    pub fn restore_block_boundary_state(
+        &mut self,
+        state: Option<crucible_device::block::BlockFaultState>,
+    ) -> Result<(), QemuNodeError> {
+        self.host_io_runtime
+            .restore_block_boundary_state(state)
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })
+    }
+
     /// Applies storage-targeted actions through this node's live block adapter.
     ///
     /// # Errors
@@ -520,10 +547,11 @@ impl QemuNode {
     pub fn apply_block_boundary_actions(
         &mut self,
         coordinate: FaultCoordinate,
+        evaluation_sequence: u64,
         actions: &[ResolvedBindingAction],
     ) -> Result<(), QemuNodeError> {
         self.host_io_runtime
-            .apply_block_boundary_actions(coordinate, actions)
+            .apply_block_boundary_actions(coordinate, evaluation_sequence, actions)
             .map_err(|source| {
                 QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
             })

@@ -147,6 +147,33 @@ pub enum QemuAsyncDriverOperation {
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Captures the block state needed to roll back one scheduler boundary.
+    #[cfg(target_os = "linux")]
+    fn checkpoint_block_boundary_state(&self) -> Option<crucible_device::block::BlockFaultState> {
+        None
+    }
+
+    /// Restores block state captured before an uncommitted scheduler boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when this runtime cannot restore
+    /// the supplied state exactly.
+    #[cfg(target_os = "linux")]
+    fn restore_block_boundary_state(
+        &mut self,
+        state: Option<crucible_device::block::BlockFaultState>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if state.is_none() {
+            Ok(())
+        } else {
+            Err(QemuAsyncDriverRuntimeError::new(
+                "restore block boundary state",
+                "host-I/O runtime does not implement block transaction rollback",
+            ))
+        }
+    }
+
     /// Applies storage-targeted actions at one exact scheduler boundary.
     ///
     /// # Errors
@@ -157,9 +184,17 @@ pub trait QemuHostIoRuntime: Send {
     fn apply_block_boundary_actions(
         &mut self,
         _coordinate: crucible::model::FaultCoordinate,
-        _actions: &[crucible::model::ResolvedBindingAction],
+        _evaluation_sequence: u64,
+        actions: &[crucible::model::ResolvedBindingAction],
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        Ok(())
+        if actions.is_empty() {
+            Ok(())
+        } else {
+            Err(QemuAsyncDriverRuntimeError::new(
+                "apply block boundary actions",
+                "host-I/O runtime does not implement signal-driven block boundary mutations",
+            ))
+        }
     }
 
     /// Installs the signal-driven coordinator for an attached live block device.

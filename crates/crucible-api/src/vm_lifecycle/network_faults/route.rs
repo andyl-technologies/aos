@@ -34,7 +34,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
         let mut staged_pending = pending_outputs.clone();
         let source_outputs = outputs.clone();
         let mut routed = Vec::new();
-        let mut observations = Vec::new();
+        let mut observation_batches = Vec::new();
         let mut transition_records = Vec::new();
         let mut next_wakeup_nanos = None;
         let mut runtime_committed = false;
@@ -212,8 +212,9 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     &mut staged_pending,
                                     Some(&mut routed),
                                 )?;
-                            observations.extend(evaluation.observations);
-                            observations.extend(transition_observations);
+                            let mut evaluation_observations = evaluation.observations;
+                            evaluation_observations.extend(transition_observations);
+                            observation_batches.push((sequence, evaluation_observations));
                             transition_records.extend(records);
                             let mut frame_actions = Vec::new();
                             staged_effect_state.boundary.apply_frame(
@@ -437,11 +438,26 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
             if next_wakeup_nanos.is_some() {
                 staged_scheduler.set_signal_fault_wakeup(next_wakeup_nanos)?;
             }
+            let mut journal =
+                self.observations
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "production fault observation journal lock is poisoned",
+                        ),
+                    })?;
+            journal
+                .append_observation_batches(observation_batches)
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: error.to_string(),
+                })?;
+            let observations = journal.snapshot();
             let appends = if observations.is_empty() {
                 Vec::new()
             } else {
                 vec![staged_scheduler.append_fault_observations(observations)?]
             };
+            journal.clear();
             Ok(appends)
         })();
         let appends = match staged {

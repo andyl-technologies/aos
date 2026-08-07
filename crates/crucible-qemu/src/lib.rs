@@ -181,6 +181,8 @@ pub use node_factory::{
     spawn_setup_and_restore_qemu_node,
 };
 pub use node_set::QemuNodeSet;
+#[cfg(target_os = "linux")]
+pub use node_set::QemuNodeSetBlockBoundaryCheckpoint;
 pub use production_fault_runtime::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionFaultRuntimeError,
     ProductionNetworkStateCheckpoint,

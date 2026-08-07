@@ -267,6 +267,7 @@ impl ProductionVmLifecycleLoop {
             self.source.world().links().to_vec(),
             scheduler,
             pending_outputs,
+            Arc::clone(&self.storage_fault_observations),
         )?;
         let (mut backend, run_directory) = replay.take_replayed_node(node)?;
         self.install_authoritative_block_coordinator(node, &mut backend)?;

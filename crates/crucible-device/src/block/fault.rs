@@ -427,6 +427,21 @@ pub struct BlockPersistenceMediaOutcome {
     pub applied_digest: [u8; 32],
 }
 
+/// One storage completion in the device's exact causal generation order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockStorageOutcome {
+    /// One contributor completed integrated service before subsequent effects.
+    Service(BlockServiceCompletion),
+    /// One physical-media persistence mutation completed.
+    Persistence(BlockPersistenceMediaOutcome),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockStorageOutcomeRef {
+    Service(usize),
+    Persistence(usize),
+}
+
 impl ResolvedBlockFaultDirective {
     /// Builds the exact fault-free directive for `request`.
     #[must_use]
@@ -999,6 +1014,7 @@ pub struct BlockFaultState {
     service_pending: BTreeMap<u64, BlockServicePendingRequest>,
     service_pending_bytes: u64,
     service_outcomes: Vec<BlockServiceCompletion>,
+    storage_outcome_order: Vec<BlockStorageOutcomeRef>,
     execution_opportunities_required: bool,
     execution_pending: BTreeMap<u64, BlockExecutionPendingRequest>,
     execution_pending_bytes: u64,
@@ -1043,6 +1059,7 @@ impl BlockFaultState {
             service_pending: BTreeMap::new(),
             service_pending_bytes: 0,
             service_outcomes: Vec::new(),
+            storage_outcome_order: Vec::new(),
             execution_opportunities_required: false,
             execution_pending: BTreeMap::new(),
             execution_pending_bytes: 0,
@@ -1094,6 +1111,7 @@ impl BlockFaultState {
             service_pending: BTreeMap::new(),
             service_pending_bytes: 0,
             service_outcomes: Vec::new(),
+            storage_outcome_order: Vec::new(),
             execution_opportunities_required: false,
             execution_pending: BTreeMap::new(),
             execution_pending_bytes: 0,
@@ -1391,6 +1409,7 @@ impl BlockFaultState {
             && self.service_pending.is_empty()
             && self.service_pending_bytes == 0
             && self.service_outcomes.is_empty()
+            && self.storage_outcome_order.is_empty()
             && self.execution_pending.is_empty()
             && self.execution_pending_bytes == 0
             && self.request_persistence_pending.is_empty()
@@ -1437,6 +1456,9 @@ impl BlockFaultState {
             || self.service_pending.len() > super::service::HARD_BLOCK_SERVICE_JOBS
             || self.service_pending_bytes > HARD_PENDING_BLOCK_FAULT_BYTES
             || self.service_outcomes.len() > super::service::HARD_BLOCK_SERVICE_JOBS
+            || self.storage_outcome_order.len()
+                > super::service::HARD_BLOCK_SERVICE_JOBS
+                    .saturating_add(HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS)
             || self.execution_pending.len() > super::service::HARD_BLOCK_SERVICE_JOBS
             || self.execution_pending_bytes > HARD_PENDING_BLOCK_FAULT_BYTES
             || self.request_persistence_pending.len() > super::service::HARD_BLOCK_SERVICE_JOBS
@@ -1461,6 +1483,32 @@ impl BlockFaultState {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "restored block fault state violates configured bounds",
             });
+        }
+        if self.storage_outcome_order.len()
+            != self
+                .service_outcomes
+                .len()
+                .saturating_add(self.persistence_media_outcomes.len())
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "restored storage outcome order does not cover every outcome",
+            });
+        }
+        let mut seen_service = vec![false; self.service_outcomes.len()];
+        let mut seen_persistence = vec![false; self.persistence_media_outcomes.len()];
+        for outcome in &self.storage_outcome_order {
+            let seen = match *outcome {
+                BlockStorageOutcomeRef::Service(index) => seen_service.get_mut(index),
+                BlockStorageOutcomeRef::Persistence(index) => seen_persistence.get_mut(index),
+            }
+            .ok_or(DeviceError::InvalidBlockFaultDirective {
+                reason: "restored storage outcome order contains an invalid index",
+            })?;
+            if std::mem::replace(seen, true) {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "restored storage outcome order contains a duplicate index",
+                });
+            }
         }
         let pending_bytes = self.pending.values().try_fold(0_u64, |total, directive| {
             total.checked_add(directive_owned_bytes(directive)?).ok_or(
@@ -1989,7 +2037,56 @@ impl BlockFaultState {
 
     /// Drains completed persistence-media evidence after durable event recording.
     pub fn drain_persistence_media_outcomes(&mut self) -> Vec<BlockPersistenceMediaOutcome> {
+        self.storage_outcome_order
+            .retain(|outcome| matches!(outcome, BlockStorageOutcomeRef::Service(_)));
         std::mem::take(&mut self.persistence_media_outcomes)
+    }
+
+    /// Borrows completed physical-media outcomes without acknowledging them.
+    #[must_use]
+    pub fn persistence_media_outcomes(&self) -> &[BlockPersistenceMediaOutcome] {
+        &self.persistence_media_outcomes
+    }
+
+    /// Returns every pending storage outcome in exact causal generation order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when checkpointed outcome-order state contains
+    /// an invalid reference.
+    pub fn storage_outcomes(&self) -> Result<Vec<BlockStorageOutcome>, DeviceError> {
+        self.storage_outcome_order
+            .iter()
+            .map(|outcome| match *outcome {
+                BlockStorageOutcomeRef::Service(index) => self
+                    .service_outcomes
+                    .get(index)
+                    .copied()
+                    .map(BlockStorageOutcome::Service),
+                BlockStorageOutcomeRef::Persistence(index) => self
+                    .persistence_media_outcomes
+                    .get(index)
+                    .cloned()
+                    .map(BlockStorageOutcome::Persistence),
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or(DeviceError::InvalidBlockFaultDirective {
+                reason: "storage outcome order contains an invalid index",
+            })
+    }
+
+    /// Drains every storage outcome in exact causal generation order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] without mutation when checkpointed outcome-order
+    /// state contains an invalid reference.
+    pub fn drain_storage_outcomes(&mut self) -> Result<Vec<BlockStorageOutcome>, DeviceError> {
+        let outcomes = self.storage_outcomes()?;
+        self.storage_outcome_order.clear();
+        self.service_outcomes.clear();
+        self.persistence_media_outcomes.clear();
+        Ok(outcomes)
     }
 
     /// Installs one directive, keyed by the exact guest request ID.
@@ -2315,7 +2412,15 @@ impl BlockFaultState {
 
     /// Drains contributor-level service evidence in canonical completion order.
     pub fn drain_service_outcomes(&mut self) -> Vec<BlockServiceCompletion> {
+        self.storage_outcome_order
+            .retain(|outcome| matches!(outcome, BlockStorageOutcomeRef::Persistence(_)));
         std::mem::take(&mut self.service_outcomes)
+    }
+
+    /// Borrows integrated-service completion evidence without acknowledging it.
+    #[must_use]
+    pub fn service_outcomes(&self) -> &[BlockServiceCompletion] {
+        &self.service_outcomes
     }
 
     fn defer_execution(
@@ -2723,6 +2828,18 @@ impl BlockFaultState {
                     outcome.sequence,
                 );
             }
+        }
+        let first_outcome = next.service_outcomes.len();
+        let outcome_end =
+            first_outcome
+                .checked_add(outcomes.len())
+                .ok_or(DeviceError::BlockFaultStateLimit {
+                    field: "block_service_outcomes",
+                    hard: super::service::HARD_BLOCK_SERVICE_JOBS,
+                })?;
+        for index in first_outcome..outcome_end {
+            next.storage_outcome_order
+                .push(BlockStorageOutcomeRef::Service(index));
         }
         next.service_outcomes.extend(outcomes);
         let mut released = Vec::with_capacity(ready.len());
@@ -4131,6 +4248,7 @@ impl BlockFaultState {
                 hard: HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS,
             });
         }
+        let outcome_index = self.persistence_media_outcomes.len();
         self.persistence_media_outcomes
             .push(BlockPersistenceMediaOutcome {
                 opportunity,
@@ -4139,6 +4257,8 @@ impl BlockFaultState {
                 media_failed: flash.failed,
                 applied_digest: *blake3::hash(&programmed).as_bytes(),
             });
+        self.storage_outcome_order
+            .push(BlockStorageOutcomeRef::Persistence(outcome_index));
         self.recompute_actual_durable_frontier();
         Ok(())
     }
@@ -6270,5 +6390,79 @@ mod tests {
         storage
             .validate_restore(32)
             .unwrap_or_else(|error| panic!("service-release checkpoint should validate: {error}"));
+    }
+
+    #[test]
+    fn service_evidence_precedes_same_nanos_persistence_it_triggers() {
+        let base = BaseImage::new(vec![0; 32]);
+        let mut durable = CowOverlay::new();
+        let mut storage = BlockFaultState::new(BlockDurabilityConfig {
+            length_bytes: 32,
+            atomic_write_bytes: 4,
+            maximum_request_bytes: 32,
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
+            volatile_cache_bytes: 32,
+            cache_entries: 8,
+            controller_buffer_bytes: 0,
+            controller_entries: 0,
+            persistence_dependencies: 32,
+            retained_versions: 8,
+            completion_durability: BlockCompletionDurability::VolatileCacheAccepted,
+        })
+        .unwrap_or_else(|error| panic!("ordered-outcome state should build: {error}"));
+        let cached = BlockRequest::write(70, 0, b"data".to_vec());
+        storage
+            .install(
+                cached.request_id,
+                ResolvedBlockFaultDirective::fault_free(&cached, 32),
+            )
+            .unwrap_or_else(|error| panic!("cached write should install: {error}"));
+        storage
+            .execute(&base, &mut durable, &cached, 0)
+            .unwrap_or_else(|error| panic!("cached write should execute: {error}"));
+        let finished = 1_000_000_010;
+
+        let serviced = BlockRequest::read(71, 0, 4);
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&serviced, 32);
+        directive.execution_nanos = 10;
+        directive.service_rules = vec![ResolvedBlockServiceRule {
+            contributor: [9; 32],
+            bytes_per_second: 4,
+            iops: None,
+            queue_depth: 1,
+            discipline: super::super::service::BlockServiceDiscipline::Fifo,
+            classes: Vec::new(),
+            rebuild_shares_service: false,
+        }];
+        storage
+            .install(serviced.request_id, directive)
+            .unwrap_or_else(|error| panic!("serviced read should install: {error}"));
+        storage
+            .execute(&base, &mut durable, &serviced, 0)
+            .unwrap_or_else(|error| panic!("serviced read should queue: {error}"));
+        storage
+            .schedule_volatile_persistence(0)
+            .unwrap_or_else(|error| panic!("cached write should schedule: {error}"));
+        storage
+            .advance_service_to(&base, &mut durable, finished)
+            .unwrap_or_else(|error| panic!("service and persistence should execute: {error}"));
+
+        let outcomes = storage
+            .storage_outcomes()
+            .unwrap_or_else(|error| panic!("outcomes should remain ordered: {error}"));
+        assert!(matches!(
+            outcomes.as_slice(),
+            [
+                BlockStorageOutcome::Service(BlockServiceCompletion {
+                    finished_nanos: service_nanos,
+                    ..
+                }),
+                BlockStorageOutcome::Persistence(BlockPersistenceMediaOutcome {
+                    executed_nanos: persistence_nanos,
+                    ..
+                })
+            ] if service_nanos == persistence_nanos && *service_nanos == finished
+        ));
     }
 }
