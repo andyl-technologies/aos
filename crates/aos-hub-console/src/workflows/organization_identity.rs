@@ -13,7 +13,7 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
-use super::resources::UnavailableWorkflow;
+use super::organization_sso::OrganizationSsoWorkflow;
 
 /// Renders organization IAM workflows and delegates unrelated pages onward.
 #[component]
@@ -30,7 +30,7 @@ pub(super) fn OrganizationIdentityWorkflow(
             <OrganizationMembers client=client organization=slug.clone()/>
         }
         .into_any(),
-        _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
+        _ => view! { <OrganizationSsoWorkflow route=route client=client/> }.into_any(),
     }
 }
 

@@ -7,6 +7,7 @@ mod instance_settings;
 mod network_boundaries;
 mod networking;
 mod organization_identity;
+mod organization_sso;
 mod resources;
 mod storage_gateways;
 
