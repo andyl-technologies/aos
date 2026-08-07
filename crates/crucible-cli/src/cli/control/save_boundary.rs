@@ -72,6 +72,7 @@ where
     Ok((boundary, firing))
 }
 
+// crucible-lint: allow rust-allow -- the save boundary keeps command identity, exact acknowledgements, state updates, selector context, and quiescence policy explicit.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) async fn run_save_predicate_to_boundary<C>(
     client: &C,

@@ -2203,6 +2203,7 @@ async fn exchange_guest_record(
     Ok(response)
 }
 
+// crucible-lint: allow rust-allow -- the guest-channel boundary keeps transport policy, branch identity, terminal mode, transcript ownership, and timeout policy explicit.
 #[allow(clippy::too_many_arguments)]
 async fn run_remote_guest_channel(
     daemon: &str,
