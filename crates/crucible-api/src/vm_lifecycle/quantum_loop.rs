@@ -264,6 +264,10 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.inner.apply_control_at_boundary(control)
     }
 
+    fn activate_debug_guest(&mut self, node: NodeId) -> Result<(), SchedulerError> {
+        self.inner.activate_debug_guest(node)
+    }
+
     fn send_guest_introspection(
         &mut self,
         node: NodeId,

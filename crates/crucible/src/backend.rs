@@ -246,6 +246,19 @@ pub trait SimulationBackend {
         })
     }
 
+    /// Activates one node's dormant debug guest agent after a non-canonical fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] when the node is unknown or its fixed
+    /// fork-time activation transport is unavailable.
+    fn activate_debug_guest(&mut self, node: &NodeId) -> Result<(), BackendError> {
+        let _ = node;
+        Err(BackendError::Unsupported {
+            capability: "activate_debug_guest",
+        })
+    }
+
     /// Sends one out-of-band request to a node's debug guest agent.
     ///
     /// # Errors

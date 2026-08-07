@@ -218,6 +218,10 @@ where
         self.backend.open_gdbstub(node, listen).map_err(Into::into)
     }
 
+    fn activate_debug_guest(&mut self, node: NodeId) -> Result<(), SchedulerError> {
+        self.backend.activate_debug_guest(&node).map_err(Into::into)
+    }
+
     fn send_guest_introspection(
         &mut self,
         node: NodeId,

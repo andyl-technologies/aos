@@ -61,6 +61,18 @@ where
         self.client
     }
 
+    /// Sends the fixed activation token to the dormant debug guest bootstrap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP rejects or cannot deliver the
+    /// bounded ring-buffer write.
+    pub fn activate_debug_guest(&mut self) -> Result<QmpCommandComplete, QemuNodeChannelError> {
+        self.client
+            .activate_debug_guest()
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Saves the QEMU VMState under a tag derived from `checkpoint`.
     ///
     /// This operation persists only the QEMU VMState half. The caller remains

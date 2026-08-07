@@ -453,6 +453,19 @@ pub trait QemuQmpMachineControlChannel: Send {
     ///
     /// Returns [`QemuNodeChannelError`] when QMP cannot send the quit command.
     fn quit(&mut self) -> Result<(), QemuNodeChannelError>;
+
+    /// Sends the fixed fork-time activation token to the dormant guest bootstrap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the channel has no activation
+    /// device or QMP rejects the bounded command.
+    fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "activate_debug_guest",
+            "QMP debug guest activation is unavailable",
+        ))
+    }
 }
 
 /// The three logical channel roles owned by one QEMU node.
@@ -517,6 +530,20 @@ pub struct QemuNode {
 }
 
 impl QemuNode {
+    /// Activates the dormant guest-introspection bootstrap after a non-canonical fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the bounded QMP activation command fails.
+    pub fn activate_debug_guest(&mut self) -> Result<(), QemuNodeError> {
+        self.channels
+            .qmp_machine_control
+            .activate_debug_guest()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
+            })
+    }
+
     /// Sends one request to this VM's debug guest agent.
     ///
     /// # Errors
