@@ -758,7 +758,11 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   remote path additionally exposes controller-leased GDB relay plus explicit
   whole-world guest-introspection fork, argv exec, PTY, and configured in-guest
   SSH byte bridging through the bounded public protocol, with opt-in bounded
-  branch-local transcript files. Controller-leased
+  branch-local transcript files. A configurable response-idle deadline now
+  attempts bounded cleanup and controller-lease release for an unresponsive
+  guest channel instead of allowing agent-driven `exec`, PTY, or SSH clients to
+  wait forever.
+  Controller-leased
   `goto`, `reverse-step`, and `reverse-continue` carry operator intent only;
   the actor binds that intent to its authoritative configuration, event-log
   prefix, and schedule-prefix event index before restore/replay and gateway

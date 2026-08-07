@@ -1645,6 +1645,20 @@ pub(super) fn plan_debug_invocation(
             "--record-transcript is available only with debug exec, pty, or ssh",
         ));
     }
+    if args.guest_idle_timeout.is_some() && !guest_shell {
+        return Err(usage_error(
+            "--guest-idle-timeout is available only with debug exec, pty, or ssh",
+        ));
+    }
+    let guest_idle_timeout = parse_run_duration_budget_ticks(
+        args.guest_idle_timeout.as_deref().unwrap_or("30s"),
+    )
+    .map(Duration::from_nanos)
+    .ok_or_else(|| {
+        usage_error(
+            "--guest-idle-timeout must be a positive duration using ticks, ns, us, ms, or s",
+        )
+    })?;
     if (explicit_fork || guest_shell) && !args.allow_mutate {
         return Err(usage_error(
             "the selected fork-debug or guest exec/PTY/SSH operation requires --allow-mutate authorization",
@@ -1705,6 +1719,7 @@ pub(super) fn plan_debug_invocation(
         allow_mutate: args.allow_mutate,
         checkpoint_stride,
         record_transcript: args.record_transcript.clone(),
+        guest_idle_timeout,
         verb,
         session_commands,
         engine_operations,
@@ -1782,6 +1797,7 @@ pub(super) fn run_remote_debug_relay(
             },
             false,
             plan.record_transcript.as_deref(),
+            plan.guest_idle_timeout,
         )),
         DebugInteractiveVerbPlan::Pty {
             argv,
@@ -1800,6 +1816,7 @@ pub(super) fn run_remote_debug_relay(
             },
             true,
             plan.record_transcript.as_deref(),
+            plan.guest_idle_timeout,
         )),
         DebugInteractiveVerbPlan::Ssh => runtime.block_on(run_remote_guest_channel(
             daemon,
@@ -1811,6 +1828,7 @@ pub(super) fn run_remote_debug_relay(
             },
             true,
             plan.record_transcript.as_deref(),
+            plan.guest_idle_timeout,
         )),
         DebugInteractiveVerbPlan::ForkDebug => {
             runtime.block_on(run_remote_guest_fork(daemon, &backend_plan, session, node))
@@ -2186,6 +2204,7 @@ async fn run_remote_guest_channel(
     open: crucible_api::GuestIntrospectionMessage,
     interactive: bool,
     transcript_path: Option<&Path>,
+    guest_idle_timeout: Duration,
 ) -> Result<(), CliError> {
     use crucible_api::{GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -2239,9 +2258,18 @@ async fn run_remote_guest_channel(
         }
         let mut input = vec![0_u8; 4096];
         let mut poll = tokio::time::interval(Duration::from_millis(5));
+        let mut idle_deadline = tokio::time::interval(guest_idle_timeout);
+        idle_deadline.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        idle_deadline.tick().await;
         loop {
             tokio::select! {
                 biased;
+                _ = idle_deadline.tick() => {
+                    break Err(backend_error(format!(
+                        "guest agent produced no response for {} ms; verify that the non-canonical fork activated `crucible-guest agent` or increase --guest-idle-timeout",
+                        guest_idle_timeout.as_millis()
+                    )));
+                }
                 read = stdin.read(&mut input), if !input_closed => {
                     let length = read.map_err(|error| backend_error(format!("terminal input failed: {error}")))?;
                     let message = if length == 0 {
@@ -2279,6 +2307,7 @@ async fn run_remote_guest_channel(
                     else {
                         continue;
                     };
+                    idle_deadline.reset();
                     if record.channel_id() != CHANNEL_ID {
                         continue;
                     }

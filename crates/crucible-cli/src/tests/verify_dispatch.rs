@@ -3236,6 +3236,8 @@ pub(super) fn cli_debug_guest_channels_require_mutation_authorization_and_preser
         "--allow-mutate",
         "--record-transcript",
         "guest.crgt",
+        "--guest-idle-timeout",
+        "250ms",
         "exec",
         "--",
         "/bin/echo",
@@ -3250,6 +3252,7 @@ pub(super) fn cli_debug_guest_channels_require_mutation_authorization_and_preser
         plan.record_transcript.as_deref(),
         Some(Path::new("guest.crgt"))
     );
+    assert_eq!(plan.guest_idle_timeout, Duration::from_millis(250));
     assert!(matches!(
         plan.verb,
         DebugInteractiveVerbPlan::Exec { ref argv }
@@ -3259,6 +3262,45 @@ pub(super) fn cli_debug_guest_channels_require_mutation_authorization_and_preser
         plan.engine_operations
             .contains(&DebugEngineOperation::GuestIntrospection)
     );
+
+    let irrelevant_timeout = Cli::parse_from([
+        "crucible",
+        "debug",
+        "--session",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "--node",
+        "node-a",
+        "--guest-idle-timeout",
+        "1s",
+        "attach-gdb",
+    ]);
+    let Commands::Debug(args) = &irrelevant_timeout.command else {
+        panic!("expected debug command");
+    };
+    let error = plan_debug_invocation(&irrelevant_timeout, args)
+        .expect_err("guest idle timeout must be rejected outside guest channels");
+    assert!(matches!(error, CliError::Usage(_)));
+
+    let zero_timeout = Cli::parse_from([
+        "crucible",
+        "debug",
+        "--session",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "--node",
+        "node-a",
+        "--allow-mutate",
+        "--guest-idle-timeout",
+        "0s",
+        "exec",
+        "--",
+        "/bin/true",
+    ]);
+    let Commands::Debug(args) = &zero_timeout.command else {
+        panic!("expected debug command");
+    };
+    let error = plan_debug_invocation(&zero_timeout, args)
+        .expect_err("zero guest idle timeout must be rejected");
+    assert!(matches!(error, CliError::Usage(_)));
     Ok(())
 }
 

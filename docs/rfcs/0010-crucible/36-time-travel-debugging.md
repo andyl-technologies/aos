@@ -1440,9 +1440,11 @@ complete from model-double evidence.
   raw-terminal mode and forwards `SIGWINCH` dimensions as typed resize records.
   Transcript recording is explicitly opt-in at the CLI, uses an exclusively
   created bounded `CRGT` v1 file containing direction-tagged complete `CRGI`
-  records, and remains outside canonical artifacts. Completion remains open for
-  fork-time activation of `crucible-guest agent`, a bounded missing-agent
-  failure, and live x86_64/aarch64 evidence. A 2026-08 manual production-VM
+  records, and remains outside canonical artifacts. The CLI now applies a
+  configurable 30-second response-idle deadline, attempts bounded channel
+  cleanup and controller-lease release when a forked VM has no responding agent.
+  Completion remains open for fork-time activation of `crucible-guest
+  agent` and live x86_64/aarch64 evidence. A 2026-08 manual production-VM
   exercise confirmed that requests cross the authenticated remote API, session,
   backend, and shared-memory request ring after the production loop delegates
   guest-introspection methods; the shipped fixture then produced no response
