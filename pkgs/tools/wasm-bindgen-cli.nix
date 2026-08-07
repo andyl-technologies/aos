@@ -30,7 +30,7 @@ in
 
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-/XRQHfg6zmnzt1tkkbbACDcNHNwLZogQRAXhnRdaBRo=";
+      hash = "sha256-H6YeIhMOGSroQA79JUTNTPr/jJ+qlL7j/tzftUXN85U=";
     };
 
     doCheck = false;
