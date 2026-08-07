@@ -19,7 +19,11 @@ pub mod app;
 #[cfg(target_arch = "wasm32")]
 pub mod components;
 #[cfg(target_arch = "wasm32")]
+mod mutation;
+#[cfg(target_arch = "wasm32")]
 pub mod transport;
+#[cfg(target_arch = "wasm32")]
+mod workflows;
 
 /// Mounts the management application into the document body.
 #[cfg(target_arch = "wasm32")]

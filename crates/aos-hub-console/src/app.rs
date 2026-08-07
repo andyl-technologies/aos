@@ -9,6 +9,7 @@ use leptos::prelude::*;
 
 use crate::route::{ConsoleRoute, ConsoleScope, PageSpec};
 use crate::transport::ApiClient;
+use crate::workflows::ResourceWorkflow;
 
 /// Bundled stylesheet used by native and Worker application shells.
 pub const STYLE_CSS: &str = include_str!("../assets/app.css");
@@ -109,13 +110,7 @@ fn ManagementShell(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
                             <strong>"Connect / ProtoJSON"</strong>
                         </div>
                     </section>
-                    <section class="panel empty-state">
-                        <p class="section-kicker">"Resource editor"</p>
-                        <h2>"Workflow adapter pending"</h2>
-                        <p>
-                            "The shared shell and authenticated transport are active. This route remains unavailable for cutover until its typed inventory and reviewed editor are attached."
-                        </p>
-                    </section>
+                    <ResourceWorkflow route=route client=client/>
                 </main>
             </div>
         </div>

@@ -6,8 +6,7 @@
 //! management request then uses a generated canonical Connect path and a
 //! ProtoJSON request/response type.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use gloo_net::http::Request;
 use serde::de::DeserializeOwned;
@@ -20,7 +19,7 @@ const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
 #[derive(Clone, Debug)]
 pub struct ApiClient {
     csrf: String,
-    session: Rc<RefCell<aos_proto_types::BrowserSessionTokenResponse>>,
+    session: Arc<Mutex<aos_proto_types::BrowserSessionTokenResponse>>,
 }
 
 impl ApiClient {
@@ -37,14 +36,14 @@ impl ApiClient {
         let session = exchange_browser_session(csrf).await?;
         Ok(Self {
             csrf: csrf.to_string(),
-            session: Rc::new(RefCell::new(session)),
+            session: Arc::new(Mutex::new(session)),
         })
     }
 
     /// Returns the authenticated browser-session summary.
     #[must_use]
     pub fn session(&self) -> aos_proto_types::BrowserSessionTokenResponse {
-        self.session.borrow().clone()
+        self.session_guard().clone()
     }
 
     /// Invokes one generated Connect-JSON unary method.
@@ -70,12 +69,12 @@ impl ApiClient {
         }
         let body = serde_json::to_string(request)
             .map_err(|error| TransportError::Json(error.to_string()))?;
-        let bearer = self.session.borrow().access_token.clone();
+        let bearer = self.session_guard().access_token.clone();
         let (mut status, mut body) = send_connect(path, &bearer, &body).await?;
         if status == 401 {
             let refreshed = exchange_browser_session(&self.csrf).await?;
             let bearer = refreshed.access_token.clone();
-            self.session.replace(refreshed);
+            *self.session_guard() = refreshed;
             (status, body) = send_connect(path, &bearer, &body).await?;
         }
         if !(200..300).contains(&status) {
@@ -85,6 +84,13 @@ impl ApiClient {
             });
         }
         serde_json::from_str(&body).map_err(|error| TransportError::Json(error.to_string()))
+    }
+
+    fn session_guard(&self) -> MutexGuard<'_, aos_proto_types::BrowserSessionTokenResponse> {
+        match self.session.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
     }
 }
 
