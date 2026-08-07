@@ -103,6 +103,7 @@ impl BlockLatency {
             BlockOp::Write => self.write_base_ns.saturating_add(variable),
             BlockOp::Flush => self.flush_ns,
             BlockOp::GetLength => self.get_length_ns,
+            BlockOp::Discard => self.write_base_ns.saturating_add(variable),
         }
     }
 }

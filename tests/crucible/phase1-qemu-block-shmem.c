@@ -28,6 +28,7 @@ typedef struct TestBackend {
     uint32_t submitted_op;
     uint64_t submitted_offset;
     size_t submitted_len;
+    bool submitted_data_was_null;
     int submit_count;
     int poll_count;
     int typed_errno;
@@ -132,6 +133,7 @@ static int test_submit(uint32_t request_id, uint32_t op, uint64_t offset,
     backend->submitted_op = op;
     backend->submitted_offset = offset;
     backend->submitted_len = len;
+    backend->submitted_data_was_null = data == NULL;
     backend->submitted_payload_len = 0;
 
     if (data != NULL && len <= sizeof(backend->submitted_payload)) {
@@ -301,6 +303,21 @@ static int exercise_driver(void)
         return 1;
     }
 
+#ifdef QEMU_PLUGIN_BLK_OP_DISCARD
+    reset_backend(&backend, QEMU_PLUGIN_BLK_OP_DISCARD, 20, 4, 0,
+                  TEST_OUTCOME_ZERO_SUCCESS);
+    if (crucible_shmem_co_pdiscard(&bs, 20, 4) != 0) {
+        return fail("discard request failed");
+    }
+    if (expect_bool(backend.submitted_data_was_null,
+                    "discard unexpectedly carried a payload") ||
+        expect_bool(backend.submitted_payload_len == 0,
+                    "discard captured payload bytes") ||
+        expect_bool(backend.poll_count == 1, "discard poll count mismatch")) {
+        return 1;
+    }
+#endif
+
     reset_backend(&backend, QEMU_PLUGIN_BLK_OP_READ, 0, sizeof(read_target), 0,
                   TEST_OUTCOME_ERROR);
     if (expect_bool(crucible_shmem_co_preadv(&bs, 0, sizeof(read_target),
@@ -359,6 +376,13 @@ static int exercise_driver(void)
         return 1;
     }
 
+#ifdef QEMU_PLUGIN_BLK_OP_DISCARD
+    if (expect_bool(crucible_shmem_co_pdiscard(&bs, 63, 2) == -ENOSPC,
+                    "discard beyond end did not fail closed")) {
+        return 1;
+    }
+#endif
+
     puts("PASS");
     puts("block_driver_registered=true");
     puts("block_driver_protocol=crucible-shmem");
@@ -378,6 +402,10 @@ static int exercise_driver(void)
 #ifdef QEMU_PLUGIN_BLK_POLL_ERROR_BASE
     puts("typed_error_errno_mapping_exact=true");
     puts("typed_error_out_of_range_fails_closed=true");
+#endif
+#ifdef QEMU_PLUGIN_BLK_OP_DISCARD
+    puts("discard_payload_free=true");
+    puts("discard_range_checks_fail_closed=true");
 #endif
     return 0;
 }

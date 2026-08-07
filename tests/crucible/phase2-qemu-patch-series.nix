@@ -370,6 +370,13 @@
       enforces = "STOR-RESULT,IO-8,PATCH-26";
       capability = "closed block result ABI translated to exact guest-visible Linux errno values";
     }
+    {
+      file = "0061-crucible-block-discard.patch";
+      catalogName = "crucible-block-discard";
+      class = "F";
+      enforces = "STOR-DISCARD,DET-16,PATCH-26";
+      capability = "payload-free block discard transported through the deterministic shmem completion path";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

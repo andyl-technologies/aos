@@ -30,7 +30,10 @@
       qemu_package_version=${qemuPackage.version}
     '';
   tPatch12PatchNames =
-    if patchName == "0060-crucible-block-typed-errors.patch"
+    if builtins.elem patchName [
+      "0060-crucible-block-typed-errors.patch"
+      "0061-crucible-block-discard.patch"
+    ]
     then [patchName]
     else [
       "0015-crucible-blk-shmem.patch"
@@ -38,7 +41,10 @@
       "0017-crucible-blk-write-sentinel.patch"
     ];
   patchContextNames =
-    if patchName == "0060-crucible-block-typed-errors.patch"
+    if builtins.elem patchName [
+      "0060-crucible-block-typed-errors.patch"
+      "0061-crucible-block-discard.patch"
+    ]
     then series.patchFiles
     else [
       "0001-crucible-sim-accel.patch"
@@ -60,6 +66,8 @@
   taskIds =
     if patchName == "0060-crucible-block-typed-errors.patch"
     then ["T-QEMU-0060"]
+    else if patchName == "0061-crucible-block-discard.patch"
+    then ["T-QEMU-0061"]
     else ["T-PATCH-12"];
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -122,7 +130,8 @@
         needle = "-#define QEMU_PLUGIN_BLK_POLL_PENDING 0";
       }
     ]
-    else [
+    else if patchName == "0060-crucible-block-typed-errors.patch"
+    then [
       {
         label = "typed block callback error encoding";
         needle = "QEMU_PLUGIN_BLK_POLL_ERROR(error_number)";
@@ -134,6 +143,20 @@
       {
         label = "out-of-range typed result rejection";
         needle = "return -EOVERFLOW";
+      }
+    ]
+    else [
+      {
+        label = "discard callback operation";
+        needle = "QEMU_PLUGIN_BLK_OP_DISCARD 3u";
+      }
+      {
+        label = "discard coroutine";
+        needle = "crucible_shmem_co_pdiscard";
+      }
+      {
+        label = "discard block driver registration";
+        needle = ".bdrv_co_pdiscard       = crucible_shmem_co_pdiscard";
       }
     ];
 
@@ -181,6 +204,16 @@
         label = "typed errno range rejection exercised";
         needle = "typed_error_out_of_range_fails_closed=true";
       }
+    ]
+    ++ lib.optionals (patchName == "0061-crucible-block-discard.patch") [
+      {
+        label = "payload-free discard exercised";
+        needle = "discard_payload_free=true";
+      }
+      {
+        label = "discard range failure exercised";
+        needle = "discard_range_checks_fail_closed=true";
+      }
     ])
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
       {
@@ -194,6 +227,10 @@
       {
         label = "write sentinel patch catalog";
         needle = "crucible-blk-write-sentinel";
+      }
+      {
+        label = "discard patch catalog";
+        needle = "crucible-block-discard";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -279,7 +316,10 @@ in
             grep -F -q 'block_init(bdrv_crucible_shmem_init)' block/crucible-shmem.c
             grep -q 'qemu_plugin_register_blk_cb' include/qemu/qemu-plugin.h
             grep -q '#define QEMU_PLUGIN_BLK_POLL_PENDING (-2)' include/qemu/qemu-plugin.h
-            ${lib.optionalString (patchName != "0060-crucible-block-typed-errors.patch") ''
+            ${lib.optionalString (!(builtins.elem patchName [
+              "0060-crucible-block-typed-errors.patch"
+              "0061-crucible-block-discard.patch"
+            ])) ''
               grep -q 'aio_co_schedule(bdrv_get_aio_context(bs), qemu_coroutine_self())' block/crucible-shmem.c
             ''}
 
@@ -588,6 +628,8 @@ in
                                        int64_t bytes, QEMUIOVector *qiov,
                                        BdrvRequestFlags flags);
                 int (*bdrv_co_flush_to_disk)(BlockDriverState *bs);
+                int (*bdrv_co_pdiscard)(BlockDriverState *bs, int64_t offset,
+                                        int64_t bytes);
                 void (*bdrv_refresh_filename)(BlockDriverState *bs);
             } BlockDriver;
 
@@ -626,6 +668,10 @@ in
               grep -q '^typed_error_errno_mapping_exact=true$' "$out/qemu-block-shmem-microtest"
               grep -q '^typed_error_out_of_range_fails_closed=true$' "$out/qemu-block-shmem-microtest"
             ''}
+            ${lib.optionalString (patchName == "0061-crucible-block-discard.patch") ''
+              grep -q '^discard_payload_free=true$' "$out/qemu-block-shmem-microtest"
+              grep -q '^discard_range_checks_fail_closed=true$' "$out/qemu-block-shmem-microtest"
+            ''}
 
             cp stock-block-negative.err "$out/stock-negative-control.err"
             cp block/crucible-shmem.c "$out/crucible-shmem.c.patched"
@@ -649,6 +695,8 @@ in
             zero_length_success_distinct_from_pending=true
             pending_sentinel=-2
             ${lib.optionalString (patchName == "0060-crucible-block-typed-errors.patch") ''typed_error_errno_mapping_exact=true''}
+            ${lib.optionalString (patchName == "0061-crucible-block-discard.patch") ''discard_payload_free=true
+            discard_range_checks_fail_closed=true''}
             apply_clean_patch_fuzz=0
             RESULT
           '';

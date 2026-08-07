@@ -595,6 +595,18 @@ impl DeviceSchedulingSubNode {
                         length_bytes: storage.persistence.length_bytes,
                         atomic_write_bytes: storage.persistence.atomic_write_bytes,
                         maximum_request_bytes: storage.persistence.maximum_request_bytes,
+                        discard_granularity_bytes: storage.persistence.discard_granularity_bytes,
+                        discard_semantics: match storage.persistence.discard_semantics {
+                            crate::model::WorldDiscardSemantics::DeterministicZero => {
+                                crucible_device::block::BlockDiscardSemantics::DeterministicZero
+                            }
+                            crate::model::WorldDiscardSemantics::ReadsOldData => {
+                                crucible_device::block::BlockDiscardSemantics::ReadsOldData
+                            }
+                            crate::model::WorldDiscardSemantics::UndefinedRecorded => {
+                                crucible_device::block::BlockDiscardSemantics::UndefinedKeyed
+                            }
+                        },
                         volatile_cache_bytes: storage.persistence.volatile_cache_bytes,
                         cache_entries: storage.persistence.cache_entries,
                         controller_buffer_bytes: storage.persistence.controller_buffer_bytes,

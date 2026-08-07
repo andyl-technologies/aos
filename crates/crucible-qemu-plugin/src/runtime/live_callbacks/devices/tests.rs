@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::BlockOperation;
 use crate::runtime::callback_quiescence::LiveCallbackQuiescence;
 
 use super::*;
@@ -13,6 +14,31 @@ use crucible_shmem::{
 };
 
 static FORCE_VCPU_EXIT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[test]
+fn qemu_discard_callback_maps_to_payload_free_wire_request() {
+    let request = block_request(3, 4096, None, 8192)
+        .unwrap_or_else(|error| panic!("discard callback should validate: {error}"));
+    assert_eq!(request.operation(), BlockOperation::Discard);
+    assert_eq!(request.offset(), 4096);
+    assert_eq!(request.count(), 8192);
+    assert!(request.payload().is_empty());
+    let encoded = request
+        .encode(7)
+        .unwrap_or_else(|error| panic!("discard wire request should encode: {error}"));
+    let (request_id, decoded) = BlockRequest::decode(&encoded)
+        .unwrap_or_else(|error| panic!("discard wire request should decode: {error}"));
+    assert_eq!(request_id, 7);
+    assert_eq!(decoded, request);
+
+    assert!(matches!(
+        block_request(3, 4096, Some(&[0]), 1),
+        Err(LiveDeviceCallbackError::UnexpectedPayloadPointer {
+            family: "block discard",
+            ..
+        })
+    ));
+}
 
 #[test]
 fn typed_block_errors_map_to_stable_linux_errno_values() {

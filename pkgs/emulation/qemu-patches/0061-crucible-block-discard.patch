@@ -1,0 +1,64 @@
+diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+index 1788515..afc442b 100644
+--- a/block/crucible-shmem.c
++++ b/block/crucible-shmem.c
+@@ -357,6 +357,26 @@ crucible_shmem_co_flush(BlockDriverState *bs)
+     return ret == 0 ? 0 : -EIO;
+ }
+ 
++static int coroutine_fn GRAPH_RDLOCK
++crucible_shmem_co_pdiscard(BlockDriverState *bs, int64_t offset,
++                           int64_t bytes)
++{
++    int ret;
++
++    ret = crucible_shmem_check_range(bs, offset, bytes, true);
++    if (ret < 0) {
++        return ret;
++    }
++
++    ret = crucible_shmem_submit_and_wait(bs, QEMU_PLUGIN_BLK_OP_DISCARD,
++                                         offset, NULL, (size_t)bytes,
++                                         NULL, 0);
++    if (ret < 0) {
++        return ret;
++    }
++    return ret == 0 ? 0 : -EIO;
++}
++
+ static void crucible_shmem_refresh_filename(BlockDriverState *bs)
+ {
+     pstrcpy(bs->exact_filename, sizeof(bs->exact_filename),
+@@ -374,6 +394,7 @@ static BlockDriver bdrv_crucible_shmem = {
+     .bdrv_co_preadv         = crucible_shmem_co_preadv,
+     .bdrv_co_pwritev        = crucible_shmem_co_pwritev,
+     .bdrv_co_flush_to_disk  = crucible_shmem_co_flush,
++    .bdrv_co_pdiscard       = crucible_shmem_co_pdiscard,
+     .bdrv_refresh_filename  = crucible_shmem_refresh_filename,
+ };
+ 
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 9d05a1f..24e2822 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -222,9 +222,9 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
+  * typedef qemu_plugin_blk_submit_cb_t - shmem block submit callback
+  * @request_id: driver-assigned request id
+  * @op: one of QEMU_PLUGIN_BLK_OP_*
+- * @offset: byte offset for read/write requests
+- * @data: write payload, or NULL for read/flush
+- * @len: requested byte count or write payload length
++ * @offset: byte offset for read, write, and discard requests
++ * @data: write payload, or NULL for read, flush, and discard
++ * @len: requested byte count for read, write, and discard; zero for flush
+  * @userdata: a pointer supplied when callbacks were registered
+  *
+  * Returns: 0 when the request was accepted, nonzero on fail-loud rejection.
+@@ -269,6 +269,7 @@ typedef void (*qemu_plugin_blk_wait_cb_t)(uint32_t request_id,
+ #define QEMU_PLUGIN_BLK_OP_READ 0u
+ #define QEMU_PLUGIN_BLK_OP_WRITE 1u
+ #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
++#define QEMU_PLUGIN_BLK_OP_DISCARD 3u
+ #define QEMU_PLUGIN_BLK_POLL_PENDING (-2)
+ #define QEMU_PLUGIN_BLK_POLL_ERROR_BASE INT64_C(4096)
+ #define QEMU_PLUGIN_BLK_POLL_ERROR_MAX INT64_C(4095)

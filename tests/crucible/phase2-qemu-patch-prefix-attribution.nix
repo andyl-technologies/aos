@@ -280,6 +280,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0061-crucible-block-discard.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

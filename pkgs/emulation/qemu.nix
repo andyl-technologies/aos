@@ -209,6 +209,7 @@
   # patch -p1 < ${./qemu-patches/0048-crucible-fault-safe-boundary.patch}
   # patch -p1 < ${./qemu-patches/0049-crucible-memory-boundary-mutate.patch}
   # patch -p1 < ${./qemu-patches/0060-crucible-block-typed-errors.patch}
+  # patch -p1 < ${./qemu-patches/0061-crucible-block-discard.patch}
 in
   mkDerivation {
     inherit pname;

@@ -10,7 +10,7 @@
 //! ```text
 //! BlockRequest  (VM slot -> SLOT_BLK_IO), little-endian, header = 20 bytes
 //!   off 0   u8   op          -- 0=read, 1=write, 2=flush, 3=get_length
-//!   off 1   u8   version     -- block wire ABI version (= 2)
+//!   off 1   u8   version     -- block wire ABI version (= 3)
 //!   off 2   u16  _reserved   -- zero on emit, ignored on receive
 //!   off 4   u32  request_id  -- correlates response to request
 //!   off 8   u64  offset      -- byte offset (read/write; 0 otherwise)
@@ -19,7 +19,7 @@
 //!
 //! BlockResponse (SLOT_BLK_IO -> VM slot), little-endian, header = 12 bytes
 //!   off 0   u8   status      -- 0=ok, 1=error
-//!   off 1   u8   version     -- block wire ABI version (= 2)
+//!   off 1   u8   version     -- block wire ABI version (= 3)
 //!   off 2   u16  _reserved   -- zero on emit, ignored on receive
 //!   off 4   u32  request_id  -- echoes the request
 //!   off 8   u32  count       -- response data length
@@ -38,7 +38,7 @@
 ///
 /// A decoder rejects any message whose version byte differs from this constant
 /// ([IO-8]); bumping it is a breaking ABI change gated by `gate:abi-conformance`.
-pub const BLOCK_ABI_VERSION: u8 = 2;
+pub const BLOCK_ABI_VERSION: u8 = 3;
 
 /// The fixed size in bytes of an encoded [`BlockRequest`] header.
 pub const REQUEST_HEADER_LEN: usize = 20;
@@ -60,6 +60,8 @@ pub enum BlockOp {
     Flush,
     /// Get the device length: returns the base image size in bytes.
     GetLength,
+    /// Discard `count` bytes at `offset` without carrying a request payload.
+    Discard,
 }
 
 impl BlockOp {
@@ -71,6 +73,7 @@ impl BlockOp {
             BlockOp::Write => 1,
             BlockOp::Flush => 2,
             BlockOp::GetLength => 3,
+            BlockOp::Discard => 4,
         }
     }
 
@@ -87,6 +90,7 @@ impl BlockOp {
             1 => Ok(BlockOp::Write),
             2 => Ok(BlockOp::Flush),
             3 => Ok(BlockOp::GetLength),
+            4 => Ok(BlockOp::Discard),
             other => Err(BlockCodecError::UnknownOp { op: other }),
         }
     }
@@ -265,6 +269,18 @@ impl BlockRequest {
             request_id,
             offset: 0,
             count: 0,
+            data: Vec::new(),
+        }
+    }
+
+    /// Builds a payload-free discard request for one exact byte range.
+    #[must_use]
+    pub fn discard(request_id: u32, offset: u64, count: u32) -> Self {
+        Self {
+            op: BlockOp::Discard,
+            request_id,
+            offset,
+            count,
             data: Vec::new(),
         }
     }

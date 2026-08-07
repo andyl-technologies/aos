@@ -103,6 +103,7 @@
     "0048-crucible-fault-safe-boundary.patch" = [];
     "0049-crucible-memory-boundary-mutate.patch" = [];
     "0060-crucible-block-typed-errors.patch" = [];
+    "0061-crucible-block-discard.patch" = [];
   };
 
   dropOnes =

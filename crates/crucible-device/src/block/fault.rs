@@ -63,6 +63,17 @@ pub enum BlockCompletionDurability {
     Durable,
 }
 
+/// Guest-visible readback after a successful discard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockDiscardSemantics {
+    /// Discarded bytes deterministically read as zero.
+    DeterministicZero,
+    /// Discard leaves the prior logical bytes visible.
+    ReadsOldData,
+    /// Discard installs deterministic device/request-keyed bytes for replay.
+    UndefinedKeyed,
+}
+
 /// Immutable durability bounds for one block device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockDurabilityConfig {
@@ -72,6 +83,10 @@ pub struct BlockDurabilityConfig {
     pub atomic_write_bytes: u32,
     /// Maximum admitted request bytes.
     pub maximum_request_bytes: u64,
+    /// Required discard alignment, or zero when discard is unsupported.
+    pub discard_granularity_bytes: u32,
+    /// Exact readback contract for successful discard.
+    pub discard_semantics: BlockDiscardSemantics,
     /// Maximum exact volatile-cache bytes.
     pub volatile_cache_bytes: u64,
     /// Maximum volatile-cache entries.
@@ -96,6 +111,8 @@ impl BlockDurabilityConfig {
             length_bytes,
             atomic_write_bytes: 1,
             maximum_request_bytes: length_bytes.max(1),
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
             volatile_cache_bytes: 0,
             cache_entries: 0,
             controller_buffer_bytes: 0,
@@ -121,6 +138,8 @@ impl BlockDurabilityConfig {
         if self.atomic_write_bytes == 0
             || self.maximum_request_bytes == 0
             || (self.length_bytes > 0 && self.maximum_request_bytes > self.length_bytes)
+            || (self.discard_granularity_bytes != 0
+                && !self.discard_granularity_bytes.is_power_of_two())
             || cache_entries > HARD_BLOCK_CACHE_ENTRIES
             || controller_entries > HARD_BLOCK_CONTROLLER_ENTRIES
             || persistence_dependencies > super::persistence::HARD_BLOCK_PERSISTENCE_EDGES
@@ -569,18 +588,23 @@ impl ResolvedBlockFaultDirective {
             });
         }
         if self.operation != BlockOp::Write
+            && self.operation != BlockOp::Discard
             && self.write_disposition != BlockFaultWriteDisposition::Apply
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "write dispositions require a write request",
             });
         }
-        if self.operation != BlockOp::Write && self.cache_policy.is_some() {
+        if !matches!(self.operation, BlockOp::Write | BlockOp::Discard)
+            && self.cache_policy.is_some()
+        {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "volatile-cache admission requires a write request",
             });
         }
-        if self.operation != BlockOp::Write && !self.persistence_transforms.is_empty() {
+        if !matches!(self.operation, BlockOp::Write | BlockOp::Discard)
+            && !self.persistence_transforms.is_empty()
+        {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "persistence transformations require a write request",
             });
@@ -1470,8 +1494,8 @@ impl BlockFaultState {
                 .then_some(BlockErrorCode::Offline)
                 .or_else(|| {
                     (directive.availability == BlockFaultAvailability::ReadOnly
-                        && request.op == BlockOp::Write)
-                        .then_some(BlockErrorCode::ReadOnly)
+                        && matches!(request.op, BlockOp::Write | BlockOp::Discard))
+                    .then_some(BlockErrorCode::ReadOnly)
                 })
                 .or_else(|| {
                     (!request_in_capacity(request, directive.reported_capacity_bytes)
@@ -1511,6 +1535,7 @@ impl BlockFaultState {
                     Ok((BlockResponse::error(request.request_id, result), 0))
                 }
             },
+            BlockOp::Discard => self.apply_discard(base, durable, request, directive),
             BlockOp::Flush => match directive.flush_disposition {
                 BlockFaultFlushDisposition::Honest => {
                     let frontier = self.next_cache_sequence;
@@ -1560,6 +1585,52 @@ impl BlockFaultState {
                 ),
                 0,
             )),
+        }
+    }
+
+    fn apply_discard(
+        &mut self,
+        base: &BaseImage,
+        durable: &mut CowOverlay,
+        request: &BlockRequest,
+        directive: &ResolvedBlockFaultDirective,
+    ) -> Result<(BlockResponse, u64), DeviceError> {
+        let granularity = u64::from(self.config.discard_granularity_bytes);
+        if granularity == 0
+            || request.count == 0
+            || !request.offset.is_multiple_of(granularity)
+            || !u64::from(request.count).is_multiple_of(granularity)
+        {
+            return Ok((
+                BlockResponse::error(request.request_id, BlockErrorCode::InvalidRange),
+                0,
+            ));
+        }
+        if self.config.discard_semantics == BlockDiscardSemantics::ReadsOldData {
+            return Ok((BlockResponse::ok(request.request_id, Vec::new()), 0));
+        }
+        let count = usize::try_from(request.count).map_err(|_error| {
+            DeviceError::InvalidBlockFaultDirective {
+                reason: "discard range does not fit memory",
+            }
+        })?;
+        let bytes = match self.config.discard_semantics {
+            BlockDiscardSemantics::DeterministicZero => vec![0; count],
+            BlockDiscardSemantics::ReadsOldData => Vec::new(),
+            BlockDiscardSemantics::UndefinedKeyed => {
+                keyed_discard_bytes(base.hash(), request, count)
+            }
+        };
+        let mut write = request.clone();
+        write.op = BlockOp::Write;
+        write.data = bytes;
+        match self.apply_write(base, durable, &write, directive)? {
+            BlockWriteOutcome::Applied(wait) => {
+                Ok((BlockResponse::ok(request.request_id, Vec::new()), wait))
+            }
+            BlockWriteOutcome::Rejected(result) => {
+                Ok((BlockResponse::error(request.request_id, result), 0))
+            }
         }
     }
 
@@ -2343,7 +2414,7 @@ impl BlockFaultState {
 
 fn request_in_capacity(request: &BlockRequest, capacity: u64) -> bool {
     match request.op {
-        BlockOp::Read | BlockOp::Write => request
+        BlockOp::Read | BlockOp::Write | BlockOp::Discard => request
             .offset
             .checked_add(u64::from(request.count))
             .is_some_and(|end| end <= capacity),
@@ -2616,6 +2687,25 @@ fn request_digest(request: &BlockRequest) -> [u8; 32] {
     }
 }
 
+fn keyed_discard_bytes(base_hash: [u8; 32], request: &BlockRequest, count: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(count);
+    let mut block = 0_u64;
+    while bytes.len() < count {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"crucible.block-discard-undefined.v1\0");
+        hasher.update(&base_hash);
+        hasher.update(&request.request_id.to_be_bytes());
+        hasher.update(&request.offset.to_be_bytes());
+        hasher.update(&request.count.to_be_bytes());
+        hasher.update(&block.to_be_bytes());
+        let digest = hasher.finalize();
+        let remaining = count - bytes.len();
+        bytes.extend_from_slice(&digest.as_bytes()[..remaining.min(digest.as_bytes().len())]);
+        block = block.saturating_add(1);
+    }
+    bytes
+}
+
 fn block_response_to_uniform(response: &BlockResponse) -> Result<Response, DeviceError> {
     if !block_response_fits_transport(response) {
         return Err(DeviceError::InvalidBlockFaultDirective {
@@ -2643,6 +2733,8 @@ mod tests {
             length_bytes: 32,
             atomic_write_bytes: 1,
             maximum_request_bytes: 32,
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
             volatile_cache_bytes: 64,
             cache_entries: 64,
             controller_buffer_bytes: 64,
@@ -2725,6 +2817,92 @@ mod tests {
             Ok(BlockErrorCode::MediumError)
         );
         assert_eq!(state.media_state().rules()[&[0x31; 32]].access_count, 2);
+    }
+
+    fn discard_state(semantics: BlockDiscardSemantics) -> BlockFaultState {
+        BlockFaultState::new(BlockDurabilityConfig {
+            length_bytes: 32,
+            atomic_write_bytes: 1,
+            maximum_request_bytes: 32,
+            discard_granularity_bytes: 4,
+            discard_semantics: semantics,
+            volatile_cache_bytes: 0,
+            cache_entries: 0,
+            controller_buffer_bytes: 0,
+            controller_entries: 0,
+            persistence_dependencies: 1024,
+            retained_versions: 8,
+            completion_durability: BlockCompletionDurability::Durable,
+        })
+        .unwrap_or_else(|error| panic!("valid discard state: {error}"))
+    }
+
+    #[test]
+    fn discard_readback_contracts_mutate_real_future_reads() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let discard = BlockRequest::discard(50, 8, 4);
+
+        let mut zero_state = discard_state(BlockDiscardSemantics::DeterministicZero);
+        let mut zero_durable = CowOverlay::new();
+        assert_eq!(
+            response(&mut zero_state, &base, &mut zero_durable, &discard, |_| {}).status,
+            BlockStatus::Ok
+        );
+        assert_eq!(
+            read(&mut zero_state, &base, &mut zero_durable, 51, 8, 4),
+            vec![0; 4]
+        );
+
+        let mut old_state = discard_state(BlockDiscardSemantics::ReadsOldData);
+        let mut old_durable = CowOverlay::new();
+        response(&mut old_state, &base, &mut old_durable, &discard, |_| {});
+        assert_eq!(
+            read(&mut old_state, &base, &mut old_durable, 51, 8, 4),
+            b"ijkl"
+        );
+
+        let mut first_state = discard_state(BlockDiscardSemantics::UndefinedKeyed);
+        let mut first_durable = CowOverlay::new();
+        response(
+            &mut first_state,
+            &base,
+            &mut first_durable,
+            &discard,
+            |_| {},
+        );
+        let first = read(&mut first_state, &base, &mut first_durable, 51, 8, 4);
+        let mut replay_state = discard_state(BlockDiscardSemantics::UndefinedKeyed);
+        let mut replay_durable = CowOverlay::new();
+        response(
+            &mut replay_state,
+            &base,
+            &mut replay_durable,
+            &discard,
+            |_| {},
+        );
+        assert_eq!(
+            read(&mut replay_state, &base, &mut replay_durable, 51, 8, 4),
+            first
+        );
+        assert_ne!(first, b"ijkl");
+    }
+
+    #[test]
+    fn discard_rejects_unsupported_or_misaligned_ranges_without_mutation() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let mut configured = discard_state(BlockDiscardSemantics::DeterministicZero);
+        let mut durable = CowOverlay::new();
+        let before = durable.clone();
+        let request = BlockRequest::discard(60, 2, 4);
+        let result = response(&mut configured, &base, &mut durable, &request, |_| {});
+        assert_eq!(result.error_code(), Ok(BlockErrorCode::InvalidRange));
+        assert_eq!(durable, before);
+
+        let mut unsupported = state(BlockCompletionDurability::Durable);
+        let request = BlockRequest::discard(61, 4, 4);
+        let result = response(&mut unsupported, &base, &mut durable, &request, |_| {});
+        assert_eq!(result.error_code(), Ok(BlockErrorCode::InvalidRange));
+        assert_eq!(durable, before);
     }
 
     #[test]
@@ -3036,6 +3214,8 @@ mod tests {
             length_bytes: 32,
             atomic_write_bytes: 1,
             maximum_request_bytes: 32,
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
             volatile_cache_bytes: 3,
             cache_entries: 1,
             controller_buffer_bytes: 0,
@@ -3071,6 +3251,8 @@ mod tests {
             length_bytes: 32,
             atomic_write_bytes: 4,
             maximum_request_bytes: 32,
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
             volatile_cache_bytes: 8,
             cache_entries: 2,
             controller_buffer_bytes: 4,
@@ -3125,6 +3307,8 @@ mod tests {
             length_bytes: 32,
             atomic_write_bytes: 4,
             maximum_request_bytes: 32,
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
             volatile_cache_bytes: 8,
             cache_entries: 2,
             controller_buffer_bytes: 0,
@@ -3166,6 +3350,8 @@ mod tests {
             length_bytes: 32,
             atomic_write_bytes: 4,
             maximum_request_bytes: 32,
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
             volatile_cache_bytes: 4,
             cache_entries: 1,
             controller_buffer_bytes: 0,
@@ -3214,6 +3400,8 @@ mod tests {
             length_bytes: 32,
             atomic_write_bytes: 4,
             maximum_request_bytes: 32,
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
             volatile_cache_bytes: 8,
             cache_entries: 2,
             controller_buffer_bytes: 0,
@@ -3262,6 +3450,8 @@ mod tests {
             length_bytes: 32,
             atomic_write_bytes: 4,
             maximum_request_bytes: 32,
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
             volatile_cache_bytes: 10,
             cache_entries: 3,
             controller_buffer_bytes: 0,
@@ -3315,6 +3505,8 @@ mod tests {
             length_bytes: 32,
             atomic_write_bytes: 4,
             maximum_request_bytes: 32,
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
             volatile_cache_bytes: 8,
             cache_entries: 2,
             controller_buffer_bytes: 0,
@@ -3357,6 +3549,8 @@ mod tests {
             length_bytes: 32,
             atomic_write_bytes: 4,
             maximum_request_bytes: 32,
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
             volatile_cache_bytes: 8,
             cache_entries: 2,
             controller_buffer_bytes: 0,

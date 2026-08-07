@@ -76,6 +76,8 @@ mod tests {
             length_bytes,
             atomic_write_bytes: 512,
             maximum_request_bytes: length_bytes,
+            discard_granularity_bytes: 0,
+            discard_semantics: BlockDiscardSemantics::DeterministicZero,
             volatile_cache_bytes: length_bytes,
             cache_entries: 64,
             controller_buffer_bytes: 0,
@@ -302,6 +304,7 @@ mod tests {
             BlockRequest::write(8, 100, vec![0xDE; 64]),
             BlockRequest::flush(9),
             BlockRequest::get_length(10),
+            BlockRequest::discard(11, 4096, 512),
         ];
         for req in cases {
             let decoded = ok(BlockRequest::decode(&ok(req.encode())));
