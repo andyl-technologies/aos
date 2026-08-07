@@ -181,6 +181,28 @@ impl PendingPlan {
             confirmation_hash: self.plan.confirmation_hash.clone(),
         }
     }
+
+    /// Builds a delivery-endpoint identity apply envelope for this exact plan.
+    pub(crate) fn delivery_endpoint_apply(
+        &self,
+    ) -> aos_proto_types::ApplyDeliveryEndpointMutationRequest {
+        aos_proto_types::ApplyDeliveryEndpointMutationRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds an endpoint-generation apply envelope for this exact plan.
+    pub(crate) fn delivery_endpoint_generation_apply(
+        &self,
+    ) -> aos_proto_types::ApplyDeliveryEndpointGenerationRequest {
+        aos_proto_types::ApplyDeliveryEndpointGenerationRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
 }
 
 static IDEMPOTENCY_SEQUENCE: AtomicU32 = AtomicU32::new(0);
