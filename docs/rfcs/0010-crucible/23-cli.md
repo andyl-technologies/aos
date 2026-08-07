@@ -1089,6 +1089,11 @@ branch on the verdict without parsing output:
   as exit 5, starts lifecycle-owned sessions through the API, drives local
   in-process-double and `--daemon` HTTP/2 RPC sessions through the same typed
   control-client workflow, streams non-empty scheduler event/state frames,
+  emits every production VM's initial `started` lifecycle fact at the initial
+  admitted scheduler boundary before the first assertion pass, returns that
+  boundary without advancing a guest when it produces a terminal verdict, and
+  identifies this event-stream contract as harness engine ABI v2 so older
+  artifacts fail compatibility checks instead of reporting false divergence,
   derives terminal status from session `OutcomeKind`, enforces
   virtual-time budgets from exact paused boundaries for both virtual-time and
   quantum limits so observation latency cannot add a replay-visible final

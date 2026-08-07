@@ -886,7 +886,7 @@ fn replay_to_savepoint_artifact_text(
         &[
             "identity",
             env!("CARGO_PKG_VERSION"),
-            "crucible-harness-e2e-v1",
+            "crucible-harness-e2e-v2",
             "crucible.reproduction-artifact.v3",
             &content_address_bytes(b"mock-backend-source-v1"),
             &content_address_bytes(b"mock-qemu-patch-series-v1"),

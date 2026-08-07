@@ -6,8 +6,34 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.reconcile_indeterminate_debug_ownership()?;
         self.reconcile_backend_membership()?;
+        if request.configuration != *self.inner.loop_impl().configuration() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "quantum request configuration is not the scheduler frontier",
+                ),
+            });
+        }
         let pre_quantum_trigger_appends = self.settle_trigger_graph()?;
         self.reconcile_backend_membership()?;
+        if self.terminal_verdict.is_some() {
+            let scheduler = self.inner.loop_impl();
+            let mut outcome = QuantumOutcome {
+                configuration: scheduler.configuration().clone(),
+                frontier: scheduler.frontier(),
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: scheduler.event_log_offset(),
+                scheduler_quiescence: Some(scheduler.quiescence()?),
+            };
+            prepend_event_log_appends(&mut outcome, pre_quantum_trigger_appends);
+            self.capture_debug_runtime_evidence()?;
+            return Ok(outcome);
+        }
         if self.branch.as_ref().is_some_and(|branch| {
             branch.base == request.configuration && !request.control.is_empty()
         }) {

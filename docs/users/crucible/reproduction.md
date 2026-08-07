@@ -60,7 +60,11 @@ Streamed event summaries retained in run evidence identify the event's original
 sequence, virtual-time and instruction-count coordinate, source, causal class,
 and a bounded set of diagnostic attributes. Fault summaries include their kind,
 tag, targets, and description; assertion summaries include their assertion id
-and state. Guest byte payloads remain redacted and are represented only by their
+and state. Each production VM emits an initial `Started` lifecycle observation
+at the initial admitted scheduler boundary before the first assertion
+evaluation, so an invalid `Always` predicate can produce an immediate violation
+instead of remaining unknown. A terminal verdict at that boundary does not
+advance a guest. Guest byte payloads remain redacted and are represented only by their
 length. These coordinates distinguish repeated scheduler boundaries and make a
 fault or violated assertion findable without exposing console or channel data.
 
@@ -252,4 +256,7 @@ and outcome in its error.
 Reproduction deliberately fails on a build-identity mismatch. Move the matching
 Crucible package closure with an artifact, or rebuild the exact revision that
 produced it. A newer binary is not automatically a valid replay consumer even
-when its artifact schema is compatible.
+when its artifact schema is compatible. Initial production lifecycle
+observations are part of harness engine ABI v2; artifacts carrying the earlier
+engine ABI are rejected as identity mismatches rather than compared against the
+new event stream.

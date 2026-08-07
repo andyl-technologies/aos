@@ -270,8 +270,8 @@ savepoints as the primary failure-analysis tools.
 
 The repository includes a deliberately incorrect scenario at
 `.codex/skills/crucible-debugger/assets/inverted-crash-expectation.scenario.toml`
-and an agent workflow in `.codex/skills/crucible-debugger/`. The scenario runs a
-healthy HTTP workload but asserts that its node must remain crashed. It is an
+and an agent workflow in `.codex/skills/crucible-debugger/`. The scenario starts
+the standard database cluster but asserts that `db-0` must remain crashed. It is an
 operator exercise, not a Nix check: the expected result is a retained failure
 artifact and the expected diagnosis is an inverted scenario assertion.
 
