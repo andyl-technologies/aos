@@ -56,7 +56,7 @@ fn ObjectUpload(client: ApiClient, cache_id: String) -> impl IntoView {
 
     view! {
         <section class="panel editor-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Authenticated producer path"</p><h2>"Upload cache object"</h2><p>"Upload one canonical cache machine path. The Hub selects a direct-origin capability or its authenticated proxy and switches large objects to resumable multipart storage."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Authenticated producer path"</p><h2>"Upload cache object"</h2><p>"Upload one canonical cache machine path. The Hub selects a direct-origin capability or its authenticated proxy and switches large objects to multipart storage."</p></div></div>
             <div class="editor-form">
                 <label><span>"Cache-relative path"</span><input required placeholder="nar/<hash>.nar.zst or <store-hash>.narinfo" prop:value=move || path.get() on:input=move |event| path.set(event_target_value(&event))/></label>
                 <label><span>"Exact object bytes"</span><input type="file" disabled=move || busy.get() on:change=on_file/></label>

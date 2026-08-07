@@ -121,8 +121,7 @@ The client owns:
 - API reads, pagination, and permission-aware rendering;
 - typed editors and semantic plan review;
 - operation status, cancellation, and retry;
-- direct/proxy and multipart cache-object and publication uploads; and
-- non-secret interrupted-upload metadata in IndexedDB.
+- direct/proxy and multipart cache-object and publication uploads.
 
 Bearer credentials, secret values, and upload authorization material are never
 persisted by the application. Secret inputs are one-way fields or references,
@@ -288,9 +287,11 @@ When single-request admission returns no URL, the browser uses the typed begin,
 part, complete, and abort multipart protocol. A partial or failed registry
 publication is not discoverable.
 
-IndexedDB may retain publication ids, upload ids, local file identity, offsets,
-and checksums so a user can resume. It must not retain API bearers or signed
-upload credentials.
+The browser does not persist upload state or authorization material. Durable
+publication sessions remain discoverable from the Hub, so a user can reopen an
+exact publication and upload its remaining declared objects. An interrupted
+cache-object multipart transfer is aborted and restarted from a newly reviewed
+admission.
 
 ## Hard management cutover
 
@@ -319,7 +320,7 @@ The cutover is complete only when:
   confirmation, permission, idempotency, and audit tests;
 - registry and cache scenarios cover standalone caches, shared caches, ordered
   cache stacks, multiple placements, and simultaneous delivery routes;
-- publication and image fixtures cover resumable uploads, exact bytes,
+- publication and image fixtures cover multipart uploads, exact bytes,
   checksums, range requests, and public/private access;
 - repository guards find no removed management handler or POST route;
 - the exact candidate commit passes hosted staging acceptance; and
