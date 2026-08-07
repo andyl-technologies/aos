@@ -360,32 +360,32 @@ fn cache_source(
             aos_proto_types::consumer_cache_stack_entry::Source::BinaryCacheId(value.to_string()),
         );
     }
-    validate_external_url(value)?;
+    let url = validate_external_url(value)?;
     Ok(
         aos_proto_types::consumer_cache_stack_entry::Source::External(
-            aos_proto_types::ExternalConsumerCache {
-                url: value.to_string(),
-            },
+            aos_proto_types::ExternalConsumerCache { url },
         ),
     )
 }
 
-fn validate_external_url(value: &str) -> Result<(), String> {
-    if !value.starts_with("http://") && !value.starts_with("https://") {
+fn validate_external_url(value: &str) -> Result<String, String> {
+    let url = leptos::web_sys::Url::new(value)
+        .map_err(|_| "External cache URL is malformed".to_string())?;
+    if !matches!(url.protocol().as_str(), "http:" | "https:") {
         return Err("External cache URLs must use HTTP or HTTPS".to_string());
     }
-    let authority = value
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or_default();
-    let host = authority.split('/').next().unwrap_or_default();
-    if host.is_empty() || host.contains('@') || value.contains('?') || value.contains('#') {
+    if url.host().is_empty()
+        || !url.username().is_empty()
+        || !url.password().is_empty()
+        || !url.search().is_empty()
+        || !url.hash().is_empty()
+    {
         return Err(
             "External cache URLs need a host and cannot contain credentials, query, or fragment"
                 .to_string(),
         );
     }
-    Ok(())
+    Ok(url.href())
 }
 
 fn begin_plan(

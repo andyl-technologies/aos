@@ -22,13 +22,14 @@ pub(super) fn CachePopulation(client: ApiClient, cache_id: String) -> impl IntoV
         let cache_id = read_cache.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListPopulationTargetsResponse>(
+                .collect_pages::<_, aos_proto_types::ListPopulationTargetsResponse, _, _, _>(
                     aos_proto_types::CACHE_INTEGRATION_SERVICE_LIST_POPULATION_TARGETS_PATH,
-                    &aos_proto_types::ListPopulationTargetsRequest {
-                        cache_id,
+                    move |page_token| aos_proto_types::ListPopulationTargetsRequest {
+                        cache_id: cache_id.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.targets, response.next_page_token),
                 )
                 .await
         }
@@ -53,13 +54,13 @@ pub(super) fn CachePopulation(client: ApiClient, cache_id: String) -> impl IntoV
                     let cache_id = view_cache.clone();
                     Suspend::new(async move {
                         match targets.await.as_ref() {
-                            Ok(response) if response.targets.is_empty() => view! {
+                            Ok(targets) if targets.is_empty() => view! {
                                 <p class="muted">"No proactive population targets."</p>
                             }
                             .into_any(),
-                            Ok(response) => view! {
+                            Ok(targets) => view! {
                                 <div class="binding-list">
-                                    {response.targets.iter().cloned().map(|target| view! {
+                                    {targets.iter().cloned().map(|target| view! {
                                         <PopulationTargetCard client=client.clone() cache_id=cache_id.clone() target=target/>
                                     }).collect_view()}
                                 </div>

@@ -326,13 +326,14 @@ fn GcRuns(client: ApiClient, cache_id: String) -> impl IntoView {
         let cache_id = cache_id.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListCacheGcRunsResponse>(
+                .collect_pages::<_, aos_proto_types::ListCacheGcRunsResponse, _, _, _>(
                     aos_proto_types::BINARY_CACHE_SERVICE_LIST_CACHE_GC_RUNS_PATH,
-                    &aos_proto_types::ListCacheGcRunsRequest {
-                        cache_id,
+                    move |page_token| aos_proto_types::ListCacheGcRunsRequest {
+                        cache_id: cache_id.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.runs, response.next_page_token),
                 )
                 .await
         }
@@ -345,13 +346,13 @@ fn GcRuns(client: ApiClient, cache_id: String) -> impl IntoView {
             <Suspense fallback=move || view! { <p class="loading-row">"Loading GC runs…"</p> }>
                 {move || Suspend::new(async move {
                     match runs.await.as_ref() {
-                        Ok(response) if response.runs.is_empty() => view! {
+                        Ok(runs) if runs.is_empty() => view! {
                             <p class="muted">"No GC runs."</p>
                         }
                         .into_any(),
-                        Ok(response) => view! {
+                        Ok(runs) => view! {
                             <div class="binding-list">
-                                {response.runs.iter().cloned().map(|run| view! {
+                                {runs.iter().cloned().map(|run| view! {
                                     <GcRunCard run=run/>
                                 }).collect_view()}
                             </div>

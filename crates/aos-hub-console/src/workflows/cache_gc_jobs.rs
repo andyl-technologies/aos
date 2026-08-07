@@ -15,7 +15,7 @@ use crate::transport::ApiClient;
 #[component]
 pub(super) fn GcDeletionJobs(client: ApiClient, cache_id: String) -> impl IntoView {
     let operation_id = RwSignal::new(String::new());
-    let jobs = RwSignal::new(None::<aos_proto_types::ListCacheGcDeletionJobsResponse>);
+    let jobs = RwSignal::new(None::<Vec<aos_proto_types::CacheGcDeletionJob>>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let list_client = client.clone();
@@ -30,14 +30,15 @@ pub(super) fn GcDeletionJobs(client: ApiClient, cache_id: String) -> impl IntoVi
         busy.set(true);
         spawn_local(async move {
             match client
-                .call::<_, aos_proto_types::ListCacheGcDeletionJobsResponse>(
+                .collect_pages::<_, aos_proto_types::ListCacheGcDeletionJobsResponse, _, _, _>(
                     aos_proto_types::BINARY_CACHE_SERVICE_LIST_CACHE_GC_DELETION_JOBS_PATH,
-                    &aos_proto_types::ListCacheGcDeletionJobsRequest {
-                        cache_id,
-                        operation_id,
+                    move |page_token| aos_proto_types::ListCacheGcDeletionJobsRequest {
+                        cache_id: cache_id.clone(),
+                        operation_id: operation_id.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.jobs, response.next_page_token),
                 )
                 .await
             {
@@ -67,13 +68,13 @@ pub(super) fn GcDeletionJobs(client: ApiClient, cache_id: String) -> impl IntoVi
                 <button class="secondary-button" type="submit" disabled=move || busy.get()>"Load deletion jobs"</button>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
-            {move || jobs.get().map(|response| {
-                if response.jobs.is_empty() {
+            {move || jobs.get().map(|jobs| {
+                if jobs.is_empty() {
                     view! { <p class="muted">"No matching deletion jobs."</p> }.into_any()
                 } else {
                     view! {
                         <div class="binding-list">
-                            {response.jobs.into_iter().map(|job| view! {
+                            {jobs.into_iter().map(|job| view! {
                                 <DeletionJobCard client=view_client.clone() cache_id=view_cache.clone() job=job/>
                             }).collect_view()}
                         </div>

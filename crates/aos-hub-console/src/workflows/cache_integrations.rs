@@ -68,13 +68,14 @@ fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
         let cache_id = read_cache_id.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListCacheIntegrationsResponse>(
+                .collect_pages::<_, aos_proto_types::ListCacheIntegrationsResponse, _, _, _>(
                     aos_proto_types::CACHE_INTEGRATION_SERVICE_LIST_CACHE_REGISTRY_INTEGRATIONS_PATH,
-                    &aos_proto_types::ListCacheRegistryIntegrationsRequest {
-                        cache_id,
+                    move |page_token| aos_proto_types::ListCacheRegistryIntegrationsRequest {
+                        cache_id: cache_id.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.integrations, response.next_page_token),
                 )
                 .await
         }
@@ -95,14 +96,13 @@ fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
             <Suspense fallback=move || view! { <p class="loading-row">"Loading integrations…"</p> }>
                 {move || Suspend::new(async move {
                     match integrations.await.as_ref() {
-                        Ok(response) if response.integrations.is_empty() => view! {
+                        Ok(integrations) if integrations.is_empty() => view! {
                             <p class="muted">"This cache has no registry integrations."</p>
                         }
                         .into_any(),
-                        Ok(response) => view! {
+                        Ok(integrations) => view! {
                             <div class="binding-list">
-                                {response
-                                    .integrations
+                                {integrations
                                     .iter()
                                     .cloned()
                                     .map(|integration| view! {

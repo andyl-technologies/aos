@@ -121,13 +121,14 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
         let cache_id = read_cache.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListRetentionSubscriptionsResponse>(
+                .collect_pages::<_, aos_proto_types::ListRetentionSubscriptionsResponse, _, _, _>(
                     aos_proto_types::CACHE_INTEGRATION_SERVICE_LIST_RETENTION_SUBSCRIPTIONS_PATH,
-                    &aos_proto_types::ListRetentionSubscriptionsRequest {
-                        cache_id,
+                    move |page_token| aos_proto_types::ListRetentionSubscriptionsRequest {
+                        cache_id: cache_id.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.subscriptions, response.next_page_token),
                 )
                 .await
         }
@@ -153,13 +154,13 @@ pub(super) fn CacheRetentionWorkflow(client: ApiClient, cache_id: String) -> imp
                         let cache_id = view_cache.clone();
                         Suspend::new(async move {
                         match subscriptions.await.as_ref() {
-                            Ok(response) if response.subscriptions.is_empty() => view! {
+                            Ok(subscriptions) if subscriptions.is_empty() => view! {
                                 <p class="muted">"No registry retention subscriptions."</p>
                             }
                             .into_any(),
-                            Ok(response) => view! {
+                            Ok(subscriptions) => view! {
                                 <div class="binding-list">
-                                    {response.subscriptions.iter().cloned().map(|subscription| view! {
+                                    {subscriptions.iter().cloned().map(|subscription| view! {
                                         <SubscriptionSummary
                                             client=client.clone()
                                             cache_id=cache_id.clone()
