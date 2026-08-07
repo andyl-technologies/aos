@@ -12,7 +12,7 @@ use crate::error::DeviceError;
 use crate::request::{AdditionalCompletion, ComputedResponse, Response, ResponseStatus};
 
 use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, BlockStatus};
-use super::flash::{BlockFlashProgramOutcome, BlockFlashState, ResolvedBlockFlashRule};
+use super::flash::{BlockFlashMutationOutcome, BlockFlashState, ResolvedBlockFlashRule};
 use super::media::{BlockMediaState, ResolvedBlockMediaRule};
 use super::overlay::{BaseImage, CowOverlay};
 use super::persistence::{
@@ -380,6 +380,12 @@ pub struct BlockPersistenceOpportunity {
     pub sequence: u64,
     /// Original guest request identity.
     pub request_id: u32,
+    /// First durability sequence assigned to the complete logical operation.
+    pub operation_sequence: u64,
+    /// Physical operation performed by this fragment.
+    pub operation: BlockOp,
+    /// Digest of the original guest wire request.
+    pub request_digest: [u8; 32],
     /// Absolute destination byte offset.
     pub offset: u64,
     /// Exact fragment byte count.
@@ -404,12 +410,12 @@ pub struct ResolvedBlockPersistenceMediaDirective {
 pub struct BlockPersistenceMediaOutcome {
     /// Opportunity identity that was consumed.
     pub opportunity: BlockPersistenceOpportunity,
-    /// Exact program spans applied to durable media.
-    pub programmed_spans: Vec<BlockFaultByteSpan>,
-    /// Whether a flash program rule reported failure after partial application.
-    pub program_failed: bool,
-    /// Digest of the bytes actually applied, including an empty application.
-    pub programmed_digest: [u8; 32],
+    /// Exact program or erase spans applied to durable media.
+    pub applied_spans: Vec<BlockFaultByteSpan>,
+    /// Whether a flash program or erase rule reported failure after partial application.
+    pub media_failed: bool,
+    /// Digest of the bytes actually programmed or erased, including an empty application.
+    pub applied_digest: [u8; 32],
 }
 
 impl ResolvedBlockFaultDirective {
@@ -641,6 +647,13 @@ impl ResolvedBlockFaultDirective {
                 reason: "write dispositions require a write request",
             });
         }
+        if self.operation == BlockOp::Discard
+            && self.write_disposition != BlockFaultWriteDisposition::Apply
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "discard does not accept write-disposition transformations",
+            });
+        }
         if !matches!(self.operation, BlockOp::Write | BlockOp::Discard)
             && self.cache_policy.is_some()
         {
@@ -755,6 +768,8 @@ pub struct BlockVolatileEntry {
     pub sequence: u64,
     /// Original request ID.
     pub request_id: u32,
+    /// Immutable physical-media identity shared by every request fragment.
+    pub media_identity: BlockMediaOperationIdentity,
     /// Destination range start.
     pub offset: u64,
     /// Exact admitted bytes.
@@ -772,10 +787,27 @@ pub struct BlockControllerEntry {
     pub sequence: u64,
     /// Original request ID.
     pub request_id: u32,
+    /// Immutable physical-media identity shared by every request fragment.
+    pub media_identity: BlockMediaOperationIdentity,
     /// Destination range start.
     pub offset: u64,
     /// Exact accepted bytes.
     pub bytes: Vec<u8>,
+}
+
+/// Immutable identity of one logical operation entering physical media.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockMediaOperationIdentity {
+    /// Write or discard operation interpreted at persistence.
+    pub operation: BlockOp,
+    /// First durability sequence assigned to the complete logical operation.
+    pub operation_sequence: u64,
+    /// Digest of the original guest wire request.
+    pub request_digest: [u8; 32],
+    /// Original complete request range start.
+    pub request_offset: u64,
+    /// Original complete request byte count.
+    pub request_count: u32,
 }
 
 /// One retained prior range version.
@@ -993,6 +1025,13 @@ impl BlockFaultState {
         }
         let volatile_bytes = self.volatile.values().try_fold(0_u64, |total, entry| {
             validate_state_range(entry.offset, entry.bytes.len(), device_length)?;
+            validate_media_entry(
+                entry.media_identity,
+                entry.sequence,
+                entry.offset,
+                entry.bytes.len(),
+                device_length,
+            )?;
             total
                 .checked_add(u64::try_from(entry.bytes.len()).map_err(|_error| {
                     DeviceError::InvalidBlockFaultDirective {
@@ -1005,6 +1044,13 @@ impl BlockFaultState {
         })?;
         let controller_bytes = self.controller.values().try_fold(0_u64, |total, entry| {
             validate_state_range(entry.offset, entry.bytes.len(), device_length)?;
+            validate_media_entry(
+                entry.media_identity,
+                entry.sequence,
+                entry.offset,
+                entry.bytes.len(),
+                device_length,
+            )?;
             total
                 .checked_add(u64::try_from(entry.bytes.len()).map_err(|_error| {
                     DeviceError::InvalidBlockFaultDirective {
@@ -1017,6 +1063,13 @@ impl BlockFaultState {
         })?;
         let media_queue_bytes = self.media_queue.values().try_fold(0_u64, |total, entry| {
             validate_state_range(entry.offset, entry.bytes.len(), device_length)?;
+            validate_media_entry(
+                entry.media_identity,
+                entry.sequence,
+                entry.offset,
+                entry.bytes.len(),
+                device_length,
+            )?;
             total
                 .checked_add(u64::try_from(entry.bytes.len()).map_err(|_error| {
                     DeviceError::InvalidBlockFaultDirective {
@@ -1092,6 +1145,26 @@ impl BlockFaultState {
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "restored persistence graph differs from pending storage layers",
+            });
+        }
+        let live_discard_operations = self
+            .controller
+            .values()
+            .map(|entry| entry.media_identity)
+            .chain(self.media_queue.values().map(|entry| entry.media_identity))
+            .chain(self.volatile.values().map(|entry| entry.media_identity))
+            .filter_map(|identity| {
+                (identity.operation == BlockOp::Discard).then_some(identity.operation_sequence)
+            })
+            .collect::<BTreeSet<_>>();
+        if self.flash.continuations().values().any(|continuation| {
+            continuation
+                .erase_decisions
+                .keys()
+                .any(|(operation, _block)| !live_discard_operations.contains(operation))
+        }) {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "restored flash erase decision has no live discard operation",
             });
         }
         let expected_durable_frontier = self
@@ -1286,10 +1359,15 @@ impl BlockFaultState {
     #[must_use]
     pub fn volatile_entries_digest(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"crucible.block-volatile-entry-set.v1\0");
+        hasher.update(b"crucible.block-volatile-entry-set.v2\0");
         for (sequence, entry) in &self.volatile {
             hasher.update(&sequence.to_be_bytes());
             hasher.update(&entry.request_id.to_be_bytes());
+            hasher.update(&[entry.media_identity.operation.to_wire()]);
+            hasher.update(&entry.media_identity.operation_sequence.to_be_bytes());
+            hasher.update(&entry.media_identity.request_digest);
+            hasher.update(&entry.media_identity.request_offset.to_be_bytes());
+            hasher.update(&entry.media_identity.request_count.to_be_bytes());
             hasher.update(&entry.offset.to_be_bytes());
             hasher.update(
                 &u64::try_from(entry.bytes.len())
@@ -1770,7 +1848,9 @@ impl BlockFaultState {
                 0,
             ));
         }
-        if self.config.discard_semantics == BlockDiscardSemantics::ReadsOldData {
+        if self.config.discard_semantics == BlockDiscardSemantics::ReadsOldData
+            && directive.persistence_media_rules.is_empty()
+        {
             return Ok((BlockResponse::ok(request.request_id, Vec::new()), 0));
         }
         let count = usize::try_from(request.count).map_err(|_error| {
@@ -1778,15 +1858,18 @@ impl BlockFaultState {
                 reason: "discard range does not fit memory",
             }
         })?;
-        let bytes = match self.config.discard_semantics {
-            BlockDiscardSemantics::DeterministicZero => vec![0; count],
-            BlockDiscardSemantics::ReadsOldData => Vec::new(),
-            BlockDiscardSemantics::UndefinedKeyed => {
-                keyed_discard_bytes(base.hash(), request, count)
+        let bytes = if !directive.persistence_media_rules.is_empty() {
+            vec![0xff; count]
+        } else {
+            match self.config.discard_semantics {
+                BlockDiscardSemantics::DeterministicZero => vec![0; count],
+                BlockDiscardSemantics::ReadsOldData => Vec::new(),
+                BlockDiscardSemantics::UndefinedKeyed => {
+                    keyed_discard_bytes(base.hash(), request, count)
+                }
             }
         };
         let mut write = request.clone();
-        write.op = BlockOp::Write;
         write.data = bytes;
         match self.apply_write(base, durable, &write, directive)? {
             BlockWriteOutcome::Applied(wait) => {
@@ -2015,6 +2098,13 @@ impl BlockFaultState {
             }
         })?;
         let first_sequence = self.next_cache_sequence;
+        let media_identity = BlockMediaOperationIdentity {
+            operation: request.op,
+            operation_sequence: first_sequence,
+            request_digest: directive.request_digest,
+            request_offset: request.offset,
+            request_count: request.count,
+        };
         self.next_cache_sequence = self.next_cache_sequence.checked_add(sequence_count).ok_or(
             DeviceError::InvalidBlockFaultDirective {
                 reason: "write durability sequence overflow",
@@ -2110,6 +2200,9 @@ impl BlockFaultState {
                         opportunity: BlockPersistenceOpportunity {
                             sequence,
                             request_id: request.request_id,
+                            operation_sequence: media_identity.operation_sequence,
+                            operation: media_identity.operation,
+                            request_digest: media_identity.request_digest,
                             offset: *offset,
                             count: u32::try_from(bytes.len()).map_err(|_error| {
                                 DeviceError::InvalidBlockFaultDirective {
@@ -2138,11 +2231,18 @@ impl BlockFaultState {
                 u64::try_from(bytes.len()).unwrap_or(u64::MAX),
             )?;
             if controller {
-                self.controller_write(sequence, request.request_id, offset, bytes.to_vec())?;
+                self.controller_write(
+                    sequence,
+                    request.request_id,
+                    media_identity,
+                    offset,
+                    bytes.to_vec(),
+                )?;
             } else if cache {
                 self.cache_write(
                     sequence,
                     request.request_id,
+                    media_identity,
                     offset,
                     bytes.to_vec(),
                     directive
@@ -2150,7 +2250,13 @@ impl BlockFaultState {
                         .is_some_and(|policy| policy.power_loss_protected),
                 )?;
             } else {
-                self.media_queue_write(sequence, request.request_id, offset, bytes.to_vec())?;
+                self.media_queue_write(
+                    sequence,
+                    request.request_id,
+                    media_identity,
+                    offset,
+                    bytes.to_vec(),
+                )?;
             }
         }
         let persistence_wait_nanos = if !cache && !controller {
@@ -2217,6 +2323,7 @@ impl BlockFaultState {
         &mut self,
         sequence: u64,
         request_id: u32,
+        media_identity: BlockMediaOperationIdentity,
         offset: u64,
         bytes: Vec<u8>,
         power_loss_protected: bool,
@@ -2249,6 +2356,7 @@ impl BlockFaultState {
             BlockVolatileEntry {
                 sequence,
                 request_id,
+                media_identity,
                 offset,
                 bytes,
                 last_access_sequence: access_sequence,
@@ -2353,6 +2461,7 @@ impl BlockFaultState {
         self.media_queue_write(
             entry.sequence,
             entry.request_id,
+            entry.media_identity,
             entry.offset,
             entry.bytes.clone(),
         )?;
@@ -2409,6 +2518,7 @@ impl BlockFaultState {
         &mut self,
         sequence: u64,
         request_id: u32,
+        media_identity: BlockMediaOperationIdentity,
         offset: u64,
         bytes: Vec<u8>,
     ) -> Result<(), DeviceError> {
@@ -2423,6 +2533,7 @@ impl BlockFaultState {
             BlockControllerEntry {
                 sequence,
                 request_id,
+                media_identity,
                 offset,
                 bytes,
             },
@@ -2434,6 +2545,7 @@ impl BlockFaultState {
         &mut self,
         sequence: u64,
         request_id: u32,
+        media_identity: BlockMediaOperationIdentity,
         offset: u64,
         bytes: Vec<u8>,
     ) -> Result<(), DeviceError> {
@@ -2459,6 +2571,7 @@ impl BlockFaultState {
             BlockControllerEntry {
                 sequence,
                 request_id,
+                media_identity,
                 offset,
                 bytes,
             },
@@ -2528,6 +2641,7 @@ impl BlockFaultState {
         self.media_queue_write(
             entry.sequence,
             entry.request_id,
+            entry.media_identity,
             entry.offset,
             entry.bytes.clone(),
         )?;
@@ -2553,17 +2667,33 @@ impl BlockFaultState {
         sequence: u64,
         now_nanos: u64,
     ) -> Result<(), DeviceError> {
-        let (request_id, offset, bytes) = if let Some(entry) = self.controller.get(&sequence) {
-            (entry.request_id, entry.offset, entry.bytes.clone())
-        } else if let Some(entry) = self.media_queue.get(&sequence) {
-            (entry.request_id, entry.offset, entry.bytes.clone())
-        } else if let Some(entry) = self.volatile.get(&sequence) {
-            (entry.request_id, entry.offset, entry.bytes.clone())
-        } else {
-            return Err(DeviceError::InvalidBlockFaultDirective {
-                reason: "ready persistence fragment has no owning storage layer",
-            });
-        };
+        let (request_id, media_identity, offset, bytes) =
+            if let Some(entry) = self.controller.get(&sequence) {
+                (
+                    entry.request_id,
+                    entry.media_identity,
+                    entry.offset,
+                    entry.bytes.clone(),
+                )
+            } else if let Some(entry) = self.media_queue.get(&sequence) {
+                (
+                    entry.request_id,
+                    entry.media_identity,
+                    entry.offset,
+                    entry.bytes.clone(),
+                )
+            } else if let Some(entry) = self.volatile.get(&sequence) {
+                (
+                    entry.request_id,
+                    entry.media_identity,
+                    entry.offset,
+                    entry.bytes.clone(),
+                )
+            } else {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "ready persistence fragment has no owning storage layer",
+                });
+            };
         let opportunity = self.persistence_opportunity(sequence).ok_or(
             DeviceError::InvalidBlockFaultDirective {
                 reason: "persistence opportunity disappeared",
@@ -2576,7 +2706,7 @@ impl BlockFaultState {
             });
         }
         let flash = directive.map_or(
-            Ok(BlockFlashProgramOutcome {
+            Ok(BlockFlashMutationOutcome {
                 spans: vec![BlockFaultByteSpan {
                     start: 0,
                     length: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
@@ -2589,13 +2719,30 @@ impl BlockFaultState {
                     .iter()
                     .map(|rule| rule.contributor)
                     .collect::<Vec<_>>();
-                let request = BlockRequest::write(request_id, offset, bytes.clone());
-                self.flash.program_registered(
-                    &request,
-                    now_nanos,
-                    self.config.length_bytes,
-                    &contributors,
-                )
+                match media_identity.operation {
+                    BlockOp::Write => {
+                        let request = BlockRequest::write(request_id, offset, bytes.clone());
+                        self.flash.program_registered(
+                            &request,
+                            now_nanos,
+                            self.config.length_bytes,
+                            &contributors,
+                        )
+                    }
+                    BlockOp::Discard => self.flash.erase_fragment_registered(
+                        media_identity.operation_sequence,
+                        media_identity.request_offset,
+                        media_identity.request_count,
+                        offset,
+                        &bytes,
+                        now_nanos,
+                        self.config.length_bytes,
+                        &contributors,
+                    ),
+                    _ => Err(DeviceError::InvalidBlockFaultDirective {
+                        reason: "physical persistence operation is not write or discard",
+                    }),
+                }
             },
         )?;
         let mut programmed = Vec::new();
@@ -2655,9 +2802,9 @@ impl BlockFaultState {
         self.persistence_media_outcomes
             .push(BlockPersistenceMediaOutcome {
                 opportunity,
-                programmed_spans: flash.spans,
-                program_failed: flash.failed,
-                programmed_digest: *blake3::hash(&programmed).as_bytes(),
+                applied_spans: flash.spans,
+                media_failed: flash.failed,
+                applied_digest: *blake3::hash(&programmed).as_bytes(),
             });
         self.recompute_actual_durable_frontier();
         Ok(())
@@ -2667,23 +2814,43 @@ impl BlockFaultState {
         let entry = self
             .controller
             .get(&sequence)
-            .map(|entry| (entry.request_id, entry.offset, entry.bytes.as_slice()))
-            .or_else(|| {
-                self.media_queue
-                    .get(&sequence)
-                    .map(|entry| (entry.request_id, entry.offset, entry.bytes.as_slice()))
+            .map(|entry| {
+                (
+                    entry.request_id,
+                    entry.media_identity,
+                    entry.offset,
+                    entry.bytes.as_slice(),
+                )
             })
             .or_else(|| {
-                self.volatile
-                    .get(&sequence)
-                    .map(|entry| (entry.request_id, entry.offset, entry.bytes.as_slice()))
+                self.media_queue.get(&sequence).map(|entry| {
+                    (
+                        entry.request_id,
+                        entry.media_identity,
+                        entry.offset,
+                        entry.bytes.as_slice(),
+                    )
+                })
+            })
+            .or_else(|| {
+                self.volatile.get(&sequence).map(|entry| {
+                    (
+                        entry.request_id,
+                        entry.media_identity,
+                        entry.offset,
+                        entry.bytes.as_slice(),
+                    )
+                })
             })?;
         Some(BlockPersistenceOpportunity {
             sequence,
             request_id: entry.0,
-            offset: entry.1,
-            count: u32::try_from(entry.2.len()).ok()?,
-            intended_digest: *blake3::hash(entry.2).as_bytes(),
+            operation_sequence: entry.1.operation_sequence,
+            operation: entry.1.operation,
+            request_digest: entry.1.request_digest,
+            offset: entry.2,
+            count: u32::try_from(entry.3.len()).ok()?,
+            intended_digest: *blake3::hash(entry.3).as_bytes(),
             ready_nanos: self.persistence.deadline_nanos(sequence).unwrap_or(0),
         })
     }
@@ -2760,6 +2927,39 @@ fn validate_state_range(offset: u64, length: usize, device_length: u64) -> Resul
             reason: "restored block state range exceeds the device",
         })
     }
+}
+
+fn validate_media_entry(
+    identity: BlockMediaOperationIdentity,
+    fragment_sequence: u64,
+    offset: u64,
+    length: usize,
+    device_length: u64,
+) -> Result<(), DeviceError> {
+    if !matches!(identity.operation, BlockOp::Write | BlockOp::Discard) {
+        return Err(DeviceError::InvalidBlockFaultDirective {
+            reason: "restored media entry has an invalid physical operation",
+        });
+    }
+    let request_end = identity
+        .request_offset
+        .checked_add(u64::from(identity.request_count));
+    let fragment_end = offset.checked_add(u64::try_from(length).map_err(|_error| {
+        DeviceError::InvalidBlockFaultDirective {
+            reason: "restored media entry length overflow",
+        }
+    })?);
+    if identity.request_count == 0
+        || identity.operation_sequence > fragment_sequence
+        || request_end.is_none_or(|end| end > device_length)
+        || fragment_end
+            .is_none_or(|end| offset < identity.request_offset || end > request_end.unwrap_or(0))
+    {
+        return Err(DeviceError::InvalidBlockFaultDirective {
+            reason: "restored media entry differs from its original request",
+        });
+    }
+    Ok(())
 }
 
 fn entry_contributes_visible(
@@ -4200,12 +4400,106 @@ mod tests {
         let outcomes = storage.drain_persistence_media_outcomes();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].opportunity, opportunity);
-        assert!(outcomes[0].program_failed);
-        assert_eq!(outcomes[0].programmed_spans.len(), 1);
-        let programmed = outcomes[0].programmed_spans[0].length as usize;
+        assert!(outcomes[0].media_failed);
+        assert_eq!(outcomes[0].applied_spans.len(), 1);
+        let programmed = outcomes[0].applied_spans[0].length as usize;
         let materialized = durable.materialize(&base);
         assert_eq!(&materialized[..programmed], &vec![0xaa; programmed]);
         assert_eq!(&materialized[programmed..4], &vec![0; 4 - programmed]);
+    }
+
+    #[test]
+    fn flash_discard_applies_one_request_wide_partial_erase() {
+        let base = BaseImage::new(vec![0xaa; 16]);
+        let mut durable = CowOverlay::new();
+        let mut storage = BlockFaultState::new(BlockDurabilityConfig {
+            length_bytes: 16,
+            atomic_write_bytes: 4,
+            maximum_request_bytes: 16,
+            discard_granularity_bytes: 4,
+            discard_semantics: BlockDiscardSemantics::ReadsOldData,
+            volatile_cache_bytes: 16,
+            cache_entries: 4,
+            controller_buffer_bytes: 0,
+            controller_entries: 0,
+            persistence_dependencies: 16,
+            retained_versions: 4,
+            completion_durability: BlockCompletionDurability::VolatileCacheAccepted,
+        })
+        .unwrap_or_else(|error| panic!("flash discard state should build: {error}"));
+        let discard = BlockRequest::discard(42, 0, 8);
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&discard, 16);
+        directive.persistence_media_rules = vec![ResolvedBlockFlashRule {
+            contributor: [7; 32],
+            choice_key: [8; 32],
+            erase_block_bytes: 8,
+            program_page_bytes: 4,
+            endurance_cycles: 10,
+            retention: super::super::flash::ResolvedBlockFlashRetention {
+                minimum_age_nanos: 1,
+                wear_age_nanos: 0,
+                bit_probability_millionths: 0,
+                maximum_changed_bits: 1,
+            },
+            read_disturb: super::super::flash::ResolvedBlockFlashReadDisturb {
+                read_threshold: 10,
+                neighbor_pages: 1,
+                bit_probability_millionths: 0,
+                maximum_changed_bits: 1,
+            },
+            program_erase: super::super::flash::ResolvedBlockFlashProgramErase {
+                program_probability_millionths: 0,
+                erase_probability_millionths: 1_000_000,
+                worn_probability_millionths: 0,
+                partial_program: false,
+                partial_erase: true,
+            },
+        }];
+        storage
+            .install(discard.request_id, directive)
+            .unwrap_or_else(|error| panic!("discard directive should install: {error}"));
+        storage
+            .execute(&base, &mut durable, &discard, 0)
+            .unwrap_or_else(|error| panic!("discard should enter the volatile cache: {error}"));
+        storage
+            .schedule_volatile_persistence(0)
+            .unwrap_or_else(|error| panic!("first fragment should enter media: {error}"));
+        storage
+            .schedule_volatile_persistence(1)
+            .unwrap_or_else(|error| panic!("second fragment should enter media: {error}"));
+        storage
+            .validate_restore(16)
+            .unwrap_or_else(|error| panic!("queued discard checkpoint should validate: {error}"));
+        storage
+            .persist_due(&base, &mut durable, 0)
+            .unwrap_or_else(|error| panic!("flash erase should persist: {error}"));
+
+        let outcomes = storage.drain_persistence_media_outcomes();
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.iter().all(|outcome| outcome.media_failed));
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| outcome.opportunity.operation == BlockOp::Discard)
+        );
+        let erased = outcomes
+            .iter()
+            .flat_map(|outcome| &outcome.applied_spans)
+            .map(|span| span.length)
+            .sum::<u64>();
+        assert!((1..=8).contains(&erased));
+        let materialized = durable.materialize(&base);
+        assert_eq!(
+            &materialized[..usize::try_from(erased).unwrap_or(0)],
+            &vec![0xff; usize::try_from(erased).unwrap_or(0)]
+        );
+        assert_eq!(
+            &materialized[usize::try_from(erased).unwrap_or(0)..8],
+            &vec![0xaa; 8 - usize::try_from(erased).unwrap_or(0)]
+        );
+        let continuation = &storage.flash_state().continuations()[&[7; 32]];
+        assert_eq!(continuation.erase_blocks[&0].erase_count, 1);
+        assert!(continuation.erase_decisions.is_empty());
     }
 
     #[test]

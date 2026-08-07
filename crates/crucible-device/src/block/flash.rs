@@ -137,16 +137,27 @@ pub struct BlockFlashContinuation {
     pub pages: BTreeMap<u64, BlockFlashPageState>,
     /// Persistent physical-cell XOR masks keyed by absolute byte offset.
     pub changed_bytes: BTreeMap<u64, u8>,
+    /// In-progress erase decisions keyed by logical operation sequence and block ordinal.
+    pub erase_decisions: BTreeMap<(u64, u64), BlockFlashEraseDecision>,
     /// Monotone physical transition sequence used in keyed choices.
     pub transition_sequence: u64,
 }
 
-/// Exact result of a flash program opportunity.
+/// Frozen result of one erase-block attempt shared by all request fragments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockFlashEraseDecision {
+    /// Bytes erased from the beginning of the physical block.
+    pub applied_prefix_bytes: u64,
+    /// Whether the erase attempt failed.
+    pub failed: bool,
+}
+
+/// Exact result of a flash program or erase opportunity.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BlockFlashProgramOutcome {
-    /// Request-relative spans that physically programmed.
+pub struct BlockFlashMutationOutcome {
+    /// Fragment-relative spans that physically programmed or erased.
     pub spans: Vec<BlockFaultByteSpan>,
-    /// Whether the device reports a program failure after applying `spans`.
+    /// Whether the device reports a media failure after applying `spans`.
     pub failed: bool,
 }
 
@@ -189,7 +200,7 @@ impl BlockFlashState {
         now_nanos: u64,
         device_length: u64,
         contributors: &[[u8; 32]],
-    ) -> Result<BlockFlashProgramOutcome, DeviceError> {
+    ) -> Result<BlockFlashMutationOutcome, DeviceError> {
         if contributors.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(invalid("flash contributors are not in canonical order"));
         }
@@ -221,6 +232,7 @@ impl BlockFlashState {
                 || continuation.erase_blocks.len() > HARD_BLOCK_FLASH_SPARSE_ENTRIES
                 || continuation.pages.len() > HARD_BLOCK_FLASH_SPARSE_ENTRIES
                 || continuation.changed_bytes.len() > HARD_BLOCK_FLASH_SPARSE_ENTRIES
+                || continuation.erase_decisions.len() > HARD_BLOCK_FLASH_SPARSE_ENTRIES
                 || continuation.erase_blocks.keys().any(|ordinal| {
                     ordinal
                         .checked_mul(continuation.rule.erase_block_bytes)
@@ -235,6 +247,15 @@ impl BlockFlashState {
                     .changed_bytes
                     .iter()
                     .any(|(offset, mask)| *offset >= device_length || *mask == 0)
+                || continuation
+                    .erase_decisions
+                    .iter()
+                    .any(|((_operation, block), decision)| {
+                        block
+                            .checked_mul(continuation.rule.erase_block_bytes)
+                            .is_none_or(|start| start >= device_length)
+                            || decision.applied_prefix_bytes > continuation.rule.erase_block_bytes
+                    })
             {
                 return Err(invalid("invalid restored flash continuation"));
             }
@@ -254,7 +275,7 @@ impl BlockFlashState {
         now_nanos: u64,
         device_length: u64,
         rules: &[ResolvedBlockFlashRule],
-    ) -> Result<BlockFlashProgramOutcome, DeviceError> {
+    ) -> Result<BlockFlashMutationOutcome, DeviceError> {
         if request.op != BlockOp::Write || request.count == 0 {
             return Err(invalid("flash program requires a nonempty write"));
         }
@@ -347,7 +368,153 @@ impl BlockFlashState {
             .into_iter()
             .collect();
         *self = next;
-        Ok(BlockFlashProgramOutcome { spans, failed })
+        Ok(BlockFlashMutationOutcome { spans, failed })
+    }
+
+    /// Resolves one physical erase fragment with request-wide frozen decisions.
+    ///
+    /// Every complete discard must be erase-block aligned for every active rule.
+    /// The first fragment reaching a block freezes its success or partial-prefix
+    /// decision and increments wear exactly once; later fragments reuse it even
+    /// across checkpoint/restore. The last request fragment releases only the
+    /// temporary decisions, retaining wear and changed-cell state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] for invalid geometry/ranges, noncanonical
+    /// contributors, overflow, or sparse-state exhaustion.
+    pub fn erase_fragment_registered(
+        &mut self,
+        operation_sequence: u64,
+        request_offset: u64,
+        request_count: u32,
+        fragment_offset: u64,
+        fragment_bytes: &[u8],
+        now_nanos: u64,
+        device_length: u64,
+        contributors: &[[u8; 32]],
+    ) -> Result<BlockFlashMutationOutcome, DeviceError> {
+        if contributors.windows(2).any(|pair| pair[0] >= pair[1]) || fragment_bytes.is_empty() {
+            return Err(invalid("invalid flash erase contributors or fragment"));
+        }
+        let request_end = request_offset
+            .checked_add(u64::from(request_count))
+            .ok_or_else(|| invalid("flash erase request range overflow"))?;
+        let fragment_end = fragment_offset
+            .checked_add(
+                u64::try_from(fragment_bytes.len())
+                    .map_err(|_error| invalid("flash erase fragment length overflow"))?,
+            )
+            .ok_or_else(|| invalid("flash erase fragment range overflow"))?;
+        if fragment_offset < request_offset
+            || fragment_end > request_end
+            || request_end > device_length
+            || fragment_bytes.iter().any(|byte| *byte != 0xff)
+        {
+            return Err(invalid("flash erase fragment differs from its request"));
+        }
+        let mut next = self.clone();
+        let mut selected = vec![true; fragment_bytes.len()];
+        let mut failed = false;
+        for contributor in contributors {
+            let continuation = next
+                .continuations
+                .get_mut(contributor)
+                .ok_or_else(|| invalid("flash erase contributor is not registered"))?;
+            let rule = continuation.rule.clone();
+            if !request_offset.is_multiple_of(rule.erase_block_bytes)
+                || !u64::from(request_count).is_multiple_of(rule.erase_block_bytes)
+            {
+                return Err(invalid("flash erase request is not erase-block aligned"));
+            }
+            let first_block = fragment_offset / rule.erase_block_bytes;
+            let last_block = fragment_end.saturating_sub(1) / rule.erase_block_bytes;
+            for block in first_block..=last_block {
+                let key = (operation_sequence, block);
+                let decision = match continuation.erase_decisions.get(&key).copied() {
+                    Some(decision) => decision,
+                    None => {
+                        if continuation.erase_decisions.len() == HARD_BLOCK_FLASH_SPARSE_ENTRIES
+                            || (!continuation.erase_blocks.contains_key(&block)
+                                && continuation.erase_blocks.len()
+                                    == HARD_BLOCK_FLASH_SPARSE_ENTRIES)
+                        {
+                            return Err(limit(
+                                "flash_erase_decisions",
+                                HARD_BLOCK_FLASH_SPARSE_ENTRIES,
+                            ));
+                        }
+                        let state = continuation.erase_blocks.entry(block).or_default();
+                        let probability = if state.erase_count >= rule.endurance_cycles {
+                            rule.program_erase.worn_probability_millionths
+                        } else {
+                            rule.program_erase.erase_probability_millionths
+                        };
+                        let transition = continuation.transition_sequence;
+                        continuation.transition_sequence = transition
+                            .checked_add(1)
+                            .ok_or_else(|| invalid("flash transition sequence overflow"))?;
+                        let attempt_failed =
+                            chosen(&rule, b"erase", block, transition, 0, probability);
+                        let applied_prefix_bytes = if !attempt_failed {
+                            rule.erase_block_bytes
+                        } else if rule.program_erase.partial_erase {
+                            keyed_nonempty_prefix(
+                                &rule,
+                                b"partial-erase",
+                                block,
+                                transition,
+                                rule.erase_block_bytes,
+                            )
+                        } else {
+                            0
+                        };
+                        state.erase_count = state
+                            .erase_count
+                            .checked_add(1)
+                            .ok_or_else(|| invalid("flash erase count overflow"))?;
+                        state.last_erase_nanos = now_nanos;
+                        let decision = BlockFlashEraseDecision {
+                            applied_prefix_bytes,
+                            failed: attempt_failed,
+                        };
+                        continuation.erase_decisions.insert(key, decision);
+                        decision
+                    }
+                };
+                failed |= decision.failed;
+                let block_start = block.saturating_mul(rule.erase_block_bytes);
+                let applied_end = block_start.saturating_add(decision.applied_prefix_bytes);
+                for (index, keep) in selected.iter_mut().enumerate() {
+                    let absolute =
+                        fragment_offset.saturating_add(u64::try_from(index).unwrap_or(u64::MAX));
+                    if absolute >= block_start
+                        && absolute < block_start.saturating_add(rule.erase_block_bytes)
+                        && absolute >= applied_end
+                    {
+                        *keep = false;
+                    }
+                }
+            }
+        }
+        for contributor in contributors {
+            let continuation = next
+                .continuations
+                .get_mut(contributor)
+                .ok_or_else(|| invalid("flash erase contributor is not registered"))?;
+            let page_bytes = continuation.rule.program_page_bytes;
+            clear_selected_erase_state(continuation, fragment_offset, &selected, page_bytes);
+        }
+        let spans = selected_spans(&selected)?;
+        if fragment_end == request_end {
+            for continuation in next.continuations.values_mut() {
+                continuation
+                    .erase_decisions
+                    .retain(|(operation, _block), _decision| *operation != operation_sequence);
+            }
+        }
+        *self = next;
+        Ok(BlockFlashMutationOutcome { spans, failed })
     }
 
     /// Applies persistent retention/read-disturb cell state to returned bytes.
@@ -496,6 +663,7 @@ impl BlockFlashState {
                             erase_blocks: BTreeMap::new(),
                             pages: BTreeMap::new(),
                             changed_bytes: BTreeMap::new(),
+                            erase_decisions: BTreeMap::new(),
                             transition_sequence: 0,
                         },
                     );
@@ -536,6 +704,65 @@ fn clear_changed_range(continuation: &mut BlockFlashContinuation, start: u64, le
     for offset in selected {
         continuation.changed_bytes.remove(&offset);
     }
+}
+
+fn clear_selected_erase_state(
+    continuation: &mut BlockFlashContinuation,
+    fragment_offset: u64,
+    selected: &[bool],
+    page_bytes: u64,
+) {
+    for (index, selected) in selected.iter().copied().enumerate() {
+        if selected {
+            continuation
+                .changed_bytes
+                .remove(&fragment_offset.saturating_add(u64::try_from(index).unwrap_or(u64::MAX)));
+        }
+    }
+    let fragment_end = fragment_offset.saturating_add(u64::try_from(selected.len()).unwrap_or(0));
+    if fragment_end == fragment_offset {
+        return;
+    }
+    let first_page = fragment_offset / page_bytes;
+    let last_page = fragment_end.saturating_sub(1) / page_bytes;
+    for page in first_page..=last_page {
+        let page_start = page.saturating_mul(page_bytes);
+        let page_end = page_start.saturating_add(page_bytes);
+        if page_start >= fragment_offset
+            && page_end <= fragment_end
+            && (page_start..page_end).all(|offset| {
+                usize::try_from(offset - fragment_offset)
+                    .ok()
+                    .and_then(|index| selected.get(index))
+                    .copied()
+                    .unwrap_or(false)
+            })
+        {
+            continuation.pages.remove(&page);
+        }
+    }
+}
+
+fn selected_spans(selected: &[bool]) -> Result<Vec<BlockFaultByteSpan>, DeviceError> {
+    let mut spans = Vec::new();
+    let mut index = 0_usize;
+    while index < selected.len() {
+        if !selected[index] {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < selected.len() && selected[index] {
+            index += 1;
+        }
+        spans.push(BlockFaultByteSpan {
+            start: u64::try_from(start)
+                .map_err(|_error| invalid("flash erase span start overflow"))?,
+            length: u64::try_from(index - start)
+                .map_err(|_error| invalid("flash erase span length overflow"))?,
+        });
+    }
+    Ok(spans)
 }
 
 fn mutate_page(
@@ -736,5 +963,101 @@ mod tests {
         assert!(outcome.failed);
         assert_eq!(outcome.spans.len(), 1);
         assert!(outcome.spans[0].length > 0 && outcome.spans[0].length <= 512);
+    }
+
+    #[test]
+    fn partial_erase_is_request_wide_checkpointed_and_counts_wear_once() {
+        let mut partial = rule();
+        partial.erase_block_bytes = 8;
+        partial.program_page_bytes = 4;
+        partial.program_erase.erase_probability_millionths = 1_000_000;
+        partial.program_erase.partial_erase = true;
+        let contributors = [partial.contributor];
+        let mut state = BlockFlashState::default();
+        state
+            .register_rules(16, &[partial])
+            .unwrap_or_else(|error| panic!("flash rule should register: {error}"));
+
+        let first = state
+            .erase_fragment_registered(7, 0, 8, 0, &[0xff; 4], 11, 16, &contributors)
+            .unwrap_or_else(|error| panic!("first erase fragment should resolve: {error}"));
+        assert!(first.failed);
+        let checkpoint = state.clone();
+        checkpoint
+            .validate_restore(16)
+            .unwrap_or_else(|error| panic!("mid-erase checkpoint should validate: {error}"));
+
+        let second = state
+            .erase_fragment_registered(7, 0, 8, 4, &[0xff; 4], 11, 16, &contributors)
+            .unwrap_or_else(|error| panic!("second erase fragment should resolve: {error}"));
+        let mut restored = checkpoint;
+        let replayed = restored
+            .erase_fragment_registered(7, 0, 8, 4, &[0xff; 4], 11, 16, &contributors)
+            .unwrap_or_else(|error| panic!("restored erase fragment should resolve: {error}"));
+
+        assert_eq!(second, replayed);
+        assert_eq!(state, restored);
+        let continuation = &state.continuations()[&contributors[0]];
+        assert_eq!(continuation.erase_blocks[&0].erase_count, 1);
+        assert_eq!(continuation.erase_blocks[&0].last_erase_nanos, 11);
+        assert!(continuation.erase_decisions.is_empty());
+        let applied = first
+            .spans
+            .iter()
+            .chain(&second.spans)
+            .map(|span| span.length)
+            .sum::<u64>();
+        assert!((1..=8).contains(&applied));
+    }
+
+    #[test]
+    fn erase_uses_worn_probability_at_the_endurance_boundary() {
+        let mut wearing = rule();
+        wearing.erase_block_bytes = 8;
+        wearing.program_page_bytes = 4;
+        wearing.endurance_cycles = 1;
+        wearing.program_erase.erase_probability_millionths = 0;
+        wearing.program_erase.worn_probability_millionths = 1_000_000;
+        wearing.program_erase.partial_erase = false;
+        let contributors = [wearing.contributor];
+        let mut state = BlockFlashState::default();
+        state
+            .register_rules(16, &[wearing])
+            .unwrap_or_else(|error| panic!("flash rule should register: {error}"));
+
+        let healthy = state
+            .erase_fragment_registered(8, 0, 8, 0, &[0xff; 8], 1, 16, &contributors)
+            .unwrap_or_else(|error| panic!("healthy erase should resolve: {error}"));
+        let worn = state
+            .erase_fragment_registered(9, 0, 8, 0, &[0xff; 8], 2, 16, &contributors)
+            .unwrap_or_else(|error| panic!("worn erase should resolve: {error}"));
+
+        assert!(!healthy.failed);
+        assert_eq!(healthy.spans[0].length, 8);
+        assert!(worn.failed);
+        assert!(worn.spans.is_empty());
+        assert_eq!(
+            state.continuations()[&contributors[0]].erase_blocks[&0].erase_count,
+            2
+        );
+    }
+
+    #[test]
+    fn erase_rejects_unaligned_complete_requests_without_mutation() {
+        let mut aligned = rule();
+        aligned.erase_block_bytes = 8;
+        aligned.program_page_bytes = 4;
+        let contributors = [aligned.contributor];
+        let mut state = BlockFlashState::default();
+        state
+            .register_rules(16, &[aligned])
+            .unwrap_or_else(|error| panic!("flash rule should register: {error}"));
+        let before = state.clone();
+
+        assert!(matches!(
+            state.erase_fragment_registered(10, 4, 8, 4, &[0xff; 4], 0, 16, &contributors,),
+            Err(DeviceError::InvalidBlockFaultDirective { .. })
+        ));
+        assert_eq!(state, before);
     }
 }
