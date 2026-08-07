@@ -731,7 +731,7 @@
       then canBuildOn system meta.build
       # New-style: structured EXECUTE constraint (where does the output run?)
       else if meta ? execute
-      then satisfies (mkPlatform system) meta.execute
+      then satisfies buildPlatform meta.execute
       # Old-style: platform string list (backward compat with ISA awareness)
       else if meta ? platforms
       then platformIsCompatible system meta.platforms
