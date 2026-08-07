@@ -215,6 +215,13 @@ error at 64 MiB. The file is branch-local diagnostic evidence: it is available
 only for an explicitly authorized non-canonical guest channel and is never
 included in canonical replay artifacts.
 
+Guest channels also have a response-idle deadline. The default is 30 seconds;
+set `--guest-idle-timeout <duration>` before the verb when a legitimately quiet
+command needs longer. If no response arrives, Crucible closes the channel,
+attempts bounded cleanup and controller-lease release, and reports an error that
+distinguishes a missing fork-time agent from an indefinitely running CLI.
+Durations accept `ticks`, `ns`, `us`, `ms`, or `s`.
+
 `exec` uses direct argv execution and does not invoke a shell. `pty` bridges the
 local standard streams to a guest controlling terminal. When standard input is
 a terminal, the client enters raw mode, restores the original mode on every
@@ -264,7 +271,8 @@ For example:
   relay. QEMU currently rejects GDB's optional trace-status and detach packets;
   GDB reports those packet errors even though inspection succeeds.
 - The shipped fixtures do not start the debug guest agent at fork time, so
-  remote `exec`, `pty`, and `ssh` are not yet production-ready.
+  remote `exec`, `pty`, and `ssh` currently reach the bounded response-idle
+  error instead of executing a command.
 - A successful debugger runtime reposition invalidates every active guest
   channel and the next channel poll returns a typed `ClosedChannel` error.
 - Guest transcripts are operator-owned files. Runtime reposition closes the

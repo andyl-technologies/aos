@@ -268,15 +268,21 @@ The four coordinate selectors are mutually exclusive.
 | `--read-only` | Off; conflicts with `--allow-mutate` | Preserve the canonical run and prohibit mutation. |
 | `--allow-mutate` | Off | Fork a non-canonical debug branch for mutation. |
 | `--checkpoint-stride <n>` | Optional | Bound reverse-step replay distance with opportunistic checkpoints. |
+| `--record-transcript <path>` | Off | Exclusively create a bounded branch-local guest-channel transcript. |
+| `--guest-idle-timeout <dur>` | `30s` | Fail and clean up when a guest agent produces no response for this duration. |
 
 Debugger verbs:
 
 | Verb | Arguments | Meaning |
 | --- | --- | --- |
 | `attach-gdb` | None | Open the mediated gdbstub channel. |
+| `fork-debug` | None | Create the explicit non-canonical whole-world branch required for guest introspection. |
 | `goto` | `<coord>` | Move to another accepted debug coordinate. |
 | `reverse-step` | `instruction`, `quantum`, `event`, `assertion`, or `timer` | Step backward by one deterministic grain. |
 | `reverse-continue` | `<condition>` | Continue backward to a matching condition. |
+| `exec` | `-- <argv...>` | Execute argv directly through the forked guest agent. |
+| `pty` | `[--columns <n>] [--rows <n>] -- <argv...>` | Bridge a local terminal to a guest PTY. |
+| `ssh` | None | Bridge bytes to the SSH server configured in the guest agent. |
 
 ### `serve`
 

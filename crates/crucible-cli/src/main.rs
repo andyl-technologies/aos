@@ -755,6 +755,9 @@ struct DebugArgs {
     /// Record the non-canonical guest channel to a new transcript file.
     #[arg(long, value_name = "PATH")]
     record_transcript: Option<PathBuf>,
+    /// Fail when the guest agent produces no response for this duration.
+    #[arg(long, value_name = "dur")]
+    guest_idle_timeout: Option<String>,
     #[command(subcommand)]
     verb: Option<DebugVerbArgs>,
 }
