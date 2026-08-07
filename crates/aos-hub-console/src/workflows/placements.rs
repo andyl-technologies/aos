@@ -59,6 +59,8 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
     });
     let view_client = client.clone();
     let view_surface = surface.clone();
+    let authority_surface = surface.clone();
+    let replication_surface = surface.clone();
     let create_surface = surface;
 
     view! {
@@ -79,6 +81,8 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
                     }}
                 </Suspense>
             </section>
+            <WriteAuthorityPanel client=client.clone() surface=authority_surface/>
+            <PlacementReplication client=client.clone() surface=replication_surface/>
             <PlacementCreate client=client surface=create_surface/>
         </div>
     }
@@ -224,7 +228,7 @@ fn PlacementCard(
     );
 
     view! {
-        <details class="binding-card"><summary><div><span class="resource-kind">{status.derived_role.clone()}</span><h3>{placement.name.clone()}</h3><code>{format!("{}:{}", placement.storage_binding_name, placement.prefix)}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "ready"/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Kind"</span><strong>{spec.kind}</strong></div><div><span>"Desired state"</span><strong>{spec.desired_state}</strong></div><div><span>"Observed completeness"</span><strong>{observation.completeness}</strong></div><div><span>"Effective read"</span><strong>{yes_no(status.effective_read_enabled)}</strong></div><div><span>"Effective write"</span><strong>{yes_no(status.effective_write_enabled)}</strong></div><div><span>"Version"</span><code>{placement.resource_version.clone()}</code></div></div><div class="subworkflow-grid"><section class="subworkflow"><h4>"Desired placement state"</h4><form class="stacked-form" on:submit=on_update><label><span>"State"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review update"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section><PlacementActions client=client surface=surface placement=placement/></div></div></details>
+        <details class="binding-card"><summary><div><span class="resource-kind">{status.derived_role.clone()}</span><h3>{placement.name.clone()}</h3><code>{format!("{}:{}", placement.storage_binding_name, placement.prefix)}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "ready"/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Kind"</span><strong>{spec.kind}</strong></div><div><span>"Desired state"</span><strong>{spec.desired_state}</strong></div><div><span>"Observed completeness"</span><strong>{observation.completeness}</strong></div><div><span>"Effective read"</span><strong>{yes_no(status.effective_read_enabled)}</strong></div><div><span>"Effective write"</span><strong>{yes_no(status.effective_write_enabled)}</strong></div><div><span>"Version"</span><code>{placement.resource_version.clone()}</code></div></div><div class="subworkflow-grid"><section class="subworkflow"><h4>"Desired placement state"</h4><form class="stacked-form" on:submit=on_update><label><span>"State"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review update"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section><PlacementActions client=client.clone() surface=surface.clone() placement=placement.clone()/></div><PlacementOperations client=client surface=surface placement=placement/></div></details>
     }
 }
 
@@ -253,6 +257,7 @@ fn PlacementActions(
         let path = match selected {
             "promote" => aos_proto_types::TOPOLOGY_SERVICE_PLAN_PROMOTE_PLACEMENT_PATH,
             "drain" => aos_proto_types::TOPOLOGY_SERVICE_PLAN_DRAIN_PLACEMENT_PATH,
+            "cancel-drain" => aos_proto_types::TOPOLOGY_SERVICE_PLAN_CANCEL_PLACEMENT_DRAIN_PATH,
             "delete" => aos_proto_types::TOPOLOGY_SERVICE_PLAN_DELETE_PLACEMENT_PATH,
             _ => return,
         };
@@ -274,6 +279,7 @@ fn PlacementActions(
         let path = match action.get_untracked().as_str() {
             "promote" => aos_proto_types::TOPOLOGY_SERVICE_PROMOTE_PLACEMENT_PATH,
             "drain" => aos_proto_types::TOPOLOGY_SERVICE_DRAIN_PLACEMENT_PATH,
+            "cancel-drain" => aos_proto_types::TOPOLOGY_SERVICE_CANCEL_PLACEMENT_DRAIN_PATH,
             "delete" => aos_proto_types::TOPOLOGY_SERVICE_DELETE_PLACEMENT_PATH,
             _ => return,
         };
@@ -294,10 +300,290 @@ fn PlacementActions(
     let promote = move |_| promote_action.run("promote");
     let drain_action = on_action.clone();
     let drain = move |_| drain_action.run("drain");
+    let cancel_drain_action = on_action.clone();
+    let cancel_drain = move |_| cancel_drain_action.run("cancel-drain");
     let delete = move |_| on_action.run("delete");
+    let draining = placement
+        .spec
+        .as_ref()
+        .is_some_and(|spec| spec.desired_state == "draining");
 
     view! {
-        <section class="subworkflow"><h4>"Lifecycle"</h4><p>"Promotion changes single-writer authority; draining and deletion remain blocked until safety predicates pass."</p><div class="form-actions"><button class="secondary-button" type="button" disabled=move || busy.get() on:click=promote>"Review promotion"</button><button class="secondary-button" type="button" disabled=move || busy.get() on:click=drain>"Review drain"</button><button class="danger-button" type="button" disabled=move || busy.get() on:click=delete>"Review deletion"</button></div><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
+        <section class="subworkflow"><h4>"Lifecycle"</h4><p>"Promotion changes single-writer authority; draining and deletion remain blocked until safety predicates pass."</p><div class="form-actions"><button class="secondary-button" type="button" disabled=move || busy.get() on:click=promote>"Review promotion"</button>{if draining { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=cancel_drain>"Review cancel drain"</button> }.into_any() } else { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=drain>"Review drain"</button> }.into_any() }}<button class="danger-button" type="button" disabled=move || busy.get() on:click=delete>"Review deletion"</button></div><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
+    }
+}
+
+#[component]
+fn WriteAuthorityPanel(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
+    let read_client = client.clone();
+    let read_surface = surface.clone();
+    let authority = LocalResource::new(move || {
+        let client = read_client.clone();
+        let surface = read_surface.clone();
+        async move {
+            client
+                .call::<_, aos_proto_types::GetWriteAuthorityResponse>(
+                    aos_proto_types::TOPOLOGY_SERVICE_GET_WRITE_AUTHORITY_PATH,
+                    &aos_proto_types::GetWriteAuthorityRequest {
+                        surface: Some(surface),
+                    },
+                )
+                .await
+        }
+    });
+
+    view! {
+        <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Single writer"</p><h2>"Write authority"</h2><p>"Desired and controller-observed writer generations must reconcile before writes become effective."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading write authority…"</p> }>{move || { let client = client.clone(); let surface = surface.clone(); Suspend::new(async move { match authority.await.as_ref() { Ok(response) => view! { <WriteAuthorityState client=client surface=surface authority=response.authority.clone()/> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
+    }
+}
+
+#[component]
+fn WriteAuthorityState(
+    client: ApiClient,
+    surface: aos_proto_types::SurfaceRef,
+    authority: Option<aos_proto_types::SurfaceWriteAuthority>,
+) -> impl IntoView {
+    let pending = RwSignal::new(None::<PendingPlan>);
+    let error = RwSignal::new(None::<String>);
+    let busy = RwSignal::new(false);
+    let action = RwSignal::new(String::new());
+    let current = authority.clone().unwrap_or_default();
+    let request_version = authority
+        .as_ref()
+        .map(|value| value.resource_version.clone());
+    let plan_client = client.clone();
+    let request_surface = surface;
+    let on_action = Callback::new(move |selected: &'static str| {
+        action.set(selected.to_string());
+        let idempotency_key = idempotency_key(&format!("write-authority-{selected}"));
+        let request = aos_proto_types::SurfaceMutationRequest {
+            surface: Some(request_surface.clone()),
+            expected_resource_version: request_version.clone(),
+            idempotency_key: idempotency_key.clone(),
+        };
+        let path = match selected {
+            "cancel" => aos_proto_types::TOPOLOGY_SERVICE_PLAN_CANCEL_PLACEMENT_PROMOTION_PATH,
+            "remove" => aos_proto_types::TOPOLOGY_SERVICE_PLAN_REMOVE_WRITE_AUTHORITY_PATH,
+            _ => return,
+        };
+        plan(
+            plan_client.clone(),
+            path,
+            request,
+            idempotency_key,
+            pending,
+            error,
+            busy,
+        );
+    });
+    let on_apply = Callback::new(move |()| {
+        let Some(reviewed) = pending.get_untracked() else {
+            return;
+        };
+        let path = match action.get_untracked().as_str() {
+            "cancel" => aos_proto_types::TOPOLOGY_SERVICE_CANCEL_PLACEMENT_PROMOTION_PATH,
+            "remove" => aos_proto_types::TOPOLOGY_SERVICE_REMOVE_WRITE_AUTHORITY_PATH,
+            _ => return,
+        };
+        let client = client.clone();
+        busy.set(true);
+        spawn_local(async move {
+            match client
+                .call::<_, serde_json::Value>(path, &reviewed.topology_apply())
+                .await
+            {
+                Ok(_) => reload(),
+                Err(failure) => error.set(Some(failure.to_string())),
+            }
+            busy.set(false);
+        });
+    });
+    let cancel_action = on_action.clone();
+    let cancel = move |_| cancel_action.run("cancel");
+    let remove = move |_| on_action.run("remove");
+    let exists = authority.is_some();
+    let promotion_pending =
+        exists && current.desired_placement_name != current.observed_placement_name;
+
+    view! {
+        {if exists { view! { <div class="resource-identity"><div><span>"Mode"</span><strong>{current.mode}</strong></div><div><span>"Desired writer"</span><code>{current.desired_placement_name}</code></div><div><span>"Observed writer"</span><code>{current.observed_placement_name}</code></div><div><span>"Desired generation"</span><strong>{current.desired_generation}</strong></div><div><span>"Observed generation"</span><strong>{current.observed_generation}</strong></div><div><span>"Reconciliation"</span><StatusBadge state=current.reconciliation_state.clone() positive=current.reconciliation_state == "ready"/></div><div><span>"Incarnation"</span><code>{current.incarnation_id}</code></div></div><div class="form-actions">{promotion_pending.then(|| view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=cancel>"Review promotion cancellation"</button> })}<button class="danger-button" type="button" disabled=move || busy.get() on:click=remove>"Review read-only transition"</button></div> }.into_any() } else { view! { <p class="muted">"This surface is explicitly read-only and has no write-authority incarnation."</p> }.into_any() }}<PlanReview pending=pending error=error busy=busy on_apply=on_apply/>
+    }
+}
+
+#[component]
+fn PlacementOperations(
+    client: ApiClient,
+    surface: aos_proto_types::SurfaceRef,
+    placement: aos_proto_types::Placement,
+) -> impl IntoView {
+    let source = RwSignal::new(String::new());
+    let action = RwSignal::new(String::new());
+    let pending = RwSignal::new(None::<PendingPlan>);
+    let error = RwSignal::new(None::<String>);
+    let busy = RwSignal::new(false);
+    let scan_client = client.clone();
+    let scan_surface = surface.clone();
+    let scan_placement = placement.clone();
+    let on_scan = move |_| {
+        action.set("scan".to_string());
+        let idempotency_key = idempotency_key("placement-scan");
+        let request = aos_proto_types::PlanScanPlacementRequest {
+            surface: Some(scan_surface.clone()),
+            placement_name: scan_placement.name.clone(),
+            idempotency_key: idempotency_key.clone(),
+            expected_resource_version: scan_placement.resource_version.clone(),
+        };
+        plan(
+            scan_client.clone(),
+            aos_proto_types::TOPOLOGY_SERVICE_PLAN_SCAN_PLACEMENT_PATH,
+            request,
+            idempotency_key,
+            pending,
+            error,
+            busy,
+        );
+    };
+    let repair_client = client.clone();
+    let repair_surface = surface;
+    let repair_placement = placement;
+    let on_repair = move |event: SubmitEvent| {
+        event.prevent_default();
+        action.set("repair".to_string());
+        let idempotency_key = idempotency_key("placement-repair");
+        let request = aos_proto_types::PlanRepairPlacementRequest {
+            surface: Some(repair_surface.clone()),
+            placement_name: repair_placement.name.clone(),
+            source_placement_name: source.get_untracked().trim().to_string(),
+            idempotency_key: idempotency_key.clone(),
+            expected_resource_version: repair_placement.resource_version.clone(),
+        };
+        plan(
+            repair_client.clone(),
+            aos_proto_types::TOPOLOGY_SERVICE_PLAN_REPAIR_PLACEMENT_PATH,
+            request,
+            idempotency_key,
+            pending,
+            error,
+            busy,
+        );
+    };
+    let on_apply = Callback::new(move |()| {
+        let Some(reviewed) = pending.get_untracked() else {
+            return;
+        };
+        let path = match action.get_untracked().as_str() {
+            "scan" => aos_proto_types::TOPOLOGY_SERVICE_SCAN_PLACEMENT_PATH,
+            "repair" => aos_proto_types::TOPOLOGY_SERVICE_REPAIR_PLACEMENT_PATH,
+            _ => return,
+        };
+        let client = client.clone();
+        busy.set(true);
+        spawn_local(async move {
+            match client
+                .call::<_, aos_proto_types::OperationResponse>(path, &reviewed.topology_apply())
+                .await
+            {
+                Ok(_) => reload(),
+                Err(failure) => error.set(Some(failure.to_string())),
+            }
+            busy.set(false);
+        });
+    });
+
+    view! {
+        <section class="subworkflow"><h4>"Controller operations"</h4><p>"Scan inventory evidence or repair this placement from an optional known-good source."</p><div class="form-actions"><button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_scan>"Review scan"</button></div><form class="stacked-form" on:submit=on_repair><label><span>"Repair source placement (optional)"</span><input prop:value=move || source.get() on:input=move |event| source.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review repair"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
+    }
+}
+
+#[component]
+fn PlacementReplication(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
+    let read_client = client.clone();
+    let read_surface = surface.clone();
+    let inventory = LocalResource::new(move || {
+        let client = read_client.clone();
+        let surface = read_surface.clone();
+        async move {
+            client
+                .call::<_, aos_proto_types::ListPlacementsResponse>(
+                    aos_proto_types::TOPOLOGY_SERVICE_LIST_PLACEMENTS_PATH,
+                    &aos_proto_types::ListPlacementsRequest {
+                        surface: Some(surface),
+                        page_size: 100,
+                        page_token: String::new(),
+                    },
+                )
+                .await
+        }
+    });
+
+    view! {
+        <section class="panel editor-panel"><p class="section-kicker">"Data movement"</p><h2>"Replicate placement"</h2><Suspense fallback=move || view! { <p class="loading-row">"Loading replication targets…"</p> }>{move || { let client = client.clone(); let surface = surface.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(response) => view! { <ReplicationForm client=client surface=surface placements=response.placements.clone()/> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
+    }
+}
+
+#[component]
+fn ReplicationForm(
+    client: ApiClient,
+    surface: aos_proto_types::SurfaceRef,
+    placements: Vec<aos_proto_types::Placement>,
+) -> impl IntoView {
+    let initial = placements
+        .first()
+        .map(|value| value.name.clone())
+        .unwrap_or_default();
+    let source = RwSignal::new(initial.clone());
+    let destination = RwSignal::new(initial);
+    let pending = RwSignal::new(None::<PendingPlan>);
+    let error = RwSignal::new(None::<String>);
+    let busy = RwSignal::new(false);
+    let request_placements = placements.clone();
+    let plan_client = client.clone();
+    let on_plan = move |event: SubmitEvent| {
+        event.prevent_default();
+        let source_name = source.get_untracked();
+        let destination_name = destination.get_untracked();
+        if source_name == destination_name {
+            error.set(Some(
+                "Source and destination placements must differ".to_string(),
+            ));
+            return;
+        }
+        let Some(version) = request_placements
+            .iter()
+            .find(|placement| placement.name == destination_name)
+            .map(|placement| placement.resource_version.clone())
+        else {
+            error.set(Some("Select a current destination placement".to_string()));
+            return;
+        };
+        let idempotency_key = idempotency_key("placement-replicate");
+        let request = aos_proto_types::PlanReplicatePlacementRequest {
+            surface: Some(surface.clone()),
+            source_placement_name: source_name,
+            destination_placement_name: destination_name,
+            idempotency_key: idempotency_key.clone(),
+            expected_resource_version: version,
+        };
+        plan(
+            plan_client.clone(),
+            aos_proto_types::TOPOLOGY_SERVICE_PLAN_REPLICATE_PLACEMENT_PATH,
+            request,
+            idempotency_key,
+            pending,
+            error,
+            busy,
+        );
+    };
+    let on_apply = apply::<aos_proto_types::OperationResponse>(
+        client,
+        aos_proto_types::TOPOLOGY_SERVICE_REPLICATE_PLACEMENT_PATH,
+        pending,
+        error,
+        busy,
+    );
+
+    view! {
+        <form class="editor-form" on:submit=on_plan><label><span>"Source"</span><select prop:value=move || source.get() on:change=move |event| source.set(event_target_value(&event))>{placements.iter().map(|placement| view! { <option value=placement.name.clone()>{placement.name.clone()}</option> }).collect_view()}</select></label><label><span>"Destination"</span><select prop:value=move || destination.get() on:change=move |event| destination.set(event_target_value(&event))>{placements.iter().map(|placement| view! { <option value=placement.name.clone()>{placement.name.clone()}</option> }).collect_view()}</select></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || placements.len() < 2>"Review replication"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/>
     }
 }
 
