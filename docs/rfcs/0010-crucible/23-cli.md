@@ -1561,7 +1561,9 @@ branch on the verdict without parsing output:
     runs the pure reduction preflight, then launches the pinned packaged
     QEMU/plugin pair and compares the terminal status/outcome/configuration,
     frontier/quanta/budget tuple, canonical event bytes, and declared-scope
-    fingerprint bytes.
+    fingerprint bytes. Replay output distinguishes successful validation from
+    the reproduced terminal status and outcome so a validated timeout or
+    failure is unambiguous to machine consumers.
   - Ordinary replay and `--check` execute one fresh QEMU session;
     `--to <savepoint>` performs the same live replay before typed-prefix and
     replay-oracle target validation, including self-contained terminal hashes;
