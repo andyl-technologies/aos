@@ -2219,6 +2219,7 @@ async fn run_remote_guest_channel(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const CHANNEL_ID: u64 = 1;
+    let pty_channel = matches!(&open, GuestIntrospectionMessage::Pty { .. });
     let _terminal_mode = LocalTerminalMode::enter_raw(interactive)?;
     let mut resize_signal = local_resize_signal(interactive)?;
     let mut transcript = match transcript_path {
@@ -2281,11 +2282,7 @@ async fn run_remote_guest_channel(
                 }
                 read = stdin.read(&mut input), if !input_closed => {
                     let length = read.map_err(|error| backend_error(format!("terminal input failed: {error}")))?;
-                    let message = if length == 0 {
-                        GuestIntrospectionMessage::Close
-                    } else {
-                        GuestIntrospectionMessage::Input(input[..length].to_vec())
-                    };
+                    let message = guest_input_message(pty_channel, &input[..length]);
                     let record = GuestIntrospectionRecord::new(CHANNEL_ID, message)
                         .map_err(|error| backend_error(error.to_string()))?;
                     exchange_guest_record(
@@ -2466,6 +2463,20 @@ async fn run_remote_guest_channel(
     transcript_result?;
     release_result.map_err(control_client_error)?;
     Ok(())
+}
+
+/// Converts local input into the guest channel's stream semantics.
+fn guest_input_message(pty_channel: bool, input: &[u8]) -> crucible_api::GuestIntrospectionMessage {
+    if !input.is_empty() {
+        return crucible_api::GuestIntrospectionMessage::Input(input.to_vec());
+    }
+    if pty_channel {
+        // Closing a PTY input descriptor is a hangup. EOT supplies ordinary
+        // terminal EOF without killing a command that is still draining output.
+        crucible_api::GuestIntrospectionMessage::Input(vec![0x04])
+    } else {
+        crucible_api::GuestIntrospectionMessage::Close
+    }
 }
 
 struct LocalTerminalMode {

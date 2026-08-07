@@ -3,6 +3,22 @@
 use super::*;
 
 #[test]
+fn guest_channel_eof_preserves_pty_output_drain() {
+    assert_eq!(
+        guest_input_message(true, &[]),
+        crucible_api::GuestIntrospectionMessage::Input(vec![0x04])
+    );
+    assert_eq!(
+        guest_input_message(false, &[]),
+        crucible_api::GuestIntrospectionMessage::Close
+    );
+    assert_eq!(
+        guest_input_message(true, b"hello"),
+        crucible_api::GuestIntrospectionMessage::Input(b"hello".to_vec())
+    );
+}
+
+#[test]
 pub(super) fn cli_debug_surface_parses_full_t_dbg_8_flags_and_verbs() -> Result<(), Box<dyn Error>>
 {
     let cli = Cli::parse_from([
