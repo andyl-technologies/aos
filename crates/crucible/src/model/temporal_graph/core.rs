@@ -977,12 +977,15 @@ impl TemporalGraph {
             current_configuration: request.current.id(),
             target_coordinate: request.target.clone(),
             target_configuration: target.id(),
+            landed_virtual_time: configuration_virtual_time(&target),
+            landed_schedule_prefix_len: target.schedule.len(),
             restore_configuration: restore.id(),
             restore_checkpoint,
             replay_suffix_decisions: replay_suffix.len(),
             runtime,
             target_checkpoint: target_checkpoint.id,
             replay_oracle,
+            live_reposition: None,
         })
     }
 

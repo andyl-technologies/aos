@@ -269,7 +269,14 @@ async fn trusted_http2_debug_controller_uses_server_side_identity_and_lease() {
         .unwrap_or_else(|error| {
             panic!("authenticated goto must dispatch through the actor: {error}")
         });
-    assert_eq!(repositioned.len(), 64);
+    assert_eq!(repositioned.landed.configuration.len(), 64);
+    assert_eq!(repositioned.landed.runtime_state.len(), 64);
+    assert_eq!(repositioned.landed.requested_coordinate, "virtual-time:0");
+    assert_eq!(repositioned.landed.virtual_time_ticks, 0);
+    assert_eq!(repositioned.landed.schedule_prefix_len, 0);
+    assert_eq!(repositioned.landed.gateway_generation, 2);
+    assert_eq!(repositioned.landed.retired_world_cleanup, "reaped");
+    assert_eq!(repositioned.target_event_sequence, None);
     client
         .release_debug_controller(created.session, &lease)
         .await

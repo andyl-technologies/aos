@@ -576,7 +576,7 @@ impl<L> Engine<L> {
         &mut self,
         previous_attach: &DebugAttachReport,
         mut candidate_graph: TemporalGraph,
-        goto: &DebugGotoReport,
+        goto: &mut DebugGotoReport,
     ) -> Result<DebugAttachReport, SessionError>
     where
         L: QuantumLoop,
@@ -656,7 +656,9 @@ impl<L> Engine<L> {
             )));
         }
 
-        refreshed.gdbstub.qemu_endpoint = evidence.qemu_gdbstub;
+        refreshed.gdbstub.qemu_endpoint = evidence.qemu_gdbstub.clone();
+        goto.runtime.runtime = reposition.target_runtime.clone();
+        goto.live_reposition = Some(evidence);
 
         self.graph = candidate_graph;
         self.configuration = configuration.clone();
@@ -1657,9 +1659,9 @@ impl<L: QuantumLoop> Engine<L> {
                 EngineState::Running | EngineState::Paused { .. } => {
                     let attach = self.current_debug_attach("debug-goto")?;
                     let mut candidate_graph = self.graph.clone();
-                    let report = candidate_graph.debug_goto(&attach, request)?;
+                    let mut report = candidate_graph.debug_goto(&attach, request)?;
                     let _refreshed =
-                        self.reposition_debug_runtime(&attach, candidate_graph, &report)?;
+                        self.reposition_debug_runtime(&attach, candidate_graph, &mut report)?;
                     reply.complete(Ok(report));
                     Ok(self.snapshot())
                 }
@@ -1671,9 +1673,9 @@ impl<L: QuantumLoop> Engine<L> {
                 EngineState::Running | EngineState::Paused { .. } => {
                     let attach = self.current_debug_attach("debug-reverse-step")?;
                     let mut candidate_graph = self.graph.clone();
-                    let report = candidate_graph.debug_reverse_step(&attach, request)?;
+                    let mut report = candidate_graph.debug_reverse_step(&attach, request)?;
                     let _refreshed =
-                        self.reposition_debug_runtime(&attach, candidate_graph, &report.goto)?;
+                        self.reposition_debug_runtime(&attach, candidate_graph, &mut report.goto)?;
                     reply.complete(Ok(report));
                     Ok(self.snapshot())
                 }
@@ -1685,10 +1687,13 @@ impl<L: QuantumLoop> Engine<L> {
                 EngineState::Running | EngineState::Paused { .. } => {
                     let attach = self.current_debug_attach("debug-reverse-continue")?;
                     let mut candidate_graph = self.graph.clone();
-                    let report = candidate_graph.debug_reverse_continue(&attach, request)?;
-                    if let Some(matched) = report.matched.as_ref() {
-                        let _refreshed =
-                            self.reposition_debug_runtime(&attach, candidate_graph, &matched.goto)?;
+                    let mut report = candidate_graph.debug_reverse_continue(&attach, request)?;
+                    if let Some(matched) = report.matched.as_mut() {
+                        let _refreshed = self.reposition_debug_runtime(
+                            &attach,
+                            candidate_graph,
+                            &mut matched.goto,
+                        )?;
                     } else if matches!(self.state, EngineState::Running) {
                         self.graph = candidate_graph;
                         self.active_step = None;

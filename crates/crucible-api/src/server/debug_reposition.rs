@@ -39,11 +39,9 @@ where
         Err(response) => return response,
     };
     match dispatch.goto(coordinate).await {
-        Ok(report) => debug_reposition_response(
-            "crucible.rpc/debug-goto-response",
-            Some(report.target_configuration),
-            None,
-        ),
+        Ok(report) => {
+            debug_reposition_response("crucible.rpc/debug-goto-response", Some(&report), None)
+        }
         Err(error) => lifecycle_error_response(error),
     }
 }
@@ -83,7 +81,7 @@ where
     match dispatch.reverse_step(grain).await {
         Ok(report) => debug_reposition_response(
             "crucible.rpc/debug-reverse-step-response",
-            Some(report.target_configuration),
+            Some(&report.goto),
             report.target_event_sequence,
         ),
         Err(error) => lifecycle_error_response(error),
@@ -124,17 +122,13 @@ where
     };
     match dispatch.reverse_continue(condition).await {
         Ok(report) => {
-            let target = report
-                .matched
-                .as_ref()
-                .map(|matched| matched.target_configuration);
             let event_sequence = report
                 .matched
                 .as_ref()
                 .map(|matched| matched.event_sequence);
             debug_reposition_response(
                 "crucible.rpc/debug-reverse-continue-response",
-                target,
+                report.matched.as_ref().map(|matched| &matched.goto),
                 event_sequence,
             )
         }
@@ -273,7 +267,7 @@ fn parse_debug_coordinate(value: &str) -> Result<crucible::DebugCoordinate, Stri
 
 fn debug_reposition_response(
     header: &'static str,
-    target: Option<ContentHash>,
+    report: Option<&crucible::DebugGotoReport>,
     event_sequence: Option<u64>,
 ) -> Response {
     let mut output = String::new();
@@ -282,7 +276,9 @@ fn debug_reposition_response(
     push_wire_line(
         &mut output,
         "target-configuration",
-        &target.map(|target| target.to_hex()).unwrap_or_default(),
+        &report
+            .map(|report| report.target_configuration.to_hex())
+            .unwrap_or_default(),
     );
     push_wire_line(
         &mut output,
@@ -291,7 +287,99 @@ fn debug_reposition_response(
             .map(|sequence| sequence.to_string())
             .unwrap_or_else(|| String::from("none")),
     );
+    if let Some(report) = report {
+        let Some(promotion) = report.live_reposition.as_ref() else {
+            return http2_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "debug reposition completed without production gateway evidence",
+            );
+        };
+        push_wire_line(
+            &mut output,
+            "requested-coordinate",
+            &debug_coordinate_text(&report.target_coordinate),
+        );
+        push_wire_line(
+            &mut output,
+            "runtime-state",
+            &report.runtime.runtime.id.to_hex(),
+        );
+        push_wire_line(
+            &mut output,
+            "virtual-time-ticks",
+            &report.landed_virtual_time.ticks.to_string(),
+        );
+        push_wire_line(
+            &mut output,
+            "schedule-prefix-len",
+            &report.landed_schedule_prefix_len.to_string(),
+        );
+        push_wire_line(
+            &mut output,
+            "event-log-prefix",
+            &report.runtime.runtime.event_log.prefix.to_hex(),
+        );
+        push_wire_line(
+            &mut output,
+            "event-log-bytes",
+            &report.runtime.runtime.event_log.bytes.to_string(),
+        );
+        push_wire_line(
+            &mut output,
+            "event-log-events",
+            &report.runtime.runtime.event_log.events.to_string(),
+        );
+        push_wire_line(
+            &mut output,
+            "node-icount-count",
+            &report.runtime.runtime.node_icounts.len().to_string(),
+        );
+        for (index, (node, icount)) in report.runtime.runtime.node_icounts.iter().enumerate() {
+            push_wire_line(
+                &mut output,
+                &format!("node-icount-{index}-name"),
+                &hex_encode(node.name.as_bytes()),
+            );
+            push_wire_line(
+                &mut output,
+                &format!("node-icount-{index}-retired"),
+                &icount.retired.to_string(),
+            );
+        }
+        push_wire_line(
+            &mut output,
+            "gateway-generation",
+            &promotion.gateway_generation.to_string(),
+        );
+        let cleanup = match &promotion.retired_world_cleanup {
+            crucible::DebugRetiredWorldCleanup::Reaped => "reaped",
+            crucible::DebugRetiredWorldCleanup::DetachedCleanupPending { .. } => {
+                "detached-cleanup-pending"
+            }
+        };
+        push_wire_line(&mut output, "retired-world-cleanup", cleanup);
+    }
     http2_response(StatusCode::OK, output)
+}
+
+fn debug_coordinate_text(coordinate: &crucible::DebugCoordinate) -> String {
+    match coordinate {
+        crucible::DebugCoordinate::Configuration(configuration) => {
+            format!("configuration:{}", configuration.id().to_hex())
+        }
+        crucible::DebugCoordinate::Checkpoint(checkpoint) => {
+            format!("checkpoint:{}", checkpoint.to_hex())
+        }
+        crucible::DebugCoordinate::EventSequence(sequence) => format!("event:{sequence}"),
+        crucible::DebugCoordinate::VirtualTime(time) => {
+            format!("virtual-time:{}", time.ticks)
+        }
+        crucible::DebugCoordinate::NodeIcount { node, icount } => format!(
+            "node-icount:{}:{}",
+            hex_encode(node.name.as_bytes()),
+            icount.retired
+        ),
+    }
 }
 
 #[cfg(test)]

@@ -1832,7 +1832,7 @@ async fn run_remote_debug_reposition(
         .acquire_debug_controller(session)
         .await
         .map_err(control_client_error)?;
-    let reposition_result: Result<Option<String>, CliError> = async {
+    let reposition_result: Result<Option<crucible_api::DebugRepositionResult>, CliError> = async {
         client
             .attach_debugger(session, &lease, &node)
             .await
@@ -1869,10 +1869,31 @@ async fn run_remote_debug_reposition(
     let target = reposition_result?;
     release_result.map_err(control_client_error)?;
     match target {
-        Some(target) => println!("crucible: debugger repositioned to {target}"),
+        Some(target) => print_debug_landed_runtime(&target),
         None => println!("crucible: reverse-continue found no matching prior condition"),
     }
     Ok(())
+}
+
+fn print_debug_landed_runtime(result: &crucible_api::DebugRepositionResult) {
+    let landed = &result.landed;
+    println!("crucible: debugger repositioned");
+    println!("requested-coordinate={}", landed.requested_coordinate);
+    println!("landed-configuration={}", landed.configuration);
+    println!("landed-runtime-state={}", landed.runtime_state);
+    println!("landed-virtual-time={}", landed.virtual_time_ticks);
+    println!("landed-schedule-prefix={}", landed.schedule_prefix_len);
+    println!("landed-event-log-prefix={}", landed.event_log_prefix);
+    println!("landed-event-log-bytes={}", landed.event_log_bytes);
+    println!("landed-event-log-events={}", landed.event_log_events);
+    for (node, retired) in &landed.node_icounts {
+        println!("landed-node-icount.{node}={retired}");
+    }
+    println!("gateway-generation={}", landed.gateway_generation);
+    println!("retired-world-cleanup={}", landed.retired_world_cleanup);
+    if let Some(sequence) = result.target_event_sequence {
+        println!("target-event-sequence={sequence}");
+    }
 }
 
 pub(super) fn parse_debug_reverse_condition(value: &str) -> Result<crucible::Predicate, CliError> {
