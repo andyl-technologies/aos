@@ -52,6 +52,7 @@
   dist = callPackage ./aos-hub-worker-dist.nix {cargoFeatures = "do-e2e";};
 
   egressFixture = ./aos-hub-direct-egress-fixture.mjs;
+  removedManagementPosts = ../../crates/aos-hub/tests/fixtures/removed-management-posts-v1.json;
 
   # The workerd config: a module worker (shim.mjs + index.wasm) with the two DO
   # classes, `enableSql = true` on the SQLite-backed `HubDb`, the direct-Fetch
@@ -173,6 +174,18 @@
     if (bootstrapState.gc_root_count !== 4) throw new Error("published images were not GC roots");
     const token = bootstrapState.token;
     const headers = { authorization: `Bearer ''${token}` };
+    const removedManagementPosts = JSON.parse(
+      fs.readFileSync("${removedManagementPosts}", "utf8"),
+    );
+    for (const removedPath of removedManagementPosts) {
+      const removed = await fetch(BASE + removedPath, {
+        method: "POST",
+        headers,
+      });
+      if (removed.status !== 404 && removed.status !== 405) {
+        throw new Error(`removed management POST remained mounted: ''${removedPath} (''${removed.status})`);
+      }
+    }
 
     async function imageRpc(method, body, authenticated = false) {
       const response = await fetch(BASE + `/aos.hub.v1.ImageService/''${method}`, {
