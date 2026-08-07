@@ -1,6 +1,8 @@
 //! Typed page adapters for canonical control-plane workflows.
 
 mod access_policy;
+mod cache_integrations;
+mod cache_stack;
 mod delivery_endpoints;
 mod delivery_routes;
 mod infrastructure;
