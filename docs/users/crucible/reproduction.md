@@ -215,6 +215,13 @@ records an explicit resume recipe from the retained base. Reseeded and override
 forks record their branch coordinates, and replay forces only decisions owned by
 the post-branch suffix.
 
+For `fork --until virtual-time`, the target is measured from the savepoint's
+restored global scheduler frontier. Crucible continues across internal branch
+admission and per-node events until that cross-node frontier reaches the target;
+one node reaching the timestamp is not sufficient. If a backend cannot reach an
+exact requested boundary, the command reports the last state, frontier, quanta,
+and outcome in its error.
+
 ## Artifact portability
 
 Reproduction deliberately fails on a build-identity mismatch. Move the matching

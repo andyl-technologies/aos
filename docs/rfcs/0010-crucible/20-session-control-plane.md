@@ -496,6 +496,9 @@ pub enum StepMode {
   itself interruptible by `pause`/`stop`) and MUST land at the same configuration
   on every host for the same starting configuration and mode. On reaching the stop
   point it MUST transition to `Paused { reason: StepComplete { mode } }`.
+  `Duration` completion MUST compare the authoritative cross-node scheduler
+  frontier to its target. An individual event or node timestamp at the target
+  MUST NOT complete the step while the global frontier remains behind it.
   *Gate:* `gate:control-responsive`, `gate:replay-oracle`. *Spec:* §4.3.
 
 ---
@@ -1111,9 +1114,10 @@ pub enum SessionError {
     (`Quantum`, `Event`, `Assertion`, `Timer`, `Duration`) and engine-owned
     active-step state. The actor starts bounded execution through the mailbox,
     polls between quanta, pauses with `StepComplete { mode }` only after the
-    requested event-log or virtual-time stop point, and clears active steps when
-    `pause` or `stop` interrupts. Focused tests cover event, assertion, timer,
-    duration, and interruptible pause/stop behavior.
+    requested event-log or virtual-time stop point, evaluates duration against
+    the global scheduler frontier rather than per-node event timestamps, and
+    clears active steps when `pause` or `stop` interrupts. Focused tests cover
+    event, assertion, timer, duration, and interruptible pause/stop behavior.
 - [x] **T-SESS-6** Implement boundary-deferred application of mid-run mutating
   commands (apply at the next quantum boundary, record the boundary in the
   control log) and immediate-at-boundary pause/stop with clean
