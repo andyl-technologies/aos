@@ -237,24 +237,18 @@ pub trait QemuVmLoadvmAdmissionPolicy {
     /// Authorizes loading the trusted baked-genesis ready-point snapshot.
     ///
     /// This does not admit arbitrary exact fat checkpoints; it only supplies
-    /// the low-level QMP token needed by the baked-genesis fallback branch.
+    /// the low-level QMP token needed by the baked-genesis branch.
     fn authorize_baked_genesis_runtime(self) -> QemuLoadvmCommandAuthorization;
 
     /// Authorizes the low-level runtime `loadvm` command.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuSavevmPolicyError`] when runtime `loadvm` is disabled.
-    fn authorize_loadvm_runtime(
-        self,
-    ) -> Result<QemuLoadvmCommandAuthorization, QemuSavevmPolicyError>;
+    fn authorize_loadvm_runtime(self) -> QemuLoadvmCommandAuthorization;
 
     /// Admits a replay-oracle-validated runtime restored through `loadvm`.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuSavevmPolicyError`] when runtime `loadvm` is disabled or
-    /// when replay-oracle evidence is missing or mismatched.
+    /// Returns [`QemuSavevmPolicyError`] when replay-oracle evidence is missing
+    /// or mismatched.
     fn accept_loadvm_realized_runtime(
         self,
         validation: QemuReplayOracleValidation,
@@ -266,9 +260,7 @@ impl QemuVmLoadvmAdmissionPolicy for QemuSavevmCompletenessPolicy {
         self.authorize_baked_genesis_runtime()
     }
 
-    fn authorize_loadvm_runtime(
-        self,
-    ) -> Result<QemuLoadvmCommandAuthorization, QemuSavevmPolicyError> {
+    fn authorize_loadvm_runtime(self) -> QemuLoadvmCommandAuthorization {
         self.authorize_loadvm_runtime()
     }
 
@@ -445,8 +437,8 @@ pub fn fork_qemu_vm(
 /// Realizes `config` through the single QEMU instantiate path.
 ///
 /// Branch priority is exact fat snapshot, nearest cached ancestor replay, then
-/// baked-genesis load plus replay. Runtime `loadvm` remains gated by
-/// [`QemuSavevmCompletenessPolicy`].
+/// baked-genesis load plus replay. Exact `loadvm` requires replay-oracle
+/// admission through [`QemuSavevmCompletenessPolicy`].
 ///
 /// # Errors
 ///
@@ -572,30 +564,21 @@ fn instantiate_qemu_vm_inner(
         validate_checkpoint_matches_config(&snapshot.checkpoint, &config, "exact snapshot")?;
         if snapshot.checkpoint.kind == CheckpointKind::Fat {
             validate_checkpoint_loadvm_state(&snapshot.checkpoint, "exact snapshot")?;
-            match policy.authorize_loadvm_runtime() {
-                Ok(authorization) => {
-                    let admission = policy
-                        .accept_loadvm_realized_runtime(snapshot.replay_oracle_validation)
-                        .map_err(|source| QemuVmRealizationError::SavevmPolicy { source })?;
-                    let runtime = executor.load_exact_snapshot(
-                        &config,
-                        &snapshot,
-                        authorization,
-                        admission,
-                    )?;
-                    validate_runtime_matches_admission(&runtime, admission)?;
-                    return Ok(QemuVmRealization {
-                        operation: QemuVmRealizationOperation::Instantiate,
-                        configuration: config,
-                        runtime,
-                        branch: QemuVmRealizationKind::ExactSnapshotLoadvm {
-                            checkpoint: snapshot.checkpoint,
-                        },
-                    });
-                }
-                Err(QemuSavevmPolicyError::LoadvmBranchDisabled { .. }) => {}
-                Err(source) => return Err(QemuVmRealizationError::SavevmPolicy { source }),
-            }
+            let authorization = policy.authorize_loadvm_runtime();
+            let admission = policy
+                .accept_loadvm_realized_runtime(snapshot.replay_oracle_validation)
+                .map_err(|source| QemuVmRealizationError::SavevmPolicy { source })?;
+            let runtime =
+                executor.load_exact_snapshot(&config, &snapshot, authorization, admission)?;
+            validate_runtime_matches_admission(&runtime, admission)?;
+            return Ok(QemuVmRealization {
+                operation: QemuVmRealizationOperation::Instantiate,
+                configuration: config,
+                runtime,
+                branch: QemuVmRealizationKind::ExactSnapshotLoadvm {
+                    checkpoint: snapshot.checkpoint,
+                },
+            });
         }
     }
 
@@ -1066,7 +1049,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{QemuLoadvmCommandPurpose, QemuSavevmFallback};
+    use crate::QemuLoadvmCommandPurpose;
 
     type SharedLog = Rc<RefCell<Vec<RealizationCall>>>;
 
@@ -1104,9 +1087,7 @@ mod tests {
     }
 
     #[derive(Clone, Copy)]
-    struct ScriptedLoadvmPolicy {
-        admit: bool,
-    }
+    struct ScriptedLoadvmPolicy;
 
     impl QemuVmRealizationStore for ScriptedStore {
         fn exact_snapshot(
@@ -1154,24 +1135,14 @@ mod tests {
             QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test()
         }
 
-        fn authorize_loadvm_runtime(
-            self,
-        ) -> Result<QemuLoadvmCommandAuthorization, QemuSavevmPolicyError> {
-            if self.admit {
-                Ok(QemuLoadvmCommandAuthorization::runtime_realization_for_test())
-            } else {
-                Err(disabled_loadvm())
-            }
+        fn authorize_loadvm_runtime(self) -> QemuLoadvmCommandAuthorization {
+            QemuLoadvmCommandAuthorization::runtime_realization_for_test()
         }
 
         fn accept_loadvm_realized_runtime(
             self,
             validation: QemuReplayOracleValidation,
         ) -> Result<QemuLoadvmRealizationAdmission, QemuSavevmPolicyError> {
-            if !self.admit {
-                return Err(disabled_loadvm());
-            }
-
             crate::savevm_policy::validate_loadvm_realized_runtime(validation)
         }
     }
@@ -1547,10 +1518,10 @@ mod tests {
     }
 
     #[test]
-    fn qemu_exact_snapshot_loadvm_is_skipped_while_fallback_policy_disables_branch()
+    fn qemu_exact_snapshot_loadvm_is_the_default_complete_realization_path()
     -> Result<(), QemuVmRealizationError> {
-        let world = world("loadvm-disabled");
-        let def = scenario("loadvm-disabled");
+        let world = world("loadvm-complete");
+        let def = scenario("loadvm-complete");
         let target = config_with_decisions(def.clone(), 1);
         let log = shared_log();
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
@@ -1573,18 +1544,17 @@ mod tests {
             QemuSavevmCompletenessPolicy::default(),
         )?;
 
-        assert_eq!(
+        assert!(matches!(
             realized.branch,
-            QemuVmRealizationKind::AncestorReplay {
-                ancestor_configuration: Configuration::genesis(target.def.clone()).id(),
-                replayed_decisions: 1,
+            QemuVmRealizationKind::ExactSnapshotLoadvm { .. }
+        ));
+        assert!(logged(&log).iter().any(|call| matches!(
+            call,
+            RealizationCall::LoadExact {
+                authorization: QemuLoadvmCommandPurpose::RuntimeRealization,
+                ..
             }
-        );
-        assert!(
-            !logged(&log)
-                .iter()
-                .any(|call| matches!(call, RealizationCall::LoadExact { .. }))
-        );
+        )));
 
         Ok(())
     }
@@ -1613,7 +1583,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            ScriptedLoadvmPolicy { admit: true },
+            ScriptedLoadvmPolicy,
         )?;
 
         assert_eq!(
@@ -1782,7 +1752,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            ScriptedLoadvmPolicy { admit: true },
+            ScriptedLoadvmPolicy,
         );
 
         assert!(matches!(
@@ -1822,7 +1792,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            ScriptedLoadvmPolicy { admit: true },
+            ScriptedLoadvmPolicy,
         );
 
         assert!(matches!(
@@ -1864,7 +1834,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            ScriptedLoadvmPolicy { admit: true },
+            ScriptedLoadvmPolicy,
         );
 
         assert!(matches!(
@@ -1906,7 +1876,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            ScriptedLoadvmPolicy { admit: true },
+            ScriptedLoadvmPolicy,
         );
 
         assert!(matches!(
@@ -1945,7 +1915,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            ScriptedLoadvmPolicy { admit: true },
+            ScriptedLoadvmPolicy,
         );
 
         assert!(matches!(
@@ -2420,12 +2390,6 @@ mod tests {
         match decision {
             Decision::RngDraw(draw) => draw.value,
             _ => 0,
-        }
-    }
-
-    fn disabled_loadvm() -> QemuSavevmPolicyError {
-        QemuSavevmPolicyError::LoadvmBranchDisabled {
-            fallback: QemuSavevmFallback::ThinReplayUntilFullS3,
         }
     }
 

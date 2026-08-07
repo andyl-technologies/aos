@@ -5,7 +5,7 @@
 //! plugin-published fingerprint sample there is folded into the cumulative
 //! prefix. Snapshot restore (`loadvm`) is deliberately not used — it stays
 //! policy-disabled per [`crate::single_vm_fingerprint`]'s savevm fallback
-//! contract (see `savevm_policy.rs` / the phase2 `qemuSavevmFallback` gate),
+//! contract (see `savevm_policy.rs` / the phase2 `qemuExactSnapshotRestore` gate),
 //! which forbids restoring VM state into the deterministic replay path. Every
 //! probe therefore reproduces state from the same immutable launch inputs.
 //! Full divergence dumps use two additional fresh runs. At the requested exact

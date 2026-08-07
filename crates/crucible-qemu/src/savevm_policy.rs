@@ -1,122 +1,46 @@
-//! QEMU `savevm` completeness fallback policy.
+//! QEMU `savevm` completeness and exact-restore admission.
 //!
-//! RFC-0010 QEMU-21/QEMU-22 allow a `loadvm`-realized runtime only after the
-//! replay oracle proves that the restored fat checkpoint is content-equal to
-//! its thin replay derivation. The Phase 0 S3 result is currently "pass with
-//! fallback", so the default policy keeps thin replay as the realization path
-//! and leaves the fat `loadvm` branch disabled.
+//! Exact fat checkpoints are a production realization path. A restored runtime
+//! is admitted only after the replay oracle proves that its continuation is
+//! content-equal to the corresponding deterministic replay. Thin checkpoints
+//! remain a distinct storage representation; they are not a fallback for an
+//! incomplete VMState implementation.
 
 use crucible::ContentHash;
 use thiserror::Error;
 
-/// Phase 0 check that adopted the conservative `savevm` fallback policy.
-pub const QEMU_SAVEVM_PHASE0_S3_CHECK: &str = "checks.crucible.phase0.s3SavevmLoadvm";
-
-/// Stable result marker for the conservative realization fallback.
-pub const QEMU_SAVEVM_FALLBACK_MARKER: &str = "thin_replay_until_full_s3";
+/// Gate proving paired QEMU VMState and host-I/O exact restore.
+pub const QEMU_SAVEVM_COMPLETENESS_CHECK: &str = "checks.crucible.phase2.qemuExactSnapshotRestore";
 
 /// Default policy for using QEMU `savevm`/`loadvm` in Crucible.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct QemuSavevmCompletenessPolicy {
-    status: QemuSavevmCompletenessStatus,
-    fallback: QemuSavevmFallback,
-    default_realization_branch: QemuVmRealizationBranch,
-    thin_checkpoint_default: bool,
-    fat_snapshot_default: bool,
-    loadvm_branch_enabled: bool,
-    full_fat_checkpoint_complete: bool,
-    oracle_validation_required_for_loadvm: bool,
-}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QemuSavevmCompletenessPolicy;
 
 impl QemuSavevmCompletenessPolicy {
-    /// Returns the conservative policy adopted by the Phase 0 S3 spike.
+    /// Returns the production policy for complete paired fat checkpoints.
     #[must_use]
-    pub const fn phase0_fallback() -> Self {
-        Self {
-            status: QemuSavevmCompletenessStatus::PassWithFallback,
-            fallback: QemuSavevmFallback::ThinReplayUntilFullS3,
-            default_realization_branch: QemuVmRealizationBranch::ThinReplay,
-            thin_checkpoint_default: true,
-            fat_snapshot_default: false,
-            loadvm_branch_enabled: false,
-            full_fat_checkpoint_complete: false,
-            oracle_validation_required_for_loadvm: true,
-        }
-    }
-
-    /// Returns the spike status that backs this policy.
-    #[must_use]
-    pub const fn status(self) -> QemuSavevmCompletenessStatus {
-        self.status
-    }
-
-    /// Returns the fallback selected for runtime realization.
-    #[must_use]
-    pub const fn fallback(self) -> QemuSavevmFallback {
-        self.fallback
-    }
-
-    /// Returns the default runtime-realization branch.
-    #[must_use]
-    pub const fn default_realization_branch(self) -> QemuVmRealizationBranch {
-        self.default_realization_branch
-    }
-
-    /// Returns whether thin checkpoint replay is the default realization path.
-    #[must_use]
-    pub const fn thin_checkpoint_default(self) -> bool {
-        self.thin_checkpoint_default
-    }
-
-    /// Returns whether fat snapshots are the default realization path.
-    #[must_use]
-    pub const fn fat_snapshot_default(self) -> bool {
-        self.fat_snapshot_default
-    }
-
-    /// Returns whether the fat `loadvm` branch may be used by default.
-    #[must_use]
-    pub const fn loadvm_branch_enabled(self) -> bool {
-        self.loadvm_branch_enabled
-    }
-
-    /// Returns whether the full fat-checkpoint replay-oracle proof is complete.
-    #[must_use]
-    pub const fn full_fat_checkpoint_complete(self) -> bool {
-        self.full_fat_checkpoint_complete
-    }
-
-    /// Returns whether every `loadvm` runtime must be replay-oracle validated.
-    #[must_use]
-    pub const fn oracle_validation_required_for_loadvm(self) -> bool {
-        self.oracle_validation_required_for_loadvm
+    pub const fn complete() -> Self {
+        Self
     }
 
     /// Attempts to accept a `loadvm`-realized runtime under this policy.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuSavevmPolicyError::LoadvmBranchDisabled`] while the Phase 0
-    /// fallback is active. Once a future full S3 gate enables `loadvm`, this
-    /// method also returns replay-oracle validation errors.
+    /// Returns a replay-oracle validation error when the comparison was not run
+    /// or the loaded and replayed continuations differ.
     pub fn accept_loadvm_realized_runtime(
         self,
         validation: QemuReplayOracleValidation,
     ) -> Result<QemuLoadvmRealizationAdmission, QemuSavevmPolicyError> {
-        if !self.loadvm_branch_enabled {
-            return Err(QemuSavevmPolicyError::LoadvmBranchDisabled {
-                fallback: self.fallback,
-            });
-        }
-
         validate_loadvm_realized_runtime(validation)
     }
 
     /// Authorizes the low-level QMP `loadvm` command for snapshot-completeness probes.
     ///
-    /// This authorization is only for running the S3-style probe that compares a
-    /// loaded VMState suffix to thin replay. It is not runtime-realization
-    /// admission and does not enable the production `loadvm` branch.
+    /// This authorization is only for the independent completeness probe that
+    /// compares a loaded VMState suffix to deterministic replay. It is not a
+    /// runtime-realization admission token.
     #[must_use]
     pub const fn authorize_loadvm_probe(self) -> QemuLoadvmCommandAuthorization {
         QemuLoadvmCommandAuthorization {
@@ -124,43 +48,24 @@ impl QemuSavevmCompletenessPolicy {
         }
     }
 
-    /// Attempts to authorize the low-level QMP `loadvm` command for runtime realization.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuSavevmPolicyError::LoadvmBranchDisabled`] while the Phase 0
-    /// fallback is active.
-    pub fn authorize_loadvm_runtime(
-        self,
-    ) -> Result<QemuLoadvmCommandAuthorization, QemuSavevmPolicyError> {
-        if !self.loadvm_branch_enabled {
-            return Err(QemuSavevmPolicyError::LoadvmBranchDisabled {
-                fallback: self.fallback,
-            });
-        }
-
-        Ok(QemuLoadvmCommandAuthorization {
+    /// Authorizes the low-level QMP `loadvm` command for exact runtime realization.
+    #[must_use]
+    pub const fn authorize_loadvm_runtime(self) -> QemuLoadvmCommandAuthorization {
+        QemuLoadvmCommandAuthorization {
             purpose: QemuLoadvmCommandPurpose::RuntimeRealization,
-        })
+        }
     }
 
     /// Authorizes QMP `loadvm` for the trusted baked-genesis ready-point snapshot.
     ///
     /// This authorization is deliberately separate from the exact fat-checkpoint
-    /// runtime branch: it only loads a baked genesis snapshot produced by
-    /// `bake`, so it remains available while arbitrary exact snapshot `loadvm`
-    /// is disabled by the Phase 0 fallback policy.
+    /// runtime branch because it only loads a baked genesis snapshot produced by
+    /// `bake`.
     #[must_use]
     pub const fn authorize_baked_genesis_runtime(self) -> QemuLoadvmCommandAuthorization {
         QemuLoadvmCommandAuthorization {
             purpose: QemuLoadvmCommandPurpose::BakedGenesisRealization,
         }
-    }
-}
-
-impl Default for QemuSavevmCompletenessPolicy {
-    fn default() -> Self {
-        Self::phase0_fallback()
     }
 }
 
@@ -233,53 +138,22 @@ mod tests {
     }
 
     #[test]
-    fn fallback_policy_authorizes_baked_genesis_without_enabling_exact_loadvm() {
-        let policy = QemuSavevmCompletenessPolicy::phase0_fallback();
+    fn complete_policy_authorizes_baked_genesis_and_exact_loadvm() {
+        let policy = QemuSavevmCompletenessPolicy::complete();
 
         assert_eq!(
             policy.authorize_baked_genesis_runtime().purpose(),
             QemuLoadvmCommandPurpose::BakedGenesisRealization
         );
-        assert!(matches!(
-            policy.authorize_loadvm_runtime(),
-            Err(QemuSavevmPolicyError::LoadvmBranchDisabled { .. })
-        ));
+        assert_eq!(
+            policy.authorize_loadvm_runtime().purpose(),
+            QemuLoadvmCommandPurpose::RuntimeRealization
+        );
     }
 
     fn content_hash_with_byte(byte: u8) -> ContentHash {
         ContentHash { bytes: [byte; 32] }
     }
-}
-
-/// Current completeness status of QEMU `savevm`/`loadvm`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QemuSavevmCompletenessStatus {
-    /// The spike passed only by adopting thin replay as the default fallback.
-    PassWithFallback,
-}
-
-/// Runtime fallback selected until full S3 replay-oracle coverage is green.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QemuSavevmFallback {
-    /// Realize checkpoints by replaying from genesis or a verified ancestor.
-    ThinReplayUntilFullS3,
-}
-
-impl QemuSavevmFallback {
-    /// Returns the stable result marker emitted by the Phase 0 S3 check.
-    #[must_use]
-    pub const fn marker(self) -> &'static str {
-        match self {
-            Self::ThinReplayUntilFullS3 => QEMU_SAVEVM_FALLBACK_MARKER,
-        }
-    }
-}
-
-/// QEMU runtime realization branch selected for a checkpoint.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QemuVmRealizationBranch {
-    /// Replay the suffix from genesis or from a verified ancestor checkpoint.
-    ThinReplay,
 }
 
 /// Purpose for an authorized low-level QMP `loadvm` command.
@@ -368,12 +242,6 @@ impl QemuLoadvmRealizationAdmission {
 /// Policy errors for QEMU `savevm`/`loadvm` realization.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum QemuSavevmPolicyError {
-    /// The default policy leaves `loadvm` disabled until full S3 coverage is green.
-    #[error("QEMU loadvm branch is disabled; fallback={fallback:?}")]
-    LoadvmBranchDisabled {
-        /// Fallback that must be used instead.
-        fallback: QemuSavevmFallback,
-    },
     /// The replay oracle was not run for a `loadvm` runtime.
     #[error("QEMU loadvm realization requires replay-oracle validation")]
     ReplayOracleValidationRequired,

@@ -228,7 +228,7 @@ fn qemu_node_realization_executor_loads_probe_without_runtime_admission()
     let runtime = executor.load_exact_snapshot_for_replay_oracle_probe(
         &config,
         &snapshot,
-        QemuSavevmCompletenessPolicy::phase0_fallback().authorize_loadvm_probe(),
+        QemuSavevmCompletenessPolicy::complete().authorize_loadvm_probe(),
     )?;
 
     assert_eq!(runtime.id, runtime_id);

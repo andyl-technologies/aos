@@ -616,24 +616,23 @@ fn live_block_event_poll_consumes_the_wake_during_idle_advance() {
     state
         .block_submit(0, 0, 0, 0, None, 0)
         .unwrap_or_else(|error| panic!("primary request should submit: {error}"));
+    let userdata = std::ptr::from_ref(&state).cast_mut().cast::<c_void>();
+    assert_eq!(
+        crucible_qemu_plugin_live_block_transport_save_cb(std::ptr::null_mut(), 0, userdata,),
+        QEMU_PLUGIN_BLOCK_TRANSPORT_SAVE_BUSY,
+        "a busy migration must reject save without aborting the source process"
+    );
     let completed = BlockResponse::new(BlockResponseStatus::Ok, 0, Vec::new())
         .encode()
         .unwrap_or_else(|error| panic!("primary response should encode: {error}"));
     enqueue_response(
         &storage.block_in_header,
         &mut storage.block_in_entries,
-        0,
+        10,
         SLOT_BLK_IO as u32,
         0,
         &completed,
     );
-    assert_eq!(
-        state
-            .block_poll(0, 0, &mut [])
-            .unwrap_or_else(|error| panic!("primary request should complete: {error}")),
-        0
-    );
-
     let reset = crate::BlockTransportReset {
         next_epoch: 1,
         recovery_nanos: 1,
@@ -666,6 +665,16 @@ fn live_block_event_poll_consumes_the_wake_during_idle_advance() {
     state
         .arm_idle_advance(0, 10, pending)
         .unwrap_or_else(|error| panic!("pending idle advance should arm: {error}"));
+    state
+        .complete_idle_advance(crate::TimeAdvanceCompletion::from_qemu(0, 10))
+        .unwrap_or_else(|error| panic!("idle advance should commit: {error}"));
+
+    assert_eq!(
+        state
+            .block_poll(0, 0, &mut [])
+            .unwrap_or_else(|error| panic!("primary request should complete: {error}")),
+        0
+    );
 
     let mut output = [0_u8; QEMU_PLUGIN_BLOCK_EVENT_CAPACITY];
     assert_eq!(

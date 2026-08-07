@@ -27,8 +27,7 @@
 //! the Linux post-setup node composition boundary; `quantum` owns the
 //! per-quantum shared-memory hot path; `qmp` owns the minimal typed QMP client;
 //! `realization` owns the start/resume/fork instantiate branch coordinator; and
-//! `savevm_policy` owns the conservative thin-replay fallback for incomplete
-//! QEMU `savevm`/`loadvm` coverage.
+//! `savevm_policy` owns exact paired QEMU `savevm`/`loadvm` restore admission.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
 //! details stay private; public callers use a safe host-driver API that
@@ -217,10 +216,9 @@ pub use realization::{
     QemuWarmRestoreNodeLauncher,
 };
 pub use savevm_policy::{
-    QEMU_SAVEVM_FALLBACK_MARKER, QEMU_SAVEVM_PHASE0_S3_CHECK, QemuLoadvmCommandAuthorization,
-    QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission, QemuReplayOracleValidation,
-    QemuSavevmCompletenessPolicy, QemuSavevmCompletenessStatus, QemuSavevmFallback,
-    QemuSavevmPolicyError, QemuVmRealizationBranch,
+    QEMU_SAVEVM_COMPLETENESS_CHECK, QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose,
+    QemuLoadvmRealizationAdmission, QemuReplayOracleValidation, QemuSavevmCompletenessPolicy,
+    QemuSavevmPolicyError,
 };
 pub use setup_failure::{
     FailedQemuNodeSetup, QemuNodeSetup, QemuSchedulableNodeSetup, QemuSetupAbortError,

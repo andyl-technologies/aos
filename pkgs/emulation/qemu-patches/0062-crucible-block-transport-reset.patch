@@ -1,5 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index afc442b..d73c79c 100644
+index afc442b..be75047 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -15,6 +15,8 @@
@@ -370,7 +370,7 @@ index afc442b..d73c79c 100644
                                  uint8_t *data, size_t capacity)
  {
      BDRVCrucibleShmemState *s = bs->opaque;
-@@ -221,7 +481,7 @@ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
+@@ -221,9 +481,19 @@ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
          if (!crucible_blk_callbacks_ready()) {
              return -ENODEV;
          }
@@ -378,8 +378,20 @@ index afc442b..d73c79c 100644
 +        ret = crucible_blk_poll_cb(epoch, request_id, data, capacity,
                                     crucible_blk_userdata);
          if (ret != QEMU_PLUGIN_BLK_POLL_PENDING) {
++            /*
++             * A single wake may publish a primary completion followed by an
++             * asynchronous reset event.  The event is intentionally hidden
++             * while the primary response is at the head of the shared ring.
++             * Poll again after consuming that response so the event cannot be
++             * stranded waiting for an edge that the producer already sent.
++             */
++            if (!crucible_shmem_poll_events(s)) {
++                return -EIO;
++            }
              return ret;
-@@ -265,6 +525,7 @@ crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
+         }
+         if (crucible_blk_wait_cb) {
+@@ -265,6 +535,7 @@ crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
                                 size_t in_capacity)
  {
      BDRVCrucibleShmemState *s = bs->opaque;
@@ -387,7 +399,7 @@ index afc442b..d73c79c 100644
      uint32_t request_id;
      int ret;
      int64_t poll_ret;
-@@ -273,19 +534,39 @@ crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
+@@ -273,19 +544,39 @@ crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
          return -ENOMEDIUM;
      }
  
@@ -430,7 +442,7 @@ index afc442b..d73c79c 100644
      return crucible_shmem_decode_poll_result(poll_ret, in_capacity);
  }
  
-@@ -383,6 +664,130 @@ static void crucible_shmem_refresh_filename(BlockDriverState *bs)
+@@ -383,6 +674,194 @@ static void crucible_shmem_refresh_filename(BlockDriverState *bs)
              "crucible-shmem://");
  }
  
@@ -529,6 +541,65 @@ index afc442b..d73c79c 100644
 +    return 0;
 +}
 +
++static int crucible_shmem_get_plugin_state(QEMUFile *f, void *opaque,
++                                            size_t size,
++                                            const VMStateField *field)
++{
++    BDRVCrucibleShmemState *s = opaque;
++    uint8_t *state;
++    uint32_t len;
++
++    (void)size;
++    (void)field;
++    len = qemu_get_be32(f);
++    if (qemu_file_get_error(f) ||
++        len < CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE ||
++        len > CRUCIBLE_BLOCK_TRANSPORT_STATE_MAX) {
++        return -EINVAL;
++    }
++    state = g_try_malloc(len);
++    if (!state) {
++        return -ENOMEM;
++    }
++    if (qemu_get_buffer(f, state, len) != len) {
++        g_free(state);
++        return -EINVAL;
++    }
++    g_free(s->vmstate_plugin_state);
++    s->vmstate_plugin_state = state;
++    s->vmstate_plugin_state_len = len;
++    return 0;
++}
++
++static int crucible_shmem_put_plugin_state(QEMUFile *f, void *opaque,
++                                            size_t size,
++                                            const VMStateField *field,
++                                            JSONWriter *vmdesc)
++{
++    BDRVCrucibleShmemState *s = opaque;
++
++    (void)size;
++    (void)field;
++    (void)vmdesc;
++    if (!s->vmstate_plugin_state ||
++        s->vmstate_plugin_state_len <
++            CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE ||
++        s->vmstate_plugin_state_len >
++            CRUCIBLE_BLOCK_TRANSPORT_STATE_MAX) {
++        return -EINVAL;
++    }
++    qemu_put_be32(f, s->vmstate_plugin_state_len);
++    qemu_put_buffer(f, s->vmstate_plugin_state,
++                    s->vmstate_plugin_state_len);
++    return qemu_file_get_error(f);
++}
++
++static const VMStateInfo vmstate_info_crucible_plugin_state = {
++    .name = "crucible block transport state",
++    .get = crucible_shmem_get_plugin_state,
++    .put = crucible_shmem_put_plugin_state,
++};
++
 +static bool crucible_shmem_guest_completion_dropped(BlockDriverState *bs,
 +                                                     int error)
 +{
@@ -551,9 +622,14 @@ index afc442b..d73c79c 100644
 +        VMSTATE_UINT8(vmstate_recovery_unadmitted,
 +                      BDRVCrucibleShmemState),
 +        VMSTATE_UINT8(vmstate_recovery_failure, BDRVCrucibleShmemState),
-+        VMSTATE_VBUFFER_ALLOC_UINT32(vmstate_plugin_state,
-+                                     BDRVCrucibleShmemState, 1, NULL,
-+                                     vmstate_plugin_state_len),
++        {
++            .name = "plugin_state",
++            .version_id = 1,
++            .size = 0,
++            .info = &vmstate_info_crucible_plugin_state,
++            .flags = VMS_SINGLE,
++            .offset = 0,
++        },
 +        VMSTATE_END_OF_LIST()
 +    },
 +};
@@ -561,7 +637,7 @@ index afc442b..d73c79c 100644
  static BlockDriver bdrv_crucible_shmem = {
      .format_name            = "crucible-shmem",
      .protocol_name          = "crucible-shmem",
-@@ -396,6 +801,8 @@ static BlockDriver bdrv_crucible_shmem = {
+@@ -396,6 +875,8 @@ static BlockDriver bdrv_crucible_shmem = {
      .bdrv_co_flush_to_disk  = crucible_shmem_co_flush,
      .bdrv_co_pdiscard       = crucible_shmem_co_pdiscard,
      .bdrv_refresh_filename  = crucible_shmem_refresh_filename,
@@ -588,7 +664,7 @@ index 1ba8d1a..d2e5041 100644
   * Truncate file to 'offset' bytes (needed only for file protocols)
   *
 diff --git a/hw/block/virtio-blk.c b/hw/block/virtio-blk.c
-index b69d099..449956c 100644
+index b69d099..9bf1347 100644
 --- a/hw/block/virtio-blk.c
 +++ b/hw/block/virtio-blk.c
 @@ -74,8 +74,19 @@ static int virtio_blk_handle_rw_error(VirtIOBlockReq *req, int error,
@@ -666,74 +742,140 @@ index b69d099..449956c 100644
  
      blk_set_enable_write_cache(s->blk, s->original_wce);
  }
-@@ -1345,6 +1369,23 @@ static void virtio_blk_save_device(VirtIODevice *vdev, QEMUFile *f)
-     }
- 
-     qemu_put_sbyte(f, 0);
-+
-+    WITH_QEMU_LOCK_GUARD(&s->rq_lock) {
-+        VirtIOBlockReq *req = s->dropped_rq;
-+
-+        while (req) {
-+            qemu_put_sbyte(f, 1);
-+
-+            if (s->conf.num_queues > 1) {
-+                qemu_put_be32(f, virtio_get_queue_index(req->vq));
-+            }
-+
-+            qemu_put_virtqueue_element(vdev, f, &req->elem);
-+            req = req->next;
-+        }
-+    }
-+
-+    qemu_put_sbyte(f, 0);
+@@ -1379,6 +1403,132 @@ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
+     return 0;
  }
  
- static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
-@@ -1352,6 +1393,10 @@ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
- {
-     VirtIOBlock *s = VIRTIO_BLK(vdev);
- 
-+    if (version_id != 3) {
++#define VIRTIO_BLK_DROPPED_REQUESTS_MAX 4096U
++
++static bool virtio_blk_dropped_requests_needed(void *opaque)
++{
++    VirtIOBlock *s = opaque;
++    bool needed;
++
++    qemu_mutex_lock(&s->rq_lock);
++    needed = s->dropped_rq != NULL;
++    qemu_mutex_unlock(&s->rq_lock);
++    return needed;
++}
++
++static int virtio_blk_put_dropped_requests(QEMUFile *f, void *opaque,
++                                            size_t size,
++                                            const VMStateField *field,
++                                            JSONWriter *vmdesc)
++{
++    VirtIOBlock *s = opaque;
++    VirtIODevice *vdev = VIRTIO_DEVICE(s);
++    VirtIOBlockReq *req;
++    uint32_t count = 0;
++
++    (void)size;
++    (void)field;
++    (void)vmdesc;
++    qemu_mutex_lock(&s->rq_lock);
++    for (req = s->dropped_rq; req; req = req->next) {
++        if (count == VIRTIO_BLK_DROPPED_REQUESTS_MAX) {
++            qemu_mutex_unlock(&s->rq_lock);
++            return -E2BIG;
++        }
++        count++;
++    }
++    qemu_put_be32(f, count);
++    for (req = s->dropped_rq; req; req = req->next) {
++        qemu_put_be32(f, virtio_get_queue_index(req->vq));
++        qemu_put_virtqueue_element(vdev, f, &req->elem);
++    }
++    qemu_mutex_unlock(&s->rq_lock);
++    return qemu_file_get_error(f);
++}
++
++static int virtio_blk_get_dropped_requests(QEMUFile *f, void *opaque,
++                                            size_t size,
++                                            const VMStateField *field)
++{
++    VirtIOBlock *s = opaque;
++    VirtIODevice *vdev = VIRTIO_DEVICE(s);
++    VirtIOBlockReq *head = NULL;
++    uint32_t count;
++    uint32_t i;
++
++    (void)size;
++    (void)field;
++    if (!blk_bs(s->blk) || !blk_bs(s->blk)->drv ||
++        !blk_bs(s->blk)->drv->bdrv_guest_completion_dropped) {
 +        return -EINVAL;
 +    }
-+
-     while (qemu_get_sbyte(f)) {
-         unsigned nvqs = s->conf.num_queues;
-         unsigned vq_idx = 0;
-@@ -1376,6 +1421,31 @@ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
-         }
-     }
- 
-+    while (qemu_get_sbyte(f)) {
-+        unsigned nvqs = s->conf.num_queues;
-+        unsigned vq_idx = 0;
++    count = qemu_get_be32(f);
++    if (qemu_file_get_error(f) ||
++        count > VIRTIO_BLK_DROPPED_REQUESTS_MAX ||
++        count > (uint64_t)s->conf.num_queues * s->conf.queue_size) {
++        return -EINVAL;
++    }
++    for (i = 0; i < count; i++) {
++        uint32_t vq_idx = qemu_get_be32(f);
 +        VirtIOBlockReq *req;
 +
-+        if (nvqs > 1) {
-+            vq_idx = qemu_get_be32(f);
-+
-+            if (vq_idx >= nvqs) {
-+                error_report(
-+                    "Invalid virtqueue index in dropped request list: %#x",
-+                    vq_idx);
-+                return -EINVAL;
-+            }
++        if (qemu_file_get_error(f) || vq_idx >= s->conf.num_queues) {
++            goto fail;
 +        }
-+
-+        req = qemu_get_virtqueue_element(vdev, f, sizeof(VirtIOBlockReq));
++        req = qemu_get_virtqueue_element_checked(
++            vdev, f, sizeof(VirtIOBlockReq));
++        if (!req) {
++            goto fail;
++        }
 +        virtio_blk_init_request(s, virtio_get_queue(vdev, vq_idx), req);
++        req->next = head;
++        head = req;
++    }
++    WITH_QEMU_LOCK_GUARD(&s->rq_lock) {
++        while (head) {
++            VirtIOBlockReq *req = head;
 +
-+        WITH_QEMU_LOCK_GUARD(&s->rq_lock) {
++            head = req->next;
 +            req->next = s->dropped_rq;
 +            s->dropped_rq = req;
 +        }
 +    }
++    return 0;
 +
-     return 0;
- }
- 
-@@ -1796,6 +1866,7 @@ static void virtio_blk_device_realize(DeviceState *dev, Error **errp)
++fail:
++    while (head) {
++        VirtIOBlockReq *req = head;
++
++        head = req->next;
++        g_free(req);
++    }
++    return -EINVAL;
++}
++
++static const VMStateInfo vmstate_info_virtio_blk_dropped_requests = {
++    .name = "virtio-blk dropped requests",
++    .get = virtio_blk_get_dropped_requests,
++    .put = virtio_blk_put_dropped_requests,
++};
++
++static const VMStateDescription vmstate_virtio_blk_dropped_requests = {
++    .name = "virtio-blk/dropped-requests",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = virtio_blk_dropped_requests_needed,
++    .fields = (const VMStateField[]) {
++        {
++            .name = "requests",
++            .version_id = 1,
++            .size = 0,
++            .info = &vmstate_info_virtio_blk_dropped_requests,
++            .flags = VMS_SINGLE,
++            .offset = 0,
++        },
++        VMSTATE_END_OF_LIST()
++    },
++};
++
+ static void virtio_resize_cb(void *opaque)
+ {
+     VirtIODevice *vdev = opaque;
+@@ -1796,6 +1946,7 @@ static void virtio_blk_device_realize(DeviceState *dev, Error **errp)
  
      s->blk = conf->conf.blk;
      s->rq = NULL;
@@ -741,7 +883,7 @@ index b69d099..449956c 100644
      s->sector_mask = (s->conf.conf.logical_block_size / BDRV_SECTOR_SIZE) - 1;
  
      for (i = 0; i < conf->num_queues; i++) {
-@@ -1844,6 +1915,7 @@ static void virtio_blk_device_unrealize(DeviceState *dev)
+@@ -1844,6 +1995,7 @@ static void virtio_blk_device_unrealize(DeviceState *dev)
      unsigned i;
  
      blk_drain(s->blk);
@@ -749,17 +891,81 @@ index b69d099..449956c 100644
      del_boot_device_lchs(dev, "/disk@0,0");
      virtio_blk_vq_aio_context_cleanup(s);
      for (i = 0; i < conf->num_queues; i++) {
-@@ -1868,8 +1940,8 @@ static void virtio_blk_instance_init(Object *obj)
- 
- static const VMStateDescription vmstate_virtio_blk = {
-     .name = "virtio-blk",
--    .minimum_version_id = 2,
--    .version_id = 2,
-+    .minimum_version_id = 3,
-+    .version_id = 3,
-     .fields = (const VMStateField[]) {
+@@ -1874,6 +2026,10 @@ static const VMStateDescription vmstate_virtio_blk = {
          VMSTATE_VIRTIO_DEVICE,
          VMSTATE_END_OF_LIST()
+     },
++    .subsections = (const VMStateDescription * const []) {
++        &vmstate_virtio_blk_dropped_requests,
++        NULL
++    },
+ };
+ 
+ static const Property virtio_blk_properties[] = {
+diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
+index 5c11542..ce5ca59 100644
+--- a/hw/virtio/virtio.c
++++ b/hw/virtio/virtio.c
+@@ -2099,19 +2099,30 @@ typedef struct VirtQueueElementOld {
+     struct iovec out_sg[VIRTQUEUE_MAX_SIZE];
+ } VirtQueueElementOld;
+ 
+-void *qemu_get_virtqueue_element(VirtIODevice *vdev, QEMUFile *f, size_t sz)
++static void *qemu_get_virtqueue_element_internal(VirtIODevice *vdev,
++                                                 QEMUFile *f, size_t sz,
++                                                 bool checked)
+ {
+     VirtQueueElement *elem;
+     VirtQueueElementOld data;
+     int i;
+ 
+-    qemu_get_buffer(f, (uint8_t *)&data, sizeof(VirtQueueElementOld));
++    if (qemu_get_buffer(f, (uint8_t *)&data,
++                        sizeof(VirtQueueElementOld)) !=
++        sizeof(VirtQueueElementOld)) {
++        return NULL;
++    }
+ 
+     /* TODO: teach all callers that this can fail, and return failure instead
+      * of asserting here.
+      * This is just one thing (there are probably more) that must be
+      * fixed before we can allow NDEBUG compilation.
+      */
++    if (checked &&
++        (data.in_num > ARRAY_SIZE(data.in_addr) ||
++         data.out_num > ARRAY_SIZE(data.out_addr))) {
++        return NULL;
++    }
+     assert(ARRAY_SIZE(data.in_addr) >= data.in_num);
+     assert(ARRAY_SIZE(data.out_addr) >= data.out_num);
+ 
+@@ -2142,10 +2153,26 @@ void *qemu_get_virtqueue_element(VirtIODevice *vdev, QEMUFile *f, size_t sz)
+         qemu_get_be32s(f, &elem->ndescs);
+     }
+ 
++    if (checked && qemu_file_get_error(f)) {
++        g_free(elem);
++        return NULL;
++    }
++
+     virtqueue_map(vdev, elem);
+     return elem;
+ }
+ 
++void *qemu_get_virtqueue_element(VirtIODevice *vdev, QEMUFile *f, size_t sz)
++{
++    return qemu_get_virtqueue_element_internal(vdev, f, sz, false);
++}
++
++void *qemu_get_virtqueue_element_checked(VirtIODevice *vdev, QEMUFile *f,
++                                         size_t sz)
++{
++    return qemu_get_virtqueue_element_internal(vdev, f, sz, true);
++}
++
+ void qemu_put_virtqueue_element(VirtIODevice *vdev, QEMUFile *f,
+                                 VirtQueueElement *elem)
+ {
 diff --git a/include/block/block_int-common.h b/include/block/block_int-common.h
 index ebb4e56..deeb3e8 100644
 --- a/include/block/block_int-common.h
@@ -807,6 +1013,19 @@ index 3d8dee7..881c160 100644
      VirtIOBlkConf conf;
      unsigned short sector_mask;
      bool original_wce;
+diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
+index 6386910..4f544f0 100644
+--- a/include/hw/virtio/virtio.h
++++ b/include/hw/virtio/virtio.h
+@@ -272,6 +272,8 @@ void virtqueue_map(VirtIODevice *vdev, VirtQueueElement *elem);
+ void *virtqueue_pop(VirtQueue *vq, size_t sz);
+ unsigned int virtqueue_drop_all(VirtQueue *vq);
+ void *qemu_get_virtqueue_element(VirtIODevice *vdev, QEMUFile *f, size_t sz);
++void *qemu_get_virtqueue_element_checked(VirtIODevice *vdev, QEMUFile *f,
++                                         size_t sz);
+ void qemu_put_virtqueue_element(VirtIODevice *vdev, QEMUFile *f,
+                                 VirtQueueElement *elem);
+ int virtqueue_avail_bytes(VirtQueue *vq, unsigned int in_bytes,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 index 24e2822..08c2352 100644
 --- a/include/qemu/qemu-plugin.h

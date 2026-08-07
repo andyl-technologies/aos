@@ -189,6 +189,22 @@
         label = "reset state migration";
         needle = "vmstate_crucible_shmem";
       }
+      {
+        label = "dropped requests use a non-restarting queue";
+        needle = "s->dropped_rq = req";
+      }
+      {
+        label = "virtio dropped-request migration is conditional";
+        needle = "virtio-blk/dropped-requests";
+      }
+      {
+        label = "ordinary virtio-blk main stream only adds the conditional subsection";
+        needle = "&vmstate_virtio_blk_dropped_requests";
+      }
+      {
+        label = "virtqueue migration input has a checked reader";
+        needle = "qemu_get_virtqueue_element_checked";
+      }
     ];
 
   failures =
@@ -268,6 +284,10 @@
         needle = "transport_reset_vmstate_paired=true";
       }
       {
+        label = "bounded VMState decoder exercised before allocation";
+        needle = "transport_reset_vmstate_oversize_rejected_preallocation=true";
+      }
+      {
         label = "closed reset error range exercised";
         needle = "transport_reset_error_range_exact=true";
       }
@@ -278,14 +298,6 @@
       {
         label = "drop-completion sentinel exercised";
         needle = "transport_reset_drop_sentinel_exact=true";
-      }
-      {
-        label = "dropped requests use a non-restarting queue";
-        needle = "s->dropped_rq = req";
-      }
-      {
-        label = "virtio dropped-request migration has a new closed version";
-        needle = ".minimum_version_id = 3";
       }
       {
         label = "discard range failure exercised";
@@ -431,10 +443,9 @@ in
                 return malloc(size == 0 ? 1 : size);
             }
 
-            static inline void *g_try_malloc(size_t size)
-            {
-                return malloc(size == 0 ? 1 : size);
-            }
+            void *fixture_try_malloc(size_t size);
+
+            #define g_try_malloc fixture_try_malloc
 
             static inline void g_free(void *pointer)
             {
@@ -523,7 +534,29 @@ in
             #define MIGRATION_VMSTATE_H
 
             typedef void VMStateIf;
-            typedef struct VMStateField { int unused; } VMStateField;
+            typedef void JSONWriter;
+            typedef struct QEMUFile {
+                uint8_t *data;
+                size_t capacity;
+                size_t position;
+                int error;
+            } QEMUFile;
+            typedef struct VMStateField VMStateField;
+            typedef struct VMStateInfo {
+                const char *name;
+                int (*get)(QEMUFile *file, void *opaque, size_t size,
+                           const VMStateField *field);
+                int (*put)(QEMUFile *file, void *opaque, size_t size,
+                           const VMStateField *field, JSONWriter *vmdesc);
+            } VMStateInfo;
+            struct VMStateField {
+                const char *name;
+                int version_id;
+                size_t size;
+                const VMStateInfo *info;
+                unsigned int flags;
+                size_t offset;
+            };
             typedef struct VMStateDescription {
                 const char *name;
                 int version_id;
@@ -534,12 +567,20 @@ in
                 const VMStateField *fields;
             } VMStateDescription;
 
+            #define VMS_SINGLE 1
+
             #define VMSTATE_UINT64(field, state) { 0 }
             #define VMSTATE_UINT32(field, state) { 0 }
             #define VMSTATE_INT64(field, state) { 0 }
             #define VMSTATE_UINT8(field, state) { 0 }
-            #define VMSTATE_VBUFFER_ALLOC_UINT32(field, state, version, test, size) { 0 }
             #define VMSTATE_END_OF_LIST() { 0 }
+
+            uint32_t qemu_get_be32(QEMUFile *file);
+            size_t qemu_get_buffer(QEMUFile *file, uint8_t *data, size_t len);
+            void qemu_put_be32(QEMUFile *file, uint32_t value);
+            void qemu_put_buffer(QEMUFile *file, const uint8_t *data,
+                                 size_t len);
+            int qemu_file_get_error(QEMUFile *file);
 
             static inline int vmstate_register_any(
                 VMStateIf *obj, const VMStateDescription *description,
@@ -864,6 +905,7 @@ in
               grep -q '^transport_reset_topology_notified=true$' "$out/qemu-block-shmem-microtest"
               grep -q '^transport_reset_commit_rejection_transactional=true$' "$out/qemu-block-shmem-microtest"
               grep -q '^transport_reset_vmstate_paired=true$' "$out/qemu-block-shmem-microtest"
+              grep -q '^transport_reset_vmstate_oversize_rejected_preallocation=true$' "$out/qemu-block-shmem-microtest"
               grep -q '^transport_reset_error_range_exact=true$' "$out/qemu-block-shmem-microtest"
               grep -q '^transport_reset_preserve_retry_admitted=true$' "$out/qemu-block-shmem-microtest"
               grep -q '^transport_reset_drop_sentinel_exact=true$' "$out/qemu-block-shmem-microtest"
@@ -899,6 +941,7 @@ in
             transport_reset_topology_notified=true
             transport_reset_commit_rejection_transactional=true
             transport_reset_vmstate_paired=true
+            transport_reset_vmstate_oversize_rejected_preallocation=true
             transport_reset_error_range_exact=true
             transport_reset_preserve_retry_admitted=true
             transport_reset_drop_sentinel_exact=true''}

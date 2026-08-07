@@ -34,6 +34,7 @@ const QEMU_PLUGIN_BLOCK_RETRY_NEW_ID: i64 = -4;
 const QEMU_PLUGIN_BLOCK_DROP_COMPLETION: i64 = -5;
 const QEMU_PLUGIN_BLOCK_ERROR_BASE: i64 = 4096;
 const QEMU_PLUGIN_BLOCK_EVENT_CAPACITY: usize = 52;
+const QEMU_PLUGIN_BLOCK_TRANSPORT_SAVE_BUSY: i64 = -1;
 const QEMU_PLUGIN_NINEP_POLL_PENDING: i64 = -2;
 
 pub(super) struct LiveDeviceCallbackState {
@@ -900,6 +901,19 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_transport_save_cb(
                 },
             ))
         }),
+        Err(LiveVcpuTimeCallbackError::LiveDevice { source })
+            if matches!(
+                source.as_ref(),
+                LiveDeviceCallbackError::TransportContinuationBusy { .. }
+            ) =>
+        {
+            /*
+             * A busy continuation is an expected migration rejection.  The
+             * QEMU ABI interprets a negative length as pre-save failure and
+             * leaves the source VM alive so its in-flight I/O can finish.
+             */
+            QEMU_PLUGIN_BLOCK_TRANSPORT_SAVE_BUSY
+        }
         Err(error) => abort_live_callback(error),
     }
 }

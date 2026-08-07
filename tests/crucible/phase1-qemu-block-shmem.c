@@ -44,8 +44,74 @@ static AioContext fixture_aio_context;
 static unsigned int fixture_schedule_count;
 static unsigned int fixture_yield_count;
 static unsigned int fixture_topology_notifications;
+static unsigned int fixture_try_malloc_count;
 static int64_t fixture_clock_ns;
 static BlockDriver *fixture_registered_driver;
+
+void *fixture_try_malloc(size_t size)
+{
+    fixture_try_malloc_count++;
+    return malloc(size == 0 ? 1 : size);
+}
+
+uint32_t qemu_get_be32(QEMUFile *file)
+{
+    uint32_t value;
+
+    if (file->position > file->capacity ||
+        file->capacity - file->position < sizeof(value)) {
+        file->error = -EIO;
+        return 0;
+    }
+    value = ((uint32_t)file->data[file->position] << 24) |
+            ((uint32_t)file->data[file->position + 1] << 16) |
+            ((uint32_t)file->data[file->position + 2] << 8) |
+            (uint32_t)file->data[file->position + 3];
+    file->position += sizeof(value);
+    return value;
+}
+
+size_t qemu_get_buffer(QEMUFile *file, uint8_t *data, size_t len)
+{
+    if (file->position > file->capacity ||
+        file->capacity - file->position < len) {
+        file->error = -EIO;
+        return 0;
+    }
+    memcpy(data, file->data + file->position, len);
+    file->position += len;
+    return len;
+}
+
+void qemu_put_be32(QEMUFile *file, uint32_t value)
+{
+    if (file->position > file->capacity ||
+        file->capacity - file->position < sizeof(value)) {
+        file->error = -EIO;
+        return;
+    }
+    file->data[file->position] = (uint8_t)(value >> 24);
+    file->data[file->position + 1] = (uint8_t)(value >> 16);
+    file->data[file->position + 2] = (uint8_t)(value >> 8);
+    file->data[file->position + 3] = (uint8_t)value;
+    file->position += sizeof(value);
+}
+
+void qemu_put_buffer(QEMUFile *file, const uint8_t *data, size_t len)
+{
+    if (file->position > file->capacity ||
+        file->capacity - file->position < len) {
+        file->error = -EIO;
+        return;
+    }
+    memcpy(file->data + file->position, data, len);
+    file->position += len;
+}
+
+int qemu_file_get_error(QEMUFile *file)
+{
+    return file->error;
+}
 
 void fixture_co_queue_init(CoQueue *queue)
 {
@@ -391,6 +457,8 @@ static int exercise_driver(void)
     TestBackend backend;
 #ifdef QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID
     TestEventBackend event;
+    uint8_t vmstate_wire[4 + CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE];
+    QEMUFile vmstate_file;
 #endif
     Error *err = NULL;
     uint8_t read_target[4] = {0};
@@ -499,6 +567,58 @@ static int exercise_driver(void)
         expect_bool(state.vmstate_plugin_state_len ==
                         CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE,
                     "transport continuation length mismatch")) {
+        return 1;
+    }
+    memset(vmstate_wire, 0, sizeof(vmstate_wire));
+    vmstate_file = (QEMUFile) {
+        .data = vmstate_wire,
+        .capacity = sizeof(vmstate_wire),
+    };
+    if (expect_bool(crucible_shmem_put_plugin_state(
+                        &vmstate_file, &state, 0, NULL, NULL) == 0,
+                    "transport VMState encoder failed") ||
+        expect_bool(vmstate_file.position == sizeof(vmstate_wire),
+                    "transport VMState encoder length mismatch") ||
+        expect_bool(crucible_shmem_pre_load(&state) == 0,
+                    "transport VMState pre-load cleanup failed")) {
+        return 1;
+    }
+    vmstate_file.position = 0;
+    vmstate_file.error = 0;
+    if (expect_bool(crucible_shmem_get_plugin_state(
+                        &vmstate_file, &state, 0, NULL) == 0,
+                    "bounded transport VMState decoder failed") ||
+        expect_bool(state.vmstate_plugin_state_len ==
+                        CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE,
+                    "bounded transport VMState decoder length mismatch")) {
+        return 1;
+    }
+    {
+        uint8_t oversized_length[] = { 0x02, 0x00, 0x00, 0x01 };
+        unsigned int allocations_before = fixture_try_malloc_count;
+        QEMUFile oversized_file = {
+            .data = oversized_length,
+            .capacity = sizeof(oversized_length),
+        };
+
+        if (expect_bool(crucible_shmem_pre_load(&state) == 0,
+                        "oversized VMState pre-load cleanup failed") ||
+            expect_bool(crucible_shmem_get_plugin_state(
+                            &oversized_file, &state, 0, NULL) == -EINVAL,
+                        "oversized transport VMState was accepted") ||
+            expect_bool(fixture_try_malloc_count == allocations_before,
+                        "oversized transport VMState allocated memory") ||
+            expect_bool(state.vmstate_plugin_state == NULL &&
+                            state.vmstate_plugin_state_len == 0,
+                        "oversized transport VMState mutated staging state")) {
+            return 1;
+        }
+    }
+    vmstate_file.position = 0;
+    vmstate_file.error = 0;
+    if (expect_bool(crucible_shmem_get_plugin_state(
+                        &vmstate_file, &state, 0, NULL) == 0,
+                    "valid transport VMState did not decode after rejection")) {
         return 1;
     }
     state.vmstate_next_request_id = 1;
@@ -643,6 +763,7 @@ static int exercise_driver(void)
     puts("transport_reset_error_range_exact=true");
     puts("transport_reset_commit_rejection_transactional=true");
     puts("transport_reset_vmstate_paired=true");
+    puts("transport_reset_vmstate_oversize_rejected_preallocation=true");
     puts("transport_reset_preserve_retry_admitted=true");
     puts("transport_reset_drop_sentinel_exact=true");
 #endif
