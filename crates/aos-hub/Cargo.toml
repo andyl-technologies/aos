@@ -61,6 +61,8 @@ required-live-dialects = ["aos-hub-core/do-e2e-test-support"]
 test-support = []
 
 [dev-dependencies]
+aos-hub-core = { workspace = true, features = ["test-fixtures"] }
+aos-proto-types = { workspace = true }
 aos-cache = { workspace = true }
 aos-remote = { workspace = true }
 # The OIDC SSO verifier moved to aos-hub-core (RFC-0004 Phase 5,

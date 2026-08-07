@@ -72,6 +72,7 @@ async fn seed_at(
         dev: true,
         delivery_attestation_verifier: None,
         domain_probe_terminator: None,
+        identity_domain_verifier: None,
         route_reservation_keyring: None,
     });
     (router(state).await, db, keys, secret, scope, owner_id)

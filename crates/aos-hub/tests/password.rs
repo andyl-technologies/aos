@@ -47,6 +47,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         dev: true,
         delivery_attestation_verifier: None,
         domain_probe_terminator: None,
+        identity_domain_verifier: None,
         route_reservation_keyring: None,
     })
 }
@@ -474,6 +475,7 @@ async fn seed_sso_org(db: &Database, slug: &str, enforce_sso: bool) -> i64 {
         enforce_sso,
         default_role: "viewer".into(),
         resource_version: 1,
+        incarnation_id: None,
         mutation_plan_id: None,
     })
     .await

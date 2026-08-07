@@ -3034,6 +3034,110 @@
   },
   {
     "service": "IdentityService",
+    "method": "GetIdentityProvider",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "PlanSetIdentityProvider",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "set_identity_provider" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "SetIdentityProvider",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "set_identity_provider", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "PlanRemoveIdentityProvider",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "remove_identity_provider" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "RemoveIdentityProvider",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "remove_identity_provider", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "ListOrganizationDomains",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "GetOrganizationDomain",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "PlanClaimOrganizationDomain",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "claim_organization_domain" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "ClaimOrganizationDomain",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "claim_organization_domain", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "PlanVerifyOrganizationDomain",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "verify_organization_domain" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "VerifyOrganizationDomain",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "verify_organization_domain", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "PlanReleaseOrganizationDomain",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "release_organization_domain" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "ReleaseOrganizationDomain",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "release_organization_domain", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
     "method": "PlanIssueAccessToken",
     "exposure": "public",
     "durability": "durable",

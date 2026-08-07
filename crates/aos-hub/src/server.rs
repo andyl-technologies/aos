@@ -672,25 +672,33 @@ fn console_deps(state: &Arc<AppState>) -> aos_hub_core::web::console::ConsoleDep
                 .for_image_indexing(),
             )),
     );
-    let topology: Arc<dyn aos_hub_core::web::console::TopologyConsole> = Arc::new(
-        aos_hub_core::service::RpcService::new(
-            Arc::clone(&state.db),
-            state.auth.jwt_keys.clone(),
-            state.external_url.clone(),
-            Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
-            Arc::clone(&surface),
-            Arc::clone(&surface_write),
-            Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
-            Arc::clone(&reindexer),
-            Arc::new(
-                aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
-                    &state.db,
-                )),
-            ),
-            Some(Arc::clone(&state.sealer)),
-        )
-        .with_secret_versions(Arc::clone(&state.secret_versions)),
-    );
+    let mut topology_service = aos_hub_core::service::RpcService::new(
+        Arc::clone(&state.db),
+        state.auth.jwt_keys.clone(),
+        state.external_url.clone(),
+        Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
+        Arc::clone(&surface),
+        Arc::clone(&surface_write),
+        Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
+        Arc::clone(&reindexer),
+        Arc::new(
+            aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
+                &state.db,
+            )),
+        ),
+        Some(Arc::clone(&state.sealer)),
+    )
+    .with_secret_versions(Arc::clone(&state.secret_versions))
+    .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
+        state.http.clone(),
+    )));
+    if let Some(provider) = &state.domain_probe_terminator {
+        topology_service = topology_service.with_domain_probe_terminator(Arc::clone(provider));
+    }
+    if let Some(verifier) = &state.identity_domain_verifier {
+        topology_service = topology_service.with_identity_domain_verifier(Arc::clone(verifier));
+    }
+    let topology: Arc<dyn aos_hub_core::web::console::TopologyConsole> = Arc::new(topology_service);
     aos_hub_core::web::console::ConsoleDeps {
         db: Arc::clone(&state.db),
         jwt_keys: state.auth.jwt_keys.clone(),
@@ -722,4 +730,81 @@ pub fn console_deps_for_worker_test(
     state: &Arc<AppState>,
 ) -> aos_hub_core::web::console::ConsoleDeps {
     console_deps(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct PublishedIdentityDomain;
+
+    #[async_trait::async_trait]
+    impl aos_hub_core::topology_probe::IdentityDomainVerifier for PublishedIdentityDomain {
+        async fn challenge_is_published(
+            &self,
+            _domain: &str,
+            _challenge: &str,
+        ) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn native_console_uses_runtime_identity_domain_verifier() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let user_id = db.create_user("owner@example.test", None).await.unwrap();
+        db.grant_membership("user", user_id, "instance", "owner")
+            .await
+            .unwrap();
+        let org_id = db
+            .create_org("native-console", "Native Console")
+            .await
+            .unwrap();
+        let challenge = db
+            .add_org_domain(org_id, "native-console.example.test")
+            .await
+            .unwrap();
+        assert!(challenge.starts_with("aos-domain-verify="));
+
+        let mut state = AppState::new(Arc::clone(&db), "https://hub.example.test".into()).await;
+        state.identity_domain_verifier = Some(Arc::new(PublishedIdentityDomain));
+        let bearer = state
+            .auth
+            .jwt_keys
+            .mint(
+                &crate::db::TokenAuth {
+                    token_id: "native-console-test".into(),
+                    owner: Principal::user(user_id),
+                    scope: Scope::root(),
+                    permissions: vec![Permission::IamAdmin],
+                },
+                300,
+            )
+            .unwrap();
+        let deps = console_deps(&Arc::new(state));
+        let plan = deps
+            .topology
+            .plan_organization_domain_verification(
+                &format!("Bearer {bearer}"),
+                aos_proto_types::PlanVerifyOrganizationDomainRequest {
+                    org_slug: "native-console".into(),
+                    domain: "native-console.example.test".into(),
+                    expected_resource_version: "1@legacy".into(),
+                    idempotency_key: "native-console-verify-plan".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let response = deps
+            .topology
+            .apply_organization_domain_verification(
+                &format!("Bearer {bearer}"),
+                plan.plan_id,
+                plan.confirmation_hash.unwrap(),
+                "native-console-verify-apply".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.domain.unwrap().state, "verified");
+    }
 }
