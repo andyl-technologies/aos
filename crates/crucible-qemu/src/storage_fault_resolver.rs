@@ -177,8 +177,13 @@ pub fn resolve_block_persistence_media_directive<'a>(
     context: StorageFaultResolutionContext,
     actions: impl IntoIterator<Item = &'a ResolvedBindingAction>,
 ) -> Result<ResolvedBlockPersistenceMediaDirective, StorageFaultResolutionError> {
+    let expected_operation = match opportunity.operation {
+        BlockOp::Write => FaultOperation::StorageWrite,
+        BlockOp::Discard => FaultOperation::StorageDiscard,
+        _ => return Err(StorageFaultResolutionError::OpportunityMismatch),
+    };
     if fault_opportunity.target() != target
-        || fault_opportunity.operation() != FaultOperation::StorageWrite
+        || fault_opportunity.operation() != expected_operation
         || fault_opportunity.phase() != FaultPhase::Persist
         || fault_opportunity.sequence() != opportunity.sequence
         || !matches!(
@@ -875,7 +880,10 @@ fn apply_effect(
             });
         }
         StorageEffectSpecification::FlashState { .. }
-            if matches!(request.op, BlockOp::Read | BlockOp::Write) =>
+            if matches!(
+                request.op,
+                BlockOp::Read | BlockOp::Write | BlockOp::Discard
+            ) =>
         {
             let rule = resolve_flash_rule(world, context, action, effect)?;
             if directive
@@ -889,9 +897,6 @@ fn apply_effect(
                 });
             }
             directive.persistence_media_rules.push(rule);
-        }
-        StorageEffectSpecification::FlashState { .. } if request.op == BlockOp::Discard => {
-            return Err(unsupported(action, "flash erase/discard transition"));
         }
         StorageEffectSpecification::FlushDisposition { kind, status }
             if request.op == BlockOp::Flush =>
@@ -1839,6 +1844,76 @@ mod tests {
         action.opportunity = Some(opportunity.id());
         action.cause = BindingActionCause::Opportunity(opportunity.id());
         action
+    }
+
+    #[test]
+    fn persistence_resolver_accepts_discard_and_rejects_operation_aliasing() {
+        let physical = BlockPersistenceOpportunity {
+            sequence: 4,
+            request_id: 17,
+            operation_sequence: 3,
+            operation: BlockOp::Discard,
+            request_digest: [3; 32],
+            offset: 4096,
+            count: 4096,
+            intended_digest: [5; 32],
+            ready_nanos: 10,
+        };
+        let coordinate = FaultCoordinate {
+            virtual_nanos: 10,
+            retired_instructions: None,
+        };
+        let payload = OpportunityPayload::StorageRequest {
+            request_sequence: physical.sequence,
+            start_byte: Some(physical.offset),
+            length_bytes: Some(u64::from(physical.count)),
+            request_digest: ContentHash {
+                bytes: physical.intended_digest,
+            },
+        };
+        let discard = FaultOpportunity::new(
+            target(),
+            FaultOperation::StorageDiscard,
+            FaultPhase::Persist,
+            coordinate,
+            physical.sequence,
+            None,
+            payload.clone(),
+        )
+        .unwrap_or_else(|error| panic!("discard persistence opportunity should build: {error}"));
+        let resolved = resolve_block_persistence_media_directive(
+            &opaque_world(),
+            &target(),
+            &physical,
+            &discard,
+            context(),
+            std::iter::empty::<&ResolvedBindingAction>(),
+        )
+        .unwrap_or_else(|error| panic!("discard persistence should resolve: {error}"));
+        assert_eq!(resolved.opportunity, physical);
+        assert!(resolved.flash_rules.is_empty());
+
+        let write_alias = FaultOpportunity::new(
+            target(),
+            FaultOperation::StorageWrite,
+            FaultPhase::Persist,
+            coordinate,
+            physical.sequence,
+            None,
+            payload,
+        )
+        .unwrap_or_else(|error| panic!("write alias opportunity should build: {error}"));
+        assert!(matches!(
+            resolve_block_persistence_media_directive(
+                &opaque_world(),
+                &target(),
+                &physical,
+                &write_alias,
+                context(),
+                std::iter::empty::<&ResolvedBindingAction>(),
+            ),
+            Err(StorageFaultResolutionError::OpportunityMismatch)
+        ));
     }
 
     #[test]
