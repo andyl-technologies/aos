@@ -480,6 +480,92 @@ async fn login_flow_creates_user_session_and_logout_revokes() {
 }
 
 #[tokio::test]
+async fn browser_session_exchange_requires_origin_and_csrf_and_returns_no_store_bearer() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let cookie = login(&app, &db, "browser@acme.com").await;
+    let secret = cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap();
+    let csrf = mint_csrf_token(secret);
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/-/auth/session-token")
+                .header(header::HOST, "127.0.0.1:8420")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+    assert!(unauthorized.headers().get(header::LOCATION).is_none());
+
+    for (origin, proof) in [
+        (None, Some(csrf.as_str())),
+        (Some("http://attacker.invalid"), Some(csrf.as_str())),
+        (Some("http://127.0.0.1:8420"), None),
+    ] {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/-/auth/session-token")
+            .header(header::HOST, "127.0.0.1:8420")
+            .header(header::COOKIE, &cookie);
+        if let Some(origin) = origin {
+            request = request.header(header::ORIGIN, origin);
+        }
+        if let Some(proof) = proof {
+            request = request.header("x-aos-csrf", proof);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/-/auth/session-token")
+                .header(header::HOST, "127.0.0.1:8420")
+                .header(header::COOKIE, cookie)
+                .header(header::ORIGIN, "http://127.0.0.1:8420")
+                .header("x-aos-csrf", csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["token_type"], "Bearer");
+    assert_eq!(value["expires_in"], 300);
+    assert_eq!(value["principal"]["email"], "browser@acme.com");
+    let token = value["access_token"].as_str().unwrap();
+    let claims = JwtKeys::from_secret(TEST_JWT_SECRET).verify(token).unwrap();
+    assert_eq!(
+        claims.owner_id,
+        db.user_by_email("browser@acme.com").await.unwrap().unwrap()
+    );
+    assert!(claims.exp - claims.iat <= 300);
+}
+
+#[tokio::test]
 async fn public_cache_inventory_does_not_link_outsiders_to_management() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
