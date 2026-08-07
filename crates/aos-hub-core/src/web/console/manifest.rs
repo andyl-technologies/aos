@@ -65,7 +65,7 @@ impl RouteSpec {
                 "{placement}" => "primary",
                 "{name}" => "stable",
                 "{token}" => "token-1",
-                "{principal}" | "{project}" | "{webhook}" | "{id}" => "1",
+                "{principal}" | "{project}" | "{webhook}" | "{id}" | "{invitation_id}" => "1",
                 "{binding}" => "binding-1",
                 literal => literal,
             })
@@ -619,6 +619,10 @@ mod tests {
     fn concrete_paths_resolve_to_their_exact_method_contract() {
         for route in route_manifest() {
             let path = route.sample_path("demo");
+            assert!(
+                !path.contains('{') && !path.contains('}'),
+                "sample path contains an unresolved parameter: {path}"
+            );
             assert_eq!(route_methods_for_path(&path), Some(route.methods), "{path}");
             assert_eq!(declared_route(route.path), Some(route));
         }
