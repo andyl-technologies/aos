@@ -114,22 +114,12 @@ impl ContentHash {
         }
     }
 
-    /// Computes the RFC-0010 DAG-store key while streaming raw object bytes.
-    ///
+    /// Computes the RFC-0010 DAG-store key from a raw object byte stream.
     /// # Errors
-    ///
     /// Returns an I/O error when the reader cannot supply the complete object.
     pub fn from_reader(mut reader: impl std::io::Read) -> Result<Self, std::io::Error> {
         let mut hasher = blake3::Hasher::new();
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            match reader.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(length) => hasher.update(&buffer[..length]),
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error),
-            };
-        }
+        std::io::copy(&mut reader, &mut hasher)?;
         Ok(Self {
             bytes: *hasher.finalize().as_bytes(),
         })
