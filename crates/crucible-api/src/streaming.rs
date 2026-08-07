@@ -403,7 +403,8 @@ pub struct SendResponse {
     pub result: CommandResult,
     /// State update observed for commands that changed run-state.
     pub state_update: Option<StateUpdate>,
-    /// Query payload returned by accepted read-only commands, when exposed.
+    /// Query payload returned by accepted read-only commands or by a lifecycle
+    /// `Stop` that captures its terminal snapshot before cleanup.
     pub query_result: Option<QueryResult>,
     /// Breakpoint identifier returned by accepted breakpoint commands on typed transports.
     pub breakpoint_id: Option<BreakpointId>,
@@ -1184,7 +1185,6 @@ async fn dispatch_command(
         (LifecycleTransition::Rejected, _) => None,
         (_, CommandResultStatus::Rejected { .. }) => None,
     };
-
     Ok(SendResponse {
         result,
         state_update,

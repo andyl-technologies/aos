@@ -1923,7 +1923,7 @@ where
         let session = request.session;
         let command_kind = SessionCommandKind::from(&request.command);
         let streaming_session = self.streaming_session(session)?;
-        let response = match streaming_session.send(request).await {
+        let mut response = match streaming_session.send(request).await {
             Ok(response) => response,
             Err(error @ StreamingApiError::CommandChannelClosed { .. }) => {
                 if let Some(runtime) = self.sessions.remove(&session.id)
@@ -1939,7 +1939,8 @@ where
         if command_kind == SessionCommandKind::Stop
             && response.result.status == CommandResultStatus::Accepted
         {
-            self.cleanup_accepted_streaming_stop(session).await?;
+            let report = self.cleanup_accepted_streaming_stop(session).await?;
+            response.query_result = Some(QueryResult::Snapshot(Box::new(report.final_snapshot)));
         }
 
         Ok(response)
@@ -1948,12 +1949,12 @@ where
     async fn cleanup_accepted_streaming_stop(
         &mut self,
         session: SessionRef,
-    ) -> Result<(), ControlClientError> {
-        if let Some(runtime) = self.sessions.remove(&session.id) {
-            let _ = runtime.sender.send(actor_shutdown_command()).await;
-            join_actor(runtime.actor_task).await?;
-        }
-        Ok(())
+    ) -> Result<SessionRunReport, ControlClientError> {
+        let Some(runtime) = self.sessions.remove(&session.id) else {
+            return Err(StreamingApiError::SessionNotFound { session }.into());
+        };
+        let _ = runtime.sender.send(actor_shutdown_command()).await;
+        join_actor(runtime.actor_task).await.map_err(Into::into)
     }
 }
 

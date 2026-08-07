@@ -927,7 +927,7 @@ where
         .await?;
     }
 
-    match run_plan.execution_mode {
+    let interactive_terminal_snapshot = match run_plan.execution_mode {
         RunExecutionMode::ToCompletion => {
             if let Some(quantum_budget) = run_plan.max_quanta {
                 drive_run_to_exact_quantum_budget(
@@ -952,18 +952,25 @@ where
                     .await?;
                 }
             }
+            None
         }
         RunExecutionMode::Interactive => match interactive_driver {
             InteractiveCommandDriver::Preparsed(commands) => {
+                let mut terminal_snapshot = None;
                 for command in commands {
-                    acknowledge_stream_command(
+                    let response = acknowledge_stream_command_payload(
                         &control,
                         &mut command_id,
-                        *command,
+                        cli_stream_command(*command)?,
                         &mut acknowledged_commands,
                     )
                     .await?;
+                    if *command == SessionCommandKind::Stop {
+                        terminal_snapshot = terminal_snapshot_from_stop_response(response)?;
+                        break;
+                    }
                 }
+                terminal_snapshot
             }
             InteractiveCommandDriver::Stdin => {
                 drive_interactive_stdin_commands(
@@ -971,10 +978,10 @@ where
                     &mut command_id,
                     &mut acknowledged_commands,
                 )
-                .await?;
+                .await?
             }
         },
-    }
+    };
 
     let mut state_updates = Vec::new();
     let mut streamed_events = Vec::new();
@@ -993,6 +1000,7 @@ where
         &mut streamed_event_frames,
         &mut coverage_events,
         &mut streamed_event_cursor,
+        interactive_terminal_snapshot.as_deref(),
     )
     .await?;
     if state_updates.last() != Some(&observation.final_state) {
@@ -1087,7 +1095,7 @@ pub(super) async fn drive_interactive_stdin_commands(
     control: &crucible_api::ClientControlStream,
     command_id: &mut u64,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
-) -> Result<(), CliError> {
+) -> Result<Option<Box<crucible_session::EngineSnapshot>>, CliError> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     drive_interactive_command_reader(
@@ -1106,25 +1114,75 @@ pub(super) async fn drive_interactive_command_reader<R, W>(
     acknowledged_commands: &mut Vec<SessionCommandKind>,
     reader: R,
     writer: &mut W,
-) -> Result<(), CliError>
+) -> Result<Option<Box<crucible_session::EngineSnapshot>>, CliError>
 where
     R: BufRead,
     W: Write,
 {
+    let mut terminal_snapshot = None;
     for line in reader.lines() {
         let line = line?;
         let Some(command) = parse_interactive_session_command_line(&line)? else {
             continue;
         };
-        acknowledge_stream_command(control, command_id, command, acknowledged_commands).await?;
+        let response = acknowledge_stream_command_payload(
+            control,
+            command_id,
+            cli_stream_command(command)?,
+            acknowledged_commands,
+        )
+        .await?;
         writeln!(
             writer,
             "interactive-ack\tcommand={}\tstatus=accepted",
             session_command_name(command)
         )?;
+        if command == SessionCommandKind::Query {
+            write_interactive_query_result(writer, response.query_result.as_ref())?;
+        }
+        if command == SessionCommandKind::Stop {
+            terminal_snapshot = terminal_snapshot_from_stop_response(response)?;
+        }
         writer.flush()?;
+        if command == SessionCommandKind::Stop {
+            break;
+        }
     }
-    Ok(())
+    Ok(terminal_snapshot)
+}
+
+fn write_interactive_query_result<W: Write>(
+    writer: &mut W,
+    result: Option<&QueryResult>,
+) -> Result<(), CliError> {
+    match result {
+        Some(QueryResult::State(state)) => {
+            writeln!(
+                writer,
+                "interactive-query\tstate={}",
+                format!("{state:?}").to_ascii_lowercase()
+            )?;
+            Ok(())
+        }
+        Some(other) => Err(backend_error(format!(
+            "interactive state query returned unexpected payload: {other:?}"
+        ))),
+        None => Err(backend_error("interactive state query returned no payload")),
+    }
+}
+
+fn terminal_snapshot_from_stop_response(
+    response: crucible_api::SendResponse,
+) -> Result<Option<Box<crucible_session::EngineSnapshot>>, CliError> {
+    match response.query_result {
+        Some(QueryResult::Snapshot(snapshot)) => Ok(Some(snapshot)),
+        Some(other) => Err(backend_error(format!(
+            "interactive stop returned unexpected terminal payload: {other:?}"
+        ))),
+        None => Err(backend_error(
+            "interactive stop returned no terminal snapshot",
+        )),
+    }
 }
 
 pub(super) async fn acknowledge_stream_command(
@@ -1136,6 +1194,7 @@ pub(super) async fn acknowledge_stream_command(
     let model_command = cli_stream_command(command)?;
     acknowledge_stream_command_payload(control, command_id, model_command, acknowledged_commands)
         .await
+        .map(|_| ())
 }
 
 pub(super) async fn acknowledge_stream_command_payload(
@@ -1143,7 +1202,7 @@ pub(super) async fn acknowledge_stream_command_payload(
     command_id: &mut u64,
     model_command: SessionCommand,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
-) -> Result<(), CliError> {
+) -> Result<crucible_api::SendResponse, CliError> {
     let command = SessionCommandKind::from(&model_command);
     let response = control
         .send_command(*command_id, model_command)
@@ -1153,7 +1212,7 @@ pub(super) async fn acknowledge_stream_command_payload(
     match response.result.status {
         CommandResultStatus::Accepted => {
             acknowledged_commands.push(command);
-            Ok(())
+            Ok(response)
         }
         CommandResultStatus::Rejected { reason } => Err(backend_error(format!(
             "session command `{}` was rejected: {reason:?}",
@@ -1192,6 +1251,7 @@ pub(super) async fn observe_run_final_state<C>(
     streamed_event_frames: &mut Vec<Vec<u8>>,
     coverage_events: &mut Vec<crucible::ObservableEvent>,
     streamed_event_cursor: &mut u64,
+    interactive_terminal_snapshot: Option<&crucible_session::EngineSnapshot>,
 ) -> Result<RunObservation, CliError>
 where
     C: ControlClient + Sync,
@@ -1258,6 +1318,47 @@ where
             .iter()
             .find(|summary| summary.session == session_ref)
         else {
+            if let Some(snapshot) = interactive_terminal_snapshot {
+                let outcome = match &snapshot.state {
+                    crucible_session::EngineState::Stopped { outcome } => {
+                        Some(OutcomeKind::from(outcome))
+                    }
+                    state => {
+                        return Err(backend_error(format!(
+                            "run session disappeared after stop returned non-terminal state {state:?}"
+                        )));
+                    }
+                };
+                let terminal_event_log_len =
+                    u64::try_from(snapshot.event_log_len).map_err(|_| {
+                        backend_error(
+                            "terminal event-log length exceeded the supported cursor range",
+                        )
+                    })?;
+                drain_terminal_event_log(
+                    control,
+                    terminal_event_log_len,
+                    run_plan.observer_profile.event_timeout_ms,
+                    streamed_events,
+                    streamed_event_frames,
+                    coverage_events,
+                    streamed_event_cursor,
+                )
+                .await?;
+                if run_plan.watch_streams_live_status {
+                    watch_statuses.push(run_snapshot_watch_status(snapshot, outcome));
+                }
+                return Ok(RunObservation {
+                    final_state: terminal_final_state(run_plan, outcome),
+                    outcome,
+                    terminal_savepoint: snapshot.terminal_savepoint.as_ref().map(|value| value.id),
+                    terminal_configuration: snapshot.configuration.clone(),
+                    frontier_ticks: snapshot.frontier.ticks,
+                    quanta: snapshot.quanta,
+                    budget_timed_out: outcome == Some(OutcomeKind::Timeout),
+                    watch_statuses,
+                });
+            }
             return Err(backend_error(
                 "run session disappeared before the engine reported an outcome",
             ));
@@ -1496,6 +1597,23 @@ pub(super) fn run_watch_status(session: &crucible_api::SessionSummary) -> String
         session
             .terminal_savepoint
             .map(format_content_hash_ref)
+            .unwrap_or_else(|| String::from("none"))
+    )
+}
+
+fn run_snapshot_watch_status(
+    snapshot: &crucible_session::EngineSnapshot,
+    outcome: Option<OutcomeKind>,
+) -> String {
+    format!(
+        "state=stopped\tfrontier_ticks={}\tquanta={}\toutcome={}\tsavepoint={}",
+        snapshot.frontier.ticks,
+        snapshot.quanta,
+        terminal_outcome_label(outcome),
+        snapshot
+            .terminal_savepoint
+            .as_ref()
+            .map(|checkpoint| format_content_hash_ref(checkpoint.id))
             .unwrap_or_else(|| String::from("none"))
     )
 }

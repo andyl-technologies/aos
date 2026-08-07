@@ -341,7 +341,6 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
         stream_stopped.state_update.map(|update| update.state),
         Some(LiveStateKind::Stopped),
     );
-
     let destroyed = rpc
         .destroy_session(DestroySessionRequest::new(created.session))
         .await
@@ -591,6 +590,19 @@ async fn in_process_lifecycle_control_stream_stop_cleans_registry() {
         )
         .await
         .unwrap_or_else(|error| panic!("in-process Control attach should succeed: {error}"));
+    let stepped = control
+        .send_command(30_515, SessionCommand::step(StepMode::Quantum))
+        .await
+        .unwrap_or_else(|error| panic!("in-process Control Step should succeed: {error}"));
+    assert_eq!(stepped.result.status, CommandResultStatus::Accepted);
+    let before_stop = control
+        .send_command(30_516, SessionCommand::query_snapshot())
+        .await
+        .unwrap_or_else(|error| panic!("pre-Stop snapshot should succeed: {error}"));
+    let Some(QueryResult::Snapshot(before_stop)) = before_stop.query_result else {
+        panic!("pre-Stop query should return a snapshot");
+    };
+    assert!(before_stop.quanta > 0);
     let stopped = control
         .send_command(30_517, SessionCommand::Stop)
         .await
@@ -600,6 +612,26 @@ async fn in_process_lifecycle_control_stream_stop_cleans_registry() {
         stopped.state_update.map(|update| update.state),
         Some(LiveStateKind::Stopped),
     );
+    let Some(QueryResult::Snapshot(snapshot)) = stopped.query_result else {
+        panic!("accepted lifecycle Stop should return its terminal snapshot");
+    };
+    assert!(matches!(
+        snapshot.state,
+        EngineState::Stopped {
+            outcome: crucible_session::Outcome::Stopped
+        }
+    ));
+    assert_eq!(snapshot.configuration, before_stop.configuration);
+    assert_eq!(snapshot.frontier, before_stop.frontier);
+    assert_eq!(snapshot.quanta, before_stop.quanta);
+    assert_eq!(snapshot.event_log_len, before_stop.event_log_len);
+    let checkpoint = snapshot
+        .terminal_savepoint
+        .as_ref()
+        .unwrap_or_else(|| panic!("operator Stop should materialize a terminal savepoint"));
+    assert_eq!(checkpoint.id, snapshot.configuration.id());
+    assert_eq!(checkpoint.configuration, snapshot.configuration.id());
+    assert_eq!(checkpoint.virtual_time, snapshot.frontier);
 
     let sessions = client.list_sessions().await.unwrap_or_else(|error| {
         panic!("in-process list after Control Stop should succeed: {error}")
@@ -618,6 +650,54 @@ async fn in_process_lifecycle_control_stream_stop_cleans_registry() {
     assert_eq!(destroyed.session, created.session);
     assert!(destroyed.already_absent);
     assert!(!destroyed.stopped);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejected_lifecycle_stop_has_no_snapshot_and_keeps_registry_entry() {
+    let client = InProcessLifecycleClient::new(lifecycle_control_plane());
+    let created = client
+        .create_session(
+            CreateSessionRequest::scenario_ref(
+                "api-control-client-scenario",
+                Seed::from_u64(30_518),
+            )
+            .with_start_paused(true),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("in-process CreateSession should succeed: {error}"));
+    let control = client
+        .control_attach(AttachRequest::new(created.session))
+        .await
+        .unwrap_or_else(|error| panic!("in-process Control attach should succeed: {error}"));
+    let exhausted = control
+        .send_command(30_519, SessionCommand::ExhaustBudget)
+        .await
+        .unwrap_or_else(|error| panic!("ExhaustBudget should terminalize the session: {error}"));
+    assert_eq!(exhausted.result.status, CommandResultStatus::Accepted);
+
+    let rejected = control
+        .send_command(30_520, SessionCommand::Stop)
+        .await
+        .unwrap_or_else(|error| panic!("rejected Stop should remain a response: {error}"));
+    assert_eq!(
+        rejected.result.status,
+        CommandResultStatus::Rejected {
+            reason: CommandRejectionKind::InvalidState,
+        }
+    );
+    assert!(rejected.query_result.is_none());
+    let sessions = client
+        .list_sessions()
+        .await
+        .unwrap_or_else(|error| panic!("list after rejected Stop should succeed: {error}"));
+    assert_eq!(sessions.sessions.len(), 1);
+    assert_eq!(sessions.sessions[0].session, created.session);
+
+    let destroyed = client
+        .destroy_session(DestroySessionRequest::new(created.session))
+        .await
+        .unwrap_or_else(|error| panic!("terminal session cleanup should succeed: {error}"));
+    assert_eq!(destroyed.session, created.session);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -812,6 +892,20 @@ async fn production_http2_lifecycle_server_admits_concurrent_watch_and_query_cli
         .await
         .unwrap_or_else(|error| panic!("Control Stop should decode: {error}"));
     assert_eq!(stopped.result.status, CommandResultStatus::Accepted);
+    let Some(QueryResult::Snapshot(snapshot)) = stopped.query_result else {
+        panic!("HTTP/2 Stop should round-trip the terminal snapshot");
+    };
+    assert!(matches!(snapshot.state, EngineState::Stopped { .. }));
+    assert_eq!(snapshot.configuration.def, scenario);
+    let checkpoint = snapshot
+        .terminal_savepoint
+        .as_ref()
+        .unwrap_or_else(|| panic!("HTTP/2 terminal snapshot should carry its savepoint"));
+    assert_eq!(checkpoint.id, snapshot.configuration.id());
+    assert_eq!(checkpoint.virtual_time, snapshot.frontier);
+    assert!(snapshot.quanta > 0);
+    assert_eq!(snapshot.frontier.ticks, snapshot.quanta);
+    assert_eq!(snapshot.event_log_len, 0);
     let destroyed = rpc
         .destroy_session(DestroySessionRequest::new(created.session))
         .await

@@ -41,6 +41,14 @@ stop
 Commands are acknowledged at deterministic session boundaries, not at the host
 wall-clock instant the line was read.
 
+`query` writes an additional `interactive-query` line containing the current
+lowercase lifecycle state. An accepted `stop` writes its acknowledgement,
+preserves the joined actor's exact terminal snapshot across registry cleanup,
+and ends interactive input immediately; lines after `stop` are not sent to the
+removed session. The registry entry is already absent when the caller receives
+the response. An interactive terminal therefore does not require a separate EOF
+after `stop`.
+
 The current parser accepts only the keyword; it does not parse payloads for a
 duration, fault, query selector, savepoint label, or fork override. Use the
 top-level `save`, `resume`, and `fork` commands for parameterized workflows. The

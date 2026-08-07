@@ -82,13 +82,12 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
             .iter()
             .any(|entry| entry.kind == "run_state_update" && entry.summary == "quiescent")
     );
-    assert!(
-        pass_outcome
-            .canonical_log
-            .iter()
-            .any(|entry| entry.kind == "run_stream_event"
-                && entry.summary == "crucible.event.diagnostic")
-    );
+    assert!(pass_outcome.canonical_log.iter().any(|entry| {
+        entry.kind == "run_stream_event"
+            && entry
+                .summary
+                .starts_with("crucible.event.diagnostic sequence=")
+    }));
     assert!(
         pass_outcome
             .stdout
