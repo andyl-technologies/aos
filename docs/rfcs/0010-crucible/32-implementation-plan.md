@@ -337,9 +337,11 @@ long-held locks.
   `T-API-7` is green through `checks.crucible.phase5.apiStateUpdateStream`,
   which wires `Control`/`Watch` attach to the actor state-transition bus, exposes
   monotone state-update frames separately from event-log frames, demultiplexes
-  RPC `state-update-frame` messages from the shared framed stream without
-  starving behind undrained event frames, and proves a Watch-only client can
-  track run-state from `SendResponse` plus `StateUpdate`.
+  RPC `state-update-frame` messages from the shared framed stream, coalesces
+  superseded state updates while preserving fail-closed event-log lag, binds the
+  attach snapshot to an atomic transition-sequence floor, and proves a Watch-only
+  client can track run-state from `SendResponse` plus `StateUpdate` even after
+  exceeding the bounded live state tail.
   `T-API-8` is green through `checks.crucible.phase5.apiEpochGuards`, which
   carries `expected_epoch` on attach, command, and lifecycle destroy requests,
   rejects stale session refs and expected epochs before actor dispatch, proves

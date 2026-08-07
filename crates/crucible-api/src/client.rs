@@ -121,9 +121,9 @@ impl ClientControlStream {
     ///
     /// # Errors
     ///
-    /// Returns [`ControlClientError`] when the underlying transport fails, the
-    /// RPC state-update frame is malformed, or the in-process state-update
-    /// stream lags.
+    /// Returns [`ControlClientError`] when the underlying transport fails or an
+    /// RPC state-update frame is malformed. Superseded state updates are
+    /// coalesced on both transports.
     pub async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
@@ -254,9 +254,9 @@ impl ClientWatchStream {
     ///
     /// # Errors
     ///
-    /// Returns [`ControlClientError`] when the underlying transport fails, the
-    /// RPC state-update frame is malformed, or the in-process state-update
-    /// stream lags.
+    /// Returns [`ControlClientError`] when the underlying transport fails or an
+    /// RPC state-update frame is malformed. Superseded state updates are
+    /// coalesced on both transports.
     pub async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
@@ -364,7 +364,7 @@ struct RpcStreamingEventReceiver {
     pending_events: VecDeque<StreamingEventFrame>,
     pending_state_updates: VecDeque<StreamingStateUpdateFrame>,
     skipped_events: u64,
-    skipped_state_updates: u64,
+    last_state_sequence: Option<u64>,
 }
 
 impl RpcStreamingEventReceiver {
@@ -394,19 +394,15 @@ impl RpcStreamingEventReceiver {
     async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
-        if self.skipped_state_updates > 0 {
-            let skipped = std::mem::take(&mut self.skipped_state_updates);
-            return Err(ControlClientError::from(
-                StreamingApiError::StateUpdateStreamLagged { skipped },
-            ));
-        }
-        if let Some(frame) = self.pending_state_updates.pop_front() {
-            return Ok(Some(frame));
-        }
-
-        loop {
+        let mut latest = self.pending_state_updates.pop_back();
+        self.pending_state_updates.clear();
+        while latest.is_none() {
             match self.frames.recv().await {
-                Some(Ok(RpcStreamingFrame::StateUpdate(frame))) => return Ok(Some(frame)),
+                Some(Ok(RpcStreamingFrame::StateUpdate(frame))) => {
+                    if self.state_sequence_is_newer(frame.sequence) {
+                        latest = Some(frame);
+                    }
+                }
                 Some(Ok(RpcStreamingFrame::Event(frame))) => {
                     self.push_pending_event(frame);
                 }
@@ -414,6 +410,30 @@ impl RpcStreamingEventReceiver {
                 None => return Ok(None),
             }
         }
+
+        loop {
+            match self.frames.try_recv() {
+                Ok(Ok(RpcStreamingFrame::StateUpdate(frame))) => {
+                    if latest
+                        .as_ref()
+                        .is_none_or(|current| frame.sequence > current.sequence)
+                        && self.state_sequence_is_newer(frame.sequence)
+                    {
+                        latest = Some(frame);
+                    }
+                }
+                Ok(Ok(RpcStreamingFrame::Event(frame))) => self.push_pending_event(frame),
+                Ok(Err(error)) => return Err(error),
+                Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                    break;
+                }
+            }
+        }
+
+        if let Some(frame) = &latest {
+            self.last_state_sequence = Some(frame.sequence);
+        }
+        Ok(latest)
     }
 
     fn push_pending_event(&mut self, frame: StreamingEventFrame) {
@@ -425,11 +445,21 @@ impl RpcStreamingEventReceiver {
     }
 
     fn push_pending_state_update(&mut self, frame: StreamingStateUpdateFrame) {
-        if self.pending_state_updates.len() >= RPC_STREAM_PENDING_FRAME_CAPACITY {
-            let _dropped = self.pending_state_updates.pop_front();
-            self.skipped_state_updates = self.skipped_state_updates.saturating_add(1);
+        if !self.state_sequence_is_newer(frame.sequence)
+            || self
+                .pending_state_updates
+                .back()
+                .is_some_and(|pending| pending.sequence >= frame.sequence)
+        {
+            return;
         }
+        self.pending_state_updates.clear();
         self.pending_state_updates.push_back(frame);
+    }
+
+    fn state_sequence_is_newer(&self, sequence: u64) -> bool {
+        self.last_state_sequence
+            .is_none_or(|delivered| sequence > delivered)
     }
 }
 
@@ -1319,7 +1349,7 @@ async fn decode_attached_stream_response(
             pending_events: VecDeque::new(),
             pending_state_updates: VecDeque::new(),
             skipped_events: 0,
-            skipped_state_updates: 0,
+            last_state_sequence: None,
         },
     ))
 }
@@ -2961,6 +2991,139 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, ControlClientError> {
     }
     Ok(bytes)
 }
+
+#[cfg(test)]
+mod streaming_receiver_tests {
+    use super::*;
+
+    fn receiver() -> RpcStreamingEventReceiver {
+        let (_sender, frames) = mpsc::channel(1);
+        RpcStreamingEventReceiver {
+            frames,
+            pending_events: VecDeque::new(),
+            pending_state_updates: VecDeque::new(),
+            skipped_events: 0,
+            last_state_sequence: None,
+        }
+    }
+
+    fn state_update(sequence: u64, state: LiveStateKind) -> StreamingStateUpdateFrame {
+        StreamingStateUpdateFrame {
+            sequence,
+            update: StateUpdate {
+                session: SessionRef::new(SessionId::new(1), 1, Seed::from_u64(1)),
+                state,
+            },
+        }
+    }
+
+    fn event(sequence: u64) -> StreamingEventFrame {
+        StreamingEventFrame {
+            generation: 0,
+            cursor: EventLogCursor::new(sequence),
+            next_cursor: EventLogCursor::new(sequence + 1),
+            event: OpenSetEventEnvelope {
+                sequence,
+                at: OpenSetEventTime {
+                    virtual_time_ticks: sequence,
+                    icount_retired: sequence,
+                    icount_node: None,
+                },
+                source: OpenSetEventSource::Engine,
+                level: EventLevel::Info,
+                observational: false,
+                payload: OpenSetPayload::new("crucible.event.evaluation_boundary", BTreeMap::new()),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_state_updates_coalesce_to_the_latest_monotone_frame() {
+        let mut receiver = receiver();
+        for sequence in 1..=32 {
+            receiver.push_pending_state_update(state_update(sequence, LiveStateKind::Running));
+        }
+        receiver.push_pending_state_update(state_update(31, LiveStateKind::Paused));
+        receiver.push_pending_state_update(state_update(33, LiveStateKind::Stopped));
+
+        assert_eq!(receiver.pending_state_updates.len(), 1);
+        let update = receiver
+            .recv_state_update()
+            .await
+            .unwrap_or_else(|error| panic!("latest state update should decode: {error}"))
+            .unwrap_or_else(|| panic!("latest state update should remain buffered"));
+        assert_eq!(update.sequence, 33);
+        assert_eq!(update.update.state, LiveStateKind::Stopped);
+
+        receiver.push_pending_state_update(state_update(32, LiveStateKind::Running));
+        assert!(receiver.pending_state_updates.is_empty());
+        assert!(
+            receiver
+                .recv_state_update()
+                .await
+                .unwrap_or_else(|error| panic!("closed state stream should remain valid: {error}"))
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn ready_rpc_frames_coalesce_before_state_delivery() {
+        let (sender, frames) = mpsc::channel(64);
+        let mut receiver = RpcStreamingEventReceiver {
+            frames,
+            pending_events: VecDeque::new(),
+            pending_state_updates: VecDeque::new(),
+            skipped_events: 0,
+            last_state_sequence: None,
+        };
+        sender
+            .send(Ok(RpcStreamingFrame::Event(event(0))))
+            .await
+            .unwrap_or_else(|error| panic!("event frame should enqueue: {error}"));
+        for sequence in 1..=32 {
+            sender
+                .send(Ok(RpcStreamingFrame::StateUpdate(state_update(
+                    sequence,
+                    if sequence == 32 {
+                        LiveStateKind::Stopped
+                    } else {
+                        LiveStateKind::Running
+                    },
+                ))))
+                .await
+                .unwrap_or_else(|error| panic!("state frame should enqueue: {error}"));
+        }
+
+        let update = receiver
+            .recv_state_update()
+            .await
+            .unwrap_or_else(|error| panic!("ready state frames should decode: {error}"))
+            .unwrap_or_else(|| panic!("latest ready state should be delivered"));
+        assert_eq!(update.sequence, 32);
+        assert_eq!(update.update.state, LiveStateKind::Stopped);
+        assert_eq!(receiver.pending_events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pending_event_overflow_remains_fail_closed() {
+        let mut receiver = receiver();
+        for sequence in 0..=RPC_STREAM_PENDING_FRAME_CAPACITY as u64 {
+            receiver.push_pending_event(event(sequence));
+        }
+
+        let error = receiver
+            .recv_event()
+            .await
+            .expect_err("dropped canonical events must report lag");
+        assert!(matches!(
+            error,
+            ControlClientError::Streaming {
+                source: StreamingApiError::EventStreamLagged { skipped: 1 }
+            }
+        ));
+    }
+}
+
 mod debug;
 mod query_result;
 
