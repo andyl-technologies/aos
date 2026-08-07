@@ -2,9 +2,9 @@
   "version": 1,
   "symbols": [
     {
-      "id": "api.create-service-account",
+      "id": "api.automation-principal",
       "category": "api",
-      "symbol": "CreateServiceAccount",
+      "symbol": "AutomationPrincipal",
       "targets": [
         "crates/aos-proto/src/proto/aos/hub/v1/hub.proto"
       ]

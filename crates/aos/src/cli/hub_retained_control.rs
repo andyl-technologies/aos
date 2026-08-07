@@ -240,11 +240,68 @@ pub enum HubInstanceSettingsMutationCmd {
 /// Organization-owned service-account commands.
 #[derive(Subcommand)]
 pub enum HubServiceAccountCmd {
+    /// List an organization's service accounts.
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Show one service account.
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        name: String,
+    },
     /// Create a service account through immutable review.
     Create {
         #[command(subcommand)]
         command: HubServiceAccountCreateCmd,
     },
+    /// Rename a service account through immutable review.
+    Update {
+        #[command(subcommand)]
+        command: HubServiceAccountUpdateCmd,
+    },
+    /// Delete a service account through immutable review.
+    Delete {
+        #[command(subcommand)]
+        command: HubServiceAccountDeleteCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubServiceAccountUpdateCmd {
+    /// Create and print an immutable rename plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        name: String,
+        #[arg(long)]
+        new_name: String,
+        #[arg(long, value_name = "VERSION")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed rename plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+#[derive(Subcommand)]
+pub enum HubServiceAccountDeleteCmd {
+    /// Create and print an immutable deletion plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        name: String,
+        #[arg(long, value_name = "VERSION")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed deletion plan.
+    Apply(HubReviewedApplyArgs),
 }
 
 /// Explicit plan/apply flow for service-account creation.

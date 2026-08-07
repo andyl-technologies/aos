@@ -2717,8 +2717,9 @@ mod tests {
 
     use crate::cli::{
         Cli, Commands, HubAccessTokenCmd, HubAccessTokenIssueCmd, HubCacheCmd,
-        HubCacheRetentionCmd, HubCmd, HubNetworkBoundaryCmd, HubPlacementCmd, HubPlacementDrainCmd,
-        HubRegistryCacheStackCmd, HubRegistryCmd, HubRouteCmd, HubStorageBindingCmd,
+        HubCacheRetentionCmd, HubCmd, HubNetworkBoundaryCmd, HubOrgCmd, HubPlacementCmd,
+        HubPlacementDrainCmd, HubRegistryCacheStackCmd, HubRegistryCmd, HubRouteCmd,
+        HubServiceAccountCmd, HubServiceAccountUpdateCmd, HubStorageBindingCmd,
     };
 
     fn parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
@@ -2981,19 +2982,17 @@ mod tests {
                 }
             }
         ));
-        assert!(
-            parse_cli([
-                "aos",
-                "hub",
-                "binding",
-                "list",
-                "--hub",
-                "https://aos.example",
-                "--org",
-                "andyl",
-            ])
-            .is_err()
-        );
+        assert!(parse_cli([
+            "aos",
+            "hub",
+            "binding",
+            "list",
+            "--hub",
+            "https://aos.example",
+            "--org",
+            "andyl",
+        ])
+        .is_err());
     }
 
     #[test]
@@ -3031,21 +3030,19 @@ mod tests {
 
     #[test]
     fn boundary_activation_requires_an_explicit_default_choice() {
-        assert!(
-            parse_cli([
-                "aos",
-                "hub",
-                "network-boundary",
-                "revision",
-                "activate",
-                "--hub",
-                "https://aos.example",
-                "corp@2",
-                "--mode",
-                "overlap",
-            ])
-            .is_err()
-        );
+        assert!(parse_cli([
+            "aos",
+            "hub",
+            "network-boundary",
+            "revision",
+            "activate",
+            "--hub",
+            "https://aos.example",
+            "corp@2",
+            "--mode",
+            "overlap",
+        ])
+        .is_err());
         let parsed = parse_cli([
             "aos",
             "hub",
@@ -3157,23 +3154,21 @@ mod tests {
                 }
             }
         ));
-        assert!(
-            parse_cli([
-                "aos",
-                "hub",
-                "registry",
-                "cache-stack",
-                "add",
-                "andyl/main",
-                "--hub",
-                "https://aos.example",
-                "--cache",
-                "nix",
-                "--url",
-                "https://cache.example",
-            ])
-            .is_err()
-        );
+        assert!(parse_cli([
+            "aos",
+            "hub",
+            "registry",
+            "cache-stack",
+            "add",
+            "andyl/main",
+            "--hub",
+            "https://aos.example",
+            "--cache",
+            "nix",
+            "--url",
+            "https://cache.example",
+        ])
+        .is_err());
     }
 
     #[test]
@@ -3234,6 +3229,49 @@ mod tests {
             }
         ));
         assert!(parse_cli(["aos", "hub", "registry", "token"]).is_err());
+    }
+
+    #[test]
+    fn service_accounts_expose_inventory_and_reviewed_lifecycle_commands() {
+        let parsed = parse_cli([
+            "aos",
+            "hub",
+            "org",
+            "service-account",
+            "update",
+            "plan",
+            "andyl",
+            "publisher",
+            "--new-name",
+            "release-publisher",
+            "--if-version",
+            "sha256:0123456789abcdef",
+            "--hub",
+            "https://aos.example",
+            "--idempotency-key",
+            "rename-release-publisher",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Commands::Hub {
+                command: HubCmd::Org {
+                    command: HubOrgCmd::ServiceAccount {
+                        command: HubServiceAccountCmd::Update {
+                            command: HubServiceAccountUpdateCmd::Plan { .. }
+                        }
+                    },
+                    ..
+                }
+            }
+        ));
+
+        for command in ["list", "show", "create", "update", "delete"] {
+            assert!(
+                parse_cli(["aos", "hub", "service-account", command]).is_err(),
+                "top-level service-account command unexpectedly parsed: {command}"
+            );
+        }
     }
 
     #[test]

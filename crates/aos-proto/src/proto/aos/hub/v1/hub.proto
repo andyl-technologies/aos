@@ -2583,12 +2583,30 @@ service IdentityService {
   // Describe the authenticated principal, its live grants, and this access
   // token's authority. The response contains no token secret.
   rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
-  // Plan creation of an org-owned non-human automation principal.
-  rpc PlanCreateAutomationPrincipal(PlanCreateAutomationPrincipalRequest)
+  // List an organization's service accounts.
+  rpc ListServiceAccounts(ListServiceAccountsRequest)
+      returns (ListServiceAccountsResponse);
+  // Inspect one organization-owned service account.
+  rpc GetServiceAccount(GetServiceAccountRequest)
+      returns (ServiceAccountResponse);
+  // Plan creation of an org-owned service account.
+  rpc PlanCreateServiceAccount(PlanCreateServiceAccountRequest)
       returns (TopologyPlanResponse);
-  // Apply one reviewed automation-principal plan exactly once.
-  rpc CreateAutomationPrincipal(ApplyTopologyPlanRequest)
-      returns (AutomationPrincipalResponse);
+  // Apply one reviewed service-account creation plan exactly once.
+  rpc CreateServiceAccount(ApplyTopologyPlanRequest)
+      returns (ServiceAccountResponse);
+  // Plan renaming one service account without changing its stable identity.
+  rpc PlanUpdateServiceAccount(PlanUpdateServiceAccountRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed service-account update plan exactly once.
+  rpc UpdateServiceAccount(ApplyTopologyPlanRequest)
+      returns (ServiceAccountResponse);
+  // Plan deletion of one service account and its direct memberships.
+  rpc PlanDeleteServiceAccount(PlanDeleteServiceAccountRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed service-account deletion plan exactly once.
+  rpc DeleteServiceAccount(ApplyTopologyPlanRequest)
+      returns (DeleteTopologyResourceResponse);
   // Read one direct membership grant and its exact resource version.
   rpc GetMembership(GetMembershipRequest) returns (MembershipResponse);
   // Plan an exact membership replacement. An empty role removes the grant.
@@ -2638,7 +2656,23 @@ message WhoAmIResponse {
   int64 access_expires_at = 7;
 }
 
-message PlanCreateAutomationPrincipalRequest {
+message ListServiceAccountsRequest {
+  string org_slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListServiceAccountsResponse {
+  repeated ServiceAccount service_accounts = 1;
+  string next_page_token = 2;
+}
+
+message GetServiceAccountRequest {
+  string org_slug = 1;
+  string name = 2;
+}
+
+message PlanCreateServiceAccountRequest {
   // Owning org slug.
   string org_slug = 1;
   // Service-account name, unique within the org.
@@ -2652,10 +2686,27 @@ message ServiceAccount {
   int64 id = 1;
   string org_slug = 2;
   string name = 3;
+  int64 created_at = 4;
+  string resource_version = 5;
 }
 
-message AutomationPrincipalResponse {
+message ServiceAccountResponse {
   ServiceAccount service_account = 1;
+}
+
+message PlanUpdateServiceAccountRequest {
+  string org_slug = 1;
+  string name = 2;
+  string new_name = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+}
+
+message PlanDeleteServiceAccountRequest {
+  string org_slug = 1;
+  string name = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
 }
 
 message GetMembershipRequest {

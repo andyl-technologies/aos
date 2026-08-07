@@ -2890,18 +2890,66 @@
   },
   {
     "service": "IdentityService",
-    "method": "PlanCreateAutomationPrincipal",
+    "method": "ListServiceAccounts",
     "exposure": "public",
-    "durability": "durable",
-    "class": { "class": "plan", "pair": "create_automation_principal" },
+    "durability": "read_only",
+    "class": { "class": "read" },
     "external_effects": false
   },
   {
     "service": "IdentityService",
-    "method": "CreateAutomationPrincipal",
+    "method": "GetServiceAccount",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "PlanCreateServiceAccount",
     "exposure": "public",
     "durability": "durable",
-    "class": { "class": "apply", "pair": "create_automation_principal", "outcome": "immediate" },
+    "class": { "class": "plan", "pair": "create_service_account" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "CreateServiceAccount",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "create_service_account", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "PlanUpdateServiceAccount",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "update_service_account" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "UpdateServiceAccount",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "update_service_account", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "PlanDeleteServiceAccount",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "delete_service_account" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "DeleteServiceAccount",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "delete_service_account", "outcome": "immediate" },
     "external_effects": false
   },
   {
