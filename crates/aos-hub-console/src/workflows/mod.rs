@@ -23,6 +23,7 @@ mod organization_identity;
 mod organization_sso;
 mod placement_policies;
 mod placements;
+mod registry_images;
 mod registry_publication;
 mod resources;
 mod storage_gateways;
