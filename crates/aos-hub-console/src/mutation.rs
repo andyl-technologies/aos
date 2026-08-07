@@ -148,6 +148,39 @@ impl PendingPlan {
             confirmation_hash: self.plan.confirmation_hash.clone(),
         }
     }
+
+    /// Builds a network-boundary identity apply envelope for this exact plan.
+    pub(crate) fn network_boundary_apply(
+        &self,
+    ) -> aos_proto_types::ApplyNetworkBoundaryMutationRequest {
+        aos_proto_types::ApplyNetworkBoundaryMutationRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds a network-boundary revision apply envelope for this exact plan.
+    pub(crate) fn network_boundary_revision_apply(
+        &self,
+    ) -> aos_proto_types::ApplyNetworkBoundaryRevisionRequest {
+        aos_proto_types::ApplyNetworkBoundaryRevisionRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds a boundary lifecycle apply envelope for this exact plan.
+    pub(crate) fn network_boundary_lifecycle_apply(
+        &self,
+    ) -> aos_proto_types::ApplyNetworkBoundaryLifecycleRequest {
+        aos_proto_types::ApplyNetworkBoundaryLifecycleRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
 }
 
 static IDEMPOTENCY_SEQUENCE: AtomicU32 = AtomicU32::new(0);
