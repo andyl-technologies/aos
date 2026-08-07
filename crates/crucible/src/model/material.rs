@@ -205,13 +205,20 @@ pub(super) fn parse_optional_blob_ref(
         .transpose()
 }
 
-pub(super) fn parse_content_hash_ref(value: &str) -> Result<ContentHash, EngineError> {
+pub(super) fn parse_content_hash_ref(
+    field: &'static str,
+    value: &str,
+) -> Result<ContentHash, EngineError> {
     let Some(hex) = value.strip_prefix("blake3:") else {
-        return Err(scenario_serialization_error(
-            "content hash reference must start with blake3:",
-        ));
+        return Err(scenario_serialization_error(format!(
+            "{field} content hash reference must start with blake3:"
+        )));
     };
-    parse_content_hash_hex(hex)
+    parse_content_hash_hex(hex).map_err(|error| {
+        scenario_serialization_error(format!(
+            "{field} content hash reference is invalid: {error}"
+        ))
+    })
 }
 
 pub(super) fn parse_content_hash_hex(hex: &str) -> Result<ContentHash, EngineError> {

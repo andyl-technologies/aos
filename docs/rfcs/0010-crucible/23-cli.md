@@ -1132,7 +1132,9 @@ branch on the verdict without parsing output:
   [CLI-16]; spec §6.
   Completed under `checks.crucible.phase5.cliRunWorkflow`: `run` parses canonical
   scenario files and `blake3:` store references, validates malformed scenarios
-  as exit 5, starts lifecycle-owned sessions through the API, drives local
+  as exit 5 with field-specific malformed-ID errors and serialized-versus-
+  recomputed values for stale derived IDs, starts lifecycle-owned sessions
+  through the API, drives local
   in-process-double and `--daemon` HTTP/2 RPC sessions through the same typed
   control-client workflow, streams non-empty scheduler event/state frames,
   publishes a remote interactive session's canonical `id:epoch:seed` reference

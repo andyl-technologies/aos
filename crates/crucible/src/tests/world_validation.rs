@@ -1106,6 +1106,11 @@ fn serializable_scenario_form_round_trips_and_rejects_host_paths() {
         &format!("id = \"blake3:{}\"", wrong_hash.to_hex()),
         1,
     );
+    let malformed_id_toml = toml.replacen(
+        &format!("id = \"blake3:{}\"", form.id().to_hex()),
+        "id = \"operator-supplied-id\"",
+        1,
+    );
     let empty_world = World::from_nodes_and_links(Vec::new(), Vec::new())
         .unwrap_or_else(|error| panic!("empty world should serialize: {error}"));
     let empty_world_toml = empty_world
@@ -1181,6 +1186,15 @@ fn serializable_scenario_form_round_trips_and_rejects_host_paths() {
         Err(EngineError::ScenarioSerializedIdMismatch { component, .. })
             if component == "scenario"
     ));
+    let wrong_id_error = ScenarioDefForm::from_canonical_toml(&wrong_id_toml)
+        .expect_err("wrong scenario id must be rejected")
+        .to_string();
+    assert!(wrong_id_error.contains(&format!("blake3:{}", wrong_hash.to_hex())));
+    assert!(wrong_id_error.contains(&format!("blake3:{}", form.id().to_hex())));
+    let malformed_id_error = ScenarioDefForm::from_canonical_toml(&malformed_id_toml)
+        .expect_err("non-content-addressed scenario id must be rejected")
+        .to_string();
+    assert!(malformed_id_error.contains("scenario.id content hash reference"));
     assert!(matches!(
         World::from_canonical_toml(&wrong_empty_world_toml),
         Err(EngineError::ScenarioSerializedIdMismatch { component, .. })
