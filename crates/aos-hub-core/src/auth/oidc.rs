@@ -956,6 +956,8 @@ mod tests {
             allow_jit: true,
             enforce_sso: false,
             default_role: "viewer".into(),
+            resource_version: 1,
+            mutation_plan_id: None,
         }
     }
 

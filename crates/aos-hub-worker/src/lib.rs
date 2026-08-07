@@ -549,7 +549,7 @@ mod entry {
                     &manifest.to_string(),
                     &public_key.to_string(),
                     aos_hub_core::clock::now_unix_secs(),
-                    route_http,
+                    Arc::clone(&route_http),
                 )
                 .map_err(|error| worker::Error::RustError(format!("route publication manifest: {error:#}")))?;
                 route_adapters = route_adapters.with_direct(Arc::new(direct));
@@ -632,6 +632,12 @@ mod entry {
                 Arc::clone(&egress),
             )))
             .with_domain_probe_terminator(domain_probe_terminator)
+            .with_identity_domain_verifier(Arc::new(
+                aos_hub_core::topology_probe::DnsJsonIdentityDomainVerifier::new(
+                    Arc::clone(&route_http),
+                    dns_endpoint.to_string(),
+                ),
+            ))
             .with_route_reservation_keyring(route_reservation_keyring)
             // RFC-0004 ch.14 Phase C: read-through cache hot point-key state
             // (sessions/tokens/config/routing) off the relational read path via Workers

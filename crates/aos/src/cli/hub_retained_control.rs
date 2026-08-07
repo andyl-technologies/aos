@@ -362,6 +362,166 @@ pub enum HubInvitationCmd {
     },
 }
 
+/// Organization OIDC identity-provider commands.
+#[derive(Subcommand)]
+pub enum HubIdentityProviderCmd {
+    /// Show the redacted identity-provider configuration.
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+    },
+    /// Create or replace the identity-provider configuration.
+    Set {
+        #[command(subcommand)]
+        command: HubIdentityProviderSetCmd,
+    },
+    /// Remove the identity-provider configuration.
+    Remove {
+        #[command(subcommand)]
+        command: HubIdentityProviderRemoveCmd,
+    },
+}
+
+/// Explicit plan/apply flow for identity-provider replacement.
+#[derive(Subcommand)]
+pub enum HubIdentityProviderSetCmd {
+    /// Create and print an immutable replacement plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        #[arg(long)]
+        issuer: String,
+        #[arg(long)]
+        authorization_endpoint: String,
+        #[arg(long)]
+        token_endpoint: String,
+        #[arg(long)]
+        jwks_uri: String,
+        #[arg(long)]
+        client_id: String,
+        #[arg(long, env = "AOS_OIDC_CLIENT_SECRET", hide_env_values = true)]
+        client_secret: Option<String>,
+        #[arg(long, conflicts_with = "client_secret")]
+        clear_client_secret: bool,
+        #[arg(long, default_value = "openid email profile")]
+        scopes: String,
+        #[arg(long)]
+        groups_claim: Option<String>,
+        #[arg(long, default_value = "{}")]
+        role_map_json: String,
+        #[arg(long)]
+        allow_jit: bool,
+        #[arg(long)]
+        enforce_sso: bool,
+        #[arg(long, default_value = "viewer")]
+        default_role: String,
+        #[arg(long, value_name = "VERSION_OR_ABSENT")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed replacement plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+/// Explicit plan/apply flow for identity-provider removal.
+#[derive(Subcommand)]
+pub enum HubIdentityProviderRemoveCmd {
+    /// Create and print an immutable removal plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        #[arg(long, value_name = "VERSION")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed removal plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+/// Organization email-domain inventory and lifecycle commands.
+#[derive(Subcommand)]
+pub enum HubOrganizationDomainCmd {
+    /// List claimed domains for an organization.
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Show one claimed domain and its TXT challenge.
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        domain: String,
+    },
+    /// Claim a domain or rotate its challenge.
+    Claim {
+        #[command(subcommand)]
+        command: HubOrganizationDomainClaimCmd,
+    },
+    /// Verify a domain's reviewed TXT challenge.
+    Verify {
+        #[command(subcommand)]
+        command: HubOrganizationDomainVerifyCmd,
+    },
+    /// Release a claimed domain.
+    Release {
+        #[command(subcommand)]
+        command: HubOrganizationDomainReleaseCmd,
+    },
+}
+
+/// Explicit plan/apply flow for claiming an organization domain.
+#[derive(Subcommand)]
+pub enum HubOrganizationDomainClaimCmd {
+    /// Create and print an immutable claim plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        domain: String,
+        #[arg(long, value_name = "VERSION_OR_ABSENT")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed claim plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+/// Explicit plan/apply flow for verifying an organization domain.
+#[derive(Subcommand)]
+pub enum HubOrganizationDomainVerifyCmd {
+    /// Create and print an immutable DNS verification plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        domain: String,
+        #[arg(long, value_name = "VERSION")]
+        if_version: String,
+    },
+    /// Resolve DNS and apply an exact reviewed verification plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+/// Explicit plan/apply flow for releasing an organization domain.
+#[derive(Subcommand)]
+pub enum HubOrganizationDomainReleaseCmd {
+    /// Create and print an immutable release plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        domain: String,
+        #[arg(long, value_name = "VERSION")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed release plan.
+    Apply(HubReviewedApplyArgs),
+}
+
 #[derive(Subcommand)]
 pub enum HubInvitationCreateCmd {
     /// Create and print an immutable invitation plan.

@@ -56,6 +56,19 @@ Hub then consumes the invitation and creates the membership atomically. Member
 managers can cancel a pending invitation from the same page. Accepted,
 cancelled, and expired invitations remain visible as history.
 
+The organization **SSO** page manages one OIDC identity provider and its email
+domains. Provider reads are redacted to a “client secret configured” state.
+Saving or removing a provider first shows an immutable effects review and then
+applies the exact reviewed revision. A blank client-secret field preserves the
+current credential; the explicit clear checkbox removes it.
+
+Claiming a domain returns the TXT value to publish. **Verify DNS** also uses a
+reviewed plan and performs the DNS lookup in the Hub; it cannot mark a domain
+verified merely because an administrator clicked the button. Only a verified
+domain participates in email-first SSO routing. Domain release is separately
+reviewed and stops that routing. Rotating a challenge returns the domain to
+pending state until the new value is published and verified.
+
 ## Browse a binary cache
 
 Cache slugs share the top-level URL namespace with registries:

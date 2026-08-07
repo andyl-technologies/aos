@@ -2282,6 +2282,71 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
+        "/aos.hub.v1.IdentityService/GetIdentityProvider",
+        get_identity_provider
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanSetIdentityProvider",
+        plan_set_identity_provider
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/SetIdentityProvider",
+        apply_set_identity_provider
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanRemoveIdentityProvider",
+        plan_remove_identity_provider
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/RemoveIdentityProvider",
+        apply_remove_identity_provider
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/ListOrganizationDomains",
+        list_organization_domains
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/GetOrganizationDomain",
+        get_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanClaimOrganizationDomain",
+        plan_claim_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/ClaimOrganizationDomain",
+        apply_claim_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanVerifyOrganizationDomain",
+        plan_verify_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/VerifyOrganizationDomain",
+        apply_verify_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanReleaseOrganizationDomain",
+        plan_release_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/ReleaseOrganizationDomain",
+        apply_release_organization_domain
+    );
+    r = rpc_route!(
+        r,
         "/aos.hub.v1.IdentityService/PlanIssueAccessToken",
         plan_issue_access_token
     );

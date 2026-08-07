@@ -8652,13 +8652,6 @@ pub(crate) async fn org_sso(
     render_org_sso(&deps, &session, &org_slug, None, started).await
 }
 
-/// Whether `session` may verify captured domains: an *instance* admin only.
-async fn can_verify_domains(deps: &ConsoleDeps, session: &Session) -> bool {
-    session
-        .allows(&deps.db, Permission::IamAdmin, &Scope::root())
-        .await
-}
-
 /// Render the org SSO page.
 async fn render_org_sso(
     deps: &ConsoleDeps,
@@ -8678,19 +8671,34 @@ async fn render_org_sso(
         Ok(permissions) => permissions,
         Err(error) => return internal(error),
     };
+    let bearer = match session.topology_bearer(deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
     let result = async {
         let Some(org) = deps.db.org_by_slug(org_slug).await? else {
             return Ok(None);
         };
-        let idp = deps.db.idp_config(org.id).await?;
-        let domains = deps.db.list_org_domains(org.id).await?;
+        let idp = match deps
+            .topology
+            .identity_provider(&bearer, org_slug.to_string())
+            .await
+        {
+            Ok(response) => response.identity_provider,
+            Err(crate::service::RpcError::NotFound(_)) => None,
+            Err(error) => return Err(anyhow::anyhow!(error.to_string())),
+        };
+        let domains = deps
+            .topology
+            .organization_domains(&bearer, org_slug.to_string())
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         Ok::<_, anyhow::Error>(Some(console::org_sso_page(
             &session.email,
             &org,
             &session.csrf(),
             idp.as_ref(),
             &domains,
-            can_verify_domains(deps, session).await,
             notice,
             &navigation,
             started,
@@ -8704,7 +8712,7 @@ async fn render_org_sso(
     }
 }
 
-/// `POST /-/org/{org}/sso` — configure the IdP or manage captured domains.
+/// `POST /-/org/{org}/sso` — review or apply an IdP/domain mutation.
 pub(crate) async fn org_sso_action(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -8713,272 +8721,251 @@ pub(crate) async fn org_sso_action(
     body: axum::body::Bytes,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
+        Ok(session) => session,
+        Err(response) => return *response,
     };
     let fields = parse_form(&String::from_utf8_lossy(&body));
-    let field = |k: &str| fields.get(k).map(String::as_str).unwrap_or("");
-
-    if let Err(resp) = check_csrf(&session, field("csrf")) {
-        return *resp;
+    let field = |key: &str| fields.get(key).map(String::as_str).unwrap_or("");
+    if let Err(response) = check_csrf(&session, field("csrf")) {
+        return *response;
     }
-    if let Err(resp) = require_sudo(&session, &headers) {
-        return *resp;
+    if let Err(response) = require_sudo(&session, &headers) {
+        return *response;
     }
     let scope = organization_scope(&deps.db, &org_slug).await;
     if !session.allows(&deps.db, Permission::IamAdmin, &scope).await {
-        if session.allows(&deps.db, Permission::Read, &scope).await {
-            return (StatusCode::FORBIDDEN, "iam.admin required").into_response();
-        }
-        return StatusCode::NOT_FOUND.into_response();
+        return (StatusCode::FORBIDDEN, "iam.admin required").into_response();
     }
-    let Some(org) = (match deps.db.org_by_slug(&org_slug).await {
-        Ok(org) => org,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
     };
-
-    match field("op") {
-        "set-idp" => {
-            let role_map = field("role_map").trim();
-            let role_map = if role_map.is_empty() { "{}" } else { role_map };
-            if serde_json::from_str::<serde_json::Value>(role_map).is_err() {
-                return (StatusCode::BAD_REQUEST, "role map must be JSON").into_response();
-            }
-            let default_role = field("default_role").trim();
-            if crate::domain::Role::parse(default_role).is_none() {
-                return (StatusCode::BAD_REQUEST, "invalid default role").into_response();
-            }
-            let existing = match deps.db.idp_config(org.id).await {
-                Ok(cfg) => cfg,
-                Err(err) => return internal(err),
-            };
-            let client_secret_enc = {
-                let provided = field("client_secret");
-                if provided.is_empty() {
-                    existing.and_then(|c| c.client_secret_enc)
-                } else {
-                    match deps.sealer.seal(provided) {
-                        Ok(sealed) => Some(sealed),
-                        Err(err) => return internal(err),
-                    }
-                }
-            };
-            let groups_claim = match field("groups_claim").trim() {
-                "" => None,
-                g => Some(g.to_string()),
-            };
-            let config = crate::db::IdpConfigRecord {
-                org_id: org.id,
-                issuer: field("issuer").trim().to_string(),
-                authorization_endpoint: field("auth_url").trim().to_string(),
-                token_endpoint: field("token_url").trim().to_string(),
-                jwks_uri: field("jwks_uri").trim().to_string(),
-                client_id: field("client_id").trim().to_string(),
-                client_secret_enc,
-                scopes: match field("scopes").trim() {
-                    "" => "openid email profile".to_string(),
-                    s => s.to_string(),
-                },
-                groups_claim,
-                role_map_json: role_map.to_string(),
-                allow_jit: field("allow_jit") == "1",
-                enforce_sso: field("enforce_sso") == "1",
-                default_role: default_role.to_string(),
-            };
-            if config.issuer.is_empty() || config.client_id.is_empty() {
-                return (StatusCode::BAD_REQUEST, "issuer and client id are required")
-                    .into_response();
-            }
-            if let Err(err) = deps.db.upsert_idp_config(&config).await {
-                return internal(err);
-            }
-            if let Err(err) = deps
-                .db
-                .record_audit(
-                    "user",
-                    Some(session.auth.user_id),
-                    &session.email,
-                    "idp.set",
-                    &org.stable_id,
-                    None,
-                    None,
-                    None,
-                    Some(&config.issuer),
+    let operation = field("op");
+    let plan_id = field("plan_id");
+    if !plan_id.is_empty() {
+        let confirmation_hash = field("confirmation_hash").to_string();
+        let idempotency_key = console_apply_idempotency_key(plan_id);
+        let result = match operation {
+            "apply-set-idp" => deps
+                .topology
+                .apply_identity_provider(
+                    &bearer,
+                    plan_id.to_string(),
+                    confirmation_hash,
+                    idempotency_key,
                 )
                 .await
-            {
-                return internal(err);
+                .map(|_| "Identity provider saved.".to_string()),
+            "apply-remove-idp" => deps
+                .topology
+                .apply_identity_provider_removal(
+                    &bearer,
+                    plan_id.to_string(),
+                    confirmation_hash,
+                    idempotency_key,
+                )
+                .await
+                .map(|_| "Identity provider removed.".to_string()),
+            "apply-add-domain" => deps
+                .topology
+                .apply_organization_domain_claim(
+                    &bearer,
+                    plan_id.to_string(),
+                    confirmation_hash,
+                    idempotency_key,
+                )
+                .await
+                .map(|response| match response.domain {
+                    Some(domain) => format!(
+                        "Claimed {}. Publish this TXT record: {}",
+                        domain.domain, domain.txt_challenge
+                    ),
+                    None => "Domain claimed.".to_string(),
+                }),
+            "apply-verify-domain" => deps
+                .topology
+                .apply_organization_domain_verification(
+                    &bearer,
+                    plan_id.to_string(),
+                    confirmation_hash,
+                    idempotency_key,
+                )
+                .await
+                .map(|response| match response.domain {
+                    Some(domain) => format!("Verified {}.", domain.domain),
+                    None => "Domain verified.".to_string(),
+                }),
+            "apply-remove-domain" => deps
+                .topology
+                .apply_organization_domain_release(
+                    &bearer,
+                    plan_id.to_string(),
+                    confirmation_hash,
+                    idempotency_key,
+                )
+                .await
+                .map(|_| "Domain released.".to_string()),
+            _ => return (StatusCode::BAD_REQUEST, "unknown reviewed operation").into_response(),
+        };
+        return match result {
+            Ok(notice) => render_org_sso(&deps, &session, &org_slug, Some(&notice), started).await,
+            Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        };
+    }
+
+    let current_idp = match deps
+        .topology
+        .identity_provider(&bearer, org_slug.clone())
+        .await
+    {
+        Ok(response) => response.identity_provider,
+        Err(crate::service::RpcError::NotFound(_)) => None,
+        Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    };
+    let domains = match deps
+        .topology
+        .organization_domains(&bearer, org_slug.clone())
+        .await
+    {
+        Ok(domains) => domains,
+        Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    };
+    let idempotency_key = format!("console-sso-plan-{}", uuid::Uuid::new_v4());
+    let planned = match operation {
+        "set-idp" => {
+            let client_secret = field("client_secret").to_string();
+            let clear_client_secret = field("clear_client_secret") == "1";
+            if clear_client_secret && !client_secret.is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "enter a replacement client secret or select clear, not both",
+                )
+                    .into_response();
             }
-            render_org_sso(
-                &deps,
-                &session,
-                &org_slug,
-                Some("Identity provider saved."),
-                started,
-            )
-            .await
+            deps.topology
+                .plan_identity_provider(
+                    &bearer,
+                    aos_proto_types::PlanSetIdentityProviderRequest {
+                        org_slug: org_slug.clone(),
+                        issuer: field("issuer").trim().to_string(),
+                        authorization_endpoint: field("auth_url").trim().to_string(),
+                        token_endpoint: field("token_url").trim().to_string(),
+                        jwks_uri: field("jwks_uri").trim().to_string(),
+                        client_id: field("client_id").trim().to_string(),
+                        replace_client_secret: clear_client_secret || !client_secret.is_empty(),
+                        client_secret,
+                        scopes: field("scopes").trim().to_string(),
+                        groups_claim: field("groups_claim").trim().to_string(),
+                        role_map_json: field("role_map").trim().to_string(),
+                        allow_jit: field("allow_jit") == "1",
+                        enforce_sso: field("enforce_sso") == "1",
+                        default_role: field("default_role").trim().to_string(),
+                        expected_resource_version: current_idp.as_ref().map_or_else(
+                            || "absent".to_string(),
+                            |idp| idp.resource_version.clone(),
+                        ),
+                        idempotency_key,
+                    },
+                )
+                .await
+                .map(|plan| ("Save identity provider", "apply-set-idp", plan))
         }
         "remove-idp" => {
-            if let Err(err) = deps.db.delete_idp_config(org.id).await {
-                return internal(err);
-            }
-            if let Err(err) = deps
-                .db
-                .record_audit(
-                    "user",
-                    Some(session.auth.user_id),
-                    &session.email,
-                    "idp.remove",
-                    &org.stable_id,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await
-            {
-                return internal(err);
-            }
-            render_org_sso(
-                &deps,
-                &session,
-                &org_slug,
-                Some("Identity provider removed."),
-                started,
-            )
-            .await
-        }
-        "add-domain" => {
-            let domain = field("domain").trim().to_lowercase();
-            if domain.is_empty() || !domain.contains('.') {
-                return (StatusCode::BAD_REQUEST, "a valid domain is required").into_response();
-            }
-            match deps.db.org_domain(&domain).await {
-                Ok(Some(existing)) if existing.org_id != org.id => {
-                    return (
-                        StatusCode::CONFLICT,
-                        format!("{domain} is already claimed by another organization"),
-                    )
-                        .into_response();
-                }
-                Ok(_) => {}
-                Err(err) => return internal(err),
-            }
-            let challenge = match deps.db.add_org_domain(org.id, &domain).await {
-                Ok(c) => c,
-                Err(err) => return internal(err),
+            let Some(idp) = current_idp else {
+                return StatusCode::NOT_FOUND.into_response();
             };
-            if let Err(err) = deps
-                .db
-                .record_audit(
-                    "user",
-                    Some(session.auth.user_id),
-                    &session.email,
-                    "domain.capture",
-                    &org.stable_id,
-                    None,
-                    None,
-                    None,
-                    Some(&domain),
+            deps.topology
+                .plan_identity_provider_removal(
+                    &bearer,
+                    aos_proto_types::PlanRemoveIdentityProviderRequest {
+                        org_slug: org_slug.clone(),
+                        expected_resource_version: idp.resource_version,
+                        idempotency_key,
+                    },
                 )
                 .await
-            {
-                return internal(err);
-            }
-            render_org_sso(
-                &deps,
-                &session,
-                &org_slug,
-                Some(&format!(
-                    "Captured {domain} (unverified). Publish this TXT record: {challenge}"
-                )),
-                started,
+                .map(|plan| ("Remove identity provider", "apply-remove-idp", plan))
+        }
+        "add-domain" => deps
+            .topology
+            .plan_organization_domain_claim(
+                &bearer,
+                aos_proto_types::PlanClaimOrganizationDomainRequest {
+                    org_slug: org_slug.clone(),
+                    domain: field("domain").trim().to_string(),
+                    expected_resource_version: "absent".to_string(),
+                    idempotency_key,
+                },
             )
             .await
-        }
-        "verify-domain" => {
-            if !can_verify_domains(&deps, &session).await {
-                return (
-                    StatusCode::FORBIDDEN,
-                    "domain verification is an instance-operator action",
-                )
-                    .into_response();
-            }
-            let domain = field("domain").trim().to_lowercase();
-            match deps.db.org_domain(&domain).await {
-                Ok(Some(d)) if d.org_id == org.id => {}
-                Ok(_) => {
-                    return (StatusCode::NOT_FOUND, "domain not claimed by this org")
-                        .into_response()
-                }
-                Err(err) => return internal(err),
-            }
-            if let Err(err) = deps.db.verify_org_domain(&domain).await {
-                return internal(err);
-            }
-            if let Err(err) = deps
-                .db
-                .record_audit(
-                    "user",
-                    Some(session.auth.user_id),
-                    &session.email,
-                    "domain.verify",
-                    &org.stable_id,
-                    None,
-                    None,
-                    None,
-                    Some(&domain),
+            .map(|plan| ("Claim email domain", "apply-add-domain", plan)),
+        "rotate-domain" => {
+            let requested = field("domain").trim();
+            let Some(domain) = domains.iter().find(|domain| domain.domain == requested) else {
+                return StatusCode::NOT_FOUND.into_response();
+            };
+            deps.topology
+                .plan_organization_domain_claim(
+                    &bearer,
+                    aos_proto_types::PlanClaimOrganizationDomainRequest {
+                        org_slug: org_slug.clone(),
+                        domain: domain.domain.clone(),
+                        expected_resource_version: domain.resource_version.clone(),
+                        idempotency_key,
+                    },
                 )
                 .await
-            {
-                return internal(err);
-            }
-            render_org_sso(
-                &deps,
-                &session,
-                &org_slug,
-                Some(&format!("Verified {domain}.")),
-                started,
-            )
-            .await
+                .map(|plan| ("Rotate domain challenge", "apply-add-domain", plan))
         }
-        "remove-domain" => {
-            let domain = field("domain").trim().to_lowercase();
-            if let Err(err) = deps.db.delete_org_domain(org.id, &domain).await {
-                return internal(err);
+        "verify-domain" | "remove-domain" => {
+            let requested = field("domain").trim();
+            let Some(domain) = domains.iter().find(|domain| domain.domain == requested) else {
+                return StatusCode::NOT_FOUND.into_response();
+            };
+            if operation == "verify-domain" {
+                deps.topology
+                    .plan_organization_domain_verification(
+                        &bearer,
+                        aos_proto_types::PlanVerifyOrganizationDomainRequest {
+                            org_slug: org_slug.clone(),
+                            domain: domain.domain.clone(),
+                            expected_resource_version: domain.resource_version.clone(),
+                            idempotency_key,
+                        },
+                    )
+                    .await
+                    .map(|plan| ("Verify email domain", "apply-verify-domain", plan))
+            } else {
+                deps.topology
+                    .plan_organization_domain_release(
+                        &bearer,
+                        aos_proto_types::PlanReleaseOrganizationDomainRequest {
+                            org_slug: org_slug.clone(),
+                            domain: domain.domain.clone(),
+                            expected_resource_version: domain.resource_version.clone(),
+                            idempotency_key,
+                        },
+                    )
+                    .await
+                    .map(|plan| ("Release email domain", "apply-remove-domain", plan))
             }
-            if let Err(err) = deps
-                .db
-                .record_audit(
-                    "user",
-                    Some(session.auth.user_id),
-                    &session.email,
-                    "domain.remove",
-                    &org.stable_id,
-                    None,
-                    None,
-                    None,
-                    Some(&domain),
-                )
-                .await
-            {
-                return internal(err);
-            }
-            render_org_sso(
-                &deps,
-                &session,
-                &org_slug,
-                Some(&format!("Removed {domain}.")),
-                started,
-            )
-            .await
         }
-        _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
+        _ => return (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
+    };
+    match planned {
+        Ok((title, apply_operation, plan)) => Html(console::reviewed_operation_plan_page(
+            &session.email,
+            title,
+            &format!("/-/org/{org_slug}/sso"),
+            &session.csrf(),
+            &plan,
+            apply_operation,
+            started,
+        ))
+        .into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
     }
 }
-
 // -- registry delivery and upstream mirroring -------------------------------
 
 /// Shows simultaneous client delivery routes.

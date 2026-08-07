@@ -15,8 +15,8 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 use super::{
-    HubAccessTokenCmd, HubInstanceSettingsSectionCmd, HubInvitationCmd, HubOrgMemberCmd,
-    HubServiceAccountCmd, HubSigningKeyCmd,
+    HubAccessTokenCmd, HubIdentityProviderCmd, HubInstanceSettingsSectionCmd, HubInvitationCmd,
+    HubOrgMemberCmd, HubOrganizationDomainCmd, HubServiceAccountCmd, HubSigningKeyCmd,
 };
 
 #[derive(Args, Debug, Clone)]
@@ -711,6 +711,16 @@ pub enum HubOrgCmd {
     Invitation {
         #[command(subcommand)]
         command: HubInvitationCmd,
+    },
+    /// Manage the organization OIDC identity provider
+    IdentityProvider {
+        #[command(subcommand)]
+        command: HubIdentityProviderCmd,
+    },
+    /// Manage organization email-domain claims
+    Domain {
+        #[command(subcommand)]
+        command: HubOrganizationDomainCmd,
     },
 }
 
@@ -2722,10 +2732,11 @@ mod tests {
 
     use crate::cli::{
         Cli, Commands, HubAccessTokenCmd, HubAccessTokenIssueCmd, HubCacheCmd,
-        HubCacheRetentionCmd, HubCmd, HubInvitationCmd, HubInvitationCreateCmd,
-        HubNetworkBoundaryCmd, HubOrgCmd, HubPlacementCmd, HubPlacementDrainCmd,
-        HubRegistryCacheStackCmd, HubRegistryCmd, HubRouteCmd, HubServiceAccountCmd,
-        HubServiceAccountUpdateCmd, HubStorageBindingCmd,
+        HubCacheRetentionCmd, HubCmd, HubIdentityProviderCmd, HubIdentityProviderSetCmd,
+        HubInvitationCmd, HubInvitationCreateCmd, HubNetworkBoundaryCmd, HubOrgCmd,
+        HubOrganizationDomainCmd, HubOrganizationDomainVerifyCmd, HubPlacementCmd,
+        HubPlacementDrainCmd, HubRegistryCacheStackCmd, HubRegistryCmd, HubRouteCmd,
+        HubServiceAccountCmd, HubServiceAccountUpdateCmd, HubStorageBindingCmd,
     };
 
     fn parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
@@ -3315,6 +3326,77 @@ mod tests {
             }
         ));
         assert!(parse_cli(["aos", "hub", "invitation", "list"]).is_err());
+    }
+
+    #[test]
+    fn organization_sso_has_separate_provider_and_domain_resources() {
+        let provider = parse_cli([
+            "aos",
+            "hub",
+            "org",
+            "identity-provider",
+            "set",
+            "plan",
+            "andyl",
+            "--issuer",
+            "https://idp.example.test",
+            "--authorization-endpoint",
+            "https://idp.example.test/authorize",
+            "--token-endpoint",
+            "https://idp.example.test/token",
+            "--jwks-uri",
+            "https://idp.example.test/jwks",
+            "--client-id",
+            "hub",
+            "--if-version",
+            "absent",
+            "--idempotency-key",
+            "plan-idp",
+        ])
+        .unwrap();
+        assert!(matches!(
+            provider.command,
+            Commands::Hub {
+                command: HubCmd::Org {
+                    command: HubOrgCmd::IdentityProvider {
+                        command: HubIdentityProviderCmd::Set {
+                            command: HubIdentityProviderSetCmd::Plan { .. }
+                        }
+                    },
+                    ..
+                }
+            }
+        ));
+
+        let domain = parse_cli([
+            "aos",
+            "hub",
+            "org",
+            "domain",
+            "verify",
+            "plan",
+            "andyl",
+            "login.example.test",
+            "--if-version",
+            "1",
+            "--idempotency-key",
+            "plan-domain-verify",
+        ])
+        .unwrap();
+        assert!(matches!(
+            domain.command,
+            Commands::Hub {
+                command: HubCmd::Org {
+                    command: HubOrgCmd::Domain {
+                        command: HubOrganizationDomainCmd::Verify {
+                            command: HubOrganizationDomainVerifyCmd::Plan { .. }
+                        }
+                    },
+                    ..
+                }
+            }
+        ));
+        assert!(parse_cli(["aos", "hub", "org", "sso"]).is_err());
     }
 
     #[test]

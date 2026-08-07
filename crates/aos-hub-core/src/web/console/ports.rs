@@ -408,6 +408,100 @@ pub trait TopologyConsole: BackendBounds {
         request: aos_proto_types::AcceptInvitationRequest,
     ) -> Result<aos_proto_types::AcceptInvitationResponse, crate::service::RpcError>;
 
+    /// Reads the redacted organization identity-provider configuration.
+    async fn identity_provider(
+        &self,
+        bearer: &str,
+        org_slug: String,
+    ) -> Result<aos_proto_types::IdentityProviderResponse, crate::service::RpcError>;
+
+    /// Plans an exact organization identity-provider replacement.
+    async fn plan_identity_provider(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanSetIdentityProviderRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError>;
+
+    /// Applies one reviewed identity-provider replacement.
+    async fn apply_identity_provider(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::IdentityProviderResponse, crate::service::RpcError>;
+
+    /// Plans removal of one exact identity-provider revision.
+    async fn plan_identity_provider_removal(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanRemoveIdentityProviderRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError>;
+
+    /// Applies one reviewed identity-provider removal.
+    async fn apply_identity_provider_removal(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::DeleteTopologyResourceResponse, crate::service::RpcError>;
+
+    /// Lists organization email-domain claims.
+    async fn organization_domains(
+        &self,
+        bearer: &str,
+        org_slug: String,
+    ) -> Result<Vec<aos_proto_types::OrganizationDomain>, crate::service::RpcError>;
+
+    /// Plans a new organization-domain claim or challenge rotation.
+    async fn plan_organization_domain_claim(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanClaimOrganizationDomainRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError>;
+
+    /// Plans verification of one exact organization-domain challenge.
+    async fn plan_organization_domain_verification(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanVerifyOrganizationDomainRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError>;
+
+    /// Plans release of one exact organization-domain claim.
+    async fn plan_organization_domain_release(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanReleaseOrganizationDomainRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError>;
+
+    /// Applies one reviewed organization-domain claim or challenge rotation.
+    async fn apply_organization_domain_claim(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::OrganizationDomainResponse, crate::service::RpcError>;
+
+    /// Applies one reviewed organization-domain DNS verification.
+    async fn apply_organization_domain_verification(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::OrganizationDomainResponse, crate::service::RpcError>;
+
+    /// Applies one reviewed organization-domain release.
+    async fn apply_organization_domain_release(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::DeleteTopologyResourceResponse, crate::service::RpcError>;
+
     /// Reads the full effective instance-settings bundle and exact revision.
     async fn instance_settings(
         &self,
@@ -1015,6 +1109,186 @@ impl TopologyConsole for crate::service::RpcService {
         request: aos_proto_types::AcceptInvitationRequest,
     ) -> Result<aos_proto_types::AcceptInvitationResponse, crate::service::RpcError> {
         crate::service::RpcService::accept_invitation(self, Some(bearer), request).await
+    }
+
+    async fn identity_provider(
+        &self,
+        bearer: &str,
+        org_slug: String,
+    ) -> Result<aos_proto_types::IdentityProviderResponse, crate::service::RpcError> {
+        self.get_identity_provider(
+            Some(bearer),
+            aos_proto_types::GetIdentityProviderRequest { org_slug },
+        )
+        .await
+    }
+
+    async fn plan_identity_provider(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanSetIdentityProviderRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError> {
+        reviewed_plan(
+            self.plan_set_identity_provider(Some(bearer), request)
+                .await?,
+            "identity-provider replacement",
+        )
+    }
+
+    async fn apply_identity_provider(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::IdentityProviderResponse, crate::service::RpcError> {
+        self.apply_set_identity_provider(
+            Some(bearer),
+            aos_proto_types::ApplyTopologyPlanRequest {
+                plan_id,
+                idempotency_key,
+                confirmation_hash,
+            },
+        )
+        .await
+    }
+
+    async fn plan_identity_provider_removal(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanRemoveIdentityProviderRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError> {
+        reviewed_plan(
+            self.plan_remove_identity_provider(Some(bearer), request)
+                .await?,
+            "identity-provider removal",
+        )
+    }
+
+    async fn apply_identity_provider_removal(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::DeleteTopologyResourceResponse, crate::service::RpcError> {
+        self.apply_remove_identity_provider(
+            Some(bearer),
+            aos_proto_types::ApplyTopologyPlanRequest {
+                plan_id,
+                idempotency_key,
+                confirmation_hash,
+            },
+        )
+        .await
+    }
+
+    async fn organization_domains(
+        &self,
+        bearer: &str,
+        org_slug: String,
+    ) -> Result<Vec<aos_proto_types::OrganizationDomain>, crate::service::RpcError> {
+        Ok(self
+            .list_organization_domains(
+                Some(bearer),
+                aos_proto_types::ListOrganizationDomainsRequest {
+                    org_slug,
+                    page_size: 1_000,
+                    page_token: String::new(),
+                },
+            )
+            .await?
+            .domains)
+    }
+
+    async fn plan_organization_domain_claim(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanClaimOrganizationDomainRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError> {
+        reviewed_plan(
+            self.plan_claim_organization_domain(Some(bearer), request)
+                .await?,
+            "organization-domain claim",
+        )
+    }
+
+    async fn plan_organization_domain_verification(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanVerifyOrganizationDomainRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError> {
+        reviewed_plan(
+            self.plan_verify_organization_domain(Some(bearer), request)
+                .await?,
+            "organization-domain verification",
+        )
+    }
+
+    async fn plan_organization_domain_release(
+        &self,
+        bearer: &str,
+        request: aos_proto_types::PlanReleaseOrganizationDomainRequest,
+    ) -> Result<ReviewedPlan, crate::service::RpcError> {
+        reviewed_plan(
+            self.plan_release_organization_domain(Some(bearer), request)
+                .await?,
+            "organization-domain release",
+        )
+    }
+
+    async fn apply_organization_domain_claim(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::OrganizationDomainResponse, crate::service::RpcError> {
+        self.apply_claim_organization_domain(
+            Some(bearer),
+            aos_proto_types::ApplyTopologyPlanRequest {
+                plan_id,
+                idempotency_key,
+                confirmation_hash,
+            },
+        )
+        .await
+    }
+
+    async fn apply_organization_domain_verification(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::OrganizationDomainResponse, crate::service::RpcError> {
+        self.apply_verify_organization_domain(
+            Some(bearer),
+            aos_proto_types::ApplyTopologyPlanRequest {
+                plan_id,
+                idempotency_key,
+                confirmation_hash,
+            },
+        )
+        .await
+    }
+
+    async fn apply_organization_domain_release(
+        &self,
+        bearer: &str,
+        plan_id: String,
+        confirmation_hash: String,
+        idempotency_key: String,
+    ) -> Result<aos_proto_types::DeleteTopologyResourceResponse, crate::service::RpcError> {
+        self.apply_release_organization_domain(
+            Some(bearer),
+            aos_proto_types::ApplyTopologyPlanRequest {
+                plan_id,
+                idempotency_key,
+                confirmation_hash,
+            },
+        )
+        .await
     }
 
     async fn instance_settings(

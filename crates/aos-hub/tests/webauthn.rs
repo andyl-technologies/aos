@@ -441,6 +441,8 @@ async fn enforced_user_passkey_login_refused_to_sso() {
         allow_jit: false,
         enforce_sso: true,
         default_role: "viewer".into(),
+        resource_version: 1,
+        mutation_plan_id: None,
     })
     .await
     .unwrap();
