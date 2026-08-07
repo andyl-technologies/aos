@@ -3,20 +3,6 @@
 use super::*;
 
 #[test]
-pub(super) fn cli_formats_live_session_reference_for_remote_debugging() {
-    let session = crucible_api::SessionRef::new(
-        crucible_api::SessionId::new(7),
-        12,
-        crucible::Seed::from_u64(42),
-    );
-
-    assert_eq!(
-        canonical_debug_session_ref(session),
-        "7:12:2a00000000000000000000000000000000000000000000000000000000000000"
-    );
-}
-
-#[test]
 pub(super) fn cli_search_fuzz_help_surface_lists_wip_flags() {
     let mut command = Cli::command();
     for (name, needles) in [
@@ -2744,5 +2730,7 @@ pub(super) fn cli_verify_workflow_runs_fresh_local_double_reductions() -> Result
 
     Ok(())
 }
+#[path = "replay_artifact/debug_session.rs"]
+mod debug_session;
 #[path = "replay_artifact/run_budget.rs"]
 mod run_budget;

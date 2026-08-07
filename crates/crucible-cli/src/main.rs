@@ -1367,35 +1367,6 @@ trait CliOperationRecorder {
     fn record_state_reference(&mut self, reference: CliStateReferenceKind);
 }
 
-#[derive(Default)]
-struct NullOperationRecorder;
-
-fn execute_cli_dispatch_plan(
-    plan: &CliThinWrapperPlan,
-    recorder: &mut impl CliOperationRecorder,
-) -> Result<(), CliError> {
-    if !plan.proves_t_cli_2() {
-        return Err(CliError::Backend(
-            "CLI invocation violates the RFC-0010 thin-wrapper contract".to_string(),
-        ));
-    }
-
-    for command in &plan.session_commands {
-        recorder.record_session_command(*command);
-    }
-    for call in &plan.api_calls {
-        recorder.record_api_call(*call);
-    }
-    for driver in &plan.delegated_drivers {
-        recorder.record_driver(*driver);
-    }
-    for reference in &plan.state_references {
-        recorder.record_state_reference(*reference);
-    }
-
-    Ok(())
-}
-
 #[path = "cli/artifact.rs"]
 mod cli_artifact;
 #[path = "cli/backend.rs"]
@@ -1435,6 +1406,7 @@ use cli_triage_debug::*;
 use cli_verify_serve::*;
 
 mod null_operation_recorder;
+use null_operation_recorder::*;
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used, clippy::unwrap_used)]
