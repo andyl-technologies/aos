@@ -206,3 +206,27 @@ The remote client includes registry, cache, organization, project, binding,
 webhook, instance, audit, changeset, and upload operations. Authorization is
 checked against current server-side grants for every request; approval never
 preserves authority the approving user could not grant.
+
+Inspect the physical topology without internal storage identifiers:
+
+```sh
+aos hub surface explain cache:acme/builds \
+  --url https://cache.example/nar/object.nar.zst \
+  --path /nar/object.nar.zst \
+  --access-class nix_cache
+aos hub placement presence cache:acme/builds nar/object.nar.zst
+```
+
+Cache placement eviction is distinct from logical GC and always uses the
+stable surface-local placement name and reviewed plan:
+
+```sh
+aos hub placement eviction plan cache:acme/builds primary \
+  --if-version <version> --idempotency-key <key>
+aos hub placement eviction run --plan-id <id> --confirm-hash <hash> \
+  --idempotency-key <key> --yes
+```
+
+Package and registry producer commands use the same cache upload admission and
+multipart API as the Web console; direct storage capabilities never receive a
+Hub bearer.

@@ -421,13 +421,6 @@
          "service" : "StorageBindingService"
       },
       {
-         "method" : "GetInstanceDefaultStorageBinding",
-         "path" : "aos.hub.v1.StorageBindingService/GetInstanceDefaultStorageBinding",
-         "request" : "GetInstanceTopologyDefaultsRequest",
-         "response" : "GetStorageBindingResponse",
-         "service" : "StorageBindingService"
-      },
-      {
          "method" : "GetInstanceTopologyDefaults",
          "path" : "aos.hub.v1.StorageBindingService/GetInstanceTopologyDefaults",
          "request" : "GetInstanceTopologyDefaultsRequest",

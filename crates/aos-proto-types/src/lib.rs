@@ -234,8 +234,9 @@ mod tests {
     use super::{
         endpoint_host, surface_ref, BrowserSessionGrant, BrowserSessionPrincipal,
         BrowserSessionTokenResponse, DeliveryEndpointRevisionSpec, EndpointHost,
-        EndpointIngressKind, GetRegistryResponse, PlanSetInstanceSettingsRequest, Platform,
-        PolicyFailureContract, PolicyRetryCondition, SurfaceRef,
+        EndpointIngressKind, GetRegistryResponse, PlanRunPlacementEvictionRequest,
+        PlanSetInstanceSettingsRequest, Platform, PolicyFailureContract, PolicyRetryCondition,
+        SurfaceRef,
     };
 
     #[test]
@@ -456,5 +457,27 @@ mod tests {
 
         let decoded: BrowserSessionTokenResponse = serde_json::from_value(json).unwrap();
         assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn placement_eviction_uses_the_public_placement_name() {
+        let request = PlanRunPlacementEvictionRequest {
+            surface: Some(SurfaceRef {
+                target: Some(surface_ref::Target::CacheSlug("acme/builds".into())),
+            }),
+            placement_name: "primary".into(),
+            expected_resource_version: Some("7".into()),
+            idempotency_key: "evict-primary".into(),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["placementName"], "primary");
+        assert!(json.get("placementId").is_none());
+        assert!(
+            serde_json::from_value::<PlanRunPlacementEvictionRequest>(serde_json::json!({
+                "cacheSlug": "acme/builds",
+                "placementId": "42"
+            }))
+            .is_err()
+        );
     }
 }

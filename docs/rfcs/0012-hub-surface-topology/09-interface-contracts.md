@@ -943,7 +943,9 @@ aos hub cache gc jobs abandon <cache> <job-id>
   --plan-id <id> --confirm-hash <hash> [--yes]
 
 aos hub placement eviction plan <surface-ref> <placement>
-aos hub placement eviction run <surface-ref> <placement> --plan-id <id> [--yes]
+  --if-version <version> --idempotency-key <key>
+aos hub placement eviction run --plan-id <id> --confirm-hash <hash>
+  --idempotency-key <key> [--yes]
 ```
 
 `gc run` is the logical namespace operation. Placement eviction is never
@@ -1293,7 +1295,6 @@ ListStorageBindingWriteRevisions
 GetStorageBindingWriteRevision
 PlanDeleteStorageBinding / DeleteStorageBinding
 
-GetInstanceDefaultStorageBinding
 GetInstanceTopologyDefaults
 PlanSetInstanceTopologyDefaults / SetInstanceTopologyDefaults
 GetOrganizationTopologyDefaults

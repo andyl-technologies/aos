@@ -74,6 +74,21 @@ Admin manages organization settings, while Maintainer owns publishing,
 channels, and keys. Owner has both sets of permissions; Developer and Viewer
 are narrower roles.
 
+Registry and cache **Placements** pages show desired placement state separately
+from controller observations and effective read/write authority. The request
+explainer tests an absolute URL, optional machine-path override, and `web`,
+`git`, or `nix_cache` access class against the live simultaneous route set. The
+object-presence lookup shows the reported digest, size, and state at every
+placement. Cache administrators with GC execution authority can review a
+physical placement eviction from the placement card; this is distinct from
+logical cache garbage collection and starts a durable evacuation operation.
+
+The cache **Objects** page accepts a canonical machine path and exact file. The
+Hub admits either a short-lived direct-origin upload or an authenticated
+same-origin proxy upload. Large files automatically use the Hub's multipart
+protocol, and a failed part aborts the durable upload. The browser never sends
+its Hub bearer to a direct storage URL.
+
 The organization's **Members** page includes member and invitation inventory.
 **Invite a member** creates a reviewed pending invitation and shows its
 acceptance link after apply; it does not pre-create an account or

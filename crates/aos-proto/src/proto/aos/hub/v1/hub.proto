@@ -81,7 +81,6 @@ service StorageBindingService {
   rpc GetStorageBindingWriteRevision(GetStorageBindingWriteRevisionRequest) returns (StorageBindingWriteRevisionResponse);
   rpc PlanDeleteStorageBinding(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
   rpc DeleteStorageBinding(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
-  rpc GetInstanceDefaultStorageBinding(GetInstanceTopologyDefaultsRequest) returns (GetStorageBindingResponse);
   rpc GetInstanceTopologyDefaults(GetInstanceTopologyDefaultsRequest) returns (TopologyDefaultsResponse);
   rpc PlanSetInstanceTopologyDefaults(PlanSetTopologyDefaultsRequest) returns (TopologyPlanResponse);
   rpc SetInstanceTopologyDefaults(ApplySetTopologyDefaultsRequest) returns (TopologyDefaultsResponse);
@@ -2443,7 +2442,8 @@ message PlanRevokeRetentionLeaseRequest {
 message RetentionLeaseResponse { RetentionLease lease = 1; }
 message PlanRunPlacementEvictionRequest {
   SurfaceRef surface = 1;
-  string placement_id = 2;
+  // Stable, surface-local placement name returned by ListPlacements.
+  string placement_name = 2;
   optional string expected_resource_version = 3;
   string idempotency_key = 4;
 }

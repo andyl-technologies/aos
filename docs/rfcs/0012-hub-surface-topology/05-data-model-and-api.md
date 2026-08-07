@@ -2980,7 +2980,6 @@ verification material and return only redacted references.
 - `ListStorageBindingWriteRevisions`, `GetStorageBindingWriteRevision`,
   controller-only `ReportStorageBindingWriteRevision`
 - `GrantStorageBindingScope`, `RevokeStorageBindingScope`
-- `GetInstanceDefaultStorageBinding`
 - `GetInstanceTopologyDefaults`, `SetInstanceTopologyDefaults`
 - `GetOrganizationTopologyDefaults`, `SetOrganizationTopologyDefaults`
 

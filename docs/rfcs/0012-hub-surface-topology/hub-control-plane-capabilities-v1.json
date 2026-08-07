@@ -45,6 +45,9 @@
       "audience": "end-user",
       "cli_families": ["registry"],
       "web_workflows": ["registry-inventory", "registry-overview", "registry-danger"],
+      "web_method_exceptions": [
+        {"method": "ListReleases", "reason": "Release discovery remains on the signed public catalog; management publication history uses PublishService."}
+      ],
       "methods": ["ListRegistries", "GetRegistry", "ListReleases", "PlanCreateRegistry", "CreateRegistry", "PlanUpdateRegistry", "UpdateRegistry", "PlanDeleteRegistry", "DeleteRegistry"]
     },
     {
@@ -59,6 +62,9 @@
       "audience": "end-user",
       "cli_families": ["signing-key"],
       "web_workflows": ["signing-keys"],
+      "web_method_exceptions": [
+        {"method": "GetSigningKey", "reason": "ListSigningKeys returns the complete redacted key model used by the browser editor."}
+      ],
       "methods": ["ListSigningKeys", "GetSigningKey", "GetSigningKeyUsage", "PlanEnrollSigningKey", "EnrollSigningKey", "PlanRotateSigningKey", "RotateSigningKey", "PlanRetireSigningKey", "RetireSigningKey", "PlanSetSigningKeyUsage", "SetSigningKeyUsage"]
     },
     {
@@ -66,6 +72,9 @@
       "audience": "end-user",
       "cli_families": ["org project"],
       "web_workflows": ["project-inventory", "project-detail"],
+      "web_method_exceptions": [
+        {"method": "GetProject", "reason": "ListProjects returns the complete project model used by inventory and reviewed deletion."}
+      ],
       "methods": ["ListProjects", "GetProject", "PlanCreateProject", "CreateProject", "PlanDeleteProject", "DeleteProject"]
     },
     {
@@ -73,13 +82,20 @@
       "audience": "end-user",
       "cli_families": ["storage-binding", "instance topology-defaults", "org topology-defaults"],
       "web_workflows": ["storage-bindings", "storage-binding-credentials", "storage-binding-grants", "topology-defaults"],
-      "methods": ["ListStorageBindings", "GetStorageBinding", "PlanCreateStorageBinding", "CreateStorageBinding", "PlanSetStorageBindingCredential", "SetStorageBindingCredential", "PlanRotateStorageBindingCredential", "RotateStorageBindingCredential", "PlanValidateStorageBindingCredential", "ValidateStorageBindingCredential", "PlanGrantStorageBindingScope", "GrantStorageBindingScope", "PlanRevokeStorageBindingScope", "RevokeStorageBindingScope", "ListStorageBindingWriteRevisions", "GetStorageBindingWriteRevision", "PlanDeleteStorageBinding", "DeleteStorageBinding", "GetInstanceDefaultStorageBinding", "GetInstanceTopologyDefaults", "PlanSetInstanceTopologyDefaults", "SetInstanceTopologyDefaults", "GetOrganizationTopologyDefaults", "PlanSetOrganizationTopologyDefaults", "SetOrganizationTopologyDefaults"]
+      "web_method_exceptions": [
+        {"method": "GetStorageBinding", "reason": "ListStorageBindings returns the complete redacted binding and grant model used by the editor."},
+        {"method": "GetStorageBindingWriteRevision", "reason": "ListStorageBindingWriteRevisions returns the complete revision rows rendered by the editor."}
+      ],
+      "methods": ["ListStorageBindings", "GetStorageBinding", "PlanCreateStorageBinding", "CreateStorageBinding", "PlanSetStorageBindingCredential", "SetStorageBindingCredential", "PlanRotateStorageBindingCredential", "RotateStorageBindingCredential", "PlanValidateStorageBindingCredential", "ValidateStorageBindingCredential", "PlanGrantStorageBindingScope", "GrantStorageBindingScope", "PlanRevokeStorageBindingScope", "RevokeStorageBindingScope", "ListStorageBindingWriteRevisions", "GetStorageBindingWriteRevision", "PlanDeleteStorageBinding", "DeleteStorageBinding", "GetInstanceTopologyDefaults", "PlanSetInstanceTopologyDefaults", "SetInstanceTopologyDefaults", "GetOrganizationTopologyDefaults", "PlanSetOrganizationTopologyDefaults", "SetOrganizationTopologyDefaults"]
     },
     {
       "service": "DomainService",
       "audience": "end-user",
       "cli_families": ["domain"],
       "web_workflows": ["domains"],
+      "web_method_exceptions": [
+        {"method": "GetDomain", "reason": "ListDomains returns the complete domain intent and observation model rendered by the editor."}
+      ],
       "methods": ["ListDomains", "GetDomain", "PlanCreateDomain", "CreateDomain", "PlanConfigureDomainDns", "ConfigureDomainDns", "PlanConfigureDomainCertificate", "ConfigureDomainCertificate", "PlanVerifyDomain", "VerifyDomain", "PlanDeleteDomain", "DeleteDomain"]
     },
     {
@@ -87,6 +103,10 @@
       "audience": "end-user",
       "cli_families": ["network-boundary"],
       "web_workflows": ["network-boundaries"],
+      "web_method_exceptions": [
+        {"method": "GetNetworkBoundary", "reason": "ListNetworkBoundaries returns the complete boundary model rendered by the editor."},
+        {"method": "GetNetworkBoundaryRevision", "reason": "ListNetworkBoundaryRevisions returns the complete immutable revision rows rendered by the editor."}
+      ],
       "methods": ["ListNetworkBoundaries", "GetNetworkBoundary", "PlanCreateNetworkBoundary", "CreateNetworkBoundary", "ListNetworkBoundaryRevisions", "GetNetworkBoundaryRevision", "PlanReviseNetworkBoundary", "ReviseNetworkBoundary", "PlanActivateNetworkBoundaryRevision", "ActivateNetworkBoundaryRevision", "PlanRetireNetworkBoundaryRevision", "RetireNetworkBoundaryRevision", "PlanGrantNetworkBoundaryScope", "GrantNetworkBoundaryScope", "PlanRevokeNetworkBoundaryScope", "RevokeNetworkBoundaryScope", "PlanDeleteNetworkBoundary", "DeleteNetworkBoundary"]
     },
     {
@@ -94,6 +114,11 @@
       "audience": "end-user",
       "cli_families": ["endpoint", "gateway"],
       "web_workflows": ["delivery-endpoints", "storage-gateways"],
+      "web_method_exceptions": [
+        {"method": "GetDeliveryEndpoint", "reason": "ListDeliveryEndpoints returns the complete endpoint model rendered by the editor."},
+        {"method": "GetDeliveryEndpointGeneration", "reason": "ListDeliveryEndpointGenerations returns the complete immutable generation rows rendered by the editor."},
+        {"method": "GetStorageGateway", "reason": "ListStorageGateways returns the complete gateway model rendered by the editor."}
+      ],
       "methods": ["ListDeliveryEndpoints", "GetDeliveryEndpoint", "PlanCreateDeliveryEndpoint", "CreateDeliveryEndpoint", "ListDeliveryEndpointGenerations", "GetDeliveryEndpointGeneration", "PlanStageDeliveryEndpointGeneration", "StageDeliveryEndpointGeneration", "PlanActivateDeliveryEndpointGeneration", "ActivateDeliveryEndpointGeneration", "PlanGrantDeliveryEndpointScope", "GrantDeliveryEndpointScope", "PlanRevokeDeliveryEndpointScope", "RevokeDeliveryEndpointScope", "PlanDeleteDeliveryEndpoint", "DeleteDeliveryEndpoint", "ListStorageGateways", "GetStorageGateway", "PlanCreateStorageGateway", "CreateStorageGateway", "PlanUpdateStorageGateway", "UpdateStorageGateway", "PlanGrantStorageGatewayScope", "GrantStorageGatewayScope", "PlanRevokeStorageGatewayScope", "RevokeStorageGatewayScope", "PreviewGatewayRoutes", "PlanEnableStorageGateway", "EnableStorageGateway", "PlanDisableStorageGateway", "DisableStorageGateway", "PlanDeleteStorageGateway", "DeleteStorageGateway"]
     },
     {
@@ -101,6 +126,9 @@
       "audience": "end-user",
       "cli_families": ["route"],
       "web_workflows": ["delivery-routes"],
+      "web_method_exceptions": [
+        {"method": "GetRoute", "reason": "ListRoutes returns the complete route generation and status model rendered by the editor."}
+      ],
       "methods": ["ListRoutes", "GetRoute", "PlanCreateRoute", "CreateRoute", "PlanUpdateRoute", "UpdateRoute", "PlanReplaceRoute", "ReplaceRoute", "PlanEnableRoute", "EnableRoute", "PlanDisableRoute", "DisableRoute", "PlanDeleteRoute", "DeleteRoute", "PlanSetCanonicalRoute", "SetCanonicalRoute", "ExplainRoute"]
     },
     {
@@ -108,6 +136,11 @@
       "audience": "end-user",
       "cli_families": ["surface", "placement", "placement-policy", "placement-equivalence"],
       "web_workflows": ["surface-topology", "placements", "placement-policies", "placement-equivalences"],
+      "web_method_exceptions": [
+        {"method": "GetPlacement", "reason": "ListPlacements returns the complete placement specification and observation rendered by the shared topology editor."},
+        {"method": "GetPlacementPolicy", "reason": "ListPlacementPolicies returns the complete policy identity model rendered by the editor."},
+        {"method": "GetPlacementPolicyRevision", "reason": "ListPlacementPolicyRevisions returns the complete immutable revision rows rendered by the editor."}
+      ],
       "methods": ["GetSurfaceTopology", "ExplainSurfaceRequest", "ListPlacements", "GetPlacement", "PlanCreatePlacement", "CreatePlacement", "PlanUpdatePlacement", "UpdatePlacement", "GetWriteAuthority", "PlanPromotePlacement", "PromotePlacement", "PlanCancelPlacementPromotion", "CancelPlacementPromotion", "PlanRemoveWriteAuthority", "RemoveWriteAuthority", "PlanDrainPlacement", "DrainPlacement", "PlanCancelPlacementDrain", "CancelPlacementDrain", "PlanDeletePlacement", "DeletePlacement", "PlanScanPlacement", "ScanPlacement", "PlanReplicatePlacement", "ReplicatePlacement", "PlanRepairPlacement", "RepairPlacement", "ListObjectPresence", "ListPlacementPolicies", "GetPlacementPolicy", "ListPlacementPolicyRevisions", "GetPlacementPolicyRevision", "PlanCreatePlacementPolicy", "CreatePlacementPolicy", "PlanRevisePlacementPolicy", "RevisePlacementPolicy", "TestPlacementPolicyRevision", "ListPlacementEquivalences", "PlanConfirmPlacementEquivalence", "ConfirmPlacementEquivalence", "PlanDeletePlacementEquivalence", "DeletePlacementEquivalence"]
     },
     {
@@ -205,6 +238,10 @@
       "audience": "public",
       "cli_families": ["image"],
       "web_workflows": ["public-images", "registry-images"],
+      "web_method_exceptions": [
+        {"method": "GetImage", "reason": "ListImages returns complete signed image metadata for the selected registry release and encoding."},
+        {"method": "ResolveImage", "reason": "ListImages returns each immutable authenticated or anonymous disk-byte download URL used by the browser action."}
+      ],
       "methods": ["ListImages", "GetImage", "ResolveImage"]
     },
     {
@@ -212,6 +249,9 @@
       "audience": "end-user",
       "cli_families": ["registry publish"],
       "web_workflows": ["registry-publication"],
+      "web_method_exceptions": [
+        {"method": "GetRegistryPublication", "reason": "ListRegistryPublications returns the complete publication state rendered by the browser workflow."}
+      ],
       "methods": ["BeginRegistryPublication", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication"]
     },
     {
@@ -233,6 +273,11 @@
       "audience": "end-user",
       "cli_families": ["cache", "cache root", "cache lease", "cache gc", "placement eviction"],
       "web_workflows": ["cache-overview", "cache-objects", "cache-retention", "cache-gc", "cache-uploads", "cache-danger"],
+      "web_method_exceptions": [
+        {"method": "GetCacheGcRun", "reason": "ListCacheGcRuns returns the complete run summaries rendered by the garbage-collection workflow."},
+        {"method": "GetCacheGcDeletionJob", "reason": "ListCacheGcDeletionJobs returns the complete deletion-job state rendered by the safety workflow."},
+        {"method": "GetRetentionRoot", "reason": "ListRetentionRoots returns the complete retained-root model rendered by the retention workflow."}
+      ],
       "methods": ["ListBinaryCaches", "GetBinaryCache", "PlanCreateBinaryCache", "CreateBinaryCache", "PlanUpdateBinaryCache", "UpdateBinaryCache", "PlanDeleteBinaryCache", "DeleteBinaryCache", "GetCacheGcPolicy", "PlanSetCacheGcPolicy", "SetCacheGcPolicy", "PlanRunCacheGc", "RunCacheGc", "PlanAcknowledgeCacheGcFirstSweep", "AcknowledgeCacheGcFirstSweep", "GetCacheGcPlan", "GetCacheGcRun", "SearchCache", "GetCacheObject", "ListCacheGcRuns", "GetCacheGcDeletionJob", "ListCacheGcDeletionJobs", "PlanRetryCacheGcDeletionJob", "RetryCacheGcDeletionJob", "PlanAbandonCacheGcDeletionJob", "AbandonCacheGcDeletionJob", "ListRootReasons", "GetRetentionRoot", "ListRetentionRoots", "PlanCreateManualRetentionRoot", "CreateManualRetentionRoot", "PlanRenewRetentionLease", "RenewRetentionLease", "PlanRevokeRetentionLease", "RevokeRetentionLease", "PlanDeleteManualRetentionRoot", "DeleteManualRetentionRoot", "PlanRefreshAllRetention", "RefreshAllRetention", "PlanRunPlacementEviction", "RunPlacementEviction", "CacheClosure", "CreateCacheObjectUploads", "BeginCacheMultipartUpload", "CompleteCacheMultipartUpload", "AbortCacheMultipartUpload"]
     },
     {
@@ -240,6 +285,12 @@
       "audience": "end-user",
       "cli_families": ["registry cache-stack", "cache integration", "cache retention", "cache population", "cache coverage"],
       "web_workflows": ["cache-integrations", "registry-cache-stack", "cache-retention", "cache-population", "cache-coverage"],
+      "web_method_exceptions": [
+        {"method": "ListRegistryCacheIntegrations", "reason": "The registry browser uses GetConsumerCacheStack, while cache-owned inventory uses ListCacheRegistryIntegrations."},
+        {"method": "GetCacheRegistryIntegration", "reason": "ListCacheRegistryIntegrations returns the complete integration rows rendered by the cache workflow."},
+        {"method": "GetRetentionSubscription", "reason": "ListRetentionSubscriptions returns the complete subscription model rendered by the retention workflow."},
+        {"method": "GetPopulationTarget", "reason": "ListPopulationTargets returns the complete target model rendered by the population workflow."}
+      ],
       "methods": ["ListRegistryCacheIntegrations", "ListCacheRegistryIntegrations", "GetCacheRegistryIntegration", "PreviewCacheIntegration", "GetConsumerCacheStack", "ValidateConsumerCacheStack", "PlanCreateConsumerCacheChangeset", "CreateConsumerCacheChangeset", "GetRetentionSubscription", "ListRetentionSubscriptions", "PlanSetRetentionSubscription", "SetRetentionSubscription", "PlanDeleteRetentionSubscription", "DeleteRetentionSubscription", "PlanRefreshRetentionSubscription", "RefreshRetentionSubscription", "ExplainRetention", "GetPopulationTarget", "ListPopulationTargets", "PlanSetPopulationTarget", "SetPopulationTarget", "PlanDeletePopulationTarget", "DeletePopulationTarget", "PlanRunPopulation", "RunPopulation", "GetCoverage", "PlanRunCoverageValidation", "RunCoverageValidation", "PlanRunCoverageRepair", "RunCoverageRepair"]
     },
     {
@@ -247,6 +298,10 @@
       "audience": "end-user",
       "cli_families": ["operation"],
       "web_workflows": ["operations"],
+      "web_method_exceptions": [
+        {"method": "GetOperation", "reason": "ListOperations returns complete operation records for the selected scope."},
+        {"method": "WatchOperation", "reason": "The browser polls ListOperations so it can recover across navigation and Worker request boundaries."}
+      ],
       "methods": ["GetOperation", "ListOperations", "WatchOperation", "CancelOperation", "RetryOperation"]
     },
     {
@@ -254,6 +309,13 @@
       "audience": "end-user",
       "cli_families": ["org member", "org invitation", "org service-account", "org identity-provider", "org domain", "access-token", "whoami"],
       "web_workflows": ["identity-access", "memberships", "invitations", "service-accounts", "access-tokens", "organization-sso", "identity-provider", "organization-domains"],
+      "web_method_exceptions": [
+        {"method": "WhoAmI", "reason": "The browser session bridge returns the authenticated principal and live scoped grants before rendering the application."},
+        {"method": "GetServiceAccount", "reason": "ListServiceAccounts returns the complete service-account rows rendered by the identity workflow."},
+        {"method": "GetInvitation", "reason": "ListInvitations returns the complete invitation lifecycle rows rendered by the member workflow."},
+        {"method": "AcceptInvitation", "reason": "Invitation acceptance is a retained server-rendered credential ceremony, not an authenticated settings action."},
+        {"method": "GetOrganizationDomain", "reason": "ListOrganizationDomains returns the complete claim and verification state rendered by the SSO workflow."}
+      ],
       "methods": ["WhoAmI", "ListServiceAccounts", "GetServiceAccount", "PlanCreateServiceAccount", "CreateServiceAccount", "PlanUpdateServiceAccount", "UpdateServiceAccount", "PlanDeleteServiceAccount", "DeleteServiceAccount", "GetMembership", "PlanSetMembership", "SetMembership", "ListInvitations", "GetInvitation", "PlanCreateInvitation", "CreateInvitation", "PlanCancelInvitation", "CancelInvitation", "AcceptInvitation", "GetIdentityProvider", "PlanSetIdentityProvider", "SetIdentityProvider", "PlanRemoveIdentityProvider", "RemoveIdentityProvider", "ListOrganizationDomains", "GetOrganizationDomain", "PlanClaimOrganizationDomain", "ClaimOrganizationDomain", "PlanVerifyOrganizationDomain", "VerifyOrganizationDomain", "PlanReleaseOrganizationDomain", "ReleaseOrganizationDomain", "PlanIssueAccessToken", "IssueAccessToken", "PlanRetireAccessToken", "RetireAccessToken", "ListAccessTokens"]
     }
   ]

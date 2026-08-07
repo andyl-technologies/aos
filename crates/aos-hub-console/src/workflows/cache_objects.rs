@@ -4,7 +4,7 @@
 //! workflow shows NAR identity and recursively resolved closure presence without
 //! implying that one successful placement represents every delivery route.
 
-use leptos::ev::SubmitEvent;
+use leptos::ev::{Event, SubmitEvent};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -14,12 +14,179 @@ use crate::transport::ApiClient;
 /// Renders cache search and exact object/closure inspection.
 #[component]
 pub(super) fn CacheObjects(client: ApiClient, cache_id: String) -> impl IntoView {
+    let can_upload = client.allows("registry.configure");
     view! {
         <div class="workflow-stack">
+            {can_upload.then(|| view! { <ObjectUpload client=client.clone() cache_id=cache_id.clone()/> })}
             <ObjectSearch client=client.clone() cache_id=cache_id.clone()/>
             <ObjectInspector client=client cache_id=cache_id/>
         </div>
     }
+}
+
+#[component]
+fn ObjectUpload(client: ApiClient, cache_id: String) -> impl IntoView {
+    let path = RwSignal::new(String::new());
+    let status = RwSignal::new(None::<String>);
+    let error = RwSignal::new(None::<String>);
+    let busy = RwSignal::new(false);
+    let on_file = move |event: Event| {
+        let input = event_target::<leptos::web_sys::HtmlInputElement>(&event);
+        let Some(file) = input.files().and_then(|files| files.get(0)) else {
+            return;
+        };
+        let object_path = path.get_untracked().trim().to_string();
+        if object_path.is_empty() {
+            error.set(Some("Cache-relative object path is required".to_string()));
+            return;
+        }
+        let client = client.clone();
+        let cache_id = cache_id.clone();
+        status.set(None);
+        error.set(None);
+        busy.set(true);
+        spawn_local(async move {
+            match upload_cache_file(client, cache_id, object_path, file).await {
+                Ok(detail) => status.set(Some(detail)),
+                Err(detail) => error.set(Some(detail)),
+            }
+            busy.set(false);
+        });
+    };
+
+    view! {
+        <section class="panel editor-panel">
+            <div class="section-heading"><div><p class="section-kicker">"Authenticated producer path"</p><h2>"Upload cache object"</h2><p>"Upload one canonical cache machine path. The Hub selects a direct-origin capability or its authenticated proxy and switches large objects to resumable multipart storage."</p></div></div>
+            <div class="editor-form">
+                <label><span>"Cache-relative path"</span><input required placeholder="nar/<hash>.nar.zst or <store-hash>.narinfo" prop:value=move || path.get() on:input=move |event| path.set(event_target_value(&event))/></label>
+                <label><span>"Exact object bytes"</span><input type="file" disabled=move || busy.get() on:change=on_file/></label>
+            </div>
+            {move || status.get().map(|value| view! { <StatusBadge state=value positive=true/> })}
+            {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
+        </section>
+    }
+}
+
+async fn upload_cache_file(
+    client: ApiClient,
+    cache_id: String,
+    path: String,
+    file: leptos::web_sys::File,
+) -> Result<String, String> {
+    let byte_size = file.size() as u64;
+    let admission = client
+        .call::<_, aos_proto_types::CreateCacheObjectUploadsResponse>(
+            aos_proto_types::BINARY_CACHE_SERVICE_CREATE_CACHE_OBJECT_UPLOADS_PATH,
+            &aos_proto_types::CreateCacheObjectUploadsRequest {
+                cache_id: cache_id.clone(),
+                path: path.clone(),
+                paths: Vec::new(),
+                size: byte_size,
+                sizes: Vec::new(),
+                delivery_url: String::new(),
+            },
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    if !admission.upload_url.is_empty() {
+        let body = file
+            .slice()
+            .map_err(|_| "the browser could not read the selected file".to_string())?;
+        client
+            .put_cache_object(&admission.upload_url, &body)
+            .await
+            .map_err(|failure| failure.to_string())?;
+        return Ok(format!("Uploaded {byte_size} bytes"));
+    }
+
+    upload_cache_file_multipart(client, cache_id, path, file, byte_size).await
+}
+
+async fn upload_cache_file_multipart(
+    client: ApiClient,
+    cache_id: String,
+    path: String,
+    file: leptos::web_sys::File,
+    byte_size: u64,
+) -> Result<String, String> {
+    let upload = client
+        .call::<_, aos_proto_types::BeginCacheMultipartUploadResponse>(
+            aos_proto_types::BINARY_CACHE_SERVICE_BEGIN_CACHE_MULTIPART_UPLOAD_PATH,
+            &aos_proto_types::BeginCacheMultipartUploadRequest {
+                cache_id,
+                delivery_url: String::new(),
+                path,
+                byte_size,
+                sha256: String::new(),
+            },
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    if upload.upload_id.is_empty() || upload.part_size == 0 || upload.part_upload_url.is_empty() {
+        return Err("the Hub returned an incomplete multipart upload".to_string());
+    }
+
+    let result = upload_cache_parts(&client, &file, byte_size, &upload).await;
+    let parts = match result {
+        Ok(parts) => parts,
+        Err(detail) => {
+            let _ = client
+                .call::<_, aos_proto_types::CacheMultipartUploadResponse>(
+                    aos_proto_types::BINARY_CACHE_SERVICE_ABORT_CACHE_MULTIPART_UPLOAD_PATH,
+                    &aos_proto_types::AbortCacheMultipartUploadRequest {
+                        upload_id: upload.upload_id.clone(),
+                    },
+                )
+                .await;
+            return Err(detail);
+        }
+    };
+    client
+        .call::<_, aos_proto_types::CacheMultipartUploadResponse>(
+            aos_proto_types::BINARY_CACHE_SERVICE_COMPLETE_CACHE_MULTIPART_UPLOAD_PATH,
+            &aos_proto_types::CompleteCacheMultipartUploadRequest {
+                upload_id: upload.upload_id,
+                parts,
+            },
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    Ok(format!("Uploaded {byte_size} bytes in verified parts"))
+}
+
+async fn upload_cache_parts(
+    client: &ApiClient,
+    file: &leptos::web_sys::File,
+    byte_size: u64,
+    upload: &aos_proto_types::BeginCacheMultipartUploadResponse,
+) -> Result<Vec<aos_proto_types::CacheMultipartPart>, String> {
+    let mut parts = Vec::new();
+    let mut start = 0_u64;
+    let mut part_number = 1_u32;
+    while start < byte_size {
+        let end = start.saturating_add(upload.part_size).min(byte_size);
+        let body = file
+            .slice_with_f64_and_f64(start as f64, end as f64)
+            .map_err(|_| "the browser could not read a multipart file slice".to_string())?;
+        let url = format!(
+            "{}/{part_number}",
+            upload.part_upload_url.trim_end_matches('/')
+        );
+        let part = client
+            .put_cache_object(&url, &body)
+            .await
+            .map_err(|failure| failure.to_string())?
+            .ok_or_else(|| "the Hub omitted the uploaded part receipt".to_string())?;
+        if part.part_number != part_number || part.etag.is_empty() {
+            return Err("the Hub returned an invalid uploaded part receipt".to_string());
+        }
+        parts.push(part);
+        start = end;
+        part_number = part_number
+            .checked_add(1)
+            .ok_or_else(|| "the selected file requires too many upload parts".to_string())?;
+    }
+    Ok(parts)
 }
 
 #[component]

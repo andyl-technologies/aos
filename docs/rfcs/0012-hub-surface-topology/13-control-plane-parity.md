@@ -87,22 +87,20 @@ path; direct table seed helpers are compiled only into test fixtures.
 ## Capability manifest
 
 `hub-control-plane-capabilities-v1.json` is the closed, versioned parity
-contract. A capability entry contains:
+contract. Its HTTP entries identify non-Connect authentication surfaces. Its
+service entries identify the audience, owning API methods, CLI command
+families, and Web workflows for one protobuf service. Native and Worker are the
+only admitted runtimes.
 
-- stable capability id, resource family, scope, action, and permission;
-- audience: `end-user`, `public`, `operator`, or `controller`;
-- interaction: `read`, `plan-apply`, `operation`, `upload`, `download`, or
-  `authentication`;
-- every owning API method;
-- CLI command paths, if applicable;
-- Web route and workflow ids, if applicable;
-- native and Worker availability; and
-- an exclusion reason for non-end-user entries.
-
-Checks compare the manifest with the protobuf descriptor, Clap command tree,
-and Web route/workflow registry. Each API method appears exactly once. A
-plan/apply entry names both methods. A final production build rejects the
-states `planned`, `partial`, and `legacy`.
+The `aos-proto-types` build compares this manifest with the generated protobuf
+descriptor. Every API method appears exactly once. Every method owned by an
+`end-user` or `public` service must also be referenced by the browser client.
+An exact method may instead have a non-empty `web_method_exceptions` reason
+when another browser call returns the same complete model or the action is an
+explicit retained authentication ceremony. Unknown, duplicate, and stale
+exceptions fail the build. The service authorization implementation remains
+the authority for each method's permission and scope; the manifest does not
+duplicate that security policy.
 
 ## Browser application boundary
 
@@ -123,7 +121,7 @@ The client owns:
 - API reads, pagination, and permission-aware rendering;
 - typed editors and semantic plan review;
 - operation status, cancellation, and retry;
-- resumable direct and multipart publication uploads; and
+- direct/proxy and multipart cache-object and publication uploads; and
 - non-secret interrupted-upload metadata in IndexedDB.
 
 Bearer credentials, secret values, and upload authorization material are never
@@ -282,10 +280,13 @@ and backlinks instead of duplicated editors. In particular:
 
 Connect requests remain bounded control messages. Large NAR, blob, and disk
 image bytes use upload admissions and direct or multipart object transfers.
-The Web application computes SHA-256, begins a publication, uploads immutable
-objects, reconciles interrupted upload state, and commits only after every
-required object and placement verifies. A partial or failed publication is not
-discoverable.
+The Web application begins a publication, uploads immutable objects, and
+commits only after every required object and placement verifies. Cache-object
+uploads use `CreateCacheObjectUploads`; a direct-origin capability receives no
+Hub bearer, while a typed same-origin proxy receives the in-memory bearer.
+When single-request admission returns no URL, the browser uses the typed begin,
+part, complete, and abort multipart protocol. A partial or failed registry
+publication is not discoverable.
 
 IndexedDB may retain publication ids, upload ids, local file identity, offsets,
 and checksums so a user can resume. It must not retain API bearers or signed

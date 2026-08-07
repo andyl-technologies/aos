@@ -1692,11 +1692,6 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/GetInstanceDefaultStorageBinding",
-        get_instance_default_storage_binding
-    );
-    r = rpc_route!(
-        r,
         "/aos.hub.v1.StorageBindingService/GetInstanceTopologyDefaults",
         get_instance_topology_defaults
     );

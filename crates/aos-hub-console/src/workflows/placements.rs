@@ -40,6 +40,9 @@ pub(super) fn PlacementWorkflow(route: ConsoleRoute, client: ApiClient) -> impl 
 
 #[component]
 fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
+    let can_manage = client.allows("placement.manage");
+    let can_evict = client.allows("cache.gc.execute");
+    let can_explain = client.allows("route.read");
     let list_client = client.clone();
     let list_surface = surface.clone();
     let placements = LocalResource::new(move || {
@@ -63,6 +66,7 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
     let view_surface = surface.clone();
     let authority_surface = surface.clone();
     let replication_surface = surface.clone();
+    let diagnostics_surface = surface.clone();
     let create_surface = surface;
 
     view! {
@@ -76,18 +80,19 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
                         Suspend::new(async move {
                             match placements.await.as_ref() {
                                 Ok(placements) if placements.is_empty() => view! { <p class="muted">"No placements for this surface."</p> }.into_any(),
-                                Ok(placements) => view! { <div class="binding-list">{placements.iter().cloned().map(|placement| view! { <PlacementCard client=client.clone() surface=surface.clone() placement=placement/> }).collect_view()}</div> }.into_any(),
+                                Ok(placements) => view! { <div class="binding-list">{placements.iter().cloned().map(|placement| view! { <PlacementCard client=client.clone() surface=surface.clone() placement=placement can_manage=can_manage can_evict=can_evict/> }).collect_view()}</div> }.into_any(),
                                 Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                             }
                         })
                     }}
                 </Suspense>
             </section>
+            <SurfaceDiagnostics client=client.clone() surface=diagnostics_surface can_explain=can_explain/>
             <WriteAuthorityPanel client=client.clone() surface=authority_surface/>
             <PlacementPolicyPanel client=client.clone() surface=create_surface.clone()/>
             <PlacementEquivalencePanel client=client.clone() surface=create_surface.clone()/>
             <PlacementReplication client=client.clone() surface=replication_surface/>
-            <PlacementCreate client=client surface=create_surface/>
+            {can_manage.then(|| view! { <PlacementCreate client=client surface=create_surface/> })}
         </div>
     }
 }
@@ -176,6 +181,8 @@ fn PlacementCard(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
     placement: aos_proto_types::Placement,
+    can_manage: bool,
+    can_evict: bool,
 ) -> impl IntoView {
     let spec = placement.spec.clone().unwrap_or_default();
     let observation = placement.observation.clone().unwrap_or_default();
@@ -232,7 +239,7 @@ fn PlacementCard(
     );
 
     view! {
-        <details class="binding-card"><summary><div><span class="resource-kind">{status.derived_role.clone()}</span><h3>{placement.name.clone()}</h3><code>{format!("{}:{}", placement.storage_binding_name, placement.prefix)}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "ready"/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Kind"</span><strong>{spec.kind}</strong></div><div><span>"Desired state"</span><strong>{spec.desired_state}</strong></div><div><span>"Observed completeness"</span><strong>{observation.completeness}</strong></div><div><span>"Effective read"</span><strong>{yes_no(status.effective_read_enabled)}</strong></div><div><span>"Effective write"</span><strong>{yes_no(status.effective_write_enabled)}</strong></div><div><span>"Version"</span><code>{placement.resource_version.clone()}</code></div></div><div class="subworkflow-grid"><section class="subworkflow"><h4>"Desired placement state"</h4><form class="stacked-form" on:submit=on_update><label><span>"State"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review update"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section><PlacementActions client=client.clone() surface=surface.clone() placement=placement.clone()/></div><PlacementOperations client=client surface=surface placement=placement/></div></details>
+        <details class="binding-card"><summary><div><span class="resource-kind">{status.derived_role.clone()}</span><h3>{placement.name.clone()}</h3><code>{format!("{}:{}", placement.storage_binding_name, placement.prefix)}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "ready"/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Kind"</span><strong>{spec.kind}</strong></div><div><span>"Desired state"</span><strong>{spec.desired_state}</strong></div><div><span>"Observed completeness"</span><strong>{observation.completeness}</strong></div><div><span>"Effective read"</span><strong>{yes_no(status.effective_read_enabled)}</strong></div><div><span>"Effective write"</span><strong>{yes_no(status.effective_write_enabled)}</strong></div><div><span>"Version"</span><code>{placement.resource_version.clone()}</code></div></div><div class="subworkflow-grid">{can_manage.then(|| view! { <section class="subworkflow"><h4>"Desired placement state"</h4><form class="stacked-form" on:submit=on_update><label><span>"State"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review update"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> })}{(can_manage || can_evict).then(|| view! { <PlacementActions client=client.clone() surface=surface.clone() placement=placement.clone() can_manage=can_manage can_evict=can_evict/> })}</div>{can_manage.then(|| view! { <PlacementOperations client=client surface=surface placement=placement/> })}</div></details>
     }
 }
 
@@ -241,14 +248,24 @@ fn PlacementActions(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
     placement: aos_proto_types::Placement,
+    can_manage: bool,
+    can_evict: bool,
 ) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let action = RwSignal::new(String::new());
     let plan_client = client.clone();
-    let request_surface = surface;
+    let eviction_client = client.clone();
+    let request_surface = surface.clone();
+    let eviction_surface = surface.clone();
     let request_placement = placement.clone();
+    let eviction_placement = placement.clone();
+    let cache_surface = can_evict
+        && matches!(
+            surface.target,
+            Some(aos_proto_types::surface_ref::Target::CacheSlug(_))
+        );
     let on_action = Callback::new(move |selected: &'static str| {
         action.set(selected.to_string());
         let idempotency_key = idempotency_key(&format!("placement-{selected}"));
@@ -275,6 +292,34 @@ fn PlacementActions(
             busy,
         );
     });
+    let eviction_pending = RwSignal::new(None::<PendingPlan>);
+    let eviction_error = RwSignal::new(None::<String>);
+    let eviction_busy = RwSignal::new(false);
+    let on_eviction = move |_| {
+        let idempotency_key = idempotency_key("placement-eviction");
+        let request = aos_proto_types::PlanRunPlacementEvictionRequest {
+            surface: Some(eviction_surface.clone()),
+            placement_name: eviction_placement.name.clone(),
+            expected_resource_version: Some(eviction_placement.resource_version.clone()),
+            idempotency_key: idempotency_key.clone(),
+        };
+        plan(
+            eviction_client.clone(),
+            aos_proto_types::BINARY_CACHE_SERVICE_PLAN_RUN_PLACEMENT_EVICTION_PATH,
+            request,
+            idempotency_key,
+            eviction_pending,
+            eviction_error,
+            eviction_busy,
+        );
+    };
+    let on_apply_eviction = apply::<aos_proto_types::OperationResponse>(
+        client.clone(),
+        aos_proto_types::BINARY_CACHE_SERVICE_RUN_PLACEMENT_EVICTION_PATH,
+        eviction_pending,
+        eviction_error,
+        eviction_busy,
+    );
     let apply_client = client;
     let on_apply = Callback::new(move |()| {
         let Some(reviewed) = pending.get_untracked() else {
@@ -311,9 +356,114 @@ fn PlacementActions(
         .spec
         .as_ref()
         .is_some_and(|spec| spec.desired_state == "draining");
+    view! {
+        <section class="subworkflow"><h4>"Lifecycle"</h4><p>"Promotion changes single-writer authority; draining and deletion remain blocked until safety predicates pass."</p><div class="form-actions">{can_manage.then(|| view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=promote>"Review promotion"</button>{if draining { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=cancel_drain>"Review cancel drain"</button> }.into_any() } else { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=drain>"Review drain"</button> }.into_any() }}<button class="danger-button" type="button" disabled=move || busy.get() on:click=delete>"Review deletion"</button> })}{cache_surface.then(|| view! { <button class="danger-button" type="button" disabled=move || eviction_busy.get() on:click=on_eviction>"Review physical eviction"</button> })}</div>{can_manage.then(|| view! { <PlanReview pending=pending error=error busy=busy on_apply=on_apply/> })}<PlanReview pending=eviction_pending error=eviction_error busy=eviction_busy on_apply=on_apply_eviction/></section>
+    }
+}
+
+#[component]
+fn SurfaceDiagnostics(
+    client: ApiClient,
+    surface: aos_proto_types::SurfaceRef,
+    can_explain: bool,
+) -> impl IntoView {
+    let url = RwSignal::new(String::new());
+    let machine_path = RwSignal::new(String::new());
+    let access_class = RwSignal::new("web".to_string());
+    let explanation = RwSignal::new(None::<aos_proto_types::ExplainSurfaceRequestResponse>);
+    let explain_error = RwSignal::new(None::<String>);
+    let explain_busy = RwSignal::new(false);
+    let explain_client = client.clone();
+    let explain_surface = surface.clone();
+    let on_explain = move |event: SubmitEvent| {
+        event.prevent_default();
+        let client = explain_client.clone();
+        let request = aos_proto_types::ExplainSurfaceRequestRequest {
+            surface: Some(explain_surface.clone()),
+            url: url.get_untracked().trim().to_string(),
+            machine_path: machine_path.get_untracked().trim().to_string(),
+            access_class: access_class.get_untracked(),
+        };
+        explain_error.set(None);
+        explanation.set(None);
+        explain_busy.set(true);
+        spawn_local(async move {
+            match client
+                .call::<_, aos_proto_types::ExplainSurfaceRequestResponse>(
+                    aos_proto_types::TOPOLOGY_SERVICE_EXPLAIN_SURFACE_REQUEST_PATH,
+                    &request,
+                )
+                .await
+            {
+                Ok(response) => explanation.set(Some(response)),
+                Err(failure) => explain_error.set(Some(failure.to_string())),
+            }
+            explain_busy.set(false);
+        });
+    };
+
+    let object_ref = RwSignal::new(String::new());
+    let presences = RwSignal::new(None::<Vec<aos_proto_types::ObjectPresence>>);
+    let presence_error = RwSignal::new(None::<String>);
+    let presence_busy = RwSignal::new(false);
+    let presence_client = client;
+    let presence_surface = surface;
+    let on_presence = move |event: SubmitEvent| {
+        event.prevent_default();
+        let object = object_ref.get_untracked().trim().to_string();
+        if object.is_empty() {
+            presence_error.set(Some("Object reference is required".to_string()));
+            return;
+        }
+        let client = presence_client.clone();
+        let surface = presence_surface.clone();
+        presence_error.set(None);
+        presences.set(None);
+        presence_busy.set(true);
+        spawn_local(async move {
+            match client
+                .collect_pages::<_, aos_proto_types::ListObjectPresenceResponse, _, _, _>(
+                    aos_proto_types::TOPOLOGY_SERVICE_LIST_OBJECT_PRESENCE_PATH,
+                    move |page_token| aos_proto_types::ListObjectPresenceRequest {
+                        surface: Some(surface.clone()),
+                        object_ref: object.clone(),
+                        page_size: 100,
+                        page_token,
+                    },
+                    |response| (response.presences, response.next_page_token),
+                )
+                .await
+            {
+                Ok(response) => presences.set(Some(response)),
+                Err(failure) => presence_error.set(Some(failure.to_string())),
+            }
+            presence_busy.set(false);
+        });
+    };
 
     view! {
-        <section class="subworkflow"><h4>"Lifecycle"</h4><p>"Promotion changes single-writer authority; draining and deletion remain blocked until safety predicates pass."</p><div class="form-actions"><button class="secondary-button" type="button" disabled=move || busy.get() on:click=promote>"Review promotion"</button>{if draining { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=cancel_drain>"Review cancel drain"</button> }.into_any() } else { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=drain>"Review drain"</button> }.into_any() }}<button class="danger-button" type="button" disabled=move || busy.get() on:click=delete>"Review deletion"</button></div><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
+        <section class="panel resource-panel">
+            <div class="section-heading"><div><p class="section-kicker">"Request topology"</p><h2>"Explain routing & object presence"</h2><p>"Resolve one public request through the live route set, or inspect one object's evidence across every placement."</p></div></div>
+            <div class="subworkflow-grid">
+                {can_explain.then(|| view! { <section class="subworkflow">
+                    <h4>"Explain a request"</h4>
+                    <form class="stacked-form" on:submit=on_explain>
+                        <label><span>"Absolute URL"</span><input required type="url" placeholder="https://cache.example/nar/object.nar.zst" prop:value=move || url.get() on:input=move |event| url.set(event_target_value(&event))/></label>
+                        <label><span>"Machine path override (optional)"</span><input placeholder="/nar/object.nar.zst" prop:value=move || machine_path.get() on:input=move |event| machine_path.set(event_target_value(&event))/></label>
+                        <label><span>"Access class"</span><select prop:value=move || access_class.get() on:change=move |event| access_class.set(event_target_value(&event))><option value="web">"Web"</option><option value="git">"Git"</option><option value="nix_cache">"Nix cache"</option></select></label>
+                        <button class="secondary-button" type="submit" disabled=move || explain_busy.get()>"Explain request"</button>
+                    </form>
+                    {move || explain_error.get().map(|detail| view! { <InlineError detail=detail/> })}
+                    {move || explanation.get().map(|result| view! { <article class="revision-card"><div class="resource-identity"><div><span>"Normalized URL"</span><code>{result.normalized_url}</code></div><div><span>"Selected route"</span><code>{display_or(&result.selected_route_id, "none")}</code></div></div><h5>"Decisions"</h5><div class="compact-list">{result.decisions.into_iter().map(|decision| view! { <p>{decision}</p> }).collect_view()}</div>{(!result.rejection_reasons.is_empty()).then(|| view! { <h5>"Rejections"</h5><div class="compact-list">{result.rejection_reasons.into_iter().map(|reason| view! { <p>{reason}</p> }).collect_view()}</div> })}</article> })}
+                </section> })}
+                <section class="subworkflow">
+                    <h4>"Locate an object"</h4>
+                    <form class="stacked-form" on:submit=on_presence><label><span>"Object reference"</span><input required placeholder="store hash, path, or release object" prop:value=move || object_ref.get() on:input=move |event| object_ref.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || presence_busy.get()>"Inspect placement evidence"</button></form>
+                    {move || presence_error.get().map(|detail| view! { <InlineError detail=detail/> })}
+                    {move || presences.get().map(|items| if items.is_empty() { view! { <p class="muted">"No placement has reported this object."</p> }.into_any() } else { view! { <div class="compact-list">{items.into_iter().map(|item| view! { <div class="compact-list-row"><div><strong>{item.placement_name}</strong><code>{display_or(&item.content_digest, "digest unavailable")}</code></div><span>{format!("{} bytes", item.size)}</span><StatusBadge state=item.state.clone() positive=item.state == "present"/></div> }).collect_view()}</div> }.into_any() })}
+                </section>
+            </div>
+        </section>
     }
 }
 
@@ -692,6 +842,13 @@ fn yes_no(value: bool) -> &'static str {
         "yes"
     } else {
         "no"
+    }
+}
+fn display_or(value: &str, fallback: &str) -> String {
+    if value.is_empty() {
+        fallback.to_string()
+    } else {
+        value.to_string()
     }
 }
 fn reload() {

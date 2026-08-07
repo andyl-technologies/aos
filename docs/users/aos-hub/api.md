@@ -142,6 +142,25 @@ both native and Worker deployments and commits only when the exact reviewed
 TXT challenge is present. Claim, audit, and plan completion are one atomic
 database transaction, including on MySQL.
 
+## Topology and cache bytes
+
+`TopologyService/ExplainSurfaceRequest` explains how one absolute HTTP request
+selects a live simultaneous route. `TopologyService/ListObjectPresence`
+returns physical evidence for one logical object across all placements.
+Placements are addressed by their stable surface-local names. Cache placement
+eviction uses the reviewed
+`BinaryCacheService/PlanRunPlacementEviction`/`RunPlacementEviction` pair and
+is separate from logical GC.
+
+Cache producers call `BinaryCacheService/CreateCacheObjectUploads` with one
+canonical machine path and declared byte size. A non-empty `uploadUrl` accepts
+the exact bytes with `PUT`; direct-origin URLs are capabilities and must not
+receive the Hub bearer, while `/BinaryCacheService/UploadObject/...` is a typed
+authenticated Hub proxy. An empty URL requires
+`BeginCacheMultipartUpload`, numbered `PUT` requests to the returned
+`partUploadUrl`, and `CompleteCacheMultipartUpload`; clients abort failed
+uploads with `AbortCacheMultipartUpload`.
+
 ## Scripting
 
 The remote client covers common calls and provides stable JSON output:

@@ -12,7 +12,7 @@ use anyhow::{Context as _, Result};
 
 use aos_core::output::{OutputMode, Printer};
 use aos_remote::hub_rpc as HubTopologyMethod;
-use aos_remote::{hub_types, HubClient, HubRpc, HubSurfaceRef, Placement};
+use aos_remote::{HubClient, HubRpc, HubSurfaceRef, Placement, hub_types};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -213,39 +213,47 @@ mod tests {
           }]
         }"#;
         assert_eq!(parse_pin_resolution_document(valid).unwrap().len(), 1);
-        assert!(parse_pin_resolution_document(
-            br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
-        )
-        .is_err());
-        assert!(parse_pin_resolution_document(
-            br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
-        )
-        .is_err());
+        assert!(
+            parse_pin_resolution_document(
+                br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
+            )
+            .is_err()
+        );
+        assert!(
+            parse_pin_resolution_document(
+                br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn pin_resolution_document_rejects_malformed_duplicate_and_unsealed_actions() {
         assert!(parse_pin_resolution_document(b"not-json").is_err());
-        assert!(parse_pin_resolution_document(
-            br#"{
+        assert!(
+            parse_pin_resolution_document(
+                br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"7"}},
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"8"}}
               ]
             }"#
-        )
-        .is_err());
-        assert!(parse_pin_resolution_document(
-            br#"{
+            )
+            .is_err()
+        );
+        assert!(
+            parse_pin_resolution_document(
+                br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[{
                 "pinId":"pin:one",
                 "release":{"expectedSourceResourceVersion":"0"}
               }]
             }"#
-        )
-        .is_err());
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1704,7 +1712,7 @@ async fn placement_eviction(printer: &Printer, command: &HubPlacementEvictionCmd
                 HubTopologyMethod::PlanRunPlacementEviction,
                 &hub_types::PlanRunPlacementEvictionRequest {
                     surface: Some(surface.to_message()),
-                    placement_id: placement.clone(),
+                    placement_name: placement.clone(),
                     expected_resource_version: Some(if_version.clone()),
                     idempotency_key: idempotency_key.clone(),
                 },
@@ -2304,9 +2312,9 @@ async fn run_coverage_operation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyTopologyPlanRequest,
-            Response = hub_types::OperationResponse,
-        > + Copy,
+        Request = hub_types::ApplyTopologyPlanRequest,
+        Response = hub_types::OperationResponse,
+    > + Copy,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
 ) -> Result<()> {
@@ -3856,9 +3864,9 @@ async fn topology_operation_mutation<PlanReq>(
     client: &HubClient,
     plan_method: impl HubRpc<Request = PlanReq, Response = hub_types::TopologyPlanResponse>,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyTopologyPlanRequest,
-            Response = hub_types::OperationResponse,
-        > + Copy,
+        Request = hub_types::ApplyTopologyPlanRequest,
+        Response = hub_types::OperationResponse,
+    > + Copy,
     plan_request: &PlanReq,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
@@ -4104,9 +4112,9 @@ async fn consumer_scope_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyConsumerScopeGrantRequest,
-            Response = hub_types::ConsumerScopeGrantResponse,
-        > + Copy,
+        Request = hub_types::ApplyConsumerScopeGrantRequest,
+        Response = hub_types::ConsumerScopeGrantResponse,
+    > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -4148,9 +4156,9 @@ async fn delete_topology_resource(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyDeleteTopologyResourceRequest,
-            Response = hub_types::DeleteTopologyResourceResponse,
-        > + Copy,
+        Request = hub_types::ApplyDeleteTopologyResourceRequest,
+        Response = hub_types::DeleteTopologyResourceResponse,
+    > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -4640,6 +4648,7 @@ async fn surface(printer: &Printer, command: &HubSurfaceCmd) -> Result<()> {
             surface_ref,
             url,
             path,
+            access_class,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
             topology_read::<_, hub_types::ExplainSurfaceRequestResponse>(
@@ -4650,7 +4659,7 @@ async fn surface(printer: &Printer, command: &HubSurfaceCmd) -> Result<()> {
                     surface: Some(surface_message(surface_ref)?),
                     url: url.clone(),
                     machine_path: path.clone().unwrap_or_default(),
-                    ..Default::default()
+                    access_class: access_class.clone(),
                 },
             )
             .await
@@ -5538,9 +5547,9 @@ async fn boundary_lifecycle_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyNetworkBoundaryLifecycleRequest,
-            Response = hub_types::NetworkBoundaryRevisionResponse,
-        > + Copy,
+        Request = hub_types::ApplyNetworkBoundaryLifecycleRequest,
+        Response = hub_types::NetworkBoundaryRevisionResponse,
+    > + Copy,
 ) -> Result<()> {
     let (boundary_id, revision) =
         parse_generation_ref(boundary_revision, "network boundary revision")?;
@@ -6119,7 +6128,7 @@ async fn topology_state_mutation<Resp>(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<Request = hub_types::ApplyDeleteTopologyResourceRequest, Response = Resp>
-        + Copy,
+    + Copy,
 ) -> Result<()>
 where
     Resp: DeserializeOwned + Serialize,
@@ -6400,9 +6409,9 @@ async fn storage_gateway_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyStorageGatewayMutationRequest,
-            Response = hub_types::StorageGatewayResponse,
-        > + Copy,
+        Request = hub_types::ApplyStorageGatewayMutationRequest,
+        Response = hub_types::StorageGatewayResponse,
+    > + Copy,
     request: hub_types::PlanStorageGatewayMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -7041,9 +7050,9 @@ async fn route_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyRouteMutationRequest,
-            Response = hub_types::DeliveryRouteResponse,
-        > + Copy,
+        Request = hub_types::ApplyRouteMutationRequest,
+        Response = hub_types::DeliveryRouteResponse,
+    > + Copy,
     request: hub_types::PlanRouteMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -7221,9 +7230,9 @@ async fn apply_topology_defaults(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplySetTopologyDefaultsRequest,
-            Response = hub_types::TopologyDefaultsResponse,
-        > + Copy,
+        Request = hub_types::ApplySetTopologyDefaultsRequest,
+        Response = hub_types::TopologyDefaultsResponse,
+    > + Copy,
 ) -> Result<()> {
     if let Some(value) = storage_binding {
         defaults.storage_binding_id = value.clone();
@@ -9263,9 +9272,9 @@ async fn apply_signing_key_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyTopologyPlanRequest,
-            Response = hub_types::SigningKeyResponse,
-        > + Copy,
+        Request = hub_types::ApplyTopologyPlanRequest,
+        Response = hub_types::SigningKeyResponse,
+    > + Copy,
 ) -> Result<()> {
     let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
     let mutation = retained_apply_mutation(apply);

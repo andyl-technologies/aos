@@ -29,8 +29,8 @@
 //! inventory and authorized placement lifecycle calls.
 
 use anyhow::{Context, Result};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
@@ -561,8 +561,6 @@ enum HubTopologyMethod {
     PlanDeleteProject,
     /// Selects the normalized `DeleteProject` Connect operation.
     DeleteProject,
-    /// Selects the normalized `GetInstanceDefaultStorageBinding` Connect operation.
-    GetInstanceDefaultStorageBinding,
     /// Selects the normalized `GetWriteAuthority` Connect operation.
     GetWriteAuthority,
     /// Selects the fenced write-authority controller observation.
@@ -1102,9 +1100,6 @@ impl HubTopologyMethod {
             CreateProject => "aos.hub.v1.ProjectService/CreateProject",
             PlanDeleteProject => "aos.hub.v1.ProjectService/PlanDeleteProject",
             DeleteProject => "aos.hub.v1.ProjectService/DeleteProject",
-            GetInstanceDefaultStorageBinding => {
-                "aos.hub.v1.StorageBindingService/GetInstanceDefaultStorageBinding"
-            }
             GetWriteAuthority => "aos.hub.v1.TopologyService/GetWriteAuthority",
             ReportWriteAuthority => "aos.hub.v1.TopologyControllerService/ReportWriteAuthority",
             PlanRemoveWriteAuthority => "aos.hub.v1.TopologyService/PlanRemoveWriteAuthority",
@@ -1483,7 +1478,6 @@ pub mod hub_rpc {
         CreateProject: ApplyProjectMutationRequest => ProjectResponse;
         PlanDeleteProject: PlanDeleteProjectRequest => TopologyPlanResponse;
         DeleteProject: ApplyProjectMutationRequest => DeleteTopologyResourceResponse;
-        GetInstanceDefaultStorageBinding: GetInstanceTopologyDefaultsRequest => GetStorageBindingResponse;
         GetWriteAuthority: GetWriteAuthorityRequest => GetWriteAuthorityResponse;
         ReportWriteAuthority: ReportWriteAuthorityRequest => WriteAuthorityObservationResponse;
         PlanRemoveWriteAuthority: SurfaceMutationRequest => TopologyPlanResponse;
@@ -1862,7 +1856,7 @@ fn ensure_trailing_slash(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{HubClient, HubSurfaceRef, HubTopologyMethod, CONNECT_PROTOCOL_VERSION_HEADER};
+    use super::{CONNECT_PROTOCOL_VERSION_HEADER, HubClient, HubSurfaceRef, HubTopologyMethod};
     use aos_proto_types::surface_ref::Target;
     use aos_proto_types::{PlanCreatePlacementRequest, PlanUpdatePlacementRequest};
     use std::str::FromStr as _;

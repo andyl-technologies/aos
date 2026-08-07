@@ -601,16 +601,6 @@
   },
   {
     "service": "StorageBindingService",
-    "method": "GetInstanceDefaultStorageBinding",
-    "exposure": "public",
-    "durability": "read_only",
-    "class": {
-      "class": "read"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "StorageBindingService",
     "method": "GetInstanceTopologyDefaults",
     "exposure": "public",
     "durability": "read_only",
