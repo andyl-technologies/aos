@@ -96,6 +96,7 @@ The resulting topology is:
 | [`12-topology-cutover-operator-runbook.md`](12-topology-cutover-operator-runbook.md) | Signed one-shot plan, quiescence, backup/restore proof, switch, rollback, and post-cutover GC procedure |
 | [`13-control-plane-parity.md`](13-control-plane-parity.md) | Canonical API ownership, Rust client console, browser and CLI authentication, capability parity, and management-surface cutover |
 | [`hub-api-manifest-v1.json`](hub-api-manifest-v1.json) | Versioned topology CLI/service family and mutation-protocol manifest |
+| [`hub-control-plane-capabilities-v1.json`](hub-control-plane-capabilities-v1.json) | Exhaustive API audience classification and CLI/Web ownership contract |
 | [`hub-cli-json-schema-v1.json`](hub-cli-json-schema-v1.json) | JSON Schema for the stable `aos hub --json` success envelope |
 | [`hub-topology-cutover-plan-v1.schema.json`](hub-topology-cutover-plan-v1.schema.json) | Closed schema for the secret-free signed cutover plan |
 | [`hub-topology-cutover-report-v1.schema.json`](hub-topology-cutover-report-v1.schema.json) | Closed schema for success, rollback, and failed-closed execution evidence |

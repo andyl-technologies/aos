@@ -310,6 +310,7 @@ struct ConnectMethod {
 fn generate_connect_descriptors(descriptor: &FileDescriptorSet) -> BuildResult<()> {
     let methods = descriptor_connect_methods(descriptor)?;
     verify_checked_api_manifest(&methods)?;
+    verify_checked_capability_manifest(&methods)?;
     let mut generated = String::from(
         "/// One Connect RPC projected directly from the canonical descriptor.\n\
          #[derive(Clone, Copy, Debug, PartialEq, Eq)]\n\
@@ -511,6 +512,171 @@ fn verify_checked_api_manifest(generated: &[ConnectMethod]) -> BuildResult<()> {
         return Err(failure(
             "checked Hub API manifest does not exactly match descriptor metadata",
         ));
+    }
+    Ok(())
+}
+
+fn verify_checked_capability_manifest(generated: &[ConnectMethod]) -> BuildResult<()> {
+    let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../docs/rfcs/0012-hub-surface-topology/hub-control-plane-capabilities-v1.json",
+    );
+    println!("cargo:rerun-if-changed={}", manifest_path.display());
+    let manifest_source = std::fs::read_to_string(&manifest_path)?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_source)?;
+    if manifest
+        .get("manifest_version")
+        .and_then(serde_json::Value::as_str)
+        != Some("aos.hub.capabilities/v1")
+    {
+        return Err(failure(
+            "unexpected checked Hub capability manifest version",
+        ));
+    }
+
+    verify_http_capabilities(&manifest)?;
+    let services = checked_array(&manifest, "services")?;
+    let mut classified = BTreeSet::new();
+    let mut service_names = BTreeSet::new();
+    for service in services {
+        let service_name = checked_string(service, "service")?;
+        if !service_names.insert(service_name) {
+            return Err(failure(format!(
+                "duplicate checked Hub capability service {service_name}"
+            )));
+        }
+        let audience = checked_string(service, "audience")?;
+        if !matches!(audience, "end-user" | "public" | "operator" | "controller") {
+            return Err(failure(format!(
+                "invalid capability audience {audience:?} for {service_name}"
+            )));
+        }
+
+        let cli_families = checked_array(service, "cli_families")?;
+        let web_workflows = checked_array(service, "web_workflows")?;
+        if matches!(audience, "end-user" | "public")
+            && (cli_families.is_empty() || web_workflows.is_empty())
+        {
+            return Err(failure(format!(
+                "public capability service {service_name} requires CLI and Web owners"
+            )));
+        }
+        if matches!(audience, "operator" | "controller") {
+            if !cli_families.is_empty() || !web_workflows.is_empty() {
+                return Err(failure(format!(
+                    "excluded capability service {service_name} declares an end-user owner"
+                )));
+            }
+            let exclusion = checked_string(service, "exclusion")?;
+            if exclusion.trim().is_empty() {
+                return Err(failure(format!(
+                    "excluded capability service {service_name} has no reason"
+                )));
+            }
+        }
+        verify_string_array(cli_families, &format!("{service_name} CLI family"))?;
+        verify_string_array(web_workflows, &format!("{service_name} Web workflow"))?;
+
+        let methods = checked_array(service, "methods")?;
+        if methods.is_empty() {
+            return Err(failure(format!(
+                "capability service {service_name} has no methods"
+            )));
+        }
+        let mut service_methods = BTreeSet::new();
+        for method in methods {
+            let method_name = method.as_str().ok_or_else(|| {
+                failure(format!(
+                    "capability service {service_name} has a non-string method"
+                ))
+            })?;
+            if !service_methods.insert(method_name) {
+                return Err(failure(format!(
+                    "duplicate capability method {service_name}/{method_name}"
+                )));
+            }
+            if !classified.insert((service_name, method_name)) {
+                return Err(failure(format!(
+                    "capability method {service_name}/{method_name} is classified twice"
+                )));
+            }
+        }
+        for method_name in &service_methods {
+            if let Some(apply_name) = method_name.strip_prefix("Plan") {
+                if !service_methods.contains(apply_name) {
+                    return Err(failure(format!(
+                        "planned capability {service_name}/{method_name} has no {apply_name} apply method"
+                    )));
+                }
+            }
+        }
+    }
+
+    let generated = generated
+        .iter()
+        .map(|method| (method.service.as_str(), method.method.as_str()))
+        .collect::<BTreeSet<_>>();
+    if classified != generated {
+        let missing = generated.difference(&classified).collect::<Vec<_>>();
+        let extra = classified.difference(&generated).collect::<Vec<_>>();
+        return Err(failure(format!(
+            "checked Hub capability manifest differs from the descriptor; missing {missing:?}, extra {extra:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn verify_http_capabilities(manifest: &serde_json::Value) -> BuildResult<()> {
+    let capabilities = checked_array(manifest, "http_capabilities")?;
+    let mut ids = BTreeSet::new();
+    let mut routes = BTreeSet::new();
+    for capability in capabilities {
+        let id = checked_string(capability, "id")?;
+        if !ids.insert(id) {
+            return Err(failure(format!("duplicate HTTP capability id {id}")));
+        }
+        let method = checked_string(capability, "method")?;
+        if !matches!(method, "GET" | "HEAD" | "POST" | "DELETE" | "PATCH" | "PUT") {
+            return Err(failure(format!(
+                "HTTP capability {id} has unsupported method {method}"
+            )));
+        }
+        let path = checked_string(capability, "path")?;
+        if !path.starts_with('/') || !routes.insert((method, path)) {
+            return Err(failure(format!(
+                "HTTP capability {id} has an invalid or duplicate route"
+            )));
+        }
+        verify_string_array(
+            checked_array(capability, "cli_families")?,
+            &format!("{id} CLI family"),
+        )?;
+        verify_string_array(
+            checked_array(capability, "web_workflows")?,
+            &format!("{id} Web workflow"),
+        )?;
+    }
+    Ok(())
+}
+
+fn checked_array<'a>(
+    value: &'a serde_json::Value,
+    field: &str,
+) -> BuildResult<&'a Vec<serde_json::Value>> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| failure(format!("checked Hub capability has no {field} array")))
+}
+
+fn verify_string_array(values: &[serde_json::Value], context: &str) -> BuildResult<()> {
+    let mut seen = BTreeSet::new();
+    for value in values {
+        let value = value
+            .as_str()
+            .ok_or_else(|| failure(format!("{context} entry is not a string")))?;
+        if value.trim().is_empty() || !seen.insert(value) {
+            return Err(failure(format!("{context} entry is empty or duplicated")));
+        }
     }
     Ok(())
 }
