@@ -220,6 +220,42 @@ fn engine_step_modes_complete_from_quantum_outcomes() {
 }
 
 #[test]
+fn duration_step_uses_global_frontier_instead_of_event_timestamp() {
+    let scenario = generated_scenario(225);
+    let configuration = Configuration::genesis(scenario);
+    let target = VirtualTime { ticks: 8 };
+    let event = crucible::test_support::condition_boundary_entry_for_test(
+        0,
+        target,
+        crucible::SchedulerEvaluationBoundaryKind::Quantum,
+    );
+    let outcome = QuantumOutcome {
+        configuration,
+        frontier: VirtualTime { ticks: 4 },
+        advanced_node: None,
+        resolved_events: Vec::new(),
+        decisions: Vec::new(),
+        event_log_entries: vec![event],
+        event_log_segment_bytes: Vec::new(),
+        event_log_segment_text: String::new(),
+        event_log_segment_hash: None,
+        event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 1),
+        scheduler_quiescence: None,
+    };
+    let step = ActiveStep::new(
+        StepMode::Duration(SimDuration { nanos: 8 }),
+        VirtualTime::default(),
+    );
+
+    assert_eq!(step.target_frontier, Some(target));
+    assert!(
+        !step
+            .is_complete(&outcome, 0)
+            .unwrap_or_else(|error| panic!("duration completion should evaluate: {error}"))
+    );
+}
+
+#[test]
 fn timer_step_ignores_timer_actions_without_timer_predicate_fire() {
     let scenario = generated_scenario(26);
     let config = Configuration::genesis(scenario.clone());

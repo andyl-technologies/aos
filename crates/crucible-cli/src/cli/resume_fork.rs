@@ -1258,6 +1258,7 @@ pub(super) async fn wait_for_resume_workflow_summary<C>(
 where
     C: ControlClient + Sync,
 {
+    let mut last_observed = None;
     for _ in 0..max_attempts {
         let sessions = client.list_sessions().await.map_err(control_client_error)?;
         let Some(summary) = sessions
@@ -1273,10 +1274,20 @@ where
         if summary.state == LiveStateKind::Stopped {
             return Err(CliError::Outcome(status_from_outcome(summary.outcome)?));
         }
+        last_observed = Some(summary.clone());
         tokio::task::yield_now().await;
     }
+    let Some(last) = last_observed else {
+        return Err(backend_error(format!(
+            "resume workflow did not observe a session while waiting for {description}"
+        )));
+    };
     Err(backend_error(format!(
-        "resume workflow did not reach {description}"
+        "resume workflow did not reach {description}: state={} frontier_ticks={} quanta={} outcome={}",
+        format!("{:?}", last.state).to_ascii_lowercase(),
+        last.frontier.ticks,
+        last.quanta_stepped,
+        terminal_outcome_label(last.outcome),
     )))
 }
 
