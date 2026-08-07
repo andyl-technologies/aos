@@ -22,6 +22,7 @@
     imageDiskMiB = 16384;
     memoryMiB = 4096;
     packages = ["aos-test-agent"];
+    extraClosures = [pkgs.coreutils];
     metadata."host.nix" = ''
       {
         aos.provisioning.storage.partitions.var.sizeMin = "2G";
