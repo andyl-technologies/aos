@@ -146,7 +146,9 @@ aos hub org invitation create plan acme new.member@example.com \
 aos hub org invitation accept acme --secret "$AOS_INVITATION_SECRET"
 ```
 
-Apply the create plan to receive the acceptance secret once. The administrator
+Apply the create plan to receive the acceptance secret. An interrupted client
+may retry with the exact same plan and apply idempotency key to recover the same
+secret; another key is rejected. The administrator
 delivers that secret to the exact invited email. `cancel plan` requires the
 invitation `resource_version` returned by list or show. Accepting creates the
 membership atomically; creating an invitation never creates a user or grants

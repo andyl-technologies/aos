@@ -121,9 +121,24 @@ pub(crate) async fn require_session(
     deps: &ConsoleDeps,
     headers: &HeaderMap,
 ) -> Result<Session, Box<Response>> {
+    require_session_with_return(deps, headers, None).await
+}
+
+/// Loads a session and preserves one validated destination through login.
+async fn require_session_with_return(
+    deps: &ConsoleDeps,
+    headers: &HeaderMap,
+    return_to: Option<&str>,
+) -> Result<Session, Box<Response>> {
     let resolved = match resolve_session_from_headers(&deps.db, headers).await {
         Ok(Some(resolved)) => resolved,
-        Ok(None) => return Err(Box::new(Redirect::to("/login").into_response())),
+        Ok(None) => {
+            let location = safe_return_path(return_to).map_or_else(
+                || "/login".to_string(),
+                |path| format!("/login?next={}", urlencode(path)),
+            );
+            return Err(Box::new(Redirect::to(&location).into_response()));
+        }
         Err(err) => return Err(Box::new(internal(err))),
     };
     Ok(Session {
@@ -1041,16 +1056,27 @@ pub(crate) fn resolved_client_ip(headers: &HeaderMap) -> String {
 pub(crate) async fn login_form(
     _deps: ConsoleDeps,
     RequestStart(started): RequestStart,
+    Query(query): Query<LoginQuery>,
 ) -> Response {
     let nonce = crate::auth::webauthn::new_challenge();
-    let html = console::login_page(None, Some(&nonce), started);
+    let next = safe_return_path(query.next.as_deref());
+    let html = console::login_page(None, Some(&nonce), next, started);
     passkey_html_response(html, &nonce)
+}
+
+/// Optional same-origin destination carried through browser authentication.
+#[derive(serde::Deserialize, Default)]
+pub(crate) struct LoginQuery {
+    #[serde(default)]
+    next: Option<String>,
 }
 
 /// `POST /login` body: the email to send a magic link to.
 #[derive(serde::Deserialize)]
 pub(crate) struct LoginForm {
     email: String,
+    #[serde(default)]
+    next: Option<String>,
 }
 
 /// `POST /login` — route to SSO or issue a magic link.
@@ -1076,10 +1102,12 @@ pub(crate) async fn login_submit(
     Form(form): Form<LoginForm>,
 ) -> Response {
     let email = form.email.trim().to_lowercase();
+    let next = safe_return_path(form.next.as_deref());
     if email.is_empty() || !email.contains('@') {
         return Html(console::login_page(
             Some("Enter a valid email address."),
             None,
+            next,
             started,
         ))
         .into_response();
@@ -1101,20 +1129,27 @@ pub(crate) async fn login_submit(
     }
     // Domain capture: route to the org's IdP when one is configured.
     if let Some((org_slug, enforce_sso)) = sso_target(&deps, &email).await {
-        let start = sso_start_path(&org_slug);
+        let start = sso_start_path(&org_slug, next);
         if enforce_sso {
             return Redirect::to(&start).into_response();
         }
-        return Html(console::login_sso_page(&email, &org_slug, &start, started)).into_response();
+        return Html(console::login_sso_page(
+            &email, &org_slug, &start, next, started,
+        ))
+        .into_response();
     }
     let secret = match deps.db.create_magic_link(&email).await {
         Ok(secret) => secret,
         Err(err) => return internal(err),
     };
-    let link = format!(
+    let mut link = format!(
         "{}/auth/magic?token={secret}",
         deps.external_url.trim_end_matches('/'),
     );
+    if let Some(next) = next {
+        link.push_str("&next=");
+        link.push_str(&urlencode(next));
+    }
     // Render with the configured brand so the email reads "Sign in to <brand>"
     // rather than the generic fallback; the transport differs per shell but the
     // copy is shared (see `crate::email`).
@@ -1133,6 +1168,8 @@ pub(crate) async fn login_submit(
 pub(crate) struct PasswordLoginForm {
     email: String,
     password: String,
+    #[serde(default)]
+    next: Option<String>,
 }
 
 /// `POST /login/password` — authenticate an email + password, sign the user in.
@@ -1159,12 +1196,14 @@ pub(crate) async fn login_password(
     Form(form): Form<PasswordLoginForm>,
 ) -> Response {
     let email = form.email.trim().to_lowercase();
+    let next = safe_return_path(form.next.as_deref());
     // The single generic failure render, used for every rejection path so the
     // endpoint is not an account-existence oracle.
     let invalid = || {
         Html(console::login_page(
             Some("Invalid email or password."),
             None,
+            next,
             started,
         ))
         .into_response()
@@ -1179,6 +1218,7 @@ pub(crate) async fn login_password(
         return Html(console::login_page(
             Some("Password login is disabled on this instance. Use SSO or a magic link."),
             None,
+            next,
             started,
         ))
         .into_response();
@@ -1221,7 +1261,9 @@ pub(crate) async fn login_password(
     // here with the password verified means an SSO-enforced user had a password
     // set before enforcement was turned on; refuse the local session anyway.)
     match sso_enforced_for(&deps, &email, Some(user_id)).await {
-        Ok(Some(org_slug)) => return Redirect::to(&sso_start_path(&org_slug)).into_response(),
+        Ok(Some(org_slug)) => {
+            return Redirect::to(&sso_start_path(&org_slug, next)).into_response()
+        }
         Ok(None) => {}
         Err(err) => return internal(err),
     }
@@ -1231,7 +1273,8 @@ pub(crate) async fn login_password(
         Ok(secret) => set_cookie_header(&secret, lifetime),
         Err(err) => return internal(err),
     };
-    ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
+    let target = next.unwrap_or("/");
+    ([(header::SET_COOKIE, cookie)], Redirect::to(target)).into_response()
 }
 
 /// Decode an `application/x-www-form-urlencoded` body into a field map.
@@ -1305,8 +1348,23 @@ async fn sso_enforced_for(
 }
 
 /// The OIDC start path that redirects a browser into an org's IdP login.
-fn sso_start_path(org_slug: &str) -> String {
-    format!("/auth/oidc/start?org={}", urlencode(org_slug))
+fn sso_start_path(org_slug: &str, next: Option<&str>) -> String {
+    let mut path = format!("/auth/oidc/start?org={}", urlencode(org_slug));
+    if let Some(next) = safe_return_path(next) {
+        path.push_str("&next=");
+        path.push_str(&urlencode(next));
+    }
+    path
+}
+
+/// Accept only an absolute path on this origin as a post-authentication target.
+fn safe_return_path(next: Option<&str>) -> Option<&str> {
+    next.map(str::trim).filter(|path| {
+        path.starts_with('/')
+            && !path.starts_with("//")
+            && !path.contains('\\')
+            && !path.chars().any(char::is_control)
+    })
 }
 
 // -- OIDC single sign-on ----------------------------------------------------
@@ -1323,6 +1381,8 @@ fn sso_start_path(org_slug: &str) -> String {
 #[derive(serde::Deserialize)]
 pub(crate) struct SsoForm {
     org: String,
+    #[serde(default)]
+    next: Option<String>,
 }
 
 /// `POST /auth/sso` — the no-JS "Sign in with SSO" button target.
@@ -1335,7 +1395,13 @@ pub(crate) async fn login_sso(
     RequestStart(started): RequestStart,
     Form(form): Form<SsoForm>,
 ) -> Response {
-    begin_oidc(&deps, &form.org, None, started).await
+    begin_oidc(
+        &deps,
+        &form.org,
+        safe_return_path(form.next.as_deref()),
+        started,
+    )
+    .await
 }
 
 /// `GET /auth/oidc/start?org=` query.
@@ -1366,6 +1432,7 @@ async fn begin_oidc(
     next: Option<&str>,
     started: Instant,
 ) -> Response {
+    let next = safe_return_path(next);
     let org = match deps.db.org_by_slug(org_slug).await {
         Ok(Some(org)) => org,
         Ok(None) => return sso_error("That organization does not exist.", started),
@@ -1417,16 +1484,13 @@ pub(crate) async fn oidc_callback(
     };
     // Honor the staged redirect only for same-origin relative paths (a leading
     // single `/`), so a forged `next` can never bounce the browser off-site.
-    let target = login
-        .redirect_after
-        .filter(|p| p.starts_with('/') && !p.starts_with("//"))
-        .unwrap_or_else(|| "/".to_string());
+    let target = safe_return_path(login.redirect_after.as_deref()).unwrap_or("/");
     ([(header::SET_COOKIE, cookie)], Redirect::to(&target)).into_response()
 }
 
 /// Render a clean SSO error page (no stack traces).
 fn sso_error(message: &str, started: Instant) -> Response {
-    Html(console::login_page(Some(message), None, started)).into_response()
+    Html(console::login_page(Some(message), None, None, started)).into_response()
 }
 
 // -- query / form param shapes ----------------------------------------------
@@ -1473,6 +1537,8 @@ pub(crate) struct CsrfForm {
 #[derive(serde::Deserialize)]
 pub(crate) struct MagicQuery {
     token: String,
+    #[serde(default)]
+    next: Option<String>,
 }
 
 /// `GET /auth/magic?token=<secret>` — consume the link, sign the user in.
@@ -1491,6 +1557,7 @@ pub(crate) async fn magic_consume(
             return Html(console::login_page(
                 Some("That sign-in link is invalid or expired. Request a new one."),
                 None,
+                safe_return_path(query.next.as_deref()),
                 started,
             ))
             .into_response()
@@ -1506,7 +1573,8 @@ pub(crate) async fn magic_consume(
         Ok(secret) => set_cookie_header(&secret, lifetime),
         Err(err) => return internal(err),
     };
-    ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
+    let target = safe_return_path(query.next.as_deref()).unwrap_or("/");
+    ([(header::SET_COOKIE, cookie)], Redirect::to(target)).into_response()
 }
 
 /// `GET /logout` — shows the non-mutating logout confirmation form.
@@ -1934,7 +2002,7 @@ pub(crate) async fn passkey_login_finish(
             Ok(Some(org_slug)) => {
                 return (
                     StatusCode::FORBIDDEN,
-                    Json(serde_json::json!({ "redirect": sso_start_path(&org_slug) })),
+                    Json(serde_json::json!({ "redirect": sso_start_path(&org_slug, None) })),
                 )
                     .into_response();
             }
@@ -4774,7 +4842,8 @@ pub(crate) async fn cancel_invitation(
 /// Query carried by the invitation acceptance link.
 #[derive(serde::Deserialize)]
 pub(crate) struct InvitationAcceptQuery {
-    token: String,
+    #[serde(default)]
+    token: Option<String>,
 }
 
 /// CSRF-protected invitation acceptance form.
@@ -4782,8 +4851,49 @@ pub(crate) struct InvitationAcceptQuery {
 pub(crate) struct InvitationAcceptForm {
     #[serde(default)]
     csrf: String,
-    #[serde(default)]
-    token: String,
+}
+
+const INVITATION_HANDOFF_COOKIE: &str = "__Host-aos_invitation";
+const INVITATION_HANDOFF_TTL_SECS: i64 = 30 * 60;
+
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    headers
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix(&prefix).map(str::to_string))
+}
+
+fn invitation_handoff_cookie(secret: &str) -> String {
+    format!(
+        "{INVITATION_HANDOFF_COOKIE}={secret}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age={INVITATION_HANDOFF_TTL_SECS}"
+    )
+}
+
+fn clear_invitation_handoff_cookie() -> String {
+    format!("{INVITATION_HANDOFF_COOKIE}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+}
+
+fn sensitive_browser_response(mut response: Response, set_cookie: Option<&str>) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    if let Some(cookie) = set_cookie {
+        match HeaderValue::from_str(cookie) {
+            Ok(value) => {
+                headers.append(header::SET_COOKIE, value);
+            }
+            Err(error) => return internal(error.into()),
+        }
+    }
+    response
 }
 
 /// `GET /-/org/{org}/invitations/accept` — review an invitation ceremony.
@@ -4794,21 +4904,41 @@ pub(crate) async fn invitation_acceptance(
     Path(org_slug): Path<String>,
     Query(query): Query<InvitationAcceptQuery>,
 ) -> Response {
-    let session = match require_session(&deps, &headers).await {
+    let clean_path = format!("/-/org/{org_slug}/invitations/accept");
+    if let Some(token) = query.token.as_deref().filter(|token| !token.is_empty()) {
+        if !crate::auth::token::is_invitation_token(token) {
+            return sensitive_browser_response(
+                (StatusCode::BAD_REQUEST, "invalid invitation credential").into_response(),
+                None,
+            );
+        }
+        let response = Redirect::to(&clean_path).into_response();
+        return sensitive_browser_response(response, Some(&invitation_handoff_cookie(token)));
+    }
+    let session = match require_session_with_return(&deps, &headers, Some(&clean_path)).await {
         Ok(session) => session,
         Err(response) => return *response,
     };
-    if query.token.is_empty() {
-        return (StatusCode::BAD_REQUEST, "invitation token is required").into_response();
+    if cookie_value(&headers, INVITATION_HANDOFF_COOKIE).is_none() {
+        return sensitive_browser_response(
+            (
+                StatusCode::BAD_REQUEST,
+                "invitation handoff is missing or expired",
+            )
+                .into_response(),
+            None,
+        );
     }
-    Html(console::invitation_acceptance_page(
-        &session.email,
-        &org_slug,
-        &session.csrf(),
-        &query.token,
-        started,
-    ))
-    .into_response()
+    sensitive_browser_response(
+        Html(console::invitation_acceptance_page(
+            &session.email,
+            &org_slug,
+            &session.csrf(),
+            started,
+        ))
+        .into_response(),
+        None,
+    )
 }
 
 /// `POST /-/org/{org}/invitations/accept` — atomically accept and join.
@@ -4825,6 +4955,13 @@ pub(crate) async fn accept_invitation(
     if let Err(response) = check_csrf(&session, &form.csrf) {
         return *response;
     }
+    let Some(secret) = cookie_value(&headers, INVITATION_HANDOFF_COOKIE) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "invitation handoff is missing or expired",
+        )
+            .into_response();
+    };
     let bearer = match session.topology_bearer(&deps, Scope::root()) {
         Ok(bearer) => bearer,
         Err(error) => return internal(error),
@@ -4835,12 +4972,15 @@ pub(crate) async fn accept_invitation(
             &bearer,
             aos_proto_types::AcceptInvitationRequest {
                 org_slug: org_slug.clone(),
-                secret: form.token,
+                secret,
             },
         )
         .await
     {
-        Ok(_) => Redirect::to(&format!("/-/org/{org_slug}/members")).into_response(),
+        Ok(_) => sensitive_browser_response(
+            Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+            Some(&clear_invitation_handoff_cookie()),
+        ),
         Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
     }
 }
@@ -10225,7 +10365,30 @@ pub(crate) async fn change_reopen(
 mod tests {
     use axum::http::{header, HeaderMap, HeaderValue};
 
-    use super::{delivery_route_url, request_has_exact_origin};
+    use super::{delivery_route_url, request_has_exact_origin, safe_return_path};
+
+    #[test]
+    fn login_return_paths_are_same_origin_and_header_safe() {
+        assert_eq!(
+            safe_return_path(Some(" /-/org/acme/members ")),
+            Some("/-/org/acme/members")
+        );
+        assert_eq!(
+            safe_return_path(Some("/invite?secret=opaque")),
+            Some("/invite?secret=opaque")
+        );
+
+        for unsafe_path in [
+            "https://evil.example/",
+            "//evil.example/",
+            "/\\evil.example/",
+            "/safe\r\nlocation: https://evil.example/",
+            "relative/path",
+            "",
+        ] {
+            assert_eq!(safe_return_path(Some(unsafe_path)), None, "{unsafe_path:?}");
+        }
+    }
 
     #[test]
     fn delivery_route_url_preserves_endpoint_scheme_and_effective_port() {

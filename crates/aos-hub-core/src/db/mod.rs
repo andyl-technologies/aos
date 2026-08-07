@@ -360,7 +360,7 @@ const MAX_AUDIT_SCAN: i64 = 10_000;
 const PORTABLE_RELATIONAL_ID_MAX: i64 = 9_007_199_254_740_991;
 
 /// Derives a positive, cross-runtime relational key from a stable incarnation.
-fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
+pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
     (incarnation.as_u128() % PORTABLE_RELATIONAL_ID_MAX as u128) as i64 + 1
 }
 
@@ -395,6 +395,45 @@ pub fn migration_statements() -> Vec<String> {
         .iter()
         .flat_map(|m| crate::backend::split_statements(m))
         .collect()
+}
+
+/// Returns a MySQL migration statement that is safe to replay after DDL's
+/// implicit commit boundary.
+fn mysql_replay_safe_migration_sql(sql: &str) -> String {
+    if sql.contains("CREATE TABLE ") && !sql.contains("CREATE TABLE IF NOT EXISTS ") {
+        return sql.replacen("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1);
+    }
+    if sql.contains("CREATE VIEW ") {
+        return sql.replacen("CREATE VIEW ", "CREATE OR REPLACE VIEW ", 1);
+    }
+    if sql.contains(" ADD COLUMN ") && !sql.contains(" ADD COLUMN IF NOT EXISTS ") {
+        return sql.replacen(" ADD COLUMN ", " ADD COLUMN IF NOT EXISTS ", 1);
+    }
+    if sql.contains("INSERT INTO ") && !sql.contains("ON CONFLICT") {
+        return sql.replacen("INSERT INTO ", "INSERT IGNORE INTO ", 1);
+    }
+    sql.to_string()
+}
+
+/// Extracts the table and index names from a migration `CREATE INDEX`.
+fn mysql_migration_index_identity(sql: &str) -> Option<(&str, &str)> {
+    let start = sql
+        .find("CREATE UNIQUE INDEX ")
+        .map(|offset| offset + "CREATE UNIQUE INDEX ".len())
+        .or_else(|| {
+            sql.find("CREATE INDEX ")
+                .map(|offset| offset + "CREATE INDEX ".len())
+        })?;
+    let rest = sql.get(start..)?.trim_start();
+    let index_end = rest.find(char::is_whitespace)?;
+    let index = rest.get(..index_end)?.trim_matches('`');
+    let after_index = rest.get(index_end..)?.trim_start();
+    let after_on = after_index.strip_prefix("ON ")?.trim_start();
+    let table_end = after_on
+        .find(|character: char| character.is_whitespace() || character == '(')
+        .unwrap_or(after_on.len());
+    let table = after_on.get(..table_end)?.trim_matches('`');
+    (!table.is_empty() && !index.is_empty()).then_some((table, index))
 }
 
 /// Marker error: a membership mutation was refused because it would leave an
@@ -3081,9 +3120,36 @@ impl Database {
                 &[],
             )
             .await?;
+        let mysql = self.dialect() == Dialect::Mysql;
+        if mysql {
+            // MySQL needs an actual singleton key: two replicas may initialize
+            // concurrently, and the legacy one-column marker cannot prevent
+            // duplicate rows. Seed the keyed marker from an existing install's
+            // maximum legacy version; the upsert is atomic under the primary key.
+            self.backend
+                .execute(
+                    "CREATE TABLE IF NOT EXISTS hub_schema_version (
+                       id INTEGER PRIMARY KEY, version INTEGER NOT NULL)",
+                    &[],
+                )
+                .await?;
+            self.backend
+                .execute(
+                    "INSERT INTO hub_schema_version(id, version)
+                     SELECT 0, COALESCE(MAX(version), 0) FROM schema_version
+                     ON CONFLICT(id) DO NOTHING",
+                    &[],
+                )
+                .await?;
+        }
+        let marker_query = if mysql {
+            "SELECT version FROM hub_schema_version WHERE id = 0"
+        } else {
+            "SELECT version FROM schema_version"
+        };
         let current: i64 = self
             .backend
-            .query_opt("SELECT version FROM schema_version", &[])
+            .query_opt(marker_query, &[])
             .await?
             .map(|row| row.get::<i64>(0))
             .transpose()?
@@ -3095,26 +3161,107 @@ impl Database {
         if current > target {
             bail!("hub database schema {current} is newer than this build supports ({target})");
         }
-        // Apply all pending migrations as one portable batch. Local SQLite and
-        // Worker HubDb execute the same multi-statement string atomically; the
-        // native server backends use their transaction-backed implementation.
+        // Apply every pending migration *and* advance the version marker in one
+        // portable transaction. Keeping the marker in the same batch matters
+        // for Durable Objects: if an isolate is evicted after DDL commits but
+        // before a separate marker write, startup would replay a non-idempotent
+        // `ALTER TABLE` and permanently wedge the object.
         if (current as usize) < MIGRATIONS.len() {
-            let pending = MIGRATIONS[current as usize..].join("\n");
-            self.backend
-                .execute_batch(&pending)
-                .await
-                .with_context(|| format!("applying migrations v{}..=v{}", current + 1, target))?;
+            if mysql {
+                // MySQL implicitly commits DDL. Apply one replay-safe
+                // statement at a time, checking indexes through the catalog,
+                // then atomically advance the singleton ledger after each
+                // complete migration. A crash can repeat only idempotent work.
+                for (offset, migration) in MIGRATIONS[current as usize..].iter().enumerate() {
+                    let migration_version = current + offset as i64 + 1;
+                    for sql in crate::backend::split_statements(migration) {
+                        if let Some((table, index)) = mysql_migration_index_identity(&sql) {
+                            let exists = self
+                                .backend
+                                .query_opt(
+                                    "SELECT 1 FROM information_schema.statistics
+                                      WHERE table_schema = DATABASE()
+                                        AND table_name = ?1 AND index_name = ?2 LIMIT 1",
+                                    &vals![table, index],
+                                )
+                                .await?
+                                .is_some();
+                            if exists {
+                                continue;
+                            }
+                        }
+                        let replay_safe = mysql_replay_safe_migration_sql(&sql);
+                        if let Err(error) = self.backend.execute(&replay_safe, &[]).await {
+                            // Concurrent starters can both observe an absent
+                            // index. Treat the losing CREATE as success only
+                            // after the catalog proves the exact index exists.
+                            let concurrently_created = if let Some((table, index)) =
+                                mysql_migration_index_identity(&sql)
+                            {
+                                self.backend
+                                    .query_opt(
+                                        "SELECT 1 FROM information_schema.statistics
+                                          WHERE table_schema = DATABASE()
+                                            AND table_name = ?1 AND index_name = ?2 LIMIT 1",
+                                        &vals![table, index],
+                                    )
+                                    .await?
+                                    .is_some()
+                            } else {
+                                false
+                            };
+                            if !concurrently_created {
+                                return Err(error).with_context(|| {
+                                    format!("applying MySQL schema migration v{migration_version}")
+                                });
+                            }
+                        }
+                    }
+                    self.backend
+                        .execute(
+                            "UPDATE hub_schema_version SET version = ?1 WHERE id = 0",
+                            &vals![migration_version],
+                        )
+                        .await?;
+                    // Keep the pre-hard-cutover marker monotonic for a rolling
+                    // old process, but never use its unkeyed shape for new code.
+                    self.backend
+                        .execute(
+                            "UPDATE schema_version SET version = ?1",
+                            &vals![migration_version],
+                        )
+                        .await?;
+                }
+            } else {
+                let mut pending = MIGRATIONS[current as usize..].join("\n");
+                pending.push_str("\nDELETE FROM schema_version;\n");
+                pending.push_str(&format!(
+                    "INSERT INTO schema_version (version) VALUES ({target});\n"
+                ));
+                let statements = crate::backend::split_statements(&pending)
+                    .into_iter()
+                    .map(|sql| Statement::new(sql, Vec::new()))
+                    .collect::<Vec<_>>();
+                self.backend
+                    .batch(&statements)
+                    .await
+                    .with_context(|| format!("applying migrations v{}..=v{target}", current + 1))?;
+            }
             self.require_schema_identity().await?;
+        } else {
+            // Normalize malformed-but-compatible marker tables left by older
+            // builds to exactly one row without making every startup rewrite it.
+            let rows = self
+                .backend
+                .query("SELECT version FROM schema_version", &[])
+                .await?;
+            if !mysql && rows.len() != 1 {
+                let marker = format!(
+                    "DELETE FROM schema_version;\nINSERT INTO schema_version (version) VALUES ({target});"
+                );
+                self.backend.execute_batch(&marker).await?;
+            }
         }
-        self.backend
-            .execute("DELETE FROM schema_version", &[])
-            .await?;
-        self.backend
-            .execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                &vals![target],
-            )
-            .await?;
         Ok(())
     }
 
@@ -15817,7 +15964,8 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT COUNT(*) FROM invitations
-                 WHERE email = ?1 AND accepted_at IS NULL AND expires_at > ?2",
+                 WHERE email = ?1 AND accepted_at IS NULL
+                   AND cancelled_at IS NULL AND expires_at > ?2",
                 &vals![email, now],
             )
             .await?
@@ -16228,6 +16376,76 @@ impl Database {
             .transpose()
     }
 
+    /// Loads the sealed recovery copy for one live pending invitation.
+    ///
+    /// Terminal transitions erase this value. Callers must unseal it through
+    /// the runtime's retained [`crate::auth::seal::SecretSealer`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn recoverable_invitation_sealed_secret(
+        &self,
+        invitation_id: i64,
+    ) -> Result<Option<String>> {
+        let now = unix_now();
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT secret_enc FROM invitations
+                  WHERE id = ?1 AND accepted_at IS NULL AND cancelled_at IS NULL
+                    AND expires_at > ?2 AND secret_enc IS NOT NULL",
+                &vals![invitation_id, now],
+            )
+            .await?;
+        if let Some(row) = row {
+            return row.get(0).map(Some);
+        }
+        self.backend
+            .execute(
+                "UPDATE invitations SET secret_enc = NULL
+                  WHERE id = ?1 AND secret_enc IS NOT NULL
+                    AND (accepted_at IS NOT NULL OR cancelled_at IS NOT NULL
+                         OR expires_at <= ?2)",
+                &vals![invitation_id, now],
+            )
+            .await?;
+        Ok(None)
+    }
+
+    /// Erases recovery ciphertext and releases live keys for expired invitations.
+    ///
+    /// The bounded batch is safe to repeat and commits both effects atomically.
+    /// `limit` is clamped to keep one maintenance pass from monopolizing the
+    /// database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn prune_expired_invitation_secrets(&self, now: i64, limit: i64) -> Result<()> {
+        let limit = limit.clamp(1, 10_000);
+        let expired_ids = "SELECT expired_id FROM (
+                            SELECT id AS expired_id FROM invitations
+                             WHERE accepted_at IS NULL AND cancelled_at IS NULL
+                               AND expires_at <= ?1
+                             ORDER BY expires_at, id LIMIT ?2
+                          ) expired_invitations";
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    format!("UPDATE invitations SET secret_enc = NULL WHERE id IN ({expired_ids})"),
+                    vals![now, limit],
+                )
+                .unchecked(),
+                Statement::new(
+                    format!("DELETE FROM live_invitations WHERE invitation_id IN ({expired_ids})"),
+                    vals![now, limit],
+                )
+                .unchecked(),
+            ])
+            .await
+    }
+
     /// Finds a live invitation for the same email and membership scope.
     ///
     /// # Errors
@@ -16280,31 +16498,152 @@ impl Database {
         if crate::domain::Role::parse(role).is_none() {
             bail!("unknown invitation role '{role}'");
         }
-        let invitation_id = self.max_id("invitations").await? + 1;
-        let affected = self
-            .backend
-            .execute(
-                "INSERT INTO invitations
-             (id, org_id, email, scope_key, role, token_hash, created_at, expires_at)
-             SELECT ?1, ?2, ?3, a.scope_key, ?5, ?6, ?7, ?8
-             FROM authorization_scopes a JOIN orgs o ON o.id = a.org_id
-             WHERE a.scope_key = ?4 AND a.org_id = ?2 AND o.deleted_at IS NULL",
-                &vals![
-                    invitation_id,
-                    org_id,
-                    email,
-                    scope,
-                    role,
-                    token_hash,
-                    unix_now(),
-                    expires_at
-                ],
-            )
+        let invitation_id = portable_relational_id(uuid::Uuid::new_v4());
+        let now = unix_now();
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE invitations SET secret_enc = NULL
+                       WHERE id IN (
+                         SELECT invitation_id FROM live_invitations
+                          WHERE org_id = ?1 AND email = ?2 AND scope_key = ?3)
+                         AND expires_at <= ?4",
+                    vals![org_id, email, scope, now],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM live_invitations
+                       WHERE org_id = ?1 AND email = ?2 AND scope_key = ?3
+                         AND invitation_id IN (
+                           SELECT id FROM invitations WHERE expires_at <= ?4)",
+                    vals![org_id, email, scope, now],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO invitations
+                     (id, org_id, email, scope_key, role, token_hash, created_at, expires_at)
+                     SELECT ?1, ?2, ?3, a.scope_key, ?5, ?6, ?7, ?8
+                       FROM authorization_scopes a JOIN orgs o ON o.id = a.org_id
+                      WHERE a.scope_key = ?4 AND a.org_id = ?2 AND o.deleted_at IS NULL",
+                    vals![
+                        invitation_id,
+                        org_id,
+                        email,
+                        scope,
+                        role,
+                        token_hash,
+                        now,
+                        expires_at
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO live_invitations(org_id, email, scope_key, invitation_id)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    vals![org_id, email, scope, invitation_id],
+                )
+                .expecting(1),
+            ])
             .await?;
-        if affected != 1 {
-            bail!("invitation scope does not identify a live scope in the organization");
-        }
         Ok(invitation_id)
+    }
+
+    /// Creates an invitation, audits it, and completes its reviewed plan atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation, serialization, authorization-scope
+    /// lookup, live-key uniqueness, plan fencing, or persistence fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_invitation_creation_plan(
+        &self,
+        record: &InvitationRecord,
+        token_hash: &str,
+        sealed_secret: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        validate_json_value(result_json, "apply result")?;
+        let now = unix_now();
+        let detail = format!("invitation_id={}", record.id);
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE invitations SET secret_enc = NULL
+                       WHERE id IN (
+                         SELECT invitation_id FROM live_invitations
+                          WHERE org_id = ?1 AND email = ?2 AND scope_key = ?3)
+                         AND expires_at <= ?4",
+                    vals![record.org_id, record.email, record.scope, now],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM live_invitations
+                       WHERE org_id = ?1 AND email = ?2 AND scope_key = ?3
+                         AND invitation_id IN (
+                           SELECT id FROM invitations WHERE expires_at <= ?4)",
+                    vals![record.org_id, record.email, record.scope, now],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO invitations
+                     (id, org_id, email, scope_key, role, token_hash, created_at,
+                      expires_at, secret_enc)
+                     SELECT ?1, ?2, ?3, a.scope_key, ?5, ?6, ?7, ?8, ?9
+                       FROM authorization_scopes a JOIN orgs o ON o.id = a.org_id
+                      WHERE a.scope_key = ?4 AND a.org_id = ?2 AND o.deleted_at IS NULL",
+                    vals![
+                        record.id,
+                        record.org_id,
+                        record.email,
+                        record.scope,
+                        record.role,
+                        token_hash,
+                        record.created_at,
+                        record.expires_at,
+                        sealed_secret
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO live_invitations(org_id, email, scope_key, invitation_id)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    vals![record.org_id, record.email, record.scope, record.id],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO audit_log
+                     (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
+                      action, scope, detail, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'invitation.create', ?6, ?7, ?8)",
+                    vals![
+                        audit_event_id,
+                        plan_id,
+                        actor_kind,
+                        actor_id,
+                        sanitize_log_text(actor_label),
+                        sanitize_log_text(&record.scope),
+                        detail,
+                        now
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE topology_plans SET applied_at = ?4, apply_result_json = ?3
+                       WHERE plan_id = ?1 AND apply_idempotency_key = ?2
+                         AND applied_at IS NULL",
+                    vals![plan_id, apply_idempotency_key, result_json, now],
+                )
+                .expecting(1),
+            ])
+            .await
     }
 
     /// Cancels a live invitation using an optimistic-concurrency baseline.
@@ -16321,17 +16660,113 @@ impl Database {
         expected_created_at: i64,
     ) -> Result<bool> {
         let now = unix_now();
-        Ok(self
+        let result = self
             .backend
-            .execute(
-                "UPDATE invitations SET cancelled_at = ?3
-                  WHERE id = ?1 AND created_at = ?2
-                    AND accepted_at IS NULL AND cancelled_at IS NULL
-                    AND expires_at > ?3",
-                &vals![invitation_id, expected_created_at, now],
-            )
-            .await?
-            == 1)
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE invitations SET cancelled_at = ?3, secret_enc = NULL
+                      WHERE id = ?1 AND created_at = ?2
+                        AND accepted_at IS NULL AND cancelled_at IS NULL
+                        AND expires_at > ?3",
+                    vals![invitation_id, expected_created_at, now],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM live_invitations WHERE invitation_id = ?1",
+                    vals![invitation_id],
+                )
+                .expecting(1),
+            ])
+            .await;
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                let still_matches = self
+                    .backend
+                    .query_opt(
+                        "SELECT id FROM invitations
+                           WHERE id = ?1 AND created_at = ?2
+                             AND accepted_at IS NULL AND cancelled_at IS NULL
+                             AND expires_at > ?3",
+                        &vals![invitation_id, expected_created_at, now],
+                    )
+                    .await?
+                    .is_some();
+                if still_matches {
+                    Err(error)
+                } else {
+                    Ok(false)
+                }
+            }
+        }
+    }
+
+    /// Cancels an invitation, audits it, and completes its reviewed plan atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the invitation CAS, live-key release, audit
+    /// append, plan fence, validation, or persistence fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_invitation_cancellation_plan(
+        &self,
+        invitation_id: i64,
+        expected_created_at: i64,
+        cancelled_at: i64,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        validate_json_value(result_json, "apply result")?;
+        let detail = format!("invitation_id={invitation_id}");
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE invitations SET cancelled_at = ?3, secret_enc = NULL
+                      WHERE id = ?1 AND created_at = ?2
+                        AND accepted_at IS NULL AND cancelled_at IS NULL
+                        AND expires_at > ?3",
+                    vals![invitation_id, expected_created_at, cancelled_at],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM live_invitations WHERE invitation_id = ?1",
+                    vals![invitation_id],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO audit_log
+                     (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
+                      action, scope, detail, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'invitation.cancel', ?6, ?7, ?8)",
+                    vals![
+                        audit_event_id,
+                        plan_id,
+                        actor_kind,
+                        actor_id,
+                        sanitize_log_text(actor_label),
+                        sanitize_log_text(scope),
+                        detail,
+                        cancelled_at
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE topology_plans SET applied_at = ?4, apply_result_json = ?3
+                       WHERE plan_id = ?1 AND apply_idempotency_key = ?2
+                         AND applied_at IS NULL",
+                    vals![plan_id, apply_idempotency_key, result_json, cancelled_at],
+                )
+                .expecting(1),
+            ])
+            .await
     }
 
     /// Accepts an invitation and creates its membership in one transaction.
@@ -16354,6 +16789,46 @@ impl Database {
         user_id: i64,
         email: &str,
     ) -> Result<Option<InvitationRecord>> {
+        self.accept_invitation_inner(token_hash, org_id, user_id, email, None)
+            .await
+    }
+
+    /// Accepts an invitation and appends its IAM audit event atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on invalid audit identity or database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn accept_invitation_audited(
+        &self,
+        token_hash: &str,
+        org_id: i64,
+        user_id: i64,
+        email: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<Option<InvitationRecord>> {
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        self.accept_invitation_inner(
+            token_hash,
+            org_id,
+            user_id,
+            email,
+            Some((actor_kind, actor_id, actor_label, audit_event_id)),
+        )
+        .await
+    }
+
+    async fn accept_invitation_inner(
+        &self,
+        token_hash: &str,
+        org_id: i64,
+        user_id: i64,
+        email: &str,
+        audit: Option<(&str, Option<i64>, &str, &str)>,
+    ) -> Result<Option<InvitationRecord>> {
         let now = unix_now();
         let record = self
             .backend
@@ -16374,21 +16849,20 @@ impl Database {
             .map(invitation_record_from_row)
             .transpose()?;
         if let Some(record) = &record {
-            self.backend
-                .checked_batch(&[
-                    Statement::new(
-                        "UPDATE invitations SET accepted_at = ?5
+            let mut statements = vec![
+                Statement::new(
+                    "UPDATE invitations SET accepted_at = ?5, secret_enc = NULL
                           WHERE id = ?1 AND token_hash = ?2 AND email = ?3
                             AND accepted_at IS NULL AND cancelled_at IS NULL
                             AND expires_at > ?5 AND org_id = ?6
                             AND EXISTS (SELECT 1 FROM users u
                                          WHERE u.id = ?4 AND u.email = ?3
                                            AND u.deleted_at IS NULL)",
-                        vals![record.id, token_hash, email, user_id, now, org_id],
-                    )
-                    .expecting(1),
-                    Statement::new(
-                        "INSERT INTO memberships
+                    vals![record.id, token_hash, email, user_id, now, org_id],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO memberships
                            (principal_kind, principal_id, scope_key, role, created_at)
                          SELECT 'user', ?1, i.scope_key, i.role, ?3
                            FROM invitations i
@@ -16398,11 +16872,36 @@ impl Database {
                                WHERE m.principal_kind = 'user'
                                  AND m.principal_id = ?1
                                  AND m.scope_key = i.scope_key)",
-                        vals![user_id, record.id, now],
+                    vals![user_id, record.id, now],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM live_invitations WHERE invitation_id = ?1",
+                    vals![record.id],
+                )
+                .expecting(1),
+            ];
+            if let Some((actor_kind, actor_id, actor_label, event_id)) = audit {
+                statements.push(
+                    Statement::new(
+                        "INSERT INTO audit_log
+                         (outbox_event_id, actor_kind, actor_id, actor_label,
+                          action, scope, detail, created_at)
+                         VALUES (?1, ?2, ?3, ?4, 'invitation.accept', ?5, ?6, ?7)",
+                        vals![
+                            event_id,
+                            actor_kind,
+                            actor_id,
+                            sanitize_log_text(actor_label),
+                            sanitize_log_text(&record.scope),
+                            format!("invitation_id={}", record.id),
+                            now
+                        ],
                     )
                     .expecting(1),
-                ])
-                .await?;
+                );
+            }
+            self.backend.checked_batch(&statements).await?;
             let mut accepted = record.clone();
             accepted.accepted_at = Some(now);
             return Ok(Some(accepted));
@@ -21912,6 +22411,31 @@ source_nar_hash = ""
         assert_eq!(public_boundary, (1, "active".to_string()));
     }
 
+    #[test]
+    fn mysql_migration_replay_helpers_cover_every_ddl_shape() {
+        for sql in migration_statements() {
+            if sql.contains("CREATE INDEX ") || sql.contains("CREATE UNIQUE INDEX ") {
+                assert!(
+                    mysql_migration_index_identity(&sql).is_some(),
+                    "unrecognized MySQL migration index statement: {sql}"
+                );
+            }
+            let replay_safe = mysql_replay_safe_migration_sql(&sql);
+            if sql.contains("CREATE TABLE ") {
+                assert!(replay_safe.contains("CREATE TABLE IF NOT EXISTS "));
+            }
+            if sql.contains("CREATE VIEW ") {
+                assert!(replay_safe.contains("CREATE OR REPLACE VIEW "));
+            }
+            if sql.contains(" ADD COLUMN ") {
+                assert!(replay_safe.contains(" ADD COLUMN IF NOT EXISTS "));
+            }
+            if sql.contains("INSERT INTO ") && !sql.contains("ON CONFLICT") {
+                assert!(replay_safe.contains("INSERT IGNORE INTO "));
+            }
+        }
+    }
+
     #[tokio::test]
     async fn migrate_register_and_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -21955,6 +22479,77 @@ source_nar_hash = ""
             message.contains("predates the topology hard cutover"),
             "{message}"
         );
+    }
+
+    #[tokio::test]
+    async fn invitation_upgrade_reconciles_duplicate_and_expired_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invitation-upgrade.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        connection.execute_batch(MIGRATIONS[1]).unwrap();
+        let org_scope = format!("org:{}", "a".repeat(32));
+        connection
+            .execute(
+                "INSERT INTO orgs(id, stable_id, slug, name, created_at)
+                 VALUES (1, ?1, 'acme', 'Acme', 1)",
+                [&org_scope],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO authorization_scopes
+                 (scope_key, kind, org_id, parent_scope_key, resource_stable_id, created_at)
+                 VALUES (?1, 'organization', 1, 'instance', ?1, 1)",
+                [&org_scope],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invitations
+                 (id, org_id, email, scope_key, role, token_hash, created_at, expires_at)
+                 VALUES
+                 (1, 1, 'duplicate@example.test', ?1, 'viewer', 'old', 10, 9999999999),
+                 (2, 1, 'duplicate@example.test', ?1, 'developer', 'new', 20, 9999999999),
+                 (3, 1, 'expired@example.test', ?1, 'viewer', 'expired', 30, 1)",
+                [&org_scope],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_version(version INTEGER NOT NULL);
+                 INSERT INTO schema_version(version) VALUES (2);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let db = Database::open(&path).await.unwrap();
+        let invitations = db.list_invitations(1).await.unwrap();
+        assert_eq!(invitations.len(), 3);
+        assert!(invitations
+            .iter()
+            .any(|item| item.id == 1 && item.cancelled_at == Some(item.created_at)));
+        assert!(invitations
+            .iter()
+            .any(|item| item.id == 2 && item.cancelled_at.is_none()));
+        assert!(db
+            .has_pending_invitation("duplicate@example.test")
+            .await
+            .unwrap());
+        assert!(!db
+            .has_pending_invitation("expired@example.test")
+            .await
+            .unwrap());
+        db.create_invitation(
+            1,
+            "expired@example.test",
+            &org_scope,
+            "viewer",
+            "replacement",
+            unix_now() + 3600,
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -23160,6 +23755,18 @@ source_nar_hash = ""
         )
         .await
         .unwrap();
+        assert!(db.has_pending_invitation("new@acme.com").await.unwrap());
+        assert!(db
+            .create_invitation(
+                org,
+                "new@acme.com",
+                &project_scope,
+                "viewer",
+                "hash-duplicate",
+                far_future,
+            )
+            .await
+            .is_err());
         let invitee = db.create_user("new@acme.com", None).await.unwrap();
         let accepted = db
             .accept_invitation("hash-a", org, invitee, "new@acme.com")
@@ -23173,12 +23780,50 @@ source_nar_hash = ""
             db.list_memberships_for("user", invitee).await.unwrap(),
             vec![(project_scope.clone(), "developer".to_string())]
         );
+        assert!(!db.has_pending_invitation("new@acme.com").await.unwrap());
         // A second accept of the same hash is rejected (already accepted).
         assert!(db
             .accept_invitation("hash-a", org, invitee, "new@acme.com")
             .await
             .unwrap()
             .is_none());
+        assert!(!db.has_pending_invitation("late@acme.com").await.unwrap());
+
+        let cancelled_id = db
+            .create_invitation(
+                org,
+                "cancelled@acme.com",
+                &org_scope,
+                "viewer",
+                "hash-cancelled",
+                far_future,
+            )
+            .await
+            .unwrap();
+        let created_at = db
+            .invitation_record(org, cancelled_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .created_at;
+        assert!(db
+            .cancel_invitation(cancelled_id, created_at)
+            .await
+            .unwrap());
+        assert!(!db
+            .has_pending_invitation("cancelled@acme.com")
+            .await
+            .unwrap());
+        db.create_invitation(
+            org,
+            "cancelled@acme.com",
+            &org_scope,
+            "viewer",
+            "hash-reinvited",
+            far_future,
+        )
+        .await
+        .unwrap();
         // Unknown hash is rejected.
         assert!(db
             .accept_invitation("hash-missing", org, invitee, "new@acme.com")
@@ -23188,9 +23833,41 @@ source_nar_hash = ""
 
         // An already-expired invitation cannot be accepted.
         let past = unix_now() - 10;
-        db.create_invitation(org, "late@acme.com", &org_scope, "viewer", "hash-b", past)
+        let expired_id = db
+            .create_invitation(org, "late@acme.com", &org_scope, "viewer", "hash-b", past)
             .await
             .unwrap();
+        db.backend
+            .execute(
+                "UPDATE invitations SET secret_enc = 'sealed-expired' WHERE id = ?1",
+                &vals![expired_id],
+            )
+            .await
+            .unwrap();
+        db.prune_expired_invitation_secrets(unix_now(), 100)
+            .await
+            .unwrap();
+        let expired_secret: Option<String> = db
+            .backend
+            .query_opt(
+                "SELECT secret_enc FROM invitations WHERE id = ?1",
+                &vals![expired_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert!(expired_secret.is_none());
+        assert!(db
+            .backend
+            .query_opt(
+                "SELECT invitation_id FROM live_invitations WHERE invitation_id = ?1",
+                &vals![expired_id],
+            )
+            .await
+            .unwrap()
+            .is_none());
         let late = db.create_user("late@acme.com", None).await.unwrap();
         assert!(db
             .accept_invitation("hash-b", org, late, "late@acme.com")

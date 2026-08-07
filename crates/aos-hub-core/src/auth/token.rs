@@ -70,13 +70,30 @@ pub fn generate_refresh_token() -> (String, String) {
 ///
 /// The `aosi_` prefix distinguishes the one-time human invitation ceremony
 /// from access and refresh credentials. The random portion contains 256 bits
-/// from the process CSPRNG. Only the returned hash may be persisted.
+/// from the process CSPRNG. The plaintext must never be stored directly; the
+/// invitation lifecycle may retain a copy only after sealing it with the
+/// runtime's durable at-rest key so an exact apply retry can recover it.
 #[must_use]
 pub fn generate_invitation_token() -> (String, String) {
     let random_bytes: [u8; 32] = rand::rng().random();
     let secret = format!("aosi_{}", hex::encode(random_bytes));
     let hash = sha256_hex(&secret);
     (secret, hash)
+}
+
+/// Returns whether `secret` has the canonical invitation-token wire shape.
+///
+/// This structural check is suitable before placing an invitation credential
+/// in an HTTP cookie. It does not authenticate the token; callers must still
+/// compare its hash through the database acceptance ceremony.
+#[must_use]
+pub fn is_invitation_token(secret: &str) -> bool {
+    secret.len() == 69
+        && secret.strip_prefix("aosi_").is_some_and(|value| {
+            value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
 }
 
 /// Computes the lowercase hex SHA-256 digest of `input`.
@@ -130,6 +147,9 @@ mod tests {
         assert!(secret.starts_with("aosi_"));
         assert_eq!(secret.len(), 69);
         assert_eq!(hash, sha256_hex(&secret));
+        assert!(is_invitation_token(&secret));
+        assert!(!is_invitation_token("aosi_bad; SameSite=None"));
+        assert!(!is_invitation_token(&format!("aosi_{}", "A".repeat(64))));
     }
 
     #[test]
