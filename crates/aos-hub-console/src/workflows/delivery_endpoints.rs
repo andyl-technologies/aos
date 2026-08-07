@@ -15,6 +15,7 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
+use super::organization_scope::organization_authorization_scope;
 use super::storage_gateways::StorageGatewayWorkflow;
 
 /// Renders endpoint workflows and delegates unrelated pages onward.
@@ -26,10 +27,37 @@ pub(super) fn DeliveryEndpointWorkflow(route: ConsoleRoute, client: ApiClient) -
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "endpoints") => view! {
-            <DeliveryEndpoints client=client owner_scope_key=format!("org:{slug}")/>
+            <OrganizationDeliveryEndpoints client=client organization=slug.clone()/>
         }
         .into_any(),
         _ => view! { <StorageGatewayWorkflow route=route client=client/> }.into_any(),
+    }
+}
+
+#[component]
+fn OrganizationDeliveryEndpoints(client: ApiClient, organization: String) -> impl IntoView {
+    let resolve_client = client.clone();
+    let scope = LocalResource::new(move || {
+        let client = resolve_client.clone();
+        let slug = organization.clone();
+        async move { organization_authorization_scope(&client, slug).await }
+    });
+
+    view! {
+        <Suspense fallback=move || view! { <p class="loading-row">"Resolving organization scope…"</p> }>
+            {move || {
+                let client = client.clone();
+                Suspend::new(async move {
+                    match scope.await.as_ref() {
+                        Ok(owner_scope_key) => view! {
+                            <DeliveryEndpoints client=client owner_scope_key=owner_scope_key.clone()/>
+                        }
+                        .into_any(),
+                        Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
+                    }
+                })
+            }}
+        </Suspense>
     }
 }
 
@@ -42,19 +70,20 @@ fn DeliveryEndpoints(client: ApiClient, owner_scope_key: String) -> impl IntoVie
         let owner_scope_key = list_scope.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListDeliveryEndpointsResponse>(
+                .collect_pages::<_, aos_proto_types::ListDeliveryEndpointsResponse, _, _, _>(
                     aos_proto_types::DELIVERY_SERVICE_LIST_DELIVERY_ENDPOINTS_PATH,
-                    &aos_proto_types::ListTopologyResourcesRequest {
-                        owner_scope_key,
+                    move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+                        owner_scope_key: owner_scope_key.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.delivery_endpoints, response.next_page_token),
                 )
                 .await
         }
     });
     let view_client = client.clone();
-    view! { <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><h2>"Delivery endpoints"</h2><p>"Endpoints bind one stable host identity to exact network-boundary and listener/TLS generations."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading delivery endpoints…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(response) if response.delivery_endpoints.is_empty() => view! { <p class="muted">"No delivery endpoints in this scope."</p> }.into_any(), Ok(response) => view! { <div class="binding-list">{response.delivery_endpoints.iter().cloned().map(|endpoint| view! { <DeliveryEndpointCard client=client.clone() endpoint=endpoint/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section><DeliveryEndpointCreate client=client owner_scope_key=owner_scope_key/></div> }
+    view! { <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><h2>"Delivery endpoints"</h2><p>"Endpoints bind one stable host identity to exact network-boundary and listener/TLS generations."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading delivery endpoints…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No delivery endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <DeliveryEndpointCard client=client.clone() endpoint=endpoint/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section><DeliveryEndpointCreate client=client owner_scope_key=owner_scope_key/></div> }
 }
 
 #[derive(Clone, Debug)]

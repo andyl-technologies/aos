@@ -14,6 +14,7 @@ use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
 use super::network_boundaries::NetworkBoundaryWorkflow;
+use super::organization_scope::organization_authorization_scope;
 
 /// Renders networking workflows for instance and organization scopes.
 #[component]
@@ -23,9 +24,36 @@ pub(super) fn NetworkingWorkflow(route: ConsoleRoute, client: ApiClient) -> impl
             view! { <Domains client=client owner_scope_key="instance".to_string()/> }.into_any()
         }
         (ConsoleScope::Organization { slug }, "domains") => {
-            view! { <Domains client=client owner_scope_key=format!("org:{slug}")/> }.into_any()
+            view! { <OrganizationDomains client=client organization=slug.clone()/> }.into_any()
         }
         _ => view! { <NetworkBoundaryWorkflow route=route client=client/> }.into_any(),
+    }
+}
+
+#[component]
+fn OrganizationDomains(client: ApiClient, organization: String) -> impl IntoView {
+    let resolve_client = client.clone();
+    let scope = LocalResource::new(move || {
+        let client = resolve_client.clone();
+        let slug = organization.clone();
+        async move { organization_authorization_scope(&client, slug).await }
+    });
+
+    view! {
+        <Suspense fallback=move || view! { <p class="loading-row">"Resolving organization scope…"</p> }>
+            {move || {
+                let client = client.clone();
+                Suspend::new(async move {
+                    match scope.await.as_ref() {
+                        Ok(owner_scope_key) => view! {
+                            <Domains client=client owner_scope_key=owner_scope_key.clone()/>
+                        }
+                        .into_any(),
+                        Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
+                    }
+                })
+            }}
+        </Suspense>
     }
 }
 
@@ -38,13 +66,14 @@ fn Domains(client: ApiClient, owner_scope_key: String) -> impl IntoView {
         let owner_scope_key = list_scope.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListDomainsResponse>(
+                .collect_pages::<_, aos_proto_types::ListDomainsResponse, _, _, _>(
                     aos_proto_types::DOMAIN_SERVICE_LIST_DOMAINS_PATH,
-                    &aos_proto_types::ListDomainsRequest {
-                        owner_scope_key,
+                    move |page_token| aos_proto_types::ListDomainsRequest {
+                        owner_scope_key: owner_scope_key.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.domains, response.next_page_token),
                 )
                 .await
         }
@@ -58,8 +87,8 @@ fn Domains(client: ApiClient, owner_scope_key: String) -> impl IntoView {
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading domains…"</p> }>
                     {move || { let client = inventory_client.clone(); Suspend::new(async move {
                         match inventory.await.as_ref() {
-                            Ok(response) if response.domains.is_empty() => view! { <p class="muted">"No managed domains in this scope."</p> }.into_any(),
-                            Ok(response) => view! { <div class="binding-list">{response.domains.iter().cloned().map(|domain| view! { <DomainCard client=client.clone() domain=domain/> }).collect_view()}</div> }.into_any(),
+                            Ok(domains) if domains.is_empty() => view! { <p class="muted">"No managed domains in this scope."</p> }.into_any(),
+                            Ok(domains) => view! { <div class="binding-list">{domains.iter().cloned().map(|domain| view! { <DomainCard client=client.clone() domain=domain/> }).collect_view()}</div> }.into_any(),
                             Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                         }
                     }) }}

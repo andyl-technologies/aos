@@ -14,6 +14,8 @@ use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 use crate::workflows::infrastructure::InfrastructureWorkflow;
 
+use super::organization_scope::organization_authorization_scope;
+
 /// Renders the typed resource adapter owned by the current canonical page.
 #[component]
 pub(crate) fn ResourceWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
@@ -34,7 +36,8 @@ pub(crate) fn ResourceWorkflow(route: ConsoleRoute, client: ApiClient) -> impl I
             view! { <RegistryInventory client=client organization=slug.clone()/> }.into_any()
         }
         (ConsoleScope::Organization { slug }, "caches") => {
-            view! { <CacheInventory client=client organization=slug.clone()/> }.into_any()
+            view! { <OrganizationCacheInventory client=client organization=slug.clone()/> }
+                .into_any()
         }
         (ConsoleScope::Organization { slug }, "danger") => {
             view! { <OrganizationDanger client=client slug=slug.clone()/> }.into_any()
@@ -690,8 +693,40 @@ fn RegistryInventory(client: ApiClient, organization: String) -> impl IntoView {
 }
 
 #[component]
-fn CacheInventory(client: ApiClient, organization: String) -> impl IntoView {
-    let owner_scope_key = format!("org:{organization}");
+fn OrganizationCacheInventory(client: ApiClient, organization: String) -> impl IntoView {
+    let resolve_client = client.clone();
+    let resolve_slug = organization.clone();
+    let scope = LocalResource::new(move || {
+        let client = resolve_client.clone();
+        let slug = resolve_slug.clone();
+        async move { organization_authorization_scope(&client, slug).await }
+    });
+
+    view! {
+        <Suspense fallback=move || view! { <p class="loading-row">"Resolving organization scope…"</p> }>
+            {move || {
+                let client = client.clone();
+                let organization = organization.clone();
+                Suspend::new(async move {
+                    match scope.await.as_ref() {
+                        Ok(owner_scope_key) => view! {
+                            <CacheInventory client=client organization=organization owner_scope_key=owner_scope_key.clone()/>
+                        }
+                        .into_any(),
+                        Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
+                    }
+                })
+            }}
+        </Suspense>
+    }
+}
+
+#[component]
+fn CacheInventory(
+    client: ApiClient,
+    organization: String,
+    owner_scope_key: String,
+) -> impl IntoView {
     let inventory_client = client.clone();
     let list_scope = owner_scope_key.clone();
     let inventory = LocalResource::new(move || {
@@ -699,13 +734,14 @@ fn CacheInventory(client: ApiClient, organization: String) -> impl IntoView {
         let owner_scope_key = list_scope.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListBinaryCachesResponse>(
+                .collect_pages::<_, aos_proto_types::ListBinaryCachesResponse, _, _, _>(
                     aos_proto_types::BINARY_CACHE_SERVICE_LIST_BINARY_CACHES_PATH,
-                    &aos_proto_types::ListBinaryCachesRequest {
-                        owner_scope_key,
+                    move |page_token| aos_proto_types::ListBinaryCachesRequest {
+                        owner_scope_key: owner_scope_key.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.caches, response.next_page_token),
                 )
                 .await
         }
@@ -789,7 +825,7 @@ fn CacheInventory(client: ApiClient, organization: String) -> impl IntoView {
             busy.set(false);
         });
     });
-    view! { <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Reusable object stores"</p><h2>"Binary caches"</h2><p>"Caches may stand alone or be shared by several registry consumer stacks and retention subscriptions."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading caches…"</p> }>{move || { let organization = organization.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(response) if response.caches.is_empty() => view! { <p class="muted">"No binary caches in this organization."</p> }.into_any(), Ok(response) => view! { <div class="resource-grid">{response.caches.iter().cloned().map(|cache| { let href = format!("/-/org/{}/caches/{}", organization, cache.slug.rsplit('/').next().unwrap_or(&cache.slug)); view! { <a class="resource-card" href=href><div><span class="resource-kind">{cache.visibility}</span><h3>{cache.name}</h3><code>{cache.slug}</code><p class="resource-metric">{format!("{} objects · {} placements", cache.object_count, cache.placement_count)}</p></div><span class="card-arrow">"→"</span></a> } }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
+    view! { <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Reusable object stores"</p><h2>"Binary caches"</h2><p>"Caches may stand alone or be shared by several registry consumer stacks and retention subscriptions."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading caches…"</p> }>{move || { let organization = organization.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(caches) if caches.is_empty() => view! { <p class="muted">"No binary caches in this organization."</p> }.into_any(), Ok(caches) => view! { <div class="resource-grid">{caches.iter().cloned().map(|cache| { let href = format!("/-/org/{}/caches/{}", organization, cache.slug.rsplit('/').next().unwrap_or(&cache.slug)); view! { <a class="resource-card" href=href><div><span class="resource-kind">{cache.visibility}</span><h3>{cache.name}</h3><code>{cache.slug}</code><p class="resource-metric">{format!("{} objects · {} placements", cache.object_count, cache.placement_count)}</p></div><span class="card-arrow">"→"</span></a> } }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section>
     <section class="panel editor-panel"><h2>"Create binary cache"</h2><form class="editor-form compact-form" on:submit=on_plan><label><span>"Cache slug"</span><input required placeholder="build" prop:value=move || cache_name.get() on:input=move |event| cache_name.set(event_target_value(&event))/></label><label><span>"Display name"</span><input required prop:value=move || display_name.get() on:input=move |event| display_name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><option value="private">"Private"</option><option value="internal">"Internal"</option><option value="public">"Public"</option></select></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section></div> }
 }
 

@@ -14,17 +14,22 @@ use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
 use super::networking::NetworkingWorkflow;
+use super::organization_scope::organization_authorization_scope;
 
 /// Renders infrastructure pages handled by this implementation boundary.
 #[component]
 pub(super) fn InfrastructureWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
     match (&route.scope, route.page.key) {
         (ConsoleScope::Instance, "storage") => view! {
-            <StorageBindings client=client owner_scope_key="instance".to_string()/>
+            <StorageBindings
+                client=client
+                owner_scope_key="instance".to_string()
+                organization_slug=None
+            />
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "storage") => view! {
-            <StorageBindings client=client owner_scope_key=format!("org:{slug}")/>
+            <OrganizationStorageBindings client=client organization=slug.clone()/>
         }
         .into_any(),
         (ConsoleScope::Instance, "defaults") => {
@@ -39,7 +44,44 @@ pub(super) fn InfrastructureWorkflow(route: ConsoleRoute, client: ApiClient) -> 
 }
 
 #[component]
-fn StorageBindings(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+fn OrganizationStorageBindings(client: ApiClient, organization: String) -> impl IntoView {
+    let resolve_client = client.clone();
+    let resolve_slug = organization.clone();
+    let scope = LocalResource::new(move || {
+        let client = resolve_client.clone();
+        let slug = resolve_slug.clone();
+        async move { organization_authorization_scope(&client, slug).await }
+    });
+
+    view! {
+        <Suspense fallback=move || view! { <p class="loading-row">"Resolving organization scope…"</p> }>
+            {move || {
+                let client = client.clone();
+                let organization = organization.clone();
+                Suspend::new(async move {
+                    match scope.await.as_ref() {
+                        Ok(owner_scope_key) => view! {
+                            <StorageBindings
+                                client=client
+                                owner_scope_key=owner_scope_key.clone()
+                                organization_slug=Some(organization)
+                            />
+                        }
+                        .into_any(),
+                        Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
+                    }
+                })
+            }}
+        </Suspense>
+    }
+}
+
+#[component]
+fn StorageBindings(
+    client: ApiClient,
+    owner_scope_key: String,
+    organization_slug: Option<String>,
+) -> impl IntoView {
     let list_client = client.clone();
     let list_scope = owner_scope_key.clone();
     let inventory = LocalResource::new(move || {
@@ -47,13 +89,14 @@ fn StorageBindings(client: ApiClient, owner_scope_key: String) -> impl IntoView 
         let owner_scope_key = list_scope.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListStorageBindingsResponse>(
+                .collect_pages::<_, aos_proto_types::ListStorageBindingsResponse, _, _, _>(
                     aos_proto_types::STORAGE_BINDING_SERVICE_LIST_STORAGE_BINDINGS_PATH,
-                    &aos_proto_types::ListStorageBindingsRequest {
-                        owner_scope_key,
+                    move |page_token| aos_proto_types::ListStorageBindingsRequest {
+                        owner_scope_key: owner_scope_key.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.storage_bindings, response.next_page_token),
                 )
                 .await
         }
@@ -73,13 +116,14 @@ fn StorageBindings(client: ApiClient, owner_scope_key: String) -> impl IntoView 
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading storage bindings…"</p> }>
                     {move || {
                         let client = inventory_view_client.clone();
+                        let organization_slug = organization_slug.clone();
                         Suspend::new(async move {
                             match inventory.await.as_ref() {
-                                Ok(response) if response.storage_bindings.is_empty() => view! { <p class="muted">"No storage bindings in this scope."</p> }.into_any(),
-                                Ok(response) => view! {
+                                Ok(bindings) if bindings.is_empty() => view! { <p class="muted">"No storage bindings in this scope."</p> }.into_any(),
+                                Ok(bindings) => view! {
                                     <div class="binding-list">
-                                        {response.storage_bindings.iter().cloned().map(|binding| view! {
-                                            <StorageBindingCard client=client.clone() binding=binding/>
+                                        {bindings.iter().cloned().map(|binding| view! {
+                                            <StorageBindingCard client=client.clone() binding=binding organization_slug=organization_slug.clone()/>
                                         }).collect_view()}
                                     </div>
                                 }.into_any(),
@@ -220,6 +264,7 @@ fn StorageBindingCreate(client: ApiClient, owner_scope_key: String) -> impl Into
 fn StorageBindingCard(
     client: ApiClient,
     binding: aos_proto_types::StorageBinding,
+    organization_slug: Option<String>,
 ) -> impl IntoView {
     let health = binding.health.clone().unwrap_or_default();
     let capabilities = binding.capabilities.clone().unwrap_or_default();
@@ -246,7 +291,7 @@ fn StorageBindingCard(
                 {(!health.error.is_empty()).then(|| view! { <InlineError detail=health.error/> })}
                 <div class="subworkflow-grid">
                     <div class="subworkflow-stack">
-                        <StorageWriteRevisions client=client.clone() binding=binding.clone()/>
+                        <StorageWriteRevisions client=client.clone() binding=binding.clone() organization_slug=organization_slug/>
                         <StorageCredentialEditor client=client.clone() binding=binding.clone()/>
                         <StorageCredentialValidation client=client.clone() binding=binding.clone()/>
                     </div>
@@ -262,8 +307,9 @@ fn StorageBindingCard(
 fn StorageWriteRevisions(
     client: ApiClient,
     binding: aos_proto_types::StorageBinding,
+    organization_slug: Option<String>,
 ) -> impl IntoView {
-    let Some(storage_binding) = storage_binding_ref(&binding) else {
+    let Some(storage_binding) = storage_binding_ref(&binding, organization_slug.as_deref()) else {
         return view! { <InlineError detail="The storage binding has no canonical owner reference.".to_string()/> }.into_any();
     };
     let revisions = LocalResource::new(move || {
@@ -861,11 +907,12 @@ fn provider_label(provider: &aos_proto_types::storage_binding_spec::Provider) ->
 }
 fn storage_binding_ref(
     binding: &aos_proto_types::StorageBinding,
+    organization_slug: Option<&str>,
 ) -> Option<aos_proto_types::StorageBindingRef> {
     let target = if binding.owner_scope_key == "instance" {
         aos_proto_types::storage_binding_ref::Target::InstanceDefault(true)
     } else {
-        let org_slug = binding.owner_scope_key.strip_prefix("org:")?.to_string();
+        let org_slug = organization_slug?.to_string();
         let name = binding.spec.as_ref()?.name.clone();
         aos_proto_types::storage_binding_ref::Target::Organization(
             aos_proto_types::OrganizationStorageBindingRef { org_slug, name },

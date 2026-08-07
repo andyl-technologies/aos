@@ -14,6 +14,7 @@ use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
 use super::delivery_endpoints::DeliveryEndpointWorkflow;
+use super::organization_scope::organization_authorization_scope;
 
 /// Renders boundary workflows and delegates unrelated pages onward.
 #[component]
@@ -24,10 +25,37 @@ pub(super) fn NetworkBoundaryWorkflow(route: ConsoleRoute, client: ApiClient) ->
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "boundaries") => view! {
-            <NetworkBoundaries client=client owner_scope_key=format!("org:{slug}")/>
+            <OrganizationNetworkBoundaries client=client organization=slug.clone()/>
         }
         .into_any(),
         _ => view! { <DeliveryEndpointWorkflow route=route client=client/> }.into_any(),
+    }
+}
+
+#[component]
+fn OrganizationNetworkBoundaries(client: ApiClient, organization: String) -> impl IntoView {
+    let resolve_client = client.clone();
+    let scope = LocalResource::new(move || {
+        let client = resolve_client.clone();
+        let slug = organization.clone();
+        async move { organization_authorization_scope(&client, slug).await }
+    });
+
+    view! {
+        <Suspense fallback=move || view! { <p class="loading-row">"Resolving organization scope…"</p> }>
+            {move || {
+                let client = client.clone();
+                Suspend::new(async move {
+                    match scope.await.as_ref() {
+                        Ok(owner_scope_key) => view! {
+                            <NetworkBoundaries client=client owner_scope_key=owner_scope_key.clone()/>
+                        }
+                        .into_any(),
+                        Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
+                    }
+                })
+            }}
+        </Suspense>
     }
 }
 
@@ -40,19 +68,20 @@ fn NetworkBoundaries(client: ApiClient, owner_scope_key: String) -> impl IntoVie
         let owner_scope_key = list_scope.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListNetworkBoundariesResponse>(
+                .collect_pages::<_, aos_proto_types::ListNetworkBoundariesResponse, _, _, _>(
                     aos_proto_types::NETWORK_BOUNDARY_SERVICE_LIST_NETWORK_BOUNDARIES_PATH,
-                    &aos_proto_types::ListTopologyResourcesRequest {
-                        owner_scope_key,
+                    move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+                        owner_scope_key: owner_scope_key.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.network_boundaries, response.next_page_token),
                 )
                 .await
         }
     });
     let view_client = client.clone();
-    view! { <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Trust and reachability"</p><h2>"Network boundaries"</h2><p>"Boundaries name verifiable network identity. Immutable revisions hold protected-transport, trusted-ingress, source, and probe policy."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading network boundaries…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(response) if response.network_boundaries.is_empty() => view! { <p class="muted">"No network boundaries in this scope."</p> }.into_any(), Ok(response) => view! { <div class="binding-list">{response.network_boundaries.iter().cloned().map(|boundary| view! { <NetworkBoundaryCard client=client.clone() boundary=boundary/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section><NetworkBoundaryCreate client=client owner_scope_key=owner_scope_key/></div> }
+    view! { <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Trust and reachability"</p><h2>"Network boundaries"</h2><p>"Boundaries name verifiable network identity. Immutable revisions hold protected-transport, trusted-ingress, source, and probe policy."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading network boundaries…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(boundaries) if boundaries.is_empty() => view! { <p class="muted">"No network boundaries in this scope."</p> }.into_any(), Ok(boundaries) => view! { <div class="binding-list">{boundaries.iter().cloned().map(|boundary| view! { <NetworkBoundaryCard client=client.clone() boundary=boundary/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section><NetworkBoundaryCreate client=client owner_scope_key=owner_scope_key/></div> }
 }
 
 #[component]

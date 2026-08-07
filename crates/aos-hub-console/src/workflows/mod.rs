@@ -23,6 +23,7 @@ mod networking;
 mod operations;
 mod organization_activity;
 mod organization_identity;
+mod organization_scope;
 mod organization_sso;
 mod placement_policies;
 mod placements;

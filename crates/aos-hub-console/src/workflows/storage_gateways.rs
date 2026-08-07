@@ -17,6 +17,7 @@ use super::access_policy::{
     access_policy_name, canonical_path, required, AccessPolicyFields, AccessPolicySignals,
 };
 use super::instance_settings::InstanceSettingsWorkflow;
+use super::organization_scope::organization_authorization_scope;
 
 /// Renders storage-gateway workflows and delegates unrelated pages onward.
 #[component]
@@ -27,7 +28,7 @@ pub(super) fn StorageGatewayWorkflow(route: ConsoleRoute, client: ApiClient) -> 
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "gateways") => view! {
-            <StorageGateways client=client scope=GatewayScope::Organization(slug.clone())/>
+            <OrganizationStorageGateways client=client organization=slug.clone()/>
         }
         .into_any(),
         _ => view! { <InstanceSettingsWorkflow route=route client=client/> }.into_any(),
@@ -37,14 +38,19 @@ pub(super) fn StorageGatewayWorkflow(route: ConsoleRoute, client: ApiClient) -> 
 #[derive(Clone, Debug)]
 enum GatewayScope {
     Instance,
-    Organization(String),
+    Organization {
+        slug: String,
+        owner_scope_key: String,
+    },
 }
 
 impl GatewayScope {
     fn owner_scope_key(&self) -> String {
         match self {
             Self::Instance => "instance".to_string(),
-            Self::Organization(slug) => format!("org:{slug}"),
+            Self::Organization {
+                owner_scope_key, ..
+            } => owner_scope_key.clone(),
         }
     }
 
@@ -53,7 +59,7 @@ impl GatewayScope {
 
         let target = match self {
             Self::Instance => Target::InstanceDefault(true),
-            Self::Organization(slug) => {
+            Self::Organization { slug, .. } => {
                 Target::Organization(aos_proto_types::OrganizationStorageBindingRef {
                     org_slug: slug.clone(),
                     name: binding_name.to_string(),
@@ -70,6 +76,41 @@ impl GatewayScope {
 struct GatewayInventory {
     binding_name: String,
     gateways: Vec<aos_proto_types::StorageGateway>,
+}
+
+#[component]
+fn OrganizationStorageGateways(client: ApiClient, organization: String) -> impl IntoView {
+    let resolve_client = client.clone();
+    let resolve_slug = organization.clone();
+    let scope = LocalResource::new(move || {
+        let client = resolve_client.clone();
+        let slug = resolve_slug.clone();
+        async move { organization_authorization_scope(&client, slug).await }
+    });
+
+    view! {
+        <Suspense fallback=move || view! { <p class="loading-row">"Resolving organization scope…"</p> }>
+            {move || {
+                let client = client.clone();
+                let slug = organization.clone();
+                Suspend::new(async move {
+                    match scope.await.as_ref() {
+                        Ok(owner_scope_key) => view! {
+                            <StorageGateways
+                                client=client
+                                scope=GatewayScope::Organization {
+                                    slug,
+                                    owner_scope_key: owner_scope_key.clone(),
+                                }
+                            />
+                        }
+                        .into_any(),
+                        Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
+                    }
+                })
+            }}
+        </Suspense>
+    }
 }
 
 #[component]
@@ -126,39 +167,41 @@ async fn load_gateway_inventory(
 ) -> Result<Vec<GatewayInventory>, String> {
     let binding_names = match scope {
         GatewayScope::Instance => vec!["default".to_string()],
-        GatewayScope::Organization(_) => client
-            .call::<_, aos_proto_types::ListStorageBindingsResponse>(
+        GatewayScope::Organization { .. } => client
+            .collect_pages::<_, aos_proto_types::ListStorageBindingsResponse, _, _, _>(
                 aos_proto_types::STORAGE_BINDING_SERVICE_LIST_STORAGE_BINDINGS_PATH,
-                &aos_proto_types::ListStorageBindingsRequest {
+                move |page_token| aos_proto_types::ListStorageBindingsRequest {
                     owner_scope_key: scope.owner_scope_key(),
                     page_size: 100,
-                    page_token: String::new(),
+                    page_token,
                 },
+                |response| (response.storage_bindings, response.next_page_token),
             )
             .await
             .map_err(|failure| failure.to_string())?
-            .storage_bindings
             .into_iter()
-            .map(|binding| binding.stable_id)
+            .filter_map(|binding| binding.spec.map(|spec| spec.name))
             .collect(),
     };
 
     let mut inventory = Vec::with_capacity(binding_names.len());
     for binding_name in binding_names {
-        let response = client
-            .call::<_, aos_proto_types::ListStorageGatewaysResponse>(
+        let storage_binding = scope.binding_ref(&binding_name);
+        let gateways = client
+            .collect_pages::<_, aos_proto_types::ListStorageGatewaysResponse, _, _, _>(
                 aos_proto_types::DELIVERY_SERVICE_LIST_STORAGE_GATEWAYS_PATH,
-                &aos_proto_types::ListStorageGatewaysRequest {
-                    storage_binding: Some(scope.binding_ref(&binding_name)),
+                move |page_token| aos_proto_types::ListStorageGatewaysRequest {
+                    storage_binding: Some(storage_binding.clone()),
                     page_size: 100,
-                    page_token: String::new(),
+                    page_token,
                 },
+                |response| (response.storage_gateways, response.next_page_token),
             )
             .await
             .map_err(|failure| failure.to_string())?;
         inventory.push(GatewayInventory {
             binding_name,
-            gateways: response.storage_gateways,
+            gateways,
         });
     }
     Ok(inventory)
