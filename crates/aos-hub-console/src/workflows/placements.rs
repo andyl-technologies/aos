@@ -13,8 +13,8 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
+use super::delivery_routes::DeliveryRouteWorkflow;
 use super::placement_policies::{PlacementEquivalencePanel, PlacementPolicyPanel};
-use super::resources::UnavailableWorkflow;
 
 /// Renders placement workflows and delegates unrelated pages onward.
 #[component]
@@ -34,7 +34,7 @@ pub(super) fn PlacementWorkflow(route: ConsoleRoute, client: ApiClient) -> impl 
             <Placements client=client surface=cache_surface(&format!("{organization}/{cache}"))/>
         }
         .into_any(),
-        _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
+        _ => view! { <DeliveryRouteWorkflow route=route client=client/> }.into_any(),
     }
 }
 

@@ -214,6 +214,24 @@ impl PendingPlan {
             confirmation_hash: self.plan.confirmation_hash.clone(),
         }
     }
+
+    /// Builds a delivery-route mutation apply envelope for this exact plan.
+    pub(crate) fn route_apply(&self) -> aos_proto_types::ApplyRouteMutationRequest {
+        aos_proto_types::ApplyRouteMutationRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds a canonical-route apply envelope for this exact plan.
+    pub(crate) fn canonical_route_apply(&self) -> aos_proto_types::ApplyCanonicalRouteRequest {
+        aos_proto_types::ApplyCanonicalRouteRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
 }
 
 static IDEMPOTENCY_SEQUENCE: AtomicU32 = AtomicU32::new(0);

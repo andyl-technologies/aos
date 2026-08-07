@@ -2,6 +2,7 @@
 
 mod access_policy;
 mod delivery_endpoints;
+mod delivery_routes;
 mod infrastructure;
 mod instance_settings;
 mod network_boundaries;

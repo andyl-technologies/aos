@@ -15,6 +15,8 @@ pub(super) struct AccessPolicySignals {
     provider_revision: RwSignal<String>,
     mechanisms: RwSignal<String>,
     client_classes: RwSignal<String>,
+    hub_principals: RwSignal<String>,
+    hub_client_classes: RwSignal<String>,
     boundary_id: RwSignal<String>,
     boundary_revision: RwSignal<String>,
 }
@@ -29,6 +31,8 @@ impl AccessPolicySignals {
             provider_revision: RwSignal::new(String::new()),
             mechanisms: RwSignal::new(String::new()),
             client_classes: RwSignal::new(String::new()),
+            hub_principals: RwSignal::new(String::new()),
+            hub_client_classes: RwSignal::new(String::new()),
             boundary_id: RwSignal::new(String::new()),
             boundary_revision: RwSignal::new(String::new()),
         }
@@ -64,7 +68,14 @@ impl AccessPolicySignals {
                     .boundary_revision
                     .set(value.boundary_revision.to_string());
             }
-            Some(Policy::Public(_)) | Some(Policy::HubAuth(_)) | None => {}
+            Some(Policy::HubAuth(value)) => {
+                signals.kind.set("hub-auth".to_string());
+                signals.hub_principals.set(value.principals.join("\n"));
+                signals
+                    .hub_client_classes
+                    .set(value.client_classes.join("\n"));
+            }
+            Some(Policy::Public(_)) | None => {}
         }
         signals
     }
@@ -76,10 +87,31 @@ impl AccessPolicySignals {
     /// Returns an error when required policy fields are missing, a boundary
     /// revision is invalid, or an external client mechanism is unsupported.
     pub(super) fn build(self) -> Result<aos_proto_types::DeliveryAccessPolicy, String> {
+        self.build_with_hub_auth(false)
+    }
+
+    /// Validates a route policy, including optional Hub-auth enforcement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same conditions as [`Self::build`].
+    pub(super) fn build_for_route(self) -> Result<aos_proto_types::DeliveryAccessPolicy, String> {
+        self.build_with_hub_auth(true)
+    }
+
+    fn build_with_hub_auth(
+        self,
+        allow_hub_auth: bool,
+    ) -> Result<aos_proto_types::DeliveryAccessPolicy, String> {
         use aos_proto_types::delivery_access_policy::Policy;
 
         let policy = match self.kind.get_untracked().as_str() {
             "public" => Policy::Public(true),
+            "hub-auth" if allow_hub_auth => Policy::HubAuth(aos_proto_types::HubAuthPolicy {
+                principals: lines(&self.hub_principals.get_untracked()),
+                client_classes: lines(&self.hub_client_classes.get_untracked()),
+                allow_anonymous_metadata: false,
+            }),
             "external-provider" => {
                 let provider_kind = required(self.provider_kind.get_untracked(), "Provider kind")?;
                 let resource_id = required(
@@ -128,17 +160,25 @@ impl AccessPolicySignals {
 
 /// Renders fields for one direct-delivery access policy.
 #[component]
-pub(super) fn AccessPolicyFields(signals: AccessPolicySignals) -> impl IntoView {
+pub(super) fn AccessPolicyFields(
+    signals: AccessPolicySignals,
+    #[prop(default = false)] allow_hub_auth: bool,
+) -> impl IntoView {
     view! {
         <label>
             <span>"Access policy"</span>
             <select prop:value=move || signals.kind.get() on:change=move |event| signals.kind.set(event_target_value(&event))>
                 <option value="public">"Public"</option>
+                {allow_hub_auth.then(|| view! { <option value="hub-auth">"AOS Hub authentication"</option> })}
                 <option value="external-provider">"External authorization provider"</option>
                 <option value="private-network">"Private network"</option>
             </select>
         </label>
         {move || match signals.kind.get().as_str() {
+            "hub-auth" if allow_hub_auth => view! {
+                <label class="full-field"><span>"Allowed principals (one per line; empty uses role grants)"</span><textarea prop:value=move || signals.hub_principals.get() on:input=move |event| signals.hub_principals.set(event_target_value(&event))></textarea></label>
+                <label class="full-field"><span>"Allowed client classes (one per line)"</span><textarea prop:value=move || signals.hub_client_classes.get() on:input=move |event| signals.hub_client_classes.set(event_target_value(&event))></textarea></label>
+            }.into_any(),
             "external-provider" => view! {
                 <label><span>"Provider kind"</span><input required prop:value=move || signals.provider_kind.get() on:input=move |event| signals.provider_kind.set(event_target_value(&event))/></label>
                 <label><span>"Provider resource ID"</span><input required prop:value=move || signals.provider_resource.get() on:input=move |event| signals.provider_resource.set(event_target_value(&event))/></label>
