@@ -13,7 +13,7 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
-use super::resources::UnavailableWorkflow;
+use super::delivery_endpoints::DeliveryEndpointWorkflow;
 
 /// Renders boundary workflows and delegates unrelated pages onward.
 #[component]
@@ -27,7 +27,7 @@ pub(super) fn NetworkBoundaryWorkflow(route: ConsoleRoute, client: ApiClient) ->
             <NetworkBoundaries client=client owner_scope_key=format!("org:{slug}")/>
         }
         .into_any(),
-        _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
+        _ => view! { <DeliveryEndpointWorkflow route=route client=client/> }.into_any(),
     }
 }
 
