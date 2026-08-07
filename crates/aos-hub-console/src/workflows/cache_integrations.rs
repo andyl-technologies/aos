@@ -12,6 +12,7 @@ use crate::transport::ApiClient;
 
 use super::cache_gc::CacheGcWorkflow;
 use super::cache_integration_preview::CacheIntegrationPreview;
+use super::cache_objects::CacheObjects;
 use super::cache_population::CachePopulation;
 use super::cache_retention::CacheRetentionWorkflow;
 use super::cache_stack::RegistryCacheStack;
@@ -33,6 +34,16 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             "integrations",
         ) => view! {
             <CacheIntegrations client=client cache_id=format!("{organization}/{cache}")/>
+        }
+        .into_any(),
+        (
+            ConsoleScope::Cache {
+                organization,
+                cache,
+            },
+            "objects",
+        ) => view! {
+            <CacheObjects client=client cache_id=format!("{organization}/{cache}")/>
         }
         .into_any(),
         (
