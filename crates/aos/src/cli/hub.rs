@@ -15,8 +15,8 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 use super::{
-    HubAccessTokenCmd, HubInstanceSettingsSectionCmd, HubOrgMemberCmd, HubServiceAccountCmd,
-    HubSigningKeyCmd,
+    HubAccessTokenCmd, HubInstanceSettingsSectionCmd, HubInvitationCmd, HubOrgMemberCmd,
+    HubServiceAccountCmd, HubSigningKeyCmd,
 };
 
 #[derive(Args, Debug, Clone)]
@@ -706,6 +706,11 @@ pub enum HubOrgCmd {
     ServiceAccount {
         #[command(subcommand)]
         command: HubServiceAccountCmd,
+    },
+    /// Manage organization invitations
+    Invitation {
+        #[command(subcommand)]
+        command: HubInvitationCmd,
     },
 }
 
@@ -2717,9 +2722,10 @@ mod tests {
 
     use crate::cli::{
         Cli, Commands, HubAccessTokenCmd, HubAccessTokenIssueCmd, HubCacheCmd,
-        HubCacheRetentionCmd, HubCmd, HubNetworkBoundaryCmd, HubOrgCmd, HubPlacementCmd,
-        HubPlacementDrainCmd, HubRegistryCacheStackCmd, HubRegistryCmd, HubRouteCmd,
-        HubServiceAccountCmd, HubServiceAccountUpdateCmd, HubStorageBindingCmd,
+        HubCacheRetentionCmd, HubCmd, HubInvitationCmd, HubInvitationCreateCmd,
+        HubNetworkBoundaryCmd, HubOrgCmd, HubPlacementCmd, HubPlacementDrainCmd,
+        HubRegistryCacheStackCmd, HubRegistryCmd, HubRouteCmd, HubServiceAccountCmd,
+        HubServiceAccountUpdateCmd, HubStorageBindingCmd,
     };
 
     fn parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
@@ -3272,6 +3278,43 @@ mod tests {
                 "top-level service-account command unexpectedly parsed: {command}"
             );
         }
+    }
+
+    #[test]
+    fn invitations_are_organization_scoped_and_reviewed() {
+        let parsed = parse_cli([
+            "aos",
+            "hub",
+            "org",
+            "invitation",
+            "create",
+            "plan",
+            "andyl",
+            "new.member@example.test",
+            "--scope",
+            "org:0123456789abcdef0123456789abcdef",
+            "--role",
+            "developer",
+            "--hub",
+            "https://aos.example",
+            "--idempotency-key",
+            "invite-new-member",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Commands::Hub {
+                command: HubCmd::Org {
+                    command: HubOrgCmd::Invitation {
+                        command: HubInvitationCmd::Create {
+                            command: HubInvitationCreateCmd::Plan { .. }
+                        }
+                    },
+                    ..
+                }
+            }
+        ));
+        assert!(parse_cli(["aos", "hub", "invitation", "list"]).is_err());
     }
 
     #[test]

@@ -134,20 +134,19 @@ pub fn magic_link_email(brand: &str, link_url: &str) -> EmailContent {
 pub fn invite_email(brand: &str, org_slug: &str, role: &str, link_url: &str) -> EmailContent {
     let brand = brand_or_default(brand);
     let href = escape(link_url);
-    let subject = format!("You've been added to {org_slug} on {brand}");
+    let subject = format!("You're invited to {org_slug} on {brand}");
     let html = format!(
         "<!doctype html>\n\
          <html><body style=\"font-family:system-ui,sans-serif;line-height:1.5;color:#1a1a1a\">\n\
-         <p>You've been added to the <strong>{org_esc}</strong> organization on {brand_esc}.</p>\n\
-         <p>You now have the <strong>{role_esc}</strong> role. Sign in to the console to get \
-         started:</p>\n\
+         <p>You've been invited to the <strong>{org_esc}</strong> organization on {brand_esc}.</p>\n\
+         <p>Accept to receive the <strong>{role_esc}</strong> role:</p>\n\
          <p><a href=\"{href}\" \
          style=\"display:inline-block;padding:10px 18px;background:#1a1a1a;color:#fff;\
-         text-decoration:none;border-radius:6px\">Open the console</a></p>\n\
+         text-decoration:none;border-radius:6px\">Review invitation</a></p>\n\
          <p style=\"color:#555;font-size:13px\">Or paste this link into your browser:<br>\n\
          <a href=\"{href}\">{href}</a></p>\n\
-         <p style=\"color:#555;font-size:13px\">This sign-in link expires in 15 minutes and can be \
-         used once. If you did not expect this, you can safely ignore this email.</p>\n\
+         <p style=\"color:#555;font-size:13px\">This invitation link expires and can be used once. \
+         If you did not expect this, you can safely ignore this email.</p>\n\
          </body></html>\n",
         org_esc = escape(org_slug),
         brand_esc = escape(brand),
@@ -155,9 +154,9 @@ pub fn invite_email(brand: &str, org_slug: &str, role: &str, link_url: &str) -> 
         href = href,
     );
     let text = format!(
-        "You've been added to the {org_slug} organization on {brand}.\n\n\
-         You now have the {role} role. Sign in to the console to get started:\n\n  {link_url}\n\n\
-         This sign-in link expires in 15 minutes and can be used once. If you did not expect this, \
+        "You've been invited to the {org_slug} organization on {brand}.\n\n\
+         Accept to receive the {role} role:\n\n  {link_url}\n\n\
+         This invitation link expires and can be used once. If you did not expect this, \
          you can safely ignore this email.\n",
     );
     EmailContent {
@@ -208,7 +207,7 @@ mod tests {
     fn invite_subject_and_text_carry_org_role_and_link() {
         let link = "https://h/login";
         let e = invite_email("Example Hub", "acme", "admin", link);
-        assert_eq!(e.subject, "You've been added to acme on Example Hub");
+        assert_eq!(e.subject, "You're invited to acme on Example Hub");
         assert!(e.text.contains("acme"));
         assert!(e.text.contains("admin"));
         assert!(e.text.contains(link));

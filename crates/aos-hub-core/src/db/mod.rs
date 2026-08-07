@@ -370,7 +370,11 @@ fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// Upgrade/cutover is deliberately an offline artifact. The first migration
 /// establishes the topology hard-cutover schema; subsequent entries are
 /// forward-only additions shared by native SQLite and Cloudflare D1.
-pub const MIGRATIONS: &[&str] = &[include_str!("schema.sql"), include_str!("auth_refresh.sql")];
+pub const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    include_str!("auth_refresh.sql"),
+    include_str!("invitation_lifecycle.sql"),
+];
 
 /// Identity stamped into databases created by the topology hard-cutover
 /// schema. Unlike the historical integer version, this value cannot collide
@@ -770,7 +774,7 @@ pub struct ServiceAccountRecord {
     pub created_at: i64,
 }
 
-/// A pending invitation system-of-record row.
+/// An invitation system-of-record row.
 #[derive(Debug, Clone)]
 pub struct InvitationRecord {
     /// Database id.
@@ -783,6 +787,28 @@ pub struct InvitationRecord {
     pub scope: String,
     /// Role the resulting grant confers.
     pub role: String,
+    /// Unix time the invitation was created.
+    pub created_at: i64,
+    /// Unix time the invitation was accepted, when applicable.
+    pub accepted_at: Option<i64>,
+    /// Unix time an administrator cancelled the invitation, when applicable.
+    pub cancelled_at: Option<i64>,
+    /// Unix time after which the invitation can no longer be accepted.
+    pub expires_at: i64,
+}
+
+fn invitation_record_from_row(row: Row) -> Result<InvitationRecord> {
+    Ok(InvitationRecord {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        email: row.get(2)?,
+        scope: row.get(3)?,
+        role: row.get(4)?,
+        created_at: row.get(5)?,
+        accepted_at: row.get(6)?,
+        cancelled_at: row.get(7)?,
+        expires_at: row.get(8)?,
+    })
 }
 
 /// An org's OIDC identity-provider configuration (system-of-record row).
@@ -16157,6 +16183,77 @@ impl Database {
 
     // -- tenancy: invitations ------------------------------------------------
 
+    /// Lists every invitation owned by an organization, newest first.
+    ///
+    /// Terminal invitations remain visible for audit. Expiry is derived from
+    /// the stored deadline rather than materialized by a background job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn list_invitations(&self, org_id: i64) -> Result<Vec<InvitationRecord>> {
+        self.backend
+            .query(
+                "SELECT id, org_id, email, scope_key, role, created_at,
+                        accepted_at, cancelled_at, expires_at
+                   FROM invitations WHERE org_id = ?1
+                  ORDER BY created_at DESC, id DESC",
+                &vals![org_id],
+            )
+            .await?
+            .into_iter()
+            .map(invitation_record_from_row)
+            .collect()
+    }
+
+    /// Reads one invitation by its organization-local numeric identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn invitation_record(
+        &self,
+        org_id: i64,
+        invitation_id: i64,
+    ) -> Result<Option<InvitationRecord>> {
+        self.backend
+            .query_opt(
+                "SELECT id, org_id, email, scope_key, role, created_at,
+                        accepted_at, cancelled_at, expires_at
+                   FROM invitations WHERE org_id = ?1 AND id = ?2",
+                &vals![org_id, invitation_id],
+            )
+            .await?
+            .map(invitation_record_from_row)
+            .transpose()
+    }
+
+    /// Finds a live invitation for the same email and membership scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn pending_invitation_for(
+        &self,
+        org_id: i64,
+        email: &str,
+        scope: &str,
+    ) -> Result<Option<i64>> {
+        let now = unix_now();
+        self.backend
+            .query_opt(
+                "SELECT id FROM invitations
+                  WHERE org_id = ?1 AND email = ?2 AND scope_key = ?3
+                    AND accepted_at IS NULL AND cancelled_at IS NULL
+                    AND expires_at > ?4
+                  ORDER BY created_at DESC, id DESC LIMIT 1",
+                &vals![org_id, email, scope, now],
+            )
+            .await?
+            .map(|row| row.get(0))
+            .transpose()
+    }
+
     /// Create an invitation; returns its new id.
     ///
     /// The caller passes the SHA-256 hash of the invite secret as
@@ -16210,12 +16307,39 @@ impl Database {
         Ok(invitation_id)
     }
 
-    /// Accept an invitation by its token hash, returning its details.
+    /// Cancels a live invitation using an optimistic-concurrency baseline.
+    ///
+    /// Returns `false` when the invitation is absent, terminal, expired, or
+    /// changed since it was reviewed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cancel_invitation(
+        &self,
+        invitation_id: i64,
+        expected_created_at: i64,
+    ) -> Result<bool> {
+        let now = unix_now();
+        Ok(self
+            .backend
+            .execute(
+                "UPDATE invitations SET cancelled_at = ?3
+                  WHERE id = ?1 AND created_at = ?2
+                    AND accepted_at IS NULL AND cancelled_at IS NULL
+                    AND expires_at > ?3",
+                &vals![invitation_id, expected_created_at, now],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Accepts an invitation and creates its membership in one transaction.
     ///
     /// Succeeds only for an invitation that is unexpired (`expires_at` is
     /// in the future relative to the current clock) and not already
     /// accepted; on success it stamps `accepted_at` and returns the
-    /// invitation so the caller can mint the corresponding membership.
+    /// invitation and inserts the corresponding membership atomically.
     /// Returns `Ok(None)` when no matching, live, unaccepted invitation
     /// exists — covering unknown hashes, expired invites, and replays
     /// alike, without distinguishing them to the caller.
@@ -16223,38 +16347,67 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn accept_invitation(&self, token_hash: &str) -> Result<Option<InvitationRecord>> {
+    pub async fn accept_invitation(
+        &self,
+        token_hash: &str,
+        org_id: i64,
+        user_id: i64,
+        email: &str,
+    ) -> Result<Option<InvitationRecord>> {
         let now = unix_now();
         let record = self
             .backend
             .query_opt(
-                "SELECT i.id, i.org_id, i.email, i.scope_key, i.role FROM invitations i
-                 JOIN orgs o ON o.id = i.org_id
-                 WHERE i.token_hash = ?1 AND i.accepted_at IS NULL
-                   AND i.expires_at > ?2 AND o.deleted_at IS NULL",
-                &vals![token_hash, now],
+                "SELECT i.id, i.org_id, i.email, i.scope_key, i.role,
+                        i.created_at, i.accepted_at, i.cancelled_at, i.expires_at
+                   FROM invitations i JOIN orgs o ON o.id = i.org_id
+                  WHERE i.token_hash = ?1 AND i.email = ?2 AND i.org_id = ?5
+                    AND i.accepted_at IS NULL AND i.cancelled_at IS NULL
+                    AND i.expires_at > ?3 AND o.deleted_at IS NULL
+                    AND EXISTS (SELECT 1 FROM users u
+                                 WHERE u.id = ?4 AND u.email = ?2
+                                   AND u.deleted_at IS NULL)",
+                &vals![token_hash, email, now, user_id, org_id],
             )
             .await
             .context("loading invitation by hash")?
-            .map(|row| -> Result<InvitationRecord> {
-                Ok(InvitationRecord {
-                    id: row.get(0)?,
-                    org_id: row.get(1)?,
-                    email: row.get(2)?,
-                    scope: row.get(3)?,
-                    role: row.get(4)?,
-                })
-            })
+            .map(invitation_record_from_row)
             .transpose()?;
         if let Some(record) = &record {
             self.backend
-                .execute(
-                    "UPDATE invitations SET accepted_at = ?2 WHERE id = ?1",
-                    &vals![record.id, now],
-                )
+                .checked_batch(&[
+                    Statement::new(
+                        "UPDATE invitations SET accepted_at = ?5
+                          WHERE id = ?1 AND token_hash = ?2 AND email = ?3
+                            AND accepted_at IS NULL AND cancelled_at IS NULL
+                            AND expires_at > ?5 AND org_id = ?6
+                            AND EXISTS (SELECT 1 FROM users u
+                                         WHERE u.id = ?4 AND u.email = ?3
+                                           AND u.deleted_at IS NULL)",
+                        vals![record.id, token_hash, email, user_id, now, org_id],
+                    )
+                    .expecting(1),
+                    Statement::new(
+                        "INSERT INTO memberships
+                           (principal_kind, principal_id, scope_key, role, created_at)
+                         SELECT 'user', ?1, i.scope_key, i.role, ?3
+                           FROM invitations i
+                          WHERE i.id = ?2 AND i.accepted_at = ?3
+                            AND NOT EXISTS (
+                              SELECT 1 FROM memberships m
+                               WHERE m.principal_kind = 'user'
+                                 AND m.principal_id = ?1
+                                 AND m.scope_key = i.scope_key)",
+                        vals![user_id, record.id, now],
+                    )
+                    .expecting(1),
+                ])
                 .await?;
+            let mut accepted = record.clone();
+            accepted.accepted_at = Some(now);
+            return Ok(Some(accepted));
         }
-        Ok(record)
+        Ok(None)
     }
 
     // -- auth: provisioning tokens ------------------------------------------
@@ -23007,15 +23160,28 @@ source_nar_hash = ""
         )
         .await
         .unwrap();
-        let accepted = db.accept_invitation("hash-a").await.unwrap().unwrap();
+        let invitee = db.create_user("new@acme.com", None).await.unwrap();
+        let accepted = db
+            .accept_invitation("hash-a", org, invitee, "new@acme.com")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(accepted.email, "new@acme.com");
         assert_eq!(accepted.scope, project_scope);
         assert_eq!(accepted.role, "developer");
+        assert_eq!(
+            db.list_memberships_for("user", invitee).await.unwrap(),
+            vec![(project_scope.clone(), "developer".to_string())]
+        );
         // A second accept of the same hash is rejected (already accepted).
-        assert!(db.accept_invitation("hash-a").await.unwrap().is_none());
+        assert!(db
+            .accept_invitation("hash-a", org, invitee, "new@acme.com")
+            .await
+            .unwrap()
+            .is_none());
         // Unknown hash is rejected.
         assert!(db
-            .accept_invitation("hash-missing")
+            .accept_invitation("hash-missing", org, invitee, "new@acme.com")
             .await
             .unwrap()
             .is_none());
@@ -23025,7 +23191,12 @@ source_nar_hash = ""
         db.create_invitation(org, "late@acme.com", &org_scope, "viewer", "hash-b", past)
             .await
             .unwrap();
-        assert!(db.accept_invitation("hash-b").await.unwrap().is_none());
+        let late = db.create_user("late@acme.com", None).await.unwrap();
+        assert!(db
+            .accept_invitation("hash-b", org, late, "late@acme.com")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

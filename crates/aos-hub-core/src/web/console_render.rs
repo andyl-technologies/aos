@@ -2075,6 +2075,7 @@ pub fn org_dashboard(
     projects: &[ProjectRecord],
     registries: &[RegistryRecord],
     members: &[MemberRow],
+    invitations: &[aos_proto_types::Invitation],
     bindings: &[StorageBindingReadSummary],
     managed_bindings: Option<&[StorageBindingRecord]>,
     caches: &[CacheSummary],
@@ -2668,6 +2669,38 @@ pub fn org_dashboard(
                 "<p><a href=\"/-/org/{}/members/invitations/new\">Invite a member</a></p>",
                 escape(&org.slug)
             );
+            if !invitations.is_empty() {
+                body.push_str("<h2>Invitations</h2>\n");
+                let rows = invitations
+                    .iter()
+                    .map(|invitation| {
+                        let action = if invitation.state == "pending" {
+                            format!(
+                                "<form class=\"console\" method=\"post\" action=\"/-/org/{}/members/invitations/{}/cancel\">{}<input type=\"hidden\" name=\"if_version\" value=\"{}\"><button class=\"danger\">cancel</button></form>",
+                                escape(&org.slug),
+                                invitation.invitation_id,
+                                csrf_field(csrf),
+                                escape(&invitation.resource_version),
+                            )
+                        } else {
+                            String::new()
+                        };
+                        vec![
+                            invitation.invitation_id.to_string(),
+                            escape(&invitation.email),
+                            escape(&invitation.scope),
+                            escape(&invitation.role),
+                            escape(&invitation.state),
+                            invitation.expires_at.to_string(),
+                            action,
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                body.push_str(&table(
+                    &["id", "email", "scope", "role", "state", "expires", ""],
+                    &rows,
+                ));
+            }
         }
     }
 
@@ -2724,6 +2757,81 @@ pub fn org_new_member_invitation_page(
         &body,
         navigation_permissions,
         started,
+    )
+}
+
+/// Renders the one-time invitation delivery result after reviewed creation.
+#[must_use]
+pub fn invitation_created_page(
+    email: &str,
+    org_slug: &str,
+    invitation: &aos_proto_types::Invitation,
+    acceptance_url: &str,
+    delivery_error: Option<&str>,
+    started: Instant,
+) -> String {
+    let mut body = String::from("<h1>Invitation created</h1>\n");
+    let _ = writeln!(
+        body,
+        "<p><code>{}</code> may join <code>{}</code> as <strong>{}</strong> after accepting.</p>",
+        escape(&invitation.email),
+        escape(org_slug),
+        escape(&invitation.role),
+    );
+    if delivery_error.is_some() {
+        body.push_str(
+            "<p class=\"bad\">Email delivery failed. Copy the one-time link below and deliver it securely.</p>\n",
+        );
+    } else {
+        body.push_str("<p class=\"good\">The invitation email was submitted for delivery.</p>\n");
+    }
+    let _ = write!(
+        body,
+        "<label>one-time acceptance link <input type=\"text\" readonly value=\"{}\"></label>\n\
+         <p class=\"dim\">This secret is shown once. Creating the invitation did not create a user or membership.</p>\n\
+         <p><a href=\"/-/org/{}/members\">Return to members →</a></p>\n",
+        escape(acceptance_url),
+        escape(org_slug),
+    );
+    page_with_session(
+        "invitation created",
+        &[
+            (format!("/-/org/{org_slug}/members"), "members".into()),
+            (String::new(), "invitation created".into()),
+        ],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// Renders the authenticated invitation acceptance ceremony.
+#[must_use]
+pub fn invitation_acceptance_page(
+    email: &str,
+    org_slug: &str,
+    csrf: &str,
+    token: &str,
+    started: Instant,
+) -> String {
+    let body = format!(
+        "<h1>Accept invitation</h1>\n\
+         <p>You are signed in as <code>{email}</code>. Accepting joins organization <code>{org}</code> with the exact role and scope recorded by the invitation.</p>\n\
+         <form class=\"console\" method=\"post\" action=\"/-/org/{org}/invitations/accept\">\n{csrf}\
+         <input type=\"hidden\" name=\"token\" value=\"{token}\">\n\
+         <button>accept invitation</button>\n</form>\n\
+         <p class=\"dim\">The invitation works only for this account's exact email address and can be used once.</p>\n",
+        email = escape(email),
+        org = escape(org_slug),
+        csrf = csrf_field(csrf),
+        token = escape(token),
+    );
+    page_with_session(
+        "accept invitation",
+        &[(String::new(), "accept invitation".into())],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
     )
 }
 
@@ -6820,6 +6928,7 @@ mod cache_render_tests {
             "viewer@acme.example",
             &org(),
             "csrf-tok",
+            &[],
             &[],
             &[],
             &[],

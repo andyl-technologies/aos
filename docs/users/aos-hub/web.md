@@ -44,6 +44,15 @@ Admin manages organization settings, while Maintainer owns publishing,
 channels, and keys. Owner has both sets of permissions; Developer and Viewer
 are narrower roles.
 
+The organization's **Members** page includes member and invitation inventory.
+**Invite a member** creates a reviewed pending invitation and shows its
+one-time acceptance link after apply; it does not pre-create an account or
+membership. Deliver that link only to the intended email. The invitee signs in
+as the exact matching address, reviews the invitation, and accepts it; the Hub
+then consumes the invitation and creates the membership atomically. Member
+managers can cancel a pending invitation from the same page. Accepted,
+cancelled, and expired invitations remain visible as history.
+
 ## Browse a binary cache
 
 Cache slugs share the top-level URL namespace with registries:
@@ -90,5 +99,5 @@ authenticated visibility, writes, or stable service methods.
   idle and 30 days absolute, with a 15-minute reauthentication window for
   sensitive work; the absolute lifetime cannot exceed 30 days.
 
-Device-code login is not currently a complete client flow and should not be
-used as an authentication plan.
+The `aos hub login` device-code flow uses the same identity and authorization
+state as browser sign-in; see the [CLI guide](cli.md).

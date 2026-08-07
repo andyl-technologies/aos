@@ -2595,11 +2595,20 @@ async fn org_view(
         } else {
             None
         };
-        let members = load_members(&deps.db, &org.stable_id).await?;
-        let owner_count = members.iter().filter(|m| m.role == "owner").count();
         let can_manage = session
             .allows(&deps.db, Permission::MembersManage, &scope)
             .await;
+        let members = load_members(&deps.db, &org.stable_id).await?;
+        let invitations = if can_manage && active == "members" {
+            let bearer = session.topology_bearer(&deps, Scope::parse(&org.stable_id))?;
+            deps.topology
+                .invitations(&bearer, org.slug.clone())
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?
+        } else {
+            Vec::new()
+        };
+        let owner_count = members.iter().filter(|m| m.role == "owner").count();
         let can_configure = session
             .allows(&deps.db, Permission::RegistryConfigure, &scope)
             .await;
@@ -2611,6 +2620,7 @@ async fn org_view(
             &projects,
             &registries,
             &members,
+            &invitations,
             &bindings,
             managed_bindings.as_deref(),
             &caches,
@@ -4562,7 +4572,7 @@ pub(crate) struct InviteForm {
     confirmation_hash: String,
 }
 
-/// `POST /-/org/{org}/members` — plan or apply an invitation membership.
+/// `POST /-/org/{org}/members/invitations` — plan or create an invitation.
 pub(crate) async fn org_invite_member(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -4594,7 +4604,7 @@ pub(crate) async fn org_invite_member(
     if !form.plan_id.is_empty() {
         return match deps
             .topology
-            .apply_membership(
+            .apply_invitation(
                 &bearer,
                 form.plan_id.clone(),
                 form.confirmation_hash,
@@ -4602,11 +4612,37 @@ pub(crate) async fn org_invite_member(
             )
             .await
         {
-            Ok(membership) => {
-                if membership.principal_kind == "user" && !membership.role.is_empty() {
-                    notify_membership_invitee(&deps, &org_slug, &membership).await;
-                }
-                Redirect::to(&format!("/-/org/{org_slug}/members")).into_response()
+            Ok(created) => {
+                let Some(invitation) = created.invitation else {
+                    return internal(anyhow::anyhow!("invitation response omitted the resource"));
+                };
+                let link = format!(
+                    "{}/-/org/{}/invitations/accept?token={}",
+                    deps.external_url.trim_end_matches('/'),
+                    org_slug,
+                    created.secret,
+                );
+                let content = crate::email::invite_email(
+                    console::brand(),
+                    &org_slug,
+                    &invitation.role,
+                    &link,
+                );
+                let delivery_error = deps
+                    .mailer
+                    .send_email(&invitation.email, &content)
+                    .await
+                    .err()
+                    .map(|error| format!("{error:#}"));
+                Html(console::invitation_created_page(
+                    &session.email,
+                    &org_slug,
+                    &invitation,
+                    &link,
+                    delivery_error.as_deref(),
+                    started,
+                ))
+                .into_response()
             }
             Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
         };
@@ -4619,50 +4655,27 @@ pub(crate) async fn org_invite_member(
         return (StatusCode::BAD_REQUEST, "invalid email").into_response();
     }
     let result = async {
-        if deps.db.org_by_slug(&org_slug).await?.is_none() {
-            anyhow::bail!("no org");
-        }
-        let invitee = deps.db.find_or_create_user(&email).await?;
-        let target = Principal::user(invitee);
-        if let Err(reject) =
-            membership_grant_allowed(&deps.db, &session.principal(), &target, &scope, role).await?
-        {
-            return Ok(Err(reject));
-        }
-        let current = deps
-            .topology
-            .membership(
-                &bearer,
-                aos_proto_types::GetMembershipRequest {
-                    principal_kind: "user".to_string(),
-                    principal_ref: email.clone(),
-                    scope: scope.as_str().to_string(),
-                },
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         let plan = deps
             .topology
-            .plan_membership(
+            .plan_invitation(
                 &bearer,
-                aos_proto_types::PlanSetMembershipRequest {
-                    principal_kind: "user".to_string(),
-                    principal_ref: email,
+                aos_proto_types::PlanCreateInvitationRequest {
+                    org_slug: org_slug.clone(),
+                    email,
                     scope: scope.as_str().to_string(),
                     role: role.as_str().to_string(),
-                    expected_resource_version: current.resource_version,
+                    ttl_secs: 0,
+                    expected_resource_version: String::new(),
                     idempotency_key: format!("console-plan-invite-member-{}", uuid::Uuid::new_v4()),
                 },
             )
             .await
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        Ok::<Result<crate::web::console::ports::ReviewedPlan, MembershipReject>, anyhow::Error>(Ok(
-            plan,
-        ))
+        Ok::<_, anyhow::Error>(plan)
     }
     .await;
     match result {
-        Ok(Ok(plan)) => Html(console::topology_plan_page(
+        Ok(plan) => Html(console::topology_plan_page(
             &session.email,
             "Invite organization member",
             &format!("/-/org/{org_slug}/members/invitations"),
@@ -4671,37 +4684,164 @@ pub(crate) async fn org_invite_member(
             started,
         ))
         .into_response(),
-        Ok(Err(reject)) => reject.into_response(),
         Err(err) => internal(err),
     }
 }
 
-/// Sends the post-commit invitation message for an applied user membership.
-///
-/// Delivery is deliberately best-effort: the retained-control apply is the
-/// system of record, and a mail outage must not roll it back or invite a second
-/// apply under a different idempotency key.
-async fn notify_membership_invitee(
-    deps: &ConsoleDeps,
-    org_slug: &str,
-    membership: &aos_proto_types::MembershipResponse,
-) {
-    let email = &membership.principal_ref;
-    match deps.db.create_magic_link(email).await {
-        Ok(secret) => {
-            let link = format!(
-                "{}/auth/magic?token={secret}",
-                deps.external_url.trim_end_matches('/'),
-            );
-            let content =
-                crate::email::invite_email(console::brand(), org_slug, &membership.role, &link);
-            if let Err(error) = deps.mailer.send_email(email, &content).await {
-                tracing::warn!(error = %format!("{error:#}"), "invite email delivery failed");
-            }
-        }
-        Err(error) => {
-            tracing::warn!(error = %format!("{error:#}"), "invite magic-link creation failed");
-        }
+/// Form for reviewing and applying an invitation cancellation.
+#[derive(serde::Deserialize)]
+pub(crate) struct CancelInvitationForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    if_version: String,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
+}
+
+/// `POST /-/org/{org}/members/invitations/{id}/cancel` — cancel an invite.
+pub(crate) async fn cancel_invitation(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, invitation_id)): Path<(String, i64)>,
+    Form(form): Form<CancelInvitationForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    if let Err(response) = require_sudo(&session, &headers) {
+        return *response;
+    }
+    let scope = organization_scope(&deps.db, &org_slug).await;
+    if !session
+        .allows(&deps.db, Permission::MembersManage, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "members.manage required").into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    if !form.plan_id.is_empty() {
+        return match deps
+            .topology
+            .apply_invitation_cancellation(
+                &bearer,
+                form.plan_id.clone(),
+                form.confirmation_hash,
+                console_apply_idempotency_key(&form.plan_id),
+            )
+            .await
+        {
+            Ok(_) => Redirect::to(&format!("/-/org/{org_slug}/members")).into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        };
+    }
+    let plan = deps
+        .topology
+        .plan_invitation_cancellation(
+            &bearer,
+            aos_proto_types::PlanCancelInvitationRequest {
+                org_slug: org_slug.clone(),
+                invitation_id,
+                expected_resource_version: form.if_version,
+                idempotency_key: format!("console-plan-cancel-invitation-{}", uuid::Uuid::new_v4()),
+            },
+        )
+        .await;
+    match plan {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            "Cancel organization invitation",
+            &format!("/-/org/{org_slug}/members/invitations/{invitation_id}/cancel"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    }
+}
+
+/// Query carried by the invitation acceptance link.
+#[derive(serde::Deserialize)]
+pub(crate) struct InvitationAcceptQuery {
+    token: String,
+}
+
+/// CSRF-protected invitation acceptance form.
+#[derive(serde::Deserialize)]
+pub(crate) struct InvitationAcceptForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    token: String,
+}
+
+/// `GET /-/org/{org}/invitations/accept` — review an invitation ceremony.
+pub(crate) async fn invitation_acceptance(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path(org_slug): Path<String>,
+    Query(query): Query<InvitationAcceptQuery>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if query.token.is_empty() {
+        return (StatusCode::BAD_REQUEST, "invitation token is required").into_response();
+    }
+    Html(console::invitation_acceptance_page(
+        &session.email,
+        &org_slug,
+        &session.csrf(),
+        &query.token,
+        started,
+    ))
+    .into_response()
+}
+
+/// `POST /-/org/{org}/invitations/accept` — atomically accept and join.
+pub(crate) async fn accept_invitation(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    Form(form): Form<InvitationAcceptForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let bearer = match session.topology_bearer(&deps, Scope::root()) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .accept_invitation(
+            &bearer,
+            aos_proto_types::AcceptInvitationRequest {
+                org_slug: org_slug.clone(),
+                secret: form.token,
+            },
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/-/org/{org_slug}/members")).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
     }
 }
 

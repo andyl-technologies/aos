@@ -324,6 +324,78 @@ pub enum HubServiceAccountCreateCmd {
     Apply(HubReviewedApplyArgs),
 }
 
+/// Organization invitation inventory and lifecycle commands.
+#[derive(Subcommand)]
+pub enum HubInvitationCmd {
+    /// List invitation history for an organization.
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Show one invitation without its acceptance secret.
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        invitation_id: i64,
+    },
+    /// Create a pending invitation through immutable review.
+    Create {
+        #[command(subcommand)]
+        command: HubInvitationCreateCmd,
+    },
+    /// Cancel a pending invitation through immutable review.
+    Cancel {
+        #[command(subcommand)]
+        command: HubInvitationCancelCmd,
+    },
+    /// Accept an invitation as the signed-in user.
+    Accept {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        #[arg(long, env = "AOS_INVITATION_SECRET", hide_env_values = true)]
+        secret: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubInvitationCreateCmd {
+    /// Create and print an immutable invitation plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        email: String,
+        #[arg(long, value_name = "STABLE_SCOPE")]
+        scope: String,
+        #[arg(long)]
+        role: String,
+        #[arg(long, value_name = "SECONDS")]
+        ttl: Option<i64>,
+    },
+    /// Apply an exact previously reviewed invitation plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+#[derive(Subcommand)]
+pub enum HubInvitationCancelCmd {
+    /// Create and print an immutable cancellation plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        invitation_id: i64,
+        #[arg(long, value_name = "VERSION")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed cancellation plan.
+    Apply(HubReviewedApplyArgs),
+}
+
 /// Organization membership queries and reviewed mutations.
 #[derive(Subcommand)]
 pub enum HubOrgMemberCmd {

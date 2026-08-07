@@ -66,6 +66,8 @@ pub const INTERNAL_UPLOAD_AUTH_TTL_SECS: i64 = 3600;
 const TOPOLOGY_PLAN_TTL_SECS: i64 = 15 * 60;
 const ACCESS_TOKEN_DEFAULT_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 const ACCESS_TOKEN_MAX_TTL_SECS: i64 = 90 * 24 * 60 * 60;
+const INVITATION_DEFAULT_TTL_SECS: i64 = 7 * 24 * 60 * 60;
+const INVITATION_MAX_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 /// Organization offboarding grace before separately scheduled hard purge.
 const ORGANIZATION_DELETE_GRACE_SECS: i64 = 30 * 24 * 60 * 60;
 
@@ -508,6 +510,27 @@ struct MembershipPlanInput {
     scope: String,
     desired_role: Option<String>,
     baseline_role: Option<String>,
+}
+
+/// Immutable preconditions for creating one invitation.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct InvitationCreatePlanInput {
+    org_id: i64,
+    org_slug: String,
+    email: String,
+    scope: String,
+    role: String,
+    ttl_secs: i64,
+}
+
+/// Immutable preconditions for cancelling one pending invitation.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct InvitationCancelPlanInput {
+    org_id: i64,
+    org_slug: String,
+    invitation_id: i64,
+    baseline_resource_version: String,
+    baseline_created_at: i64,
 }
 
 /// Immutable preconditions for issuing one scoped access-token generation.
@@ -1663,6 +1686,80 @@ fn service_account_message(
         created_at: record.created_at,
         resource_version,
     })
+}
+
+fn invitation_resource_version(record: &crate::db::InvitationRecord) -> Result<String, RpcError> {
+    let canonical = serde_json::to_vec(&(
+        record.id,
+        record.org_id,
+        &record.email,
+        &record.scope,
+        &record.role,
+        record.created_at,
+        record.accepted_at,
+        record.cancelled_at,
+        record.expires_at,
+    ))
+    .map_err(RpcError::internal)?;
+    Ok(hex::encode(Sha256::digest(canonical)))
+}
+
+fn invitation_message(
+    org_slug: &str,
+    record: crate::db::InvitationRecord,
+) -> Result<pb::Invitation, RpcError> {
+    let resource_version = invitation_resource_version(&record)?;
+    let state = if record.accepted_at.is_some() {
+        "accepted"
+    } else if record.cancelled_at.is_some() {
+        "cancelled"
+    } else if record.expires_at <= clock::now_unix_secs() {
+        "expired"
+    } else {
+        "pending"
+    };
+    Ok(pb::Invitation {
+        invitation_id: record.id,
+        org_slug: org_slug.to_string(),
+        email: record.email,
+        scope: record.scope,
+        role: record.role,
+        state: state.to_string(),
+        created_at: record.created_at,
+        accepted_at: record.accepted_at.unwrap_or_default(),
+        cancelled_at: record.cancelled_at.unwrap_or_default(),
+        expires_at: record.expires_at,
+        resource_version,
+    })
+}
+
+fn normalize_invitation_email(value: &str) -> Result<String, RpcError> {
+    let email = value.trim().to_ascii_lowercase();
+    if email.len() > 254 {
+        return Err(RpcError::invalid("email address is too long"));
+    }
+    let mut parts = email.split('@');
+    let local = parts.next().unwrap_or_default();
+    let domain = parts.next().unwrap_or_default();
+    let valid_local = !local.is_empty()
+        && local.len() <= 64
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !local.contains("..")
+        && local.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || b"!#$%&'*+-/=?^_`{|}~.".contains(&byte)
+        });
+    let valid_domain = matches!(url::Host::parse(domain), Ok(url::Host::Domain(parsed)) if parsed == domain)
+        && domain.contains('.')
+        && !domain.ends_with('.');
+    if parts.next().is_some() || !valid_local || !valid_domain {
+        return Err(RpcError::invalid(
+            "email must use canonical lowercase dot-atom syntax and an ASCII DNS domain",
+        ));
+    }
+    Ok(email)
 }
 
 fn normalize_service_account_name(value: &str) -> Result<String, RpcError> {
@@ -19040,6 +19137,517 @@ impl RpcService {
         Ok(response)
     }
 
+    /// Lists invitation history for one organization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage members, [`RpcError::NotFound`] for an unknown organization, and
+    /// [`RpcError::Internal`] on persistence failure.
+    pub async fn list_invitations(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListInvitationsRequest,
+    ) -> Result<pb::ListInvitationsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(
+            &claims,
+            Permission::MembersManage,
+            &Scope::parse(&org.stable_id),
+        )
+        .await?;
+        let invitations = self
+            .db
+            .list_invitations(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|record| invitation_message(&org.slug, record))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (invitations, next_page_token) = paginate(invitations, req.page_size, &req.page_token)?;
+        Ok(pb::ListInvitationsResponse {
+            invitations,
+            next_page_token,
+        })
+    }
+
+    /// Reads one invitation without exposing its acceptance secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage members, [`RpcError::NotFound`] for an unknown resource, and
+    /// [`RpcError::Internal`] on persistence failure.
+    pub async fn get_invitation(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetInvitationRequest,
+    ) -> Result<pb::InvitationResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(
+            &claims,
+            Permission::MembersManage,
+            &Scope::parse(&org.stable_id),
+        )
+        .await?;
+        let record = self
+            .db
+            .invitation_record(org.id, req.invitation_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("invitation"))?;
+        Ok(pb::InvitationResponse {
+            invitation: Some(invitation_message(&org.slug, record)?),
+            secret: String::new(),
+        })
+    }
+
+    /// Persists an immutable plan for creating one invitation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::InvalidArgument`] for invalid invitation contents,
+    /// an authentication or authorization error when the caller cannot manage
+    /// members at the target scope, [`RpcError::AlreadyExists`] for a duplicate
+    /// pending invitation, and [`RpcError::Internal`] on persistence failure.
+    pub async fn plan_create_invitation(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanCreateInvitationRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        require_absent_resource_version(&req.expected_resource_version)?;
+        let email = normalize_invitation_email(&req.email)?;
+        let role = Role::parse(&req.role)
+            .ok_or_else(|| RpcError::invalid(format!("unknown role '{}'", req.role)))?;
+        let ttl_secs = if req.ttl_secs == 0 {
+            INVITATION_DEFAULT_TTL_SECS
+        } else {
+            req.ttl_secs
+        };
+        if !(1..=INVITATION_MAX_TTL_SECS).contains(&ttl_secs) {
+            return Err(RpcError::invalid(format!(
+                "ttl_secs must be 0 or between 1 and {INVITATION_MAX_TTL_SECS}"
+            )));
+        }
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = parse_authorization_scope(&req.scope)?;
+        let context = self
+            .db
+            .authorization_context(scope.as_str())
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("authorization scope"))?;
+        if !context.is_covered_by(&Scope::parse(&org.stable_id))
+            || (role == Role::Owner && scope.as_str() != org.stable_id)
+        {
+            return Err(RpcError::invalid(
+                "invitation scope and role must belong to the organization",
+            ));
+        }
+        self.require_permission(&claims, Permission::MembersManage, &scope)
+            .await?;
+        self.require_membership_grant_ceiling(&claims, &scope, None, Some(role))
+            .await?;
+        if self
+            .db
+            .pending_invitation_for(org.id, &email, scope.as_str())
+            .await
+            .map_err(RpcError::internal)?
+            .is_some()
+        {
+            return Err(RpcError::AlreadyExists(
+                "a pending invitation already exists for this email and scope".into(),
+            ));
+        }
+        if let Some(user_id) = self
+            .db
+            .user_by_email(&email)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            let already_member = self
+                .db
+                .list_memberships_for("user", user_id)
+                .await
+                .map_err(RpcError::internal)?
+                .into_iter()
+                .any(|(candidate, _)| candidate == scope.as_str());
+            if already_member {
+                return Err(RpcError::AlreadyExists(
+                    "the invited user already has a direct membership at this scope".into(),
+                ));
+            }
+        }
+        let input = InvitationCreatePlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            email,
+            scope: scope.as_str().to_string(),
+            role: role.as_str().to_string(),
+            ttl_secs,
+        };
+        self.create_control_plan(
+            &claims,
+            "create_invitation",
+            &input.scope,
+            &input,
+            &req.idempotency_key,
+            vec![format!(
+                "invite {} as {} at {}",
+                input.email, input.role, input.scope
+            )],
+            Vec::new(),
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed invitation-creation plan exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error for an invalid caller,
+    /// [`RpcError::FailedPrecondition`] when the reviewed baseline changed, and
+    /// an internal or plan-lifecycle error when creation cannot be committed.
+    pub async fn apply_create_invitation(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::InvitationResponse, RpcError> {
+        const PLAN_KIND: &str = "create_invitation";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::MembersManage)
+            .await?;
+        if self
+            .replayed_control_result::<pb::InvitationResponse>(
+                auth,
+                &req.plan_id,
+                PLAN_KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+            .is_some()
+        {
+            return Err(RpcError::FailedPrecondition(
+                "invitation secret was delivered once and cannot be replayed; cancel and recreate the invitation if delivery was interrupted"
+                    .to_string(),
+            ));
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            PLAN_KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, InvitationCreatePlanInput) = self
+            .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let scope = parse_authorization_scope(&input.scope)?;
+        self.require_permission(&claims, Permission::MembersManage, &scope)
+            .await?;
+        let role = Role::parse(&input.role).ok_or_else(|| {
+            RpcError::FailedPrecondition("reviewed invitation role is invalid".into())
+        })?;
+        self.require_membership_grant_ceiling(&claims, &scope, None, Some(role))
+            .await?;
+        if self
+            .db
+            .pending_invitation_for(org.id, &input.email, &input.scope)
+            .await
+            .map_err(RpcError::internal)?
+            .is_some()
+        {
+            return Err(RpcError::FailedPrecondition(
+                "a pending invitation appeared after planning".into(),
+            ));
+        }
+        if let Some(user_id) = self
+            .db
+            .user_by_email(&input.email)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            let already_member = self
+                .db
+                .list_memberships_for("user", user_id)
+                .await
+                .map_err(RpcError::internal)?
+                .into_iter()
+                .any(|(candidate, _)| candidate == input.scope);
+            if already_member {
+                return Err(RpcError::FailedPrecondition(
+                    "the invitee gained a direct membership after planning".into(),
+                ));
+            }
+        }
+        let (secret, token_hash) = crate::auth::token::generate_invitation_token();
+        let invitation_id = self
+            .db
+            .create_invitation(
+                org.id,
+                &input.email,
+                &input.scope,
+                &input.role,
+                &token_hash,
+                clock::now_unix_secs().saturating_add(input.ttl_secs),
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        let record = self
+            .db
+            .invitation_record(org.id, invitation_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("created invitation disappeared")))?;
+        let response = pb::InvitationResponse {
+            invitation: Some(invitation_message(&org.slug, record)?),
+            secret,
+        };
+        let persisted = pb::InvitationResponse {
+            invitation: response.invitation.clone(),
+            secret: String::new(),
+        };
+        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &persisted)
+            .await?;
+        Ok(response)
+    }
+
+    /// Persists an immutable plan for cancelling one pending invitation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage members, [`RpcError::NotFound`] for an unknown resource,
+    /// [`RpcError::FailedPrecondition`] for a terminal or stale invitation, and
+    /// [`RpcError::Internal`] on persistence failure.
+    pub async fn plan_cancel_invitation(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanCancelInvitationRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let record = self
+            .db
+            .invitation_record(org.id, req.invitation_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("invitation"))?;
+        let scope = parse_authorization_scope(&record.scope)?;
+        self.require_permission(&claims, Permission::MembersManage, &scope)
+            .await?;
+        let version = invitation_resource_version(&record)?;
+        if req.expected_resource_version != version {
+            return Err(RpcError::FailedPrecondition(
+                "invitation resource version is stale".into(),
+            ));
+        }
+        if record.accepted_at.is_some()
+            || record.cancelled_at.is_some()
+            || record.expires_at <= clock::now_unix_secs()
+        {
+            return Err(RpcError::FailedPrecondition(
+                "only a pending invitation may be cancelled".into(),
+            ));
+        }
+        let input = InvitationCancelPlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            invitation_id: record.id,
+            baseline_resource_version: version,
+            baseline_created_at: record.created_at,
+        };
+        self.create_control_plan(
+            &claims,
+            "cancel_invitation",
+            &record.scope,
+            &input,
+            &req.idempotency_key,
+            vec![format!("cancel invitation {}", record.id)],
+            Vec::new(),
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed invitation-cancellation plan exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error for an invalid caller,
+    /// [`RpcError::FailedPrecondition`] when the reviewed invitation changed,
+    /// and an internal or plan-lifecycle error when cancellation cannot commit.
+    pub async fn apply_cancel_invitation(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::InvitationResponse, RpcError> {
+        const PLAN_KIND: &str = "cancel_invitation";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::MembersManage)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                PLAN_KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            PLAN_KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, InvitationCancelPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let current = self
+            .db
+            .invitation_record(org.id, input.invitation_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::FailedPrecondition("invitation disappeared".into()))?;
+        let scope = parse_authorization_scope(&current.scope)?;
+        self.require_permission(&claims, Permission::MembersManage, &scope)
+            .await?;
+        if invitation_resource_version(&current)? != input.baseline_resource_version
+            || !self
+                .db
+                .cancel_invitation(input.invitation_id, input.baseline_created_at)
+                .await
+                .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::FailedPrecondition(
+                "invitation changed after planning".into(),
+            ));
+        }
+        let cancelled = self
+            .db
+            .invitation_record(org.id, input.invitation_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::internal(anyhow::anyhow!("cancelled invitation disappeared"))
+            })?;
+        let response = pb::InvitationResponse {
+            invitation: Some(invitation_message(&org.slug, cancelled)?),
+            secret: String::new(),
+        };
+        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
+            .await?;
+        Ok(response)
+    }
+
+    /// Accepts an invitation for the authenticated matching user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication error for a non-user caller,
+    /// [`RpcError::FailedPrecondition`] for an invalid, terminal, expired, or
+    /// conflicting invitation, and [`RpcError::Internal`] on persistence failure.
+    pub async fn accept_invitation(
+        &self,
+        auth: Option<&str>,
+        req: pb::AcceptInvitationRequest,
+    ) -> Result<pb::AcceptInvitationResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let principal = claims_principal(&claims)
+            .filter(|principal| principal.kind == PrincipalKind::User)
+            .ok_or_else(|| {
+                RpcError::PermissionDenied("a human user must accept invitations".into())
+            })?;
+        let email = self
+            .db
+            .user_email(principal.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::PermissionDenied("authenticated user is not live".into()))?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        if req.secret.is_empty() {
+            return Err(RpcError::invalid("invitation secret is required"));
+        }
+        let token_hash = crate::auth::token::sha256_hex(&req.secret);
+        let accepted = self
+            .db
+            .accept_invitation(&token_hash, org.id, principal.id, &email)
+            .await
+            .map_err(|error| {
+                RpcError::FailedPrecondition(format!("invitation could not be accepted: {error:#}"))
+            })?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "invitation is invalid, terminal, expired, or belongs to another user".into(),
+                )
+            })?;
+        Ok(pb::AcceptInvitationResponse {
+            membership: Some(pb::MembershipResponse {
+                principal_kind: "user".to_string(),
+                principal_ref: email,
+                scope: accepted.scope.clone(),
+                role: accepted.role.clone(),
+                resource_version: accepted.role.clone(),
+            }),
+            invitation: Some(invitation_message(&org.slug, accepted)?),
+        })
+    }
+
     /// Persists an immutable plan for issuing a scoped access token.
     pub async fn plan_issue_access_token(
         &self,
@@ -31815,6 +32423,168 @@ mod cache_upload_tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn invitation_acceptance_atomically_creates_membership_for_matching_user() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("invites", "Invites").await.unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+
+        let plan = service
+            .plan_create_invitation(
+                Some(&auth),
+                pb::PlanCreateInvitationRequest {
+                    org_slug: org.slug.clone(),
+                    email: "New.Member@Example.Test".into(),
+                    scope: org.stable_id.clone(),
+                    role: "developer".into(),
+                    ttl_secs: 3600,
+                    expected_resource_version: String::new(),
+                    idempotency_key: "plan-create-invitation".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let created = service
+            .apply_create_invitation(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: plan.plan_id,
+                    confirmation_hash: plan.confirmation_hash,
+                    idempotency_key: "apply-create-invitation".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(created.secret.starts_with("aosi_"));
+        let invitation = created.invitation.unwrap();
+        assert_eq!(invitation.email, "new.member@example.test");
+        assert_eq!(invitation.state, "pending");
+        assert_eq!(
+            db.user_by_email("new.member@example.test").await.unwrap(),
+            None,
+            "creating an invitation must not create a user"
+        );
+
+        let invitee = db
+            .create_user("new.member@example.test", None)
+            .await
+            .unwrap();
+        let token = service
+            .jwt_keys
+            .mint(
+                &TokenAuth {
+                    token_id: "invitee-session".into(),
+                    owner: Principal::user(invitee),
+                    scope: Scope::root(),
+                    permissions: Vec::new(),
+                },
+                3600,
+            )
+            .unwrap();
+        let invitee_auth = format!("Bearer {token}");
+        let accepted = service
+            .accept_invitation(
+                Some(&invitee_auth),
+                pb::AcceptInvitationRequest {
+                    org_slug: org.slug.clone(),
+                    secret: created.secret.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.invitation.unwrap().state, "accepted");
+        assert_eq!(accepted.membership.unwrap().role, "developer");
+        assert_eq!(
+            db.list_memberships_for("user", invitee).await.unwrap(),
+            vec![(org.stable_id, "developer".to_string())]
+        );
+        assert!(service
+            .accept_invitation(
+                Some(&invitee_auth),
+                pb::AcceptInvitationRequest {
+                    org_slug: org.slug,
+                    secret: created.secret,
+                },
+            )
+            .await
+            .is_err());
+
+        let cancel_plan = service
+            .plan_create_invitation(
+                Some(&auth),
+                pb::PlanCreateInvitationRequest {
+                    org_slug: "invites".into(),
+                    email: "cancelled@example.test".into(),
+                    scope: db.org_by_id(org_id).await.unwrap().unwrap().stable_id,
+                    role: "viewer".into(),
+                    ttl_secs: 3600,
+                    expected_resource_version: String::new(),
+                    idempotency_key: "plan-create-cancelled-invitation".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let cancellable = service
+            .apply_create_invitation(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: cancel_plan.plan_id,
+                    confirmation_hash: cancel_plan.confirmation_hash,
+                    idempotency_key: "apply-create-cancelled-invitation".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .invitation
+            .unwrap();
+        let cancellation = service
+            .plan_cancel_invitation(
+                Some(&auth),
+                pb::PlanCancelInvitationRequest {
+                    org_slug: "invites".into(),
+                    invitation_id: cancellable.invitation_id,
+                    expected_resource_version: cancellable.resource_version,
+                    idempotency_key: "plan-cancel-invitation".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let cancelled = service
+            .apply_cancel_invitation(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: cancellation.plan_id,
+                    confirmation_hash: cancellation.confirmation_hash,
+                    idempotency_key: "apply-cancel-invitation".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .invitation
+            .unwrap();
+        assert_eq!(cancelled.state, "cancelled");
+        let history = service
+            .list_invitations(
+                Some(&auth),
+                pb::ListInvitationsRequest {
+                    org_slug: "invites".into(),
+                    page_size: 50,
+                    page_token: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(history.invitations.len(), 2);
+        assert_eq!(history.invitations[0].state, "cancelled");
+        assert_eq!(history.invitations[1].state, "accepted");
     }
 
     fn one_signed_raw_image_package() -> aos_registry_surface::manifest::PackageToml {

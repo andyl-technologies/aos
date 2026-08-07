@@ -2978,6 +2978,62 @@
   },
   {
     "service": "IdentityService",
+    "method": "ListInvitations",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "GetInvitation",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "PlanCreateInvitation",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "create_invitation" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "CreateInvitation",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "create_invitation", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "PlanCancelInvitation",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "cancel_invitation" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "CancelInvitation",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "cancel_invitation", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
+    "method": "AcceptInvitation",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "identity_ceremony" },
+    "external_effects": false
+  },
+  {
+    "service": "IdentityService",
     "method": "PlanIssueAccessToken",
     "exposure": "public",
     "durability": "durable",
