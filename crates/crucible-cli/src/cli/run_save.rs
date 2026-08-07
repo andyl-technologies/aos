@@ -43,6 +43,33 @@ pub(crate) struct SaveBoundaryEvidence {
     pub(crate) breakpoint_firing: Option<crucible_session::BreakpointFiring>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SaveWorkflowFailureTrace {
+    pub(crate) selector: SaveAtSelector,
+    pub(crate) frontier_ticks: u64,
+    pub(crate) quanta: u64,
+    pub(crate) state_updates: Vec<String>,
+    pub(crate) acknowledged_commands: Vec<SessionCommandKind>,
+}
+
+impl SaveWorkflowFailureTrace {
+    pub(crate) fn canonical_summary(&self, error: &CliError) -> String {
+        let (at, kind, name) = match &self.selector {
+            SaveAtSelector::PropertyViolation { assertion } => {
+                ("property", "property-violation", assertion.as_str())
+            }
+            SaveAtSelector::Marker { name } => ("marker", "guest-marker", name.as_str()),
+        };
+        format!(
+            "at={at} selector={kind}:{} frontier={} quanta={} error={:?}",
+            encode_canonical_summary_value(name),
+            self.frontier_ticks,
+            self.quanta,
+            error.to_string()
+        )
+    }
+}
+
 impl SaveBoundaryEvidence {
     pub(crate) fn selector_kind(&self) -> &'static str {
         match &self.selector {

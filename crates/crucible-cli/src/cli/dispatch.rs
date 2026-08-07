@@ -346,7 +346,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
         }
         if !matches!(&cli.command, Commands::Replay(_)) {
-            let mut outcome = execute_backend_routed_command(
+            let execution = execute_backend_routed_command(
                 &thin_plan,
                 &backend_plan,
                 ergonomics_plan.as_ref(),
@@ -356,7 +356,26 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 verify_plan.as_ref(),
                 save_plan.as_ref(),
                 &mut NullBackendCommandRunner,
-            )?;
+            );
+            let mut outcome = match execution {
+                Err(CliError::SaveWorkflowTrace { source, trace }) => {
+                    let save_plan = save_plan.as_ref().ok_or_else(|| {
+                        backend_error("save workflow trace escaped a non-save command")
+                    })?;
+                    emit_save_workflow_failure_trace(
+                        cli,
+                        &thin_plan,
+                        &backend_plan,
+                        ergonomics_plan.as_ref(),
+                        save_plan,
+                        &trace,
+                        &source,
+                    )?;
+                    return Err(*source);
+                }
+                Err(error) => return Err(error),
+                Ok(outcome) => outcome,
+            };
             #[cfg(any(test, feature = "test-double"))]
             if matches!(
                 &cli.command,

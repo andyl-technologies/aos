@@ -301,7 +301,17 @@ where
             ));
         }
     };
-    let firing = validate_save_selector_firing(selector, breakpoint_id, &boundary, &firings)?;
+    let firing = validate_save_selector_firing(selector, breakpoint_id, &boundary, &firings)
+        .map_err(|source| CliError::SaveWorkflowTrace {
+            source: Box::new(source),
+            trace: SaveWorkflowFailureTrace {
+                selector: selector.clone(),
+                frontier_ticks: boundary.frontier.ticks,
+                quanta: boundary.quanta_stepped,
+                state_updates: state_updates.clone(),
+                acknowledged_commands: acknowledged_commands.clone(),
+            },
+        })?;
     Ok((boundary, firing))
 }
 

@@ -381,6 +381,96 @@ pub(crate) fn export_savepoint_handle(
     Ok(())
 }
 
+pub(crate) fn emit_save_workflow_failure_trace(
+    cli: &Cli,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    save_plan: &SaveInvocationPlan,
+    trace: &SaveWorkflowFailureTrace,
+    error: &CliError,
+) -> Result<(), CliError> {
+    let mut entries = backend_canonical_log_entries(thin_plan, backend_plan, ergonomics_plan);
+    for entry in &mut entries {
+        entry.kind = match entry.kind.as_str() {
+            "session_command" => String::from("planned_session_command"),
+            "api_call" => String::from("planned_api_call"),
+            _ => continue,
+        };
+    }
+    let request_seed = save_plan
+        .run_plan
+        .request_seed
+        .unwrap_or_else(|| save_plan.run_plan.scenario.scenario_def().seed());
+    push_save_failure_trace_entry(
+        &mut entries,
+        "scenario",
+        "run_scenario",
+        format!("id={}", save_plan.run_plan.scenario.scenario_id().to_hex()),
+    );
+    push_save_failure_trace_entry(&mut entries, "session", "run_seed", request_seed.to_hex());
+    push_save_failure_trace_entry(
+        &mut entries,
+        "session",
+        "save_boundary_mode",
+        match &trace.selector {
+            SaveAtSelector::PropertyViolation { .. } => String::from("property-violation"),
+            SaveAtSelector::Marker { .. } => String::from("marker (quiescence-guarded)"),
+        },
+    );
+    for state in &trace.state_updates {
+        push_save_failure_trace_entry(&mut entries, "session", "run_state_update", state.clone());
+    }
+    for command in &trace.acknowledged_commands {
+        push_save_failure_trace_entry(
+            &mut entries,
+            "control",
+            "interactive_ack",
+            session_command_name(*command).to_string(),
+        );
+    }
+    push_save_failure_trace_entry(
+        &mut entries,
+        "control",
+        "save_boundary_failure",
+        trace.canonical_summary(error),
+    );
+    let digest = canonical_log_digest(&entries);
+    push_save_failure_trace_entry(
+        &mut entries,
+        "cli",
+        "final_outcome",
+        format!(
+            "subcommand=save status=error exit_code={} canonical_log={} artifact=none",
+            error.exit_code(),
+            digest
+        ),
+    );
+    emit_canonical_trace(
+        cli.output_format(),
+        &entries,
+        cli.trace.as_deref(),
+        !cli.quiet,
+    )?;
+    Ok(())
+}
+
+fn push_save_failure_trace_entry(
+    entries: &mut Vec<CanonicalLogEntry>,
+    node: &str,
+    kind: &str,
+    summary: String,
+) {
+    let sequence = entries.len() as u64;
+    entries.push(CanonicalLogEntry {
+        sequence,
+        virtual_time_ticks: sequence,
+        node: node.to_string(),
+        kind: kind.to_string(),
+        summary,
+    });
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SavepointClosureStoreReport {
     pub(crate) artifact: crucible::ContentHash,

@@ -437,9 +437,14 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     assert!(decode_savepoint_handle(contradictory_marker.as_bytes()).is_err());
 
     let wrong_marker_out = temp.path().join("wrong-marker.crucible-savepoint");
+    let wrong_marker_trace = temp.path().join("wrong-marker.jsonl");
     let wrong_marker_cli = Cli::parse_from([
         String::from("crucible"),
         String::from("--quiet"),
+        String::from("--format"),
+        String::from("jsonl"),
+        String::from("--trace"),
+        wrong_marker_trace.display().to_string(),
         String::from("--artifact-dir"),
         artifact_dir.display().to_string(),
         String::from("--backend"),
@@ -463,6 +468,15 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     assert_eq!(error.exit_code(), 3);
     assert!(error.to_string().contains("did not fire"));
     assert!(!wrong_marker_out.exists());
+    let wrong_marker_trace = fs::read_to_string(wrong_marker_trace)?;
+    assert!(wrong_marker_trace.contains("save_boundary_failure"));
+    assert!(wrong_marker_trace.contains("guest-marker:compaction-started"));
+    assert!(wrong_marker_trace.contains("interactive_ack"));
+    assert!(wrong_marker_trace.contains("planned_session_command"));
+    assert!(!wrong_marker_trace.contains("\"kind\":\"session_command\""));
+    assert!(wrong_marker_trace.contains("marker (quiescence-guarded)"));
+    assert!(!wrong_marker_trace.contains("error=save%20"));
+    assert!(wrong_marker_trace.contains("status=error exit_code=3"));
 
     let no_source_marker_scenario = write_marker_selector_without_source_scenario(&temp)?;
     let no_source_marker_out = temp.path().join("no-source-marker.crucible-savepoint");
