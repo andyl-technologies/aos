@@ -181,6 +181,23 @@ impl ConsoleRoute {
         }
     }
 
+    /// Returns persistent navigation pages allowed by live route permissions.
+    ///
+    /// Creation workflows remain available through permission-gated inventory
+    /// actions, but never become permanent navigation items.
+    #[must_use]
+    pub fn visible_navigation(&self, permissions: &[String]) -> Vec<&'static PageSpec> {
+        self.navigation()
+            .iter()
+            .filter(|page| {
+                page.is_navigation_item()
+                    && permissions
+                        .iter()
+                        .any(|permission| permission == page.navigation_permission())
+            })
+            .collect()
+    }
+
     /// Constructs the canonical deep link for one sibling page.
     #[must_use]
     pub fn href(&self, page: &PageSpec) -> String {
@@ -857,6 +874,105 @@ mod tests {
                     previous = Some(page.group);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn role_aware_navigation_snapshots_use_live_permissions() {
+        let route = ConsoleRoute::resolve("/-/org/acme").expect("organization route");
+        for (permissions, expected) in [
+            (
+                &["read"][..],
+                &[
+                    "overview",
+                    "projects",
+                    "registries",
+                    "caches",
+                    "storage",
+                    "domains",
+                    "boundaries",
+                    "endpoints",
+                    "gateways",
+                    "defaults",
+                    "identity",
+                    "members",
+                    "signing",
+                    "webhooks",
+                    "operations",
+                ][..],
+            ),
+            (
+                &["read", "tokens.self"][..],
+                &[
+                    "overview",
+                    "projects",
+                    "registries",
+                    "caches",
+                    "storage",
+                    "domains",
+                    "boundaries",
+                    "endpoints",
+                    "gateways",
+                    "defaults",
+                    "identity",
+                    "members",
+                    "signing",
+                    "tokens",
+                    "webhooks",
+                    "operations",
+                ][..],
+            ),
+            (
+                &["read", "iam.admin", "audit.read"][..],
+                &[
+                    "overview",
+                    "projects",
+                    "registries",
+                    "caches",
+                    "storage",
+                    "domains",
+                    "boundaries",
+                    "endpoints",
+                    "gateways",
+                    "defaults",
+                    "identity",
+                    "members",
+                    "sso",
+                    "signing",
+                    "webhooks",
+                    "operations",
+                    "audit",
+                    "danger",
+                ][..],
+            ),
+        ] {
+            let permissions = permissions
+                .iter()
+                .map(|permission| (*permission).to_string())
+                .collect::<Vec<_>>();
+            let actual = route
+                .visible_navigation(&permissions)
+                .into_iter()
+                .map(|page| page.key)
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{permissions:?}");
+        }
+    }
+
+    #[test]
+    fn settings_workspace_keeps_wide_medium_and_narrow_layout_contracts() {
+        let css = include_str!("../../aos-hub-console/assets/app.css");
+        for rule in [
+            ".workspace { display: grid; grid-template-columns: minmax(230px, 280px) minmax(0, 1fr) minmax(220px, 260px);",
+            "@media (max-width: 1100px)",
+            ".workspace { grid-template-columns: minmax(230px, 280px) minmax(0, 1fr); }",
+            ".context-rail { grid-column: 2;",
+            "@media (max-width: 760px)",
+            ".workspace { display: block; }",
+            ".settings-sidebar nav { display: flex; overflow-x: auto;",
+            ".context-rail { grid-column: auto;",
+        ] {
+            assert!(css.contains(rule), "missing responsive layout rule: {rule}");
         }
     }
 
