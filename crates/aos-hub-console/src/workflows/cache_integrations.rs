@@ -16,6 +16,7 @@ use super::cache_objects::CacheObjects;
 use super::cache_population::CachePopulation;
 use super::cache_retention::CacheRetentionWorkflow;
 use super::cache_stack::RegistryCacheStack;
+use super::registry_publication::RegistryPublicationWorkflow;
 use super::resources::UnavailableWorkflow;
 
 /// Renders registry/cache integration pages and delegates unrelated routes.
@@ -24,6 +25,10 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
     match (&route.scope, route.page.key) {
         (ConsoleScope::Registry { path }, "caches") => view! {
             <RegistryCacheStack client=client registry_id=path.clone()/>
+        }
+        .into_any(),
+        (ConsoleScope::Registry { path }, "publishes") => view! {
+            <RegistryPublicationWorkflow client=client registry_id=path.clone()/>
         }
         .into_any(),
         (
