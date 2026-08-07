@@ -29,6 +29,7 @@ pub mod client;
 pub mod control_responsive;
 pub mod debug_access;
 pub mod debug_gateway;
+mod debug_holders;
 pub mod debug_relay;
 pub mod event_log_stream;
 pub mod lifecycle;
@@ -44,9 +45,10 @@ pub mod vm_resume;
 
 pub use client::{
     ClientControlStream, ClientWatchStream, ControlClient, ControlClientError, ControlClientFuture,
-    ControlTransportKind, ControlWireModel, HelloRequest, HelloResponse, InProcessControlClient,
-    InProcessLifecycleControlStream, RpcControlClient, RpcControlStream, RpcEndpoint,
-    RpcMutualTlsConfig, RpcTransportProtocol, RpcWatchStream, assert_shared_wire_model,
+    ControlTransportKind, ControlWireModel, DebugControllerAccess, DebugControllerAcquisition,
+    HelloRequest, HelloResponse, InProcessControlClient, InProcessLifecycleControlStream,
+    RpcControlClient, RpcControlStream, RpcEndpoint, RpcMutualTlsConfig, RpcTransportProtocol,
+    RpcWatchStream, assert_shared_wire_model,
 };
 pub use control_responsive::{
     CONTROL_RESPONSIVE_QUANTUM_BOUND, CONTROL_RESPONSIVE_REQUIRED_OPERATIONS,

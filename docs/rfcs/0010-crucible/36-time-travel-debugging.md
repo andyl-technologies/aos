@@ -1449,7 +1449,15 @@ complete from model-double evidence.
   requested and landed configuration/event/scheduler/node-icount evidence as
   separate typed fields and retain an inclusive exact event cursor; the open
   gate is a packaged live exercise proving those fields against non-empty
-  history.
+  history. The manual acceptance runner now generates its scenario from the
+  packaged kernel and root-image BLAKE3 identities, enables fail-closed asset
+  reference validation, creates non-empty live history, and compares the full
+  landed tuple across reverse and repeated goto operations. It queues validated
+  GDB register traffic at the per-session operation barrier while each
+  reverse/goto/fork transaction commits, then requires the gateway generation
+  to advance and the same GDB connection and hardware breakpoint state to
+  remain usable. These checks define the required captured evidence; they do
+  not close this task until both packaged architectures pass live.
 - [ ] **T-DBG-11** Enforce debugger identities, capability roles, one-controller
   leases, Unix peer authentication, remote HTTP/2+mTLS relay, and explicit trusted
   unauthenticated bind policy in the daemon and CLI. — satisfies [DBG-43], [DBG-44];
@@ -1466,6 +1474,20 @@ complete from model-double evidence.
   principal on every operation. Authenticated attach allocates a daemon-loopback
   stable gateway, and the CLI exposes it through a bounded client-side loopback
   relay over HTTP/2 while retaining and finally releasing the controller lease.
+  RPC ABI v5 adds caller-owned acquisition tokens and daemon-side holder
+  identities: a lost-response retry reuses one token/holder, while concurrent
+  commands and a long-lived relay hold separate
+  references to the same principal/generation, and only the final release clears
+  the session coordinator lease. Bounded tombstones reject delayed retries after
+  final release. Relay close atomically releases its holder; ordinary release is
+  rejected while that holder backs a live relay. A command therefore cannot
+  invalidate an in-flight relay, and a second principal remains excluded until
+  every holder closes. Every controller operation carries the holder as well as
+  the authenticated principal and generation, so releasing one acquisition
+  immediately revokes that access even while a sibling holder remains. Acquire
+  and final release await both registry locks before mutation, then update holder
+  and coordinator state without another suspension point; cancelled RPC futures
+  cannot strand a half-transitioned lease.
   Read-only service cannot acquire, attach, open, or write a debugger relay.
   Completion remains open for Unix peer credentials, multiple-observer RPC
   plumbing, and live mTLS/relay conformance evidence.
@@ -1544,3 +1566,12 @@ complete from model-double evidence.
   q35/qemu64/ttyS0 or virt/cortex-a57/ttyAMA0 consistently, and configures
   debugger backends for every daemon-submitted World node; these are required
   implementation prerequisites, not substitutes for the remaining live gate.
+  The suite now ships an out-of-check manual runner that exercises both retained
+  architectures through the public CLI: repeated read-only GDB snapshots,
+  non-empty reverse history, full landed-coordinate replay equality, queued
+  register traffic across the atomic operation barrier, breakpoint retention,
+  scheduler `continue`/`stepi`/`vCont;s`, fork-time argv exec, PTY, SSH, typed
+  stream closure on reposition, transcripts, and per-architecture aggregate
+  evidence. It uses bounded process groups and hard TERM/KILL deadlines. This
+  paragraph records the acceptance design only; T-DBG-14 remains open until the
+  runner's live x86_64 and AArch64 evidence is captured and reviewed.

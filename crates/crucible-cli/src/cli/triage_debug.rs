@@ -1828,8 +1828,9 @@ async fn run_remote_debug_reposition(
     verb: &DebugInteractiveVerbPlan,
 ) -> Result<(), CliError> {
     let client = remote_rpc_client(daemon, backend_plan)?;
+    let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
-        .acquire_debug_controller(session)
+        .acquire_debug_controller(session, &acquisition)
         .await
         .map_err(control_client_error)?;
     let reposition_result: Result<Option<crucible_api::DebugRepositionResult>, CliError> = async {
@@ -1936,8 +1937,9 @@ async fn run_remote_guest_fork(
     node: crucible::NodeId,
 ) -> Result<(), CliError> {
     let client = remote_rpc_client(daemon, backend_plan)?;
+    let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
-        .acquire_debug_controller(session)
+        .acquire_debug_controller(session, &acquisition)
         .await
         .map_err(control_client_error)?;
     let fork_result = async {
@@ -1975,8 +1977,9 @@ async fn run_remote_debug_relay_async(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let client = remote_rpc_client(daemon, backend_plan)?;
+    let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
-        .acquire_debug_controller(session)
+        .acquire_debug_controller(session, &acquisition)
         .await
         .map_err(control_client_error)?;
     if let Err(error) = client.attach_debugger(session, &lease, &node).await {
@@ -1994,7 +1997,6 @@ async fn run_remote_debug_relay_async(
         Ok(listener) => listener,
         Err(error) => {
             let _ = client.close_debug_relay(session, &lease, relay).await;
-            let _ = client.release_debug_controller(session, &lease).await;
             return Err(backend_error(format!(
                 "cannot bind local GDB relay {gdb_listen}: {error}"
             )));
@@ -2004,7 +2006,6 @@ async fn run_remote_debug_relay_async(
         Ok(address) => address,
         Err(error) => {
             let _ = client.close_debug_relay(session, &lease, relay).await;
-            let _ = client.release_debug_controller(session, &lease).await;
             return Err(backend_error(format!(
                 "cannot read local GDB relay address: {error}"
             )));
@@ -2019,7 +2020,6 @@ async fn run_remote_debug_relay_async(
                 Ok(()) => None,
                 Err(error) => {
                     let _ = client.close_debug_relay(session, &lease, relay).await;
-                    let _ = client.release_debug_controller(session, &lease).await;
                     return Err(backend_error(format!("debug relay signal error: {error}")));
                 }
             }
@@ -2027,14 +2027,12 @@ async fn run_remote_debug_relay_async(
     };
     let Some(accepted) = accepted else {
         let _ = client.close_debug_relay(session, &lease, relay).await;
-        let _ = client.release_debug_controller(session, &lease).await;
         return Ok(());
     };
     let (mut local, _) = match accepted {
         Ok(accepted) => accepted,
         Err(error) => {
             let _ = client.close_debug_relay(session, &lease, relay).await;
-            let _ = client.release_debug_controller(session, &lease).await;
             return Err(backend_error(format!(
                 "cannot accept local GDB connection: {error}"
             )));
@@ -2088,10 +2086,8 @@ async fn run_remote_debug_relay_async(
     }
     .await;
     let close_result = client.close_debug_relay(session, &lease, relay).await;
-    let release_result = client.release_debug_controller(session, &lease).await;
     relay_result?;
     close_result.map_err(control_client_error)?;
-    release_result.map_err(control_client_error)?;
     Ok(())
 }
 
@@ -2180,7 +2176,7 @@ impl GuestTranscriptWriter {
 async fn exchange_guest_record(
     client: &RpcControlClient,
     session: SessionRef,
-    lease: &crucible_session::DebugControllerLease,
+    lease: &crucible_api::DebugControllerAccess,
     node: &crucible::NodeId,
     channel_id: u64,
     request: Option<&crucible_api::GuestIntrospectionRecord>,
@@ -2227,8 +2223,9 @@ async fn run_remote_guest_channel(
         None => None,
     };
     let client = remote_rpc_client(daemon, backend_plan)?;
+    let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
-        .acquire_debug_controller(session)
+        .acquire_debug_controller(session, &acquisition)
         .await
         .map_err(control_client_error)?;
     let open = GuestIntrospectionRecord::new(CHANNEL_ID, open)

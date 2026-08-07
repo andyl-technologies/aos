@@ -13,6 +13,23 @@ Agents can follow the repository example skill at
 It treats the packaged CLI as the debugging tool, preserves causal evidence,
 and requires a non-canonical fork before fault injection or guest access.
 
+To run the complete production matrix manually and retain every command's
+evidence outside the Nix checks, use:
+
+```sh
+./result/bin/crucible-debugger-live-matrix \
+  --architecture all \
+  --output debugger-live-evidence
+```
+
+The output directory must not exist. The matrix clears debugger backend and boot
+asset overrides, generates each scenario from the BLAKE3 identities of the
+packaged kernel and root image, and uses only the public daemon and CLI surfaces.
+It preserves per-architecture logs, GDB transcripts, complete landed runtime
+coordinates, guest-channel transcripts, package build information, and an
+aggregate `result` file. `--help` reports the architectures retained by that
+suite; `all` fails closed unless both x86_64 and AArch64 assets are present.
+
 ## Interactive run control
 
 Start paused at genesis and read commands from standard input:
@@ -370,7 +387,13 @@ The CLI acquires the session's exclusive controller lease, asks the daemon to
 attach its private standalone gateway, binds the requested client-side loopback
 listener, and prints the actual address. Connect ordinary GDB to that address in
 a second terminal. Closing GDB or pressing Ctrl-C closes the relay and releases
-the lease. Retrying attachment for the same live session is idempotent: the
+its lease holder. Independent commands from the same authenticated operator use
+separate holders, so finishing one command cannot close the relay or invalidate
+another command already in flight. A different operator remains excluded until
+the final holder closes. Internally, an acquisition token is reused for a
+lost-response retry but never shared between independently released command
+lifetimes. Direct release of a holder backing a live relay is rejected; relay
+close owns that release. Retrying attachment for the same live session is idempotent: the
 gateway reconnects the private QEMU RSP endpoint, verifies its paused state, and
 replays acknowledged thread selections and hardware breakpoints before serving
 the next GDB client. If a state-changing RSP reply or scheduler operation was

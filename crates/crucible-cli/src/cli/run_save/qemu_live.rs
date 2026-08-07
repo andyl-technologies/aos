@@ -933,6 +933,9 @@ pub(crate) fn production_qemu_lifecycle_config(
     if let Some(kernel_cmdline) = live_qemu_kernel_cmdline() {
         config = config.with_kernel_cmdline_prefix(kernel_cmdline);
     }
+    if live_qemu_validate_guest_asset_references()? {
+        config = config.with_guest_asset_reference_validation();
+    }
     if let Some((kernel, root_image, kernel_cmdline)) = live_qemu_aarch64_assets()? {
         config = config.with_guest_assets(
             crucible::VmArchitecture::Aarch64,

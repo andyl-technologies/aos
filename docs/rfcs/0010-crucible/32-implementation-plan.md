@@ -787,8 +787,11 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   configuration identity and expose no earlier reverse coordinate;
   T-DBG-10/T-DBG-14 must bind landed runtime evidence and exercise non-empty
   live reverse history before completion. Typed requested/landed evidence and
-  the inclusive exact event cursor are implemented; the packaged live proof is
-  still required.
+  the inclusive exact event cursor are implemented. A packaged, out-of-check
+  manual runner now defines the complete evidence capture, including
+  content-bound guest assets, non-empty history, atomic operator barriers,
+  scheduler run control, and fork-time guest channels on both architectures;
+  executing and reviewing that live proof is still required.
 - Failure triage: `T-TRI-1` is green through `checks.crucible.phase6.failureSignature`,
   which implements the recorded-run-only `FailureSignature` tuple for property
   violations and divergence bisection points, binds checked event-log projection
@@ -857,8 +860,9 @@ acceptance gate.
   register reads, and accept hardware-breakpoint insert/remove packets without
   a model double. The native suite now retains architecture-specific x86_64 and
   AArch64 guest closures and selects the corresponding production launch
-  profile. The complete controller/gateway/run-control/guest-channel matrix
-  remains open until the packaged live exercise is captured.
+  profile. The suite ships the complete controller/gateway/run-control/
+  guest-channel matrix as a manual evidence runner outside Nix checks. The task
+  remains open until successful x86_64 and AArch64 executions are captured.
 - Performance (incl. the fleet-perf tasks `T-PERF-27, T-PERF-28` and the host-parallelism tasks `T-PERF-29 … T-PERF-34`): `T-PERF-1 … T-PERF-34` ([`25`](25-performance-targets.md)).
 - Distributed / continuous exploration (campaigns spanning a fleet of workers): `T-DCE-1 … T-DCE-10` ([`35`](35-distributed-continuous-exploration.md)).
 - Worked example scenarios as CI fixtures (happy path, partition-recovery, crash/restart, fault campaign, determinism check): `T-EX-1 … T-EX-5` ([`33`](33-examples-and-workloads.md)). These double as the `gate:e2e-determinism` corpus.
