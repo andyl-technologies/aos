@@ -2,9 +2,9 @@
 //!
 //! These subcommands interact with a running `aos-hub` purely through
 //! its public ConnectRPC API (RFC-0004), never by touching the hub's database
-//! directly. `login` exchanges a provisioning secret for that JWT. Public
-//! topology reads run anonymously; private inventory and all desired-state
-//! writes take a `--token` Hub access JWT. Mutations use typed resource
+//! directly. `login` uses browser-approved device authorization by default.
+//! Public topology reads run anonymously; private inventory and all desired-state
+//! writes use an explicit bearer or the active stored Hub profile. Mutations use typed resource
 //! references, optimistic concurrency, and the shared immutable plan/apply
 //! contract.
 //!
@@ -21,10 +21,10 @@ use super::{
 
 #[derive(Args, Debug, Clone)]
 pub struct HubAccessArgs {
-    /// Hub base URL (http:// or https://)
+    /// Hub base URL; defaults to the active profile
     #[arg(long, env = "AOS_HUB")]
-    pub hub: String,
-    /// Hub access JWT for authenticated access
+    pub hub: Option<String>,
+    /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
     #[arg(long, env = "AOS_TOKEN")]
     pub token: Option<String>,
 }
@@ -127,14 +127,23 @@ pub struct HubAccessPolicyArgs {
 
 #[derive(Subcommand)]
 pub enum HubCmd {
-    /// Exchange a provisioning secret for a hub access JWT
+    /// Sign in through browser-approved device authorization
     Login {
         /// Hub base URL (http:// or https://)
         #[arg(long)]
         hub: String,
-        /// The `aos_`-prefixed provisioning secret to exchange
+        /// Bootstrap with an administrator-issued provisioning secret
         #[arg(long)]
-        provisioning_token: String,
+        provisioning_token: Option<String>,
+        /// Request authority at this canonical stable scope
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    /// Revoke and remove a stored Hub profile
+    Logout {
+        /// Hub base URL; defaults to the active profile
+        #[arg(long, env = "AOS_HUB")]
+        hub: Option<String>,
     },
     /// Generate or verify topology cutover artifacts offline
     Topology {
@@ -736,11 +745,11 @@ pub enum HubOrgTopologyDefaultsCmd {
 pub enum HubStorageBindingCmd {
     /// List the storage bindings under an org
     List {
-        /// Hub base URL (http:// or https://)
-        #[arg(long)]
-        hub: String,
-        /// Hub access JWT for authenticated access
-        #[arg(long)]
+        /// Hub base URL; defaults to the active profile
+        #[arg(long, env = "AOS_HUB")]
+        hub: Option<String>,
+        /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
+        #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
         /// Limit results to one organization
         #[arg(long)]
@@ -750,11 +759,11 @@ pub enum HubStorageBindingCmd {
     },
     /// Create a storage binding under an org (needs registry.configure)
     Create {
-        /// Hub base URL (http:// or https://)
-        #[arg(long)]
-        hub: String,
-        /// Hub access JWT for authenticated access
-        #[arg(long)]
+        /// Hub base URL; defaults to the active profile
+        #[arg(long, env = "AOS_HUB")]
+        hub: Option<String>,
+        /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
+        #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
         /// Org slug
         #[arg(long)]
@@ -2744,7 +2753,7 @@ mod tests {
                             },
                     },
             } => {
-                assert_eq!(access.hub, "https://aos.example");
+                assert_eq!(access.hub.as_deref(), Some("https://aos.example"));
                 assert!(access.token.is_none());
                 assert_eq!(surface, "registry:andyl/main");
             }

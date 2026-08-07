@@ -2,12 +2,11 @@
 //!
 //! Drives [`aos_remote::HubClient`] so the CLI interacts with a running
 //! `aos-hub` purely through its public ConnectRPC API, never by
-//! touching the hub's database. `login` exchanges a provisioning secret for a
-//! hub access JWT via the REST `POST /oauth2/token` endpoint
-//! ([`aos_remote::exchange_token`]); read operations run anonymously by default
-//! and accept an optional `--token` (that JWT) for authenticated reads. Hub
-//! desired-state writes take that JWT, use optimistic concurrency, and are
-//! plan-only until a reviewed plan id and confirmation hash are supplied.
+//! touching the hub's database. `login` uses the shared OAuth device flow and
+//! stores rotating credentials in a user-only profile; an explicit
+//! provisioning grant remains available for automation bootstrap. Hub
+//! desired-state writes use optimistic concurrency and are plan-only until a
+//! reviewed plan id and confirmation hash are supplied.
 
 use anyhow::{Context as _, Result};
 
@@ -133,28 +132,65 @@ fn endpoint_ingress_kind(value: &str) -> Result<i32> {
     Ok(kind as i32)
 }
 
-/// Handles `aos hub login`: exchanges a provisioning secret for an access JWT.
-async fn login(printer: &Printer, hub: &str, provisioning_token: &str) -> Result<()> {
-    let grant = aos_remote::exchange_token(hub, provisioning_token).await?;
+/// Handles `aos hub login` through device authorization or explicit bootstrap.
+async fn login(
+    printer: &Printer,
+    hub: &str,
+    provisioning_token: Option<&str>,
+    scope: Option<&str>,
+) -> Result<()> {
+    if let Some(provisioning_token) = provisioning_token {
+        let grant = aos_remote::exchange_token(hub, provisioning_token).await?;
+        if print_hub_json(
+            printer,
+            "login",
+            serde_json::json!({
+                "access_token": grant.access_token,
+                "token_type": grant.token_type,
+                "expires_in": grant.expires_in,
+                "stored": false,
+            }),
+        ) {
+            return Ok(());
+        }
+        printer.info(&format!(
+            "access token issued ({}, expires in {}s):",
+            grant.token_type, grant.expires_in
+        ));
+        println!("{}", grant.access_token);
+        return Ok(());
+    }
+
+    let authorization = aos_remote::start_device_authorization(hub, scope, &[]).await?;
+    printer.info("Approve this AOS CLI in your browser:");
+    printer.plain(&format!("  {}", authorization.verification_uri_complete));
+    printer.plain(&format!("  code: {}", authorization.user_code));
+    let started = std::time::Instant::now();
+    let mut interval = authorization.interval.max(1) as u64;
+    let grant = loop {
+        if started.elapsed().as_secs() >= authorization.expires_in.max(1) as u64 {
+            anyhow::bail!("device authorization expired");
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+        match aos_remote::poll_device_token(hub, &authorization.device_code).await? {
+            aos_remote::DeviceTokenPoll::Pending => {}
+            aos_remote::DeviceTokenPoll::SlowDown => interval = interval.saturating_add(5),
+            aos_remote::DeviceTokenPoll::Granted(grant) => break grant,
+        }
+    };
+    let access_expires_at = crate::commands::hub_auth::install_device_grant(hub, grant)?;
     if print_hub_json(
         printer,
         "login",
         serde_json::json!({
-            "access_token": grant.access_token,
-            "token_type": grant.token_type,
-            "expires_in": grant.expires_in,
+            "hub": hub,
+            "stored": true,
+            "access_expires_at": access_expires_at,
         }),
     ) {
         return Ok(());
     }
-    // The access token is the deliverable; reserve stdout for the exact token
-    // so it can be captured into `--token` or a variable without parsing
-    // human-facing status text.
-    printer.info(&format!(
-        "access token issued ({}, expires in {}s):",
-        grant.token_type, grant.expires_in
-    ));
-    println!("{}", grant.access_token);
+    printer.success(&format!("signed in to {hub}"));
     Ok(())
 }
 
@@ -405,11 +441,37 @@ mod tests {
 /// Returns an error if the hub URL is invalid, the hub is unreachable, or an
 /// RPC call fails.
 pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
+    if !matches!(
+        command,
+        HubCmd::Login { .. } | HubCmd::Logout { .. } | HubCmd::Topology { .. }
+    ) {
+        crate::commands::hub_auth::prepare_active_profile().await?;
+    }
     match command {
         HubCmd::Login {
             hub,
             provisioning_token,
-        } => login(printer, hub, provisioning_token).await,
+            scope,
+        } => {
+            login(
+                printer,
+                hub,
+                provisioning_token.as_deref(),
+                scope.as_deref(),
+            )
+            .await
+        }
+        HubCmd::Logout { hub } => {
+            let origin = crate::commands::hub_auth::logout(hub.as_deref()).await?;
+            if !print_hub_json(
+                printer,
+                "logout",
+                serde_json::json!({ "hub": origin, "revoked": true }),
+            ) {
+                printer.success(&format!("signed out of {origin}"));
+            }
+            Ok(())
+        }
         HubCmd::Topology { command } => match command {
             HubTopologyCmd::Cutover { command } => match command {
                 HubTopologyCutoverCmd::MaterializeVerifier(args) => {
@@ -7396,10 +7458,33 @@ async fn instance_topology_defaults(
 
 /// Builds a hub client: token-authenticated when a JWT is supplied, else
 /// anonymous (public reads only).
-fn hub_client(hub: &str, token: Option<&str>) -> Result<HubClient> {
+trait HubArgument {
+    fn as_optional_hub(&self) -> Option<&str>;
+}
+
+impl HubArgument for Option<String> {
+    fn as_optional_hub(&self) -> Option<&str> {
+        self.as_deref()
+    }
+}
+
+impl HubArgument for String {
+    fn as_optional_hub(&self) -> Option<&str> {
+        Some(self)
+    }
+}
+
+impl HubArgument for str {
+    fn as_optional_hub(&self) -> Option<&str> {
+        Some(self)
+    }
+}
+
+fn hub_client<H: HubArgument + ?Sized>(hub: &H, token: Option<&str>) -> Result<HubClient> {
+    let (hub, token) = crate::commands::hub_auth::resolve_access(hub.as_optional_hub(), token)?;
     match token {
-        Some(token) => HubClient::connect_with_token(hub, token),
-        None => HubClient::connect_anonymous(hub),
+        Some(token) => HubClient::connect_with_token(&hub, &token),
+        None => HubClient::connect_anonymous(&hub),
     }
 }
 

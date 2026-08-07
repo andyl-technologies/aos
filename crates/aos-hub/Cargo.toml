@@ -62,6 +62,7 @@ test-support = []
 
 [dev-dependencies]
 aos-cache = { workspace = true }
+aos-remote = { workspace = true }
 # The OIDC SSO verifier moved to aos-hub-core (RFC-0004 Phase 5,
 # console-dedup stage F), so the hub no longer needs jsonwebtoken at build time.
 # The OIDC e2e test (`tests/oidc.rs`) still uses it to *encode* the signed

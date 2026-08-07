@@ -43,20 +43,33 @@ always public-only: they do not use a browser session or bearer token, and the
 current router accepts only single-segment slugs. Use the unary service routes
 for canonical organization/registry paths and authenticated visibility.
 
-Publishing automation starts with a provisioning token whose secret begins with `aos_`.
-The Hub stores only its hash. Exchange it at `POST /oauth2/token` to obtain a
-one-hour access token, or let `aos hub login` perform the exchange:
+Interactive clients start an RFC 8628 device grant with
+`POST /oauth2/device_authorization`, show the returned verification URL and
+user code, and poll `POST /oauth2/token` at the advertised interval. A
+successful poll returns a one-hour access token and a rotating refresh
+credential. `aos hub login` implements this flow:
 
 ```sh
-aos hub login \
-  --hub https://hub.example.com \
-  --provisioning-token '<aos_...>'
+aos hub login --hub https://hub.example.com
 ```
 
-Keep the provisioning token in a secret store and exchange it again when the
-short-lived access token expires. A native operator can mint read/publish
-provisioning tokens with `aos-hub token mint`; the web console can mint the same
-scoped tokens on either runtime.
+The device request uses `client_id=aos-cli`, an optional canonical stable
+resource `scope`, and an optional space-separated `permission` value. Polling
+uses grant type `urn:ietf:params:oauth:grant-type:device_code`. Refresh uses
+grant type `refresh_token`; every successful refresh returns a replacement
+refresh credential. Reusing a consumed credential revokes the complete family.
+`POST /oauth2/revoke` accepts the refresh credential,
+`client_id=aos-cli`, and `token_type_hint=refresh_token`.
+
+Publishing automation may instead start with a provisioning token whose secret
+begins with `aos_`. The Hub stores only its hash. Exchange it with the explicit
+grant type `urn:aos:params:oauth:grant-type:provisioning-token` and the secret
+as an `Authorization: Bearer` credential. A native operator can mint scoped
+provisioning tokens with `aos-hub token mint`.
+
+All OAuth credential responses carry `Cache-Control: no-store`. Native and
+Cloudflare Worker deployments mount the same handlers and return the same
+structured pending, slow-down, denial, expiry, and invalid-grant errors.
 
 The current CLI and console do not provide an initial instance-admin bearer
 token. Bootstrap administration through the local `aos-hub` command on native

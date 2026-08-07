@@ -52,7 +52,36 @@ Public reads work without a token:
 ./result/bin/aos hub registry get acme/cdn --hub https://hub.example.com
 ```
 
-Exchange a provisioning token for a one-hour access token:
+Sign in interactively:
+
+```sh
+./result/bin/aos hub login \
+  --hub https://hub.example.com
+```
+
+The CLI prints a browser URL and short approval code. After approval it stores
+an access token and rotating refresh credential in
+`$XDG_CONFIG_HOME/aos/hub-profiles.json` (or
+`$HOME/.config/aos/hub-profiles.json`) with user-only permissions. The selected
+Hub becomes the active profile, so authenticated commands need no repeated
+connection flags:
+
+```sh
+./result/bin/aos hub org list
+```
+
+The access token lasts one hour. The CLI refreshes it automatically before
+expiry and rotates the stored refresh credential. Sign out and revoke the
+complete refresh-token family with `aos hub logout`; pass `--hub` to remove a
+specific stored origin instead of the active one.
+
+Explicit `--hub` and `--token` values take precedence over `AOS_HUB` and
+`AOS_TOKEN`, which take precedence over the active profile. Public reads may
+still select a Hub explicitly and run without a token.
+
+For non-interactive bootstrap automation, exchange an administrator-issued
+provisioning secret explicitly. This prints a one-hour access token but does
+not persist a profile:
 
 ```sh
 ./result/bin/aos hub login \
@@ -60,25 +89,14 @@ Exchange a provisioning token for a one-hour access token:
   --provisioning-token '<aos_...>'
 ```
 
-Then pass the printed token to authenticated commands:
-
-```sh
-./result/bin/aos hub org list \
-  --hub https://hub.example.com \
-  --token '<access-token>'
-```
-
 Use the global `--json` flag for scripts:
 
 ```sh
 ./result/bin/aos --json hub org list \
-  --hub https://hub.example.com \
-  --token '<access-token>'
+  --hub https://hub.example.com
 ```
 
 The remote client includes registry, cache, organization, project, binding,
 webhook, instance, audit, changeset, and upload operations. Authorization is
-checked by the server for every request. The shipped token-minting flow is
-currently aimed at read and publish automation; use the web console or native
-operator CLI to bootstrap administrative work rather than assuming an owner JWT
-is available.
+checked against current server-side grants for every request; approval never
+preserves authority the approving user could not grant.
