@@ -1126,6 +1126,7 @@ pub(super) async fn session_actor_state_transition_bus_broadcasts_actor_owned_tr
     assert_eq!(stopped.from.state_kind, LiveStateKind::Paused);
     assert_eq!(stopped.to.state_kind, LiveStateKind::Stopped);
     assert_eq!(stopped.to.outcome, Some(OutcomeKind::Stopped));
+    assert_eq!(stopped.to.state_transition_sequence, stopped.sequence);
 }
 
 #[tokio::test]
@@ -1141,6 +1142,7 @@ pub(super) async fn session_state_transition_stream_reports_lag_without_backpres
         event_log_len: 0,
         quanta_stepped: 0,
         control_acknowledgements: 0,
+        state_transition_sequence: 0,
     };
 
     for sequence in 0..=usize_to_u64(SESSION_STATE_BROADCAST_CAPACITY) {
@@ -1157,6 +1159,45 @@ pub(super) async fn session_state_transition_stream_reports_lag_without_backpres
         Err(SessionStateTransitionStreamError::Lagged { skipped }) => assert!(skipped > 0),
         Ok(frame) => panic!("lagged state stream should not deliver frame {frame:?}"),
     }
+}
+
+#[tokio::test]
+pub(super) async fn state_transition_floor_suppresses_pre_snapshot_frames() {
+    let bus = SessionStateTransitionBus::new();
+    let mut stream = bus.subscribe();
+    let view = LiveSnapshotView {
+        state_kind: LiveStateKind::Paused,
+        outcome: None,
+        terminal_savepoint: None,
+        configuration: crucible::ContentHash::from_bytes(b"state-transition-floor"),
+        virtual_time: VirtualTime { ticks: 3 },
+        event_log_len: 0,
+        quanta_stepped: 3,
+        control_acknowledgements: 3,
+        state_transition_sequence: 3,
+    };
+    for sequence in 1..=3 {
+        let transition = LiveSnapshotView {
+            state_transition_sequence: sequence,
+            ..view
+        };
+        bus.publish(SessionStateTransitionFrame {
+            sequence,
+            from_state: EngineState::Loaded,
+            to_state: EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            },
+            from: transition,
+            to: transition,
+        });
+    }
+
+    stream.set_sequence_floor(2);
+    let update = stream
+        .recv_latest()
+        .await
+        .unwrap_or_else(|| panic!("post-snapshot transition should remain queued"));
+    assert_eq!(update.sequence, 3);
 }
 
 #[test]

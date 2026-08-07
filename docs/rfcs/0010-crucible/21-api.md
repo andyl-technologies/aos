@@ -699,14 +699,20 @@ ran in-process against the double or over the wire against QEMU.
   `crucible-api::streaming` now subscribes each `Control`/`Watch` attach to the
   session actor's state-transition bus, exposes monotone
   `StreamingStateUpdateFrame` delivery separately from event-log frames, and
-  maps state-transition lag to a distinct streaming error. The RPC client reads
-  one framed stream and demultiplexes event and state-update frames on demand so
-  a state-only receiver cannot be starved behind undrained event frames. The
+  recovers a lagged state observer at the retained monotone tail because a newer
+  state supersedes every skipped state. The lock-free live snapshot carries the
+  actor's matching transition sequence, and attach installs it as the stream
+  floor so a queued pre-snapshot transition cannot regress `Attached.state`.
+  The RPC client reads one framed stream,
+  demultiplexes event and state-update frames on demand, and coalesces pending
+  states to the highest sequence so a state-only receiver cannot be starved
+  behind undrained event frames. Event-frame overflow remains a fail-closed lag
+  error because canonical evidence is not supersedable. The
   HTTP/2 gate emits framed `state-update-frame` messages beside event frames.
   The state-update gate proves a Watch-only client advances Loaded -> Paused ->
   Running -> Paused -> Stopped from `SendResponse` plus `StateUpdate` frames,
-  verifies monotone state-update sequence numbers, and asserts those updates do
-  not appear as event-log frames.
+  verifies monotone state-update sequence numbers and lag recovery, and asserts
+  those updates do not appear as event-log frames.
 - [x] **T-API-8** Implement epoch guards: server-monotonic `session_epoch` on
   `SessionRef`, `expected_epoch` on attach/lifecycle/command RPCs, fast-fail with
   FailedPrecondition / SessionClosed(EPOCH_MISMATCH) on a recycled id; prove the

@@ -17,7 +17,7 @@ use crucible_session::{
     LiveSnapshot, LiveStateKind, QueryResult, SavepointInfo, SessionCommand, SessionCommandKind,
     SessionError, SessionEventLogStream, SessionHandle, SessionReproductionLog,
     SessionStateTransitionBus, SessionStateTransitionFrame, SessionStateTransitionStream,
-    SessionStateTransitionStreamError, lifecycle_transition,
+    lifecycle_transition,
 };
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
@@ -525,7 +525,10 @@ pub enum StreamingApiError {
         /// Number of skipped frames reported by the event-log stream.
         skipped: u64,
     },
-    /// The subscriber fell behind the bounded state-update tail.
+    /// A legacy peer reported state-update lag instead of coalescing it.
+    ///
+    /// Current in-process and RPC receivers retain this variant for wire and
+    /// source compatibility but recover to their newest available state.
     #[error("streaming state-update subscriber lagged by {skipped} frames")]
     StateUpdateStreamLagged {
         /// Number of skipped frames reported by the state-transition stream.
@@ -659,7 +662,7 @@ impl InProcessStreamingSession {
         StreamingApiError,
     > {
         self.validate_session(request.session, request.expected_epoch)?;
-        let state_updates = self.state_transitions.subscribe();
+        let mut state_updates = self.state_transitions.subscribe();
         let (attach_tail, events) = self.event_log.subscribe_with_replay_tail(request.from);
         let reproduction = self
             .reproduction_log
@@ -673,6 +676,7 @@ impl InProcessStreamingSession {
             reproduction,
         );
         let live = self.live.read();
+        state_updates.set_sequence_floor(live.state_transition_sequence);
         Ok((
             Attached {
                 session: self.session,
@@ -746,10 +750,13 @@ impl ControlStream {
 
     /// Receives the next live run-state update.
     ///
+    /// Superseded updates may be coalesced when the subscriber falls behind the
+    /// bounded state-update tail. The returned sequence remains monotone.
+    ///
     /// # Errors
     ///
-    /// Returns [`StreamingApiError::StateUpdateStreamLagged`] if the subscriber
-    /// falls behind the bounded state-update tail.
+    /// This method currently has no recoverable error condition. Its result
+    /// remains fallible for compatibility with the combined streaming API.
     pub async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
@@ -760,7 +767,8 @@ impl ControlStream {
     ///
     /// # Errors
     ///
-    /// Returns [`StreamingApiError`] if either underlying stream reports lag.
+    /// Returns [`StreamingApiError::EventStreamLagged`] if the canonical event
+    /// subscriber falls behind. Superseded state updates are coalesced.
     pub async fn recv_frame(&mut self) -> Result<Option<StreamingFrame>, StreamingApiError> {
         recv_api_frame(self.session, &mut self.events, &mut self.state_updates).await
     }
@@ -821,10 +829,13 @@ impl WatchStream {
 
     /// Receives the next live run-state update.
     ///
+    /// Superseded updates may be coalesced when the subscriber falls behind the
+    /// bounded state-update tail. The returned sequence remains monotone.
+    ///
     /// # Errors
     ///
-    /// Returns [`StreamingApiError::StateUpdateStreamLagged`] if the subscriber
-    /// falls behind the bounded state-update tail.
+    /// This method currently has no recoverable error condition. Its result
+    /// remains fallible for compatibility with the combined streaming API.
     pub async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
@@ -835,7 +846,8 @@ impl WatchStream {
     ///
     /// # Errors
     ///
-    /// Returns [`StreamingApiError`] if either underlying stream reports lag.
+    /// Returns [`StreamingApiError::EventStreamLagged`] if the canonical event
+    /// subscriber falls behind. Superseded state updates are coalesced.
     pub async fn recv_frame(&mut self) -> Result<Option<StreamingFrame>, StreamingApiError> {
         recv_api_frame(self.session, &mut self.events, &mut self.state_updates).await
     }
@@ -1076,11 +1088,10 @@ async fn recv_api_state_update(
     session: SessionRef,
     state_updates: &mut SessionStateTransitionStream,
 ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
-    state_updates
-        .recv()
+    Ok(state_updates
+        .recv_latest()
         .await
-        .map(|frame| frame.map(|frame| state_update_frame(session, frame)))
-        .map_err(state_update_stream_error)
+        .map(|frame| state_update_frame(session, frame)))
 }
 
 async fn recv_api_frame(
@@ -1107,14 +1118,6 @@ fn state_update_frame(
             session,
             state: frame.to.state_kind,
         },
-    }
-}
-
-fn state_update_stream_error(error: SessionStateTransitionStreamError) -> StreamingApiError {
-    match error {
-        SessionStateTransitionStreamError::Lagged { skipped } => {
-            StreamingApiError::StateUpdateStreamLagged { skipped }
-        }
     }
 }
 

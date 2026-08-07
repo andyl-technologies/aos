@@ -598,11 +598,21 @@ impl<L> SessionActor<L> {
         let before_state = self.last_published_state.clone();
         let before = self.live.read();
         let snapshot = self.engine.snapshot();
-        self.live.publish(&snapshot, self.control_acknowledgements);
-        let after = self.live.read();
         let after_state = snapshot.state.clone();
-        if before_state != after_state {
-            self.state_transition_sequence = self.state_transition_sequence.saturating_add(1);
+        let state_changed = before_state != after_state;
+        let state_transition_sequence = if state_changed {
+            self.state_transition_sequence.saturating_add(1)
+        } else {
+            self.state_transition_sequence
+        };
+        self.live.publish(
+            &snapshot,
+            self.control_acknowledgements,
+            state_transition_sequence,
+        );
+        let after = self.live.read();
+        if state_changed {
+            self.state_transition_sequence = state_transition_sequence;
             self.state_transitions.publish(SessionStateTransitionFrame {
                 sequence: self.state_transition_sequence,
                 from_state: before_state,

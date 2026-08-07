@@ -128,6 +128,11 @@ canonical event-log rendering selected by `--format`:
 With `--quiet`, the trace file is still written. For automation, prefer JSONL
 plus exit codes instead of scraping table output.
 
+State-transition notifications are a monotone live view: if an observer falls
+behind during a long run, Crucible coalesces superseded states and continues from
+the retained tail. Canonical event-log frames are never coalesced; losing one is
+a hard streaming error so a trace cannot silently omit replay evidence.
+
 ## Artifacts and store layout
 
 If `--store` is absent, the local DAG store defaults to:
