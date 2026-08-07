@@ -34,7 +34,9 @@ use crate::subnode::{IoCore, IoSubNode, ShmemDeliveryResult, ShmemInboxProcess};
 
 use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, RESPONSE_HEADER_LEN};
 use super::fault::{
-    BlockDurabilityConfig, BlockFaultState, BlockRetainedRelease, ResolvedBlockFaultDirective,
+    BlockDurabilityConfig, BlockFaultState, BlockPersistenceMediaOutcome,
+    BlockPersistenceOpportunity, BlockRetainedRelease, ResolvedBlockFaultDirective,
+    ResolvedBlockPersistenceMediaDirective,
 };
 use super::overlay::{BaseImage, CowOverlay};
 
@@ -304,6 +306,37 @@ impl BlockDevice {
         directive: ResolvedBlockFaultDirective,
     ) -> Result<(), DeviceError> {
         self.storage_faults.install(request_id, directive)
+    }
+
+    /// Returns the next physical persistence opportunity ready at `now_nanos`.
+    #[must_use]
+    pub fn next_storage_persistence_opportunity(
+        &self,
+        now_nanos: u64,
+    ) -> Option<BlockPersistenceOpportunity> {
+        self.storage_faults.next_persistence_opportunity(now_nanos)
+    }
+
+    /// Installs one exact resolved physical-media directive.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the directive does not authenticate the
+    /// live persistence opportunity, repeats an installed decision, or exceeds
+    /// flash/persistence state bounds.
+    pub fn install_storage_persistence_media_directive(
+        &mut self,
+        directive: ResolvedBlockPersistenceMediaDirective,
+    ) -> Result<(), DeviceError> {
+        self.storage_faults
+            .install_persistence_media_directive(directive)
+    }
+
+    /// Drains completed physical-media outcomes for event recording.
+    pub fn drain_storage_persistence_media_outcomes(
+        &mut self,
+    ) -> Vec<BlockPersistenceMediaOutcome> {
+        self.storage_faults.drain_persistence_media_outcomes()
     }
 
     /// Drops exact volatile-cache entries selected by their global sequence.

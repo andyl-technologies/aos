@@ -151,10 +151,95 @@ use crucible_device::block::{
     BlockCompletionDurability, BlockDiscardSemantics, BlockDuplicatePolicy, BlockDurabilityConfig,
     BlockFaultAvailability, BlockFaultByteSpan, BlockFaultCacheEviction, BlockFaultDirtyEviction,
     BlockFaultFlushDisposition, BlockFaultReadTransform, BlockFaultResult, BlockFaultState,
-    BlockFaultWriteDisposition, BlockMediaRangeState, BlockOp, BlockPersistenceOrdering,
-    BlockRequest, BlockResponse, ResolvedBlockCachePolicy, ResolvedBlockFaultDirective,
-    ResolvedBlockMediaRule, ResolvedBlockPersistenceTransform,
+    BlockFaultWriteDisposition, BlockMediaRangeState, BlockOp, BlockPersistenceOpportunity,
+    BlockPersistenceOrdering, BlockRequest, BlockResponse, ResolvedBlockCachePolicy,
+    ResolvedBlockFaultDirective, ResolvedBlockFlashProgramErase, ResolvedBlockFlashReadDisturb,
+    ResolvedBlockFlashRetention, ResolvedBlockFlashRule, ResolvedBlockMediaRule,
+    ResolvedBlockPersistenceMediaDirective, ResolvedBlockPersistenceTransform,
 };
+
+/// Resolves persistent flash policy for one exact physical persistence opportunity.
+///
+/// Contributions are sorted by binding/action identity and retain distinct
+/// contributor state. The returned directive authenticates the complete live
+/// opportunity, so a delayed or replayed decision cannot attach to another
+/// fragment with a reused guest request ID.
+///
+/// # Errors
+///
+/// Returns [`StorageFaultResolutionError`] for a mismatched opportunity/action,
+/// a non-flash effect, a wrong-shaped policy reference, or duplicate contributor.
+pub fn resolve_block_persistence_media_directive<'a>(
+    world: &World,
+    target: &ResolvedFaultTarget,
+    opportunity: &BlockPersistenceOpportunity,
+    fault_opportunity: &FaultOpportunity,
+    context: StorageFaultResolutionContext,
+    actions: impl IntoIterator<Item = &'a ResolvedBindingAction>,
+) -> Result<ResolvedBlockPersistenceMediaDirective, StorageFaultResolutionError> {
+    if fault_opportunity.target() != target
+        || fault_opportunity.operation() != FaultOperation::StorageWrite
+        || fault_opportunity.phase() != FaultPhase::Persist
+        || fault_opportunity.sequence() != opportunity.sequence
+        || !matches!(
+            fault_opportunity.payload(),
+            OpportunityPayload::StorageRequest {
+                request_sequence,
+                start_byte: Some(start),
+                length_bytes: Some(length),
+                request_digest,
+            } if *request_sequence == opportunity.sequence
+                && *start == opportunity.offset
+                && *length == u64::from(opportunity.count)
+                && request_digest.bytes == opportunity.intended_digest
+        )
+    {
+        return Err(StorageFaultResolutionError::OpportunityMismatch);
+    }
+    let mut actions = actions.into_iter().collect::<Vec<_>>();
+    actions.sort_by(|left, right| {
+        left.binding
+            .cmp(&right.binding)
+            .then_with(|| left.transition_sequence.cmp(&right.transition_sequence))
+    });
+    let mut flash_rules = Vec::new();
+    let mut contributors = std::collections::BTreeSet::new();
+    for action in actions {
+        if action.target != *target {
+            return Err(StorageFaultResolutionError::TargetMismatch {
+                binding: action.binding.clone(),
+            });
+        }
+        validate_action_identity(action, fault_opportunity)?;
+        if action.kind == BindingActionKind::RemovePersistent
+            || matches!(
+                action.mapping_output.as_ref(),
+                ResolvedMappingOutput::Activation { active: false }
+            )
+        {
+            continue;
+        }
+        let EffectSpecification::Storage(effect @ StorageEffectSpecification::FlashState { .. }) =
+            action.effect.specification()
+        else {
+            return Err(unsupported(action, "non-flash persistence-media effect"));
+        };
+        let rule = resolve_flash_rule(world, context, action, effect)?;
+        let contributor = rule.contributor;
+        if !contributors.insert(contributor) {
+            return Err(StorageFaultResolutionError::InvalidDirective {
+                binding: action.binding.clone(),
+                reason: String::from("duplicate flash persistence contributor"),
+            });
+        }
+        flash_rules.push(rule);
+    }
+    flash_rules.sort_by_key(|rule| rule.contributor);
+    Ok(ResolvedBlockPersistenceMediaDirective {
+        opportunity: opportunity.clone(),
+        flash_rules,
+    })
+}
 
 /// Resolves one cache-loss impulse into exact live cache sequence identities.
 ///
@@ -411,6 +496,9 @@ fn resolve_block_fault_directive_with_capacity<'a>(
         };
         apply_effect(world, request, context, action, effect, &mut directive)?;
     }
+    directive
+        .persistence_media_rules
+        .sort_by_key(|rule| rule.contributor);
     Ok(directive)
 }
 
@@ -786,6 +874,25 @@ fn apply_effect(
                 time_threshold_nanos: time_threshold_nanos.as_ref().map(|value| value.get()),
             });
         }
+        StorageEffectSpecification::FlashState { .. }
+            if matches!(request.op, BlockOp::Read | BlockOp::Write) =>
+        {
+            let rule = resolve_flash_rule(world, context, action, effect)?;
+            if directive
+                .persistence_media_rules
+                .iter()
+                .any(|existing| existing.contributor == rule.contributor)
+            {
+                return Err(StorageFaultResolutionError::InvalidDirective {
+                    binding: action.binding.clone(),
+                    reason: String::from("duplicate flash persistence contributor"),
+                });
+            }
+            directive.persistence_media_rules.push(rule);
+        }
+        StorageEffectSpecification::FlashState { .. } if request.op == BlockOp::Discard => {
+            return Err(unsupported(action, "flash erase/discard transition"));
+        }
         StorageEffectSpecification::FlushDisposition { kind, status }
             if request.op == BlockOp::Flush =>
         {
@@ -843,6 +950,7 @@ fn apply_effect(
         | StorageEffectSpecification::PersistenceOrder { .. }
         | StorageEffectSpecification::VolatileCache { .. }
         | StorageEffectSpecification::MediaRange { .. }
+        | StorageEffectSpecification::FlashState { .. }
         | StorageEffectSpecification::FlushDisposition { .. } => {}
         _ => return Err(unsupported(action, effect.kind().as_str())),
     }
@@ -1240,6 +1348,107 @@ fn require_policy_kind(
         });
     }
     Ok(())
+}
+
+fn storage_policy<T>(
+    world: &World,
+    reference: &FaultObjectId,
+    binding: &FaultObjectId,
+    expected: &'static str,
+    select: impl FnOnce(&StoragePolicyArtifactKind) -> Option<T>,
+) -> Result<T, StorageFaultResolutionError> {
+    world
+        .fault_topology()
+        .storage_policy_artifact(reference)
+        .and_then(|artifact| select(&artifact.artifact))
+        .ok_or_else(|| StorageFaultResolutionError::PolicyReference {
+            binding: binding.clone(),
+            reference: reference.clone(),
+            expected,
+        })
+}
+
+fn resolve_flash_rule(
+    world: &World,
+    context: StorageFaultResolutionContext,
+    action: &ResolvedBindingAction,
+    effect: &StorageEffectSpecification,
+) -> Result<ResolvedBlockFlashRule, StorageFaultResolutionError> {
+    let StorageEffectSpecification::FlashState {
+        erase_block_bytes,
+        program_page_bytes,
+        endurance_cycles,
+        retention_rule,
+        read_disturb_rule,
+        program_erase_rule,
+    } = effect
+    else {
+        return Err(unsupported(action, "non-flash persistence-media effect"));
+    };
+    let retention = storage_policy(
+        world,
+        retention_rule,
+        &action.binding,
+        "retention",
+        |kind| match kind {
+            StoragePolicyArtifactKind::Retention(policy) => Some(policy.clone()),
+            _ => None,
+        },
+    )?;
+    let read_disturb = storage_policy(
+        world,
+        read_disturb_rule,
+        &action.binding,
+        "read_disturb",
+        |kind| match kind {
+            StoragePolicyArtifactKind::ReadDisturb(policy) => Some(policy.clone()),
+            _ => None,
+        },
+    )?;
+    let program_erase = storage_policy(
+        world,
+        program_erase_rule,
+        &action.binding,
+        "program_erase",
+        |kind| match kind {
+            StoragePolicyArtifactKind::ProgramErase(policy) => Some(policy.clone()),
+            _ => None,
+        },
+    )?;
+    let contributor = action.id().bytes;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.storage-flash-choice-key.v1\0");
+    hasher.update(&context.scenario_seed.bytes);
+    hasher.update(&contributor);
+    if let Some(opportunity) = action.opportunity {
+        hasher.update(&opportunity.bytes);
+    }
+    Ok(ResolvedBlockFlashRule {
+        contributor,
+        choice_key: *hasher.finalize().as_bytes(),
+        erase_block_bytes: erase_block_bytes.get(),
+        program_page_bytes: program_page_bytes.get(),
+        endurance_cycles: endurance_cycles.get(),
+        retention: ResolvedBlockFlashRetention {
+            minimum_age_nanos: retention.minimum_age_nanos.get(),
+            wear_age_nanos: retention.wear_age_nanos,
+            bit_probability_millionths: retention.bit_probability.get(),
+            maximum_changed_bits: retention.maximum_changed_bits.get(),
+        },
+        read_disturb: ResolvedBlockFlashReadDisturb {
+            read_threshold: read_disturb.read_threshold.get(),
+            neighbor_pages: read_disturb.neighbor_pages.get(),
+            bit_probability_millionths: read_disturb.bit_probability.get(),
+            maximum_changed_bits: read_disturb.maximum_changed_bits.get(),
+        },
+        program_erase: ResolvedBlockFlashProgramErase {
+            program_probability_millionths: program_erase.program_probability.get(),
+            erase_probability_millionths: program_erase.erase_probability.get(),
+            worn_probability_millionths: program_erase.worn_probability.get(),
+            partial_program: program_erase.partial_program,
+            partial_erase: program_erase.partial_erase,
+        },
+    })
 }
 
 fn resolve_write_disposition(
