@@ -48,12 +48,9 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     assert_eq!(outcome.status, BackendCommandStatus::Passed);
     assert!(outcome.terminal_savepoint.is_some());
     assert!(outcome.savepoint_oracle.is_some());
-    assert!(
-        outcome
-            .stdout
-            .iter()
-            .any(|line| { line.starts_with("run-savepoint\tpolicy=always\tcheckpoint=blake3:") })
-    );
+    assert!(!outcome.stdout.iter().any(|line| {
+        line.starts_with("run-savepoint\t") || line.starts_with("run-store\t")
+    }));
     assert!(outcome.stdout.iter().any(|line| {
         line.starts_with("save-oracle\tstatus=fat==thin-passed\tconfiguration=blake3:")
     }));

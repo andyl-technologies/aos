@@ -99,8 +99,10 @@ exploration bounds.
 `run --save-on <fail|always|never>` controls terminal checkpoint
 materialization. The default is `never`. `fail` materializes only a non-passing
 outcome; `always` materializes every outcome. The resulting checkpoint reference
-is reported and stored in the DAG store. Use the dedicated `save` command when
-you need an exported `.crucible-savepoint` handle at a chosen boundary.
+is reported only after its replayable closure and lookup index are stored in the
+DAG store. The `run-store` output row records their content hashes and store
+path. Use the dedicated `save` command when you need an exported
+`.crucible-savepoint` handle at a chosen boundary.
 
 ## Output formats
 

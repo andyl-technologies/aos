@@ -2048,6 +2048,8 @@ pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production
         String::from("7"),
         String::from("run"),
         scenario.display().to_string(),
+        String::from("--save-on"),
+        String::from("always"),
     ]);
     let Commands::Run(args) = &cli.command else {
         panic!("expected run command");
@@ -2074,6 +2076,11 @@ pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production
 
     assert_eq!(outcome.status, BackendCommandStatus::Passed);
     assert_eq!(outcome.exit_code, 0);
+    let checkpoint = outcome
+        .terminal_savepoint
+        .expect("remote always-save run must retain its terminal checkpoint");
+    let evidence = savepoint_store_evidence("remote run test", checkpoint, temp.path())?;
+    assert_eq!(evidence.configuration.id(), checkpoint);
     assert!(outcome.stdout.iter().any(|line| {
         line.starts_with("run-session\t")
             && line.contains("created=paused")

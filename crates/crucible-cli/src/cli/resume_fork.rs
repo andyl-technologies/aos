@@ -1863,6 +1863,22 @@ pub(super) fn finish_run_workflow_outcome(
     }
     append_local_double_run_entries(&mut outcome, run_plan, &report);
     if let Some(savepoint) = run_terminal_savepoint_for_policy(run_plan, &report)? {
+        let store_root = run_plan
+            .save_store_root
+            .as_ref()
+            .ok_or_else(|| backend_error("run save policy required a configured DAG store"))?;
+        let terminal_configuration = report.terminal_configuration.as_ref().ok_or_else(|| {
+            backend_error("run save policy required a terminal configuration for persistence")
+        })?;
+        let store_report = persist_checkpoint_closure_artifact(
+            store_root,
+            run_plan.scenario.scenario_form(),
+            terminal_configuration,
+            crucible::VirtualTime {
+                ticks: report.final_frontier_ticks,
+            },
+            savepoint,
+        )?;
         outcome.terminal_savepoint = Some(savepoint);
         let savepoint = format_content_hash_ref(savepoint);
         outcome.stdout.push(format!(
@@ -1871,6 +1887,13 @@ pub(super) fn finish_run_workflow_outcome(
             savepoint,
             report.final_state,
             terminal_outcome_label(report.outcome)
+        ));
+        outcome.stdout.push(format!(
+            "run-store\tcheckpoint={}\tartifact={}\tindex={}\tstore={}",
+            savepoint,
+            format_content_hash_ref(store_report.artifact),
+            format_content_hash_ref(store_report.index),
+            store_root.display()
         ));
         outcome.canonical_log.push(CanonicalLogEntry {
             sequence: outcome.canonical_log.len() as u64,
@@ -1882,6 +1905,18 @@ pub(super) fn finish_run_workflow_outcome(
                 run_save_policy_label(run_plan.save_policy),
                 savepoint,
                 terminal_outcome_label(report.outcome)
+            ),
+        });
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("session"),
+            kind: String::from("run_savepoint_store"),
+            summary: format!(
+                "checkpoint={} artifact={} index={}",
+                savepoint,
+                format_content_hash_ref(store_report.artifact),
+                format_content_hash_ref(store_report.index)
             ),
         });
         outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);

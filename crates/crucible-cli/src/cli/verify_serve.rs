@@ -112,6 +112,7 @@ pub(super) fn verify_run_invocation_plan(
 ) -> RunInvocationPlan {
     RunInvocationPlan {
         scenario,
+        save_store_root: None,
         request_seed: Some(request_seed),
         terminal_condition: RunTerminalCondition::Quiescence,
         max_virtual_time: None,
