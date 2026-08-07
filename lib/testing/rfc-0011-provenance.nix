@@ -16,7 +16,7 @@
         module = {
           environment.etc."provenance-demo.conf".text = "package-owned\n";
           systemd.services.provenance-demo = {
-            description = "RFC-0011 provenance fixture";
+            description = "configuration provenance fixture";
             wantedBy = ["multi-user.target"];
             script = "echo provenance-demo";
           };

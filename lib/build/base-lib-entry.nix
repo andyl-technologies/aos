@@ -55,13 +55,20 @@ let
     builtins.fromJSON
     (builtins.unsafeDiscardStringContext (builtins.readFile ./frozen-artifacts.json));
 
+  # Immutable artifact baseline used to distinguish image-owned output from
+  # host changes to values that base modules project into aggregate files,
+  # users, units, presets, and closure pins.
+  imageManifest =
+    builtins.fromJSON
+    (builtins.unsafeDiscardStringContext (builtins.readFile ./image-manifest.json));
+
   # The bundled base module set + the image's system-variant modules. These are
   # exactly the modules the image was built from (minus the registry config
   # packages, which arrive at stage-2 as authenticated `packageModules`).
   baseModules = import ./modules;
   systemModules = import ./system-modules.nix;
 in {
-  inherit lib;
+  inherit lib imageManifest;
 
   ## Evaluate the closed one-time provisioning projection.
   ##

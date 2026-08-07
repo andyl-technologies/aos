@@ -1,4 +1,4 @@
-# tests/fleet/rfc-0011-degraded-boot.nix — RFC-0011 soft/hard graph edges.
+# tests/fleet/rfc-0011-degraded-boot.nix — soft and hard activation graph edges.
 #
 # The live machine first publishes three genuine exposed packages into an
 # authenticated test registry and evaluates them by name. The test then
@@ -157,7 +157,7 @@ in {
       degraded.succeed("systemctl is-active --quiet sshd.service")
 
       # Publish the exact image-bundled outputs into a signed local registry.
-      # Bundling makes the gen-0 host reachable, but RFC-0011 package selection
+      # Bundling makes the gen-0 host reachable, but package selection
       # still resolves names and pins closures from authenticated registry
       # metadata. Keeping those trust paths distinct is load-bearing.
       degraded.succeed(textwrap.dedent(r"""
@@ -206,7 +206,7 @@ in {
             ${pkgs.aos}/bin/apr publish "$output" \
               --name "$name" \
               --version 1.0.0 \
-              --description 'RFC-0011 degraded activation fixture' \
+              --description 'Degraded activation fixture' \
               --license MIT \
               --maintainer test \
               --expose-manifest "$expose/manifest.json" \

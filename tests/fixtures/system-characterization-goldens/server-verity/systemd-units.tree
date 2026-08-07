@@ -11,6 +11,7 @@ unit	aos-graph-compile.service
 unit	aos-host-config-cache.service
 unit	aos-host-config-restore.service
 unit	aos-image-boot-commit.service
+unit	aos-image-measurement-index.service
 unit	aos-install-baked-packages.service
 unit	aos-nix-db.service
 unit	aos-pkg-fetch@.service
@@ -34,6 +35,7 @@ link	multi-user.target.wants/aos-graph-compile.service	../aos-graph-compile.serv
 link	multi-user.target.wants/aos-host-config-cache.service	../aos-host-config-cache.service
 link	multi-user.target.wants/aos-host-config-restore.service	../aos-host-config-restore.service
 link	multi-user.target.wants/aos-image-boot-commit.service	../aos-image-boot-commit.service
+link	multi-user.target.wants/aos-image-measurement-index.service	../aos-image-measurement-index.service
 link	multi-user.target.wants/aos-install-baked-packages.service	../aos-install-baked-packages.service
 link	multi-user.target.wants/aos-nix-db.service	../aos-nix-db.service
 link	multi-user.target.wants/aos-preset.service	../aos-preset.service

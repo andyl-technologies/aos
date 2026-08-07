@@ -1,4 +1,4 @@
-//! RFC-0011 acceptance tests for the persisted two-axis generation model.
+//! Acceptance tests for the persisted two-axis generation model.
 
 use aos_package::types::{
     ConfigGeneration, ConfigGenerationState, ImageGeneration, ImageGenerationState, ImageSlot,

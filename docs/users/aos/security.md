@@ -247,6 +247,14 @@ boot-commit verifier confirms the stored quote's signature, nonce, and PCR 7/11
 values against both the live TPM and published image record. This mechanism
 does not supply production signing keys, enrollment, or key custody.
 
+The seed image gets its expected ready-phase PCR 11 from build-produced UKI
+measurement metadata. That metadata is signed by the PCR-policy key and bound
+to the exact UKI hash; the image references the Nix derivation outputs directly
+rather than embedding store paths or captured build results in source. At boot,
+AOS verifies the metadata against the public key embedded in the UKI before it
+can become image-catalog authority. Registry-installed images continue to use
+their independently signed release catalog.
+
 Each committed configuration generation also carries
 `gen-attestation.json`, binding its manifest to the evaluator, base library,
 authenticated package-module inputs, authorized `host.nix`, normalized facts,

@@ -1,6 +1,6 @@
-# tests/fleet/rfc-0011-image-rollback.nix - RFC-0011 durable A/B lifecycle.
+# tests/fleet/rfc-0011-image-rollback.nix - durable A/B lifecycle.
 #
-# This is the executable acceptance gate for the image half of RFC-0011. It
+# This is the executable acceptance gate for the image lifecycle. It
 # publishes a real measured, dm-verity-backed raw image through a registry,
 # stages it through `apm upgrade --system` onto the inactive GPT slot, exhausts
 # its real sd-boot boot count and observes automatic fallback, retries and
@@ -28,7 +28,7 @@
       systemd.services.aos-eval.preStart = ''
         if [ ! -e /var/lib/aos-test/allow-eval ]; then
           mkdir -p /run/aos
-          printf '{ invalid RFC-0011 boot-count fixture\n' > /run/aos/manifest.json
+          printf '{ invalid boot-count fixture\n' > /run/aos/manifest.json
           exit 1
         fi
       '';
@@ -227,7 +227,7 @@ in {
           ${pkgs.aos}/bin/apr --json publish '${candidateTop}' \\
             --name aos \\
             --version 9999.0.0-rfc0011 \\
-            --description 'RFC-0011 A/B lifecycle fixture' \\
+            --description 'A/B lifecycle fixture' \\
             --license MIT \\
             --maintainer test \\
             --sysroot \\
@@ -281,7 +281,7 @@ in {
           chmod -R a+rX /var/lib/sysreg-cache
 
           git -C "$REG_DIR" add -A
-          git -C "$REG_DIR" commit -m 'release: RFC-0011 A/B fixture'
+          git -C "$REG_DIR" commit -m 'release: A/B lifecycle fixture'
           git -C "$REG_DIR" tag v1.0.0
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
           chown -R aos-gitd:aos-gitd "$ORIGIN"

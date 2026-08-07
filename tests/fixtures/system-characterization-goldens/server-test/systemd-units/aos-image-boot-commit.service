@@ -2,7 +2,8 @@
 After=aos-firstboot-reeval.service aos-graph-compile.service aos-activate.service aos-config.target
 Before=multi-user.target
 ConditionPathExists=/run/aos/image-reeval-required
-Description=Commit a successful RFC-0011 image transition
+ConditionPathExists=/sys/firmware/efi
+Description=Commit a successful image transition
 Requires=aos-graph-compile.service
 
 [Service]
@@ -12,6 +13,12 @@ ExecStart=<<aos-job-script>>
 set -e
 
 set -euo pipefail
+if ! /nix/store/<hash>-util-linux-2.42.1/bin/mountpoint -q /boot; then
+  mkdir -p /boot
+  /nix/store/<hash>-util-linux-2.42.1/bin/mount -t vfat \
+    -o ro,noatime,fmask=0077,dmask=0077 \
+    '/dev/disk/by-partlabel/ESP' /boot
+fi
 boot_writable=false
 restore_boot_read_only() {
   if [ "$boot_writable" = true ]; then
@@ -128,7 +135,7 @@ stable_path="/boot/$stable"
 
 # Bless only a pending candidate that actually became the running
 # image. When sd-boot has already fallen back, the running known-good
-# entry is normally uncounted and `set-successful` would fail; in that
+# entry is normally uncounted and blessing would fail; in that
 # arm we merely restore it as the durable default below. A stable file
 # also means an earlier attempt already completed the rename, making
 # this step idempotent across a crash before state publication.
@@ -159,7 +166,7 @@ if [ "$pending" -eq "$running" ]; then
     fi
   done
   if [ "$live_counted" = true ]; then
-    /nix/store/<hash>-systemd-259.1/bin/bootctl set-successful
+    /nix/store/<hash>-systemd-259.1/lib/systemd/systemd-bless-boot --path=/boot good
   elif [ ! -e "$stable_path" ]; then
     echo "aos-image-boot-commit: neither a live counted nor stable UKI exists for $entry" >&2
     exit 1

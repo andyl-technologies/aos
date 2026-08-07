@@ -1,4 +1,4 @@
-# RFC-0011 P2 stock/native manifest and option-graph parity gate.
+# Stock/native manifest and option-graph parity gate.
 {
   pkgs,
   lib,

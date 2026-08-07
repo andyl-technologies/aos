@@ -44,7 +44,7 @@ struct PackageGenerationPruneResult {
     removed: Vec<u32>,
 }
 
-/// Result of pruning the RFC-0011 configuration-generation profile.
+/// Result of pruning the configuration-generation profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ConfigGenerationPruneResult {
     current: u32,
@@ -660,7 +660,7 @@ fn clean_generations_json(
         "generations_after_count": package.after.len(),
         "removed_generations": package.removed,
         "removed": package.removed.len(),
-        // `--system` additionally reports the independent RFC-0011 config
+        // `--system` additionally reports the independent configuration
         // axis, whose generation numbers need not align with package gens.
         "configuration": configuration.map(|result| serde_json::json!({
             "current_generation": result.current,

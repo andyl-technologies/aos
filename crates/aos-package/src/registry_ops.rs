@@ -1638,7 +1638,7 @@ description = ""
 /// provenance, so they must be published with `--key-id`; a raw `--key` has
 /// no stable roster id for the DSSE builder identity.
 ///
-/// `--config-module` publishes RFC-0011's config-only companion output.
+/// `--config-module` publishes the package's config-only companion output.
 /// `--config-base-lib` is required with it and records the exact options
 /// library used by the restricted, no-IFD options-only evaluation. The signed
 /// provenance binds the payload, config output, base lib, and (when present)
@@ -3778,7 +3778,7 @@ fn dump_pe_section(uki: &Path, section: &str) -> Result<Option<tempfile::NamedTe
 ///
 /// `systemd-measure calculate` emits one `11:sha256=` line per boot phase
 /// (`enter-initrd` → `enter-initrd:leave-initrd:sysinit:ready`); this records
-/// the **last** — the stable `ready` phase at which RFC-0011 activation takes
+/// the **last** — the stable `ready` phase at which configuration activation takes
 /// its generation quote. `aos-eval.service` is explicitly ordered after
 /// `systemd-pcrphase.service`, and later operator-driven switches necessarily
 /// run in this same phase.

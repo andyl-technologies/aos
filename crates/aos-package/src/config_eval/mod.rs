@@ -1464,7 +1464,7 @@ fn read_base_lib_abi_hash(base_lib: &Path, expected_abi: u32) -> Result<String> 
     Ok(abi_hash)
 }
 
-/// Derives the RFC-0011 evaluator identity from its Nix store-path component.
+/// Derives the evaluator identity from its Nix store-path component.
 fn evaluator_store_hash(executable: &Path) -> Result<String> {
     let root = evaluator_store_root(executable)?;
     let basename = root
@@ -1904,9 +1904,12 @@ fn enrich_runtime_projection(
                     format!("manifest ownership.storePaths.{package_path} must be a string")
                 })?;
                 if existing != name {
-                    if existing == "@base" && package_path == package.store_path {
+                    if existing == "@base"
+                        && package_path == package.store_path
+                        && package.origin != runtime::RuntimePackageOrigin::Image
+                    {
                         anyhow::bail!(
-                            "runtime output {} for authenticated package {name} aliases an image-bundled store path owned by @base; base content cannot be reclassified as a package output",
+                            "registry runtime output {} for authenticated package {name} aliases an image-bundled store path owned by @base; base content cannot be reclassified as a package output",
                             package.store_path
                         );
                     }

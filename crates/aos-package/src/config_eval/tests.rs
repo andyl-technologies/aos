@@ -431,6 +431,16 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
             .contains("base content cannot be reclassified as a package output")
     );
 
+    let mut image_runtime = runtime.clone();
+    image_runtime
+        .packages
+        .get_mut("web")
+        .unwrap()
+        .origin = super::runtime::RuntimePackageOrigin::Image;
+    enrich_runtime_projection(bundled_output.as_object_mut().unwrap(), &image_runtime)
+        .expect("an image-origin pin may reuse its identical image-owned output");
+    assert_eq!(bundled_output["ownership"]["storePaths"][output], "@base");
+
     let referenced = "/nix/store/0000000000000000000000000000000c-web-data";
     let mut manifest = serde_json::json!({
         "etc": {

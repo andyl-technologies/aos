@@ -1,0 +1,146 @@
+[Unit]
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=aos-eval.service multi-user.target
+Description=Import authenticated UKI PCR 11 measurement metadata
+Requires=local-fs.target systemd-tmpfiles-setup.service
+
+[Service]
+Environment="PATH=/nix/store/<hash>-coreutils-9.5/bin:/nix/store/<hash>-findutils-4.10.0/bin:/nix/store/<hash>-grep-3.11/bin:/nix/store/<hash>-sed-4.9/bin:/nix/store/<hash>-systemd-259.1/bin:/nix/store/<hash>-coreutils-9.5/sbin:/nix/store/<hash>-findutils-4.10.0/sbin:/nix/store/<hash>-grep-3.11/sbin:/nix/store/<hash>-sed-4.9/sbin:/nix/store/<hash>-systemd-259.1/sbin"
+ExecStart=<<aos-job-script>>
+#!/nix/store/<hash>-bash-5.2.37/bin/bash
+set -e
+
+set -euo pipefail
+state=/var/lib/profiles/image/state.json
+if ! /nix/store/<hash>-util-linux-2.42.1/bin/mountpoint -q /boot; then
+  mkdir -p /boot
+  /nix/store/<hash>-util-linux-2.42.1/bin/mount -t vfat \
+    -o ro,noatime,fmask=0077,dmask=0077 \
+    '/dev/disk/by-partlabel/ESP' /boot
+fi
+running=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er '.running' "$state")
+entry=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er --argjson running "$running" \
+  '.generations[] | select(.number == $running) | .uki_path' "$state")
+case "$entry" in
+  EFI/Linux/*.efi) ;;
+  *)
+    echo "aos-image-measurement-index: unsafe recorded UKI path $entry" >&2
+    exit 1
+    ;;
+esac
+recorded_uki="/boot/$entry"
+uki="$recorded_uki"
+if [ ! -f "$uki" ]; then
+  uki_name=${entry#EFI/Linux/}
+  uki_stem=${uki_name%.efi}
+  case "$uki_stem" in
+    *+*)
+      recorded_tries=${uki_stem##*+}
+      stable_stem=${uki_stem%+*}
+      case "$recorded_tries" in
+        ""|*[!0-9]*)
+          echo "aos-image-measurement-index: invalid terminal boot count in $entry" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    *) stable_stem=$uki_stem ;;
+  esac
+  found=
+  for candidate in "/boot/EFI/Linux/${stable_stem}"+*.efi; do
+    [ -f "$candidate" ] || continue
+    if [ -n "$found" ]; then
+      echo "aos-image-measurement-index: ambiguous live UKI for $entry" >&2
+      exit 1
+    fi
+    found=$candidate
+  done
+  if [ -z "$found" ]; then
+    echo "aos-image-measurement-index: live UKI is missing for $entry" >&2
+    exit 1
+  fi
+  uki=$found
+fi
+measurement="$recorded_uki.measurement"
+signature="$measurement.sig"
+public_key=/run/systemd/tpm2-pcr-public-key.pem
+require_file() {
+  if [ ! -f "$1" ]; then
+    echo "aos-image-measurement-index: required file is missing: $1" >&2
+    exit 1
+  fi
+}
+registry=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er --argjson running "$running" \
+  '.generations[] | select(.number == $running) | .registry' "$state")
+recorded=$(/nix/store/<hash>-jq-1.8.1/bin/jq -r --argjson running "$running" \
+  '[.generations[] | select(.number == $running) | .expected_pcr11][0] // ""' \
+  "$state")
+if [ "$registry" != seed ]; then
+  # Registry-installed generations already carry the value from their
+  # independently signed release catalog. Their UKI artifact was
+  # checked against that value before it was staged.
+  test -n "$recorded"
+  exit 0
+fi
+require_file "$uki"
+require_file "$measurement"
+require_file "$signature"
+require_file "$public_key"
+/nix/store/<hash>-openssl-3.4.1/bin/openssl dgst -sha256 -verify "$public_key" \
+  -signature "$signature" "$measurement" >/dev/null
+
+schema=
+measured_uki=
+expected=
+lines=0
+while IFS= read -r line; do
+  lines=$((lines + 1))
+  case "$lines:$line" in
+    1:aos.uki-measurement/v1) schema=$line ;;
+    2:uki_sha256=*) measured_uki=${line#*=} ;;
+    3:expected_pcr11=sha256:*) expected=${line#*=} ;;
+    *)
+      echo "aos-image-measurement-index: malformed measurement metadata" >&2
+      exit 1
+      ;;
+  esac
+done < "$measurement"
+[ "$lines" -eq 3 ] && [ "$schema" = aos.uki-measurement/v1 ]
+case "$measured_uki" in
+  *[!0-9a-f]*|"") exit 1 ;;
+esac
+[ "${#measured_uki}" -eq 64 ]
+case "$expected" in
+  sha256:*) expected_hex=${expected#sha256:} ;;
+  *) exit 1 ;;
+esac
+case "$expected_hex" in
+  *[!0-9a-f]*|"") exit 1 ;;
+esac
+[ "${#expected_hex}" -eq 64 ]
+actual_uki=$(/nix/store/<hash>-openssl-3.4.1/bin/openssl dgst -sha256 -r "$uki")
+actual_uki=${actual_uki%% *}
+[ "$actual_uki" = "$measured_uki" ] || {
+  echo "aos-image-measurement-index: measurement metadata belongs to a different UKI" >&2
+  exit 1
+}
+
+if [ -n "$recorded" ]; then
+  [ "$recorded" = "$expected" ] || {
+    echo "aos-image-measurement-index: catalog and signed UKI PCR 11 disagree" >&2
+    exit 1
+  }
+  exit 0
+fi
+/nix/store/<hash>-jq-1.8.1/bin/jq --argjson running "$running" --arg expected "$expected" \
+  '(.generations[] | select(.number == $running)).expected_pcr11 = $expected' \
+  "$state" > "$state.new"
+/nix/store/<hash>-coreutils-9.5/bin/sync -f "$state.new"
+mv "$state.new" "$state"
+/nix/store/<hash>-coreutils-9.5/bin/sync -f "$(dirname "$state")"
+<<aos-job-script-end>>
+RemainAfterExit=true
+Type=oneshot
+
+[Install]
+WantedBy=multi-user.target

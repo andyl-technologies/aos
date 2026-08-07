@@ -52,7 +52,7 @@ in
 
     expose = {
       units."aos-rfc0011-secret.service" = {
-        description = "RFC-0011 system credential consumer";
+        description = "System credential consumer";
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
@@ -70,5 +70,5 @@ in
       ];
     };
 
-    meta.description = "Fleet fixture for RFC-0011 secretRef activation";
+    meta.description = "Fleet fixture for secretRef activation";
   }

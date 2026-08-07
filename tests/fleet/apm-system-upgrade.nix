@@ -1,6 +1,6 @@
 # tests/fleet/apm-system-upgrade.nix - Refuse incomplete A/B system upgrades.
 #
-# RFC-0011 retired live, single-axis sysroot activation. `apm upgrade --system`
+# Live, single-axis sysroot activation is retired. `apm upgrade --system`
 # now accepts only an authenticated raw OTA payload and stages it into the
 # inactive A/B slot; host configuration changes use the evaluator/activation
 # transaction instead. This test preserves the old pre-staged-toplevel fixture
@@ -11,7 +11,8 @@
 # Its closure is pre-staged on disk, so no registry/cache peer is needed and the
 # failure can be attributed specifically to incomplete image metadata.
 #
-# The target boots image generation 1 with no evaluated configuration yet.
+# The target boots image generation 1 and completes its initial host-policy
+# evaluation before the rejected upgrade is attempted.
 # The registry advertises a different sysroot version and a valid toplevel
 # closure, but deliberately omits `versions.platforms.*.images`. Dry-run may
 # report the candidate; the real operation must reject it before mutation.
@@ -167,7 +168,6 @@ in {
       target.wait_until_succeeds(
           "systemctl is-active test-http-server.service", timeout=120
       )
-
       image_before = json.loads(
           target.succeed("cat /var/lib/profiles/image/state.json")
       )
@@ -181,12 +181,11 @@ in {
       config_before = json.loads(
           target.succeed("cat /var/lib/profiles/system/state.json")
       )
-      assert config_before == {
-          "current": 0,
-          "next": 1,
-          "generations": [],
-      }, config_before
-      target.fail("test -e /var/lib/profiles/system/current")
+      assert config_before["current"] == 1, config_before
+      assert config_before["next"] == 2, config_before
+      assert len(config_before["generations"]) == 1, config_before
+      assert config_before["generations"][0]["image_gen_parent"] == 1, config_before
+      target.succeed("test -e /var/lib/profiles/system/current")
 
       # Fixture baseline. gen-1 opens port 8000 in the base nftables ruleset
       # but does not yet add tcp_keepalive_time to the kernel sysctl drop-in.
@@ -291,7 +290,7 @@ in {
       )
       assert image_after == image_before, (image_before, image_after)
       assert config_after == config_before, (config_before, config_after)
-      target.fail("test -e /var/lib/profiles/system/current")
+      target.succeed("test -e /var/lib/profiles/system/current")
 
       # No live configuration surface or daemon changed as a side effect.
       target.fail("test -e /etc/aos/upgrade-test/marker.conf")

@@ -1,6 +1,6 @@
 # tests/fleet/rfc-0011-on-host-eval.nix — general runtime host.nix activation.
 #
-# This is the load-bearing RFC-0011 stage-2 acceptance gate. Unlike the
+# This is the load-bearing on-host evaluation acceptance gate. Unlike the
 # provisioning test, the machine identity exercised here is not baked into the
 # image: literal metadata host.nix overrides the baked hostname and contributes
 # an /etc artifact, account, service, and desired package through the production
@@ -12,6 +12,9 @@
 }: {
   name = "rfc-0011-on-host-eval";
   timeout = 1500;
+  # This test waits for the evaluator/graph transaction explicitly and emits
+  # focused unit diagnostics on failure.
+  systemReadyTimeout = 0;
 
   machines.runtime = {
     system = systems.server-test;
@@ -39,12 +42,12 @@
           group = "rfc0011";
           home = "/var/lib/rfc0011";
           shell = "/bin/bash";
-          description = "RFC-0011 runtime host user";
+          description = "Runtime-configured host user";
           extraGroups = [];
         };
 
         systemd.services.rfc0011-host = {
-          description = "RFC-0011 runtime host service";
+          description = "Runtime-configured host service";
           wantedBy = [ "multi-user.target" ];
           serviceConfig = {
             Type = "oneshot";
@@ -94,8 +97,71 @@
           ).strip())
 
 
+      def wait_for_activation(machine):
+          try:
+              machine.succeed(
+                  "timeout --kill-after=2s 300s bash -c '"
+                  "until test -s /run/aos/manifest.json "
+                  "&& test -s /run/aos/graph.json "
+                  "&& test -s /run/aos/activation.json; "
+                  "do sleep 1; done'",
+                  timeout=310,
+              )
+          except Exception:
+              for unit in (
+                  "multi-user.target",
+                  "aos-provisioning-persist.service",
+                  "aos-firstboot-reeval.service",
+                  "aos-host-config-restore.service",
+                  "aos-nix-db.service",
+                  "aos-seed-baked-packages.service",
+                  "aos-eval.service",
+                  "aos-graph-compile.service",
+                  "aos-activate.service",
+              ):
+                  print(machine.succeed(
+                      f"systemctl status {unit} --no-pager 2>&1 || true"
+                  ))
+                  print(machine.succeed(
+                      f"journalctl -b -u {unit} --no-pager 2>&1 || true"
+                  ))
+              print(machine.succeed(
+                  "systemctl list-jobs --no-pager 2>&1 || true"
+              ))
+              for path in (
+                  "/run/aos/manifest.json",
+                  "/run/aos/graph.json",
+                  "/run/aos/activation.json",
+                  "/var/lib/profiles/system/state.json",
+              ):
+                  print(machine.succeed(f"cat {path} 2>&1 || true"))
+              raise
+
+
       def assert_live(value):
-          runtime.succeed(f"test \"$(cat /etc/hostname)\" = runtime-{value}")
+          try:
+              runtime.wait_until_succeeds(
+                  f"test \"$(cat /etc/hostname)\" = runtime-{value}", timeout=60
+              )
+          except Exception:
+              for unit in (
+                  "aos-eval.service",
+                  "aos-graph-compile.service",
+                  "aos-activate.service",
+                  "aos-image-boot-commit.service",
+              ):
+                  print(runtime.succeed(
+                      f"systemctl status {unit} --no-pager 2>&1 || true"
+                  ))
+                  print(runtime.succeed(
+                      f"journalctl -b -u {unit} --no-pager 2>&1 || true"
+                  ))
+              print(runtime.succeed(
+                  "cat /var/lib/profiles/system/state.json 2>&1 || true"
+              ))
+              print(runtime.succeed("cat /run/aos/manifest.json 2>&1 || true"))
+              print(runtime.succeed("cat /proc/mounts 2>&1 || true"))
+              raise
           runtime.succeed(
               f"test \"$(cat /etc/rfc0011/runtime.conf)\" = generation={value}"
           )
@@ -106,9 +172,7 @@
           runtime.succeed("systemctl is-active --quiet aos-test-agent.service")
 
 
-      image_default.wait_until_succeeds(
-          "systemctl is-active --quiet aos-graph-compile.service", timeout=300
-      )
+      wait_for_activation(image_default)
       image_default.succeed("test ! -e /run/aos-metadata/host.nix")
       default_preview = json.loads(image_default.succeed(f"""
           {APM} --json switch --dry-run \
@@ -124,9 +188,7 @@
 
       # Reaching these units proves graph compilation synchronously awaited the
       # activation proof, rather than merely observing an eval manifest.
-      runtime.wait_until_succeeds(
-          "systemctl is-active --quiet aos-graph-compile.service", timeout=300
-      )
+      wait_for_activation(runtime)
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet aos-activate.service", timeout=300
       )
@@ -295,11 +357,11 @@
           group = \"rfc0011\";
           home = \"/var/lib/rfc0011\";
           shell = \"/bin/bash\";
-          description = \"RFC-0011 runtime host user\";
+          description = \"Runtime-configured host user\";
           extraGroups = [];
         };
         systemd.services.rfc0011-host = {
-          description = \"RFC-0011 runtime host service\";
+          description = \"Runtime-configured host service\";
           wantedBy = [ \"multi-user.target\" ];
           serviceConfig = { Type = \"oneshot\"; RemainAfterExit = true; };
           script = \"printf two > /run/rfc0011-host-service\";

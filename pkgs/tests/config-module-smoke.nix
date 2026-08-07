@@ -1,4 +1,4 @@
-##! RFC-0011 package config-output smoke fixture.
+##! Package config-output smoke fixture.
 {mkDerivation}:
 mkDerivation {
   pname = "config-module-smoke";
@@ -35,5 +35,5 @@ mkDerivation {
     ];
   };
 
-  meta.description = "RFC-0011 package config-output smoke fixture";
+  meta.description = "Package config-output smoke fixture";
 }

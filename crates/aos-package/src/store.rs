@@ -424,8 +424,8 @@ fn retained_baselib_image_generations(
     keep
 }
 
-/// Reconciles production image-scoped base-library roots with RFC-0011's
-/// retention floor.
+/// Reconciles production image-scoped base-library roots with the retention
+/// floor.
 ///
 /// Roots are retained for the exact A/B-resident generations, exact retained
 /// configuration parents, and one prior-distinct-ABI recovery generation;

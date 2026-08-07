@@ -1,4 +1,4 @@
-## RFC-0011 migration fixture: the module-evaluated representation of the
+## Migration fixture: the module-evaluated representation of the
 ## legacy `web` expose.config corpus pinned by golden_config_artifact.rs.
 {
   config.packageExpose.config.artifacts = [

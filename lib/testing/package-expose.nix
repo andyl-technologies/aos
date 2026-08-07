@@ -68,34 +68,34 @@
   configModuleEvalContract =
     lib.throwIfNot
     evaluatedConfigModule.config.configModuleSmoke.enable
-    "RFC-0011 config module fixture must evaluate through lib.evalModules"
+    "config module fixture must evaluate through lib.evalModules"
     (lib.throwIfNot
       (evaluatedConfigModule.config.configModuleSmoke.command == "${pkgs.bash}/bin/bash")
-      "RFC-0011 config modules must resolve dependency output strings through evaluator injection"
+      "config modules must resolve dependency output strings through evaluator injection"
       (lib.throwIfNot
         (evaluatedConfigModule.config.configModuleSmoke.privateMessage
           == "configModuleSmoke.enable remains evaluable")
-        "RFC-0011 config module fixture must import and use its private helper"
+        "config module fixture must import and use its private helper"
         true));
   configModuleContract =
     lib.throwIfNot
     (configModuleOutput.outputName == "config")
-    "RFC-0011 config module fixture must expose the named config output"
+    "config module fixture must expose the named config output"
     (lib.throwIfNot
       (configModuleOutput.outPath != configModulePackage.outPath)
-      "RFC-0011 config output must be separate from the package payload output"
+      "config output must be separate from the package payload output"
       (lib.throwIfNot
         (configModulePackage.configModule.outPath == configModuleOutput.outPath)
-        "RFC-0011 configModule compatibility alias must identify pkg.config"
+        "configModule compatibility alias must identify pkg.config"
         (lib.throwIfNot
           (configModulePackage.passthru.configModule.outPath == configModuleOutput.outPath)
-          "RFC-0011 passthru.configModule compatibility alias must identify pkg.config"
+          "passthru.configModule compatibility alias must identify pkg.config"
           (lib.throwIfNot
             (!(builtins.elem "config" configModulePackage.outputs))
-            "RFC-0011 companion config artifact must not alter payload derivation outputs"
+            "companion config artifact must not alter payload derivation outputs"
             (lib.throwIfNot
               (configModulePackage.drvPath == configModulePayloadBaseline.drvPath)
-              "RFC-0011 configModule must not alter the payload derivation contract"
+              "configModule must not alter the payload derivation contract"
               true)))));
   phaseExitPackage = pkgs.mkDerivation {
     pname = "config-module-phase-exit";
@@ -195,7 +195,7 @@
   typedExposeRejects = field: expose:
     lib.throwIfNot
     (!(builtins.tryEval (builtins.deepSeq (pkg.overrideAttrs (_: {inherit expose;})).expose true)).success)
-    "RFC-0011 typed expose module accepted invalid ${field}"
+    "typed expose module accepted invalid ${field}"
     true;
   typedFirewallRejected = typedExposeRejects "firewall" {
     firewall.allowedTCP = "443";
@@ -1636,7 +1636,7 @@ in
           grep -q 'aos.config-module-meta/v1' "$configModuleOutput/config-meta.json"
           grep -q 'configModuleSmoke.enable' "$configModuleOutput/config-meta.json"
           if grep -R -n -F "$NIX_STORE_DIR/" "$configModuleOutput"; then
-            echo "RFC-0011 config output contains a Nix store-path literal" >&2
+            echo "config output contains a Nix store-path literal" >&2
             exit 1
           fi
           test -f "$composedConfigModuleOutput/module.nix"
@@ -1656,7 +1656,7 @@ in
           grep -q 'expose-smoke._aosExposeConfigProjection' "$generatedExposeConfigOutput/config-meta.json"
           grep -q '"package":"expose-smoke"' "$generatedExposeConfigOutput/expose-config.json"
           if grep -R -n -F "$NIX_STORE_DIR/" "$generatedExposeConfigOutput"; then
-            echo "RFC-0011 generated expose config output contains a Nix store-path literal" >&2
+            echo "generated expose config output contains a Nix store-path literal" >&2
             exit 1
           fi
 

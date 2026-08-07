@@ -1061,8 +1061,8 @@ in {
     rfc-0011-materialize = config-materialize;
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
     config-parity-p2 = import ./lib/testing/config-parity-p2.nix {inherit pkgs lib;};
-    # Complete non-KVM RFC-0011 gate. The image lifecycle and degraded-network
-    # contracts are exercised by checks.fleet.rfc-0011-all below.
+    # Complete non-KVM on-host configuration gate. The image lifecycle and
+    # degraded-network contracts are exercised by the fleet aggregate below.
     rfc-0011-all = pkgs.mkDerivation {
       pname = "rfc-0011-all";
       version = "0";

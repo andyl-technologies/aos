@@ -534,8 +534,8 @@ pub async fn install_system(
     // download-time refusal rather than a boot-time brick.
     validate_sysroot_secure_boot(config, toplevel_meta, &closure.registry_name, printer)?;
 
-    // RFC-0011 image generations are never activated into the running root.
-    // When the two-axis image state exists, import the authenticated OTA
+    // Image generations are never activated into the running root. When the
+    // two-axis image state exists, import the authenticated OTA
     // payload, write only the inactive root/hash slot, publish its counted UKI
     // last, and make it the durable next boot. First-boot evaluation under the
     // new image creates the config generation after reboot.

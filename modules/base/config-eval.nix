@@ -77,7 +77,7 @@ in {
       internal = true;
       readOnly = true;
       description = ''
-        Canonical RFC-0011 hash of the in-image module ABI integer and option
+        Canonical hash of the in-image module ABI integer and option
         schema. This is computed by the options-only base-library evaluation.
       '';
     };
@@ -303,6 +303,152 @@ in {
       '';
     };
 
+    systemd.services.aos-image-measurement-index = lib.mkIf config.aos.boot.secureBoot.measuredBoot.enable {
+      description = "Import authenticated UKI PCR 11 measurement metadata";
+      wantedBy = ["multi-user.target"];
+      # aos-seed-profiles is an initrd-only unit and disappears at
+      # switch-root. Stage 2 consumes the durable state that it wrote under
+      # /var, so requiring that vanished unit would drop this job and, through
+      # aos-eval's Requires= edge, silently skip host activation.
+      requires = ["local-fs.target" "systemd-tmpfiles-setup.service"];
+      after = ["local-fs.target" "systemd-tmpfiles-setup.service"];
+      before = ["aos-eval.service" "multi-user.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        set -euo pipefail
+        state=/var/lib/profiles/image/state.json
+        if ! ${pkgs.util-linux}/bin/mountpoint -q /boot; then
+          mkdir -p /boot
+          ${pkgs.util-linux}/bin/mount -t vfat \
+            -o ro,noatime,fmask=0077,dmask=0077 \
+            ${lib.escapeShellArg config.aos.filesystems.espDevice} /boot
+        fi
+        running=$(${pkgs.jq}/bin/jq -er '.running' "$state")
+        entry=$(${pkgs.jq}/bin/jq -er --argjson running "$running" \
+          '.generations[] | select(.number == $running) | .uki_path' "$state")
+        case "$entry" in
+          EFI/Linux/*.efi) ;;
+          *)
+            echo "aos-image-measurement-index: unsafe recorded UKI path $entry" >&2
+            exit 1
+            ;;
+        esac
+        recorded_uki="/boot/$entry"
+        uki="$recorded_uki"
+        if [ ! -f "$uki" ]; then
+          uki_name=''${entry#EFI/Linux/}
+          uki_stem=''${uki_name%.efi}
+          case "$uki_stem" in
+            *+*)
+              recorded_tries=''${uki_stem##*+}
+              stable_stem=''${uki_stem%+*}
+              case "$recorded_tries" in
+                ""|*[!0-9]*)
+                  echo "aos-image-measurement-index: invalid terminal boot count in $entry" >&2
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *) stable_stem=$uki_stem ;;
+          esac
+          found=
+          for candidate in "/boot/EFI/Linux/''${stable_stem}"+*.efi; do
+            [ -f "$candidate" ] || continue
+            if [ -n "$found" ]; then
+              echo "aos-image-measurement-index: ambiguous live UKI for $entry" >&2
+              exit 1
+            fi
+            found=$candidate
+          done
+          if [ -z "$found" ]; then
+            echo "aos-image-measurement-index: live UKI is missing for $entry" >&2
+            exit 1
+          fi
+          uki=$found
+        fi
+        measurement="$recorded_uki.measurement"
+        signature="$measurement.sig"
+        public_key=/run/systemd/tpm2-pcr-public-key.pem
+        require_file() {
+          if [ ! -f "$1" ]; then
+            echo "aos-image-measurement-index: required file is missing: $1" >&2
+            exit 1
+          fi
+        }
+        registry=$(${pkgs.jq}/bin/jq -er --argjson running "$running" \
+          '.generations[] | select(.number == $running) | .registry' "$state")
+        recorded=$(${pkgs.jq}/bin/jq -r --argjson running "$running" \
+          '[.generations[] | select(.number == $running) | .expected_pcr11][0] // ""' \
+          "$state")
+        if [ "$registry" != seed ]; then
+          # Registry-installed generations already carry the value from their
+          # independently signed release catalog. Their UKI artifact was
+          # checked against that value before it was staged.
+          test -n "$recorded"
+          exit 0
+        fi
+        require_file "$uki"
+        require_file "$measurement"
+        require_file "$signature"
+        require_file "$public_key"
+        ${pkgs.openssl}/bin/openssl dgst -sha256 -verify "$public_key" \
+          -signature "$signature" "$measurement" >/dev/null
+
+        schema=
+        measured_uki=
+        expected=
+        lines=0
+        while IFS= read -r line; do
+          lines=$((lines + 1))
+          case "$lines:$line" in
+            1:aos.uki-measurement/v1) schema=$line ;;
+            2:uki_sha256=*) measured_uki=''${line#*=} ;;
+            3:expected_pcr11=sha256:*) expected=''${line#*=} ;;
+            *)
+              echo "aos-image-measurement-index: malformed measurement metadata" >&2
+              exit 1
+              ;;
+          esac
+        done < "$measurement"
+        [ "$lines" -eq 3 ] && [ "$schema" = aos.uki-measurement/v1 ]
+        case "$measured_uki" in
+          *[!0-9a-f]*|"") exit 1 ;;
+        esac
+        [ "''${#measured_uki}" -eq 64 ]
+        case "$expected" in
+          sha256:*) expected_hex=''${expected#sha256:} ;;
+          *) exit 1 ;;
+        esac
+        case "$expected_hex" in
+          *[!0-9a-f]*|"") exit 1 ;;
+        esac
+        [ "''${#expected_hex}" -eq 64 ]
+        actual_uki=$(${pkgs.openssl}/bin/openssl dgst -sha256 -r "$uki")
+        actual_uki=''${actual_uki%% *}
+        [ "$actual_uki" = "$measured_uki" ] || {
+          echo "aos-image-measurement-index: measurement metadata belongs to a different UKI" >&2
+          exit 1
+        }
+
+        if [ -n "$recorded" ]; then
+          [ "$recorded" = "$expected" ] || {
+            echo "aos-image-measurement-index: catalog and signed UKI PCR 11 disagree" >&2
+            exit 1
+          }
+          exit 0
+        fi
+        ${pkgs.jq}/bin/jq --argjson running "$running" --arg expected "$expected" \
+          '(.generations[] | select(.number == $running)).expected_pcr11 = $expected' \
+          "$state" > "$state.new"
+        ${pkgs.coreutils}/bin/sync -f "$state.new"
+        mv "$state.new" "$state"
+        ${pkgs.coreutils}/bin/sync -f "$(dirname "$state")"
+      '';
+    };
+
     systemd.services.aos-eval = {
       description = "Evaluate host configuration to a converged manifest";
       wantedBy = ["multi-user.target"];
@@ -318,6 +464,7 @@ in {
           "aos-nix-db.service"
         ]
         ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "systemd-pcrphase.service"
+        ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "aos-image-measurement-index.service"
         ++ packageSeedReadinessUnits;
       after =
         [
@@ -330,6 +477,7 @@ in {
           "aos-host-config-restore.service"
           "aos-nix-db.service"
         ]
+        ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "aos-image-measurement-index.service"
         ++ packageSeedReadinessUnits;
       before = [
         "aos-install-baked-packages.service"
@@ -433,7 +581,7 @@ in {
     # failed candidate is demoted and the known-good running image becomes the
     # durable default again.
     systemd.services.aos-image-boot-commit = {
-      description = "Commit a successful RFC-0011 image transition";
+      description = "Commit a successful image transition";
       wantedBy = ["multi-user.target"];
       after = [
         "aos-firstboot-reeval.service"
@@ -443,13 +591,24 @@ in {
       ];
       requires = ["aos-graph-compile.service"];
       before = ["multi-user.target"];
-      unitConfig.ConditionPathExists = "/run/aos/image-reeval-required";
+      unitConfig.ConditionPathExists = [
+        "/run/aos/image-reeval-required"
+        # Direct-kernel development and fleet boots can evaluate host policy,
+        # but they have no firmware-selected UKI or ESP to bless.
+        "/sys/firmware/efi"
+      ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
       };
       script = ''
         set -euo pipefail
+        if ! ${pkgs.util-linux}/bin/mountpoint -q /boot; then
+          mkdir -p /boot
+          ${pkgs.util-linux}/bin/mount -t vfat \
+            -o ro,noatime,fmask=0077,dmask=0077 \
+            ${lib.escapeShellArg config.aos.filesystems.espDevice} /boot
+        fi
         boot_writable=false
         restore_boot_read_only() {
           if [ "$boot_writable" = true ]; then
@@ -588,7 +747,7 @@ in {
 
         # Bless only a pending candidate that actually became the running
         # image. When sd-boot has already fallen back, the running known-good
-        # entry is normally uncounted and `set-successful` would fail; in that
+        # entry is normally uncounted and blessing would fail; in that
         # arm we merely restore it as the durable default below. A stable file
         # also means an earlier attempt already completed the rename, making
         # this step idempotent across a crash before state publication.
@@ -619,7 +778,7 @@ in {
             fi
           done
           if [ "$live_counted" = true ]; then
-            ${pkgs.systemd}/bin/bootctl set-successful
+            ${pkgs.systemd}/lib/systemd/systemd-bless-boot --path=/boot good
           elif [ ! -e "$stable_path" ]; then
             echo "aos-image-boot-commit: neither a live counted nor stable UKI exists for $entry" >&2
             exit 1

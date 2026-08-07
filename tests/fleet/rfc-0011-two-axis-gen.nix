@@ -1,4 +1,4 @@
-# tests/fleet/rfc-0011-two-axis-gen.nix - RFC-0011 two-axis generations.
+# tests/fleet/rfc-0011-two-axis-gen.nix - two-axis generations.
 #
 # Exercises the production image publisher, A/B stage and boot path, first-boot
 # evaluation, live configuration activation, and rollback porcelain. The two
@@ -359,7 +359,7 @@ in {
           ${pkgs.aos}/bin/apr --json publish '${abi2Top}' \
             --name aos \
             --version 9999.0.0-rfc0011-abi2 \
-            --description 'RFC-0011 two-axis ABI fixture' \
+            --description 'Two-axis ABI fixture' \
             --license MIT \
             --maintainer test \
             --sysroot \
@@ -371,7 +371,7 @@ in {
           ${pkgs.aos}/bin/apr publish '${abi1OnlyConfig}' \
             --name rfc0011-abi1-config \
             --version 0 \
-            --description 'RFC-0011 ABI-1-only config module fixture' \
+            --description 'ABI-1-only config module fixture' \
             --license MIT \
             --maintainer test \
             --config-module '${abi1OnlyConfig.config}' \
@@ -412,7 +412,7 @@ in {
           git -C "$REG_DIR" add -A
           git -C "$REG_DIR" \
             -c gpg.format=ssh -c user.signingkey="$KEY" \
-            commit -S -m 'publish: RFC-0011 ABI fixtures'
+            commit -S -m 'publish: configuration ABI fixtures'
           mkdir -p /var/lib/sysreg-cache
           {APR} release 1.0.0 \
             --registry sysreg \

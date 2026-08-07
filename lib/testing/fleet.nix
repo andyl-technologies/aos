@@ -144,6 +144,22 @@
   }: let
     agentPackage = config.aos.packages.aos-test-agent.package or pkgs.aos-test-agent;
     agentPath = "${agentPackage}/share/aos-test-agent/aos-test-agent";
+    runtimeAgentUnit = pkgs.writeTextFile {
+      name = "aos-fleet-test-agent-runtime-unit";
+      destination = "/aos-test-agent.service";
+      text = ''
+        [Unit]
+        Description=AOS VM Test Guest Agent
+        RefuseManualStop=true
+
+        [Service]
+        Type=simple
+        ExecStart=${agentPath}
+        Restart=on-failure
+        RestartSec=1
+        Environment=PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin
+      '';
+    };
   in {
     # Fleet machines are driven through the guest agent (virtio-serial), never
     # an interactive serial console. The debug profile's initrd serial debug
@@ -196,16 +212,25 @@
       };
 
     systemd.services = lib.optionalAttrs bakeAgentUnit {
-      "aos-test-agent" = {
-        description = "AOS VM Test Guest Agent";
+      "aos-test-agent-bootstrap" = {
+        description = "Install the AOS VM test control channel";
         wantedBy = ["multi-user.target"];
+        before = ["aos-eval.service"];
+        stopOnRemoval = false;
+        unitConfig.RefuseManualStop = true;
         serviceConfig = {
-          Type = "simple";
-          ExecStart = agentPath;
-          Restart = "on-failure";
-          RestartSec = 1;
-          Environment = "PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
+          Type = "oneshot";
         };
+        # Configuration generations replace /etc, so the control channel used
+        # to drive and inspect that replacement must not live there. Install
+        # the long-running unit in systemd's runtime namespace instead.
+        script = ''
+          ${pkgs.coreutils}/bin/mkdir -p /run/systemd/system
+          ${pkgs.coreutils}/bin/ln -sfn ${runtimeAgentUnit}/aos-test-agent.service \
+            /run/systemd/system/aos-test-agent.service
+          ${pkgs.systemd}/bin/systemctl daemon-reload
+          ${pkgs.systemd}/bin/systemctl start aos-test-agent.service
+        '';
       };
     };
   };
@@ -225,6 +250,14 @@
             bakeAgentUnit = !m.bakesAgent;
           })
         ]
+        # A baked-/var kernel machine already carries the fleet control agent
+        # as test infrastructure. Do not also activate the exposed
+        # aos-test-agent package: both own aos-test-agent.service, and starting
+        # the package target while multi-user.target is bringing up the baked
+        # harness creates an unresolvable ordering cycle.
+        ++ lib.optional (m.bakesAgent && m.system.config.aos.packages ? aos-test-agent) {
+          aos.packages.aos-test-agent.bundle = lib.mkForce false;
+        }
         ++ m.extraModules;
     };
 
@@ -318,6 +351,7 @@
     # — including the per-machine `packages` enum-against-`config.aos.packages`.
     inherit (spec) name testScript timeout machines;
     bootTimeout = spec.bootTimeout or null;
+    systemReadyTimeout = spec.systemReadyTimeout or null;
 
     machinesWithIndex = mkMachinesWithIndex machines;
     hostsEntries = mkHostsEntries machinesWithIndex;
@@ -334,6 +368,9 @@
         inherit name timeout;
       }
       // (lib.optionalAttrs (bootTimeout != null) {boot_timeout = bootTimeout;})
+      // (lib.optionalAttrs (systemReadyTimeout != null) {
+        system_ready_timeout = systemReadyTimeout;
+      })
       // {
         machines =
           builtins.map (

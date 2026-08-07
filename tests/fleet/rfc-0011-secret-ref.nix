@@ -39,7 +39,7 @@ in {
     extraModules = [
       {
         systemd.services.rfc0011-system-credential = {
-          description = "Provide the RFC-0011 platform system credential";
+          description = "Provide the platform system credential";
           wantedBy = ["sysinit.target"];
           before = ["aos-eval.service"];
           serviceConfig = {
@@ -178,7 +178,7 @@ in {
           ${pkgs.aos}/bin/apr publish '${pkgs.aos-rfc0011-secret}' \
             --name aos-rfc0011-secret \
             --version 1.0.0 \
-            --description 'RFC-0011 secret reference fixture' \
+            --description 'Secret reference fixture' \
             --license MIT \
             --maintainer test \
             --expose-manifest '${pkgs.aos-rfc0011-secret.expose}/manifest.json' \

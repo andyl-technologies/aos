@@ -201,6 +201,8 @@
       ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
       UKI_PATH = "${ukiA}/${ukiAStoreFilename}";
       UKI_B_PATH = "${ukiB}/${ukiBStoreFilename}";
+      UKI_MEASUREMENT_PATH = "${ukiA}/${ukiAStoreFilename}.measurement";
+      UKI_MEASUREMENT_SIG_PATH = "${ukiA}/${ukiAStoreFilename}.measurement.sig";
       SDBOOT_DIR = "${pkgs.systemd}/lib/systemd/boot/efi";
 
       # Secure Boot signing inputs (empty unless enabled). The UKI is
@@ -257,6 +259,12 @@
             # UKI auto-discovered by sd-boot from /EFI/Linux/. The ESP filename
             # carries the boot-counting tries suffix when enabled.
             cp "$UKI_PATH" esp/EFI/Linux/${espUkiFilename}
+            ${lib.optionalString sb.measuredBoot.enable ''
+              cp "$UKI_MEASUREMENT_PATH" \
+                esp/EFI/Linux/${espUkiFilename}.measurement
+              cp "$UKI_MEASUREMENT_SIG_PATH" \
+                esp/EFI/Linux/${espUkiFilename}.measurement.sig
+            ''}
 
             # sd-boot configuration. The `default aos-*.efi` glob is the
             # FIRST-INSTALL FALLBACK only: it picks the lexically-highest match.
@@ -281,8 +289,11 @@
             # Size the ESP to its contents (UKI + sd-boot) x2 — headroom for an
             # A/B sysupdate staging a second UKI — plus 32 MiB FAT overhead,
             # rounded up to MiB and floored at 128 MiB (FAT32 minimum comfort).
-            esp_content_kib=$(du -sk esp | cut -f1)
-            esp_mib=$(( (esp_content_kib * 2 + 32768) / 1024 + 1 ))
+            # Use apparent bytes rather than allocated blocks. UKIs may contain
+            # sparse padding between PE sections, but FAT must store every
+            # logical byte when the file is copied onto the ESP.
+            esp_content_bytes=$(du -sb esp | cut -f1)
+            esp_mib=$(( (esp_content_bytes * 2 + 33554432 + 1048575) / 1048576 ))
             if [ "$esp_mib" -lt 128 ]; then esp_mib=128; fi
             esp_bytes=$(( esp_mib * 1048576 ))
             esp_sectors=$(( esp_bytes / 512 ))

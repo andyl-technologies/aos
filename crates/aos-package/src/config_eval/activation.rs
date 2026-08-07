@@ -1,7 +1,7 @@
 //! Transactional activation of an evaluated host configuration.
 //!
-//! This module is the commit half of RFC-0011's stage-2 pipeline. Evaluation
-//! and package rendering are deliberately side-effect free; once the soft
+//! This module is the commit half of the on-host configuration pipeline.
+//! Evaluation and package rendering are deliberately side-effect free; once the soft
 //! fetch/render wing settles, [`activate_config`] re-projects the manifest onto
 //! the packages that actually materialized, creates or reuses a
 //! content-addressed configuration generation, invokes the image's atomic

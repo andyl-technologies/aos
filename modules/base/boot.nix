@@ -199,6 +199,11 @@ in {
       # UKI placement, so the guest must not attempt a runtime bootloader
       # update and leave systemd-boot-update.service failed.
       "systemd.mask=systemd-boot-update.service"
+      # The stock blessing service runs as soon as systemd considers boot
+      # complete. AOS instead keeps a counted image pending until
+      # host policy has evaluated, activated, and produced its attestation;
+      # aos-image-boot-commit performs that delayed blessing explicitly.
+      "systemd.mask=systemd-bless-boot.service"
     ];
 
     aos.boot.initrd.loadModules = lib.mkDefault (

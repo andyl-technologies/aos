@@ -2,7 +2,7 @@
 #
 # This gate has two independent halves:
 #
-# 1. Nix evaluates the migrated fixture through the RFC-0011 typed expose
+# 1. Nix evaluates the migrated fixture through the typed expose
 #    module and compares that projection to metadata emitted by the live legacy
 #    `_expose-renderer.nix` path.  This catches schema/default/action drift.
 # 2. `golden_config_artifact.rs` consumes the exact JSON projection pinned here

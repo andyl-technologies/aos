@@ -118,14 +118,86 @@ impl StockNixEvaluator {
             \x20   factsModules = {facts_modules};\n\
             \x20   structuredErrors = {structured_errors};\n\
             \x20 }};\n\
+            \x20 baselineSystem = baseLib.evalHostConfig {{\n\
+            \x20   operatorModules = [ ];\n\
+            \x20   packageModules = [ ];\n\
+            \x20   factsModules = [ ];\n\
+            \x20   structuredErrors = {structured_errors};\n\
+            \x20 }};\n\
+            \x20 candidate = system.config.system.build.configManifest;\n\
+            \x20 baseline = baselineSystem.config.system.build.configManifest;\n\
+            \x20 imageManifest = baseLib.imageManifest;\n\
+            \x20 listBy = keyOf: values: builtins.listToAttrs (builtins.map\n\
+            \x20   (value: {{ name = keyOf value; inherit value; }})\n\
+            \x20   values);\n\
+            \x20 candidateUsers = listBy (user: user.name) candidate.users;\n\
+            \x20 baselineUsers = listBy (user: user.name) baseline.users;\n\
+            \x20 imageUsers = listBy (user: user.name) imageManifest.users;\n\
+            \x20 presetKey = preset: \"${{preset.unit}}:${{preset.source}}\";\n\
+            \x20 candidatePresets = listBy presetKey candidate.presets;\n\
+            \x20 baselinePresets = listBy presetKey baseline.presets;\n\
+            \x20 imagePresets = listBy presetKey imageManifest.presets;\n\
+            \x20 candidateStorePaths = listBy (path: path) candidate.storePaths;\n\
+            \x20 imageStorePaths = listBy (path: path) imageManifest.storePaths;\n\
+            \x20 changedFromBaseline = name: baselineValues: candidateValues:\n\
+            \x20   let\n\
+            \x20     baselineHas = builtins.hasAttr name baselineValues;\n\
+            \x20     candidateHas = builtins.hasAttr name candidateValues;\n\
+            \x20   in baselineHas != candidateHas\n\
+            \x20      || (candidateHas && candidateValues.${{name}} != baselineValues.${{name}});\n\
+            \x20 mergeImageDefaults = imageValues: baselineValues: candidateValues:\n\
+            \x20   builtins.listToAttrs (builtins.concatMap\n\
+            \x20     (name:\n\
+            \x20       if changedFromBaseline name baselineValues candidateValues then\n\
+            \x20         if builtins.hasAttr name candidateValues\n\
+            \x20         then [ {{ inherit name; value = candidateValues.${{name}}; }} ]\n\
+            \x20         else [ ]\n\
+            \x20       else if builtins.hasAttr name imageValues then\n\
+            \x20         [ {{ inherit name; value = imageValues.${{name}}; }} ]\n\
+            \x20       else if builtins.hasAttr name candidateValues then\n\
+            \x20         [ {{ inherit name; value = candidateValues.${{name}}; }} ]\n\
+            \x20       else [ ])\n\
+            \x20     (builtins.attrNames (imageValues // baselineValues // candidateValues)));\n\
+            \x20 mergeOwners = imageValues: baselineValues: candidateValues:\n\
+            \x20   imageOwners: candidateOwners:\n\
+            \x20   builtins.mapAttrs\n\
+            \x20     (name: _:\n\
+            \x20       let\n\
+            \x20         changed = changedFromBaseline name baselineValues candidateValues;\n\
+            \x20         fromImage = !changed && builtins.hasAttr name imageValues;\n\
+            \x20         owner = if fromImage\n\
+            \x20           then imageOwners.${{name}} or \"@base\"\n\
+            \x20           else candidateOwners.${{name}} or \"@base\";\n\
+            \x20       in if !fromImage && changed && owner == \"@base\" then \"@host\" else owner)\n\
+            \x20     (mergeImageDefaults imageValues baselineValues candidateValues);\n\
+            \x20 mergedEtc = mergeImageDefaults imageManifest.etc baseline.etc candidate.etc;\n\
+            \x20 mergedUnits = mergeImageDefaults imageManifest.units baseline.units candidate.units;\n\
+            \x20 mergedJobScripts = mergeImageDefaults imageManifest.jobScripts baseline.jobScripts candidate.jobScripts;\n\
+            \x20 mergedUsers = mergeImageDefaults imageUsers baselineUsers candidateUsers;\n\
+            \x20 mergedPresets = mergeImageDefaults imagePresets baselinePresets candidatePresets;\n\
+            \x20 mergedStorePaths = imageStorePaths // candidateStorePaths;\n\
              in {{\n\
             \x20 optionWrites = system._optionWrites;\n\
-            \x20 manifest = system.config.system.build.configManifest // {{\n\
+            \x20 manifest = candidate // {{\n\
+            \x20   etc = mergedEtc;\n\
+            \x20   units = mergedUnits;\n\
+            \x20   jobScripts = mergedJobScripts;\n\
+            \x20   users = builtins.attrValues mergedUsers;\n\
+            \x20   presets = builtins.attrValues mergedPresets;\n\
+            \x20   storePaths = builtins.attrNames mergedStorePaths;\n\
+            \x20   ownership = candidate.ownership // {{\n\
+            \x20     etc = mergeOwners imageManifest.etc baseline.etc candidate.etc imageManifest.ownership.etc candidate.ownership.etc;\n\
+            \x20     units = mergeOwners imageManifest.units baseline.units candidate.units imageManifest.ownership.units candidate.ownership.units;\n\
+            \x20     jobScripts = mergeOwners imageManifest.jobScripts baseline.jobScripts candidate.jobScripts imageManifest.ownership.jobScripts candidate.ownership.jobScripts;\n\
+            \x20     users = mergeOwners imageUsers baselineUsers candidateUsers imageManifest.ownership.users candidate.ownership.users;\n\
+            \x20     presets = mergeOwners imagePresets baselinePresets candidatePresets imageManifest.ownership.presets candidate.ownership.presets;\n\
+            \x20     storePaths = imageManifest.ownership.storePaths // candidate.ownership.storePaths;\n\
+            \x20   }};\n\
             \x20   config = baseLib.lib.recursiveUpdate\n\
-            \x20     system.config.system.build.configManifest.config\n\
+            \x20     candidate.config\n\
             \x20     system.config.aos.apm.installAtBoot.config;\n\
             \x20   credentials = baseLib.lib.recursiveUpdate\n\
-            \x20     system.config.system.build.configManifest.credentials\n\
+            \x20     candidate.credentials\n\
             \x20     (baseLib.lib.recursiveUpdate\n\
             \x20       system.config.aos.apm.installAtBoot.credentials\n\
             \x20       (builtins.mapAttrs\n\
@@ -892,7 +964,10 @@ mod tests {
             ),
             "{text}"
         );
-        assert!(text.contains("manifest = system.config.system.build.configManifest"));
+        assert!(text.contains("manifest = candidate //"));
+        assert!(text.contains("baselineSystem = baseLib.evalHostConfig"));
+        assert!(text.contains("etc = mergedEtc"));
+        assert!(text.contains("mergeImageDefaults imageManifest.etc baseline.etc candidate.etc"));
         assert!(text.contains("installAtBoot.config"), "{text}");
         assert!(text.contains("installAtBoot.systemCredentials"), "{text}");
         assert!(
