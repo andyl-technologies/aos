@@ -248,6 +248,7 @@ pub(super) struct SaveRecordingLifecycleLoop {
     pub(super) quanta: u64,
     pub(super) event_log_events: u64,
     pub(super) retained_event_log: Vec<crucible::SchedulerEventLogEntry>,
+    selector_delay_quanta: u64,
 }
 
 #[cfg(any(test, feature = "test-double"))]
@@ -258,7 +259,14 @@ impl SaveRecordingLifecycleLoop {
             quanta: 0,
             event_log_events: 0,
             retained_event_log: Vec::new(),
+            selector_delay_quanta: 1,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_selector_delay_quanta(mut self, quanta: u64) -> Self {
+        self.selector_delay_quanta = quanta;
+        self
     }
 
     fn diagnostic_entry(
@@ -366,8 +374,10 @@ impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
         let diagnostic_sequence = loop_state.next_event_log_sequence();
         let diagnostic = loop_state.diagnostic_entry(diagnostic_sequence, frontier);
         loop_state.record_entry(&mut event_log_entries, diagnostic);
-        loop_state.record_scenario_guest_markers(frontier, &mut event_log_entries);
-        loop_state.record_scenario_assertion_events(&mut event_log_entries)?;
+        if loop_state.quanta > loop_state.selector_delay_quanta {
+            loop_state.record_scenario_guest_markers(frontier, &mut event_log_entries);
+            loop_state.record_scenario_assertion_events(&mut event_log_entries)?;
+        }
         let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
             at: frontier,
             order: Vec::new(),
@@ -394,7 +404,11 @@ impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
                 0,
                 loop_state.event_log_events,
             ),
-            scheduler_quiescence: Some(crucible::SchedulerQuiescence::default()),
+            scheduler_quiescence: if loop_state.quanta <= loop_state.selector_delay_quanta {
+                None
+            } else {
+                Some(crucible::SchedulerQuiescence::default())
+            },
         })
     });
 

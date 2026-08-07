@@ -86,6 +86,12 @@ mailbox at all.
   slow a single quantum is on a given host. *Gate:* `gate:control-responsive`.
   *Spec:* §1, §3; routes [INV-8].
 
+  A `continue` may cross `Running` and reach a breakpoint-induced `Paused` state
+  (or terminal `Stopped` state) before a streaming observer samples the mirror.
+  The streaming acknowledgement therefore accepts that later stable state only
+  when its state-transition sequence is newer than the pre-command snapshot; a
+  stale `Paused` mirror does not acknowledge `continue`.
+
 ---
 
 ## 2. The lifecycle state machine

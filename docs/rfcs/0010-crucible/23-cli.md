@@ -507,7 +507,18 @@ the oracle (07 §6) on export — a save that fails the oracle fails the command
 For `--at virtual-time`, the controller advances one acknowledged scheduler
 quantum at a time. It tolerates bounded zero-time boot quanta, rejects sustained
 stagnation or an overshooting boundary, and exports only when the observed
-frontier equals the requested coordinate exactly.
+frontier equals the requested coordinate exactly. `--max-virtual-time` is valid
+only for that boundary; supplying it with quiescence, property, or marker is a
+usage error. Quiescence, property, and marker saves install one-shot suspending
+breakpoints and continue across scheduler quanta until the requested evidence
+appears. Property selectors match the named assertion's `Violated` phase. A
+companion quiescence breakpoint bounds property and marker selectors: if the
+scenario becomes quiescent without the requested evidence, the command fails
+without exporting a handle. Breakpoint-firing coordinates are checked against
+the paused save boundary before materialization. Save-boundary observation uses
+the production backend completion window rather than the short streaming
+acknowledgement yield budget, so a valid long-running QEMU quantum cannot be
+misreported as a missing breakpoint.
 
 **Exit codes.** `0` = savepoint materialized, oracle-validated, and exported;
 `1` = the run hit a non-savepoint terminal outcome before `--at` (the outcome is
@@ -1154,8 +1165,11 @@ branch on the verdict without parsing output:
   local-double property saves through host assertion evaluation of
   scenario-declared properties, exercises marker saves through white-box
   scenario-declared guest marker sources, proves both selector classes with
-  suspending breakpoints plus breakpoint-firing proof, rejects wrong-marker and
-  no-source marker selectors, routes explicitly selected local-QEMU saves
+  suspending breakpoints plus breakpoint-firing proof, continues across
+  arbitrary non-quiescent scheduler quanta until selector evidence arrives,
+  bounds missing selectors with a companion quiescence breakpoint, rejects
+  irrelevant `--max-virtual-time` flags outside virtual-time saves, rejects
+  wrong-marker and no-source marker selectors, routes explicitly selected local-QEMU saves
   through the same create-savepoint/export/oracle workflow with resolved
   QEMU/plugin identity metadata, process-tests real-binary `save --backend qemu`
   JSONL output and handle export through marker-resolved QEMU/plugin identity,

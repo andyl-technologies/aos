@@ -139,7 +139,7 @@ option; it is not part of the shipped production interface.
 | `--at <virtual-time\|quiescence\|property\|marker>` | Required | Select the save boundary; see [boundary values](#terminal-and-save-boundary-values). |
 | `--label <name>` | Optional | Add a human-readable savepoint label. |
 | `--max-virtual-time <dur>` | Required with `--at virtual-time` | Exact virtual-time coordinate at which to save; stagnation and overshoot fail closed. |
-| `--property <assertion>` | Required with `--at property` | Assertion ID whose verdict supplies the boundary. |
+| `--property <assertion>` | Required with `--at property` | Assertion ID whose violated phase supplies the boundary. |
 | `--marker <name>` | Required with `--at marker` | Guest-marker ID whose observation supplies the boundary. |
 | `--out <path>` | Default below `--artifact-dir` | Select the exported savepoint-handle path. |
 
@@ -293,7 +293,7 @@ Debugger verbs:
 | --- | --- | --- |
 | `quiescence` | `run --until`, `resume --until`, `fork --until`, `save --at` | Stop when the scheduler has no immediately runnable work. This is the default terminal condition. |
 | `virtual-time` | `--until`, `save --at` | Stop at the positive `--max-virtual-time` duration. |
-| `property` | `--until`, `save --at` | Stop on a property verdict; `save` also requires `--property`. |
+| `property` | `--until`, `save --at` | Stop on a property verdict; `save` requires `--property` and selects that assertion's violated phase. |
 | `stopped` | `--until` only | Stop only after an explicit stopped state. |
 | `marker` | `save --at` only | Save after observing the named `--marker`. |
 

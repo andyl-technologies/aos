@@ -907,6 +907,11 @@ pub(crate) fn plan_save_invocation(
                     "save --at quiescence does not accept --property or --marker selectors",
                 ));
             }
+            if args.max_virtual_time.is_some() {
+                return Err(usage_error(
+                    "save --at quiescence does not accept --max-virtual-time",
+                ));
+            }
             RunUntilArg::Quiescence
         }
         SaveAtArg::VirtualTime => {

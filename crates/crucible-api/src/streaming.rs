@@ -14,8 +14,8 @@ use crucible::{
 };
 use crucible_session::{
     BreakpointId, CommandReply, LifecycleStateKind, LifecycleTransition, LiveQueryKind,
-    LiveSnapshot, LiveStateKind, QueryResult, SavepointInfo, SessionCommand, SessionCommandKind,
-    SessionError, SessionEventLogStream, SessionHandle, SessionReproductionLog,
+    LiveSnapshot, LiveSnapshotView, LiveStateKind, QueryResult, SavepointInfo, SessionCommand,
+    SessionCommandKind, SessionError, SessionEventLogStream, SessionHandle, SessionReproductionLog,
     SessionStateTransitionBus, SessionStateTransitionFrame, SessionStateTransitionStream,
     lifecycle_transition,
 };
@@ -1130,9 +1130,10 @@ async fn dispatch_command(
     command_id: u64,
     command: SessionCommand,
 ) -> Result<SendResponse, StreamingApiError> {
-    let before = live.read().state_kind;
+    let before = live.read();
+    let before_state = before.state_kind;
     let command_kind = SessionCommandKind::from(&command);
-    let transition = lifecycle_transition(lifecycle_state(before), command_kind);
+    let transition = lifecycle_transition(lifecycle_state(before_state), command_kind);
     if let LifecycleTransition::Rejected = transition {
         return Ok(SendResponse {
             result: CommandResult {
@@ -1171,11 +1172,18 @@ async fn dispatch_command(
     let state_update = match (transition, result.status) {
         (LifecycleTransition::Accepted { to }, CommandResultStatus::Accepted) => {
             let expected = live_state(to);
-            if expected == before {
+            if expected == before_state {
                 None
             } else {
                 let state = if command_requires_stable_state_ack(command_kind) {
-                    wait_for_streaming_state(live, command_kind, expected, max_actor_yields).await?
+                    wait_for_streaming_state(
+                        live,
+                        command_kind,
+                        expected,
+                        before.state_transition_sequence,
+                        max_actor_yields,
+                    )
+                    .await?
                 } else {
                     expected
                 };
@@ -1198,17 +1206,18 @@ async fn wait_for_streaming_state(
     live: &LiveSnapshot,
     command: SessionCommandKind,
     expected: LiveStateKind,
+    before_transition_sequence: u64,
     max_actor_yields: u64,
 ) -> Result<LiveStateKind, StreamingApiError> {
-    let observed = live.read().state_kind;
-    if streaming_state_satisfies_ack(command, expected, observed) {
-        return Ok(observed);
+    let observed = live.read();
+    if streaming_state_satisfies_ack(command, expected, &observed, before_transition_sequence) {
+        return Ok(observed.state_kind);
     }
     for _ in 0..max_actor_yields {
         tokio::task::yield_now().await;
-        let observed = live.read().state_kind;
-        if streaming_state_satisfies_ack(command, expected, observed) {
-            return Ok(observed);
+        let observed = live.read();
+        if streaming_state_satisfies_ack(command, expected, &observed, before_transition_sequence) {
+            return Ok(observed.state_kind);
         }
     }
     Err(StreamingApiError::StateDidNotAdvance { command, expected })
@@ -1217,17 +1226,18 @@ async fn wait_for_streaming_state(
 fn streaming_state_satisfies_ack(
     command: SessionCommandKind,
     expected: LiveStateKind,
-    observed: LiveStateKind,
+    observed: &LiveSnapshotView,
+    before_transition_sequence: u64,
 ) -> bool {
-    observed == expected
-        || matches!(
-            (command, expected, observed),
+    observed.state_kind == expected
+        || (matches!(
+            (command, expected, observed.state_kind),
             (
                 SessionCommandKind::Continue,
                 LiveStateKind::Running,
-                LiveStateKind::Stopped
+                LiveStateKind::Paused | LiveStateKind::Stopped
             )
-        )
+        ) && observed.state_transition_sequence > before_transition_sequence)
 }
 
 const fn command_requires_stable_state_ack(command: SessionCommandKind) -> bool {
@@ -1298,5 +1308,38 @@ fn require_send_mapping() -> Result<(), StreamingEquivalenceError> {
         None => Err(StreamingEquivalenceError::MissingMethod {
             method: ApiMethod::Send,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn continue_acknowledges_an_immediate_breakpoint_pause() {
+        let mut observed = LiveSnapshotView {
+            state_kind: LiveStateKind::Paused,
+            outcome: None,
+            terminal_savepoint: None,
+            configuration: crucible::ContentHash::default(),
+            virtual_time: crucible::VirtualTime::default(),
+            event_log_len: 0,
+            quanta_stepped: 0,
+            control_acknowledgements: 0,
+            state_transition_sequence: 7,
+        };
+        assert!(!streaming_state_satisfies_ack(
+            SessionCommandKind::Continue,
+            LiveStateKind::Running,
+            &observed,
+            7,
+        ));
+        observed.state_transition_sequence = 9;
+        assert!(streaming_state_satisfies_ack(
+            SessionCommandKind::Continue,
+            LiveStateKind::Running,
+            &observed,
+            7,
+        ));
     }
 }
