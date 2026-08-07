@@ -183,6 +183,54 @@ impl ApiClient {
         Ok(())
     }
 
+    /// Uploads cache-object bytes to a server-issued direct or Hub-proxy URL.
+    ///
+    /// A bearer is attached only to typed same-origin proxy URLs. Direct-origin
+    /// capabilities retain their query signature and never receive Hub
+    /// credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the URL is not an HTTP(S) upload capability, the
+    /// request fails, or the upload endpoint rejects the bytes.
+    pub(crate) async fn put_cache_object(
+        &self,
+        upload_url: &str,
+        body: &web_sys::Blob,
+    ) -> Result<Option<aos_proto_types::CacheMultipartPart>, TransportError> {
+        let (same_origin, expects_part) = validate_cache_upload_url(upload_url)?;
+        let bearer = same_origin.then(|| self.session_guard().access_token.clone());
+        let (mut status, mut response) =
+            send_cache_upload(upload_url, bearer.as_deref(), body).await?;
+        if same_origin && status == 401 {
+            let refreshed = exchange_browser_session(&self.csrf).await?;
+            let bearer = refreshed.access_token.clone();
+            *self.session_guard() = refreshed;
+            (status, response) = send_cache_upload(upload_url, Some(&bearer), body).await?;
+        }
+        if same_origin && status == 401 {
+            redirect_to_login()?;
+            return Err(TransportError::SessionExpired);
+        }
+        if !(200..300).contains(&status) {
+            return Err(TransportError::Http {
+                status,
+                detail: bounded_detail(&response),
+            });
+        }
+        if !expects_part {
+            return Ok(None);
+        }
+        if response.trim().is_empty() {
+            return Err(TransportError::Json(
+                "multipart upload omitted its part receipt".to_string(),
+            ));
+        }
+        serde_json::from_str(&response)
+            .map(Some)
+            .map_err(|error| TransportError::Json(error.to_string()))
+    }
+
     fn session_guard(&self) -> MutexGuard<'_, aos_proto_types::BrowserSessionTokenResponse> {
         match self.session.lock() {
             Ok(guard) => guard,
@@ -265,6 +313,63 @@ async fn send_publication_upload(
         .await
         .map_err(|error| TransportError::Request(error.to_string()))?;
     Ok(response.status())
+}
+
+async fn send_cache_upload(
+    upload_url: &str,
+    bearer: Option<&str>,
+    body: &web_sys::Blob,
+) -> Result<(u16, String), TransportError> {
+    let mut request = Request::put(upload_url).header("content-type", "application/octet-stream");
+    if let Some(bearer) = bearer {
+        request = request.header("authorization", &format!("Bearer {bearer}"));
+    }
+    let response = request
+        .body(body.clone())
+        .map_err(|error| TransportError::Request(error.to_string()))?
+        .send()
+        .await
+        .map_err(|error| TransportError::Request(error.to_string()))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| TransportError::Response(error.to_string()))?;
+    Ok((status, body))
+}
+
+fn validate_cache_upload_url(upload_url: &str) -> Result<(bool, bool), TransportError> {
+    let parsed =
+        leptos::web_sys::Url::new(upload_url).map_err(|_| TransportError::InvalidUploadUrl)?;
+    if !matches!(parsed.protocol().as_str(), "http:" | "https:")
+        || !parsed.username().is_empty()
+        || !parsed.password().is_empty()
+        || !parsed.hash().is_empty()
+    {
+        return Err(TransportError::InvalidUploadUrl);
+    }
+    let origin = leptos::web_sys::window()
+        .and_then(|window| window.location().origin().ok())
+        .ok_or(TransportError::InvalidUploadUrl)?;
+    if parsed.origin() != origin {
+        return Ok((false, false));
+    }
+    let path = parsed.pathname();
+    let object_prefix = "/aos.hub.v1.BinaryCacheService/UploadObject/";
+    let part_prefix = "/aos.hub.v1.BinaryCacheService/UploadPart/";
+    let is_object = path
+        .strip_prefix(object_prefix)
+        .is_some_and(|suffix| !suffix.is_empty());
+    let is_part = path
+        .strip_prefix(part_prefix)
+        .is_some_and(|suffix| !suffix.is_empty());
+    if is_object || is_part {
+        if !parsed.search().is_empty() {
+            return Err(TransportError::InvalidUploadUrl);
+        }
+        return Ok((true, is_part));
+    }
+    Ok((false, false))
 }
 
 fn validate_publication_upload_url(upload_url: &str) -> Result<(), TransportError> {

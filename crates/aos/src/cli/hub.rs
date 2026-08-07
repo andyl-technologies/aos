@@ -988,6 +988,9 @@ pub enum HubSurfaceCmd {
         url: String,
         #[arg(long)]
         path: Option<String>,
+        /// Select the route capability to explain
+        #[arg(long, value_parser = ["web", "git", "nix_cache"], default_value = "web")]
+        access_class: String,
     },
 }
 
@@ -2764,7 +2767,7 @@ mod tests {
         HubInvitationCmd, HubInvitationCreateCmd, HubNetworkBoundaryCmd, HubOperationCmd,
         HubOrgCmd, HubOrganizationDomainCmd, HubOrganizationDomainVerifyCmd, HubPlacementCmd,
         HubPlacementDrainCmd, HubRegistryCacheStackCmd, HubRegistryCmd, HubRouteCmd,
-        HubServiceAccountCmd, HubServiceAccountUpdateCmd, HubStorageBindingCmd,
+        HubServiceAccountCmd, HubServiceAccountUpdateCmd, HubStorageBindingCmd, HubSurfaceCmd,
     };
 
     fn parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
@@ -2914,6 +2917,46 @@ mod tests {
     }
 
     #[test]
+    fn surface_explain_requires_a_supported_access_class() {
+        let cli = parse_cli([
+            "aos",
+            "hub",
+            "surface",
+            "explain",
+            "cache:andyl/nix",
+            "--url",
+            "https://cache.example/nar/object.nar.zst",
+            "--access-class",
+            "nix_cache",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Hub {
+                command:
+                    HubCmd::Surface {
+                        command: HubSurfaceCmd::Explain { access_class, .. },
+                    },
+            } => assert_eq!(access_class, "nix_cache"),
+            _ => panic!("unexpected command shape"),
+        }
+
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "surface",
+                "explain",
+                "cache:andyl/nix",
+                "--url",
+                "https://cache.example",
+                "--access-class",
+                "smtp",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
     fn non_interactive_confirmation_requires_a_reviewed_plan() {
         let error = parse_cli([
             "aos",
@@ -3027,17 +3070,19 @@ mod tests {
                 }
             }
         ));
-        assert!(parse_cli([
-            "aos",
-            "hub",
-            "binding",
-            "list",
-            "--hub",
-            "https://aos.example",
-            "--org",
-            "andyl",
-        ])
-        .is_err());
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "binding",
+                "list",
+                "--hub",
+                "https://aos.example",
+                "--org",
+                "andyl",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -3107,19 +3152,21 @@ mod tests {
 
     #[test]
     fn boundary_activation_requires_an_explicit_default_choice() {
-        assert!(parse_cli([
-            "aos",
-            "hub",
-            "network-boundary",
-            "revision",
-            "activate",
-            "--hub",
-            "https://aos.example",
-            "corp@2",
-            "--mode",
-            "overlap",
-        ])
-        .is_err());
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "network-boundary",
+                "revision",
+                "activate",
+                "--hub",
+                "https://aos.example",
+                "corp@2",
+                "--mode",
+                "overlap",
+            ])
+            .is_err()
+        );
         let parsed = parse_cli([
             "aos",
             "hub",
@@ -3231,21 +3278,23 @@ mod tests {
                 }
             }
         ));
-        assert!(parse_cli([
-            "aos",
-            "hub",
-            "registry",
-            "cache-stack",
-            "add",
-            "andyl/main",
-            "--hub",
-            "https://aos.example",
-            "--cache",
-            "nix",
-            "--url",
-            "https://cache.example",
-        ])
-        .is_err());
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "registry",
+                "cache-stack",
+                "add",
+                "andyl/main",
+                "--hub",
+                "https://aos.example",
+                "--cache",
+                "nix",
+                "--url",
+                "https://cache.example",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -3506,17 +3555,19 @@ mod tests {
         ));
 
         assert!(parse_cli(["aos", "hub", "operation", "list", "registry:andyl/main"]).is_err());
-        assert!(parse_cli([
-            "aos",
-            "hub",
-            "operation",
-            "list",
-            "--target",
-            "registry:andyl/main",
-            "--scope",
-            "instance",
-        ])
-        .is_err());
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "operation",
+                "list",
+                "--target",
+                "registry:andyl/main",
+                "--scope",
+                "instance",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

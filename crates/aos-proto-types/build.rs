@@ -566,6 +566,7 @@ fn verify_checked_capability_manifest(generated: &[ConnectMethod]) -> BuildResul
     }
 
     verify_http_capabilities(&manifest)?;
+    let console_source = checked_console_source()?;
     let services = checked_array(&manifest, "services")?;
     let mut classified = BTreeSet::new();
     let mut service_names = BTreeSet::new();
@@ -641,6 +642,9 @@ fn verify_checked_capability_manifest(generated: &[ConnectMethod]) -> BuildResul
                 }
             }
         }
+        if matches!(audience, "end-user" | "public") {
+            verify_web_method_coverage(service, service_name, &service_methods, &console_source)?;
+        }
     }
 
     let generated = generated
@@ -653,6 +657,79 @@ fn verify_checked_capability_manifest(generated: &[ConnectMethod]) -> BuildResul
         return Err(failure(format!(
             "checked Hub capability manifest differs from the descriptor; missing {missing:?}, extra {extra:?}"
         )));
+    }
+    Ok(())
+}
+
+fn checked_console_source() -> BuildResult<String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../aos-hub-console/src");
+    let mut paths = Vec::new();
+    collect_rust_sources(&root, &mut paths)?;
+    paths.sort();
+
+    let mut source = String::new();
+    for path in paths {
+        println!("cargo:rerun-if-changed={}", path.display());
+        source.push_str(&std::fs::read_to_string(path)?);
+        source.push('\n');
+    }
+    Ok(source)
+}
+
+fn collect_rust_sources(directory: &Path, paths: &mut Vec<PathBuf>) -> BuildResult<()> {
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_rust_sources(&path, paths)?;
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            paths.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn verify_web_method_coverage(
+    service: &serde_json::Value,
+    service_name: &str,
+    methods: &BTreeSet<&str>,
+    console_source: &str,
+) -> BuildResult<()> {
+    let exceptions = service
+        .get("web_method_exceptions")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut exception_methods = BTreeSet::new();
+    for exception in exceptions {
+        let method = checked_string(exception, "method")?;
+        let reason = checked_string(exception, "reason")?;
+        if reason.trim().is_empty()
+            || !methods.contains(method)
+            || !exception_methods.insert(method)
+        {
+            return Err(failure(format!(
+                "invalid Web method exception for {service_name}/{method}"
+            )));
+        }
+    }
+
+    for method in methods {
+        let constant = rust_constant_identifier(&format!("{service_name}_{method}_PATH"));
+        let is_used = console_source.contains(&constant);
+        let is_excepted = exception_methods.contains(method);
+        match (is_used, is_excepted) {
+            (false, false) => {
+                return Err(failure(format!(
+                    "end-user capability {service_name}/{method} has no browser client call or documented Web exception"
+                )));
+            }
+            (true, true) => {
+                return Err(failure(format!(
+                    "stale Web method exception for {service_name}/{method}"
+                )));
+            }
+            _ => {}
+        }
     }
     Ok(())
 }

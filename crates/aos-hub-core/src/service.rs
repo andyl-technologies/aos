@@ -12327,24 +12327,6 @@ impl RpcService {
         })
     }
 
-    /// Returns the instance-default storage binding.
-    pub async fn get_instance_default_storage_binding(
-        &self,
-        auth: Option<&str>,
-        _req: pb::GetInstanceTopologyDefaultsRequest,
-    ) -> Result<pb::GetStorageBindingResponse, RpcError> {
-        self.readable_storage_owner(auth, "instance").await?;
-        let record = self
-            .db
-            .instance_default_binding()
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("instance default storage binding"))?;
-        Ok(pb::GetStorageBindingResponse {
-            storage_binding: Some(self.storage_binding_message(record).await?),
-        })
-    }
-
     /// `StorageBindingService.PlanCreateStorageBinding` persists an immutable create plan.
     ///
     /// # Errors
@@ -32276,16 +32258,13 @@ impl RpcService {
         let cache = self.binary_cache_or_not_found(cache_slug).await?;
         self.require_cache_permission(auth, &cache, Permission::CacheGcExecute)
             .await?;
-        let placement_id = req
-            .placement_id
-            .parse::<i64>()
-            .map_err(|_| RpcError::invalid("placement_id must be an integer"))?;
         let placement = self
             .db
-            .surface_placement(placement_id)
+            .list_surface_placements(SurfaceTarget::BinaryCache(cache.id))
             .await
             .map_err(RpcError::internal)?
-            .filter(|placement| placement.cache_id == Some(cache.id))
+            .into_iter()
+            .find(|placement| placement.name == req.placement_name)
             .ok_or_else(|| RpcError::not_found("cache placement"))?;
         if req
             .expected_resource_version
@@ -32363,17 +32342,15 @@ impl RpcService {
         let cache = self.binary_cache_or_not_found(cache_slug).await?;
         self.require_cache_permission(auth, &cache, Permission::CacheGcExecute)
             .await?;
-        let placement_id = planned
-            .placement_id
-            .parse::<i64>()
-            .map_err(|_| RpcError::invalid("placement_id must be an integer"))?;
         let placement = self
             .db
-            .surface_placement(placement_id)
+            .list_surface_placements(SurfaceTarget::BinaryCache(cache.id))
             .await
             .map_err(RpcError::internal)?
-            .filter(|placement| placement.cache_id == Some(cache.id))
+            .into_iter()
+            .find(|placement| placement.name == planned.placement_name)
             .ok_or_else(|| RpcError::not_found("cache placement"))?;
+        let placement_id = placement.id;
         let expected_version = planned
             .expected_resource_version
             .as_deref()
@@ -32432,7 +32409,7 @@ impl RpcService {
                     },
                 ],
                 detail_json: serde_json::json!({
-                    "placementId": planned.placement_id,
+                    "placementName": planned.placement_name,
                     "desiredState": "draining"
                 })
                 .to_string(),
