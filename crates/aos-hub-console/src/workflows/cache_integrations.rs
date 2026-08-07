@@ -17,6 +17,7 @@ use super::cache_objects::CacheObjects;
 use super::cache_population::CachePopulation;
 use super::cache_retention::CacheRetentionWorkflow;
 use super::cache_stack::RegistryCacheStack;
+use super::operations::{OperationSurface, OperationsWorkflow};
 use super::organization_activity::OrganizationActivity;
 use super::registry_catalog::RegistryCatalog;
 use super::registry_configuration::RegistryConfiguration;
@@ -30,6 +31,37 @@ use super::signing_keys::{SigningKeyTarget, SigningKeyWorkflow};
 #[component]
 pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
     match (&route.scope, route.page.key) {
+        (ConsoleScope::Instance, "operations") => view! {
+            <OperationsWorkflow client=client surface=OperationSurface::Instance/>
+        }
+        .into_any(),
+        (ConsoleScope::Organization { slug }, "operations") => view! {
+            <OperationsWorkflow
+                client=client
+                surface=OperationSurface::Organization(slug.clone())
+            />
+        }
+        .into_any(),
+        (ConsoleScope::Registry { path }, "operations") => view! {
+            <OperationsWorkflow
+                client=client
+                surface=OperationSurface::Registry(path.clone())
+            />
+        }
+        .into_any(),
+        (
+            ConsoleScope::Cache {
+                organization,
+                cache,
+            },
+            "operations",
+        ) => view! {
+            <OperationsWorkflow
+                client=client
+                surface=OperationSurface::Cache(format!("{organization}/{cache}"))
+            />
+        }
+        .into_any(),
         (ConsoleScope::Registry { path }, "caches") => view! {
             <RegistryCacheStack client=client registry_id=path.clone()/>
         }

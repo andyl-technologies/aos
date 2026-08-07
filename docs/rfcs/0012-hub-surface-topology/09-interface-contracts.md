@@ -1631,14 +1631,33 @@ Operations expose progress, item/byte counts, current phase, warnings, and
 terminal error details. Cancellation is best-effort and leaves topology in a
 documented resumable state.
 
-`ListOperations` takes the same closed typed resource oneof returned in each
-operation's immutable target list; it does not accept a free-form
-`targetKind`/`targetId` pair. The CLI expresses this as one required qualified
-argument such as `registry:andyl/main`, `cache:andyl/shared`,
-`domain:<stable-id>`, or `route:<stable-id>`. Only the operation's `primary`
-target participates in resource listing and authorization; source,
-destination, policy, and generation targets remain visible in the operation
-detail without making the operation appear in several unrelated inventories.
+`ListOperations` accepts exactly one of two selectors:
+
+- the same closed typed resource oneof returned in each operation's immutable
+  target list; or
+- an immutable `authorization_scope_key`, which includes operations owned by
+  that scope and every descendant in the validated authorization closure.
+
+It does not accept a free-form `targetKind`/`targetId` pair. Target inventory
+requires that resource's read permission. Scope inventory requires
+`audit.read` on the requested scope. Page tokens are bound to the exact
+selector and state filter, and a cursor from a sibling scope is rejected.
+
+The CLI expresses these modes as mutually exclusive `--target KIND:ID` and
+`--scope SCOPE` flags. Examples include `--target registry:andyl/main`,
+`--target domain:<stable-id>`, and `--scope org:<immutable-id>`. There is no
+positional or legacy target form. Only the operation's `primary` target
+participates in exact-target listing. Source, destination, policy, and
+generation targets remain visible in operation detail without making the
+operation appear in several unrelated exact-target inventories.
+
+The Web UI always resolves its mutable route locator through the typed resource
+API and lists by the returned immutable scope. Instance and organization pages
+therefore aggregate descendant work; registry and cache pages use the same
+scope model so operations on subordinate topology are not omitted. Each card
+shows progress, exact target-generation snapshots, error detail, and resource
+version. Cancel and retry require an explicit confirmation and send the exact
+displayed version as the optimistic-concurrency fence.
 
 ### Events and audit
 

@@ -533,12 +533,26 @@ pub enum HubOperationCmd {
         access: HubAccessArgs,
         operation_id: String,
     },
-    /// List operations for one typed target
+    /// List operations for one target or authorization scope
     List {
         #[command(flatten)]
         access: HubAccessArgs,
         /// Qualified target, for example registry:andyl/main or cache:andyl/shared
-        target: String,
+        #[arg(
+            long,
+            value_name = "KIND:ID",
+            conflicts_with = "scope",
+            required_unless_present = "scope"
+        )]
+        target: Option<String>,
+        /// Immutable scope, including all descendant-owned operations
+        #[arg(
+            long,
+            value_name = "SCOPE",
+            conflicts_with = "target",
+            required_unless_present = "target"
+        )]
+        scope: Option<String>,
         #[arg(long)]
         state: Option<String>,
         #[command(flatten)]
@@ -2736,8 +2750,8 @@ mod tests {
     use crate::cli::{
         Cli, Commands, HubAccessTokenCmd, HubAccessTokenIssueCmd, HubCacheCmd,
         HubCacheRetentionCmd, HubCmd, HubIdentityProviderCmd, HubIdentityProviderSetCmd,
-        HubInvitationCmd, HubInvitationCreateCmd, HubNetworkBoundaryCmd, HubOrgCmd,
-        HubOrganizationDomainCmd, HubOrganizationDomainVerifyCmd, HubPlacementCmd,
+        HubInvitationCmd, HubInvitationCreateCmd, HubNetworkBoundaryCmd, HubOperationCmd,
+        HubOrgCmd, HubOrganizationDomainCmd, HubOrganizationDomainVerifyCmd, HubPlacementCmd,
         HubPlacementDrainCmd, HubRegistryCacheStackCmd, HubRegistryCmd, HubRouteCmd,
         HubServiceAccountCmd, HubServiceAccountUpdateCmd, HubStorageBindingCmd,
     };
@@ -3432,6 +3446,66 @@ mod tests {
             }
         ));
         assert!(parse_cli(["aos", "hub", "org", "sso"]).is_err());
+    }
+
+    #[test]
+    fn operation_inventory_requires_one_explicit_selector() {
+        let target = parse_cli([
+            "aos",
+            "hub",
+            "operation",
+            "list",
+            "--target",
+            "registry:andyl/main",
+        ])
+        .unwrap();
+        assert!(matches!(
+            target.command,
+            Commands::Hub {
+                command: HubCmd::Operation {
+                    command: HubOperationCmd::List {
+                        target: Some(_),
+                        scope: None,
+                        ..
+                    }
+                }
+            }
+        ));
+
+        let scope = parse_cli([
+            "aos",
+            "hub",
+            "operation",
+            "list",
+            "--scope",
+            "org:0123456789abcdef0123456789abcdef",
+        ])
+        .unwrap();
+        assert!(matches!(
+            scope.command,
+            Commands::Hub {
+                command: HubCmd::Operation {
+                    command: HubOperationCmd::List {
+                        target: None,
+                        scope: Some(_),
+                        ..
+                    }
+                }
+            }
+        ));
+
+        assert!(parse_cli(["aos", "hub", "operation", "list", "registry:andyl/main"]).is_err());
+        assert!(parse_cli([
+            "aos",
+            "hub",
+            "operation",
+            "list",
+            "--target",
+            "registry:andyl/main",
+            "--scope",
+            "instance",
+        ])
+        .is_err());
     }
 
     #[test]

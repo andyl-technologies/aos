@@ -2664,6 +2664,7 @@ async fn operation(printer: &Printer, command: &HubOperationCmd) -> Result<()> {
         HubOperationCmd::List {
             access,
             target,
+            scope,
             state,
             pagination,
         } => {
@@ -2673,10 +2674,11 @@ async fn operation(printer: &Printer, command: &HubOperationCmd) -> Result<()> {
                 &client,
                 HubTopologyMethod::ListOperations,
                 &hub_types::ListOperationsRequest {
-                    target: Some(operation_list_target(target)?),
+                    target: target.as_deref().map(operation_list_target).transpose()?,
                     state: state.clone().unwrap_or_default(),
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
+                    authorization_scope_key: scope.clone().unwrap_or_default(),
                 },
             )
             .await

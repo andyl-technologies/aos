@@ -376,6 +376,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("invitation_lifecycle.sql"),
     include_str!("identity_control.sql"),
     include_str!("identity_incarnation.sql"),
+    include_str!("operation_scope_inventory.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -10063,6 +10064,100 @@ impl Database {
         } else {
             None
         };
+        Ok(TopologyOperationPage {
+            records,
+            next_cursor,
+        })
+    }
+
+    /// Lists operations owned by a scope or any of its descendants.
+    ///
+    /// The inventory is ordered newest first with a stable operation-id
+    /// tiebreaker. The cursor is accepted only when its operation belongs to
+    /// the same scope closure and state filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, an invalid state, or a cursor
+    /// that does not belong to the requested inventory.
+    pub async fn list_scope_topology_operations_page(
+        &self,
+        authorization_scope_key: &str,
+        state: Option<&str>,
+        page_size: u32,
+        after_operation_id: Option<&str>,
+    ) -> Result<TopologyOperationPage> {
+        let state = state.unwrap_or("");
+        if !state.is_empty()
+            && !matches!(
+                state,
+                "pending" | "running" | "succeeded" | "failed" | "cancelled"
+            )
+        {
+            bail!("invalid operation state filter '{state}'");
+        }
+
+        let after_created_at = if let Some(cursor) = after_operation_id {
+            validate_key_bytes(cursor, "operation page token", 64)?;
+            Some(
+                self.backend
+                    .query_opt(
+                        "SELECT o.created_at
+                           FROM topology_operations o
+                           JOIN authorization_scope_ancestors ancestry
+                             ON ancestry.descendant_scope_key = o.authorization_scope_key
+                          WHERE o.operation_id = ?1
+                            AND ancestry.ancestor_scope_key = ?2
+                            AND (?3 = '' OR o.state = ?3)",
+                        &vals![cursor, authorization_scope_key, state],
+                    )
+                    .await?
+                    .context("operation page token does not belong to this inventory")?
+                    .get::<i64>(0)?,
+            )
+        } else {
+            None
+        };
+        let limit = if page_size == 0 {
+            100_i64
+        } else {
+            i64::from(page_size.min(500))
+        };
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {OPERATION_COLUMNS}
+                       FROM topology_operations o
+                       JOIN authorization_scope_ancestors ancestry
+                         ON ancestry.descendant_scope_key = o.authorization_scope_key
+                      WHERE ancestry.ancestor_scope_key = ?1
+                        AND (?2 = '' OR o.state = ?2)
+                        AND (?3 IS NULL OR o.created_at < ?3
+                          OR (o.created_at = ?3 AND o.operation_id > ?4))
+                      ORDER BY o.created_at DESC, o.operation_id
+                      LIMIT ?5"
+                ),
+                &vals![
+                    authorization_scope_key,
+                    state,
+                    after_created_at,
+                    after_operation_id,
+                    limit + 1
+                ],
+            )
+            .await?;
+        let mut records = rows
+            .iter()
+            .map(row_to_topology_operation)
+            .collect::<Result<Vec<_>>>()?;
+        let next_cursor = if records.len() > limit as usize {
+            records.pop();
+            records.last().map(|record| record.operation_id.clone())
+        } else {
+            None
+        };
+
         Ok(TopologyOperationPage {
             records,
             next_cursor,
@@ -24950,6 +25045,104 @@ source_nar_hash = ""
         assert_eq!(replay.resource_version, first.resource_version);
         assert!(db
             .mutate_topology_operation("retry-op", 3, "cancel", "retry-key")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn scope_operation_inventory_includes_only_descendant_scopes() {
+        let db = Database::open_in_memory().await.unwrap();
+        let acme_id = db
+            .create_org("acme-operations", "Acme Operations")
+            .await
+            .unwrap();
+        let other_id = db
+            .create_org("other-operations", "Other Operations")
+            .await
+            .unwrap();
+        let acme_scope = db.org_by_id(acme_id).await.unwrap().unwrap().stable_id;
+
+        let acme_registry_id = db
+            .create_managed_registry(acme_id, "", "main", "private", &[], false)
+            .await
+            .unwrap();
+        let acme_registry = db.registry_by_id(acme_registry_id).await.unwrap().unwrap();
+        let acme_cache_id = db
+            .create_binary_cache(
+                Some(acme_id),
+                "acme-operations/cache",
+                "Cache",
+                "private",
+                0,
+                "zstd",
+                false,
+            )
+            .await
+            .unwrap();
+        let acme_cache = db.binary_cache_by_id(acme_cache_id).await.unwrap().unwrap();
+        let other_registry_id = db
+            .create_managed_registry(other_id, "", "main", "private", &[], false)
+            .await
+            .unwrap();
+        let other_registry = db.registry_by_id(other_registry_id).await.unwrap().unwrap();
+
+        let now = unix_now();
+        let operation = |id: &str, scope: &str, kind: &str, target: &str| {
+            Statement::new(
+                "INSERT INTO topology_operations
+                   (operation_id, operation_kind, authorization_scope_key,
+                    control_permission, primary_target_kind, primary_target_stable_id,
+                    state, detail_json, created_at)
+                 VALUES (?1, 'test_operation', ?2, 'read', ?3, ?4, 'pending', '{}', ?5)",
+                vals![id, scope, kind, target, now],
+            )
+            .expecting(1)
+        };
+        db.backend
+            .checked_batch(&[
+                operation(
+                    "operation-a",
+                    &acme_registry.scope_key,
+                    "registry",
+                    &acme_registry.stable_id,
+                ),
+                operation(
+                    "operation-c",
+                    &acme_cache.scope_key,
+                    "binary_cache",
+                    &acme_cache.stable_id,
+                ),
+                operation(
+                    "operation-b",
+                    &other_registry.scope_key,
+                    "registry",
+                    &other_registry.stable_id,
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let first = db
+            .list_scope_topology_operations_page(&acme_scope, None, 1, None)
+            .await
+            .unwrap();
+        assert_eq!(first.records[0].operation_id, "operation-a");
+        assert_eq!(first.next_cursor.as_deref(), Some("operation-a"));
+
+        let second = db
+            .list_scope_topology_operations_page(&acme_scope, None, 1, first.next_cursor.as_deref())
+            .await
+            .unwrap();
+        assert_eq!(second.records[0].operation_id, "operation-c");
+        assert!(second.next_cursor.is_none());
+
+        let instance = db
+            .list_scope_topology_operations_page("instance", None, 10, None)
+            .await
+            .unwrap();
+        assert_eq!(instance.records.len(), 3);
+        assert!(db
+            .list_scope_topology_operations_page(&acme_scope, None, 10, Some("operation-b"),)
             .await
             .is_err());
     }
