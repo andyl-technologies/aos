@@ -10,6 +10,7 @@ use crate::components::{InlineError, StatusBadge};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
+use super::cache_integration_preview::CacheIntegrationPreview;
 use super::cache_stack::RegistryCacheStack;
 use super::resources::UnavailableWorkflow;
 
@@ -37,7 +38,7 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
 
 #[component]
 fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
-    let read_client = client;
+    let read_client = client.clone();
     let read_cache_id = cache_id.clone();
     let integrations = LocalResource::new(move || {
         let client = read_client.clone();
@@ -57,6 +58,7 @@ fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
     });
 
     view! {
+        <div class="workflow-stack">
         <section class="panel resource-panel">
             <div class="section-heading">
                 <div>
@@ -95,6 +97,8 @@ fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
                 })}
             </Suspense>
         </section>
+        <CacheIntegrationPreview client=client cache_id=cache_id/>
+        </div>
     }
 }
 
