@@ -178,8 +178,9 @@ struct PreparedBlockTransportReset {
 /// The destination receives the exact request bytes through its own admitted
 /// geometry and durability state. The source retains the sole guest completion
 /// and executes the request as a locally lost write after both cloned device
-/// states commit together. Its completion carries the destination durability
-/// delay so the guest cannot observe success before the destination horizon.
+/// states commit together. Its completion carries an exact destination
+/// durability dependency so the guest cannot observe success before that
+/// frontier is acknowledged.
 ///
 /// # Errors
 ///
@@ -191,7 +192,7 @@ pub fn install_cross_device_misdirected_persistence(
     destination: &mut BlockDevice,
     mut resolved: ResolvedBlockRequestPersistenceDirective,
     destination_device: [u8; 32],
-) -> Result<(), DeviceError> {
+) -> Result<super::fault::BlockExternalDurabilityDependency, DeviceError> {
     let destination_offset = match resolved.directive.write_disposition {
         super::fault::BlockFaultWriteDisposition::Misdirected {
             destination: super::fault::BlockFaultMisdirectionDestination::ExternalDevice(device),
@@ -210,7 +211,7 @@ pub fn install_cross_device_misdirected_persistence(
     }
     let mut next_source = source.clone();
     let mut next_destination = destination.clone();
-    let destination_wait_nanos = next_destination.storage_faults.apply_external_write(
+    let destination_frontier = next_destination.storage_faults.apply_external_write(
         &next_destination.base,
         &mut next_destination.overlay,
         resolved.opportunity.request.request_id,
@@ -220,17 +221,15 @@ pub fn install_cross_device_misdirected_persistence(
         resolved.opportunity.request.data.clone(),
     )?;
     resolved.directive.write_disposition = super::fault::BlockFaultWriteDisposition::Lost;
-    resolved.directive.remote_durability_wait_nanos = resolved
-        .directive
-        .remote_durability_wait_nanos
-        .checked_add(destination_wait_nanos)
-        .ok_or(DeviceError::InvalidBlockFaultDirective {
-            reason: "cross-device destination durability wait overflow",
-        })?;
+    let dependency = super::fault::BlockExternalDurabilityDependency {
+        destination_device,
+        required_frontier: destination_frontier,
+    };
+    resolved.directive.external_durability_dependency = Some(dependency);
     next_source.install_storage_request_persistence_directive(resolved)?;
     *source = next_source;
     *destination = next_destination;
-    Ok(())
+    Ok(dependency)
 }
 
 impl BlockDevice {

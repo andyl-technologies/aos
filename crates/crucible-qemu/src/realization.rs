@@ -126,7 +126,7 @@ impl QemuVmSnapshot {
         checkpoint: Checkpoint,
         replay_oracle_validation: QemuReplayOracleValidation,
     ) -> Self {
-        let host_io = crate::QemuHostIoCheckpoint::without_block(checkpoint.id);
+        let host_io = crate::QemuHostIoCheckpoint::without_devices(checkpoint.id);
         let node = crate::QemuNodeContinuationCheckpoint {
             execution_binding: checkpoint.id,
             last_observed_time: checkpoint.virtual_time,

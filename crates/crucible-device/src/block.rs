@@ -507,17 +507,15 @@ mod tests {
         let delivery = source
             .next_storage_delivery_opportunity(now_nanos)
             .unwrap_or_else(|| panic!("source delivery opportunity should be available"));
-        ok(
-            source.install_storage_delivery_directive(ResolvedBlockDeliveryDirective {
-                directive: delivery.resolved.clone(),
-                opportunity: delivery,
-            }),
-        );
-        ok(source.advance_to(request_icount));
-        let source_deadline = source.next_exact_local_event();
+        let dependency = delivery
+            .resolved
+            .external_durability_dependency
+            .unwrap_or_else(|| panic!("source completion carries destination dependency"));
+        assert_eq!(dependency.destination_device, [7; 32]);
         assert!(
-            source_deadline.is_some_and(|event| event > request_icount),
-            "source deadline was {source_deadline:?}"
+            destination.storage_fault_state().actual_durable_frontier()
+                < dependency.required_frontier,
+            "destination must not acknowledge durability before media persistence"
         );
         let persistence = destination
             .next_storage_persistence_opportunity(now_nanos)
@@ -529,6 +527,18 @@ mod tests {
             },
         ));
         ok(destination.advance_to(request_icount));
+        assert!(
+            destination.storage_fault_state().actual_durable_frontier()
+                >= dependency.required_frontier,
+            "destination must acknowledge the exact required frontier"
+        );
+        ok(
+            source.install_storage_delivery_directive(ResolvedBlockDeliveryDirective {
+                directive: delivery.resolved.clone(),
+                opportunity: delivery,
+            }),
+        );
+        ok(source.advance_to(request_icount));
         assert_ne!(&source.materialize()[0..512], &[0x5a; 512]);
         assert_eq!(&destination.materialize()[512..1024], &[0x5a; 512]);
         let outcomes = ok(destination.drain_storage_outcomes());

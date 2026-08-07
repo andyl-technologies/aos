@@ -478,6 +478,8 @@ pub struct StoragePolicyNinePObject {
     pub mode: u32,
     /// Exact regular-file/symlink data, or empty bytes for a directory.
     pub data: Vec<u8>,
+    /// Whether this version is a namespace tombstone rather than an object.
+    pub deleted: bool,
 }
 
 /// Visibility scope for committed 9p updates.
@@ -500,6 +502,8 @@ pub struct StoragePolicyNinePVisibility {
     pub scope: StoragePolicyNinePVisibilityScope,
     /// Whether metadata and data share one frontier.
     pub atomic_metadata_and_data: bool,
+    /// Additional data lag when metadata and data do not advance atomically.
+    pub data_visibility_lag_nanos: Option<PositiveU64>,
     /// Whether lookup may retain a deleted object until visibility advances.
     pub retain_deleted_objects: bool,
 }
@@ -772,8 +776,18 @@ impl WorldStoragePolicyArtifact {
                         .path
                         .split('/')
                         .any(|component| component == "." || component == "..")
-                    && object.data.len() <= HARD_STORAGE_POLICY_BYTES,
+                    && object.version <= u64::from(u32::MAX)
+                    && object.data.len() <= HARD_STORAGE_POLICY_BYTES
+                    && if object.deleted {
+                        object.mode == 0 && object.data.is_empty()
+                    } else {
+                        object.mode & 0o170_000 != 0
+                    },
                 "storage 9p object artifact",
+            ),
+            StoragePolicyArtifactKind::NinePVisibility(policy) => require(
+                policy.atomic_metadata_and_data == policy.data_visibility_lag_nanos.is_none(),
+                "storage 9p metadata/data visibility policy",
             ),
             StoragePolicyArtifactKind::Bytes { bytes } => require(
                 !bytes.is_empty() && bytes.len() <= HARD_STORAGE_POLICY_BYTES,
@@ -824,6 +838,7 @@ mod tests {
                 version: 1,
                 mode: 0o100_644,
                 data: Vec::new(),
+                deleted: false,
             }),
         };
         assert!(object.validate().is_err());

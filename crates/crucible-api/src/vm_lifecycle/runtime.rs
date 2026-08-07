@@ -303,7 +303,7 @@ impl ProductionVmLifecycleLoop {
                 ),
             });
         }
-        self.install_authoritative_block_coordinator(node, &mut backend)?;
+        self.install_authoritative_storage_coordinators(node, &mut backend)?;
         let observed = SimulationBackend::now(&backend).ticks;
         if observed != target.counter {
             let _ = SimulationBackend::shutdown(&mut backend);
@@ -442,7 +442,7 @@ impl ProductionVmLifecycleLoop {
         .map_err(|error| SchedulerError::BoundaryViolation {
             message: format!("relaunch QEMU node `{}`: {error}", node.name),
         })?;
-        self.install_authoritative_block_coordinator(node, &mut backend)?;
+        self.install_authoritative_storage_coordinators(node, &mut backend)?;
         let observed = SimulationBackend::now(&backend).ticks;
         let replacement_block = self.block_bindings.get(node).map(|binding| {
             backend
@@ -486,32 +486,51 @@ impl ProductionVmLifecycleLoop {
         Ok(observed)
     }
 
-    fn install_authoritative_block_coordinator(
+    fn install_authoritative_storage_coordinators(
         &self,
         node: &NodeId,
         backend: &mut ProductionLiveNode,
     ) -> Result<(), SchedulerError> {
-        let Some(binding) = self.block_bindings.get(node) else {
-            return Ok(());
-        };
-        backend
-            .install_block_fault_coordinator(Box::new(ProductionBlockFaultCoordinator::new(
-                Arc::clone(&self.fault_runtime),
-                Arc::clone(&self.fault_evaluation_cursor),
-                Arc::clone(&self.storage_fault_observations),
-                Arc::clone(&self.block_devices),
-                self.source.world().clone(),
-                binding.target.clone(),
-                self.source.plan().fault_signals(),
-                self.scenario.id(),
-                self.icount_shift,
-            )))
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "attach authoritative block coordinator to `{}`: {error}",
-                    node.name
-                ),
-            })
+        if let Some(binding) = self.block_bindings.get(node) {
+            backend
+                .install_block_fault_coordinator(Box::new(ProductionBlockFaultCoordinator::new(
+                    Arc::clone(&self.fault_runtime),
+                    Arc::clone(&self.fault_evaluation_cursor),
+                    Arc::clone(&self.storage_fault_observations),
+                    Arc::clone(&self.block_devices),
+                    self.source.world().clone(),
+                    binding.target.clone(),
+                    self.source.plan().fault_signals(),
+                    self.scenario.id(),
+                    self.icount_shift,
+                )))
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "attach authoritative block coordinator to `{}`: {error}",
+                        node.name
+                    ),
+                })?;
+        }
+        if let Some(binding) = self.ninep_bindings.get(node) {
+            backend
+                .install_ninep_fault_coordinator(Box::new(
+                    storage_faults::ProductionNinepFaultCoordinator::new(
+                        Arc::clone(&self.fault_runtime),
+                        Arc::clone(&self.fault_evaluation_cursor),
+                        Arc::clone(&self.storage_fault_observations),
+                        self.source.world().clone(),
+                        binding.target.clone(),
+                        self.icount_shift,
+                    ),
+                ))
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "attach authoritative 9p coordinator to `{}`: {error}",
+                        node.name
+                    ),
+                })?;
+        }
+        Ok(())
     }
 
     fn app_random_continuation_config(

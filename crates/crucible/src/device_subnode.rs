@@ -808,22 +808,23 @@ impl DeviceSchedulingSubNode {
 
     /// Returns the active I/O fault table installed on this sub-node.
     #[must_use]
-    pub fn io_faults(&self) -> &IoFaults {
-        self.device.faults()
+    pub fn io_faults(&self) -> Option<&IoFaults> {
+        self.device.block_faults()
     }
 
     /// Installs an active I/O fault table on this sub-node.
     ///
     /// Existing modeled completions are recomputed immediately so the in-flight
     /// horizon and RESOLVE delivery reflect the live fault set.
-    pub fn set_io_faults(&mut self, faults: IoFaults) {
-        self.device.set_faults(faults);
+    pub fn set_io_faults(&mut self, faults: IoFaults) -> Result<(), DeviceError> {
+        self.device.set_block_faults(faults)?;
         if self.resolved.iter().any(|completion| completion.delivered) {
             self.frozen_modeled
                 .extend(self.modeled.iter().map(ModeledCompletion::key));
             self.frozen_rng_position = Some(self.rng_position);
         }
         self.resolve_all();
+        Ok(())
     }
 
     /// Returns a shared view of the held block device, when this is a disk sub-node.
@@ -1235,18 +1236,24 @@ impl ScheduledDevice {
     }
 
     /// Returns the held device's active I/O fault table.
-    fn faults(&self) -> &IoFaults {
+    fn block_faults(&self) -> Option<&IoFaults> {
         match self {
-            ScheduledDevice::Block(device) => device.faults(),
-            ScheduledDevice::Ninep(device) => device.faults(),
+            ScheduledDevice::Block(device) => Some(device.faults()),
+            ScheduledDevice::Ninep(_) => None,
         }
     }
 
-    /// Installs an active I/O fault table on the held device.
-    fn set_faults(&mut self, faults: IoFaults) {
+    /// Installs an active completion-fault table on a block device.
+    fn set_block_faults(&mut self, faults: IoFaults) -> Result<(), DeviceError> {
         match self {
-            ScheduledDevice::Block(device) => device.set_faults(faults),
-            ScheduledDevice::Ninep(device) => device.set_faults(faults),
+            ScheduledDevice::Block(device) => {
+                device.set_faults(faults);
+                Ok(())
+            }
+            ScheduledDevice::Ninep(_) => Err(DeviceError::WrongDeviceKind {
+                expected: "block",
+                actual: "9p",
+            }),
         }
     }
 
@@ -1262,9 +1269,19 @@ impl ScheduledDevice {
             ScheduledDevice::Block(device) => {
                 device.resolve_response(primary_icount, status, payload, rng)
             }
-            ScheduledDevice::Ninep(device) => {
-                device.resolve_response(primary_icount, status, payload, rng)
-            }
+            ScheduledDevice::Ninep(_) => crucible_device::IoFaultOutcome {
+                primary: crucible_device::ResolvedResponse {
+                    delivery_icount: primary_icount,
+                    status,
+                    payload,
+                },
+                duplicate: None,
+                loss_fired: false,
+                dropped: false,
+                failure_errno: None,
+                duplicate_fired: false,
+                corrupt_fired: false,
+            },
         }
     }
 
@@ -1283,8 +1300,7 @@ impl ScheduledDevice {
             ScheduledDevice::Block(_) => {
                 block_error_payload(modeled_payload).unwrap_or_else(|| outcome.payload.clone())
             }
-            ScheduledDevice::Ninep(_) => ninep_error_payload(modeled_payload, failure_errno)
-                .unwrap_or_else(|| outcome.payload.clone()),
+            ScheduledDevice::Ninep(_) => outcome.payload.clone(),
         }
     }
 }

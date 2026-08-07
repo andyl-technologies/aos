@@ -37,6 +37,7 @@ pub use device_host_work::{
 };
 pub use host_io_runtime::{
     QemuBlockFaultCoordinator, QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError,
+    QemuNinepFaultCoordinator,
 };
 pub use host_parallel_gate::{
     QemuLiveHostParallelGateError, QemuLiveHostParallelReport, run_qemu_live_host_parallel_gate,
@@ -56,8 +57,8 @@ pub use ninep_io_gate::{
     run_qemu_live_9p_io_gate,
 };
 pub use ninep_io_servicer::{
-    NinepIoDiagnostics, NinepIoDiagnosticsSnapshot, QemuLive9pIoServiceStep, QemuLive9pIoServicer,
-    QemuLive9pIoServicerError,
+    NinepIoDiagnostics, NinepIoDiagnosticsSnapshot, QemuLive9pIoRequestPin,
+    QemuLive9pIoServiceStep, QemuLive9pIoServicer, QemuLive9pIoServicerError,
 };
 pub use node_step_gate::{
     QemuLiveExactSnapshotReport, QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError,

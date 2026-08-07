@@ -1,40 +1,37 @@
-//! Host servicer for a live node's `SLOT_9P_IO` rings.
+//! Host servicer for a live node's signal-driven `SLOT_9P_IO` rings.
 //!
 //! This is the 9p analogue of [`crate::supervision::QemuLiveBlockIoServicer`]:
 //! it maps the node's shared-memory region read-write and composes a
-//! deterministic [`NinepDevice`] over a fixed [`FsTree`]. Each `service` call:
+//! deterministic [`NinepDevice`] over an authenticated [`FsTree`]. Coordinated
+//! production servicing pins each exact request before consuming it:
 //!
 //! ```text
-//!   process_shmem_inbox(request ring)  -> COMPUTE responses into in-flight queue
+//!   pin request -> resolve signal phases -> COMPUTE response into in-flight queue
 //!   advance_to_shmem(guest_icount, response ring) -> DELIVER due responses
 //!   store_device_completion_deadline_icount(next_exact_local_event)
 //! ```
-//!
-//! A 9p request's response is due at `delivery_icount = ceil(vt(request_icount) +
-//! NinepLatency)`, strictly after the request, so a guest blocked on 9p I/O hits
-//! the *same* SCHED-8 device-horizon gap as block I/O: it cannot advance to its
-//! own completion. The RFC-0010 0039 patch (a `blk_wait`-style device-wait
-//! callback plus a `QEMU_CLOCK_VIRTUAL` delivery-resume timer) closes both the
-//! block and the 9p path with one mechanism -- Part A (advance trigger) and Part
-//! B (delivery resume) are device-agnostic. Until it lands, a guest's 9p probe
-//! stalls at the horizon exactly as block I/O does; the live 9p harness asserts
-//! that known stall signature as its pre-0039 baseline.
-//!
-//! The diagnostics types here parallel the block servicer's; a future
-//! device-agnostic `DeviceIoDiagnostics` could DRY the two, but the block
-//! harness is already landed and validated, so this mirror keeps them separate.
+//! A response is not published until its exact visibility and deliver phases
+//! have been evaluated. The pending phase authorization and request identity
+//! are checkpointed with the device and both transport rings.
 
 use std::collections::BTreeMap;
 use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use crucible_device::{FsTree, IoCore, NinepDevice, NinepLatency, Node};
+use crucible::model::ContentHash;
+use crucible_device::{
+    DeviceError, FsTree, IoCore, NinepDevice, NinepLatency, NinepObjectVersion,
+    NinepRequestIdentity, NinepRequestOpportunity, NinepVisibilityPolicy, NinepVisibilityRelease,
+    NinepVisibilityState, Node, Request, ResolvedNinepRequestDirective,
+};
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    NodeSlotSnapshot, SLOT_9P_IO, SetupRegionMapError, mmap_setup_region,
+    NodeSlotSnapshot, SLOT_9P_IO, STATUS_IDLE, SetupRegionMapError, mmap_setup_region,
 };
 use thiserror::Error;
+
+use crate::QemuLive9pIoServicerCheckpoint;
 
 /// In-flight request-queue capacity for the servicer's I/O core.
 const SERVICER_INBOX_CAPACITY: u64 = 16;
@@ -45,9 +42,13 @@ const SERVICER_OUTBOX_CAPACITY: u64 = 16;
 pub struct QemuLive9pIoServicer {
     region: MappedSetupRegion,
     device: NinepDevice,
+    tree: FsTree,
+    tree_hash: ContentHash,
     vm_slot: u32,
     frames_processed: usize,
     frames_delivered: usize,
+    pending_fault_opportunities:
+        BTreeMap<(u64, NinepRequestIdentity), (NinepRequestOpportunity, bool)>,
 }
 
 impl QemuLive9pIoServicer {
@@ -71,6 +72,32 @@ impl QemuLive9pIoServicer {
         vm_slot: u32,
         icount_shift: u8,
     ) -> Result<Self, QemuLive9pIoServicerError> {
+        let tree = deterministic_fs_tree()?;
+        Self::from_shmem_fd_with_tree(
+            shmem_fd,
+            region_len,
+            vm_slot,
+            icount_shift,
+            tree,
+            NinepLatency::default(),
+        )
+    }
+
+    /// Maps the live 9p transport over one authenticated immutable tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLive9pIoServicerError::MapRegion`] when the region cannot
+    /// be mapped or [`QemuLive9pIoServicerError::Device`] when the I/O core
+    /// rejects its clock or queue configuration.
+    pub fn from_shmem_fd_with_tree(
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        vm_slot: u32,
+        icount_shift: u8,
+        tree: FsTree,
+        latency: NinepLatency,
+    ) -> Result<Self, QemuLive9pIoServicerError> {
         let region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLive9pIoServicerError::MapRegion { source })?;
         let core = IoCore::new(
@@ -80,15 +107,508 @@ impl QemuLive9pIoServicer {
             SERVICER_OUTBOX_CAPACITY,
         )
         .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
-        let tree = deterministic_fs_tree()?;
-        let device = NinepDevice::new(core, tree, NinepLatency::default());
+        let tree_hash = ContentHash {
+            bytes: tree.content_hash(),
+        };
+        let device = NinepDevice::new(core, tree.clone(), latency);
         Ok(Self {
             region,
             device,
+            tree,
+            tree_hash,
             vm_slot,
             frames_processed: 0,
             frames_delivered: 0,
+            pending_fault_opportunities: BTreeMap::new(),
         })
+    }
+
+    /// Requires an authenticated signal decision for every production request.
+    pub fn require_fault_directives(&mut self) {
+        self.device.require_fault_directives();
+    }
+
+    /// Pins the exact request-ring head without consuming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLive9pIoServicerError`] for inaccessible rings, malformed
+    /// frame payload, invalid 9p, or completion-coordinate overflow.
+    pub fn pin_next_request(
+        &mut self,
+    ) -> Result<Option<QemuLive9pIoRequestPin>, QemuLive9pIoServicerError> {
+        let pair = self.ring_pair()?;
+        let frame = pair
+            .first
+            .header
+            .peek(pair.first.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        let Some(frame) = frame else {
+            return Ok(None);
+        };
+        let payload = frame
+            .payload()
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        let opportunity =
+            NinepRequestOpportunity::from_frame(frame.delivery_icount, frame.seq, payload.to_vec())
+                .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        let request = Request::new(frame.delivery_icount, frame.seq, payload.to_vec());
+        let completion_icount = self
+            .device
+            .core()
+            .compute_delivery_icount(&request, self.device.latency_model())
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        Ok(Some(QemuLive9pIoRequestPin {
+            opportunity,
+            completion_icount,
+        }))
+    }
+
+    /// Installs the exact resolve decision for the pinned request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLive9pIoServicerError::Device`] for a stale, malformed, or
+    /// duplicate directive.
+    pub fn install_fault_directive(
+        &mut self,
+        request_icount: u64,
+        transport_sequence: u32,
+        frame: &[u8],
+        directive: ResolvedNinepRequestDirective,
+    ) -> Result<(), QemuLive9pIoServicerError> {
+        self.device
+            .install_fault_directive(request_icount, transport_sequence, frame, directive)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })
+    }
+
+    /// Commits one scenario-owned object update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLive9pIoServicerError::Device`] for invalid or conflicting
+    /// update state.
+    pub fn commit_visibility_update(
+        &mut self,
+        update_id: [u8; 32],
+        object: NinepObjectVersion,
+        policy: NinepVisibilityPolicy,
+        release: NinepVisibilityRelease,
+        data_lag_nanos: u64,
+    ) -> Result<u64, QemuLive9pIoServicerError> {
+        self.device
+            .commit_visibility_update(update_id, object, policy, release, data_lag_nanos)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })
+    }
+
+    /// Advances object visibility from exact time and observed event identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLive9pIoServicerError::Device`] for inconsistent state.
+    pub fn advance_visibility(
+        &mut self,
+        now_nanos: u64,
+        events: &BTreeMap<[u8; 32], u64>,
+    ) -> Result<(u64, u64), QemuLive9pIoServicerError> {
+        self.device
+            .advance_visibility(now_nanos, events)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })
+    }
+
+    /// Returns the committed-versus-visible state.
+    #[must_use]
+    pub const fn visibility_state(&self) -> &NinepVisibilityState {
+        self.device.visibility_state()
+    }
+
+    /// Consumes and computes at most one directive-authorized request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLive9pIoServicerError`] for ring, directive, compute, or
+    /// wake failures.
+    pub fn process_one_request(
+        &mut self,
+        expected: &QemuLive9pIoRequestPin,
+    ) -> Result<QemuLive9pIoServiceStep, QemuLive9pIoServicerError> {
+        let pinned = self.pin_next_request()?;
+        if pinned.as_ref() != Some(expected) {
+            return Err(QemuLive9pIoServicerError::PinnedRequestChanged);
+        }
+        let pending_key = (expected.completion_icount, expected.opportunity.identity);
+        if self.pending_fault_opportunities.contains_key(&pending_key) {
+            return Err(QemuLive9pIoServicerError::DuplicatePendingOpportunity);
+        }
+        let Self {
+            region,
+            device,
+            vm_slot,
+            frames_processed,
+            pending_fault_opportunities,
+            ..
+        } = self;
+        let pair = region
+            .node_directed_ring_pair_mut(
+                *vm_slot,
+                *vm_slot,
+                SLOT_9P_IO as u32,
+                SLOT_9P_IO as u32,
+                *vm_slot,
+            )
+            .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })?;
+        let intake = device
+            .process_one_shmem_request(pair.first.header, pair.first.entries, pair.node_slot)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        *frames_processed += intake.processed;
+        let next_completion_icount = device.core().next_exact_local_event();
+        if intake.processed == 1 {
+            let pinned = pinned.ok_or(QemuLive9pIoServicerError::MissingPinnedRequest)?;
+            if pending_fault_opportunities
+                .insert(
+                    (pinned.completion_icount, pinned.opportunity.identity),
+                    (pinned.opportunity, false),
+                )
+                .is_some()
+            {
+                return Err(QemuLive9pIoServicerError::DuplicatePendingOpportunity);
+            }
+        }
+        pair.node_slot
+            .store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+        Ok(QemuLive9pIoServiceStep {
+            processed: intake.processed,
+            delivered: 0,
+            first_request_icount: intake.first_request_icount,
+            computed_completion_icount: (intake.processed > 0)
+                .then_some(next_completion_icount)
+                .flatten(),
+            next_completion_icount,
+        })
+    }
+
+    /// Captures the exact 9p device and shared-memory ring continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the guest is not at a quiescent boundary or either
+    /// ring cannot be snapshotted consistently.
+    pub fn checkpoint(
+        &mut self,
+        execution_binding: ContentHash,
+    ) -> Result<QemuLive9pIoServicerCheckpoint, QemuLive9pIoServicerError> {
+        let pair = self.ring_pair()?;
+        let node = pair.node_slot.snapshot();
+        if node.status != STATUS_IDLE || node.device_io_active != 0 {
+            return Err(QemuLive9pIoServicerError::CheckpointNotQuiescent);
+        }
+        let requests = pair
+            .first
+            .header
+            .snapshot(pair.first.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        let responses = pair
+            .second
+            .header
+            .snapshot(pair.second.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        Ok(QemuLive9pIoServicerCheckpoint {
+            execution_binding,
+            tree: self.tree_hash,
+            region_header: self.region.header_snapshot(),
+            vm_slot: self.vm_slot,
+            device: self.device.snapshot(),
+            requests,
+            responses,
+            pending_fault_opportunities: self
+                .pending_fault_opportunities
+                .iter()
+                .map(|((completion, _), (opportunity, authorized))| {
+                    (*completion, opportunity.clone(), *authorized)
+                })
+                .collect(),
+            frames_processed: self.frames_processed,
+            frames_delivered: self.frames_delivered,
+        })
+    }
+
+    /// Validates a paired 9p restore without mutating live state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an identity, tree, region, ring, device, or
+    /// quiescence mismatch.
+    pub fn validate_checkpoint(
+        &mut self,
+        expected_execution_binding: ContentHash,
+        checkpoint: &QemuLive9pIoServicerCheckpoint,
+    ) -> Result<(), QemuLive9pIoServicerError> {
+        if checkpoint.execution_binding != expected_execution_binding {
+            return Err(QemuLive9pIoServicerError::CheckpointBindingMismatch);
+        }
+        if checkpoint.tree != self.tree_hash
+            || checkpoint.vm_slot != self.vm_slot
+            || checkpoint.region_header != self.region.header_snapshot()
+        {
+            return Err(QemuLive9pIoServicerError::CheckpointTopologyMismatch);
+        }
+        checkpoint
+            .requests
+            .canonical_bytes()
+            .and_then(|_| checkpoint.responses.canonical_bytes())
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        let _staged = NinepDevice::restore(&checkpoint.device, self.tree.clone())
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        validate_pending_fault_opportunities(checkpoint)?;
+        let pair = self.ring_pair()?;
+        let node = pair.node_slot.snapshot();
+        if node.status != STATUS_IDLE || node.device_io_active != 0 {
+            return Err(QemuLive9pIoServicerError::CheckpointNotQuiescent);
+        }
+        Ok(())
+    }
+
+    /// Atomically restores the 9p device and both transport rings in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors documented by [`Self::validate_checkpoint`], or a
+    /// ring restoration error. The request ring is rolled back if restoring the
+    /// response ring fails.
+    pub fn restore_checkpoint(
+        &mut self,
+        expected_execution_binding: ContentHash,
+        checkpoint: &QemuLive9pIoServicerCheckpoint,
+    ) -> Result<(), QemuLive9pIoServicerError> {
+        self.validate_checkpoint(expected_execution_binding, checkpoint)?;
+        let staged = NinepDevice::restore(&checkpoint.device, self.tree.clone())
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        let pair = self.ring_pair()?;
+        let prior_requests = pair
+            .first
+            .header
+            .snapshot(pair.first.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        pair.first
+            .header
+            .restore(pair.first.entries, &checkpoint.requests)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        if let Err(source) = pair
+            .second
+            .header
+            .restore(pair.second.entries, &checkpoint.responses)
+        {
+            pair.first
+                .header
+                .restore(pair.first.entries, &prior_requests)
+                .map_err(DeviceError::from)
+                .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+            return Err(QemuLive9pIoServicerError::Device {
+                source: DeviceError::from(source),
+            });
+        }
+        pair.node_slot.store_device_completion_deadline_icount(
+            staged.core().next_exact_local_event().unwrap_or(0),
+        );
+        self.device = staged;
+        self.frames_processed = checkpoint.frames_processed;
+        self.frames_delivered = checkpoint.frames_delivered;
+        self.pending_fault_opportunities = checkpoint
+            .pending_fault_opportunities
+            .iter()
+            .map(|(completion, opportunity, authorized)| {
+                (
+                    (*completion, opportunity.identity),
+                    (opportunity.clone(), *authorized),
+                )
+            })
+            .collect();
+        Ok(())
+    }
+
+    /// Returns exact request opportunities whose computed replies are now due.
+    #[must_use]
+    pub fn due_fault_opportunities(
+        &self,
+        guest_icount: u64,
+    ) -> Vec<(u64, NinepRequestOpportunity)> {
+        self.pending_fault_opportunities
+            .range(
+                ..=(
+                    guest_icount,
+                    NinepRequestIdentity {
+                        request_icount: u64::MAX,
+                        transport_sequence: u32::MAX,
+                        tag: u16::MAX,
+                        digest: [u8::MAX; 32],
+                    },
+                ),
+            )
+            .filter_map(|((completion, _), (opportunity, authorized))| {
+                (!*authorized).then(|| (*completion, opportunity.clone()))
+            })
+            .collect()
+    }
+
+    /// Marks due opportunities as phase-authorized before response publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any identity is absent, not due, or already
+    /// authorized.
+    pub fn authorize_fault_opportunities(
+        &mut self,
+        guest_icount: u64,
+        opportunities: &[(u64, NinepRequestIdentity)],
+    ) -> Result<(), QemuLive9pIoServicerError> {
+        for (completion, identity) in opportunities {
+            if *completion > guest_icount {
+                return Err(QemuLive9pIoServicerError::PendingOpportunityMismatch);
+            }
+            let (_, authorized) = self
+                .pending_fault_opportunities
+                .get_mut(&(*completion, *identity))
+                .ok_or(QemuLive9pIoServicerError::PendingOpportunityMismatch)?;
+            if *authorized {
+                return Err(QemuLive9pIoServicerError::PendingOpportunityMismatch);
+            }
+            *authorized = true;
+        }
+        Ok(())
+    }
+
+    /// Delivers due replies after the coordinator authorized their phases.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for ring access, publication failure, or inconsistent
+    /// pending-opportunity accounting.
+    pub fn deliver_due(
+        &mut self,
+        guest_icount: u64,
+    ) -> Result<QemuLive9pIoServiceStep, QemuLive9pIoServicerError> {
+        let due = self
+            .pending_fault_opportunities
+            .range(
+                ..=(
+                    guest_icount,
+                    NinepRequestIdentity {
+                        request_icount: u64::MAX,
+                        transport_sequence: u32::MAX,
+                        tag: u16::MAX,
+                        digest: [u8::MAX; 32],
+                    },
+                ),
+            )
+            .filter_map(|((completion, _), (opportunity, authorized))| {
+                (*authorized).then(|| (*completion, opportunity.clone()))
+            })
+            .collect::<Vec<_>>();
+        if self
+            .pending_fault_opportunities
+            .range(
+                ..=(
+                    guest_icount,
+                    NinepRequestIdentity {
+                        request_icount: u64::MAX,
+                        transport_sequence: u32::MAX,
+                        tag: u16::MAX,
+                        digest: [u8::MAX; 32],
+                    },
+                ),
+            )
+            .any(|(_, (_, authorized))| !*authorized)
+        {
+            return Err(QemuLive9pIoServicerError::PendingOpportunityMismatch);
+        }
+        let Self {
+            region,
+            device,
+            vm_slot,
+            frames_delivered,
+            pending_fault_opportunities,
+            ..
+        } = self;
+        let pair = region
+            .node_directed_ring_pair_mut(
+                *vm_slot,
+                *vm_slot,
+                SLOT_9P_IO as u32,
+                SLOT_9P_IO as u32,
+                *vm_slot,
+            )
+            .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })?;
+        let delivery = device
+            .advance_to_shmem(
+                guest_icount,
+                pair.second.header,
+                pair.second.entries,
+                pair.node_slot,
+            )
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        if delivery.delivered > due.len() {
+            return Err(QemuLive9pIoServicerError::PendingOpportunityMismatch);
+        }
+        for (completion, opportunity) in due.into_iter().take(delivery.delivered) {
+            pending_fault_opportunities.remove(&(completion, opportunity.identity));
+        }
+        *frames_delivered += delivery.delivered;
+        let next_completion_icount = device.core().next_exact_local_event();
+        pair.node_slot
+            .store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+        Ok(QemuLive9pIoServiceStep {
+            processed: 0,
+            delivered: delivery.delivered,
+            first_request_icount: None,
+            computed_completion_icount: None,
+            next_completion_icount,
+        })
+    }
+
+    /// Reports whether either 9p transport ring or device queue is nonempty.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either ring cannot be snapshotted consistently.
+    pub fn has_pending_work(&mut self) -> Result<bool, QemuLive9pIoServicerError> {
+        let pair = self.ring_pair()?;
+        let requests = pair
+            .first
+            .header
+            .snapshot(pair.first.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        let responses = pair
+            .second
+            .header
+            .snapshot(pair.second.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        let device = self.device.snapshot();
+        Ok(!requests.frames.is_empty()
+            || !responses.frames.is_empty()
+            || !device.core.inbox.is_empty()
+            || !device.core.inflight.is_empty()
+            || !device.core.outbox.is_empty())
+    }
+
+    fn ring_pair(&mut self) -> Result<MappedNodeRingPairMut<'_>, QemuLive9pIoServicerError> {
+        self.region
+            .node_directed_ring_pair_mut(
+                self.vm_slot,
+                self.vm_slot,
+                SLOT_9P_IO as u32,
+                SLOT_9P_IO as u32,
+                self.vm_slot,
+            )
+            .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })
     }
 
     /// Drains newly arrived requests and delivers responses due at `guest_icount`.
@@ -134,6 +654,7 @@ impl QemuLive9pIoServicer {
             vm_slot,
             frames_processed,
             frames_delivered,
+            ..
         } = self;
         let vm_slot = *vm_slot;
         let ninep_slot = SLOT_9P_IO as u32;
@@ -228,7 +749,7 @@ impl QemuLive9pIoServicer {
 }
 
 /// The per-call outcome of one [`QemuLive9pIoServicer::service`] step.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QemuLive9pIoServiceStep {
     /// Request frames drained and COMPUTEd this call.
     pub processed: usize,
@@ -240,6 +761,15 @@ pub struct QemuLive9pIoServiceStep {
     pub computed_completion_icount: Option<u64>,
     /// The device's next completion icount after this call, when one is pending.
     pub next_completion_icount: Option<u64>,
+}
+
+/// Exact shared-memory request pinned for signal evaluation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLive9pIoRequestPin {
+    /// Decoded request identity, operation, coordinate, and complete frame.
+    pub opportunity: NinepRequestOpportunity,
+    /// Deterministic completion coordinate before result mutation.
+    pub completion_icount: u64,
 }
 
 /// A shared diagnostic sink for one live 9p-I/O servicing run.
@@ -402,6 +932,77 @@ pub enum QemuLive9pIoServicerError {
         /// Underlying device error.
         source: crucible_device::DeviceError,
     },
+    /// The QEMU execution identity differs from the host checkpoint.
+    #[error("9p checkpoint execution binding does not match QEMU VMState")]
+    CheckpointBindingMismatch,
+    /// The immutable tree, VM slot, or shared-memory geometry differs.
+    #[error("9p checkpoint topology does not match the live device")]
+    CheckpointTopologyMismatch,
+    /// QEMU has not acknowledged a device-I/O-free exact boundary.
+    #[error("9p checkpoint requires an idle guest with no active device I/O")]
+    CheckpointNotQuiescent,
+    /// A coordinated request was consumed without its exact pinned identity.
+    #[error("9p request was consumed without a pinned fault opportunity")]
+    MissingPinnedRequest,
+    /// The request-ring head changed after the coordinator pinned it.
+    #[error("9p request-ring head changed after exact fault resolution")]
+    PinnedRequestChanged,
+    /// Two pending replies claimed the same exact request identity and deadline.
+    #[error("9p pending fault opportunity is duplicated")]
+    DuplicatePendingOpportunity,
+    /// Device delivery count differs from the authorized opportunity set.
+    #[error("9p delivered replies differ from pending fault opportunities")]
+    PendingOpportunityMismatch,
+    /// Checkpointed pending request metadata is malformed or non-canonical.
+    #[error("9p checkpoint pending fault opportunities are invalid")]
+    InvalidPendingOpportunities,
+}
+
+fn validate_pending_fault_opportunities(
+    checkpoint: &QemuLive9pIoServicerCheckpoint,
+) -> Result<(), QemuLive9pIoServicerError> {
+    let pending = &checkpoint.pending_fault_opportunities;
+    if pending
+        .windows(2)
+        .any(|pair| (pair[0].0, pair[0].1.identity) >= (pair[1].0, pair[1].1.identity))
+    {
+        return Err(QemuLive9pIoServicerError::InvalidPendingOpportunities);
+    }
+    for (completion, opportunity, _) in pending {
+        let reconstructed = NinepRequestOpportunity::from_frame(
+            opportunity.request_icount,
+            opportunity.identity.transport_sequence,
+            opportunity.frame.clone(),
+        )
+        .map_err(|_| QemuLive9pIoServicerError::InvalidPendingOpportunities)?;
+        if reconstructed != *opportunity || *completion < opportunity.request_icount {
+            return Err(QemuLive9pIoServicerError::InvalidPendingOpportunities);
+        }
+    }
+    if !checkpoint.device.directives.is_empty()
+        || checkpoint.frames_delivered > checkpoint.frames_processed
+        || checkpoint.frames_processed - checkpoint.frames_delivered != pending.len()
+    {
+        return Err(QemuLive9pIoServicerError::InvalidPendingOpportunities);
+    }
+    let mut responses = checkpoint
+        .device
+        .core
+        .inflight
+        .iter()
+        .chain(checkpoint.device.core.outbox.iter())
+        .map(|response| (response.delivery_icount(), response.response.request_id))
+        .collect::<Vec<_>>();
+    let mut opportunities = pending
+        .iter()
+        .map(|(completion, opportunity, _)| (*completion, opportunity.identity.transport_sequence))
+        .collect::<Vec<_>>();
+    responses.sort_unstable();
+    opportunities.sort_unstable();
+    if responses != opportunities {
+        return Err(QemuLive9pIoServicerError::InvalidPendingOpportunities);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

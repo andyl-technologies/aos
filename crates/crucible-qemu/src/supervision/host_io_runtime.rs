@@ -36,6 +36,7 @@ use crucible_shmem::{
 use thiserror::Error;
 
 use super::block_io_servicer::{BlockIoDiagnostics, QemuLiveBlockIoServicer};
+use super::ninep_io_servicer::{NinepIoDiagnostics, QemuLive9pIoServicer};
 use crate::quantum::idle_state_from_snapshot;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{
@@ -69,6 +70,7 @@ pub struct QemuLiveHostIoRuntime {
     poll_interval: Duration,
     advance_wait_deadline: AdvanceWaitDeadline,
     block: Option<BlockIoServicing>,
+    ninep: Option<NinepIoServicing>,
 }
 
 /// The participant half of the runtime: a block servicer plus its diagnostic sink.
@@ -76,6 +78,13 @@ struct BlockIoServicing {
     servicer: QemuLiveBlockIoServicer,
     diagnostics: Arc<BlockIoDiagnostics>,
     coordinator: Option<Box<dyn QemuBlockFaultCoordinator>>,
+}
+
+/// The participant half of the runtime for one shared-memory 9p device.
+struct NinepIoServicing {
+    servicer: QemuLive9pIoServicer,
+    diagnostics: Arc<NinepIoDiagnostics>,
+    coordinator: Option<Box<dyn QemuNinepFaultCoordinator>>,
 }
 
 /// Owns exact signal evaluation around one live block servicing pass.
@@ -111,6 +120,21 @@ pub trait QemuBlockFaultCoordinator: Send {
         servicer: &mut QemuLiveBlockIoServicer,
         guest_icount: u64,
     ) -> Result<super::QemuLiveBlockIoServiceStep, QemuAsyncDriverRuntimeError>;
+}
+
+/// Owns exact signal evaluation around one live 9p servicing pass.
+pub trait QemuNinepFaultCoordinator: Send {
+    /// Services one request/delivery pass at the observed guest coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when opportunity construction,
+    /// signal evaluation, state mutation, or evidence recording fails.
+    fn service_ninep_io(
+        &mut self,
+        servicer: &mut QemuLive9pIoServicer,
+        guest_icount: u64,
+    ) -> Result<super::QemuLive9pIoServiceStep, QemuAsyncDriverRuntimeError>;
 }
 
 impl QemuLiveHostIoRuntime {
@@ -178,6 +202,7 @@ impl QemuLiveHostIoRuntime {
             poll_interval,
             advance_wait_deadline: AdvanceWaitDeadline::default(),
             block: None,
+            ninep: None,
         })
     }
 
@@ -208,6 +233,25 @@ impl QemuLiveHostIoRuntime {
             coordinator: None,
         });
         Ok(self)
+    }
+
+    /// Attaches a 9p servicer driven once per advance poll.
+    ///
+    /// The servicer owns the `SLOT_9P_IO` rings and serves the immutable World
+    /// tree supplied at launch. Each poll drains requests, advances virtual
+    /// device time, and publishes due replies before the boundary is classified.
+    #[must_use]
+    pub fn with_ninep_servicer(
+        mut self,
+        servicer: QemuLive9pIoServicer,
+        diagnostics: Arc<NinepIoDiagnostics>,
+    ) -> Self {
+        self.ninep = Some(NinepIoServicing {
+            servicer,
+            diagnostics,
+            coordinator: None,
+        });
+        self
     }
 
     /// Signals QEMU's plugin wake eventfd with the exact eight-byte counter write.
@@ -309,6 +353,7 @@ impl QemuLiveHostIoRuntime {
             // delivered, so draining and delivering at the observed icount is what
             // lets the advance make progress.
             self.service_block_io(&snapshot)?;
+            self.service_ninep_io(&snapshot)?;
             let idle = idle_state_from_snapshot(snapshot);
             match classify_quantum_boundary(&idle, snapshot.max_advance_icount) {
                 QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. } => {
@@ -413,6 +458,37 @@ impl QemuLiveHostIoRuntime {
         }
         Ok(())
     }
+
+    /// Services the 9p ring at the guest's observed coordinate, if attached.
+    fn service_ninep_io(
+        &mut self,
+        snapshot: &crucible_shmem::NodeSlotSnapshot,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let Some(ninep) = &mut self.ninep else {
+            return Ok(());
+        };
+        let serviced = match &mut ninep.coordinator {
+            Some(coordinator) => {
+                coordinator.service_ninep_io(&mut ninep.servicer, snapshot.current_icount)?
+            }
+            None => ninep
+                .servicer
+                .service(snapshot.current_icount)
+                .map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new("service 9p io", source.to_string())
+                })?,
+        };
+        ninep.diagnostics.record(
+            snapshot.current_icount,
+            snapshot.device_io_active != 0,
+            snapshot.idle_wake_icount,
+            &serviced,
+        );
+        if serviced.processed > 0 || serviced.delivered > 0 {
+            self.signal_wake()?;
+        }
+        Ok(())
+    }
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
@@ -471,15 +547,26 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         self.release_checkpoint_pause()
     }
 
-    fn has_pending_block_io(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
-        self.block
+    fn has_pending_device_io(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        let block = self
+            .block
             .as_mut()
             .map(|block| block.servicer.has_pending_work())
             .transpose()
             .map(Option::unwrap_or_default)
             .map_err(|source| {
                 QemuAsyncDriverRuntimeError::new("inspect pending block I/O", source.to_string())
-            })
+            })?;
+        let ninep = self
+            .ninep
+            .as_mut()
+            .map(|ninep| ninep.servicer.has_pending_work())
+            .transpose()
+            .map(Option::unwrap_or_default)
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new("inspect pending 9p I/O", source.to_string())
+            })?;
+        Ok(block || ninep)
     }
 
     fn checkpoint_host_io(
@@ -494,10 +581,19 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             .map_err(|source| {
                 QemuAsyncDriverRuntimeError::new("checkpoint host block I/O", source.to_string())
             })?;
-        Ok(match block {
-            Some(block) => QemuHostIoCheckpoint::with_block(execution_binding, block),
-            None => QemuHostIoCheckpoint::without_block(execution_binding),
-        })
+        let ninep = self
+            .ninep
+            .as_mut()
+            .map(|ninep| ninep.servicer.checkpoint(execution_binding))
+            .transpose()
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new("checkpoint host 9p I/O", source.to_string())
+            })?;
+        Ok(QemuHostIoCheckpoint::with_devices(
+            execution_binding,
+            block,
+            ninep,
+        ))
     }
 
     fn validate_host_io_checkpoint(
@@ -526,6 +622,22 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 "validate host-I/O checkpoint",
                 "captured block topology does not match the live host-I/O runtime",
             )),
+        }?;
+        match (self.ninep.as_mut(), checkpoint.ninep.as_ref()) {
+            (Some(ninep), Some(checkpoint)) => ninep
+                .servicer
+                .validate_checkpoint(execution_binding, checkpoint)
+                .map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "validate host 9p-I/O checkpoint",
+                        source.to_string(),
+                    )
+                }),
+            (None, None) => Ok(()),
+            _ => Err(QemuAsyncDriverRuntimeError::new(
+                "validate host-I/O checkpoint",
+                "captured 9p topology does not match the live host-I/O runtime",
+            )),
         }
     }
 
@@ -535,6 +647,17 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         checkpoint: &QemuHostIoCheckpoint,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         self.validate_host_io_checkpoint(execution_binding, checkpoint)?;
+        let prior_block = self
+            .block
+            .as_mut()
+            .map(|block| block.servicer.checkpoint(execution_binding))
+            .transpose()
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "capture block rollback checkpoint",
+                    source.to_string(),
+                )
+            })?;
         match (self.block.as_mut(), checkpoint.block.as_ref()) {
             (Some(block), Some(checkpoint)) => block
                 .servicer
@@ -550,7 +673,40 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 "restore host-I/O checkpoint",
                 "validated block topology changed before commit",
             )),
+        }?;
+        let ninep_result = match (self.ninep.as_mut(), checkpoint.ninep.as_ref()) {
+            (Some(ninep), Some(checkpoint)) => ninep
+                .servicer
+                .restore_checkpoint(execution_binding, checkpoint)
+                .map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "restore host 9p-I/O checkpoint",
+                        source.to_string(),
+                    )
+                }),
+            (None, None) => Ok(()),
+            _ => Err(QemuAsyncDriverRuntimeError::new(
+                "restore host-I/O checkpoint",
+                "validated 9p topology changed before commit",
+            )),
+        };
+        if let Err(error) = ninep_result {
+            if let (Some(block), Some(prior)) = (self.block.as_mut(), prior_block.as_ref()) {
+                block
+                    .servicer
+                    .restore_checkpoint(execution_binding, prior)
+                    .map_err(|rollback| {
+                        QemuAsyncDriverRuntimeError::new(
+                            "roll back host block-I/O checkpoint",
+                            format!(
+                                "9p restore failed: {error}; block rollback failed: {rollback}"
+                            ),
+                        )
+                    })?;
+            }
+            return Err(error);
         }
+        Ok(())
     }
 
     fn checkpoint_block_boundary_state(
@@ -634,6 +790,27 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             )
         })?;
         block.coordinator = Some(coordinator);
+        Ok(())
+    }
+
+    fn install_ninep_fault_coordinator(
+        &mut self,
+        coordinator: Box<dyn QemuNinepFaultCoordinator>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let ninep = self.ninep.as_mut().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(
+                "install 9p fault coordinator",
+                "live node has no shared-memory 9p servicer",
+            )
+        })?;
+        if ninep.coordinator.is_some() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "install 9p fault coordinator",
+                "live 9p servicer already owns a signal coordinator",
+            ));
+        }
+        ninep.servicer.require_fault_directives();
+        ninep.coordinator = Some(coordinator);
         Ok(())
     }
 

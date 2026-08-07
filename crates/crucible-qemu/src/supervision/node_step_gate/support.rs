@@ -117,6 +117,7 @@ pub(super) fn prime_guest_off_boot_barrier(
     router_name: &str,
     coverage: QemuLaunchPluginSwitch,
     mut block: Option<&mut QemuLiveBlockIoServicer>,
+    mut ninep: Option<&mut QemuLive9pIoServicer>,
 ) -> Result<Vec<crate::QemuNodeEmittedFrame>, QemuLiveNodeStepGateError> {
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuLiveNodeStepGateError::PrimeRegionMap { source })?;
@@ -147,6 +148,11 @@ pub(super) fn prime_guest_off_boot_barrier(
             servicer
                 .service_fault_free_initialization(current)
                 .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
+        }
+        if let Some(servicer) = ninep.as_deref_mut() {
+            servicer
+                .service(current)
+                .map_err(|source| QemuLiveNodeStepGateError::NinepServicer { source })?;
         }
         if current >= PRIME_CEILING_ICOUNT {
             reached = true;
@@ -252,10 +258,14 @@ pub(super) fn vm_launch_config(
         }
         None => vm,
     };
-    match &config.shmem_block {
+    let vm = match &config.shmem_block {
         Some(block) => vm.with_crucible_shmem_block(CrucibleShmemBlockDevice::new(
             block.durability.length_bytes,
         )),
+        None => vm,
+    };
+    match &config.shmem_ninep {
+        Some(_) => vm.with_crucible_shmem_9p(CrucibleShmem9pDevice::new()),
         None => vm,
     }
 }

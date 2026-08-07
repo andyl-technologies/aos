@@ -661,7 +661,7 @@ where
         Ok(prepared_setup) => prepared_setup,
         Err(error) => return Err(reap_failed_restore_child(&mut child, error)),
     };
-    let no_block_checkpoint = crate::QemuHostIoCheckpoint::without_block(checkpoint.id);
+    let no_block_checkpoint = crate::QemuHostIoCheckpoint::without_devices(checkpoint.id);
     let host_io_checkpoint = host_io_checkpoint.unwrap_or(&no_block_checkpoint);
     if let Err(source) = host_io_runtime.quiesce_for_checkpoint(async_policy.qmp_command_timeout) {
         return Err(reap_failed_restore_child(

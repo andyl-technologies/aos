@@ -45,6 +45,7 @@
 pub mod codec;
 pub mod device;
 pub mod errno;
+pub mod fault;
 pub mod server;
 pub mod tree;
 
@@ -53,6 +54,7 @@ pub use codec::{
     StatfsReply, TMessage,
 };
 pub use device::{NinepDevice, NinepLatency, NinepSnapshot};
+pub use fault::*;
 pub use server::{FidEntry, FidState, MAX_MSIZE, MIN_MSIZE, NinepServer, NinepServerSnapshot};
 pub use tree::{
     BadComponent, DirEntry, FsTree, FsTreeDecodeError, Node, qid_path, validate_component,
@@ -1124,157 +1126,75 @@ mod tests {
         }
     }
 
-    // ---- uniform I/O fault injection on 9p (IO-25, IO-26, T-IO-12) --------
+    // ---- signal-driven exact request directives -------------------------
 
-    use crate::fault::{IoFaultOutcome, IoFaults, Probability};
-    use crate::request::ResponseStatus;
-
-    /// A fixed engine decision-RNG root + device stream id for the 9p tests
-    /// (a stand-in for the engine's name-hash fork of the scenario seed).
-    const NINEP_ROOT: u64 = 0x9e1f_5eed_c0de;
-    const NINEP_DOMAIN: &str = "crucible.test.device-stream";
-    const NINEP_NAME: &str = "fs";
-
-    /// Forks the 9p device's RNG at its captured cursor.
-    fn ninep_rng(dev: &NinepDevice) -> crate::fault::DeviceRng {
-        dev.rng(NINEP_ROOT, NINEP_DOMAIN, NINEP_NAME)
+    fn file_object(path: &str, version: u32, data: &[u8]) -> NinepObjectVersion {
+        NinepObjectVersion {
+            path: path.to_owned(),
+            version,
+            mode: 0o100_644,
+            data: data.to_vec(),
+            deleted: false,
+        }
     }
 
-    /// Resolves a modeled reply through the device's active fault table.
-    fn resolve_reply(
-        dev: &mut NinepDevice,
-        primary_icount: u64,
-        payload: Vec<u8>,
-    ) -> IoFaultOutcome {
-        let mut rng = ninep_rng(dev);
-        dev.resolve_response(primary_icount, ResponseStatus::Ok, payload, &mut rng)
+    fn install_result(dev: &mut NinepDevice, t: u64, request: &[u8], result: NinepResultDirective) {
+        let sequence = u32::from(u16::from_le_bytes([request[5], request[6]]));
+        let mut directive = ResolvedNinepRequestDirective::fault_free(t, sequence, request)
+            .unwrap_or_else(|error| panic!("valid directive: {error}"));
+        directive.result = result;
+        ok(dev.install_fault_directive(t, sequence, request, directive));
     }
 
     #[test]
-    fn ninep_latency_fault_shifts_delivery_icount_later() {
+    fn required_directive_is_fail_closed_and_preserves_server_state() {
         let mut dev = device();
-        dev.set_faults(IoFaults {
-            added_latency_ns: 4096, // 16 icounts at shift 8
-            ..IoFaults::none()
-        });
-        let outcome = resolve_reply(&mut dev, 100, vec![0; 4]);
-        assert_eq!(outcome.primary.delivery_icount, 116);
-        assert!(dev.rng_position() > 0, "fault resolution consumed draws");
+        dev.require_fault_directives();
+        let request = tattach(2, 1);
+        let error = dev
+            .submit(0, &request)
+            .expect_err("missing exact directive must fail");
+        assert!(matches!(
+            error,
+            crate::DeviceError::MissingNinepFaultDirective { tag: 2 }
+        ));
+        assert!(dev.server().fids().is_empty());
     }
 
     #[test]
-    fn ninep_bandwidth_fault_adds_transfer_delay_proportional_to_count() {
+    fn errno_directive_returns_rlerror_without_attach_side_effects() {
         let mut dev = device();
-        dev.set_faults(IoFaults {
-            bandwidth_bytes_per_sec: 1_000_000_000, // 1 ns/byte
-            ..IoFaults::none()
-        });
-        // 256 bytes -> 256 ns -> ceil(256/256) = 1 icount at shift 8.
-        let outcome = resolve_reply(&mut dev, 0, vec![0; 256]);
-        assert_eq!(outcome.primary.delivery_icount, 1);
-    }
-
-    #[test]
-    fn ninep_jitter_fault_shifts_within_window() {
-        let mut dev = device();
-        dev.set_faults(IoFaults {
-            jitter_window_ns: 4096,
-            ..IoFaults::none()
-        });
-        let outcome = resolve_reply(&mut dev, 0, vec![0; 4]);
-        assert!(outcome.primary.delivery_icount <= 16);
-    }
-
-    #[test]
-    fn ninep_reorder_fault_can_shift_one_reply_past_another() {
-        let mut dev = device();
-        dev.set_faults(IoFaults {
-            reorder_window_ns: 65_536,
-            ..IoFaults::none()
-        });
-        let mut rng = ninep_rng(&dev);
-        let a = dev.resolve_response(10, ResponseStatus::Ok, vec![0; 4], &mut rng);
-        let b = dev.resolve_response(10, ResponseStatus::Ok, vec![0; 4], &mut rng);
-        assert_ne!(
-            a.primary.delivery_icount, b.primary.delivery_icount,
-            "independent reorder draws move one reply past the other"
+        dev.require_fault_directives();
+        let request = tattach(2, 1);
+        install_result(
+            &mut dev,
+            0,
+            &request,
+            NinepResultDirective::Errno(errno::EIO),
         );
+        let (_, reply) = round_trip(&mut dev, 0, &request);
+        assert_eq!(reply_type(&reply), codec::RLERROR);
+        assert_eq!(rlerror_code(&reply), errno::EIO);
+        assert!(dev.server().fids().is_empty());
+        assert!(dev.snapshot().directives.is_empty());
     }
 
     #[test]
-    fn ninep_loss_fault_returns_error_status() {
+    fn stale_read_uses_exact_object_bytes_and_survives_restore_before_consumption() {
         let mut dev = device();
-        dev.set_faults(IoFaults {
-            loss: Probability::ALWAYS,
-            ..IoFaults::none()
-        });
-        let outcome = resolve_reply(&mut dev, 0, vec![1, 2, 3, 4]);
-        assert!(outcome.loss_fired);
-        assert_eq!(outcome.primary.status, ResponseStatus::Error);
-    }
-
-    #[test]
-    fn ninep_duplicate_fault_emits_a_second_reply_later() {
-        let mut dev = device();
-        dev.set_faults(IoFaults {
-            duplicate: Probability::ALWAYS,
-            duplicate_gap_ns: 4096,
-            ..IoFaults::none()
-        });
-        let outcome = resolve_reply(&mut dev, 0, vec![9; 8]);
-        assert!(outcome.duplicate_fired);
-        let dup = outcome
-            .duplicate
-            .unwrap_or_else(|| panic!("duplicate fault must emit a second reply"));
-        assert!(dup.delivery_icount > outcome.primary.delivery_icount);
-    }
-
-    #[test]
-    fn ninep_corrupt_fault_flips_seeded_bits_in_read_payload() {
-        let mut dev = device();
-        dev.set_faults(IoFaults {
-            corrupt: Probability::ALWAYS,
-            corrupt_bit_flips: 3,
-            ..IoFaults::none()
-        });
-        let outcome = resolve_reply(&mut dev, 0, vec![0u8; 16]);
-        assert!(outcome.corrupt_fired);
-        assert_ne!(outcome.primary.payload, vec![0u8; 16]);
-    }
-
-    #[test]
-    fn ninep_fault_resolution_is_reproducible_and_snapshots_rng_and_faults() {
-        let faults = IoFaults {
-            jitter_window_ns: 1024,
-            loss: Probability::new(1, 3),
-            duplicate: Probability::new(1, 2),
-            duplicate_gap_ns: 512,
-            corrupt: Probability::new(1, 2),
-            corrupt_bit_flips: 2,
-            ..IoFaults::none()
-        };
-        let mut a = device();
-        a.set_faults(faults.clone());
-        let mut b = device();
-        b.set_faults(faults.clone());
-        let oa = resolve_reply(&mut a, 5, vec![7; 8]);
-        let ob = resolve_reply(&mut b, 5, vec![7; 8]);
-        assert_eq!(oa, ob, "same seed + same inputs => identical outcome");
-        assert_eq!(a.rng_position(), b.rng_position());
-
-        // The active faults AND the RNG cursor round-trip through snapshot/restore.
-        let snap = a.snapshot();
-        assert_eq!(snap.faults, faults);
-        assert_eq!(snap.rng_position, a.rng_position());
-        let restored = ok(NinepDevice::restore(&snap, sample_tree()));
-        assert_eq!(restored.faults(), &faults);
-        assert_eq!(restored.rng_position(), a.rng_position());
-
-        // A restored device resumes the draw stream byte-identically.
-        let mut restored = restored;
-        let mut continue_a = a;
-        let resumed = resolve_reply(&mut restored, 9, vec![3; 8]);
-        let uninterrupted = resolve_reply(&mut continue_a, 9, vec![3; 8]);
-        assert_eq!(resumed, uninterrupted);
+        dev.require_fault_directives();
+        let request = tread(9, 55, 1, 3);
+        install_result(
+            &mut dev,
+            7,
+            &request,
+            NinepResultDirective::Stale(file_object("/captured", 4, b"ABCDE")),
+        );
+        let snapshot = dev.snapshot();
+        let mut restored = ok(NinepDevice::restore(&snapshot, sample_tree()));
+        let (_, reply) = round_trip(&mut restored, 7, &request);
+        assert_eq!(reply_type(&reply), codec::RREAD);
+        assert_eq!(&reply[11..], b"BCD");
+        assert!(restored.snapshot().directives.is_empty());
     }
 }

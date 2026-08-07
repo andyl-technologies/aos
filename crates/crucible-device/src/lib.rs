@@ -110,8 +110,10 @@ pub use netlink::{
     ResolvedNetworkFrameEffectsError, fragment_ethernet_ipv4, generate_network_response,
 };
 pub use ninep::{
-    FsTree, FsTreeDecodeError, NinepDevice, NinepLatency, NinepServer, NinepServerSnapshot,
-    NinepSnapshot, Node, Qid, QidType,
+    FsTree, FsTreeDecodeError, NinepDevice, NinepLatency, NinepObjectVersion, NinepOperation,
+    NinepRequestIdentity, NinepRequestOpportunity, NinepResultDirective, NinepServer,
+    NinepServerSnapshot, NinepSnapshot, NinepVisibilityPolicy, NinepVisibilityRelease,
+    NinepVisibilityScope, NinepVisibilityState, Node, Qid, QidType, ResolvedNinepRequestDirective,
 };
 pub use request::{
     AdditionalCompletion, AffineLatency, ComputedResponse, LatencyModel, Request, RequestId,

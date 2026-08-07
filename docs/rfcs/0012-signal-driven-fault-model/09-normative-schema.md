@@ -449,8 +449,8 @@ most 65,536 entries or 16 MiB of inline bytes in one declaration.
 | `array_selection` | `lowest_healthy/stable_hash/least_loaded` | `storage.array_state.selection_policy` |
 | `rebuild` | positive chunk bytes, bounded queue depth, positive byte rate | `storage.array_state.rebuild_service` |
 | `array_consistency` | `require_quorum/degraded_commit/atomic_stripe` | `storage.array_state.consistency_policy` |
-| `ninep_visibility` | scope `global/per_session/writer_immediate`; metadata/data atomicity; deleted-object retention | `ninep.visibility.visibility_policy` |
-| `ninep_object` | absolute canonical path, version sequence, Linux mode, and bounded exact bytes | stale or misdirected `ninep.result` |
+| `ninep_visibility` | scope `global/per_session/writer_immediate`; `atomic_metadata_and_data`; `retain_deleted_objects`; `data_visibility_lag_nanos` absent for atomic visibility and required positive for non-atomic visibility | `ninep.visibility.visibility_policy` |
+| `ninep_object` | absolute canonical path including `/`; 32-bit 9p QID version sequence; Linux mode; bounded exact bytes; `deleted`; a deleted object requires zero mode and empty bytes, while live objects require directory, regular-file, or symlink mode and directories require empty bytes | stale or misdirected `ninep.result`; `ninep.visibility.update` |
 | `bytes` | nonempty bounded exact bytes | static stale block-read versions |
 
 Plan admission checks every reference's artifact class, nested typed-result

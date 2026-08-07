@@ -6,7 +6,7 @@
 //! with state from another checkpoint.
 
 use crucible::{ContentHash, PreemptionDecision, VirtualTime};
-use crucible_device::BlockSnapshot;
+use crucible_device::{BlockSnapshot, NinepRequestOpportunity, NinepSnapshot};
 use crucible_shmem::{RegionHeaderSnapshot, SpscRingSnapshot};
 
 /// Complete host block-device continuation paired with QEMU VMState.
@@ -22,6 +22,35 @@ pub struct QemuLiveBlockIoServicerCheckpoint {
     pub(crate) responses: SpscRingSnapshot,
     pub(crate) frames_processed: usize,
     pub(crate) frames_delivered: usize,
+}
+
+/// Complete host 9p-device continuation paired with QEMU VMState.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLive9pIoServicerCheckpoint {
+    pub(crate) execution_binding: ContentHash,
+    pub(crate) tree: ContentHash,
+    pub(crate) region_header: RegionHeaderSnapshot,
+    pub(crate) vm_slot: u32,
+    pub(crate) device: NinepSnapshot,
+    pub(crate) requests: SpscRingSnapshot,
+    pub(crate) responses: SpscRingSnapshot,
+    pub(crate) pending_fault_opportunities: Vec<(u64, NinepRequestOpportunity, bool)>,
+    pub(crate) frames_processed: usize,
+    pub(crate) frames_delivered: usize,
+}
+
+impl QemuLive9pIoServicerCheckpoint {
+    /// Returns the QEMU execution checkpoint paired with this host continuation.
+    #[must_use]
+    pub const fn execution_binding(&self) -> ContentHash {
+        self.execution_binding
+    }
+
+    /// Returns the immutable filesystem-tree identity used by this continuation.
+    #[must_use]
+    pub const fn tree(&self) -> ContentHash {
+        self.tree
+    }
 }
 
 impl QemuLiveBlockIoServicerCheckpoint {
@@ -47,6 +76,7 @@ impl QemuLiveBlockIoServicerCheckpoint {
 pub struct QemuHostIoCheckpoint {
     pub(crate) execution_binding: ContentHash,
     pub(crate) block: Option<QemuLiveBlockIoServicerCheckpoint>,
+    pub(crate) ninep: Option<QemuLive9pIoServicerCheckpoint>,
 }
 
 /// Scheduler-facing continuation owned by the Apache QEMU node wrapper.
@@ -92,23 +122,26 @@ impl QemuNodeContinuationCheckpoint {
 }
 
 impl QemuHostIoCheckpoint {
-    /// Builds a checkpoint for a runtime with no shared-memory block device.
+    /// Builds a checkpoint for a runtime with no shared-memory host devices.
     #[must_use]
-    pub const fn without_block(execution_binding: ContentHash) -> Self {
+    pub const fn without_devices(execution_binding: ContentHash) -> Self {
         Self {
             execution_binding,
             block: None,
+            ninep: None,
         }
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) const fn with_block(
+    pub(crate) const fn with_devices(
         execution_binding: ContentHash,
-        block: QemuLiveBlockIoServicerCheckpoint,
+        block: Option<QemuLiveBlockIoServicerCheckpoint>,
+        ninep: Option<QemuLive9pIoServicerCheckpoint>,
     ) -> Self {
         Self {
             execution_binding,
-            block: Some(block),
+            block,
+            ninep,
         }
     }
 
@@ -122,5 +155,11 @@ impl QemuHostIoCheckpoint {
     #[must_use]
     pub const fn block(&self) -> Option<&QemuLiveBlockIoServicerCheckpoint> {
         self.block.as_ref()
+    }
+
+    /// Returns the 9p continuation when the captured runtime owned one.
+    #[must_use]
+    pub const fn ninep(&self) -> Option<&QemuLive9pIoServicerCheckpoint> {
+        self.ninep.as_ref()
     }
 }

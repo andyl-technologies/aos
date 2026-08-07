@@ -9,7 +9,8 @@
 //!
 //! It also owns [`NinepSnapshot`], the device half of a `MaterializedState`
 //! contribution: the uniform-core snapshot, the server's fid table + negotiated
-//! `msize`, and the device RNG cursor — **never** the served tree
+//! `msize`, exact fault directives, visibility continuation, and session
+//! identity — **never** the served tree
 //! bytes ([IO-19], [TEMP-9]). [`NinepDevice::restore`] re-supplies the
 //! content-addressed tree and re-arms the fid table and in-flight queue.
 //!
@@ -22,16 +23,20 @@
 //! delivery_icount  = ceil(vt(request_icount) + NinepLatency::latency_ns)
 //! ```
 
+use std::collections::BTreeMap;
+
 use crucible_shmem::{FrameEntry, NodeSlot, RingHeader};
 
-use crate::clock::ceil_ns_to_icount;
 use crate::error::DeviceError;
-use crate::fault::{DeviceRng, IoFaultOutcome, IoFaults};
 use crate::inflight::PendingResponse;
 use crate::request::{ComputedResponse, LatencyModel, Request, Response, ResponseStatus};
 use crate::subnode::{IoCore, IoCoreSnapshot, IoSubNode, ShmemDeliveryResult, ShmemInboxProcess};
 
-use super::codec::{self, Message, TMessage};
+use super::codec::{self, GetattrReply, Message, Qid, QidType, TMessage};
+use super::fault::{
+    NinepObjectVersion, NinepRequestIdentity, NinepResultDirective, NinepVisibilityPolicy,
+    NinepVisibilityRelease, NinepVisibilityState, ResolvedNinepRequestDirective,
+};
 use super::server::{NinepServer, NinepServerSnapshot};
 use super::tree::FsTree;
 
@@ -106,7 +111,7 @@ impl LatencyModel for NinepLatency {
 ///
 /// Composes an [`IoCore`] (clock, rings, in-flight queue) with the device state
 /// (the [`NinepServer`] protocol engine and its served [`FsTree`], the latency
-/// model, and the RNG cursor). Drive it with [`IoCore`]'s lifecycle
+/// model, and signal-driven request state). Drive it with [`IoCore`]'s lifecycle
 /// methods reached through [`NinepDevice::core_mut`], or the convenience wrappers
 /// [`NinepDevice::submit`] / [`NinepDevice::advance_to`] /
 /// [`NinepDevice::next_response`].
@@ -115,15 +120,11 @@ pub struct NinepDevice {
     core: IoCore,
     server: NinepServer,
     latency: NinepLatency,
-    /// The active I/O fault table applied to completions ([IO-25], [IO-26]).
-    faults: IoFaults,
-    /// The per-device RNG stream cursor (draws consumed so far, [IO-23]).
-    ///
-    /// Advanced by [`NinepDevice::resolve_response`] as the seeded per-device RNG
-    /// draws each completion's faults; captured in the snapshot and re-derived on
-    /// restore via [`NinepDevice::rng`] so a fork resumes the same draw sequence.
-    /// Fault-free 9p (the default) never draws, so the cursor stays zero.
-    rng_position: u64,
+    require_fault_directives: bool,
+    directives: BTreeMap<NinepRequestIdentity, ResolvedNinepRequestDirective>,
+    visibility: NinepVisibilityState,
+    virtual_fids: BTreeMap<u32, NinepObjectVersion>,
+    session_epoch: u64,
 }
 
 impl NinepDevice {
@@ -138,8 +139,11 @@ impl NinepDevice {
             core,
             server: NinepServer::new(tree),
             latency,
-            faults: IoFaults::none(),
-            rng_position: 0,
+            require_fault_directives: false,
+            directives: BTreeMap::new(),
+            visibility: NinepVisibilityState::default(),
+            virtual_fids: BTreeMap::new(),
+            session_epoch: 0,
         }
     }
 
@@ -164,74 +168,86 @@ impl NinepDevice {
         &self.server
     }
 
-    /// Returns the device RNG stream cursor (draws consumed so far, [IO-23]).
+    /// Returns the deterministic latency model used for request completions.
     #[must_use]
-    pub fn rng_position(&self) -> u64 {
-        self.rng_position
+    pub const fn latency_model(&self) -> &NinepLatency {
+        &self.latency
     }
 
-    /// Returns a read-only view of the active I/O fault table ([IO-26]).
-    #[must_use]
-    pub fn faults(&self) -> &IoFaults {
-        &self.faults
+    /// Requires every subsequently computed request to carry an exact directive.
+    pub fn require_fault_directives(&mut self) {
+        self.require_fault_directives = true;
     }
 
-    /// Activates an I/O fault table for subsequent completions ([IO-25], [IO-26]).
+    /// Installs the resolve decision for one exact ring-head request.
     ///
-    /// The 9p device applies exactly the same fault taxonomy as the block device
-    /// and the network link: latency/jitter/reorder/bandwidth shift the reply
-    /// delivery icount, loss turns the reply into an error status, duplicate emits
-    /// a second reply, and corrupt flips seeded bits in the read payload. The
-    /// active set is part of the device's `MaterializedState` contribution, so a
-    /// fork resumes with identical fault behavior ([IO-26]).
-    pub fn set_faults(&mut self, faults: IoFaults) {
-        self.faults = faults;
-    }
-
-    /// Builds a seeded RNG positioned at this device's captured cursor ([IO-23]).
+    /// # Errors
     ///
-    /// Forks the device stream by name-hash from the engine's decision-RNG
-    /// `root_seed` in `domain` for `name` ([DET-25]) and resumes it at the
-    /// captured cursor, so the returned RNG's next draw is byte-identical to the
-    /// uninterrupted run's. The caller supplies the engine root seed and the
-    /// device's stable stream domain and name (the engine owns the name-hash).
-    #[must_use]
-    pub fn rng(&self, root_seed: u64, domain: &str, name: &str) -> DeviceRng {
-        DeviceRng::restore(root_seed, domain, name, self.rng_position)
-    }
-
-    /// Resolves a modeled reply through the active fault table ([IO-25]).
-    ///
-    /// Applies the uniform I/O fault taxonomy to a modeled
-    /// `(delivery_icount, status, payload)` triple — the reply
-    /// [`NinepDevice::submit`]'s COMPUTE step would deliver — drawing every
-    /// probabilistic choice from `rng` in the fixed model order and advancing the
-    /// device RNG cursor to match ([IO-21], [IO-23]). The returned
-    /// [`IoFaultOutcome`] carries the perturbed primary reply, an optional
-    /// duplicate, and which faults fired. Nanosecond shifts are converted to
-    /// icounts with the device's fixed clock shift, so the result is a pure
-    /// function of the inputs, the table, and the RNG position ([IO-22], [IO-24]).
-    pub fn resolve_response(
+    /// Returns [`DeviceError`] when the directive is malformed or duplicated.
+    pub fn install_fault_directive(
         &mut self,
-        primary_icount: u64,
-        status: ResponseStatus,
-        payload: Vec<u8>,
-        rng: &mut DeviceRng,
-    ) -> IoFaultOutcome {
-        let shift_bits = self.core.shift_bits();
-        let outcome = self
-            .faults
-            .resolve(primary_icount, status, payload, rng, |ns| {
-                ceil_ns_to_icount(ns, shift_bits).unwrap_or(u64::MAX)
+        request_icount: u64,
+        transport_sequence: u32,
+        frame: &[u8],
+        directive: ResolvedNinepRequestDirective,
+    ) -> Result<(), DeviceError> {
+        directive.validate_for(request_icount, transport_sequence, frame)?;
+        if self.directives.contains_key(&directive.identity) {
+            return Err(DeviceError::InvalidNinepFaultDirective {
+                reason: "9p request directive is already installed",
             });
-        self.rng_position = rng.position();
-        outcome
+        }
+        self.directives.insert(directive.identity, directive);
+        Ok(())
+    }
+
+    /// Commits one object update to the visibility continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] for invalid content, conflicting identity, or a
+    /// bounded-state overflow.
+    pub fn commit_visibility_update(
+        &mut self,
+        update_id: [u8; 32],
+        object: NinepObjectVersion,
+        policy: NinepVisibilityPolicy,
+        release: NinepVisibilityRelease,
+        data_lag_nanos: u64,
+    ) -> Result<u64, DeviceError> {
+        self.visibility.commit(
+            update_id,
+            object,
+            policy,
+            release,
+            self.session_epoch,
+            data_lag_nanos,
+        )
+    }
+
+    /// Advances the visible frontier from exact time and event evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] if checkpointed visibility state is inconsistent.
+    pub fn advance_visibility(
+        &mut self,
+        now_nanos: u64,
+        observed_events: &BTreeMap<[u8; 32], u64>,
+    ) -> Result<(u64, u64), DeviceError> {
+        self.visibility
+            .advance_visibility(self.session_epoch, now_nanos, observed_events)
+    }
+
+    /// Returns the committed-versus-visible continuation.
+    #[must_use]
+    pub const fn visibility_state(&self) -> &NinepVisibilityState {
+        &self.visibility
     }
 
     /// Enqueues an encoded 9p request frame and COMPUTEs it immediately.
     ///
-    /// This is the ARRIVE+COMPUTE convenience path for the in-process double
-    /// ([IO-27]): the `frame` bytes are wrapped into the uniform [`Request`] at
+    /// The `frame` bytes are wrapped into the uniform [`Request`] at
     /// `request_icount`, enqueued, and COMPUTEd, fixing the response's
     /// `delivery_icount`. The response stays in flight until
     /// [`NinepDevice::advance_to`] reaches that icount. The `request_id` is the
@@ -258,7 +274,16 @@ impl NinepDevice {
             })?;
         // Borrow split: process_inbox needs `&mut self.core` and `&mut server`
         // simultaneously, so serve through a detached server view.
-        Self::process_pending(&mut self.core, &mut self.server, &self.latency)
+        Self::process_pending(
+            &mut self.core,
+            &mut self.server,
+            &self.latency,
+            self.require_fault_directives,
+            &mut self.directives,
+            &self.visibility,
+            &mut self.virtual_fids,
+            &mut self.session_epoch,
+        )
     }
 
     /// Drains raw 9p request frames from a shared-memory inbox ring.
@@ -282,9 +307,39 @@ impl NinepDevice {
         let mut node = NinepServerNode {
             server: &mut self.server,
             latency: &self.latency,
+            require_fault_directives: self.require_fault_directives,
+            directives: &mut self.directives,
+            visibility: &self.visibility,
+            virtual_fids: &mut self.virtual_fids,
+            session_epoch: &mut self.session_epoch,
         };
         self.core
             .process_shmem_inbox(&mut node, inbox, inbox_entries, producer_slot)
+    }
+
+    /// Dequeues and computes at most one shared-memory 9p request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] for ring corruption, a missing or mismatched
+    /// required directive, protocol encoding failure, or wake failure.
+    pub fn process_one_shmem_request(
+        &mut self,
+        inbox: &RingHeader,
+        inbox_entries: &[FrameEntry],
+        producer_slot: &NodeSlot,
+    ) -> Result<ShmemInboxProcess, DeviceError> {
+        let mut node = NinepServerNode {
+            server: &mut self.server,
+            latency: &self.latency,
+            require_fault_directives: self.require_fault_directives,
+            directives: &mut self.directives,
+            visibility: &self.visibility,
+            virtual_fids: &mut self.virtual_fids,
+            session_epoch: &mut self.session_epoch,
+        };
+        self.core
+            .process_one_shmem_request(&mut node, inbox, inbox_entries, producer_slot)
     }
 
     /// Advances the clock to `limit` and DELIVERs every due response ([IO-2]).
@@ -344,8 +399,21 @@ impl NinepDevice {
         core: &mut IoCore,
         server: &mut NinepServer,
         latency: &NinepLatency,
+        require_fault_directives: bool,
+        directives: &mut BTreeMap<NinepRequestIdentity, ResolvedNinepRequestDirective>,
+        visibility: &NinepVisibilityState,
+        virtual_fids: &mut BTreeMap<u32, NinepObjectVersion>,
+        session_epoch: &mut u64,
     ) -> Result<(), DeviceError> {
-        let mut node = NinepServerNode { server, latency };
+        let mut node = NinepServerNode {
+            server,
+            latency,
+            require_fault_directives,
+            directives,
+            visibility,
+            virtual_fids,
+            session_epoch,
+        };
         core.process_inbox(&mut node)
     }
 
@@ -353,7 +421,8 @@ impl NinepDevice {
     ///
     /// Captures the uniform-core snapshot (clock, rings, in-flight responses),
     /// the server's fid table and negotiated `msize`, the latency model (part of
-    /// the `World`, [IO-22]), and the device RNG cursor — **never**
+    /// the `World`, [IO-22]), exact directives, visibility continuation, and
+    /// session identity — **never**
     /// the served tree bytes ([TEMP-9]).
     #[must_use]
     pub fn snapshot(&self) -> NinepSnapshot {
@@ -361,8 +430,11 @@ impl NinepDevice {
             core: self.core.snapshot(),
             server: self.server.snapshot(),
             latency: self.latency,
-            faults: self.faults.clone(),
-            rng_position: self.rng_position,
+            require_fault_directives: self.require_fault_directives,
+            directives: self.directives.clone(),
+            visibility: self.visibility.clone(),
+            virtual_fids: self.virtual_fids.clone(),
+            session_epoch: self.session_epoch,
         }
     }
 
@@ -370,8 +442,8 @@ impl NinepDevice {
     ///
     /// The served `tree` is re-supplied (it is the shared, content-addressed
     /// `World`, never carried in the snapshot, [IO-19], [TEMP-9]); the fid table,
-    /// negotiated `msize`, latency model, RNG position, and in-flight responses
-    /// are restored verbatim. Open directory caches are reconstructed from the
+    /// negotiated `msize`, latency model, directives, visibility state, session
+    /// identity, and in-flight responses are restored verbatim. Open directory caches are reconstructed from the
     /// tree on demand, so the restored device answers byte-identically to an
     /// uninterrupted run ([IO-19], [IO-28]).
     ///
@@ -379,16 +451,39 @@ impl NinepDevice {
     ///
     /// Returns any [`DeviceError`] [`IoCore::restore`] raises.
     pub fn restore(snapshot: &NinepSnapshot, tree: FsTree) -> Result<Self, DeviceError> {
+        snapshot.visibility.validate()?;
+        for (identity, directive) in &snapshot.directives {
+            if identity != &directive.identity {
+                return Err(DeviceError::InvalidNinepFaultDirective {
+                    reason: "9p checkpoint directive index is inconsistent",
+                });
+            }
+            match &directive.result {
+                NinepResultDirective::Errno(0) => {
+                    return Err(DeviceError::InvalidNinepFaultDirective {
+                        reason: "9p checkpoint directive has zero errno",
+                    });
+                }
+                NinepResultDirective::Stale(object) | NinepResultDirective::Misdirected(object) => {
+                    object.validate()?
+                }
+                NinepResultDirective::Normal | NinepResultDirective::Errno(_) => {}
+            }
+        }
+        for object in snapshot.virtual_fids.values() {
+            object.validate()?;
+        }
         let core = IoCore::restore(&snapshot.core)?;
         let server = NinepServer::restore(&snapshot.server, tree);
         Ok(Self {
             core,
             server,
             latency: snapshot.latency,
-            // Restore the active fault table so post-restore replies are perturbed
-            // identically ([IO-26]); omitting it would silently diverge.
-            faults: snapshot.faults.clone(),
-            rng_position: snapshot.rng_position,
+            require_fault_directives: snapshot.require_fault_directives,
+            directives: snapshot.directives.clone(),
+            visibility: snapshot.visibility.clone(),
+            virtual_fids: snapshot.virtual_fids.clone(),
+            session_epoch: snapshot.session_epoch,
         })
     }
 }
@@ -403,30 +498,113 @@ impl NinepDevice {
 struct NinepServerNode<'a> {
     server: &'a mut NinepServer,
     latency: &'a NinepLatency,
+    require_fault_directives: bool,
+    directives: &'a mut BTreeMap<NinepRequestIdentity, ResolvedNinepRequestDirective>,
+    visibility: &'a NinepVisibilityState,
+    virtual_fids: &'a mut BTreeMap<u32, NinepObjectVersion>,
+    session_epoch: &'a mut u64,
 }
 
 impl<'a> IoSubNode for NinepServerNode<'a> {
     type Latency = NinepLatency;
-    type ComputeCheckpoint = NinepServer;
+    type ComputeCheckpoint = (NinepServer, BTreeMap<u32, NinepObjectVersion>, u64);
 
     fn latency_model(&self) -> &Self::Latency {
         self.latency
     }
 
     fn compute_checkpoint(&self) -> Self::ComputeCheckpoint {
-        self.server.clone()
+        (
+            self.server.clone(),
+            self.virtual_fids.clone(),
+            *self.session_epoch,
+        )
     }
 
     fn restore_compute_checkpoint(&mut self, checkpoint: Self::ComputeCheckpoint) {
-        *self.server = checkpoint;
+        *self.server = checkpoint.0;
+        *self.virtual_fids = checkpoint.1;
+        *self.session_epoch = checkpoint.2;
     }
 
     fn compute(&mut self, request: &Request) -> Result<ComputedResponse, DeviceError> {
-        // Dispatch the 9p request frame. Hostile/mutating/unknown bytes yield a
-        // well-formed Rlerror reply frame ([IO-17], [IO-18]); the only Err here
-        // is a pathological reply that cannot be encoded, which is an internal
-        // bug, not external input.
-        let reply = self.server.handle(&request.payload)?;
+        let message = Message::decode(&request.payload).ok();
+        let begins_session = message
+            .as_ref()
+            .is_some_and(|message| matches!(message.body, TMessage::Version { .. }));
+        if begins_session && *self.session_epoch == u64::MAX {
+            return Err(DeviceError::InvalidNinepFaultDirective {
+                reason: "9p session epoch overflow",
+            });
+        }
+        let identity = ResolvedNinepRequestDirective::fault_free(
+            request.request_icount,
+            request.request_id,
+            &request.payload,
+        )?
+        .identity;
+        let directive = self.directives.get(&identity).cloned();
+        if self.require_fault_directives && directive.is_none() {
+            return Err(DeviceError::MissingNinepFaultDirective { tag: identity.tag });
+        }
+        if let Some(directive) = &directive {
+            directive.validate_for(request.request_icount, request.request_id, &request.payload)?;
+        }
+
+        let explicit = directive
+            .as_ref()
+            .and_then(|directive| match &directive.result {
+                NinepResultDirective::Stale(object) | NinepResultDirective::Misdirected(object) => {
+                    Some(object.clone())
+                }
+                NinepResultDirective::Normal | NinepResultDirective::Errno(_) => None,
+            });
+        let visible = message.as_ref().and_then(|message| {
+            request_fid(&message.body)
+                .and_then(|fid| self.virtual_fids.get(&fid).cloned())
+                .or_else(|| {
+                    request_fid(&message.body)
+                        .and_then(|fid| self.server.fids().get(&fid))
+                        .map(|fid| format!("/{}", fid.path.join("/")))
+                        .and_then(|path| self.visibility.visible_object(*self.session_epoch, &path))
+                })
+        });
+        let selected = explicit.or(visible);
+        let reply = match directive.as_ref().map(|directive| &directive.result) {
+            Some(NinepResultDirective::Errno(errno)) => {
+                codec::encode_rlerror(identity.tag, *errno)?
+            }
+            _ => match selected.as_ref() {
+                Some(object) => object_reply(
+                    message
+                        .as_ref()
+                        .ok_or(DeviceError::InvalidNinepFaultDirective {
+                            reason: "9p object result requires a decodable request",
+                        })?,
+                    object,
+                    self.virtual_fids,
+                )?,
+                None => {
+                    let reply = self.server.handle(&request.payload)?;
+                    if let Some(message) = &message {
+                        match message.body {
+                            TMessage::Version { .. } => self.virtual_fids.clear(),
+                            TMessage::Clunk { fid } => {
+                                self.virtual_fids.remove(&fid);
+                            }
+                            _ => {}
+                        }
+                    }
+                    reply
+                }
+            },
+        };
+        if directive.is_some() {
+            self.directives.remove(&identity);
+        }
+        if begins_session {
+            *self.session_epoch += 1;
+        }
         // The status is Ok unless the reply is an Rlerror frame; map the 9p
         // reply type byte (offset 4) to the uniform status so the core's
         // coincident-delivery ordering and any fault hooks see the outcome.
@@ -442,11 +620,151 @@ impl<'a> IoSubNode for NinepServerNode<'a> {
     }
 }
 
+fn request_fid(message: &TMessage) -> Option<u32> {
+    match message {
+        TMessage::Walk { fid, .. }
+        | TMessage::Lopen { fid, .. }
+        | TMessage::Read { fid, .. }
+        | TMessage::Readdir { fid, .. }
+        | TMessage::Getattr { fid, .. }
+        | TMessage::Readlink { fid }
+        | TMessage::Statfs { fid }
+        | TMessage::Clunk { fid }
+        | TMessage::Xattrwalk { fid, .. }
+        | TMessage::Fsync { fid } => Some(*fid),
+        TMessage::Version { .. }
+        | TMessage::Attach { .. }
+        | TMessage::Flush { .. }
+        | TMessage::Mutating { .. }
+        | TMessage::Unknown { .. } => None,
+    }
+}
+
+fn object_qid(object: &NinepObjectVersion) -> Qid {
+    let kind = match object.mode & 0o170_000 {
+        0o040_000 => QidType::Dir,
+        0o120_000 => QidType::Symlink,
+        _ => QidType::File,
+    };
+    Qid {
+        kind,
+        version: object.version,
+        path: super::tree::qid_path(&object.components()),
+    }
+}
+
+fn object_reply(
+    message: &Message,
+    object: &NinepObjectVersion,
+    virtual_fids: &mut BTreeMap<u32, NinepObjectVersion>,
+) -> Result<Vec<u8>, DeviceError> {
+    object.validate()?;
+    let tag = message.tag;
+    if object.deleted {
+        return codec::encode_rlerror(tag, super::errno::ENOENT).map_err(DeviceError::from);
+    }
+    let qid = object_qid(object);
+    let reply = match &message.body {
+        TMessage::Walk { newfid, wnames, .. } => {
+            virtual_fids.insert(*newfid, object.clone());
+            let qids = if wnames.is_empty() {
+                Vec::new()
+            } else {
+                vec![qid]
+            };
+            codec::encode_rwalk(tag, &qids)?
+        }
+        TMessage::Lopen { fid, .. } => {
+            virtual_fids.insert(*fid, object.clone());
+            codec::encode_rlopen(tag, &qid, 0)?
+        }
+        TMessage::Read { offset, count, .. } => {
+            if object.mode & 0o170_000 != 0o100_000 {
+                codec::encode_rlerror(
+                    tag,
+                    if object.mode & 0o170_000 == 0o040_000 {
+                        super::errno::EISDIR
+                    } else {
+                        super::errno::EINVAL
+                    },
+                )?
+            } else {
+                let start = usize::try_from(*offset).unwrap_or(usize::MAX);
+                let end = start.saturating_add(*count as usize).min(object.data.len());
+                let data = object.data.get(start..end).unwrap_or(&[]);
+                codec::encode_rread(tag, data)?
+            }
+        }
+        TMessage::Readdir { offset, count, .. } => {
+            if object.mode & 0o170_000 != 0o040_000 {
+                codec::encode_rlerror(tag, super::errno::ENOTDIR)?
+            } else {
+                let mut data = Vec::new();
+                let entries = [(1_u64, qid, "."), (2_u64, qid, "..")];
+                for (cookie, entry_qid, name) in entries {
+                    if cookie <= *offset {
+                        continue;
+                    }
+                    let mut encoded = Vec::new();
+                    codec::push_dirent(&mut encoded, &entry_qid, cookie, 4, name)?;
+                    if data.len().saturating_add(encoded.len()) > *count as usize {
+                        if data.is_empty() {
+                            return Ok(codec::encode_rlerror(tag, super::errno::EMSGSIZE)?);
+                        }
+                        break;
+                    }
+                    data.extend_from_slice(&encoded);
+                }
+                codec::encode_rreaddir(tag, &data)?
+            }
+        }
+        TMessage::Getattr { request_mask, .. } => {
+            let size = u64::try_from(object.data.len()).unwrap_or(u64::MAX);
+            GetattrReply {
+                valid: *request_mask,
+                qid,
+                mode: object.mode,
+                uid: 0,
+                gid: 0,
+                nlink: 1,
+                rdev: 0,
+                size,
+                blksize: 4096,
+                blocks: size.saturating_add(511) / 512,
+            }
+            .encode(tag)?
+        }
+        TMessage::Readlink { .. } => {
+            if object.mode & 0o170_000 != 0o120_000 {
+                codec::encode_rlerror(tag, super::errno::EINVAL)?
+            } else {
+                let target = std::str::from_utf8(&object.data).map_err(|_| {
+                    DeviceError::InvalidNinepFaultDirective {
+                        reason: "9p symlink target is not UTF-8",
+                    }
+                })?;
+                codec::encode_rreadlink(tag, target)?
+            }
+        }
+        TMessage::Xattrwalk { newfid, .. } => {
+            virtual_fids.insert(*newfid, object.clone());
+            codec::encode_rxattrwalk(tag, 0)?
+        }
+        _ => {
+            return Err(DeviceError::InvalidNinepFaultDirective {
+                reason: "9p object result does not support this request shape",
+            });
+        }
+    };
+    Ok(reply)
+}
+
 /// The device half of a 9p sub-node's `MaterializedState` ([IO-19], [IO-23]).
 ///
 /// Holds the uniform-core snapshot (clock, rings, in-flight responses), the
 /// server's fid table and negotiated `msize`, the latency model (part of the
-/// `World`, [IO-22]), and the device RNG cursor. It **never** holds
+/// `World`, [IO-22]), exact directives, visibility continuation, and session
+/// identity. It **never** holds
 /// the served tree bytes ([TEMP-9]); restore re-supplies the content-addressed
 /// tree, whose open caches are pure functions of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -458,11 +776,16 @@ pub struct NinepSnapshot {
     /// The latency model parameters, restored so post-restore completion icounts
     /// match an uninterrupted run ([IO-22]).
     pub latency: NinepLatency,
-    /// The active I/O fault table, restored so post-restore replies are perturbed
-    /// identically ([IO-25], [IO-26]).
-    pub faults: IoFaults,
-    /// The per-device RNG stream cursor (draws consumed so far, [IO-23]).
-    pub rng_position: u64,
+    /// Whether every compute requires an authenticated request directive.
+    pub require_fault_directives: bool,
+    /// Installed directives not yet consumed by their exact requests.
+    pub directives: BTreeMap<NinepRequestIdentity, ResolvedNinepRequestDirective>,
+    /// Committed-versus-visible object versions and frontiers.
+    pub visibility: NinepVisibilityState,
+    /// Fids bound to scenario-owned object versions outside the immutable tree.
+    pub virtual_fids: BTreeMap<u32, NinepObjectVersion>,
+    /// Monotone negotiated-session identity for per-session visibility.
+    pub session_epoch: u64,
 }
 
 impl NinepSnapshot {

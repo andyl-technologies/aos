@@ -668,6 +668,24 @@ impl QemuNode {
             })
     }
 
+    /// Installs the production signal coordinator for this node's 9p device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the host-I/O runtime has no attached 9p
+    /// servicer or already owns a coordinator.
+    #[cfg(target_os = "linux")]
+    pub fn install_ninep_fault_coordinator(
+        &mut self,
+        coordinator: Box<dyn crate::QemuNinepFaultCoordinator>,
+    ) -> Result<(), QemuNodeError> {
+        self.host_io_runtime
+            .install_ninep_fault_coordinator(coordinator)
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })
+    }
+
     /// Builds a QEMU scheduler node from one owned child handle and its channels.
     #[must_use]
     pub fn new(
@@ -1298,9 +1316,9 @@ impl QemuNode {
     /// Returns [`QemuNodeError`] when the production host runtime cannot inspect
     /// the block transport or device continuation.
     #[cfg(target_os = "linux")]
-    pub(crate) fn has_pending_block_io_for_gate(&mut self) -> Result<bool, QemuNodeError> {
+    pub(crate) fn has_pending_device_io_for_gate(&mut self) -> Result<bool, QemuNodeError> {
         self.host_io_runtime
-            .has_pending_block_io()
+            .has_pending_device_io()
             .map_err(|source| {
                 QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
             })

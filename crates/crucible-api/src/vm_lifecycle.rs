@@ -332,6 +332,7 @@ pub struct ProductionVmLifecycleLoop {
     branch: Option<ProductionVmBranchConfig>,
     launch_configs: BTreeMap<NodeId, ProductionLiveNodeStepGateConfig>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
+    ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
     block_devices: storage_faults::ProductionBlockDevices,
     storage_fault_observations: storage_faults::ProductionStorageObservations,
     fault_runtime: Arc<std::sync::Mutex<ProductionFaultRuntime>>,
@@ -362,7 +363,7 @@ use network_faults::{
     ProductionFaultEvaluationCursor, ProductionFaultNetworkInterceptor,
     SharedProductionFaultEvaluationCursor,
 };
-use storage_faults::{ProductionBlockFaultCoordinator, block_binding_for_vm};
+use storage_faults::{ProductionBlockFaultCoordinator, block_binding_for_vm, ninep_binding_for_vm};
 
 /// Derives the production scheduler's initial state-space search frontier.
 ///
@@ -471,6 +472,7 @@ pub fn build_production_vm_lifecycle_loop(
     let mut backends = ProductionNodeSet::new();
     let mut launch_configs = BTreeMap::new();
     let mut block_bindings = BTreeMap::new();
+    let mut ninep_bindings = BTreeMap::new();
     let mut node_indexes = BTreeMap::new();
     let mut initial_ticks = None;
     let scenario_seed = scenario.seed().bytes();
@@ -531,6 +533,12 @@ pub fn build_production_vm_lifecycle_loop(
         {
             launch = launch.with_shmem_block(block.base.clone(), block.durability.clone());
             block_bindings.insert(vm.id.clone(), block);
+        }
+        if let Some(ninep) =
+            ninep_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
+        {
+            launch = launch.with_shmem_ninep(ninep.tree.clone(), ninep.latency);
+            ninep_bindings.insert(vm.id.clone(), ninep);
         }
         if vm.initrd.is_some() && config.initrd.is_none() {
             return Err(loop_factory_error(format!(
@@ -702,6 +710,26 @@ pub fn build_production_vm_lifecycle_loop(
                 ))
             })?;
     }
+    for (node, ninep) in &ninep_bindings {
+        backends
+            .install_ninep_fault_coordinator(
+                node,
+                Box::new(storage_faults::ProductionNinepFaultCoordinator::new(
+                    Arc::clone(&fault_runtime),
+                    Arc::clone(&fault_evaluation_cursor),
+                    Arc::clone(&storage_fault_observations),
+                    source.world().clone(),
+                    ninep.target.clone(),
+                    first.icount_shift,
+                )),
+            )
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "attach signal-driven 9p coordinator to `{}`: {error}",
+                    node.name
+                ))
+            })?;
+    }
 
     Ok(ProductionVmLifecycleLoop {
         inner: BackendQuantumLoop::with_network_output_interceptor(
@@ -725,6 +753,7 @@ pub fn build_production_vm_lifecycle_loop(
         branch: config.branch.clone(),
         launch_configs,
         block_bindings,
+        ninep_bindings,
         block_devices,
         storage_fault_observations,
         fault_runtime,

@@ -155,6 +155,12 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying block-servicer error.
         source: crate::QemuLiveBlockIoServicerError,
     },
+    /// The World-backed 9p servicer could not be constructed or serviced.
+    #[error("build live 9p-I/O servicer failed")]
+    NinepServicer {
+        /// Underlying 9p-servicer error.
+        source: crate::QemuLive9pIoServicerError,
+    },
     /// The typed QMP VMState channel could not connect.
     #[error("connect QMP VMState channel failed")]
     QmpConnect {
