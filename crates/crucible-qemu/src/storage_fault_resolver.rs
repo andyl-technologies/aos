@@ -3,9 +3,8 @@
 //! Signal evaluation and keyed hazard decisions occur in `crucible`. This
 //! module is the live block-adapter boundary: it consumes only committed,
 //! typed [`ResolvedBindingAction`] values for one exact request and translates
-//! the currently executable subset into a [`ResolvedBlockFaultDirective`]. It
-//! never evaluates signals, consults host time, or silently accepts an effect
-//! whose device semantics are not implemented.
+//! them into a [`ResolvedBlockFaultDirective`]. It never evaluates signals,
+//! consults host time, or silently substitutes a different device behavior.
 
 use crucible::model::{
     BindingActionCause, BindingActionKind, ContentHash, EffectLifetime, EffectSpecification,
@@ -576,8 +575,10 @@ pub fn resolve_block_fault_directive<'a>(
 /// # Errors
 ///
 /// Returns [`StorageFaultResolutionError::OpportunityMismatch`] when request
-/// identity differs, or [`StorageFaultResolutionError::PhaseMergeOverflow`]
-/// when latency composition exceeds `u64`.
+/// identity differs, [`StorageFaultResolutionError::PhaseMergeOverflow`] when
+/// latency composition exceeds `u64`, or
+/// [`StorageFaultResolutionError::PhaseMergeConflict`] when independently
+/// sampled phases both retain the same completion.
 pub fn merge_block_fault_phase_directive(
     accumulated: &mut ResolvedBlockFaultDirective,
     phase: FaultPhase,
@@ -610,6 +611,9 @@ pub fn merge_block_fault_phase_directive(
             accumulated.error_result = partial.error_result;
             accumulated.retain_completion = partial.retain_completion;
             accumulated.retention_timeout_response = partial.retention_timeout_response;
+            accumulated.retention_timeout_nanos = partial.retention_timeout_nanos;
+            accumulated.retention_recovery_event = partial.retention_recovery_event;
+            accumulated.retention_recovery_after_nanos = partial.retention_recovery_after_nanos;
             accumulated.read_transforms = partial.read_transforms;
             accumulated.media_rules.extend(partial.media_rules);
         }
@@ -617,6 +621,18 @@ pub fn merge_block_fault_phase_directive(
             accumulated.execution_nanos = partial.execution_nanos;
             accumulated.write_disposition = partial.write_disposition;
             accumulated.flush_disposition = partial.flush_disposition;
+            if partial.retain_completion {
+                if accumulated.retain_completion {
+                    return Err(StorageFaultResolutionError::PhaseMergeConflict {
+                        field: "completion retention",
+                    });
+                }
+                accumulated.retain_completion = true;
+                accumulated.retention_timeout_response = partial.retention_timeout_response;
+                accumulated.retention_timeout_nanos = partial.retention_timeout_nanos;
+                accumulated.retention_recovery_event = partial.retention_recovery_event;
+                accumulated.retention_recovery_after_nanos = partial.retention_recovery_after_nanos;
+            }
             accumulated.cache_policy = partial.cache_policy;
             accumulated.persistence_transforms = partial.persistence_transforms;
             accumulated.persistence_media_rules = partial.persistence_media_rules;
@@ -856,17 +872,34 @@ fn apply_effect(
             timeout_result,
         } => {
             require_block_result(world, timeout_result, false, &action.binding)?;
-            if let Some(stall_nanos) = stall_nanos {
-                let stall_nanos = mapped_u64(action, MappedEffectParameter::DurationNanos)?
-                    .unwrap_or(stall_nanos.get());
-                directive.error_result =
-                    Some(resolve_block_failure(world, timeout_result).ok_or_else(|| {
-                        StorageFaultResolutionError::PolicyReference {
+            let stall_nanos = mapped_u64(action, MappedEffectParameter::DurationNanos)?
+                .unwrap_or(stall_nanos.get());
+            let timeout = resolve_block_failure(world, timeout_result).ok_or_else(|| {
+                StorageFaultResolutionError::PolicyReference {
+                    binding: action.binding.clone(),
+                    reference: timeout_result.clone(),
+                    expected: "non-success block typed_result",
+                }
+            })?;
+            if let Some(recovery_event) = recovery_event {
+                directive.retain_completion = true;
+                directive.retention_timeout_response =
+                    Some(BlockResponse::error_for(request.identity(), timeout));
+                directive.retention_timeout_nanos = Some(
+                    action
+                        .coordinate
+                        .virtual_nanos
+                        .checked_add(stall_nanos)
+                        .ok_or_else(|| StorageFaultResolutionError::Overflow {
                             binding: action.binding.clone(),
-                            reference: timeout_result.clone(),
-                            expected: "non-success block typed_result",
-                        }
-                    })?);
+                            field: "retention_timeout_nanos",
+                        })?,
+                );
+                directive.retention_recovery_event =
+                    Some(storage_recovery_event_key(recovery_event));
+                directive.retention_recovery_after_nanos = Some(action.coordinate.virtual_nanos);
+            } else {
+                directive.error_result = Some(timeout);
                 directive.additional_latency_nanos = directive
                     .additional_latency_nanos
                     .checked_add(stall_nanos)
@@ -874,13 +907,6 @@ fn apply_effect(
                         binding: action.binding.clone(),
                         field: "additional_latency_nanos",
                     })?;
-            } else if recovery_event.is_some() {
-                return Err(unsupported(action, "recovery-event completion stall"));
-            } else {
-                return Err(StorageFaultResolutionError::InvalidDirective {
-                    binding: action.binding.clone(),
-                    reason: String::from("stall has neither a duration nor a recovery event"),
-                });
             }
         }
         StorageEffectSpecification::DuplicateCompletion {
@@ -1212,10 +1238,13 @@ fn apply_effect(
             }
             directive.persistence_media_rules.push(rule);
         }
-        StorageEffectSpecification::FlushDisposition { kind, status }
-            if request.op == BlockOp::Flush =>
-        {
-            let success = !matches!(kind, StorageFlushKind::Error);
+        StorageEffectSpecification::FlushDisposition {
+            kind,
+            status,
+            stall_nanos,
+            recovery_event,
+        } if request.op == BlockOp::Flush => {
+            let success = !matches!(kind, StorageFlushKind::Error | StorageFlushKind::Stall);
             require_block_result(world, status, success, &action.binding)?;
             directive.flush_disposition = match kind {
                 StorageFlushKind::Honest => BlockFaultFlushDisposition::Honest,
@@ -1230,7 +1259,40 @@ fn apply_effect(
                 ),
                 StorageFlushKind::Lie => BlockFaultFlushDisposition::Lie,
                 StorageFlushKind::Stall => {
-                    return Err(unsupported(action, "event-driven flush stall"));
+                    let stall_nanos = stall_nanos.ok_or_else(|| {
+                        StorageFaultResolutionError::InvalidDirective {
+                            binding: action.binding.clone(),
+                            reason: String::from("flush stall has no timeout duration"),
+                        }
+                    })?;
+                    let stall_nanos = mapped_u64(action, MappedEffectParameter::DurationNanos)?
+                        .unwrap_or(stall_nanos.get());
+                    let timeout = resolve_block_failure(world, status).ok_or_else(|| {
+                        StorageFaultResolutionError::PolicyReference {
+                            binding: action.binding.clone(),
+                            reference: status.clone(),
+                            expected: "non-success block typed_result",
+                        }
+                    })?;
+                    directive.retain_completion = true;
+                    directive.retention_timeout_response =
+                        Some(BlockResponse::error_for(request.identity(), timeout));
+                    directive.retention_timeout_nanos = Some(
+                        action
+                            .coordinate
+                            .virtual_nanos
+                            .checked_add(stall_nanos)
+                            .ok_or_else(|| StorageFaultResolutionError::Overflow {
+                                binding: action.binding.clone(),
+                                field: "retention_timeout_nanos",
+                            })?,
+                    );
+                    directive.retention_recovery_event =
+                        recovery_event.as_ref().map(storage_recovery_event_key);
+                    directive.retention_recovery_after_nanos = recovery_event
+                        .as_ref()
+                        .map(|_event| action.coordinate.virtual_nanos);
+                    BlockFaultFlushDisposition::Stall
                 }
             };
         }
@@ -2037,6 +2099,12 @@ fn target_storage_device<'a>(
         .ok_or(StorageFaultResolutionError::UnsupportedTarget)
 }
 
+/// Returns the process-independent subscription key stored by the block device.
+#[must_use]
+pub fn storage_recovery_event_key(event: &FaultObjectId) -> [u8; 32] {
+    ContentHash::from_canonical_material("crucible.storage-recovery-event.v1", event.as_str()).bytes
+}
+
 fn unsupported(
     action: &ResolvedBindingAction,
     parameter: &'static str,
@@ -2057,6 +2125,12 @@ pub enum StorageFaultResolutionError {
     #[error("storage phase composition overflowed `{field}`")]
     PhaseMergeOverflow {
         /// Overflowed directive field.
+        field: &'static str,
+    },
+    /// Independently sampled phases selected mutually exclusive request behavior.
+    #[error("storage phase composition conflicts on `{field}`")]
+    PhaseMergeConflict {
+        /// Conflicting directive field.
         field: &'static str,
     },
     /// An action is not bound to the supplied opportunity and phase.
@@ -2149,8 +2223,11 @@ mod tests {
     use crucible::model::{
         BindingActionCause, BoundedCount, ContentHash, CountLimit, EFFECT_SEMANTIC_VERSION,
         EffectLifetime, EffectRequest, FaultCoordinate, FaultOperation, FaultPhase, OperationSet,
-        PositiveU64, SignalId, StoragePolicyServiceClass,
+        PositiveU64, SignalId, StoragePolicyArtifactKind, StoragePolicyResult,
+        StoragePolicyServiceClass, StoragePolicyTypedResult, WorldFaultTopology,
+        WorldStoragePolicyArtifact,
     };
+    use crucible_device::block::BlockErrorCode;
 
     use super::*;
 
@@ -2205,6 +2282,22 @@ mod tests {
         World::from_content_hash(ContentHash::from_bytes(b"storage-resolver-test-world"))
     }
 
+    fn world_with_block_result(id_value: &str, result: StoragePolicyResult) -> World {
+        let mut topology = WorldFaultTopology::default();
+        topology
+            .storage_policy_artifacts
+            .push(WorldStoragePolicyArtifact {
+                id: id(id_value),
+                semantic_version: 1,
+                artifact: StoragePolicyArtifactKind::TypedResult(StoragePolicyTypedResult::Block {
+                    result,
+                }),
+            });
+        opaque_world()
+            .with_fault_topology(topology)
+            .unwrap_or_else(|error| panic!("test storage policy should be valid: {error}"))
+    }
+
     fn context() -> StorageFaultResolutionContext {
         StorageFaultResolutionContext::new(ContentHash::from_bytes(b"storage-resolver-seed"))
     }
@@ -2225,6 +2318,100 @@ mod tests {
             1,
         )
         .unwrap_or_else(|error| panic!("test opportunity should be valid: {error}"))
+    }
+
+    #[test]
+    fn stall_timeout_resolves_exact_timeout_and_optional_recovery_subscription() {
+        let timeout_result = id("timeout-result");
+        let recovery_event = id("recover-storage");
+        let world = world_with_block_result(timeout_result.as_str(), StoragePolicyResult::Timeout);
+        let request = BlockRequest::read(7, 0, 512);
+        let opportunity = opportunity(&request, FaultPhase::Resolve);
+        let action = bind_to_opportunity(
+            action(
+                "stall-read",
+                EffectLifetime::Opportunity,
+                FaultPhase::Resolve,
+                StorageEffectSpecification::StallTimeout {
+                    stall_nanos: PositiveU64::new("stall_nanos", 25)
+                        .unwrap_or_else(|error| panic!("test timeout should be valid: {error}")),
+                    recovery_event: Some(recovery_event.clone()),
+                    timeout_result,
+                },
+                ResolvedMappingOutput::Activation { active: true },
+            ),
+            &opportunity,
+        );
+        let resolved = resolve_block_fault_directive_with_capacity(
+            &world,
+            &target(),
+            &request,
+            1,
+            &opportunity,
+            4096,
+            context(),
+            [&action],
+        )
+        .unwrap_or_else(|error| panic!("stall should resolve: {error}"));
+
+        assert!(resolved.retain_completion);
+        assert_eq!(resolved.retention_timeout_nanos, Some(35));
+        assert_eq!(
+            resolved.retention_recovery_event,
+            Some(storage_recovery_event_key(&recovery_event))
+        );
+        assert_eq!(resolved.retention_recovery_after_nanos, Some(10));
+        assert_eq!(
+            resolved
+                .retention_timeout_response
+                .as_ref()
+                .and_then(|response| response.error_code().ok()),
+            Some(BlockErrorCode::Timeout)
+        );
+    }
+
+    #[test]
+    fn flush_stall_without_recovery_still_retains_until_exact_timeout() {
+        let timeout_result = id("flush-timeout-result");
+        let world = world_with_block_result(timeout_result.as_str(), StoragePolicyResult::Timeout);
+        let request = BlockRequest::flush(8);
+        let opportunity = opportunity(&request, FaultPhase::Persist);
+        let action = bind_to_opportunity(
+            action(
+                "stall-flush",
+                EffectLifetime::Opportunity,
+                FaultPhase::Persist,
+                StorageEffectSpecification::FlushDisposition {
+                    kind: StorageFlushKind::Stall,
+                    status: timeout_result,
+                    stall_nanos: Some(PositiveU64::new("stall_nanos", 40).unwrap_or_else(
+                        |error| panic!("test flush timeout should be valid: {error}"),
+                    )),
+                    recovery_event: None,
+                },
+                ResolvedMappingOutput::Activation { active: true },
+            ),
+            &opportunity,
+        );
+        let resolved = resolve_block_fault_directive_with_capacity(
+            &world,
+            &target(),
+            &request,
+            1,
+            &opportunity,
+            4096,
+            context(),
+            [&action],
+        )
+        .unwrap_or_else(|error| panic!("flush stall should resolve: {error}"));
+
+        assert!(resolved.retain_completion);
+        assert_eq!(resolved.retention_timeout_nanos, Some(50));
+        assert_eq!(resolved.retention_recovery_event, None);
+        assert_eq!(
+            resolved.flush_disposition,
+            BlockFaultFlushDisposition::Stall
+        );
     }
 
     fn bind_to_opportunity(

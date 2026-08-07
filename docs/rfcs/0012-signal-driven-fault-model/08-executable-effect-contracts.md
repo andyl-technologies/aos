@@ -504,7 +504,7 @@ declared beam and gateway sets.
 | `storage.latency` | opportunity; resolve/deliver | operation filter, `extra_nanos`, `jitter_nanos` | checked-sum | `storage.latency.v1`; component delays and keyed jitter |
 | `storage.service` | persistent state; queue | `bytes_per_second`, optional `iops`, queue depth, token/service parameters | minimum constraints | `storage.service.v1`; service and queue ledger |
 | `storage.operation_failure` | opportunity; resolve | operation filter, probability, typed status/errno | severity plus independent-hazards | `storage.failure.v1`; decision and returned status |
-| `storage.stall_timeout` | opportunity/state; resolve | `stall_nanos` or recovery event, timeout result | maximum stall and earliest modeled timeout | `storage.stall.v1`; wait/recovery/timeout coordinates |
+| `storage.stall_timeout` | opportunity/state; resolve | positive `stall_nanos`, optional recovery event, non-success timeout result | maximum stall and earliest modeled timeout | `storage.stall.v1`; wait/recovery/timeout coordinates |
 | `storage.completion_reorder` | opportunity; deliver | `window_nanos`, selection | maximum window with keyed shifts | `storage.reorder.v1`; original/resolved completion order |
 | `storage.duplicate_completion` | opportunity; deliver | copies, gap, protocol-valid duplicate policy | bounded checked copies | `storage.duplicate.v1`; duplicate IDs and guest-visible disposition |
 | `storage.read_transform` | opportunity; resolve | `kind = bit_flip/stale/misdirected`, selector/version/range fields | ordered-transform | `storage.read-transform.v1`; source version/range and before/after digest |
@@ -512,13 +512,28 @@ declared beam and gateway sets.
 | `storage.persistence_order` | persistent/opportunity; persist | ordering group, delay/barrier rule | declared partial order then operation ID | `storage.persistence-order.v1`; volatile and durable sequence ledger |
 | `storage.volatile_cache` | persistent; persist | capacity and registered cache policy | one cache policy per admitted write | `storage.volatile-cache.v1`; admitted/evicted cache entries and durable frontier before/after |
 | `storage.volatile_cache_loss` | impulse; boundary | selector `all/after_sequence/range_intersection/keyed_subset` and `loss = power_loss/protection_failure` | canonical exact-entry selection; keyed subsets rank the complete eligible set | `storage.volatile-cache-loss.v1`; pre-loss entry-set digest, eligible/protected/selected entries, and durable frontier before/after |
-| `storage.flush_disposition` | opportunity; persist | `kind = honest/error/lie/stall`, status | severity `honest < lie < stall < error` only where comparable; otherwise conflict | `storage.flush.v1`; requested barrier, reported status, actual durable frontier |
+| `storage.flush_disposition` | opportunity; persist | `kind = honest/error/lie/stall`, typed status; stall additionally requires positive `stall_nanos` and permits an optional recovery event | severity `honest < lie < stall < error` only where comparable; otherwise conflict | `storage.flush.v1`; requested barrier, reported status, actual durable frontier, wait/recovery/timeout coordinates |
 | `storage.media_range` | persistent/state; resolve/persist | range, state `bad/latent/poisoned/read_only`, operation/count/time thresholds | range overlay in canonical start/length/binding order | `storage.media-range.v1`; resolved range state and thresholds |
 | `storage.flash_state` | persistent state; persist | erase-block geometry, wear counters, endurance, retention/read-disturb/program rules | state-machine per erase block | `storage.flash.v1`; counters, temperature/time inputs, changed cells/ranges |
 | `storage.controller_lifecycle` | state-machine; boundary | reset/reconnect/enumeration, queue treatment, namespace/path changes | severity/state-machine | `storage.controller.v1`; old/new controller, queues and namespace/path set |
 | `storage.array_state` | state-machine; resolve/persist | layout, member/path state, selection, rebuild service, consistency policy | one array policy plus member outages | `storage.array.v1`; selected members, degraded/rebuild state and durability |
 | `ninep.result` | opportunity; resolve | operation, `kind = errno/stale/misdirected`, errno/version/object fields | severity or ordered-transform | `ninep.result.v1`; request fields and response/error evidence |
 | `ninep.visibility` | stateful; persist/deliver | object/update ID, visibility delay/event, namespace/data policy | operation order plus declared delay | `ninep.visibility.v1`; committed and visible frontiers, lookup result |
+
+Every storage stall has a finite, positive maximum wait. The adapter subscribes
+to an optional exported event at the exact opportunity coordinate and accepts
+only occurrences strictly after that coordinate. The ordinary computed
+completion is released when the earliest eligible recovery event occurs; the
+typed non-success result is released at the timeout coordinate. Recovery wins a
+tie at the same virtual coordinate. If the host observes both after a delayed
+poll, their modeled coordinates still determine the winner. Release of all
+completions selected at one boundary is atomic with response reservation,
+durability mutation, scheduler sequencing, and observation recording. A stalled
+flush advances and reports its captured durable frontier only on recovery; its
+timeout leaves that frontier unchanged. Referenced event occurrences and
+retained completions are authenticated checkpoint state and are subject to the
+declared hard runtime bounds; exhausting either bound fails the run rather than
+dropping history or inventing a completion.
 
 ## 8.5 Node, CPU, memory, clock, interrupt, and accelerator registry
 

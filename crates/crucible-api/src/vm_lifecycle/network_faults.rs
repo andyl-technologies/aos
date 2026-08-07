@@ -1347,7 +1347,7 @@ pub(super) struct ProductionFaultEvaluationCursor {
 
 impl ProductionFaultEvaluationCursor {
     pub(super) fn next_sequence(&mut self, coordinate: u64) -> Result<u64, SchedulerError> {
-        if self.coordinate.is_some() {
+        if self.coordinate == Some(coordinate) {
             self.coordinate_sequence =
                 self.coordinate_sequence.checked_add(1).ok_or_else(|| {
                     SchedulerError::BoundaryViolation {
@@ -1356,6 +1356,8 @@ impl ProductionFaultEvaluationCursor {
                         ),
                     }
                 })?;
+        } else {
+            self.coordinate_sequence = 0;
         }
         self.coordinate = Some(coordinate);
         Ok(self.coordinate_sequence)
@@ -3100,6 +3102,15 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn production_fault_cursor_sequences_only_within_one_coordinate() {
+        let mut cursor = ProductionFaultEvaluationCursor::default();
+        assert_eq!(cursor.next_sequence(10).unwrap_or(u64::MAX), 0);
+        assert_eq!(cursor.next_sequence(10).unwrap_or(u64::MAX), 1);
+        assert_eq!(cursor.next_sequence(11).unwrap_or(u64::MAX), 0);
+        assert_eq!(cursor.next_sequence(11).unwrap_or(u64::MAX), 1);
+    }
 
     #[test]
     fn production_evaluation_sequence_never_reuses_an_a_b_a_coordinate() {

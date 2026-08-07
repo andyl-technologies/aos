@@ -970,6 +970,21 @@ impl QemuLiveBlockIoServicer {
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
+    /// Atomically releases a batch of retained storage completions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] without changing the
+    /// device when any release or response reservation fails.
+    pub fn release_storage_completions(
+        &mut self,
+        releases: &[(BlockRequestIdentity, BlockRetainedRelease)],
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.device
+            .release_storage_completions(releases)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
     /// Pins the head request's completion coordinate without COMPUTE or dequeue.
     ///
     /// The method observes at most the SPSC head, computes its completion icount

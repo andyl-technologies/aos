@@ -12,11 +12,15 @@ use crucible::model::{
     BindingEvaluation, ContentHash, EffectKind, FaultAdapterManifests, FaultCapabilityId,
     FaultCapabilityManifest, FaultCoordinate, FaultExecutionError, FaultObjectId, FaultOpportunity,
     FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink, HostFaultActionState,
-    OwnedFaultExecutionRuntime, SignalArtifactProvider, SignalBoundarySnapshot,
+    OwnedFaultExecutionRuntime, ReferencedSignalEvent, SignalArtifactProvider,
+    SignalBoundarySnapshot,
 };
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 
 use crate::{ProductionFaultActionSink, QemuNodeSet};
+
+/// Hard bound on recovery-event occurrences retained for device subscriptions.
+const HARD_PRODUCTION_REFERENCED_EVENTS: usize = 262_144;
 
 /// Complete resumable state for the production fault runtime.
 #[derive(Clone, Debug)]
@@ -31,6 +35,8 @@ pub struct ProductionFaultRuntimeCheckpoint {
     qemu_fault_sequences: BTreeMap<NodeId, u64>,
     /// Scheduler-owned network queues, pending outputs, and transition ledger.
     network_state: Option<ProductionNetworkStateCheckpoint>,
+    /// Referenced event occurrences retained for device recovery subscriptions.
+    emitted_events: Vec<ReferencedSignalEvent>,
     /// Aggregate identity binding every continuation component to the plan.
     identity: ContentHash,
 }
@@ -127,6 +133,11 @@ pub enum ProductionFaultRuntimeError {
     /// Restored live QEMU state differs from the paired fault checkpoint.
     #[error("live QEMU execution fingerprints do not match the fault checkpoint")]
     QemuFingerprintMismatch,
+    /// Referenced recovery-event history reached its declared hard bound.
+    #[error(
+        "production referenced-event history exceeds {HARD_PRODUCTION_REFERENCED_EVENTS} entries"
+    )]
+    ReferencedEventLimit,
 }
 
 /// Owning signal runtime coupled to host devices and live patched QEMU.
@@ -134,6 +145,7 @@ pub struct ProductionFaultRuntime {
     runtime: Option<OwnedFaultExecutionRuntime>,
     host: HostFaultActionSink,
     restored_network_state: Option<ProductionNetworkStateCheckpoint>,
+    emitted_events: Vec<ReferencedSignalEvent>,
 }
 
 impl ProductionFaultRuntime {
@@ -168,6 +180,7 @@ impl ProductionFaultRuntime {
             runtime,
             host: HostFaultActionSink::new(),
             restored_network_state: None,
+            emitted_events: Vec::new(),
         })
     }
 
@@ -185,6 +198,9 @@ impl ProductionFaultRuntime {
         nodes: &mut QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
         let manifests = production_manifests(nodes)?;
+        if checkpoint.emitted_events.len() > HARD_PRODUCTION_REFERENCED_EVENTS {
+            return Err(ProductionFaultRuntimeError::ReferencedEventLimit);
+        }
         if checkpoint.identity
             != production_checkpoint_identity(
                 plan.id(),
@@ -193,6 +209,7 @@ impl ProductionFaultRuntime {
                 &checkpoint.qemu_fingerprints,
                 &checkpoint.qemu_fault_sequences,
                 checkpoint.network_state.as_ref(),
+                &checkpoint.emitted_events,
             )
         {
             return Err(FaultExecutionError::CheckpointPresence.into());
@@ -217,6 +234,7 @@ impl ProductionFaultRuntime {
         let qemu_fault_sequences = checkpoint.qemu_fault_sequences;
         let host = checkpoint.host;
         let restored_network_state = checkpoint.network_state;
+        let emitted_events = checkpoint.emitted_events;
         let runtime = match (plan.programs().is_empty(), checkpoint.runtime) {
             (true, None) => None,
             (false, Some(checkpoint)) => {
@@ -237,6 +255,7 @@ impl ProductionFaultRuntime {
             runtime,
             host: HostFaultActionSink::from_state(host),
             restored_network_state,
+            emitted_events,
         })
     }
 
@@ -261,12 +280,23 @@ impl ProductionFaultRuntime {
         let Some(runtime) = &mut self.runtime else {
             return Ok(BindingEvaluation::default());
         };
+        if self
+            .emitted_events
+            .len()
+            .checked_add(referenced_event_signal_count(runtime.plan()))
+            .is_none_or(|count| count > HARD_PRODUCTION_REFERENCED_EVENTS)
+        {
+            return Err(ProductionFaultRuntimeError::ReferencedEventLimit);
+        }
         let mut sink = ProductionFaultActionSink::new(&mut self.host, nodes);
-        Ok(runtime.evaluate_boundary_with_backend(
+        let evaluation = runtime.evaluate_boundary_with_backend(
             coordinate,
             same_coordinate_sequence,
             &mut sink,
-        )?)
+        )?;
+        self.emitted_events
+            .extend(evaluation.emitted_events.iter().cloned());
+        Ok(evaluation)
     }
 
     /// Evaluates one exact device or architectural opportunity.
@@ -363,6 +393,7 @@ impl ProductionFaultRuntime {
             &qemu_fingerprints,
             &qemu_fault_sequences,
             self.restored_network_state.as_ref(),
+            &self.emitted_events,
         );
         Ok(ProductionFaultRuntimeCheckpoint {
             runtime,
@@ -370,6 +401,7 @@ impl ProductionFaultRuntime {
             qemu_fingerprints,
             qemu_fault_sequences,
             network_state: self.restored_network_state.clone(),
+            emitted_events: self.emitted_events.clone(),
             identity,
         })
     }
@@ -398,6 +430,7 @@ impl ProductionFaultRuntime {
             &checkpoint.qemu_fingerprints,
             &checkpoint.qemu_fault_sequences,
             checkpoint.network_state.as_ref(),
+            &checkpoint.emitted_events,
         );
         Ok(checkpoint)
     }
@@ -406,6 +439,12 @@ impl ProductionFaultRuntime {
     #[must_use]
     pub const fn host_state(&self) -> &HostFaultActionState {
         self.host.state()
+    }
+
+    /// Returns referenced signal events in exact evaluation order.
+    #[must_use]
+    pub fn emitted_events(&self) -> &[ReferencedSignalEvent] {
+        &self.emitted_events
     }
 
     /// Removes committed host impulses for exact device-opportunity execution.
@@ -433,6 +472,25 @@ impl ProductionFaultRuntime {
     }
 }
 
+fn referenced_event_signal_count(plan: &FaultSignalPlan) -> usize {
+    plan.bindings()
+        .iter()
+        .filter_map(|binding| match binding.effect().specification() {
+            crucible::model::EffectSpecification::Storage(
+                crucible::model::StorageEffectSpecification::StallTimeout {
+                    recovery_event, ..
+                }
+                | crucible::model::StorageEffectSpecification::FlushDisposition {
+                    recovery_event,
+                    ..
+                },
+            ) => recovery_event.as_ref(),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
 fn production_checkpoint_identity(
     plan: ContentHash,
     runtime: Option<&FaultRuntimeCheckpoint>,
@@ -440,6 +498,7 @@ fn production_checkpoint_identity(
     qemu_fingerprints: &BTreeMap<NodeId, ContentHash>,
     qemu_fault_sequences: &BTreeMap<NodeId, u64>,
     network_state: Option<&ProductionNetworkStateCheckpoint>,
+    emitted_events: &[ReferencedSignalEvent],
 ) -> ContentHash {
     let mut material = Vec::new();
     material.extend_from_slice(&plan.bytes);
@@ -471,6 +530,20 @@ fn production_checkpoint_identity(
             material.extend_from_slice(&cursor.same_coordinate_sequence.to_be_bytes());
         }
     }
+    for event in emitted_events {
+        material.extend_from_slice(event.signal.as_str().as_bytes());
+        material.push(0);
+        material.extend_from_slice(&event.coordinate.virtual_nanos.to_be_bytes());
+        material.extend_from_slice(
+            &event
+                .coordinate
+                .retired_instructions
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        material.extend_from_slice(&event.same_coordinate_sequence.to_be_bytes());
+        material.extend_from_slice(&event.evidence.bytes);
+    }
     for (node, fingerprint) in qemu_fingerprints {
         material.extend_from_slice(node.name.as_bytes());
         material.push(0);
@@ -480,7 +553,7 @@ fn production_checkpoint_identity(
         }
     }
     ContentHash::from_canonical_material(
-        "crucible.production-fault-runtime-checkpoint.v1",
+        "crucible.production-fault-runtime-checkpoint.v2",
         &hex_bytes(&material),
     )
 }
@@ -539,14 +612,16 @@ fn hex_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crucible::model::{
-        BindingMapping, BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy,
-        EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest, EffectSpecification,
-        EvaluatedSignal, FaultBinding, FaultDirection, FaultPhase, InverseCdfTable,
-        NetworkAvailabilityState, NetworkEffectSpecification, NetworkInFlightPolicy,
-        ResolvedFaultTarget, ResolvedTargetSet, SampleObservation, SignalChoiceContext,
-        SignalCoordinate, SignalDomain, SignalEvaluationError, SignalId, SignalNode,
-        SignalNodeKind, SignalResourceLimits, SignalShape, SignalSourceSpecification, SignalUnit,
-        SignalValue, SignalValueType, TargetSelector,
+        BindingEventParent, BindingMapping, BindingMappingRegistry, BindingObservabilityPolicy,
+        BindingSampling, BindingSearchPolicy, EFFECT_SEMANTIC_VERSION, EffectKind, EffectLifetime,
+        EffectRequest, EffectSpecification, EvaluatedSignal, FaultBinding, FaultDirection,
+        FaultPhase, InverseCdfTable, NetworkAvailabilityState, NetworkEffectSpecification,
+        NetworkInFlightPolicy, PositiveU64, ResolvedFaultTarget, ResolvedTargetSet,
+        SampleObservation, SignalChoiceContext, SignalCoordinate, SignalDomain,
+        SignalEvaluationError, SignalId, SignalNode, SignalNodeKind, SignalPoint,
+        SignalResourceLimits, SignalShape, SignalSourceSpecification, SignalUnit, SignalValue,
+        SignalValueType, StateTransitionTableDeclaration, StorageEffectSpecification,
+        TargetSelector,
     };
 
     struct NoArtifacts;
@@ -805,5 +880,168 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn production_checkpoints_referenced_storage_recovery_events() {
+        let active = signal_id("stall-transition");
+        let recovery = signal_id("storage-recovered");
+        let schema = signal_id("storage-recovery-v1");
+        let transition_schema = signal_id("storage-transition-v1");
+        let transition_value = SignalValue::Event {
+            schema: transition_schema.clone(),
+            payload: vec![1],
+        };
+        let program = crucible::model::SignalProgram::new(
+            vec![
+                SignalNode {
+                    id: active.clone(),
+                    domain: SignalDomain::Event,
+                    output: SignalShape::new(
+                        SignalValueType::Event(transition_schema),
+                        SignalUnit::Dimensionless,
+                        0,
+                    )
+                    .unwrap_or_else(|error| panic!("test signal shape should be valid: {error}")),
+                    inputs: Vec::new(),
+                    kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
+                        events: vec![SignalPoint {
+                            coordinate: SignalCoordinate::Event {
+                                parent: Box::new(SignalCoordinate::VirtualTime { nanos: 0 }),
+                                sequence: 0,
+                            },
+                            sequence: 0,
+                            value: transition_value.clone(),
+                        }],
+                    }),
+                },
+                SignalNode {
+                    id: recovery.clone(),
+                    domain: SignalDomain::Event,
+                    output: SignalShape::new(
+                        SignalValueType::Event(schema.clone()),
+                        SignalUnit::Dimensionless,
+                        0,
+                    )
+                    .unwrap_or_else(|error| panic!("test event shape should be valid: {error}")),
+                    inputs: Vec::new(),
+                    kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
+                        events: vec![SignalPoint {
+                            coordinate: SignalCoordinate::Event {
+                                parent: Box::new(SignalCoordinate::VirtualTime { nanos: 5 }),
+                                sequence: 0,
+                            },
+                            sequence: 0,
+                            value: SignalValue::Event {
+                                schema,
+                                payload: vec![1],
+                            },
+                        }],
+                    }),
+                },
+            ],
+            vec![active.clone(), recovery.clone()],
+            SignalResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("test signal program should be valid: {error}"));
+        let target = ResolvedFaultTarget::BlockDevice {
+            device: ContentHash::from_bytes(b"storage-recovery-device"),
+        };
+        let effect = EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::StateMachine,
+            EffectSpecification::Storage(StorageEffectSpecification::StallTimeout {
+                stall_nanos: PositiveU64::new("stall_nanos", 20)
+                    .unwrap_or_else(|error| panic!("test stall should be positive: {error}")),
+                recovery_event: Some(object_id(recovery.as_str())),
+                timeout_result: object_id("timeout-result"),
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test stall effect should be valid: {error}"));
+        let transition_table = object_id("storage-stall-transition-table");
+        let mapping_registry = BindingMappingRegistry::new(
+            vec![StateTransitionTableDeclaration {
+                id: transition_table.clone(),
+                semantic_version: 1,
+                input: transition_value
+                    .value_type()
+                    .unwrap_or_else(|| panic!("test transition value should be typed")),
+                effect: EffectKind::StorageStallTimeout,
+                transitions: [(transition_value, object_id("retain-completion"))]
+                    .into_iter()
+                    .collect(),
+                default_transition: object_id("retain-completion"),
+            }],
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("test mapping registry should be valid: {error}"));
+        let binding = FaultBinding::new_with_registry(
+            object_id("storage-stall-binding"),
+            vec![active],
+            BindingSampling::AtEvent(BindingEventParent::VirtualTime),
+            BindingMapping::StateTransition { transition_table },
+            TargetSelector::Exact(
+                ResolvedTargetSet::new(vec![target], false)
+                    .unwrap_or_else(|error| panic!("test target should be valid: {error}")),
+            ),
+            [FaultPhase::Resolve].into_iter().collect(),
+            effect,
+            None,
+            BindingSearchPolicy::Fixed,
+            BindingObservabilityPolicy {
+                samples: SampleObservation::ChangesAndEffects,
+                record_inactive_opportunities: false,
+                retain_mapped_values: true,
+            },
+            &program,
+            &mapping_registry,
+        )
+        .unwrap_or_else(|error| panic!("test binding should be valid: {error}"));
+        let plan = FaultSignalPlan::new(vec![program], vec![binding])
+            .unwrap_or_else(|error| panic!("test plan should be valid: {error}"));
+        let artifacts: Arc<dyn SignalArtifactProvider> = Arc::new(NoArtifacts);
+        let mut nodes = QemuNodeSet::new();
+        let seed = ContentHash::from_bytes(b"storage-recovery-event-test");
+        let mut runtime = ProductionFaultRuntime::new(
+            plan.clone(),
+            Some(Arc::clone(&artifacts)),
+            SignalBoundarySnapshot::default(),
+            seed,
+            &nodes,
+        )
+        .unwrap_or_else(|error| panic!("production plan should be admitted: {error}"));
+
+        let first = runtime
+            .evaluate_boundary(
+                FaultCoordinate {
+                    virtual_nanos: 0,
+                    retired_instructions: None,
+                },
+                0,
+                &mut nodes,
+            )
+            .unwrap_or_else(|error| panic!("initial boundary should execute: {error}"));
+        assert_eq!(first.next_wakeup_nanos, Some(5));
+        assert!(first.emitted_events.is_empty());
+        let recovered = runtime
+            .evaluate_boundary(
+                FaultCoordinate {
+                    virtual_nanos: 5,
+                    retired_instructions: None,
+                },
+                0,
+                &mut nodes,
+            )
+            .unwrap_or_else(|error| panic!("recovery boundary should execute: {error}"));
+        assert_eq!(recovered.emitted_events.len(), 1);
+        assert_eq!(recovered.emitted_events[0].signal, recovery);
+
+        let checkpoint = runtime
+            .checkpoint(&mut nodes)
+            .unwrap_or_else(|error| panic!("production checkpoint should succeed: {error}"));
+        let restored =
+            ProductionFaultRuntime::restore(plan, Some(artifacts), seed, checkpoint, &mut nodes)
+                .unwrap_or_else(|error| panic!("production checkpoint should restore: {error}"));
+        assert_eq!(restored.emitted_events(), runtime.emitted_events());
     }
 }
