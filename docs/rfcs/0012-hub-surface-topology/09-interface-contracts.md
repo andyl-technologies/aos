@@ -94,6 +94,18 @@ and layout behavior are normative in
 The exhaustive old method+path deletion and replacement list is normative in
 [`11-web-route-cutover-ledger.md`](11-web-route-cutover-ledger.md).
 
+Authenticated management is a client application, not a parallel HTTP form
+API. A settings GET deep link returns the application shell, which exchanges
+the caller's HttpOnly session and CSRF proof for an in-memory short-lived
+bearer and invokes the canonical Connect-JSON methods directly. All durable
+mutations present the API's semantic plan and apply that exact plan; the client
+does not synthesize effects or call server-side compatibility handlers.
+
+Login, logout, account security, passkey ceremonies, device approval, and
+public registry browsing remain server-rendered. They are deliberately outside
+the management application boundary and are listed explicitly in the route
+cutover ledger.
+
 ### End-user system images
 
 Every registry browse navbar includes **Images**, linking to the canonical

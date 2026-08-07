@@ -239,9 +239,16 @@ exposing partial state.
 
 ## Phase 7: unify the settings Web UI
 
+- [ ] Build one hermetic Leptos client application for authenticated instance,
+      organization, registry, and binary-cache management.
+- [ ] Generate content-addressed JavaScript, WebAssembly, and CSS assets once
+      and ship the identical bundle in native and Worker deployments.
+- [ ] Exchange the HttpOnly browser session and CSRF proof for a five-minute
+      in-memory API bearer; never persist that bearer in the browser.
+- [ ] Drive every read and mutation through the canonical `aos.hub.v1`
+      Connect-JSON API and its immutable plan/apply contract.
 - [ ] Replace the flat `SettingsTab` list with one grouped settings-navigation
-      model shared by instance, organization, registry, and binary-cache
-      scopes.
+      model shared by every managed scope.
 - [ ] Make each scope root render Overview and make Overview the first active
       item; move organization Registries to its explicit inventory path.
 - [ ] Build shared scope-header, summary-strip, placement, delivery-route,
@@ -261,21 +268,25 @@ exposing partial state.
       operations to dedicated workflows; remove full create forms from list
       pages.
 - [ ] Implement the wide settings workspace and responsive context rail while
-      preserving the existing visual language and complete no-JS operation.
+      preserving the existing visual language. Login, account security,
+      activation, and public browse retain their server-rendered operation.
 - [ ] Add role-aware grouped-nav snapshots, root-route/active-item tests,
       canonical-row ordering tests, shared-component parity tests, and wide,
       medium, and narrow layout snapshots.
-- [ ] Generate the final method+path route manifest and an exhaustive old-route
-      deletion manifest; assert no removed GET/POST form action is mounted by
-      the flat router, nested-registry dispatcher, native runtime, or Worker.
+- [ ] Generate the final SPA deep-link manifest and exhaustive old-route
+      deletion manifest; assert no removed management POST is mounted by the
+      native runtime or Worker.
+- [ ] Check a capability manifest that maps every remote end-user operation to
+      its permission, API owner, CLI command, Web workflow, and runtime support.
 - [ ] Remove old settings route names, handlers, templates, nav labels, and
       duplicated registry/cache rendering code rather than retaining aliases.
 
 **Done when:** instance, organization, registry, and binary-cache settings use one
 deterministic hierarchy; each root selects the first Overview item; every page
 has one primary mutation domain; registry/cache topology views cannot drift;
-and the final route table contains only the canonical paths in
-`09-interface-contracts.md`.
+the final route table contains only canonical SPA deep links and retained auth,
+account, and public routes; and the parity manifest contains no incomplete
+end-user capability.
 
 ## Phase 8: cut over and delete the old topology
 
