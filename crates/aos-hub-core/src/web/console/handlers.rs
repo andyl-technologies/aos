@@ -44,7 +44,7 @@ use base64::Engine as _;
 
 use crate::auth::session::{set_cookie_header, ABSOLUTE_LIFETIME_SECS, COOKIE_NAME};
 use crate::db::{Database, SessionAuth as DbSession};
-use crate::domain::{iam, Principal, Role, Scope};
+use crate::domain::{iam, Permission, Principal, Role, Scope};
 use crate::web::console::ports::ConsoleDeps;
 use crate::web::console_render as console;
 use crate::web::csrf::{connect_or_csrf_ok, mint_csrf_token, verify_csrf_token};
@@ -264,6 +264,11 @@ async fn route_permissions(
         aos_hub_console_contract::ConsoleScope::Organizations
     ) {
         let mut permissions = std::collections::BTreeSet::new();
+        // The authenticated organization directory is also the bootstrap
+        // surface for a user without memberships. Creation remains guarded by
+        // the live invite and email-domain policies in OrganizationService;
+        // this display capability must not make that API decision in advance.
+        permissions.insert(Permission::Read.as_str().to_string());
         for (_, role) in grants {
             permissions.extend(
                 iam::role_grants(*role)

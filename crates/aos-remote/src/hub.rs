@@ -29,24 +29,18 @@
 //! inventory and authorized placement lifecycle calls.
 
 use anyhow::{Context, Result};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
-use aos_proto_types::SurfaceRef;
+use aos_proto_types::{SurfaceRef, CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
 
 use crate::client::validate_base_url;
 
 /// Default per-request timeout for hub RPC calls.
 const HUB_TIMEOUT_SECS: u64 = 30;
-
-/// Connect unary protocol-version request header.
-const CONNECT_PROTOCOL_VERSION_HEADER: &str = "Connect-Protocol-Version";
-
-/// Required Connect unary protocol version.
-const CONNECT_PROTOCOL_VERSION: &str = "1";
 
 /// A Connect-JSON client for an `aos-hub`'s services.
 ///
@@ -1856,9 +1850,11 @@ fn ensure_trailing_slash(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CONNECT_PROTOCOL_VERSION_HEADER, HubClient, HubSurfaceRef, HubTopologyMethod};
+    use super::{HubClient, HubSurfaceRef, HubTopologyMethod};
     use aos_proto_types::surface_ref::Target;
-    use aos_proto_types::{PlanCreatePlacementRequest, PlanUpdatePlacementRequest};
+    use aos_proto_types::{
+        PlanCreatePlacementRequest, PlanUpdatePlacementRequest, CONNECT_PROTOCOL_VERSION_HEADER,
+    };
     use std::str::FromStr as _;
 
     #[test]

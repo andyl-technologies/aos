@@ -49,6 +49,18 @@ The CLI does not inspect Hub storage or invoke hidden operator endpoints. Both
 clients serialize the generated ProtoJSON request types and consume the same
 response and error contracts.
 
+Every browser and CLI unary request sends the shared
+`connect-protocol-version: 1` contract exported by `aos-proto-types`; the
+native and Worker dispatchers reject a missing, repeated, or different value.
+This is one protocol constant used by all clients and servers, not parallel
+client-specific spellings.
+
+The authenticated organization inventory is also the tenant-bootstrap surface.
+A user with no memberships can open it and the dedicated organization-creation
+page. The API remains the sole authority for live invite-only and signup-domain
+policy when the user plans creation; route visibility does not duplicate or
+bypass that policy.
+
 A Web route's organization slug is only a locator. Before an organization page
 lists or creates scoped infrastructure, the client calls `GetOrganization` and
 uses the returned immutable `authorization_scope_key`. It carries the slug
@@ -101,6 +113,13 @@ explicit retained authentication ceremony. Unknown, duplicate, and stale
 exceptions fail the build. The service authorization implementation remains
 the authority for each method's permission and scope; the manifest does not
 duplicate that security policy.
+
+Browser method coverage recognizes generated path identifiers only as Rust
+code, excluding comments and string literals, so prose cannot satisfy the
+gate. The native console integration suite exercises a zero-membership session
+exchange. The real-workerd deployment fixture exchanges a browser session and
+completes an authenticated read plus one reviewed plan/apply mutation through
+the production Worker route stack.
 
 ## Browser application boundary
 

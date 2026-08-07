@@ -16,6 +16,12 @@
 
 include!(concat!(env!("OUT_DIR"), "/connect_paths.rs"));
 
+/// Canonical header identifying the Connect unary protocol version.
+pub const CONNECT_PROTOCOL_VERSION_HEADER: &str = "connect-protocol-version";
+
+/// Connect unary protocol version required by every Hub JSON request.
+pub const CONNECT_PROTOCOL_VERSION: &str = "1";
+
 /// Exact integer decoder for ProtoJSON's quoted or unquoted number forms.
 ///
 /// ProtoJSON permits exponent notation even for integer fields. Parsing via
