@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn emit_replay_report_output(
+pub(crate) fn emit_replay_report_output(
     cli: &Cli,
     report: &ReplayArtifactReport,
 ) -> Result<(), CliError> {
@@ -17,7 +17,7 @@ pub(super) fn emit_replay_report_output(
     }
     Ok(())
 }
-pub(super) fn emit_replay_error_output(
+pub(crate) fn emit_replay_error_output(
     cli: &Cli,
     args: &ReplayArgs,
     error: &CliError,
@@ -47,7 +47,7 @@ pub(super) fn emit_replay_error_output(
     Ok(())
 }
 
-pub(super) fn replay_report_status(report: &ReplayArtifactReport) -> BackendCommandStatus {
+pub(crate) fn replay_report_status(report: &ReplayArtifactReport) -> BackendCommandStatus {
     if report
         .check
         .as_ref()
@@ -68,11 +68,11 @@ pub(super) fn replay_report_status(report: &ReplayArtifactReport) -> BackendComm
     }
 }
 
-pub(super) fn replay_report_exit_code(report: &ReplayArtifactReport) -> i32 {
+pub(crate) fn replay_report_exit_code(report: &ReplayArtifactReport) -> i32 {
     replay_report_status(report).exit_code()
 }
 
-pub(super) fn replay_machine_readable_trace_entries(
+pub(crate) fn replay_machine_readable_trace_entries(
     report: &ReplayArtifactReport,
     status: BackendCommandStatus,
     exit_code: i32,
@@ -149,7 +149,7 @@ pub(super) fn replay_machine_readable_trace_entries(
     entries
 }
 
-pub(super) fn push_replay_trace_entry(
+pub(crate) fn push_replay_trace_entry(
     entries: &mut Vec<CanonicalLogEntry>,
     kind: impl Into<String>,
     summary: impl Into<String>,
@@ -166,7 +166,7 @@ pub(super) fn push_replay_trace_entry(
     });
 }
 
-pub(super) fn replay_final_outcome_summary(
+pub(crate) fn replay_final_outcome_summary(
     report: &ReplayArtifactReport,
     status: BackendCommandStatus,
     exit_code: i32,
@@ -181,7 +181,7 @@ pub(super) fn replay_final_outcome_summary(
     )
 }
 
-pub(super) fn replay_check_machine_readable_summary(check: &ReplayCheckReport) -> String {
+pub(crate) fn replay_check_machine_readable_summary(check: &ReplayCheckReport) -> String {
     match &check.mismatch {
         Some(mismatch) => format!(
             "path={} status=mismatch expected={} replayed={} first_diff_byte={} original_len={} replayed_len={}",
@@ -200,7 +200,7 @@ pub(super) fn replay_check_machine_readable_summary(check: &ReplayCheckReport) -
     }
 }
 
-pub(super) fn replay_to_savepoint_machine_readable_summary(
+pub(crate) fn replay_to_savepoint_machine_readable_summary(
     target: &ReplayToSavepointReport,
 ) -> String {
     format!(
@@ -229,7 +229,7 @@ pub(super) fn replay_to_savepoint_machine_readable_summary(
     )
 }
 
-pub(super) fn replay_bisect_machine_readable_summary(bisect: &ReplayBisectionReport) -> String {
+pub(crate) fn replay_bisect_machine_readable_summary(bisect: &ReplayBisectionReport) -> String {
     match &bisect.divergence {
         Some(divergence) => format!(
             "path={} status=diverged mismatch={} first_decision={} first_fingerprint_sample={} first_virtual_time={} first_virtual_time_node={} first_instruction={} first_instruction_node={} byte={} left_state={} right_state={}",
