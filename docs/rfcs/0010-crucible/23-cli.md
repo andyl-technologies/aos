@@ -882,9 +882,17 @@ bounded guest-introspection protocol; they never expose a host shell.
 `--checkpoint-stride` tunes checkpoint density so reverse stepping stays cheap
 (bounded replay suffix, 36, [HARN-9]).
 
-**Exit codes.** `0` = clean debugger exit; `3` = backend error or
-pinned-identity mismatch ([HARN-28]); `4` = discovery/config (e.g. a backend
-without `open_gdbstub`, [SESS-32]); `5` = malformed/unresolvable
+The current production executor implements these operations for a live daemon
+session. A local artifact, savepoint, or daemonless session target fails clearly
+with exit `4` before launching the generic QEMU admission probe; it MUST NOT emit
+a plan-only success or claim that `goto`, reverse execution, GDB attachment, or
+guest introspection occurred. Malformed artifact decoding retains exit `5`
+precedence. Local instantiate/replay remains part of open T-DBG-9/T-DBG-10 work.
+
+**Exit codes.** `0` = clean debugger exit; `3` = pinned-identity mismatch
+([HARN-28]); `4` = backend capability, discovery, configuration, or an
+unimplemented local executor (e.g. a backend without `open_gdbstub`, [SESS-32]);
+`5` = malformed/unresolvable
 artifact/savepoint; `64` = usage error (e.g. conflicting `--at*` flags).
 
 - **[CLI-27]** `crucible debug <artifact|savepoint|--session>` MUST be a thin
@@ -920,16 +928,16 @@ branch on the verdict without parsing output:
    1     Failed (property violation) / verify divergence / replay --check mismatch /
          replay --bisect divergence / counterexample found
    2     Timeout (virtual-time or quantum budget reached, 20 §2)
-   3     Crashed / backend error / replay-oracle violation / pinned-identity mismatch
-   4     discovery or configuration error (QEMU/plugin/store/daemon; §5)
+   3     Crashed / replay-oracle violation / pinned-identity mismatch
+   4     backend capability / discovery / configuration error (QEMU/plugin/store/daemon; §5)
    5     invalid scenario or malformed/unresolvable artifact (06 §9)
    64    usage error (bad flags / args; conventional EX_USAGE)
 ```
 
 - **[CLI-25]** The exit-code mapping in §15 MUST be uniform across the
   run-capable subcommands: `0` success, `1` failure/divergence/counterexample,
-  `2` timeout, `3` crash/backend/oracle/identity-mismatch, `4`
-  discovery/config, `5` invalid scenario/artifact, `64` usage. A script MUST be
+  `2` timeout, `3` crash/oracle/identity-mismatch, `4`
+  backend-capability/discovery/config, `5` invalid scenario/artifact, `64` usage. A script MUST be
   able to branch on a run's verdict by exit code without parsing stdout, and
   `--format json`/`jsonl` MUST be sufficient for fully machine-readable output of
   the event log and the final outcome. *Spec:* §15; cross-ref 20 §2, §4.
@@ -1457,6 +1465,9 @@ branch on the verdict without parsing output:
   remote surface exposes explicit `fork-debug`, authenticated stable GDB relay,
   actor-owned goto/reverse operations, and fork-gated guest exec/PTY/SSH without
   admitting mutation or free control before the explicit transition.
+  The daemonless local route remains an open production-executor task and fails
+  with exit `4` before a generic QEMU probe; it never emits a successful
+  planned-only result or claims that a debugger verb executed.
 - [x] **T-CLI-19** Validate a discovered QEMU plugin by reading its ELF dynamic
   symbol table, not by scanning the file for symbol-name bytes, so a file that
   merely contains the string cannot impersonate a plugin.

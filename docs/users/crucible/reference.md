@@ -85,7 +85,7 @@ Output-format values:
 | `search` | Explore a bounded schedule space. | [State-space search](exploration.md#state-space-search) |
 | `fuzz` | Sample a scenario family using basic-block coverage. | [Coverage-guided fuzzing](exploration.md#coverage-guided-fuzzing) |
 | `triage` | Cluster, deduplicate, compare, and minimize findings. | [Findings and triage](exploration.md#findings-and-triage) |
-| `debug` | Inspect a recorded or running execution at a coordinate. | [Debugging](debugging.md#debug-command) |
+| `debug` | Inspect a live daemon session at a coordinate; local artifact/savepoint execution currently fails closed. | [Debugging](debugging.md#debug-command) |
 | `serve` | Run the remote lifecycle API. | [Daemon operation](daemon.md) |
 | `completions` | Generate shell completion definitions. | [Shell completions](running.md#shell-completions) |
 

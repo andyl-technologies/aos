@@ -229,15 +229,16 @@ For example:
 
 ## Current limitations
 
-- The production debug path requires the packaged QEMU backend even for
-  admission and identity checks.
-- Local artifact debugging currently emits planned operations and live probe
-  evidence; the persistent GDB listener is available for an attached daemon
-  session.
+- Local artifact, savepoint, and daemonless-session debug execution is not yet
+  implemented. It exits `4` and states that no operation executed instead of
+  returning a successful plan-only result.
+- Executed debugger operations require an attached live production-daemon
+  session. Artifact analysis remains available through `replay`, `verify`, and
+  explicit savepoints.
 - `fork-debug` creates a non-canonical branch. Do not use its output as a normal
   replay-oracle artifact.
-- Artifact-targeted `attach-gdb` does not keep a GDB session open after the
-  bounded local probe exits.
+- Artifact-targeted `attach-gdb` is unavailable locally; use a live daemon
+  session for the persistent GDB relay.
 - Packaged GDB can inspect registers and threads through a live x86_64 daemon
   relay. QEMU currently rejects GDB's optional trace-status and detach packets;
   GDB reports those packet errors even though inspection succeeds.
@@ -277,13 +278,13 @@ mkdir -p /tmp/crucible-debugger-artifacts
 
 An agent or operator should report the terminal outcome, violated assertion,
 seed, frontier, quanta, artifact path, and the evidence that distinguishes a
-scenario-authoring error from a guest crash. Artifact `debug` commands currently
-emit `debug-plan execution=planned-only`; use a live production-daemon session
-for executed reverse operations or persistent GDB inspection. `--save-on`
+scenario-authoring error from a guest crash. Local artifact `debug` commands
+exit `4` with `no debug operation was executed`; use a live production-daemon
+session for executed reverse operations or persistent GDB inspection. `--save-on`
 controls savepoint creation, while failed runs retain a reproduction artifact
 under every savepoint policy. Treat any confusing command, unexpected exit
-status, or plan-only response that looks like executed work as a debugger
-usability finding.
+status, or successful response that did not execute work as a debugger usability
+finding.
 
 ## Remote GDB attachment
 
