@@ -268,11 +268,8 @@ struct NavigationGroup {
 
 fn navigation_groups(route: &ConsoleRoute, client: &ApiClient) -> Vec<NavigationGroup> {
     let mut groups = Vec::<NavigationGroup>::new();
-    for page in route
-        .navigation()
-        .iter()
-        .filter(|page| page.is_navigation_item() && client.allows(page.navigation_permission()))
-    {
+    let permissions = client.session().route_permissions;
+    for page in route.visible_navigation(&permissions) {
         match groups.last_mut() {
             Some(group) if group.label == page.group => group.pages.push(page),
             _ => groups.push(NavigationGroup {
