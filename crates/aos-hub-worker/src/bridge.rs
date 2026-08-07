@@ -196,34 +196,3 @@ pub async fn dispatch(
         }
     }
 }
-
-/// Dispatches one live-workerd test request through the production bridge
-/// conversion, delivery rewrite, and shared router.
-///
-/// Open-source workerd cannot provide the console's production bindings. This
-/// non-default e2e seam therefore omits only console dispatch and attestation;
-/// machine and Connect API requests still use their ordinary shared routes.
-///
-/// # Errors
-///
-/// Returns an error when conversion, delivery rewriting, or router dispatch
-/// fails.
-#[cfg(feature = "do-e2e")]
-pub(crate) async fn dispatch_do_e2e(
-    router: axum::Router,
-    svc: &aos_hub_core::service::RpcService,
-    req: Request,
-) -> Result<Response> {
-    use tower::ServiceExt as _;
-
-    let axum_req = to_axum(req).await?;
-    let axum_req = match aos_hub_core::connect::rewrite_for_delivery_route(svc, axum_req).await {
-        Ok(request) => request,
-        Err(response) => return to_worker(response).await,
-    };
-    let axum_resp = router
-        .oneshot(axum_req)
-        .await
-        .map_err(|error| worker::Error::RustError(format!("router dispatch: {error}")))?;
-    to_worker(axum_resp).await
-}

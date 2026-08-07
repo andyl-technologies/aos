@@ -269,13 +269,13 @@ mod entry {
         }
     }
 
-    /// Builds the shared API and machine router with the live-workerd storage adapter.
+    /// Builds the complete shared router with the live-workerd storage adapter.
     #[cfg(feature = "do-e2e")]
     async fn router_from_do_e2e(
         state: &State,
         env: &Env,
         db: Arc<Database>,
-    ) -> Result<(Router, Arc<RpcService>)> {
+    ) -> Result<(Router, Arc<RpcService>, ConsoleDeps)> {
         let secret = env.secret(HUB_JWT_SECRET)?.to_string();
         let jwt_keys = JwtKeys::from_secret(secret.as_bytes());
         let external_url = env.var(HUB_EXTERNAL_URL)?.to_string();
@@ -297,9 +297,9 @@ mod entry {
         );
         let service = Arc::new(RpcService::new(
             Arc::clone(&db),
-            jwt_keys,
-            external_url,
-            rate_limiter,
+            jwt_keys.clone(),
+            external_url.clone(),
+            Arc::clone(&rate_limiter),
             fetch,
             write,
             lease,
@@ -309,7 +309,29 @@ mod entry {
             ),
             None,
         ));
-        Ok((aos_hub_core::connect::router(Arc::clone(&service)), service))
+        let egress = worker_egress(env)?;
+        let sealer = sealer_from_secret(&env.secret(HUB_SEAL_KEY)?.to_string())
+            .map_err(|error| worker::Error::RustError(format!("e2e sealer: {error:#}")))?;
+        let console_deps = ConsoleDeps {
+            db,
+            jwt_keys,
+            external_url,
+            dev: false,
+            ratelimit: rate_limiter,
+            mailer: Arc::new(WorkerMailer::new(
+                None,
+                None,
+                None,
+                None,
+                Arc::clone(&egress),
+            )),
+            sealer,
+            http: Arc::new(WorkerHttpClient::new(egress)),
+            control: Some(Arc::clone(&service)),
+        };
+        let router = aos_hub_core::connect::router(Arc::clone(&service))
+            .merge(console_router(console_deps.clone()));
+        Ok((router, service, console_deps))
     }
 
     /// Build the shared `axum` router over HubDb SQLite and R2 bindings.
@@ -1427,8 +1449,9 @@ mod entry {
                 .unwrap_or_default();
             #[cfg(feature = "do-e2e")]
             {
-                let (router, service) = router_from_do_e2e(&self.state, &self.env, db).await?;
-                return crate::bridge::dispatch_do_e2e(router, &service, req).await;
+                let (router, service, console_deps) =
+                    router_from_do_e2e(&self.state, &self.env, db).await?;
+                return crate::bridge::dispatch(router, &service, console_deps, None, req).await;
             }
             // The DO runs the same shared router as the native shell.
             #[cfg(not(feature = "do-e2e"))]
