@@ -8,6 +8,11 @@ The current CLI exposes both concepts, but its interactive and debugger syntax
 is still lower-level than the target design. Treat this page as an exact surface
 reference, not as a promise of a full debugger UI.
 
+Agents can follow the repository example skill at
+[`examples/codex-skills/crucible-debugger/SKILL.md`](../../../examples/codex-skills/crucible-debugger/SKILL.md).
+It treats the packaged CLI as the debugging tool, preserves causal evidence,
+and requires a non-canonical fork before fault injection or guest access.
+
 ## Interactive run control
 
 Start paused at genesis and read commands from standard input:
@@ -142,6 +147,14 @@ Crucible does not provide a symbol server. Supply the guest executable and
 DWARF files to GDB locally. The packaged GDB includes Python scripting, TUI,
 and both x86_64 and aarch64 target descriptions.
 
+The x86_64 suite also retains matching x86_64 and AArch64 guest kernels and root
+images. A scenario's `world.node.arch` selects the complete machine/CPU/console
+and guest-artifact profile; do not override only `CRUCIBLE_QEMU` when changing
+architectures. For custom assets, set the matching
+`CRUCIBLE_KERNEL_<ARCH>`, `CRUCIBLE_ROOT_IMAGE_<ARCH>`, and
+`CRUCIBLE_KERNEL_CMDLINE_<ARCH>` triplet together (`ARCH` is `X86_64` or
+`AARCH64`). A partial triplet fails before QEMU starts.
+
 Remote time travel uses the same authenticated controller lease and stable
 gateway attachment. The client sends only the requested coordinate or reverse
 operation; the daemon's session actor supplies the authoritative current
@@ -180,13 +193,20 @@ available at subsequent scheduler boundaries.
 fork by itself, and mutation or operator-controlled execution remains rejected
 until that whole-world non-canonical branch has been created.
 
-The remote guest-introspection commands and transport are present, but the
-shipped production VM lifecycle does not yet activate `crucible-guest agent`
-when `fork-debug` creates the non-canonical branch. Consequently `exec`, `pty`,
-and `ssh` are not yet operational against the shipped fixtures. Images used for
-development must arrange an agent themselves; production users should treat
-these verbs as preview-only until the fork-time activation and live gates in
-RFC-0010 T-DBG-12 and T-DBG-14 are complete.
+The shipped debug fixture keeps the guest agent inactive on canonical execution.
+`fork-debug` first commits the explicit non-canonical branch, hot-adds a fixed
+activation-only port, and waits up to 64 scheduler quanta for the agent's typed
+feature advertisement. The response lists argv exec, PTY, resize, SSH bridge,
+and channel-capacity support. If activation or negotiation fails, the command
+still reports the committed branch identity together with the failure reason so
+the branch remains discoverable and diagnosable. All commands and stream bytes
+after activation use the versioned shared-memory/doorbell protocol; the hotplug
+port carries only the fixed activation token.
+
+Custom images must include an event-driven bootstrap for the fixed activation
+port and must not start or poll the agent during canonical execution. A missing
+bootstrap is reported as a bounded activation failure rather than a hanging
+debug command.
 
 The intended workflow first creates the explicit branch, then opens a channel
 in a second invocation. Both commands acquire and release the exclusive

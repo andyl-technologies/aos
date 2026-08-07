@@ -277,7 +277,8 @@ misdescribe this as only three kernel objects.
    counter writes.
 3. **The QMP socket** (§10.4) — out-of-band machine control: capability
    negotiation, `savevm`/`loadvm` for the VM-state half of a checkpoint, and
-   `quit` as a shutdown rung.
+   `quit` as a shutdown rung, plus the fixed activation-only debugger hotplug at
+   an explicit non-canonical fork boundary (36 [DBG-45A]).
 
 - **[QEMU-17]** A VM node MUST preserve exactly three logical channel roles — the
   plugin IPC control channel (14), the shared-memory region (13), and the QMP
@@ -296,7 +297,8 @@ misdescribe this as only three kernel objects.
   retry/service eventfd writes; parked plugin paths MAY issue repeated actual
   futex waits after non-actionable returns ([SHM-1]); it MUST NOT
   perform a QMP round-trip or plugin-IPC message on the advance path. QMP and plugin-IPC traffic
-  occur only at instantiate/save/teardown boundaries, never per quantum. *Gate:*
+  occur only at instantiate/save/teardown or explicit non-canonical debugger-fork
+  boundaries, never as ordinary per-quantum traffic. *Gate:*
   `gate:control-responsive`, `gate:layer1-injection`. *Spec:* §10.3; satisfies
   [SHM-1], [SHM-2].
 
@@ -319,7 +321,9 @@ pub struct QemuNode {
 QMP is QEMU's JSON-line machine-control protocol. Crucible uses a **minimal,
 typed** client — not a general QMP binding — covering exactly the commands the
 execution model needs: capability negotiation, `savevm`/`loadvm` (the VM-state
-half of a `Checkpoint`, 07), and `quit` (a shutdown rung, §10.6). It is an
+half of a `Checkpoint`, 07), `quit` (a shutdown rung, §10.6), and the fixed
+`chardev-add`/`device_add`/`ringbuf-write` sequence that activates a guest debug
+agent only after an explicit non-canonical fork (36 [DBG-45A]). It is an
 out-of-band control channel: it carries no per-quantum timing and no frames
 ([QEMU-17]).
 
@@ -337,7 +341,9 @@ mis-parse.
   and its response as a Rust type, and (c) skips asynchronous QMP events while
   awaiting a command's `return`/`error`, surfacing an `error` response as a typed
   `Result::Err`. The client MUST cover, at minimum: capability negotiation,
-  `savevm`, `loadvm`, and `quit`. It MUST NOT expose a stringly-typed
+  `savevm`, `loadvm`, `quit`, and the fixed activation-only debugger hotplug. The
+  activation surface MUST NOT accept caller-selected devices or bytes and MUST
+  carry no guest-introspection payload. It MUST NOT expose a stringly-typed
   execute-arbitrary-JSON path on the determinism-critical control flow. *Gate:*
   `gate:control-responsive`. *Spec:* §10.4; references 07.
 

@@ -693,6 +693,11 @@ backpressure; it never overwrites or silently discards a record. Authorization
 for these channels remains host-side and is never represented as a process
 capability object in shared memory.
 
+Debugger agent activation is not a backpressure escape hatch. RFC 36
+[DBG-45A]'s fixed fork-time token carries no guest-introspection record; every
+feature advertisement and `CRGI` request/response still uses these rings and
+obeys [SHM-47] and [SHM-48].
+
 - **[SHM-47]** Every logical VM MUST have exactly one ABI-v6 request ring and one
   response ring with fixed direction and ownership. Entries MUST contain only a
   nonzero fixed-width sequence, a bounded complete protocol record, and zeroed

@@ -895,23 +895,34 @@ operation is admitted; possessing a capability does not weaken that invariant.
 
 Debugger introspection targets a guest VM, never the Crucible host. A debug-capable
 guest image advertises a versioned guest-agent feature and exposes a deterministic
-virtio-serial-style port implemented through the public shared-memory protocol.
+stream API implemented through the public shared-memory protocol.
 The ABI carries owned command, stream, resize, exit-status, and close records only;
 it contains no native pointers or process-private objects. Adding this transport is
 an explicit shared-memory ABI version change and must pass ABI conformance on both
 x86_64 and aarch64.
 
-The concrete port reuses the already-attested per-architecture white-box
-doorbell as a deterministic guest rendezvous rather than adding another QEMU
-control plane. The guest supplies one fixed 4,608-byte mutable `CRGX` v1 buffer.
+The concrete data plane reuses the already-attested per-architecture white-box
+doorbell as a deterministic guest rendezvous. The guest supplies one fixed
+4,608-byte mutable `CRGX` v1 buffer.
 On each trap the GPL-side plugin validates an optional complete `CRGI` response,
 publishes it to the plugin-to-host ring, dequeues at most one host request, and
 overwrites the same guest buffer with that request or an idle reply. The frame
 has a 16-byte pointer-free header, a bounded complete `CRGI` record, and a
 zero-checked tail. Guest and plugin directions are closed and fail loudly when
-reversed. This makes the port “virtio-serial-style” at the stream API without
-introducing a virtual device or transferring a descriptor across the process
-boundary.
+reversed. No exec, PTY, SSH, credential, or `CRGI` payload crosses QMP or a
+virtual device, and no descriptor crosses the process boundary.
+
+Activation is a separate, one-shot control edge. The canonical launch contains
+no debugger activation device. After the explicit non-canonical fork marker has
+committed, the typed QMP client hot-adds one private ring-buffer-backed
+virtio-serial port and writes the fixed `CRUCIBLE_DEBUG_AGENT_V1` token. The
+fixture's event-driven hotplug hook consumes only that token and starts the
+agent; it does not poll during canonical execution. Callers cannot choose the
+device, token, or bytes. The activation edge is bounded, host-to-guest only,
+recorded by the branch action, carries no introspection records, and disappears
+with the forked runtime on reposition or teardown. The subsequent feature
+advertisement and every channel byte use only `CRGX`/`CRGI` and the shared-memory
+rings.
 
 The response exchange is acknowledged. When the fixed 64-entry plugin-to-host
 ring is full, the plugin returns `retry`, retains the guest response sequence,
@@ -959,12 +970,11 @@ and sends `SIGHUP` to the PTY process group. Direct-child exit also hangs up
 descendants that retain stream descriptors. Agent shutdown terminates and reaps
 remaining process groups and joins their bounded readers.
 
-An idle agent still has a causal instruction-count cost: it polls only after a
-fixed spin count, but it is not timing-neutral. Therefore an image or daemon MUST
-NOT activate `crucible-guest agent` on canonical execution. Activation belongs
-to the authorized whole-world non-canonical debug fork and is recorded as part
-of that fork's causal configuration. A future interrupt-backed device may remove
-polling, but is not required by this protocol version.
+An idle agent still has a causal instruction-count cost. Therefore an image or
+daemon MUST NOT activate `crucible-guest agent` on canonical execution. The
+shipped fixture installs only an event-driven hotplug hook; the activation port
+it awaits is absent until the authorized whole-world non-canonical fork. Agent
+activation is recorded as part of that fork's causal configuration.
 
 Guest streams are ephemeral by default and excluded from canonical artifacts. An
 operator may explicitly request transcript recording on the non-canonical branch.
@@ -986,6 +996,17 @@ instances.
   non-canonical branch and never changes canonical causal bytes. *Gate:*
   `gate:e2e-determinism`, `gate:replay-oracle`. *Spec:* §36.9.3; cross-ref §36.5.
 
+- **[DBG-45A]** Fork-time agent activation MAY use the existing typed QMP plane
+  to hot-add one fixed activation-only port and send one fixed versioned token,
+  but only after the non-canonical fork marker commits. The device MUST be absent
+  from canonical launch topology; the command MUST carry no `CRGI`, operator,
+  credential, or transcript bytes; activation MUST be replay-bound to the branch
+  action; and reposition or teardown MUST discard the activation device with its
+  runtime. All guest-introspection data remains exclusively on [DBG-45]'s
+  shared-memory/doorbell path. *Gate:* `gate:e2e-determinism`,
+  `gate:abi-conformance`, `gate:replay-oracle`. *Spec:* §36.9.3; cross-ref 10
+  §10.4, 13 §13.3.9, 16 §16.3.1.
+
 ### 36.9.4 Toolchain and architecture gates
 
 The shipped suite includes GNU GDB built hermetically from source using AOS
@@ -993,6 +1014,15 @@ packages. Live debugger gates first establish the x86_64 path, then require the
 same attach/read/breakpoint/reposition/run-control and guest-introspection contract
 on aarch64. Architecture support is not complete while either required live gate
 uses a model double or fallback.
+
+The native x86_64 suite retains two architecture-specific guest closures: its
+native x86_64 kernel/root image and an AArch64 kernel/root image produced by the
+AOS cross-toolchain ladder. The wrapper exports separate immutable artifact
+triplets, and the production lifecycle selects the triplet from each World VM's
+declared architecture, including restart and replacement launches. It never
+boots an AArch64 profile with x86_64 guest artifacts. Post-cross native tool
+tiers use the repository's declared QEMU-binfmt builder contract; no host
+compiler, userland, or upstream package set participates.
 
 - **[DBG-47]** The Crucible suite MUST ship a hermetic GNU GDB and MUST pass live
   x86_64 and aarch64 gates for stable attach, read-only neutrality, scheduler-routed
@@ -1415,7 +1445,11 @@ complete from model-double evidence.
   reverse from either event/schedule history. Completion therefore also requires
   operator-visible landed runtime-coordinate evidence and a live fixture with
   non-empty recorded reverse history; configuration identity alone is not
-  sufficient proof of a successful distinct landing.
+  sufficient proof of a successful distinct landing. The API and CLI now return
+  requested and landed configuration/event/scheduler/node-icount evidence as
+  separate typed fields and retain an inclusive exact event cursor; the open
+  gate is a packaged live exercise proving those fields against non-empty
+  history.
 - [ ] **T-DBG-11** Enforce debugger identities, capability roles, one-controller
   leases, Unix peer authentication, remote HTTP/2+mTLS relay, and explicit trusted
   unauthenticated bind policy in the daemon and CLI. — satisfies [DBG-43], [DBG-44];
@@ -1468,14 +1502,14 @@ complete from model-double evidence.
   records, and remains outside canonical artifacts. The CLI now applies a
   configurable 30-second response-idle deadline, attempts bounded channel
   cleanup and controller-lease release when a forked VM has no responding agent.
-  Completion remains open for fork-time activation of `crucible-guest
-  agent` and live x86_64/aarch64 evidence. A 2026-08 manual production-VM
-  exercise confirmed that requests cross the authenticated remote API, session,
-  backend, and shared-memory request ring after the production loop delegates
-  guest-introspection methods; the shipped fixture then produced no response
-  because its canonical init does not run the debug agent. Starting the agent
-  canonically would violate [DBG-44], so activation remains part of the explicit
-  whole-world fork rather than a fixture workaround.
+  Fork-time activation is now implemented as [DBG-45A]'s fixed QMP hotplug after
+  the non-canonical branch commits. The shipped fixture installs an event-driven
+  hotplug hook, starts `crucible-guest agent` only after the fixed token, and
+  advertises exec/PTY/resize/SSH features through the shared-memory protocol.
+  Activation waits for at most 64 scheduler quanta and returns the committed
+  branch identity even when negotiation fails. Completion remains open only for
+  packaged live exec/PTY/SSH evidence, reposition-driven stream closure, and the
+  x86_64/AArch64 parity exercise.
 - [x] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
   for local/remote GDB, reverse commands, guest exec, PTY, and SSH compatibility. —
   satisfies [DBG-47]; spec §36.9.4; cross-ref 23, 26.
@@ -1504,4 +1538,8 @@ complete from model-double evidence.
   thread state without an intervening runtime reposition. QEMU still rejects GDB's optional
   trace-status and detach packets. Completion remains open for the full
   controller/gateway atomic replacement, scheduler run-control, fork-time guest
-  agent activation, and guest-introspection matrix on both architectures.
+  agent execution, and guest-introspection matrix on both architectures. The
+  native suite now retains both architecture-specific guest closures, selects
+  q35/qemu64/ttyS0 or virt/cortex-a57/ttyAMA0 consistently, and configures
+  debugger backends for every daemon-submitted World node; these are required
+  implementation prerequisites, not substitutes for the remaining live gate.
