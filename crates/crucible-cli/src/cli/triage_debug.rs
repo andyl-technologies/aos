@@ -1270,11 +1270,6 @@ pub(super) fn write_failure_findings_ledger_v3(
     findings_out: Option<&Path>,
     evidence: &[TriageFindingEvidence],
 ) -> Result<(PathBuf, crucible::ContentHash, Vec<u8>), CliError> {
-    if evidence.is_empty() {
-        return Err(artifact_error(
-            "cannot write a signed findings ledger without findings",
-        ));
-    }
     let bytes = failure_findings_ledger_v3_bytes(evidence)?;
     let digest = crucible::ContentHash::from_bytes(&bytes);
     let path = findings_out.map(Path::to_path_buf).unwrap_or_else(|| {

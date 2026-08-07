@@ -623,7 +623,7 @@ fn attach_qemu_findings_outputs(
     findings: Vec<crate::cli_report::TriageFindingEvidence>,
     reproduction_artifacts: Vec<Vec<u8>>,
 ) -> Result<(), CliError> {
-    if findings.is_empty() {
+    if findings.is_empty() && findings_out.is_none() {
         return Ok(());
     }
     let (path, digest, ledger_bytes) = crate::cli_triage_debug::write_failure_findings_ledger_v3(

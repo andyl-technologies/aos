@@ -203,7 +203,7 @@ timing can be reproduced.
 | `--max-depth <n>` | Optional | Bound decision depth. |
 | `--max-states <n>` | Default `1` | Bound materialized states. Set this explicitly for useful campaigns. |
 | `--on-violation <stop\|collect>` | Engine default `stop` when omitted | Stop at the first property/timeout finding or continue within the supplied budget. |
-| `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Override the signed findings-ledger output path. |
+| `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Write the signed findings ledger here, including an empty ledger when no finding is retained. |
 | `--schedule-named-truths <path>` | Optional | Load schedule-named assertion truth data. |
 | `--retained-evidence <path>` | Hidden/internal | Load backend-retained assertion evidence for gate workflows. |
 
@@ -229,7 +229,7 @@ Supply the family either positionally or with `--family`, never both.
 | `--coverage <basic-block>` | Default `basic-block` | Select the coverage feedback signal. |
 | `--corpus <path>` | Optional | Seed and regression corpus directory. |
 | `--on-violation <stop\|collect>` | Default `stop` | Stop at the first property/timeout finding or retain findings through the run budget. |
-| `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Override the signed findings-ledger output path. |
+| `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Write the signed findings ledger here, including an empty ledger when no finding is retained. |
 
 ### `triage`
 

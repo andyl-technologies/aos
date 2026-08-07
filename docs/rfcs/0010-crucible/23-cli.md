@@ -1461,7 +1461,10 @@ branch on the verdict without parsing output:
   Production-QEMU search and fuzz now classify terminal property violations and
   concrete execution timeouts as findings, honor `--on-violation stop|collect`,
   retain one replay artifact per selected finding, and emit a canonical signed
-  v3 findings ledger automatically (or at `--findings-out`). The ledger binds
+  v3 findings ledger automatically (or at `--findings-out`). An explicit
+  `--findings-out` path is written as a valid signed zero-finding ledger when
+  the campaign retains no counterexample, while the implicit default remains
+  absent for zero findings. The ledger binds
   each artifact to exact streamed event frames, coverage, typed evidence, and
   its discovery signature so `triage --recompute-signatures` can verify the
   discovery boundary offline. When one execution streams multiple violated

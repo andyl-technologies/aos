@@ -1750,6 +1750,27 @@ pub(super) fn cli_triage_distinguishes_empty_malformed_and_missing_ledgers() {
 }
 
 #[test]
+pub(super) fn cli_explicit_findings_path_writes_triageable_empty_v3_ledger()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let path = temp.path().join("empty.crucible-findings");
+    let (written_path, digest, bytes) =
+        write_failure_findings_ledger_v3(temp.path(), Some(&path), &[])?;
+
+    assert_eq!(written_path, path);
+    assert_eq!(fs::read(&path)?, bytes);
+    assert_eq!(digest, crucible::ContentHash::from_bytes(&bytes));
+    assert!(String::from_utf8(bytes.clone())?.contains("finding_count=0"));
+
+    let store = crucible::LocalDagStore::new(temp.path().join("store"));
+    let loaded = parse_failure_findings_ledger_bytes(&store, &bytes)?;
+    assert_eq!(loaded.ledger.artifact_count(), 0);
+    assert!(loaded.ledger.signed_findings().is_empty());
+    assert!(loaded.evidence.is_empty());
+    Ok(())
+}
+
+#[test]
 pub(super) fn cli_triage_rejects_cli_sidecar_signature_evidence() {
     let temp = TempDir::new().expect("tempdir must be created");
     let findings = temp.path().join("sidecar.findings-ledger");
