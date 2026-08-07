@@ -54,6 +54,8 @@
 //! stay the read-only province of the runtime, so the block servicer cannot
 //! perturb the state the determinism gates observe.
 
+use std::fs::File;
+use std::io::Write;
 use std::os::fd::BorrowedFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -102,20 +104,55 @@ pub struct QemuLiveBlockIoServicer {
 /// stage atomic transactions spanning two independently owned block devices.
 #[derive(Clone)]
 pub struct QemuSharedBlockDevice {
-    inner: Arc<Mutex<BlockDevice>>,
+    inner: Arc<QemuSharedBlockDeviceInner>,
+}
+
+struct QemuSharedBlockDeviceInner {
+    device: Mutex<BlockDevice>,
+    notification: Mutex<QemuBlockDeviceNotification>,
+}
+
+struct QemuBlockDeviceNotification {
+    region: MappedSetupRegion,
+    vm_slot: u32,
+    wake: Option<Arc<File>>,
 }
 
 impl QemuSharedBlockDevice {
-    fn new(device: BlockDevice) -> Self {
+    fn new(device: BlockDevice, notification_region: MappedSetupRegion, vm_slot: u32) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(device)),
+            inner: Arc::new(QemuSharedBlockDeviceInner {
+                device: Mutex::new(device),
+                notification: Mutex::new(QemuBlockDeviceNotification {
+                    region: notification_region,
+                    vm_slot,
+                    wake: None,
+                }),
+            }),
         }
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, BlockDevice>, QemuLiveBlockIoServicerError> {
         self.inner
+            .device
             .lock()
             .map_err(|_| QemuLiveBlockIoServicerError::DeviceLockPoisoned)
+    }
+
+    pub(crate) fn attach_notification_wake(
+        &self,
+        wake: Arc<File>,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        let mut notification = self
+            .inner
+            .notification
+            .lock()
+            .map_err(|_| QemuLiveBlockIoServicerError::NotificationLockPoisoned)?;
+        if notification.wake.is_some() {
+            return Err(QemuLiveBlockIoServicerError::NotificationWakeAlreadyAttached);
+        }
+        notification.wake = Some(wake);
+        Ok(())
     }
 
     /// Returns whether two handles own the same authoritative device.
@@ -145,7 +182,10 @@ impl QemuSharedBlockDevice {
     ///
     /// Locks are acquired in canonical content-hash order. The underlying
     /// transaction clones both complete devices and commits neither unless the
-    /// destination mutation and source persistence installation both succeed.
+    /// destination mutation, deadline publication, and runtime wake all succeed.
+    /// The source completion is delayed through the destination's durability
+    /// horizon, while the destination is scheduled at the source persistence
+    /// opportunity's exact virtual-time coordinate.
     ///
     /// # Errors
     ///
@@ -164,25 +204,80 @@ impl QemuSharedBlockDevice {
             return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
         }
         if source_id < destination_id {
-            let mut source = self.lock()?;
-            let mut destination = destination.lock()?;
-            install_cross_device_misdirected_persistence(
-                &mut source,
-                &mut destination,
+            let mut source_device = self.lock()?;
+            let mut destination_device = destination.lock()?;
+            let prior_source = source_device.clone();
+            let prior_destination = destination_device.clone();
+            let prior_deadline = prior_destination.next_exact_local_event();
+            if let Err(source) = install_cross_device_misdirected_persistence(
+                &mut source_device,
+                &mut destination_device,
                 resolved,
                 destination_id.bytes,
-            )
+            ) {
+                return Err(QemuLiveBlockIoServicerError::Device { source });
+            }
+            let deadline = destination_device.next_exact_local_event();
+            if let Err(error) = destination.publish_remote_mutation(deadline, prior_deadline) {
+                *source_device = prior_source;
+                *destination_device = prior_destination;
+                return Err(error);
+            }
         } else {
-            let mut destination = destination.lock()?;
-            let mut source = self.lock()?;
-            install_cross_device_misdirected_persistence(
-                &mut source,
-                &mut destination,
+            let mut destination_device = destination.lock()?;
+            let mut source_device = self.lock()?;
+            let prior_source = source_device.clone();
+            let prior_destination = destination_device.clone();
+            let prior_deadline = prior_destination.next_exact_local_event();
+            if let Err(source) = install_cross_device_misdirected_persistence(
+                &mut source_device,
+                &mut destination_device,
                 resolved,
                 destination_id.bytes,
-            )
+            ) {
+                return Err(QemuLiveBlockIoServicerError::Device { source });
+            }
+            let deadline = destination_device.next_exact_local_event();
+            if let Err(error) = destination.publish_remote_mutation(deadline, prior_deadline) {
+                *source_device = prior_source;
+                *destination_device = prior_destination;
+                return Err(error);
+            }
         }
-        .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+        Ok(())
+    }
+
+    fn publish_remote_mutation(
+        &self,
+        deadline: Option<u64>,
+        rollback_deadline: Option<u64>,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        let notification = self
+            .inner
+            .notification
+            .lock()
+            .map_err(|_| QemuLiveBlockIoServicerError::NotificationLockPoisoned)?;
+        let wake = notification
+            .wake
+            .clone()
+            .ok_or(QemuLiveBlockIoServicerError::NotificationWakeMissing)?;
+        let slot = notification
+            .region
+            .node_slot(notification.vm_slot)
+            .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
+        slot.store_device_completion_deadline_icount(deadline.unwrap_or(0));
+        if let Err(source) = slot.wake_for_frame_delivery() {
+            slot.store_device_completion_deadline_icount(rollback_deadline.unwrap_or(0));
+            return Err(QemuLiveBlockIoServicerError::Device {
+                source: DeviceError::from(source),
+            });
+        }
+        let mut wake = wake.as_ref();
+        if let Err(source) = wake.write_all(&1_u64.to_ne_bytes()) {
+            slot.store_device_completion_deadline_icount(rollback_deadline.unwrap_or(0));
+            return Err(QemuLiveBlockIoServicerError::NotificationWake { source });
+        }
+        Ok(())
     }
 }
 
@@ -272,6 +367,8 @@ impl QemuLiveBlockIoServicer {
     ) -> Result<Self, QemuLiveBlockIoServicerError> {
         let region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLiveBlockIoServicerError::MapRegion { source })?;
+        let notification_region = mmap_setup_region(shmem_fd, region_len)
+            .map_err(|source| QemuLiveBlockIoServicerError::MapRegion { source })?;
         let core = IoCore::new(
             icount_shift,
             SLOT_BLK_IO as u32,
@@ -279,7 +376,11 @@ impl QemuLiveBlockIoServicer {
             SERVICER_OUTBOX_CAPACITY,
         )
         .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
-        let device = QemuSharedBlockDevice::new(BlockDevice::new(core, base, latency));
+        let device = QemuSharedBlockDevice::new(
+            BlockDevice::new(core, base, latency),
+            notification_region,
+            vm_slot,
+        );
         Ok(Self {
             region,
             device,
@@ -323,6 +424,8 @@ impl QemuLiveBlockIoServicer {
             return Err(QemuLiveBlockIoServicerError::CheckpointRegionMismatch);
         }
         let mut region = mmap_setup_region(shmem_fd, region_len)
+            .map_err(|source| QemuLiveBlockIoServicerError::MapRegion { source })?;
+        let notification_region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLiveBlockIoServicerError::MapRegion { source })?;
         if !same_region_layout(region.header_snapshot(), checkpoint.region_header) {
             return Err(QemuLiveBlockIoServicerError::CheckpointRegionMismatch);
@@ -373,7 +476,7 @@ impl QemuLiveBlockIoServicer {
             .store_device_completion_deadline_icount(device.next_exact_local_event().unwrap_or(0));
         Ok(Self {
             region,
-            device: QemuSharedBlockDevice::new(device),
+            device: QemuSharedBlockDevice::new(device, notification_region, checkpoint.vm_slot),
             vm_slot: checkpoint.vm_slot,
             frames_processed: checkpoint.frames_processed,
             frames_delivered: checkpoint.frames_delivered,
@@ -1560,6 +1663,21 @@ pub enum QemuLiveBlockIoServicerError {
     /// Another thread panicked while mutating the authoritative block device.
     #[error("authoritative block-device lock is poisoned")]
     DeviceLockPoisoned,
+    /// Another thread panicked while publishing a remote device mutation.
+    #[error("block-device notification lock is poisoned")]
+    NotificationLockPoisoned,
+    /// A runtime wake was attached to the same authoritative device twice.
+    #[error("block-device remote-mutation wake channel is already attached")]
+    NotificationWakeAlreadyAttached,
+    /// A remotely addressable device was exposed before its runtime wake was attached.
+    #[error("block-device remote-mutation wake channel is not attached")]
+    NotificationWakeMissing,
+    /// The destination runtime could not be awakened after a remote mutation.
+    #[error("wake destination block runtime after remote mutation failed: {source}")]
+    NotificationWake {
+        /// Underlying eventfd write error.
+        source: std::io::Error,
+    },
     /// A cross-device operation named one device twice or aliased its handles.
     #[error("cross-device block transaction does not identify two distinct devices")]
     CrossDeviceIdentityMismatch,
@@ -1690,6 +1808,24 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("map test servicer: {error}"));
         (file, layout.region_size, servicer)
+    }
+
+    #[cfg(unix)]
+    fn unlinked_wake_file() -> fs::File {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "crucible-block-servicer-wake-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap_or_else(|error| panic!("create test wake: {error}"));
+        fs::remove_file(&path).unwrap_or_else(|error| panic!("unlink test wake: {error}"));
+        file
     }
 
     #[test]
@@ -1840,5 +1976,132 @@ mod tests {
             .checkpoint(binding)
             .unwrap_or_else(|error| panic!("capture state after rejected restore: {error}"));
         assert_eq!(after, before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_write_publishes_destination_deadline_and_wake() {
+        fn cached_config() -> BlockDurabilityConfig {
+            let mut config = BlockDurabilityConfig::write_through(4096);
+            config.atomic_write_bytes = 512;
+            config.volatile_cache_bytes = 4096;
+            config.cache_entries = 16;
+            config.retained_versions = 16;
+            config.completion_durability =
+                crucible_device::block::BlockCompletionDurability::VolatileCacheAccepted;
+            config
+        }
+
+        fn staged_persistence(
+            source: &QemuSharedBlockDevice,
+            now_nanos: u64,
+        ) -> ResolvedBlockRequestPersistenceDirective {
+            let request = BlockRequest::write(31, 0, vec![0xa5; 512]);
+            let mut device = source
+                .lock()
+                .unwrap_or_else(|error| panic!("lock source: {error}"));
+            device
+                .configure_storage_faults(cached_config(), true)
+                .unwrap_or_else(|error| panic!("configure source: {error}"));
+            device
+                .require_storage_execution_opportunities()
+                .unwrap_or_else(|error| panic!("require source opportunities: {error}"));
+            let mut admission = ResolvedBlockFaultDirective::fault_free(&request, 4096);
+            admission.execution_nanos = now_nanos;
+            admission.persistence_admitted_nanos = now_nanos;
+            device
+                .install_storage_fault_directive(request.identity(), admission)
+                .unwrap_or_else(|error| panic!("install admission: {error}"));
+            device
+                .submit(now_nanos, &request)
+                .unwrap_or_else(|error| panic!("submit source write: {error}"));
+            let opportunity = device
+                .next_storage_execution_opportunity(now_nanos)
+                .unwrap_or_else(|| panic!("execution opportunity is present"));
+            let mut execution = opportunity.admission.clone();
+            execution.execution_nanos = opportunity.ready_nanos;
+            execution.persistence_admitted_nanos = opportunity.ready_nanos;
+            device
+                .install_storage_execution_directive(ResolvedBlockExecutionDirective {
+                    opportunity,
+                    directive: execution,
+                })
+                .unwrap_or_else(|error| panic!("install execution: {error}"));
+            device
+                .advance_to(now_nanos)
+                .unwrap_or_else(|error| panic!("advance source: {error}"));
+            let opportunity = device
+                .next_storage_request_persistence_opportunity(now_nanos)
+                .unwrap_or_else(|| panic!("persistence opportunity is present"));
+            let mut directive = opportunity.resolved.clone();
+            directive.write_disposition =
+                crucible_device::block::BlockFaultWriteDisposition::Misdirected {
+                    destination:
+                        crucible_device::block::BlockFaultMisdirectionDestination::ExternalDevice(
+                            [2; 32],
+                        ),
+                    destination_offset: 512,
+                };
+            ResolvedBlockRequestPersistenceDirective {
+                opportunity,
+                directive,
+            }
+        }
+
+        let (_source_file, _source_region_len, source_servicer) = checkpoint_fixture();
+        let (_destination_file, _destination_region_len, destination_servicer) =
+            checkpoint_fixture();
+        let source = source_servicer.shared_device();
+        let destination = destination_servicer.shared_device();
+        {
+            let mut destination_device = destination
+                .lock()
+                .unwrap_or_else(|error| panic!("lock destination: {error}"));
+            let mut destination_config = BlockDurabilityConfig::write_through(4096);
+            destination_config.atomic_write_bytes = 512;
+            destination_config.retained_versions = 16;
+            destination_device
+                .configure_storage_faults(destination_config, false)
+                .unwrap_or_else(|error| panic!("configure destination: {error}"));
+            destination_device
+                .require_storage_persistence_media_opportunities()
+                .unwrap_or_else(|error| panic!("require destination persistence: {error}"));
+        }
+        let wake = Arc::new(unlinked_wake_file());
+        destination
+            .attach_notification_wake(Arc::clone(&wake))
+            .unwrap_or_else(|error| panic!("attach destination wake: {error}"));
+        let now_nanos = 64;
+        let directive = staged_persistence(&source, now_nanos);
+
+        source
+            .install_cross_device_misdirected_persistence(
+                ContentHash { bytes: [1; 32] },
+                &destination,
+                ContentHash { bytes: [2; 32] },
+                directive,
+            )
+            .unwrap_or_else(|error| panic!("commit remote write: {error}"));
+
+        assert_eq!(
+            destination_servicer
+                .region
+                .node_slot(0)
+                .unwrap_or_else(|error| panic!("read destination slot: {error}"))
+                .device_completion_deadline_icount(),
+            now_nanos
+        );
+        assert_eq!(
+            wake.metadata()
+                .unwrap_or_else(|error| panic!("inspect wake write: {error}"))
+                .len(),
+            8
+        );
+        assert_eq!(
+            destination
+                .inspect_storage_visible(512, 512)
+                .unwrap_or_else(|error| panic!("inspect destination bytes: {error}")),
+            vec![0xa5; 512]
+        );
     }
 }
