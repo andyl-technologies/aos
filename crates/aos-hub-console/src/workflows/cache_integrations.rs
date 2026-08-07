@@ -10,6 +10,7 @@ use crate::components::{InlineError, StatusBadge};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
+use super::access_tokens::RegistryAccessTokens;
 use super::cache_gc::CacheGcWorkflow;
 use super::cache_integration_preview::CacheIntegrationPreview;
 use super::cache_objects::CacheObjects;
@@ -50,6 +51,10 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
         .into_any(),
         (ConsoleScope::Registry { path }, "mirror") => view! {
             <RegistryMirrorWorkflow client=client registry_id=path.clone()/>
+        }
+        .into_any(),
+        (ConsoleScope::Registry { path }, "tokens") => view! {
+            <RegistryAccessTokens client=client registry_id=path.clone()/>
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "signing") => view! {
