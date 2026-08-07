@@ -10,6 +10,7 @@ use crate::components::{InlineError, StatusBadge};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
+use super::cache_gc::CacheGcWorkflow;
 use super::cache_integration_preview::CacheIntegrationPreview;
 use super::cache_population::CachePopulation;
 use super::cache_retention::CacheRetentionWorkflow;
@@ -42,6 +43,16 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             "retention",
         ) => view! {
             <CacheRetentionWorkflow client=client cache_id=format!("{organization}/{cache}")/>
+        }
+        .into_any(),
+        (
+            ConsoleScope::Cache {
+                organization,
+                cache,
+            },
+            "gc",
+        ) => view! {
+            <CacheGcWorkflow client=client cache_id=format!("{organization}/{cache}")/>
         }
         .into_any(),
         _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
