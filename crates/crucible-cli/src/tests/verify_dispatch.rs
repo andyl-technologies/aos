@@ -317,6 +317,53 @@ pub(super) fn cli_verify_workflow_compares_existing_reproduction_artifacts()
             .any(|line| line.contains("mismatch=canonical-log+fingerprint-stream"))
     );
 
+    let qemu_backend = ResolvedLocalBackend::Qemu {
+        qemu: PathBuf::from("/test/qemu"),
+        plugin: PathBuf::from("/test/plugin"),
+        qemu_build_id: content_address_bytes(b"verify-compare-qemu-build"),
+        qemu_patch_series_hash: content_address_bytes(b"verify-compare-qemu-patches"),
+        plugin_abi: required_qemu_plugin_abi(),
+        shmem_abi_version: crucible::SHMEM_ABI_VERSION.to_string(),
+        qemu_source: QemuDiscoverySource::Flag,
+        plugin_source: QemuDiscoverySource::Flag,
+    };
+    let qemu_artifact = verify_reproduction_artifact_bytes(
+        21,
+        Some(&qemu_backend),
+        &scenario,
+        &entries,
+        &second_samples,
+    )?;
+    let qemu_left = temp.path().join("qemu-left.crucible");
+    let qemu_right = temp.path().join("qemu-right.crucible");
+    fs::write(&qemu_left, &qemu_artifact)?;
+    fs::write(&qemu_right, &qemu_artifact)?;
+    let auto_cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("auto"),
+        String::from("verify"),
+        String::from("--compare"),
+        qemu_left.display().to_string(),
+        qemu_right.display().to_string(),
+    ]);
+    let Commands::Verify(auto_args) = &auto_cli.command else {
+        panic!("expected verify command");
+    };
+    let auto_plan = plan_verify_invocation(auto_args, temp.path())?;
+    let auto_outcome = execute_backend_routed_command(
+        &plan_cli_invocation(&auto_cli),
+        &plan_backend_selection(&auto_cli)?.expect("verify should retain a route"),
+        None,
+        None,
+        Some(&auto_plan),
+        None,
+        &mut NullBackendCommandRunner,
+    )?;
+    assert_eq!(auto_outcome.status, BackendCommandStatus::Passed);
+    let producer_mismatch = verify_compare_artifacts_with_paths(&left, &qemu_artifact, &cli)?;
+    assert!(matches!(producer_mismatch, CliError::Identity(_)));
+
     let different_seed = verify_reproduction_artifact_bytes(
         22,
         Some(&ResolvedLocalBackend::Double),

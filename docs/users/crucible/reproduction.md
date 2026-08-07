@@ -39,8 +39,10 @@ To compare two existing artifacts without running the scenario again:
 ```
 
 Artifact comparison uses the identities embedded in those artifacts. It does
-not generate a new seed, so repeated comparisons of unchanged inputs produce
-stable evidence.
+not select or execute the locally available backend. The two producer identities
+must match each other, so repeated comparisons of unchanged inputs produce
+stable evidence even when the comparison host does not have that producer
+backend installed.
 
 ## Failure artifacts
 

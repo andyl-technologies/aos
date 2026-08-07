@@ -1803,9 +1803,7 @@ pub(super) fn run_remote_verify_workflow(
                 ergonomics_plan,
             ))?
         }
-        VerifyMode::CompareArtifacts { .. } => {
-            verify_compare_artifacts(verify_plan, backend_plan.resolved_backend.as_ref())?
-        }
+        VerifyMode::CompareArtifacts { .. } => verify_compare_artifacts(verify_plan)?,
     };
     finish_verify_workflow_outcome(
         thin_plan,

@@ -443,6 +443,8 @@ long-held locks.
   decision/sample/byte reporting, both-side reproduction artifacts,
   `verify --compare <a> <b>`, exit 0/1 deterministic/divergent outcomes, and
   local-QEMU verify output pinned to the resolved QEMU/plugin build identity.
+  Artifact comparison validates the two embedded producer identities against
+  each other and does not substitute an auto-discovered local backend identity.
   Each local-QEMU reduction also performs an independent production plugin boot
   and rejects non-identical live reports.
   `T-CLI-16` is green through `checks.crucible.phase5.cliCompletionsHelp`, which
