@@ -498,6 +498,9 @@ message SystemImage {
   string format = 6;
   string logical_image_id = 7;
   string filename = 8;
+  // Immutable byte URL. Private images resolve to the Hub control origin so
+  // the caller can reuse its bearer or browser session; public images may
+  // resolve to a ready CDN/direct delivery route.
   string download_url = 9;
   string media_type = 10;
   string compression = 11;

@@ -13,6 +13,7 @@ name = "aos-hub-console"
 path = "src/main.rs"
 
 [dependencies]
+aos-hub-console-contract = { workspace = true }
 aos-proto-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

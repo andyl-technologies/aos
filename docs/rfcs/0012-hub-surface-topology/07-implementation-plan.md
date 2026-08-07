@@ -239,46 +239,46 @@ exposing partial state.
 
 ## Phase 7: unify the settings Web UI
 
-- [ ] Build one hermetic Leptos client application for authenticated instance,
+- [x] Build one hermetic Leptos client application for authenticated instance,
       organization, registry, and binary-cache management.
-- [ ] Generate content-addressed JavaScript, WebAssembly, and CSS assets once
+- [x] Generate content-addressed JavaScript, WebAssembly, and CSS assets once
       and ship the identical bundle in native and Worker deployments.
-- [ ] Exchange the HttpOnly browser session and CSRF proof for a five-minute
+- [x] Exchange the HttpOnly browser session and CSRF proof for a five-minute
       in-memory API bearer; never persist that bearer in the browser.
-- [ ] Drive every read and mutation through the canonical `aos.hub.v1`
+- [x] Drive every read and mutation through the canonical `aos.hub.v1`
       Connect-JSON API and its immutable plan/apply contract.
-- [ ] Replace the flat `SettingsTab` list with one grouped settings-navigation
+- [x] Replace the flat `SettingsTab` list with one grouped settings-navigation
       model shared by every managed scope.
-- [ ] Make each scope root render Overview and make Overview the first active
+- [x] Make each scope root render Overview and make Overview the first active
       item; move organization Registries to its explicit inventory path.
-- [ ] Build shared scope-header, summary-strip, placement, delivery-route,
+- [x] Build shared scope-header, summary-strip, placement, delivery-route,
       cache-integration, operation, impact-review, and danger components.
-- [ ] Render registry and binary-cache placement/delivery pages from the same
+- [x] Render registry and binary-cache placement/delivery pages from the same
       component and column definitions, parameterized by `SurfaceRef`.
-- [ ] Give Storage & replicas a separate Write authority panel showing desired
+- [x] Give Storage & replicas a separate Write authority panel showing desired
       and observed placement/generation, pending or failed reconciliation, and
       the sole Promote action. Placement editors expose kind, lifecycle, read
       selection, and order but never editable primary/write fields.
-- [ ] Split storage inventory from credentials, gateways, placements, and
+- [x] Split storage inventory from credentials, gateways, placements, and
       delivery; split cache retention from logical GC and placement eviction.
-- [ ] Replace combined “Serving & mirror,” “Linked registries,” and “GC & pins”
+- [x] Replace combined “Serving & mirror,” “Linked registries,” and “GC & pins”
       pages with the single-responsibility pages defined by
       `10-settings-information-architecture.md`.
-- [ ] Move resource creation, credential rotation, migration, and destructive
+- [x] Move resource creation, credential rotation, migration, and destructive
       operations to dedicated workflows; remove full create forms from list
       pages.
-- [ ] Implement the wide settings workspace and responsive context rail while
+- [x] Implement the wide settings workspace and responsive context rail while
       preserving the existing visual language. Login, account security,
       activation, and public browse retain their server-rendered operation.
-- [ ] Add role-aware grouped-nav snapshots, root-route/active-item tests,
+- [x] Add role-aware grouped-nav snapshots, root-route/active-item tests,
       canonical-row ordering tests, shared-component parity tests, and wide,
       medium, and narrow layout snapshots.
-- [ ] Generate the final SPA deep-link manifest and exhaustive old-route
+- [x] Generate the final SPA deep-link manifest and exhaustive old-route
       deletion manifest; assert no removed management POST is mounted by the
       native runtime or Worker.
-- [ ] Check a capability manifest that maps every remote end-user operation to
+- [x] Check a capability manifest that maps every remote end-user operation to
       its permission, API owner, CLI command, Web workflow, and runtime support.
-- [ ] Remove old settings route names, handlers, templates, nav labels, and
+- [x] Remove old settings route names, handlers, templates, nav labels, and
       duplicated registry/cache rendering code rather than retaining aliases.
 
 **Done when:** instance, organization, registry, and binary-cache settings use one
@@ -501,7 +501,8 @@ storage, and Worker Durable Object SQLite/R2 where the runtime supports the bind
   state, and permission-restricted state;
 - removed commands, Web paths, and API routes are not mounted;
 - removed form actions do not occur in rendered HTML or route manifests;
-- no-JS Web UI completion for every topology and integration mutation;
+- browser management completion for every topology and integration mutation,
+  with no parallel HTML form mutation path;
 - native and Worker Connect-JSON fixture parity.
 
 ### Security cases

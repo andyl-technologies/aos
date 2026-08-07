@@ -70,6 +70,7 @@
   nodejs,
   protobuf,
   stdenv,
+  aos-hub-console-dist,
   # Extra cargo feature flags for purpose-built test artifacts. Space-separated;
   # empty for the default production build.
   cargoFeatures ? "",
@@ -152,6 +153,9 @@ in
           # aos.hub.v1 message structs (the worker depends on it via
           # aos-hub-core), so point prost-build at the hermetic protoc.
           export PROTOC="${protobuf}/bin/protoc"
+          export AOS_HUB_CONSOLE_JS="${aos-hub-console-dist}/hub-console.js"
+          export AOS_HUB_CONSOLE_WASM="${aos-hub-console-dist}/hub-console_bg.wasm"
+          export AOS_HUB_CONSOLE_CSS="${aos-hub-console-dist}/hub-console.css"
           # Step 1 — compile the worker cdylib to wasm32. rust-lld (shipped in
           # pkgs.rust's rustlib bin) is the wasm linker; no env override needed.
           #
@@ -334,7 +338,13 @@ in
           cp aos-hub-core/src/web/static_assets/JetBrainsMono-Bold.woff2 \
             "$out/assets/_assets/jetbrains-mono-bold.woff2"
           cp aos-hub-core/src/web/static_assets/OFL.txt   "$out/assets/_assets/OFL.txt"
-          printf '/_assets/*\n  Cache-Control: public, max-age=86400\n' \
+          cp ${aos-hub-console-dist}/hub-console.js \
+            "$out/assets/_assets/hub-console.js"
+          cp ${aos-hub-console-dist}/hub-console_bg.wasm \
+            "$out/assets/_assets/hub-console_bg.wasm"
+          cp ${aos-hub-console-dist}/hub-console.css \
+            "$out/assets/_assets/hub-console.css"
+          printf '/_assets/*\n  Cache-Control: public, max-age=86400\n\n/_assets/hub-console*\n  Cache-Control: public, max-age=31536000, immutable\n' \
             > "$out/assets/_headers"
         '';
       }

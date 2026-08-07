@@ -47,21 +47,15 @@
 //! why the RPC transport is **Connect-JSON** (plain JSON over HTTP) over
 //! ordinary `axum` handlers, with no `connectrpc` runtime on the registry path.
 //!
-//! The producer console (RFC-0004 Phase 5, console-dedup stage C) is served by
+//! Browser authentication and the management application shell are served by
 //! the same shared router too: the Worker builds a
 //! [`ConsoleDeps`](aos_hub_core::web::console::ConsoleDeps) over its console
 //! ports ([`consoleports`]) and merges
 //! [`console_router`](aos_hub_core::web::console::console_router) onto the
-//! RPC/facade/browse router, so the console runs identical code on both shells.
-//! As of stage H3 that includes the git-backed config/change-request flow
-//! (`/{slug}/-/settings/configuration`, `/{slug}/-/settings/change-requests`):
-//! its base-commit reads go
-//! through the R2 [`surface`] read provider and its draft-object writes through
-//! the R2 [`surface::R2SurfaceWriteProvider`] write provider, so **every**
-//! console route is mounted on the Worker. Registries whose canonical paths
-//! contain slashes are offered to the shared nested dispatcher by the Worker
-//! bridge before delivery-route and facade routing, matching the native hub's
-//! catch-all ordering.
+//! RPC/facade/browse router. The identical hermetic Leptos bundle performs all
+//! resource reads and reviewed mutations through `aos.hub.v1` on both
+//! runtimes. Registries whose canonical paths contain slashes are offered to
+//! the shared nested dispatcher before delivery-route and facade routing.
 //!
 //! Worker-local: only the Cron-trigger indexer ([`indexer`]). The `fetch`
 //! handler bridges every request to the shared router; the schema is migrated
@@ -329,11 +323,10 @@ mod entry {
     /// - the RPC + facade + browse router built from the [`RpcService`]
     ///   ([`aos_hub_core::connect::router`]), over the R2 surface provider
     ///   ([`crate::surface`]);
-    /// - the producer-console router ([`console_router`]) built from a
-    ///   [`ConsoleDeps`], over the Worker's console ports
-    ///   ([`crate::consoleports`]): the logging [`WorkerMailer`], the gateway-backed
-    ///   [`WorkerHttpClient`], the inline [`WorkerReindexer`], and the shared
-    ///   AES-GCM sealer from `HUB_SEAL_KEY`.
+    /// - the browser identity and application-shell router ([`console_router`])
+    ///   built from [`ConsoleDeps`], the Worker's [`WorkerMailer`] and
+    ///   [`WorkerHttpClient`], and the shared AES-GCM sealer from
+    ///   `HUB_SEAL_KEY`.
     ///
     /// Both routers carry their own state, so they merge into one `Router<()>`
     /// exactly as the native hub composes them; the console's static paths win
@@ -686,18 +679,7 @@ mod entry {
             )),
             sealer,
             http: Arc::new(WorkerHttpClient::new(Arc::clone(&egress))),
-            surface,
-            surface_write,
-            reindexer,
-            // The default store is this Worker's R2 bucket; show its name (as
-            // `r2://<bucket>`) on instance settings when the deploy baked it.
-            default_storage_location: Some(format!("r2://{default_bucket}")),
-            // RFC-0004 ch.14 Phase C: Workers KV for read-through caching +
-            // token-revocation tombstones (the `SESSIONS` namespace).
-            kv: Some(Arc::new(crate::workerkv::WorkerKv::new(
-                env.kv(crate::handlers::bindings::KV_SESSIONS)?,
-            ))),
-            topology: Arc::clone(&service) as Arc<dyn aos_hub_core::web::console::TopologyConsole>,
+            control: Some(Arc::clone(&service)),
         };
 
         // The service is returned alongside the router so the bridge can run the

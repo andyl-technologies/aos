@@ -1,0 +1,12 @@
+[package]
+name = "aos-hub-console-contract"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+description = "Wasm-clean canonical route contract for the AOS Hub console"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = { workspace = true }

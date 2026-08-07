@@ -551,9 +551,47 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
-    assert!(String::from_utf8(body)
-        .unwrap()
-        .contains(&private_fixture.qcow2_key));
+    let private_listing: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let private_download = private_listing["images"][0]["downloadUrl"]
+        .as_str()
+        .unwrap();
+    let private_download = url::Url::parse(private_download).unwrap();
+    assert_eq!(
+        private_download.origin().ascii_serialization(),
+        "http://127.0.0.1:8420"
+    );
+    assert!(private_download.path().starts_with("/-/images/"));
+    assert!(private_download
+        .path()
+        .ends_with(&private_fixture.qcow2_key));
+
+    let (status, _, _) = request(&app, Method::GET, private_download.path(), &[], Vec::new()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, headers, bytes) = request(
+        &app,
+        Method::HEAD,
+        private_download.path(),
+        &[("cookie", &cookie)],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(bytes.is_empty());
+    assert_eq!(
+        headers[header::CONTENT_LENGTH],
+        private_fixture.qcow2.len().to_string()
+    );
+    let (status, headers, bytes) = request(
+        &app,
+        Method::GET,
+        private_download.path(),
+        &[("authorization", &authorization), ("range", "bytes=4-12")],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(bytes, private_fixture.qcow2[4..=12]);
+    assert_eq!(headers[header::VARY], "Authorization, Cookie");
 
     // A stale inventory row on an earlier placement must not authorize its
     // same-size corrupt bytes. Request-time verification skips it and serves

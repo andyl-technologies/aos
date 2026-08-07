@@ -1186,6 +1186,70 @@ async fn serve_resolved_delivery(
     }
 }
 
+/// Serves immutable signed-image bytes through the Hub control origin.
+///
+/// Private image resolutions use this same-origin path so browsers can present
+/// their host-only session cookie and CLI clients can present the bearer they
+/// used for discovery. Public resolutions remain free to select a CDN-backed
+/// canonical delivery route.
+async fn serve_control_image(
+    svc: Arc<RpcService>,
+    method: Method,
+    headers: HeaderMap,
+    registry_id: i64,
+    path: String,
+) -> Response {
+    if !path.starts_with("images/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let registry = match svc.db.registry_by_id(registry_id).await {
+        Ok(Some(registry)) => registry,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    let now =
+        match crate::delivery_http::HttpTimestamp::from_unix_seconds(crate::clock::now_unix_secs())
+        {
+            Ok(now) => now,
+            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        };
+    let auth_header = auth_header(&headers);
+    let session_secret = crate::web::session::session_secret_from_headers(&headers);
+    let authorization = match (auth_header.as_deref(), session_secret.as_deref()) {
+        (Some(auth), _) => ReadAuthorization::AuthorizationHeader(Some(auth)),
+        (None, Some(secret)) => ReadAuthorization::SessionCookie(secret),
+        (None, None) => ReadAuthorization::AuthorizationHeader(None),
+    };
+    let request = crate::image_http::ImageHttpRequest {
+        method: if method == Method::HEAD {
+            crate::delivery_http::DeliveryMethod::Head
+        } else {
+            crate::delivery_http::DeliveryMethod::Get
+        },
+        range: headers.get(header::RANGE).map(HeaderValue::as_bytes),
+        if_match: headers.get(header::IF_MATCH).map(HeaderValue::as_bytes),
+        if_unmodified_since: headers
+            .get(header::IF_UNMODIFIED_SINCE)
+            .map(HeaderValue::as_bytes),
+        if_none_match: headers
+            .get(header::IF_NONE_MATCH)
+            .map(HeaderValue::as_bytes),
+        if_modified_since: headers
+            .get(header::IF_MODIFIED_SINCE)
+            .map(HeaderValue::as_bytes),
+        if_range: headers.get(header::IF_RANGE).map(HeaderValue::as_bytes),
+        now,
+    };
+    match svc
+        .registry_serve(authorization, &registry, &path, request)
+        .await
+    {
+        Ok(RegistryServeOutcome::Response(response)) => response,
+        Ok(RegistryServeOutcome::NotFound) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
 async fn resolved_delivery_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -2961,6 +3025,39 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         "/aos.hub.v1.OperationService/RetryOperation",
         retry_operation
     );
+    r = r.route(
+        "/-/images/{registry_id}/{*path}",
+        get(
+            |State(state): State<SharedState>,
+             method: Method,
+             headers: HeaderMap,
+             Path((registry_id, path)): Path<(i64, String)>| {
+                let service = from_state(state);
+                send_bridge(serve_control_image(
+                    service,
+                    method,
+                    headers,
+                    registry_id,
+                    path,
+                ))
+            },
+        )
+        .head(
+            |State(state): State<SharedState>,
+             method: Method,
+             headers: HeaderMap,
+             Path((registry_id, path)): Path<(i64, String)>| {
+                let service = from_state(state);
+                send_bridge(serve_control_image(
+                    service,
+                    method,
+                    headers,
+                    registry_id,
+                    path,
+                ))
+            },
+        ),
+    );
     // Browse and static control-plane routes are mounted only when requested.
     // Machine bytes are never selected by a slug wildcard; the outer typed
     // delivery dispatcher resolves an exact endpoint and route before
@@ -2973,6 +3070,13 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r = r
             .route("/_assets/style.css", get(assets::stylesheet))
             .route("/_assets/app.js", get(assets::app_js))
+            .route("/_assets/hub-console.js", get(assets::console_js))
+            .route(
+                "/_assets/hub-console-bootstrap.js",
+                get(assets::console_bootstrap_js),
+            )
+            .route("/_assets/hub-console_bg.wasm", get(assets::console_wasm))
+            .route("/_assets/hub-console.css", get(assets::console_css))
             .route(
                 "/_assets/jetbrains-mono-regular.woff2",
                 get(assets::font_regular),

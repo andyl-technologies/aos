@@ -277,6 +277,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // Kept for the outermost domain-routing layer below (it captures the service
     // directly, independent of the AppState-typed router's state).
     let dispatch_service = Arc::clone(&rpc_service);
+    let console_deps = console_deps(&state, Some(Arc::clone(&rpc_service)));
     let rpc_router = aos_hub_core::connect::rpc_browse_router(rpc_service);
 
     // Public bytes never resolve from a resource slug. The outer delivery-route
@@ -285,18 +286,10 @@ pub async fn router(state: Arc<AppState>) -> Router {
     let router = Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics));
-    // The shared producer-console router (RFC-0004 Phase 5, console-dedup stage
-    // B): the wasm-clean management handlers, built over the hub's database,
-    // JWT keys, rate limiter, mailer, sealer, the hardened reqwest `HttpClient`
-    // port, and the native surface read/write and reindex ports (over which the
-    // shared retained-control services coordinate reviewed topology changes).
-    // It carries its own `ConsoleDeps` state, so — like `rpc_router` — it is
-    // merged after `with_state` below. Nested-canonical registry console pages
-    // (slugs with slashes, which the flat `/{slug}/-/…` routes can't capture)
-    // are served by the same shared dispatcher from the catch-all — see
-    // [`console_deps`] and `dispatch_nested` — so there is a single console
-    // routing table for both flat and nested slugs.
-    let console_deps = console_deps(&state);
+    // The shared browser boundary owns identity ceremonies and the management
+    // application shell. Resource reads and mutations leave the shell through
+    // the same canonical Connect API as the CLI. Nested registry deep links are
+    // served by the shared dispatcher below.
     let nested_console_deps = console_deps.clone();
     // Seed the editable site chrome (title/banner/footer) from the database at
     // startup so the masthead reflects persisted branding; a branding save
@@ -327,9 +320,8 @@ pub async fn router(state: Arc<AppState>) -> Router {
         // The shared Connect-JSON router carries its own `Arc<RpcService>`
         // state, so it is merged after `with_state`.
         .merge(rpc_router)
-        // The shared producer-console router carries its own `ConsoleDeps`
-        // state, so — like `rpc_router` — it is merged after `with_state`. Its
-        // static console paths are wrapped by the same security layers.
+        // The shared browser router carries its own `ConsoleDeps` state and is
+        // merged after `with_state`; the outer security layers wrap it too.
         .merge(console_router)
         // Dispatch nested registry settings before the shared browse wildcard
         // can claim `/{org}/{registry}/-/{*rest}`. The middleware passes every
@@ -647,58 +639,10 @@ async fn render_metrics(state: &AppState) -> Result<String, anyhow::Error> {
 /// `default_storage_location` is `None` here: the nested dispatcher only serves
 /// registry console pages, which never read it (it backs the instance-settings
 /// page, served by the flat console router, where [`serve`] sets it explicitly).
-fn console_deps(state: &Arc<AppState>) -> aos_hub_core::web::console::ConsoleDeps {
-    let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> = Arc::new(
-        crate::coreports::HubSurfaceProvider::new(
-            Arc::clone(&state.db),
-            state.http.clone(),
-            state.image_snapshots.clone(),
-        )
-        .with_credentials(Arc::clone(&state.secret_versions)),
-    );
-    let surface_write: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> = Arc::new(
-        crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db), state.http.clone())
-            .with_credentials(Arc::clone(&state.secret_versions)),
-    );
-    let reindexer: Arc<dyn aos_hub_core::reindex::Reindexer> = Arc::new(
-        crate::coreports::HubReindexer::new(Arc::clone(&state.db), state.image_snapshots.clone())
-            .with_surface_provider(Arc::new(
-                crate::coreports::HubSurfaceProvider::new(
-                    Arc::clone(&state.db),
-                    state.http.clone(),
-                    state.image_snapshots.clone(),
-                )
-                .with_credentials(Arc::clone(&state.secret_versions))
-                .for_image_indexing(),
-            )),
-    );
-    let mut topology_service = aos_hub_core::service::RpcService::new(
-        Arc::clone(&state.db),
-        state.auth.jwt_keys.clone(),
-        state.external_url.clone(),
-        Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
-        Arc::clone(&surface),
-        Arc::clone(&surface_write),
-        Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
-        Arc::clone(&reindexer),
-        Arc::new(
-            aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
-                &state.db,
-            )),
-        ),
-        Some(Arc::clone(&state.sealer)),
-    )
-    .with_secret_versions(Arc::clone(&state.secret_versions))
-    .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
-        state.http.clone(),
-    )));
-    if let Some(provider) = &state.domain_probe_terminator {
-        topology_service = topology_service.with_domain_probe_terminator(Arc::clone(provider));
-    }
-    if let Some(verifier) = &state.identity_domain_verifier {
-        topology_service = topology_service.with_identity_domain_verifier(Arc::clone(verifier));
-    }
-    let topology: Arc<dyn aos_hub_core::web::console::TopologyConsole> = Arc::new(topology_service);
+fn console_deps(
+    state: &Arc<AppState>,
+    control: Option<Arc<aos_hub_core::service::RpcService>>,
+) -> aos_hub_core::web::console::ConsoleDeps {
     aos_hub_core::web::console::ConsoleDeps {
         db: Arc::clone(&state.db),
         jwt_keys: state.auth.jwt_keys.clone(),
@@ -708,14 +652,7 @@ fn console_deps(state: &Arc<AppState>) -> aos_hub_core::web::console::ConsoleDep
         mailer: Arc::clone(&state.mailer),
         sealer: Arc::clone(&state.sealer),
         http: Arc::new(crate::coreports::HubHttpClient::new(state.http.clone())),
-        surface,
-        surface_write,
-        reindexer,
-        default_storage_location: None,
-        // The native hub's in-process database is already colocated and fast, so
-        // it runs without a KV cache; token-revocation is immediate via the DB.
-        kv: None,
-        topology,
+        control,
     }
 }
 
@@ -729,82 +666,5 @@ fn console_deps(state: &Arc<AppState>) -> aos_hub_core::web::console::ConsoleDep
 pub fn console_deps_for_worker_test(
     state: &Arc<AppState>,
 ) -> aos_hub_core::web::console::ConsoleDeps {
-    console_deps(state)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct PublishedIdentityDomain;
-
-    #[async_trait::async_trait]
-    impl aos_hub_core::topology_probe::IdentityDomainVerifier for PublishedIdentityDomain {
-        async fn challenge_is_published(
-            &self,
-            _domain: &str,
-            _challenge: &str,
-        ) -> anyhow::Result<bool> {
-            Ok(true)
-        }
-    }
-
-    #[tokio::test]
-    async fn native_console_uses_runtime_identity_domain_verifier() {
-        let db = Arc::new(Database::open_in_memory().await.unwrap());
-        let user_id = db.create_user("owner@example.test", None).await.unwrap();
-        db.grant_membership("user", user_id, "instance", "owner")
-            .await
-            .unwrap();
-        let org_id = db
-            .create_org("native-console", "Native Console")
-            .await
-            .unwrap();
-        let challenge = db
-            .add_org_domain(org_id, "native-console.example.test")
-            .await
-            .unwrap();
-        assert!(challenge.starts_with("aos-domain-verify="));
-
-        let mut state = AppState::new(Arc::clone(&db), "https://hub.example.test".into()).await;
-        state.identity_domain_verifier = Some(Arc::new(PublishedIdentityDomain));
-        let bearer = state
-            .auth
-            .jwt_keys
-            .mint(
-                &crate::db::TokenAuth {
-                    token_id: "native-console-test".into(),
-                    owner: Principal::user(user_id),
-                    scope: Scope::root(),
-                    permissions: vec![Permission::IamAdmin],
-                },
-                300,
-            )
-            .unwrap();
-        let deps = console_deps(&Arc::new(state));
-        let plan = deps
-            .topology
-            .plan_organization_domain_verification(
-                &format!("Bearer {bearer}"),
-                aos_proto_types::PlanVerifyOrganizationDomainRequest {
-                    org_slug: "native-console".into(),
-                    domain: "native-console.example.test".into(),
-                    expected_resource_version: "1@legacy".into(),
-                    idempotency_key: "native-console-verify-plan".into(),
-                },
-            )
-            .await
-            .unwrap();
-        let response = deps
-            .topology
-            .apply_organization_domain_verification(
-                &format!("Bearer {bearer}"),
-                plan.plan_id,
-                plan.confirmation_hash.unwrap(),
-                "native-console-verify-apply".into(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.domain.unwrap().state, "verified");
-    }
+    console_deps(state, None)
 }

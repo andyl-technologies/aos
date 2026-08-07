@@ -1,18 +1,16 @@
 //! First-party static assets served under `/_assets/` — the stylesheet, the
 //! progressive-enhancement JS bundle, and the self-hosted fonts.
 //!
-//! These are embedded at build time and served by the *shared* browse router
-//! ([`crate::connect`]) so **both** shells expose them: the no-JS browse pages
-//! and the producer console (rendered by [`crate::web`]) link
-//! `/_assets/style.css` + `/_assets/app.js`, and `style.css` `@font-face`s the
-//! woff2 fonts. They live in core (not the native crate) precisely so the
-//! Cloudflare Worker serves them too — otherwise its pages 404 their CSS/JS.
+//! These are embedded at build time and served by the shared router
+//! ([`crate::connect`]) so both runtimes expose the public browse assets and
+//! the hermetic browser-console JavaScript, WebAssembly, and CSS bundle.
 //!
 //! Every asset is first-party and same-origin: it loads under the strict
 //! `default-src 'self'` CSP with no third-party origin, and there are no font
 //! CDNs. URLs are stable (not content-hashed), so the cache lifetime is a
 //! conservative hour (CSS/JS) / day (fonts) rather than `immutable`, letting a
-//! hub upgrade reship them.
+//! hub upgrade reship them. The console shell appends the combined content
+//! identity and the console assets use immutable caching.
 
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
@@ -24,6 +22,15 @@ pub const STYLESHEET: &str = include_str!("static_assets/style.css");
 /// the TOML config editor, each an enhancement over a form/textarea that works
 /// without JS.
 pub const APP_JS: &str = include_str!("static_assets/app.js");
+
+/// The generated browser-console ES module.
+pub const CONSOLE_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hub-console.js"));
+
+/// The generated browser-console WebAssembly module.
+pub const CONSOLE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hub-console_bg.wasm"));
+
+/// The browser-console stylesheet.
+pub const CONSOLE_CSS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hub-console.css"));
 
 /// A short content hash of the CSS + JS bundle, for cache-busting asset URLs.
 ///
@@ -44,6 +51,9 @@ pub fn asset_version() -> &'static str {
         let mut hasher = Sha256::new();
         hasher.update(STYLESHEET.as_bytes());
         hasher.update(APP_JS.as_bytes());
+        hasher.update(CONSOLE_JS);
+        hasher.update(CONSOLE_WASM);
+        hasher.update(CONSOLE_CSS);
         hex::encode(hasher.finalize())[..8].to_string()
     })
 }
@@ -77,6 +87,48 @@ pub async fn app_js() -> Response {
             (header::CACHE_CONTROL, "public, max-age=3600"),
         ],
         APP_JS,
+    )
+        .into_response()
+}
+
+/// Serves the browser-console ES module.
+pub async fn console_js() -> Response {
+    immutable_asset("text/javascript; charset=utf-8", CONSOLE_JS)
+}
+
+/// Serves the browser-console WebAssembly module.
+pub async fn console_wasm() -> Response {
+    immutable_asset("application/wasm", CONSOLE_WASM)
+}
+
+/// Serves the browser-console stylesheet.
+pub async fn console_css() -> Response {
+    immutable_asset("text/css; charset=utf-8", CONSOLE_CSS)
+}
+
+/// Serves the small browser-console bootstrap module.
+pub async fn console_bootstrap_js() -> Response {
+    let version = asset_version();
+    let source = format!(
+        "import init from './hub-console.js?v={version}';\n\nawait init(new URL('./hub-console_bg.wasm?v={version}', import.meta.url));\n"
+    );
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        source,
+    )
+        .into_response()
+}
+
+fn immutable_asset(content_type: &'static str, bytes: &'static [u8]) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        bytes,
     )
         .into_response()
 }

@@ -11233,6 +11233,15 @@ impl RpcService {
         Ok(url.to_string())
     }
 
+    fn control_image_download_base(&self, registry_id: i64) -> Result<String, RpcError> {
+        let mut url = url::Url::parse(&self.external_url).map_err(RpcError::internal)?;
+        url.path_segments_mut()
+            .map_err(|_| RpcError::internal(anyhow::anyhow!("Hub URL cannot carry paths")))?
+            .pop_if_empty()
+            .extend(["-", "images", &registry_id.to_string(), ""]);
+        Ok(url.to_string())
+    }
+
     fn system_image_message(
         &self,
         download_base: &str,
@@ -11311,16 +11320,16 @@ impl RpcService {
     ) -> Result<pb::ListImagesResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.slug).await?;
         self.require_read(auth, &registry).await?;
-        let download_base = self
-            .db
-            .ready_registry_canonical_url(registry.id)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| {
-                RpcError::FailedPrecondition(
-                    "registry canonical image delivery route is not ready".to_string(),
-                )
-            })?;
+        let control_base = self.control_image_download_base(registry.id)?;
+        let download_base = if registry.visibility == "public" {
+            self.db
+                .ready_registry_canonical_url(registry.id)
+                .await
+                .map_err(RpcError::internal)?
+                .unwrap_or(control_base)
+        } else {
+            control_base
+        };
         if !req.release.is_empty() && !req.channel.is_empty() {
             return Err(RpcError::invalid(
                 "release and channel are mutually exclusive",

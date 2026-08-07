@@ -1046,9 +1046,15 @@ The returned immutable URL accepts `GET` and `HEAD`, one satisfiable HTTP byte
 range, and conditional requests consistently in native and Worker runtimes.
 It returns `Content-Disposition` with the signed filename, the exact image
 media type and integrity metadata, range headers, and immutable cache headers.
-Public images permit anonymous access. Private images require the route's Hub,
-external-provider, or private-network authorization policy. A download always
-serves the encoded disk file itself, never a NAR or store directory.
+Public images permit anonymous access. For a public registry the API selects a
+ready canonical delivery route, falling back to the Hub control origin when no
+public route is ready. For a private registry it returns an immutable
+same-origin `/-/images/{registry-id}/...` URL so a browser session or API bearer
+can authorize the byte request through Hub. Independently authenticated CDN,
+VPN, and direct-backend routes remain simultaneous delivery options, but are
+not returned as the default private URL unless the caller can use their own
+authorization policy. A download always serves the encoded disk file itself,
+never a NAR or store directory.
 
 ### Common messages
 

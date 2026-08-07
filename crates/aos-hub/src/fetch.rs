@@ -518,6 +518,11 @@ impl LocalFsFetch {
                 return Ok(None);
             };
             let mut file = tokio::fs::File::from_std(file);
+            // `open_retained` provides an independent file description on the
+            // Linux production target. Development targets use a duplicated
+            // descriptor, so normalize its offset before a sequential test
+            // read; they do not claim concurrent serving support.
+            file.seek(std::io::SeekFrom::Start(0)).await?;
             let strong_etag = Some(format!("\"snapshot-sha256-{digest}\""));
             return match range {
                 Some((start, end)) if start < total => {
