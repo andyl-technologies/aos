@@ -338,7 +338,7 @@ pub fn ClosureGraph(
     slug: String,
     /// The closure root's store-path hash.
     root_hash: String,
-    /// The flat closure node list from `CacheService.CacheClosure`.
+    /// The flat closure node list from `BinaryCacheService.CacheClosure`.
     nodes: Vec<ClosureNode>,
     /// Total on-disk size of the present closure (bytes).
     total_size: i64,

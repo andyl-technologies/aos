@@ -21,26 +21,18 @@
 //!   `Mutex<HashMap>`): a single-replica hub serializes pointer flips correctly
 //!   and cheaply. (A multi-replica native deployment would need a shared store,
 //!   as for the Worker.)
-//! - The **Cloudflare Worker** backs the lease with a D1 table
-//!   (`publish_leases`), because each request may land in a *different* isolate
-//!   with its own empty memory — a process-local lease cannot serialize across
-//!   isolates. The D1 lease is a single conditional upsert keyed by
-//!   `registry_id`, so it is shared across every isolate of the deployment. This
-//!   is the RFC-0004 "later phase multi-process" lease.
+//! - The **Cloudflare Worker** backs the lease with the strongly consistent
+//!   coordinator Durable Object. Each request may land in a different isolate,
+//!   so a process-local lease cannot serialize pointer flips; the coordinator's
+//!   single serialized instance can.
 //!
 //! The port carries the same target-conditional bound as the rest of the core
 //! ports ([`BackendBounds`]): `Send + Sync` natively, unbounded on the
 //! single-threaded wasm32 Worker.
 //!
-//! # `publish_leases` schema (Worker D1 impl)
-//!
-//! ```text
-//! CREATE TABLE publish_leases (
-//!     registry_id     INTEGER PRIMARY KEY,  -- one live lease per registry
-//!     holder_token_id TEXT    NOT NULL,     -- the JWT `sub` that holds it
-//!     deadline        INTEGER NOT NULL      -- unix secs after which it expires
-//! );
-//! ```
+//! [`CoordinatorLease`] namespaces
+//! its keys under `publish:` and delegates admission and release to the shared
+//! [`Coordinator`] port.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -84,7 +76,7 @@ pub trait PublishLease: BackendBounds {
     /// # Errors
     ///
     /// The `Err` variant is the *conflict* signal carrying the current holder's
-    /// token id, not a transport failure: a D1-backed implementation that cannot
+    /// token id, not a transport failure: a durable implementation that cannot
     /// reach its store treats that as an internal error of the surrounding write
     /// handler, not a lease conflict, so it returns a holder string only for a
     /// genuine live-lease collision and otherwise propagates the IO error out of
@@ -119,9 +111,8 @@ struct LeaseEntry {
 ///
 /// Correct and cheap for the common single-replica native hub (publish writes
 /// are rare and short). It is **not** shared across processes/replicas: a
-/// multi-replica deployment must use the D1-backed lease (the Worker's
-/// `D1PublishLease`) so two publishers landing on different replicas cannot both
-/// acquire. This is the relocated, byte-identical behavior of the hub's prior
+/// multi-replica deployment must use a shared coordinator-backed lease so two
+/// publishers landing on different replicas cannot both acquire. This is the relocated behavior of the hub's prior
 /// in-`AppState` `LeaseMap`.
 #[derive(Debug, Default)]
 pub struct InMemoryLease {
@@ -173,10 +164,10 @@ impl PublishLease for InMemoryLease {
 
 /// A [`PublishLease`] backed by the strongly-consistent [`Coordinator`] port.
 ///
-/// RFC-0004 chapter 14 routes the publish lease off D1 (`publish_leases`) and
+/// RFC-0004 chapter 14 routes the publish lease through a coordinator and
 /// onto the [`Coordinator`]'s generic lease primitive. On the Worker the
 /// coordinator is a Durable Object (`WorkerCoordinator`) — a single serialized
-/// instance replaces the cross-isolate D1 lease; natively it is the in-process
+/// instance provides cross-isolate exclusion; natively it is the in-process
 /// [`InMemoryCoordinator`](crate::coordinator::InMemoryCoordinator). The lease
 /// key namespaces the registry id under `publish:` so it does not collide with
 /// other coordinator keys.
@@ -212,7 +203,7 @@ impl PublishLease for CoordinatorLease {
             Ok(Some(holder)) => Err(holder),
             // A coordinator IO error is not a lease conflict: acquire
             // optimistically so a transient coordinator failure never blocks a
-            // legitimate publish (matching the prior D1 lease's out-of-band
+            // legitimate publish (matching the coordinator's out-of-band
             // error handling). The surrounding write handler surfaces real IO
             // failures of the pointer writes themselves.
             Err(_) => Ok(()),

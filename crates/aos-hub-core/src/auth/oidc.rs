@@ -12,9 +12,10 @@
 //! [`HttpClient`](crate::web::console::ports::HttpClient) port rather than a
 //! concrete client, so it is transport- and runtime-neutral: the native hub
 //! satisfies the port with its hardened [`reqwest`] client (SSRF resolver,
-//! request timeout, body cap), and the Cloudflare Worker satisfies it over the
-//! Fetch API. The port already performs the error-for-status check and the
-//! response body cap, so this module never sees a streaming response.
+//! request timeout, body cap), and the Cloudflare Worker satisfies it through
+//! the fixed authenticated egress gateway. The port already performs the
+//! error-for-status check and the response body cap, so this module never sees
+//! a streaming response.
 //!
 //! Crypto is dependency-light and **fully pure-Rust**: [`sha2`] for the PKCE
 //! S256 challenge, [`rand`] for the high-entropy `state`/`nonce`/`code_verifier`,
@@ -86,6 +87,22 @@ pub const FLOW_TTL_SECS: i64 = 10 * 60;
 /// keys with absurd RSA moduli — is a verification-DoS vector, so the key set
 /// is rejected past this bound before any RSA verifying key is built.
 const MAX_JWKS_KEYS: usize = 32;
+const MAX_URL_BYTES: usize = 2048;
+const MAX_CLIENT_ID_BYTES: usize = 255;
+const MAX_SCOPES_BYTES: usize = 1024;
+const MAX_SCOPE_COUNT: usize = 32;
+const MAX_CLAIM_NAME_BYTES: usize = 128;
+const MAX_ROLE_MAP_BYTES: usize = 16 * 1024;
+const MAX_ROLE_MAP_ENTRIES: usize = 64;
+const MAX_GROUP_BYTES: usize = 256;
+const MAX_CALLBACK_CODE_BYTES: usize = 8 * 1024;
+const MAX_ID_TOKEN_BYTES: usize = 96 * 1024;
+const MAX_JWT_HEADER_BYTES: usize = 8 * 1024;
+const MAX_JWT_PAYLOAD_BYTES: usize = 64 * 1024;
+const MAX_JWT_SIGNATURE_BYTES: usize = 2 * 1024;
+const MAX_JWKS_BYTES: usize = 1024 * 1024;
+const MIN_RSA_MODULUS_BYTES: usize = 256;
+const MAX_RSA_MODULUS_BYTES: usize = 1024;
 
 /// An org's OIDC identity-provider configuration, with the client secret in
 /// whatever (possibly sealed) form the caller holds.
@@ -149,6 +166,120 @@ impl IdpConfig {
             default_role,
         }
     }
+}
+
+/// Validates the complete persisted OIDC configuration contract.
+///
+/// This is the single admission boundary used by API, CLI, Web, native, and
+/// Worker paths because every writer reaches [`Database::upsert_idp_config`].
+///
+/// # Errors
+///
+/// Returns an error for unsafe/non-canonical URLs, oversized or malformed
+/// fields, missing `openid`, unknown roles, or an invalid role-map shape.
+pub fn validate_idp_config_record(record: &IdpConfigRecord) -> Result<()> {
+    for (label, raw) in [
+        ("issuer", record.issuer.as_str()),
+        (
+            "authorization endpoint",
+            record.authorization_endpoint.as_str(),
+        ),
+        ("token endpoint", record.token_endpoint.as_str()),
+        ("JWKS URI", record.jwks_uri.as_str()),
+    ] {
+        anyhow::ensure!(
+            !raw.is_empty() && raw.len() <= MAX_URL_BYTES,
+            "{label} length is invalid"
+        );
+        let url = url::Url::parse(raw).with_context(|| format!("{label} is not a valid URL"))?;
+        let debug_loopback_http = cfg!(debug_assertions)
+            && url.scheme() == "http"
+            && matches!(
+                std::env::var("AOS_HUB_ALLOW_LOCAL_REMOTES").as_deref(),
+                Ok("1" | "true" | "yes")
+            )
+            && url
+                .host_str()
+                .is_some_and(|host| matches!(host, "127.0.0.1" | "::1" | "localhost"));
+        anyhow::ensure!(
+            url.scheme() == "https" || debug_loopback_http,
+            "{label} must use https"
+        );
+        anyhow::ensure!(
+            url.username().is_empty()
+                && url.password().is_none()
+                && url.fragment().is_none()
+                && url.query().is_none(),
+            "{label} cannot contain credentials, query, or fragment"
+        );
+        anyhow::ensure!(url.host_str().is_some(), "{label} must have a host");
+        crate::url_guard::is_safe_remote_url(raw).with_context(|| format!("unsafe {label}"))?;
+    }
+    anyhow::ensure!(
+        !record.client_id.is_empty() && record.client_id.len() <= MAX_CLIENT_ID_BYTES,
+        "OIDC client id length is invalid"
+    );
+    anyhow::ensure!(
+        !record.client_id.chars().any(char::is_control),
+        "OIDC client id contains a control character"
+    );
+    anyhow::ensure!(
+        record.scopes.len() <= MAX_SCOPES_BYTES,
+        "OIDC scopes are too long"
+    );
+    let scopes = record.scopes.split_ascii_whitespace().collect::<Vec<_>>();
+    anyhow::ensure!(
+        !scopes.is_empty()
+            && scopes.len() <= MAX_SCOPE_COUNT
+            && scopes
+                .iter()
+                .all(|scope| !scope.is_empty() && scope.len() <= 64)
+            && scopes.iter().filter(|scope| **scope == "openid").count() == 1,
+        "OIDC scopes must contain one openid scope and at most {MAX_SCOPE_COUNT} bounded tokens"
+    );
+    if let Some(name) = record.groups_claim.as_deref() {
+        anyhow::ensure!(
+            !name.is_empty()
+                && name.len() <= MAX_CLAIM_NAME_BYTES
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')),
+            "OIDC groups claim name is invalid"
+        );
+    }
+    anyhow::ensure!(
+        record.role_map_json.len() <= MAX_ROLE_MAP_BYTES,
+        "OIDC role map is too large"
+    );
+    let role_map: BTreeMap<String, String> =
+        serde_json::from_str(&record.role_map_json).context("OIDC role map must be an object")?;
+    anyhow::ensure!(
+        role_map.len() <= MAX_ROLE_MAP_ENTRIES,
+        "OIDC role map has too many entries"
+    );
+    for (group, role) in &role_map {
+        anyhow::ensure!(
+            !group.is_empty()
+                && group.len() <= MAX_GROUP_BYTES
+                && !group.chars().any(char::is_control),
+            "OIDC role-map group is invalid"
+        );
+        anyhow::ensure!(
+            Role::parse(role).is_some(),
+            "OIDC role map contains an unknown role"
+        );
+    }
+    anyhow::ensure!(
+        Role::parse(&record.default_role).is_some(),
+        "OIDC default role is invalid"
+    );
+    if let Some(sealed) = record.client_secret_enc.as_deref() {
+        anyhow::ensure!(
+            !sealed.is_empty() && sealed.len() <= 32 * 1024,
+            "sealed OIDC client secret length is invalid"
+        );
+    }
+    Ok(())
 }
 
 /// Parse a `{"group": "role"}` JSON object into a role map, skipping unknown
@@ -232,11 +363,12 @@ pub async fn begin_login(
     org_id: i64,
     redirect_after: Option<&str>,
 ) -> Result<AuthRedirect> {
-    let config = db
+    let record = db
         .idp_config(org_id)
         .await?
-        .map(IdpConfig::from_record)
         .with_context(|| format!("org {org_id} has no OIDC identity provider configured"))?;
+    validate_idp_config_record(&record)?;
+    let config = IdpConfig::from_record(record);
 
     let verifier = new_code_verifier();
     let challenge = code_challenge_s256(&verifier);
@@ -277,6 +409,24 @@ pub struct CallbackParams {
     pub code: String,
     /// The opaque CSRF `state` echoed back; identifies the staged flow.
     pub state: String,
+}
+
+fn validate_callback_params(params: &CallbackParams) -> Result<()> {
+    anyhow::ensure!(
+        !params.code.is_empty()
+            && params.code.len() <= MAX_CALLBACK_CODE_BYTES
+            && !params.code.chars().any(char::is_control),
+        "OIDC authorization code is empty, oversized, or contains controls"
+    );
+    let state = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&params.state)
+        .context("OIDC state is not canonical base64url")?;
+    anyhow::ensure!(
+        state.len() == 32
+            && base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&state) == params.state,
+        "OIDC state is not a canonical 256-bit value"
+    );
+    Ok(())
 }
 
 /// The token-endpoint response (only the id_token is required).
@@ -355,17 +505,19 @@ pub async fn complete_login(
     external_url: &str,
     params: &CallbackParams,
 ) -> Result<OidcLogin> {
+    validate_callback_params(params)?;
     // 1. Consume the flow (single-use, expiry-checked).
     let flow = db
         .take_oidc_flow(&params.state)
         .await?
         .ok_or_else(|| anyhow!("unknown, expired, or replayed login state"))?;
 
-    let config = db
+    let record = db
         .idp_config(flow.org_id)
         .await?
-        .map(IdpConfig::from_record)
         .with_context(|| format!("org {} has no OIDC identity provider", flow.org_id))?;
+    validate_idp_config_record(&record)?;
+    let config = IdpConfig::from_record(record);
 
     // 2. Exchange the authorization code (with PKCE proof) for tokens. The
     // `HttpClient` port already enforces the body cap and the error-for-status
@@ -381,14 +533,35 @@ pub async fn complete_login(
         let secret = sealer
             .unseal(sealed)
             .context("unsealing OIDC client secret")?;
+        anyhow::ensure!(secret.len() <= 16 * 1024, "OIDC client secret is too large");
         form.push(("client_secret".to_string(), secret));
     }
+    let form_bytes = form
+        .iter()
+        .try_fold(0usize, |total, (key, value)| {
+            total
+                .checked_add(key.len())
+                .and_then(|total| total.checked_add(value.len()))
+        })
+        .context("OIDC token form length overflow")?;
+    anyhow::ensure!(
+        form.len() <= 8 && form_bytes <= 64 * 1024,
+        "OIDC token form is too large"
+    );
     let token_bytes = http
         .post_form(&config.token_endpoint, &form)
         .await
         .context("OIDC token request failed")?;
+    anyhow::ensure!(
+        token_bytes.len() <= MAX_ID_TOKEN_BYTES + 16 * 1024,
+        "OIDC token response is too large"
+    );
     let token: TokenResponse =
         serde_json::from_slice(&token_bytes).context("decoding OIDC token response")?;
+    anyhow::ensure!(
+        !token.id_token.is_empty() && token.id_token.len() <= MAX_ID_TOKEN_BYTES,
+        "OIDC id_token length is invalid"
+    );
     let _ = &token.access_token; // reserved for at_hash / userinfo later
 
     // 3/4. Verify the id_token against the JWKS and the flow's nonce.
@@ -447,10 +620,18 @@ async fn verify_id_token(
 ) -> Result<IdTokenClaims> {
     use jwt_rustcrypto::{decode, decode_only, Algorithm, ValidationOptions, VerifyingKey};
 
+    validate_jwt_components(id_token)?;
+
     // Parse the header (unverified) to select the signing key by `kid`.
     let header = decode_only(id_token)
         .map_err(|err| anyhow!("id_token header is malformed: {err}"))?
         .header;
+    if let Some(kid) = header.kid.as_deref() {
+        anyhow::ensure!(
+            !kid.is_empty() && kid.len() <= 256 && !kid.chars().any(char::is_control),
+            "id_token kid is invalid"
+        );
+    }
 
     // The `HttpClient` port already enforces the body cap and the
     // error-for-status check, so we only decode the returned bytes.
@@ -458,6 +639,10 @@ async fn verify_id_token(
         .get(&config.jwks_uri)
         .await
         .context("JWKS request failed")?;
+    anyhow::ensure!(
+        jwks_bytes.len() <= MAX_JWKS_BYTES,
+        "JWKS document is too large"
+    );
     let jwks: Jwks = serde_json::from_slice(&jwks_bytes).context("decoding JWKS document")?;
 
     // Reject an absurdly large key set before building any decoding key: a JWKS
@@ -467,6 +652,23 @@ async fn verify_id_token(
         bail!(
             "JWKS document advertises {} keys, exceeding the {MAX_JWKS_KEYS}-key limit",
             jwks.keys.len()
+        );
+    }
+    for key in &jwks.keys {
+        anyhow::ensure!(key.kty.len() <= 16, "JWK key type is too long");
+        if let Some(kid) = key.kid.as_deref() {
+            anyhow::ensure!(
+                !kid.is_empty() && kid.len() <= 256 && !kid.chars().any(char::is_control),
+                "JWK kid is invalid"
+            );
+        }
+        anyhow::ensure!(
+            key.n.as_ref().map_or(true, |value| value.len() <= 1400),
+            "JWK modulus is too large"
+        );
+        anyhow::ensure!(
+            key.e.as_ref().map_or(true, |value| value.len() <= 16),
+            "JWK exponent is too large"
         );
     }
 
@@ -491,6 +693,10 @@ async fn verify_id_token(
         (Some(n), Some(e)) => (n, e),
         _ => bail!("RSA JWK is missing the n/e components"),
     };
+    anyhow::ensure!(
+        n.len() <= 1400 && e.len() <= 16,
+        "RSA JWK components exceed encoded size limits"
+    );
     // The JWK carries the modulus/exponent as base64url; jwt-rustcrypto's
     // `from_rsa_components` takes the raw big-endian bytes and builds the key via
     // the pure-Rust `rsa` crate (no C, so it compiles to wasm32).
@@ -500,6 +706,39 @@ async fn verify_id_token(
     let e_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(e)
         .context("decoding JWK exponent (e)")?;
+    anyhow::ensure!(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&n_bytes) == *n
+            && base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&e_bytes) == *e,
+        "RSA JWK components are not canonical base64url"
+    );
+    anyhow::ensure!(
+        n_bytes.first().is_some_and(|byte| *byte != 0)
+            && e_bytes.first().is_some_and(|byte| *byte != 0),
+        "RSA JWK components contain a redundant leading zero"
+    );
+    anyhow::ensure!(
+        (MIN_RSA_MODULUS_BYTES..=MAX_RSA_MODULUS_BYTES).contains(&n_bytes.len()),
+        "RSA JWK modulus must be between 2048 and 8192 bits"
+    );
+    let modulus_bits = n_bytes.len() * 8 - n_bytes[0].leading_zeros() as usize;
+    anyhow::ensure!(
+        (2048..=8192).contains(&modulus_bits),
+        "RSA JWK modulus must be between 2048 and 8192 significant bits"
+    );
+    anyhow::ensure!(
+        (1..=8).contains(&e_bytes.len()),
+        "RSA JWK exponent length is invalid"
+    );
+    let exponent = e_bytes
+        .iter()
+        .try_fold(0_u64, |value, byte| {
+            value.checked_mul(256)?.checked_add(u64::from(*byte))
+        })
+        .context("RSA JWK exponent overflow")?;
+    anyhow::ensure!(
+        exponent >= 3 && exponent % 2 == 1,
+        "RSA JWK exponent is invalid"
+    );
     let key = VerifyingKey::from_rsa_components(&n_bytes, &e_bytes)
         .map_err(|err| anyhow!("building RSA verifying key from JWK components: {err}"))?;
 
@@ -520,6 +759,16 @@ async fn verify_id_token(
         .map_err(|err| anyhow!("id_token signature or claim validation failed: {err}"))?;
     let claims: IdTokenClaims =
         serde_json::from_value(decoded.payload).context("decoding id_token claims")?;
+    anyhow::ensure!(
+        !claims.sub.is_empty() && claims.sub.len() <= 512,
+        "id_token subject length is invalid"
+    );
+    if let Some(email) = claims.email.as_deref() {
+        anyhow::ensure!(
+            email.len() <= 320 && !email.chars().any(char::is_control),
+            "id_token email is invalid"
+        );
+    }
 
     // Nonce binds the id_token to *this* login attempt (replay defense).
     match &claims.nonce {
@@ -528,6 +777,38 @@ async fn verify_id_token(
     }
 
     Ok(claims)
+}
+
+fn validate_jwt_components(token: &str) -> Result<()> {
+    anyhow::ensure!(token.len() <= MAX_ID_TOKEN_BYTES, "id_token is too large");
+    let components = token.split('.').collect::<Vec<_>>();
+    anyhow::ensure!(components.len() == 3, "id_token must have three components");
+    for (index, (component, decoded_limit)) in components
+        .iter()
+        .zip([
+            MAX_JWT_HEADER_BYTES,
+            MAX_JWT_PAYLOAD_BYTES,
+            MAX_JWT_SIGNATURE_BYTES,
+        ])
+        .enumerate()
+    {
+        anyhow::ensure!(!component.is_empty(), "id_token component {index} is empty");
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(component)
+            .with_context(|| format!("id_token component {index} is not base64url"))?;
+        anyhow::ensure!(
+            decoded.len() <= decoded_limit,
+            "id_token component {index} is too large"
+        );
+        anyhow::ensure!(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(&decoded)
+                .as_str()
+                == *component,
+            "id_token component {index} is not canonically encoded"
+        );
+    }
+    Ok(())
 }
 
 /// Map the id_token's groups claim to roles and grant them at the org scope.
@@ -550,7 +831,7 @@ async fn grant_mapped_roles(
         .org_by_id(config.org_id)
         .await?
         .with_context(|| format!("org {} vanished mid-login", config.org_id))?;
-    let scope = Scope::parse(&org.slug);
+    let scope = Scope::parse(&org.stable_id);
     let user_id = db
         .identity_user(&config.issuer, &claims.sub)
         .await?
@@ -561,6 +842,7 @@ async fn grant_mapped_roles(
         .groups_claim
         .as_deref()
         .map(|name| extract_groups(claims, name))
+        .transpose()?
         .unwrap_or_default();
 
     let mut mapped: Vec<Role> = groups
@@ -589,15 +871,31 @@ async fn grant_mapped_roles(
 ///
 /// The claim may be a JSON array of strings or a single string; anything else
 /// yields no groups.
-fn extract_groups(claims: &IdTokenClaims, name: &str) -> Vec<String> {
-    match claims.extra.get(name) {
+fn extract_groups(claims: &IdTokenClaims, name: &str) -> Result<Vec<String>> {
+    let groups = match claims.extra.get(name) {
         Some(serde_json::Value::Array(items)) => items
             .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect(),
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .context("id_token groups array contains a non-string value")
+            })
+            .collect::<Result<Vec<_>>>()?,
         Some(serde_json::Value::String(s)) => vec![s.clone()],
         _ => Vec::new(),
-    }
+    };
+    anyhow::ensure!(
+        groups.len() <= 256,
+        "id_token groups claim has too many entries"
+    );
+    anyhow::ensure!(
+        groups.iter().all(|group| !group.is_empty()
+            && group.len() <= MAX_GROUP_BYTES
+            && !group.chars().any(char::is_control)),
+        "id_token groups claim contains an invalid entry"
+    );
+    Ok(groups)
 }
 
 #[cfg(test)]
@@ -641,6 +939,59 @@ mod tests {
         assert_eq!(map.get("acme-admins"), Some(&Role::Admin));
         assert_eq!(map.get("devs"), Some(&Role::Developer));
         assert!(!map.contains_key("ghosts"));
+    }
+
+    fn config_record() -> IdpConfigRecord {
+        IdpConfigRecord {
+            org_id: 1,
+            issuer: "https://idp.example/tenant".into(),
+            authorization_endpoint: "https://idp.example/authorize".into(),
+            token_endpoint: "https://idp.example/token".into(),
+            jwks_uri: "https://idp.example/jwks".into(),
+            client_id: "hub-client".into(),
+            client_secret_enc: None,
+            scopes: "openid email profile".into(),
+            groups_claim: Some("groups".into()),
+            role_map_json: r#"{"admins":"admin"}"#.into(),
+            allow_jit: true,
+            enforce_sso: false,
+            default_role: "viewer".into(),
+        }
+    }
+
+    #[test]
+    fn idp_configuration_is_strict_and_centralized() {
+        let valid = config_record();
+        assert!(validate_idp_config_record(&valid).is_ok());
+        let mut invalid = valid.clone();
+        invalid.token_endpoint = "http://169.254.169.254/token".into();
+        assert!(validate_idp_config_record(&invalid).is_err());
+        let mut invalid = valid.clone();
+        invalid.jwks_uri = "https://idp.example/jwks?tenant=other".into();
+        assert!(validate_idp_config_record(&invalid).is_err());
+        let mut invalid = valid.clone();
+        invalid.scopes = "email profile".into();
+        assert!(validate_idp_config_record(&invalid).is_err());
+        let mut invalid = valid;
+        invalid.role_map_json = format!("{{\"{}\":\"admin\"}}", "g".repeat(MAX_GROUP_BYTES + 1));
+        assert!(validate_idp_config_record(&invalid).is_err());
+    }
+
+    #[test]
+    fn callback_and_jwt_components_are_bounded_and_canonical() {
+        let params = CallbackParams {
+            code: "code".into(),
+            state: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([5_u8; 32]),
+        };
+        assert!(validate_callback_params(&params).is_ok());
+        let mut oversized = params.clone();
+        oversized.code = "x".repeat(MAX_CALLBACK_CODE_BYTES + 1);
+        assert!(validate_callback_params(&oversized).is_err());
+        assert!(validate_jwt_components(&dummy_rs256_token()).is_ok());
+        let oversized_header =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(vec![b'x'; MAX_JWT_HEADER_BYTES + 1]);
+        assert!(validate_jwt_components(&format!("{oversized_header}.e30.c2ln")).is_err());
     }
 
     /// Minimal `header.payload.sig` JWT shell with a valid RS256 header so

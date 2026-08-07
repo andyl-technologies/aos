@@ -2,9 +2,9 @@
 //!
 //! [`Backend`] is the narrow waist between the hub's `Database` methods and the
 //! SQL engines. It is **async** (RFC-0004 Phase 5): a concrete driver runs
-//! every query over its own connection — `sqlx` pools for the native hub, the
-//! Cloudflare D1 bindings for the Worker — so one `Database` implementation
-//! serves sqlite, postgres, mysql, and D1. Each driver applies
+//! every query over its own connection — `sqlx` pools for the native hub and
+//! the `HubDb` Durable Object's colocated SQLite for the Worker — so one
+//! `Database` implementation serves both runtimes. Each driver applies
 //! [`Dialect::translate`](crate::dialect::Dialect::translate) (via [`prepare`])
 //! before handing SQL to its engine.
 //!
@@ -17,6 +17,7 @@
 //! query_opt(sql, params).await      -> Option<Row>            (0-or-1-row SELECT)
 //! execute_batch(ddl).await          -> ()                     (migration scripts)
 //! batch(&[Statement]).await         -> ()                     (one atomic transaction)
+//! checked_batch(&[CheckedStatement])-> ()                     (atomic row-count assertions)
 //! ```
 //!
 //! `execute_insert` abstracts away sqlite's `last_insert_rowid()`: postgres
@@ -24,16 +25,16 @@
 //! [`with_returning_id`]) and reads the value back (every hub auto-increment
 //! table names its key `id`); mysql reads `last_insert_id()` from the result.
 //!
-//! [`Backend::batch`] runs a fixed statement list as one atomic unit, so the
-//! multi-row writes (`apply_snapshot`, `record_validation_run`, `rotate_token`,
-//! …) commit atomically on every engine. The few read-then-write sites that
-//! sqlite/postgres express as a single guarded `RETURNING`/upsert run as
-//! sequential claim-gated statements on mysql.
+//! [`Backend::batch`] runs a fixed statement list as one atomic unit, while
+//! [`Backend::checked_batch`] additionally rolls the transaction back when a
+//! guarded statement affects an unexpected number of rows. Multi-row writes
+//! therefore commit atomically on every engine, including optimistic-CAS
+//! workflows whose correctness depends on a one-row mutation.
 //!
 //! This module is engine-neutral: it owns the trait, the [`Statement`] unit of
 //! atomic work, and the [`split_statements`]/[`with_returning_id`]/[`prepare`]
 //! helpers every driver reuses. The concrete drivers live in the deployment
-//! crates (`SqlxBackend` in the native hub, the D1 backend in the Worker).
+//! crates (`SqlxBackend` in the native hub, the `HubDb` bridge in the Worker).
 
 use anyhow::{Context, Result};
 
@@ -45,7 +46,7 @@ use crate::value::{Row, Value};
 /// On a native build a `Backend` (and therefore the [`Database`](crate::db::Database)
 /// that holds one) must be `Send + Sync` so the multi-threaded tokio server can
 /// move request futures across worker threads. On `wasm32-unknown-unknown` the
-/// Cloudflare Worker is single-threaded and its D1 futures are `!Send`, so the
+/// Cloudflare Worker is single-threaded and its runtime futures are `!Send`, so the
 /// bound is dropped there. This blanket-impl alias lets the one [`Backend`]
 /// definition carry the right bound on each target.
 #[cfg(not(target_arch = "wasm32"))]
@@ -61,9 +62,9 @@ impl<T> BackendBounds for T {}
 /// One statement in a [`Backend::batch`]: source SQL and its bound parameters.
 ///
 /// A batch is the portable unit of atomic multi-statement work. The native
-/// backends run it inside a SQL transaction; Cloudflare D1 runs it as
-/// `batch().await` — its *only* atomicity primitive, since it has no interactive
-/// transactions. Because a batch cannot read a value back mid-flight, every
+/// backends run it inside a SQL transaction; the Worker bridge sends the whole
+/// batch to `HubDb` as one operation. Because a batch cannot read a value back
+/// mid-flight, every
 /// statement must be self-contained: ids are assigned client-side rather than
 /// read from `last_insert_rowid`, and any guard is encoded in a `WHERE` clause
 /// rather than a read-then-branch. This is the seam the unified
@@ -90,6 +91,52 @@ impl Statement {
             sql: sql.into(),
             params,
         }
+    }
+
+    /// Requires this statement to affect exactly `expected_rows` in a checked batch.
+    #[must_use]
+    pub fn expecting(self, expected_rows: u64) -> CheckedStatement {
+        CheckedStatement {
+            statement: self,
+            expected_rows: Some(expected_rows),
+        }
+    }
+
+    /// Includes this statement in a checked batch without a row-count assertion.
+    #[must_use]
+    pub fn unchecked(self) -> CheckedStatement {
+        CheckedStatement {
+            statement: self,
+            expected_rows: None,
+        }
+    }
+}
+
+/// One atomic batch statement with an optional affected-row assertion.
+///
+/// A mismatch is a transaction error, not a post-commit diagnostic. Native
+/// backends roll the transaction back and the Worker propagates the error from
+/// its runtime-atomic database turn. CAS workflows use this type so a guarded
+/// zero-row write cannot leave earlier statements committed.
+#[derive(Debug, Clone)]
+pub struct CheckedStatement {
+    /// Statement to execute.
+    pub statement: Statement,
+    /// Required affected-row count, or `None` when the statement is auxiliary.
+    pub expected_rows: Option<u64>,
+}
+
+impl CheckedStatement {
+    /// Builds a statement that must affect exactly `expected_rows`.
+    #[must_use]
+    pub fn exact(sql: impl Into<String>, params: Vec<Value>, expected_rows: u64) -> Self {
+        Statement::new(sql, params).expecting(expected_rows)
+    }
+
+    /// Builds an auxiliary statement without an affected-row assertion.
+    #[must_use]
+    pub fn unchecked(sql: impl Into<String>, params: Vec<Value>) -> Self {
+        Statement::new(sql, params).unchecked()
     }
 }
 
@@ -161,7 +208,7 @@ pub trait Backend: BackendBounds {
     /// This is the *portable* transaction primitive: a fixed, self-contained
     /// statement list with no mid-flight reads or `last_insert_rowid`
     /// round-trips. The native backend runs it inside one real SQL transaction
-    /// (`begin` / per-statement `execute` / `commit`); D1 runs it as a single
+    /// (`begin` / per-statement `execute` / `commit`); HubDb runs it as a single
     /// `batch()`.
     ///
     /// # Errors
@@ -169,6 +216,14 @@ pub trait Backend: BackendBounds {
     /// Returns an error if any statement fails to translate or execute; the
     /// whole batch is then rolled back.
     async fn batch(&self, stmts: &[Statement]) -> Result<()>;
+
+    /// Runs an atomic batch and rolls it back when an affected-row assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when translation/execution fails or a statement's
+    /// affected-row count differs from [`CheckedStatement::expected_rows`].
+    async fn checked_batch(&self, stmts: &[CheckedStatement]) -> Result<()>;
 }
 
 /// Splits a multi-statement DDL script into individual statements at
@@ -180,7 +235,7 @@ pub trait Backend: BackendBounds {
 /// so statement-level `;` splitting is otherwise sufficient. Fragments that
 /// carry no executable SQL — only whitespace and `--` line comments, e.g. a
 /// trailing inline comment left after the final `;` — are dropped, since a
-/// backend such as D1 rejects a comment-only prepared statement ("SQL code did
+/// backend such as Durable Object SQLite rejects a comment-only prepared statement ("SQL code did
 /// not contain a statement").
 pub fn split_statements(sql: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -231,7 +286,7 @@ pub fn split_statements(sql: &str) -> Vec<String> {
 /// SQL — i.e. something other than whitespace and `--` line comments.
 ///
 /// Used by [`split_statements`] to drop comment-only fragments (such as a
-/// trailing inline comment after the final `;`) that a backend like D1 would
+/// trailing inline comment after the final `;`) that a backend would
 /// reject with "SQL code did not contain a statement". A `--` inside a string
 /// literal can cause a false positive (the fragment is reported as having SQL),
 /// which is harmless: a fragment containing a real statement is exactly what we
@@ -280,7 +335,7 @@ pub fn prepare(dialect: Dialect, sql: &str, params: &[Value]) -> Result<(String,
 }
 
 // The concrete native driver runs every query over a `sqlx` connection pool.
-// It is the hub's backend (and the CLI's); the Cloudflare Worker supplies a D1
+// It is the hub's backend (and the CLI's); the Cloudflare Worker supplies a HubDb
 // `Backend` instead. `sqlx` is a native-only dependency — it does not build for
 // `wasm32-unknown-unknown` — so the driver and its connection-URL helper are
 // compiled out of the Worker target (RFC-0004 Phase 5).
@@ -291,7 +346,7 @@ pub use sqlx::SqlxBackend;
 
 // Per-statement query timing (RFC-0004 ch.14 Phase A): a `Backend` decorator
 // that records each statement's wall-clock duration for a `Server-Timing`
-// header, so the per-request D1 session cost is measurable at the call site.
+// header, so the per-request Worker database cost is measurable at the call site.
 // Feature-gated (`query-timing`, off by default) so production pays nothing.
 #[cfg(feature = "query-timing")]
 mod timing;
@@ -340,13 +395,16 @@ pub(crate) fn redact_db_url(url: &str) -> String {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::{redact_db_url, split_statements, Backend, SqlxBackend, Statement};
+    use super::{
+        prepare, redact_db_url, split_statements, Backend, CheckedStatement, SqlxBackend, Statement,
+    };
+    use crate::dialect::Dialect;
     use crate::value::Value;
 
     #[test]
     fn split_statements_drops_trailing_inline_comment() {
         // An inline `--` comment carrying its own `;` after the statement's
-        // terminator must not yield a comment-only fragment (D1 rejects one with
+        // terminator must not yield a comment-only fragment (HubDb rejects one with
         // "SQL code did not contain a statement"). Mirrors the v8 migration.
         let sql = "ALTER TABLE t ADD COLUMN c TEXT; -- a note (with; a semicolon)\n";
         let stmts = split_statements(sql);
@@ -417,6 +475,57 @@ mod tests {
         assert!(err.is_err(), "a failing statement aborts the batch");
         let rows = backend.query("SELECT id FROM t", &[]).await.unwrap();
         assert!(rows.is_empty(), "the first insert was rolled back");
+    }
+
+    #[tokio::test]
+    async fn checked_batch_rolls_back_on_an_affected_row_mismatch() {
+        let backend = batch_fixture().await;
+        let error = backend
+            .checked_batch(&[
+                CheckedStatement::exact(
+                    "INSERT INTO t (id, v) VALUES (?1, ?2)",
+                    vec![Value::Int(1), Value::Text("a".into())],
+                    1,
+                ),
+                CheckedStatement::exact(
+                    "UPDATE t SET v = ?2 WHERE id = ?1",
+                    vec![Value::Int(99), Value::Text("missing".into())],
+                    1,
+                ),
+            ])
+            .await;
+        assert!(error.is_err(), "a row-count mismatch aborts the batch");
+        let rows = backend.query("SELECT id FROM t", &[]).await.unwrap();
+        assert!(rows.is_empty(), "the earlier insert was rolled back");
+    }
+
+    #[test]
+    fn checked_cas_statements_prepare_portably_for_every_dialect() {
+        let sql = "UPDATE grants SET state = ?2, resource_version = resource_version + 1
+                   WHERE id = ?1 AND resource_version = ?3 AND state = ?4";
+        let params = vec![
+            Value::Text("grant:one".into()),
+            Value::Text("revoked".into()),
+            Value::Int(7),
+            Value::Text("active".into()),
+        ];
+        let (sqlite_sql, sqlite_params) = prepare(Dialect::Sqlite, sql, &params).unwrap();
+        assert!(sqlite_sql.contains("state = ?2"));
+        assert_eq!(sqlite_params, params);
+        let (postgres_sql, postgres_params) = prepare(Dialect::Postgres, sql, &params).unwrap();
+        assert!(postgres_sql.contains("state = $2"));
+        assert_eq!(postgres_params, params);
+        let (mysql_sql, mysql_params) = prepare(Dialect::Mysql, sql, &params).unwrap();
+        assert!(!mysql_sql.contains("?1"));
+        assert_eq!(
+            mysql_params,
+            vec![
+                Value::Text("revoked".into()),
+                Value::Text("grant:one".into()),
+                Value::Int(7),
+                Value::Text("active".into()),
+            ]
+        );
     }
 
     #[test]

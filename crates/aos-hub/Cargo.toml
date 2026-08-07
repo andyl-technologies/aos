@@ -16,9 +16,11 @@ hmac = { workspace = true }
 base64 = { workspace = true }
 aes-gcm = { workspace = true }
 hex = { workspace = true }
+zeroize = { workspace = true }
 semver = { workspace = true }
 tracing = { workspace = true }
 flate2 = { workspace = true }
+futures-util = { workspace = true }
 zstd = { workspace = true }
 lzma-rs = { workspace = true }
 bzip2-rs = { workspace = true }
@@ -31,6 +33,7 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 axum = { workspace = true }
 rand = { workspace = true }
+rustix = { workspace = true, features = ["process"] }
 uuid = { workspace = true }
 tower-http = { workspace = true, features = ["catch-panic", "limit"] }
 clap = { workspace = true }
@@ -50,6 +53,12 @@ default = []
 # SqlxBackend driver and its feature-gated enum arms now live.
 postgres = ["aos-hub-core/postgres"]
 mysql = ["aos-hub-core/mysql"]
+# Makes live-dialect configuration mandatory for the hermetic parity gate.
+# This is a test-only assertion switch; it does not change database behavior.
+required-live-dialects = ["aos-hub-core/do-e2e-test-support"]
+# Exposes only the cross-shell console dependency adapter used by the Worker
+# request-contract test. Disabled in every production build.
+test-support = []
 
 [dev-dependencies]
 aos-cache = { workspace = true }
@@ -64,7 +73,12 @@ rusqlite = { workspace = true }
 tower = { workspace = true }
 http = { workspace = true }
 futures = { workspace = true }
+http-body-util = { workspace = true }
 
 [[bin]]
 name = "aos-hub"
 path = "src/main.rs"
+
+[[bin]]
+name = "aos-hub-egress"
+path = "src/bin/aos-hub-egress.rs"

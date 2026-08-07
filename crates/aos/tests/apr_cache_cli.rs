@@ -602,7 +602,7 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         "{release}",
     );
     assert!(
-        release.contains("Updated registry.toml [[caches]]"),
+        release.contains("Updated registry.toml [caches]"),
         "{release}",
     );
     assert!(
@@ -647,7 +647,7 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     );
     assert!(
         fs::read_to_string(registry_dir.join("registry.toml"))?
-            .contains(&format!("url = \"{}\"", cache_server.base_url())),
+            .contains(&format!("endpoint = \"{}\"", cache_server.base_url())),
         "release should commit the static cache pointer",
     );
     assert!(
@@ -721,7 +721,7 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
 }
 
 /// All-or-nothing: a release whose cache upload fails must leave neither an
-/// advertised `[[caches]]` pointer nor a release tag behind.
+/// advertised cache-stack change nor a release tag behind.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apr_release_aborts_without_pointer_or_tag_when_upload_fails() -> Result<()> {
     if !nix_toolchain_available("apr release all-or-nothing e2e") {
@@ -797,7 +797,7 @@ async fn apr_release_aborts_without_pointer_or_tag_when_upload_fails() -> Result
     let registry_dir = registry_dir(&maintainer_home, registry_name);
     let registry_toml = fs::read_to_string(registry_dir.join("registry.toml"))?;
     assert!(
-        !registry_toml.contains("[[caches]]"),
+        !registry_toml.contains("[caches]"),
         "a failed release must not advertise a cache pointer:\n{registry_toml}",
     );
     let tags = git_stdout(&registry_dir, &["tag", "--list"], "listing release tags")?;

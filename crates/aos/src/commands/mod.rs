@@ -15,6 +15,8 @@ pub mod fmt;
 pub mod gc;
 pub mod graph;
 pub mod hub;
+pub mod hub_cutover_verify;
+pub mod image;
 pub mod lint;
 pub mod metadata;
 pub mod package;

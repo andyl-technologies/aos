@@ -7,7 +7,7 @@
 #     test-static-cache-server (:8000, serving /var/lib). The producer
 #     fabricates a store path, `apr create`s a signed registry, and runs a
 #     SINGLE `apr release` that publishes the package, stages + uploads the
-#     static binary cache to a served directory, advertises the `[[caches]]`
+#     static binary cache to a served directory, advertises the `[caches]`
 #     pointer, and signs the release tag — then pushes the registry git to the
 #     gitd origin so the consumer can clone it.
 #   client (192.168.50.10): package-less. `apm registry add` over git://, then
@@ -200,7 +200,7 @@ in {
           chown -R aos-gitd:aos-gitd "$ORIGIN"
       """), timeout=600)
       print("=== apr release output ===\n" + release)
-      assert "Updated registry.toml [[caches]]" in release, release
+      assert "Updated registry.toml [caches]" in release, release
       assert "Generated static cache: 1 narinfos, 1 NARs" in release, release
       assert "Released relreg ${releaseTag}" in release, release
 

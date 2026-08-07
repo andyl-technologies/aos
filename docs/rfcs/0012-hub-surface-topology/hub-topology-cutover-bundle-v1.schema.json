@@ -1,0 +1,106 @@
+{
+  "$schema": "https://aos.andyl.org/schemas/aos-cutover-schema-v1.metaschema.json",
+  "$id": "https://aos.andyl.org/schemas/hub-topology-cutover-bundle-v1.schema.json",
+  "dialect": "aos-cutover-schema/v1",
+  "type": "object",
+  "required": ["schema_version", "payload", "payload_sha256", "signer_key_id", "signer_role", "algorithm", "domain", "signature_base64"],
+  "properties": {
+    "schema_version": { "const": "aos-cutover-bundle-envelope/v1" },
+    "payload": { "$ref": "#/$defs/bundleManifest" },
+    "payload_sha256": { "$ref": "#/$defs/sha256" },
+    "signer_key_id": { "$ref": "#/$defs/stableId" },
+    "signer_role": { "const": "bundle_root" },
+    "algorithm": { "const": "ed25519" },
+    "domain": { "const": "aos.hub.topology-cutover.bundle-manifest/v1" },
+    "signature_base64": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "stableId": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "relativePath": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$" },
+    "mediaType": { "type": "string", "minLength": 3, "maxLength": 127, "pattern": "^[a-z0-9.+-]+/[A-Za-z0-9.+-]+$" },
+    "nodeKind": { "enum": ["document", "schema", "metaschema", "fixture_manifest", "interface_manifest", "key_map", "public_key", "signature_envelope", "signature", "evidence", "source_export", "tool", "ruleset"] },
+    "nodeRole": { "enum": ["plan_payload", "report_payload", "verification_payload", "dialect_metaschema", "plan_schema", "report_schema", "verification_schema", "fixture_schema", "bundle_schema", "bundle_generation_schema", "signature_envelope_schema", "signer_key_map_schema", "fixture_manifest", "api_manifest", "cli_manifest", "route_manifest", "signer_key_map", "signer_public_key", "plan_signature_envelope", "plan_signature", "report_signature_envelope", "report_signature", "verification_signature_envelope", "verification_signature", "key_map_signature_envelope", "key_map_signature", "verifier", "evidence", "source_export", "tool", "ruleset"] },
+    "edgeRelation": { "enum": ["schema_validated_by", "signed_by", "uses_signature", "authorized_by", "derived_from", "commits_to", "validated_by"] },
+    "entry": {
+      "type": "object",
+      "required": ["node_id", "path", "kind", "media_type", "role", "size_bytes", "sha256"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/stableId" },
+        "path": { "$ref": "#/$defs/relativePath" },
+        "kind": { "$ref": "#/$defs/nodeKind" },
+        "media_type": { "$ref": "#/$defs/mediaType" },
+        "role": { "$ref": "#/$defs/nodeRole" },
+        "size_bytes": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from_node_id", "relation", "to_node_id"],
+      "properties": {
+        "from_node_id": { "$ref": "#/$defs/stableId" },
+        "relation": { "$ref": "#/$defs/edgeRelation" },
+        "to_node_id": { "$ref": "#/$defs/stableId" }
+      },
+      "additionalProperties": false
+    },
+    "documents": {
+      "type": "object",
+      "required": ["plan_payload_node_id", "plan_signature_envelope_node_id", "report_payload_node_id", "report_signature_envelope_node_id", "verification_payload_node_id", "verification_signature_envelope_node_id"],
+      "properties": {
+        "plan_payload_node_id": { "$ref": "#/$defs/stableId" },
+        "plan_signature_envelope_node_id": { "$ref": "#/$defs/stableId" },
+        "report_payload_node_id": { "$ref": "#/$defs/stableId" },
+        "report_signature_envelope_node_id": { "$ref": "#/$defs/stableId" },
+        "verification_payload_node_id": { "$ref": "#/$defs/stableId" },
+        "verification_signature_envelope_node_id": { "$ref": "#/$defs/stableId" }
+      },
+      "additionalProperties": false
+    },
+    "schemas": {
+      "type": "object",
+      "required": ["dialect_metaschema_node_id", "plan_node_id", "report_node_id", "verification_node_id", "fixtures_node_id", "bundle_node_id", "bundle_generation_node_id", "signature_envelope_node_id", "signer_key_map_node_id"],
+      "properties": {
+        "dialect_metaschema_node_id": { "$ref": "#/$defs/stableId" },
+        "plan_node_id": { "$ref": "#/$defs/stableId" },
+        "report_node_id": { "$ref": "#/$defs/stableId" },
+        "verification_node_id": { "$ref": "#/$defs/stableId" },
+        "fixtures_node_id": { "$ref": "#/$defs/stableId" },
+        "bundle_node_id": { "$ref": "#/$defs/stableId" },
+        "bundle_generation_node_id": { "$ref": "#/$defs/stableId" },
+        "signature_envelope_node_id": { "$ref": "#/$defs/stableId" },
+        "signer_key_map_node_id": { "$ref": "#/$defs/stableId" }
+      },
+      "additionalProperties": false
+    },
+    "trust": {
+      "type": "object",
+      "required": ["key_map_payload_node_id", "key_map_signature_envelope_node_id"],
+      "properties": {
+        "key_map_payload_node_id": { "$ref": "#/$defs/stableId" },
+        "key_map_signature_envelope_node_id": { "$ref": "#/$defs/stableId" }
+      },
+      "additionalProperties": false
+    },
+    "bundleManifest": {
+      "type": "object",
+      "required": ["schema_version", "bundle_id", "dialect", "entries", "edges", "documents", "schemas", "trust", "verifier_node_id", "complete"],
+      "properties": {
+        "schema_version": { "const": "aos-cutover-bundle/v1" },
+        "bundle_id": { "$ref": "#/$defs/stableId" },
+        "dialect": { "const": "aos-cutover-schema/v1" },
+        "entries": { "type": "array", "minItems": 16, "uniqueItems": true, "items": { "$ref": "#/$defs/entry" } },
+        "edges": { "type": "array", "minItems": 12, "uniqueItems": true, "items": { "$ref": "#/$defs/edge" } },
+        "documents": { "$ref": "#/$defs/documents" },
+        "schemas": { "$ref": "#/$defs/schemas" },
+        "trust": { "$ref": "#/$defs/trust" },
+        "verifier_node_id": { "$ref": "#/$defs/stableId" },
+        "complete": { "const": true }
+      },
+      "additionalProperties": false
+    }
+  }
+}

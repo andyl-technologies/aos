@@ -42,5 +42,6 @@ ssh-key = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 rayon = { workspace = true }
+rustix = { workspace = true }
 
 [dev-dependencies]

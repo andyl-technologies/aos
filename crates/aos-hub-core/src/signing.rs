@@ -1,12 +1,10 @@
-//! Hosted-key signing for managed registries (RFC-0004 "hosted keys").
+//! Pure signing and verification primitives for registry artifacts.
 //!
-//! Signing is client-side by default: the hub holds no private key and a web
-//! edit only records a *prepared* operation a maintainer signs locally. When
-//! an org opts a registry into a [hosted key](crate::db::HostedKeyRecord), the
-//! shared service may instead sign directly — advancing channels and re-signing
-//! tags from the web — using the same wire format and verification path every
-//! client uses, so the service's output is indistinguishable to the indexer
-//! from a maintainer's.
+//! These functions transform a caller-supplied Ed25519 key into the immutable
+//! release-tag and channel-partition wire formats. They do not load private
+//! material, select custody, mutate topology, or write surfaces. The retained
+//! control plane owns those decisions through signing-key generations and
+//! exact consumer usage pins.
 //!
 //! The correctness invariant: everything this module emits is consumed by the
 //! *same* reader that verifies a client's bytes
@@ -20,33 +18,15 @@
 //! partition    channels/<ch>/<bb> = render_tag_payload(<ch>, <release-tag-oid>, "tag") + SSHSIG
 //! ```
 //!
-//! For the service's signatures to verify, the hosted key's public trusted-key
-//! line **must be a trust anchor of the registry** (pinned `trust_keys`, or an
-//! active roster key). [`advance_channel`] and [`resign_tag`] sign with the
-//! hosted key; pinning it is an enrollment-time concern
-//! ([`crate::db::Database::create_hosted_key`] returns the line to pin).
+//! Public signing-key generations and exact consumer usage pins are retained
+//! by the Hub. Private-key operations happen in external custody; signed
+//! artifacts arrive over the ordinary immutable publication path.
 //!
-//! # Storage seam (single-source across shells)
-//!
-//! Both signing flows write through the [`SurfaceWriteProvider`] port
-//! ([`crate::surface_write`]) and re-index through the [`Reindexer`] port
-//! ([`crate::reindex`]), never the host filesystem directly, so the *same*
-//! signing-and-publishing logic runs on the native hub (filesystem-backed) and
-//! the Cloudflare Worker (R2-backed). The native hub re-indexes inline and
-//! cross-references the resulting commit in its audit row; the Worker defers the
-//! re-index to its Cron indexer (the [`Reindexer`] returns no inline commit), so
-//! a Worker advance's audit row carries no index commit reference.
-
-use anyhow::{bail, Context, Result};
+use anyhow::Result;
 
 use aos_registry_surface::object::{encode_loose, hash_object, ObjectKind, Oid};
 use aos_registry_surface::tag::{render_tag_payload, verify_signed_tag};
 use aos_registry_surface::{sshsig, tag};
-
-use crate::auth::seal::SecretSealer;
-use crate::db::{Database, RegistryRecord};
-use crate::reindex::Reindexer;
-use crate::surface_write::SurfaceWriteProvider;
 
 /// The tagger message embedded in hub-signed release tags.
 const RELEASE_TAG_MESSAGE: &str = "release";
@@ -131,284 +111,12 @@ pub fn sign_partition(
     Ok(payload)
 }
 
-/// The outcome of a hosted-key [`advance_channel`].
-#[derive(Debug, Clone)]
-pub struct AdvanceResult {
-    /// The channel that was advanced.
-    pub channel: String,
-    /// The release the advanced partitions now point at.
-    pub release: String,
-    /// How many partitions this advance newly moved to `release`.
-    pub moved: usize,
-    /// How many of the 256 partitions point at `release` after the advance.
-    pub at_target: usize,
-    /// The rollout percentage (`at_target` / 256), rounded to a whole number.
-    pub rollout_percent: u32,
-}
-
-/// Advance a hosted-key registry's channel to an existing release, server-side.
-///
-/// Loads the registry's hosted signing key, locates the release tag object for
-/// `target_semver` (the release must already exist on the surface — publishing
-/// a new release is a separate concern), then signs and writes the next `count`
-/// partitions not already at the target. Each partition is a freshly
-/// hub-signed payload written atomically under
-/// `channels/<channel>/<bucket-hex>` through the registry's
-/// [`SurfaceWriteProvider`]. The registry is re-indexed through the
-/// [`Reindexer`] port so its index reflects the advance, and a `channel.advance`
-/// audit row is recorded with the hosted key as actor.
-///
-/// The write and re-index go through ports rather than the host filesystem, so
-/// the same logic runs on the native hub (filesystem-backed, inline re-index)
-/// and the Cloudflare Worker (R2-backed, Cron-deferred re-index). The audit
-/// row's index-commit cross-reference is whatever the [`Reindexer`] returns:
-/// `Some(commit)` on the native hub, `None` on the Worker (deferred).
-///
-/// The advance respects the anti-rollback floor: if the registry has recorded a
-/// floor for this channel above `target_semver`, the advance is refused rather
-/// than writing partitions the next index would reject.
+/// Verifies a signed release tag against an exact release name and trust set.
 ///
 /// # Errors
 ///
-/// Returns an error when the registry has no hosted key, has no writable surface
-/// (a registration-only registry cannot be written), when `target_semver` has
-/// no indexed release, when `target_semver` is below the channel's floor, when
-/// signing or writing a partition fails, or when the re-index fails.
-pub async fn advance_channel(
-    db: &Database,
-    sealer: &dyn SecretSealer,
-    surface_write: &dyn SurfaceWriteProvider,
-    reindexer: &dyn Reindexer,
-    registry: &RegistryRecord,
-    channel_name: &str,
-    target_semver: &str,
-    count: usize,
-    when: i64,
-) -> Result<AdvanceResult> {
-    let hosted_key_id = registry.hosted_key_id.with_context(|| {
-        format!(
-            "registry '{}' has no hosted signing key: prepare the advance for client-side \
-             signing instead (apr channel advance --from-hub)",
-            registry.slug
-        )
-    })?;
-
-    // Anti-rollback: never advance below the recorded floor.
-    if let (Some(floor), Ok(target)) = (
-        db.channel_floor(registry.id, channel_name).await?,
-        semver::Version::parse(target_semver),
-    ) {
-        if let Ok(floor_v) = semver::Version::parse(&floor) {
-            if target < floor_v {
-                bail!(
-                    "refusing to advance channel '{channel_name}' to {target_semver}: \
-                     below the recorded floor {floor}"
-                );
-            }
-        }
-    }
-
-    // Locate the release tag object that the partitions must point at. The
-    // indexed release row carries the tag oid the (already published) release
-    // tag object hashes to.
-    let release = db
-        .list_releases(registry.id)
-        .await?
-        .into_iter()
-        .find(|r| r.semver == target_semver)
-        .with_context(|| {
-            format!(
-                "no indexed release '{target_semver}' for registry '{}': \
-                 the release must be published before a channel can advance to it",
-                registry.slug
-            )
-        })?;
-    let release_tag_oid = release.tag_oid;
-
-    let (key_id, signing_key, _public) = db.load_hosted_signing_key(sealer, hosted_key_id).await?;
-
-    // Resolve the per-registry surface writer up front: a registration-only
-    // registry has no writable surface and the advance must refuse cleanly
-    // before signing anything.
-    let writer = surface_write.writer(registry).await?;
-
-    // Which buckets already point at the target, and which are candidates to
-    // move. The indexed `ChannelSummary` carries the resolved semver per
-    // bucket (an empty vec when the channel has not been indexed yet).
-    let current: Vec<Option<String>> = db
-        .list_channels(registry.id)
-        .await?
-        .into_iter()
-        .find(|c| c.name == channel_name)
-        .map(|c| c.partitions)
-        .unwrap_or_else(|| vec![None; 256]);
-    let mut at_target = current
-        .iter()
-        .filter(|slot| slot.as_deref() == Some(target_semver))
-        .count();
-
-    let payload = sign_partition(&signing_key, channel_name, &release_tag_oid, when)?;
-
-    // Raise the anti-rollback floor to the target SYNCHRONOUSLY, before writing
-    // any partition and independent of the re-index. The next advance's
-    // anti-rollback check (above) reads the floor back from `channel_floors`; on
-    // the Worker the re-index is deferred to Cron, so relying on the indexer to
-    // raise the floor (as the pre-port code did) would let a second advance in
-    // the same Cron window read a *stale* floor and roll the channel back below a
-    // version already served. Raising it here makes the floor current on both
-    // shells the instant an advance commits to writing. The check above
-    // guarantees `target_semver >= floor`, so this is a monotonic raise; doing it
-    // before the writes means even a mid-write failure leaves the floor high
-    // (conservative — never a rollback). The native hub's inline re-index also
-    // raises the floor to the same frontier, so this is idempotent there.
-    db.set_channel_floor(registry.id, channel_name, target_semver)
-        .await
-        .with_context(|| format!("raising anti-rollback floor for channel '{channel_name}'"))?;
-
-    let mut moved = 0usize;
-    for bucket in 0u16..=255 {
-        if moved >= count {
-            break;
-        }
-        if current
-            .get(bucket as usize)
-            .map(|slot| slot.as_deref() == Some(target_semver))
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let rel_path = format!("channels/{channel_name}/{bucket:02x}");
-        writer
-            .write(&rel_path, &payload)
-            .await
-            .with_context(|| format!("writing partition {rel_path}"))?;
-        moved += 1;
-        at_target += 1;
-    }
-
-    // Re-index so the index reflects the new partitions. The native hub indexes
-    // inline and returns the commit; the Worker defers to Cron and returns None.
-    let index_commit = reindexer.reindex(registry).await?;
-
-    let rollout_percent = ((at_target as f64 / 256.0) * 100.0).round() as u32;
-    let detail = serde_json::json!({
-        "channel": channel_name,
-        "release": target_semver,
-        "moved": moved,
-        "at_target": at_target,
-        "rollout_percent": rollout_percent,
-    })
-    .to_string();
-    db.record_audit(
-        "key",
-        None,
-        &format!("hosted-key:{key_id}"),
-        "channel.advance",
-        &registry.slug,
-        None,
-        index_commit.as_deref(),
-        None,
-        Some(&detail),
-    )
-    .await?;
-
-    // Notify subscribers of the advance. Additive and non-fatal: a webhook
-    // failure never undoes the partitions just written. `dispatch` is a pure
-    // database enqueue (the HTTP delivery is drained out-of-band by the native
-    // delivery worker or the Worker's Cron trigger), so it runs unchanged on
-    // both shells with no outbound-HTTP port.
-    if let Some(org_id) = registry.org_id {
-        let event = crate::webhook::WebhookEvent::ChannelAdvanced {
-            registry: registry.slug.clone(),
-            channel: channel_name.to_string(),
-            release: target_semver.to_string(),
-            moved,
-            at_target,
-            rollout_percent,
-            at: when,
-        };
-        if let Err(err) = crate::webhook::dispatch(db, org_id, &event).await {
-            tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "dispatching channel.advanced webhook");
-        }
-    }
-
-    Ok(AdvanceResult {
-        channel: channel_name.to_string(),
-        release: target_semver.to_string(),
-        moved,
-        at_target,
-        rollout_percent,
-    })
-}
-
-/// Re-sign a release tag with the registry's hosted key (key rotation).
-///
-/// Produces a fresh signed `tag` object for `semver` over `commit_oid`,
-/// signed by the hosted key rather than the original signer, and writes it as
-/// a loose object through the registry's [`SurfaceWriteProvider`]. This
-/// supports the rotation re-sign flow: when a registry adopts a hosted key, its
-/// existing release tags can be re-signed under the new anchor so they verify
-/// against it. Returns the re-signed tag's oid.
-///
-/// The re-signed tag object's oid differs from the original only if the
-/// signature bytes differ; callers that need the channel partitions to follow
-/// (because the oid changed) re-advance the channel afterward.
-///
-/// # Errors
-///
-/// Returns an error when the registry has no hosted key, has no writable
-/// surface, or when signing or writing the tag object fails.
-pub async fn resign_tag(
-    db: &Database,
-    sealer: &dyn SecretSealer,
-    surface_write: &dyn SurfaceWriteProvider,
-    registry: &RegistryRecord,
-    semver: &str,
-    commit_oid: &str,
-    when: i64,
-) -> Result<Oid> {
-    let hosted_key_id = registry.hosted_key_id.with_context(|| {
-        format!(
-            "registry '{}' has no hosted signing key to re-sign with",
-            registry.slug
-        )
-    })?;
-    let (key_id, signing_key, _public) = db.load_hosted_signing_key(sealer, hosted_key_id).await?;
-
-    let signed = sign_release_tag(&signing_key, semver, commit_oid, when)?;
-    let writer = surface_write.writer(registry).await?;
-    let loose_path = signed.oid.loose_path();
-    writer
-        .write(&loose_path, &signed.loose_bytes)
-        .await
-        .with_context(|| format!("writing loose tag object {}", signed.oid))?;
-
-    db.record_audit(
-        "key",
-        None,
-        &format!("hosted-key:{key_id}"),
-        "tag.resign",
-        &registry.slug,
-        None,
-        Some(commit_oid),
-        Some(&signed.oid.to_hex()),
-        Some(semver),
-    )
-    .await?;
-    Ok(signed.oid)
-}
-
-/// Verify a hub-signed release tag object against a trust anchor set.
-///
-/// A thin wrapper over [`aos_registry_surface::tag::verify_signed_tag`]
-/// confirming the service's own output is consumable by the indexer's
-/// verification path: the signature checks against `trusted_keys` and the
-/// embedded name binds to `semver`.
-///
-/// # Errors
-///
-/// Returns an error when the payload is malformed, signed by an untrusted key,
-/// or name-bound to a different name.
+/// Returns an error when the signature is invalid, untrusted, malformed, or
+/// name-bound to a different release.
 pub fn verify_release_tag(
     signed: &SignedTagBytes,
     semver: &str,
@@ -427,7 +135,7 @@ mod tests {
     }
 
     fn trusted(k: &ed25519_dalek::SigningKey) -> Vec<String> {
-        vec![sshsig::trusted_key_line("hosted", &k.verifying_key())]
+        vec![sshsig::trusted_key_line("test-signer", &k.verifying_key())]
     }
 
     #[test]

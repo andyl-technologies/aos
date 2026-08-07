@@ -16,12 +16,24 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
 /// Builds an `AuthState` with deterministic JWT keys and a seeded token.
-async fn seed() -> (Arc<AuthState>, String) {
+async fn seed() -> (Arc<AuthState>, String, String, i64) {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org_id = db.create_org("acme", "Acme").await.unwrap();
+    let owner_id = db
+        .create_user("ci@acme.example", Some("CI publisher"))
+        .await
+        .unwrap();
+    db.create_project(org_id, "infra/prod", "Production")
+        .await
+        .unwrap();
+    let scope = db.list_projects(org_id).await.unwrap()[0].scope_key.clone();
+    db.grant_membership("user", owner_id, &scope, "maintainer")
+        .await
+        .unwrap();
     let (_id, secret) = db
         .create_token(
-            Principal::user(42),
-            "acme/infra/prod",
+            Principal::user(owner_id),
+            &scope,
             &[Permission::Read, Permission::Publish],
             Some("ci"),
             None,
@@ -35,12 +47,12 @@ async fn seed() -> (Arc<AuthState>, String) {
         ratelimit: aos_hub::ratelimit::RateLimiter::new().into(),
         trusted_proxy: false,
     });
-    (state, secret)
+    (state, secret, scope, owner_id)
 }
 
 #[tokio::test]
 async fn oauth2_exchange_happy_path_decodes_to_claims() {
-    let (state, secret) = seed().await;
+    let (state, secret, scope, owner_id) = seed().await;
     let keys = state.jwt_keys.clone();
     let app = oauth2_router().with_state(state);
 
@@ -67,14 +79,14 @@ async fn oauth2_exchange_happy_path_decodes_to_claims() {
     let access_token = json["access_token"].as_str().unwrap();
     let claims = keys.verify(access_token).unwrap();
     assert_eq!(claims.owner_kind, "user");
-    assert_eq!(claims.owner_id, 42);
-    assert_eq!(claims.scope, "acme/infra/prod");
+    assert_eq!(claims.owner_id, owner_id);
+    assert_eq!(claims.scope, scope);
     assert_eq!(claims.perms, vec!["read", "publish"]);
 }
 
 #[tokio::test]
 async fn oauth2_exchange_rejects_bad_secret() {
-    let (state, _secret) = seed().await;
+    let (state, _secret, _scope, _owner_id) = seed().await;
     let app = oauth2_router().with_state(state);
 
     let resp = app
@@ -93,7 +105,7 @@ async fn oauth2_exchange_rejects_bad_secret() {
 
 #[tokio::test]
 async fn oauth2_exchange_rejects_missing_header() {
-    let (state, _secret) = seed().await;
+    let (state, _secret, _scope, _owner_id) = seed().await;
     let app = oauth2_router().with_state(state);
 
     let resp = app

@@ -66,7 +66,7 @@ const HUB_IDENT_EMAIL: &str = "hub@aos";
 ///
 /// Kept separate from the git commit message (which stays the deterministic
 /// `config: edit <file> in <slug>` summary so signing is reproducible): the
-/// title/body live only in the `config_changesets` row and drive the review
+/// title/body live only in the `change_requests` row and drive the review
 /// surface's headings. [`ProposeMeta::default`] (both `None`) is used by
 /// non-interactive callers such as the cache-toggle path.
 #[derive(Debug, Clone, Default)]
@@ -177,6 +177,50 @@ pub async fn propose_config_change(
     when: i64,
     meta: ProposeMeta,
 ) -> Result<ProposedChange> {
+    propose_config_change_with_id(
+        db,
+        sealer,
+        fetch,
+        writer,
+        registry,
+        ChangeId::new(),
+        file_path,
+        new_contents,
+        actor_kind,
+        actor_id,
+        actor_label,
+        when,
+        meta,
+    )
+    .await
+}
+
+/// Proposes a git-backed config change with a caller-selected change id.
+///
+/// Control-plane apply uses the topology plan id so a crash after writing the
+/// signed draft can recover the exact changeset instead of drafting a duplicate.
+/// Callers must reserve the id before invoking this function.
+///
+/// # Errors
+///
+/// Returns the same errors as [`propose_config_change`], plus conflicts when
+/// `change_id` already names another changeset.
+#[allow(clippy::too_many_arguments)]
+pub async fn propose_config_change_with_id(
+    db: &Database,
+    sealer: &dyn SecretSealer,
+    fetch: &dyn SurfaceFetch,
+    writer: &dyn SurfaceWrite,
+    registry: &RegistryRecord,
+    change_id: ChangeId,
+    file_path: &str,
+    new_contents: &str,
+    actor_kind: &str,
+    actor_id: Option<i64>,
+    actor_label: &str,
+    when: i64,
+    meta: ProposeMeta,
+) -> Result<ProposedChange> {
     if file_path.contains('/') {
         bail!("only top-level committed files may be edited as change requests, got '{file_path}'");
     }
@@ -206,8 +250,6 @@ pub async fn propose_config_change(
         .with_context(|| format!("committed file '{file_path}' is not UTF-8"))?;
 
     let (signing_key, _public) = db.get_or_create_draft_signing_key(sealer).await?;
-    let change_id = ChangeId::new();
-
     // Write the new blob and replace it in the root tree.
     let new_blob_oid = write_loose(writer, ObjectKind::Blob, new_contents.as_bytes()).await?;
     entries.insert(
@@ -248,7 +290,7 @@ pub async fn propose_config_change(
         actor_kind,
         actor_id,
         actor_label,
-        &registry.slug,
+        &registry.scope_key,
         Some(&summary),
         &git_ref,
         &commit_oid.to_hex(),
@@ -270,7 +312,7 @@ pub async fn propose_config_change(
         actor_id,
         actor_label,
         "config.change_request",
-        &registry.slug,
+        &registry.scope_key,
         Some(change_id.as_str()),
         Some(&commit_oid.to_hex()),
         None,

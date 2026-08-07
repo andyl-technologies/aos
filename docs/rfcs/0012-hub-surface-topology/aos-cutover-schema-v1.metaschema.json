@@ -1,0 +1,113 @@
+{
+  "$schema": "https://aos.andyl.org/schemas/aos-cutover-schema-v1.metaschema.json",
+  "$id": "https://aos.andyl.org/schemas/aos-cutover-schema-v1.metaschema.json",
+  "dialect": "aos-cutover-schema/v1",
+  "type": "object",
+  "required": ["$schema", "dialect"],
+  "properties": {
+    "$schema": { "const": "https://aos.andyl.org/schemas/aos-cutover-schema-v1.metaschema.json" },
+    "$id": { "type": "string", "pattern": "^https://aos\\.andyl\\.org/schemas/[A-Za-z0-9._-]+\\.json$" },
+    "dialect": { "const": "aos-cutover-schema/v1" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "description": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "type": { "$ref": "#/$defs/typeDeclaration" },
+    "const": {},
+    "enum": { "type": "array", "minItems": 1, "uniqueItems": true },
+    "properties": { "$ref": "#/$defs/schemaMap" },
+    "required": { "$ref": "#/$defs/stringSet" },
+    "additionalProperties": { "$ref": "#/$defs/boolOrSchema" },
+    "unevaluatedProperties": { "$ref": "#/$defs/boolOrSchema" },
+    "items": { "$ref": "#/$defs/schemaNode" },
+    "minItems": { "type": "integer", "minimum": 0 },
+    "maxItems": { "type": "integer", "minimum": 0 },
+    "uniqueItems": { "type": "boolean" },
+    "minLength": { "type": "integer", "minimum": 0 },
+    "maxLength": { "type": "integer", "minimum": 0 },
+    "pattern": { "type": "string", "maxLength": 2048 },
+    "format": { "enum": ["utc-date-time", "https-or-path-uri"] },
+    "minimum": { "type": "integer" },
+    "maximum": { "type": "integer" },
+    "allOf": { "$ref": "#/$defs/schemaSet" },
+    "anyOf": { "$ref": "#/$defs/schemaSet" },
+    "oneOf": { "$ref": "#/$defs/schemaSet" },
+    "not": { "$ref": "#/$defs/schemaNode" },
+    "if": { "$ref": "#/$defs/schemaNode" },
+    "then": { "$ref": "#/$defs/schemaNode" },
+    "else": { "$ref": "#/$defs/schemaNode" },
+    "$ref": { "type": "string", "pattern": "^#(?:/\\$defs/[A-Za-z0-9._-]+)?$" },
+    "$defs": { "$ref": "#/$defs/schemaMap" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "typeName": {
+      "enum": ["null", "boolean", "object", "array", "string", "integer"]
+    },
+    "typeDeclaration": {
+      "oneOf": [
+        { "$ref": "#/$defs/typeName" },
+        {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/typeName" }
+        }
+      ]
+    },
+    "stringSet": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 255 }
+    },
+    "schemaSet": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/schemaNode" }
+    },
+    "schemaMap": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/schemaNode" }
+    },
+    "boolOrSchema": {
+      "oneOf": [
+        { "type": "boolean" },
+        { "$ref": "#/$defs/schemaNode" }
+      ]
+    },
+    "schemaNode": {
+      "type": "object",
+      "properties": {
+        "$id": { "type": "string", "maxLength": 512 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "type": { "$ref": "#/$defs/typeDeclaration" },
+        "const": {},
+        "enum": { "type": "array", "minItems": 1, "uniqueItems": true },
+        "properties": { "$ref": "#/$defs/schemaMap" },
+        "required": { "$ref": "#/$defs/stringSet" },
+        "additionalProperties": { "$ref": "#/$defs/boolOrSchema" },
+        "unevaluatedProperties": { "$ref": "#/$defs/boolOrSchema" },
+        "items": { "$ref": "#/$defs/schemaNode" },
+        "minItems": { "type": "integer", "minimum": 0 },
+        "maxItems": { "type": "integer", "minimum": 0 },
+        "uniqueItems": { "type": "boolean" },
+        "minLength": { "type": "integer", "minimum": 0 },
+        "maxLength": { "type": "integer", "minimum": 0 },
+        "pattern": { "type": "string", "maxLength": 2048 },
+        "format": { "enum": ["utc-date-time", "https-or-path-uri"] },
+        "minimum": { "type": "integer" },
+        "maximum": { "type": "integer" },
+        "allOf": { "$ref": "#/$defs/schemaSet" },
+        "anyOf": { "$ref": "#/$defs/schemaSet" },
+        "oneOf": { "$ref": "#/$defs/schemaSet" },
+        "not": { "$ref": "#/$defs/schemaNode" },
+        "if": { "$ref": "#/$defs/schemaNode" },
+        "then": { "$ref": "#/$defs/schemaNode" },
+        "else": { "$ref": "#/$defs/schemaNode" },
+        "$ref": { "type": "string", "pattern": "^#(?:/\\$defs/[A-Za-z0-9._-]+)?$" },
+        "$defs": { "$ref": "#/$defs/schemaMap" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

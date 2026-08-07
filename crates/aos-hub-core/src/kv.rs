@@ -3,8 +3,8 @@
 //! RFC-0004 chapter 14 moves the request hot path's point-key lookups —
 //! sessions, API tokens, instance config, the host→registry routing table, trust
 //! rosters, and short-lived auth artifacts — out of the relational `Backend` and
-//! onto a key-value store, because each carries D1's ~120 ms per-request session
-//! cost for a single-key `get` that needs none of D1's relational/transactional
+//! onto a key-value store, because each relational lookup carries per-request session
+//! cost for a single-key `get` that needs none of the database's transactional
 //! model. Cloudflare recommends exactly this for "session data, credentials (API
 //! keys), and configuration data."
 //!

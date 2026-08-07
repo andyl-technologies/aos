@@ -1,0 +1,6 @@
+{
+  "schema_version": "aos.hub.topology-cutover-backup-fixture/v1",
+  "database_stable_id": "database/production",
+  "database_kind": "d1",
+  "row_count": 10
+}

@@ -47,6 +47,10 @@ maintainer and integration workflow, not the normal installation path.
 [Build and customize release images](system-images.md) covers system variants,
 release policy, output formats, and image validation.
 
+[Deploy the hosted AOS Hub](aos-hub-deployment.md) covers manual deployment with
+the packaged Wrangler and Cloudflare OAuth, isolated staging and production
+configuration, validation, promotion, and rollback.
+
 ## Use the repository CLI
 
 Run the packaged repository command through the flake:

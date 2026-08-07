@@ -1,4 +1,4 @@
-//! The shared Connect-JSON `axum` router for the `aos.registry.v1` API.
+//! The shared Connect-JSON `axum` router for the `aos.hub.v1` API.
 //!
 //! RFC-0004 Phase 5 serves the registry-hub RPC surface as a single transport
 //! on both deployment targets: **Connect-JSON** — the Connect protocol's JSON
@@ -10,14 +10,15 @@
 //!
 //! # Wire format
 //!
-//! Each method is one route: `POST /aos.registry.v1.{Service}/{Method}`. The
+//! Each method is one route: `POST /aos.hub.v1.{Service}/{Method}`. The
 //! request body is the JSON-encoded request message; the success response is
 //! the JSON-encoded response message with `200 OK`. An error is the Connect
 //! error envelope with the matching HTTP status:
 //!
 //! ```text
-//! POST /aos.registry.v1.RegistryService/GetRegistry
+//! POST /aos.hub.v1.RegistryService/GetRegistry
 //! Content-Type: application/json
+//! Connect-Protocol-Version: 1
 //! { "slug": "acme/cdn" }
 //!   -> 200 { "registry": { "slug": "acme/cdn", … } }
 //!   -> 404 { "code": "not_found", "message": "registry not found" }
@@ -32,17 +33,18 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, Request, State};
-use axum::http::{header, HeaderMap, StatusCode, Uri};
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 #[cfg(not(target_arch = "wasm32"))]
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use unicode_normalization::UnicodeNormalization as _;
 
-use crate::service::{FacadeObject, FacadeWrite, RpcError, RpcService};
+use crate::service::{ReadAuthorization, RegistryServeOutcome, RpcError, RpcService};
 use crate::web::browse::{self, Rendered};
 
 /// The reserved human-namespace marker segment (`/{slug}/-/…`).
@@ -51,6 +53,59 @@ use crate::web::browse::{self, Rendered};
 /// be shadowed by the machine surface that owns the registry root (RFC-0004
 /// "The `/-/` namespace").
 const BROWSE_MARKER: &str = "-";
+const DOMAIN_PROBE_PATH: &str = "/.well-known/aos-domain-probe";
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DomainProbeQuery {
+    nonce: String,
+}
+
+/// Canonical Connect namespace for placement collection reads.
+const LIST_PLACEMENTS_PATH: &str = "/aos.hub.v1.TopologyService/ListPlacements";
+/// Canonical Connect namespace for one placement read.
+const GET_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/GetPlacement";
+/// Canonical Connect namespace for placement creation.
+const PLAN_CREATE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/PlanCreatePlacement";
+/// Canonical Connect namespace for placement creation-plan application.
+const CREATE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/CreatePlacement";
+/// Canonical Connect namespace for mutable placement updates.
+const PLAN_UPDATE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/PlanUpdatePlacement";
+/// Canonical Connect namespace for placement update-plan application.
+const UPDATE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/UpdatePlacement";
+/// Canonical Connect namespace for the desired/observed authority view.
+const GET_WRITE_AUTHORITY_PATH: &str = "/aos.hub.v1.TopologyService/GetWriteAuthority";
+/// Canonical Connect namespace for immutable promotion planning.
+const PLAN_PROMOTE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/PlanPromotePlacement";
+/// Canonical Connect namespace for promotion-plan application.
+const PROMOTE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/PromotePlacement";
+/// Canonical Connect namespace for controller authority observations.
+const REPORT_WRITE_AUTHORITY_PATH: &str =
+    "/aos.hub.v1.TopologyControllerService/ReportWriteAuthority";
+/// Canonical Connect namespace for explicit read-only planning.
+const PLAN_REMOVE_WRITE_AUTHORITY_PATH: &str =
+    "/aos.hub.v1.TopologyService/PlanRemoveWriteAuthority";
+/// Canonical Connect namespace for explicit read-only plan application.
+const REMOVE_WRITE_AUTHORITY_PATH: &str = "/aos.hub.v1.TopologyService/RemoveWriteAuthority";
+/// Canonical Connect namespace for placement drain planning.
+const PLAN_DRAIN_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/PlanDrainPlacement";
+/// Canonical Connect namespace for placement drain application.
+const DRAIN_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/DrainPlacement";
+/// Canonical Connect namespace for placement drain-cancellation planning.
+const PLAN_CANCEL_PLACEMENT_DRAIN_PATH: &str =
+    "/aos.hub.v1.TopologyService/PlanCancelPlacementDrain";
+/// Canonical Connect namespace for placement drain-cancellation application.
+const CANCEL_PLACEMENT_DRAIN_PATH: &str = "/aos.hub.v1.TopologyService/CancelPlacementDrain";
+/// Canonical Connect namespace for placement deletion plans/applies.
+const PLAN_DELETE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/PlanDeletePlacement";
+/// Canonical Connect namespace for placement deletion-plan application.
+const DELETE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/DeletePlacement";
+
+/// Maximum buffered body size for every unary Connect request on both shells.
+pub const CONNECT_REQUEST_BODY_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Connect unary protocol-version request header.
+const CONNECT_PROTOCOL_VERSION_HEADER: &str = "connect-protocol-version";
 
 #[cfg(target_arch = "wasm32")]
 use send_wrapper::SendWrapper;
@@ -58,7 +113,7 @@ use send_wrapper::SendWrapper;
 // --- The wasm `Send` bridge ---------------------------------------------------
 //
 // `axum`'s `Handler` and `Router` state demand `Send + Sync`, but the Worker's
-// D1-backed `RpcService` is `?Send` (its `Backend`/`RateLimiter` futures hold
+// Worker-backed `RpcService` is `?Send` (its runtime futures hold
 // non-`Send` JS values). On the single-threaded Worker that is sound, so a
 // `SendWrapper` (which is unconditionally `Send + Sync` and panics only if
 // touched off its origin thread — impossible with one thread) bridges the gap.
@@ -147,6 +202,42 @@ fn decode_request<Req: DeserializeOwned>(body: &Bytes) -> Result<Req, RpcError> 
     serde_json::from_slice(bytes).map_err(|e| RpcError::invalid(format!("decode request: {e}")))
 }
 
+/// Validates the headers required by a Connect unary JSON request.
+fn validate_connect_headers(headers: &HeaderMap) -> Result<(), Response> {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response())?;
+    let media_type = content_type
+        .split(';')
+        .next()
+        .map(str::trim)
+        .unwrap_or_default();
+    if !media_type.eq_ignore_ascii_case("application/json") {
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response());
+    }
+
+    let mut encodings = headers.get_all(header::CONTENT_ENCODING).iter();
+    if let Some(encoding) = encodings.next() {
+        if encodings.next().is_some() || !encoding.as_bytes().eq_ignore_ascii_case(b"identity") {
+            return Err(error_response(&RpcError::Unimplemented(
+                "unsupported Content-Encoding; supported encodings: identity".to_string(),
+            )));
+        }
+    }
+
+    let mut versions = headers.get_all(CONNECT_PROTOCOL_VERSION_HEADER).iter();
+    let version = versions
+        .next()
+        .ok_or_else(|| error_response(&RpcError::invalid("missing Connect-Protocol-Version: 1")))?;
+    if versions.next().is_some() || version.as_bytes() != b"1" {
+        return Err(error_response(&RpcError::invalid(
+            "Connect-Protocol-Version must occur once with value 1",
+        )));
+    }
+    Ok(())
+}
+
 /// Drive one unary Connect-JSON call: decode → invoke `call` → encode.
 ///
 /// `call` receives the shared service, the owned `Authorization` header, and the
@@ -164,6 +255,9 @@ where
     F: FnOnce(Arc<RpcService>, Option<String>, Req) -> Fut,
     Fut: std::future::Future<Output = Result<Resp, RpcError>>,
 {
+    if let Err(response) = validate_connect_headers(&headers) {
+        return response;
+    }
     let auth = auth_header(&headers);
     let req: Req = match decode_request(&body) {
         Ok(req) => req,
@@ -175,397 +269,7 @@ where
     }
 }
 
-/// Serve one registry machine path from the shared surface facade.
-///
-/// The catch-all `GET`/`HEAD` handler for the registry machine surface
-/// (`/{slug}/{*path}`): it delegates to
-/// [`RpcService::facade_fetch`](crate::service::RpcService::facade_fetch), which
-/// classifies the path, enforces registry visibility against the
-/// `Authorization` header, and reads the bytes through the
-/// [`SurfaceProvider`](crate::fetch::SurfaceProvider). A hit renders as `200`
-/// with the path's `Content-Type` and `Cache-Control`; a `None` (non-machine
-/// path or absent object) renders as `404`; an [`RpcError`] renders as the
-/// Connect error envelope (so a private registry read without authority is the
-/// usual `401`/`403`/`404`).
-///
-/// The body is dropped for the response either way, so a `HEAD` and a `GET`
-/// share this one handler and differ only in whether axum elides the body.
-async fn facade(
-    svc: Arc<RpcService>,
-    headers: HeaderMap,
-    slug: String,
-    path: String,
-    query: Option<String>,
-) -> Response {
-    let auth = auth_header(&headers);
-    // A managed cache: stream NAR/narinfo through the shared `cache_serve`
-    // (Range-aware, generated `nix-cache-info`, presigned-`302`) — the *same*
-    // path the native hub uses, so the Worker streams a NAR from R2 rather than
-    // buffering it. Caches and registries are separate slug namespaces, so a
-    // cache slug is never a registry; registries fall through to `facade_fetch`.
-    if let Ok(Some(cache)) = svc.db.cache_by_slug(&slug).await {
-        let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
-        return match svc.cache_serve(auth.as_deref(), &cache, &path, range).await {
-            Ok(Some(resp)) => resp,
-            Ok(None) => StatusCode::NOT_FOUND.into_response(),
-            Err(err) => error_response(&err),
-        };
-    }
-    match svc.facade_fetch(auth.as_deref(), &slug, &path).await {
-        // A presigned private-origin read: `302` to the (short-lived) origin URL
-        // the client fetches directly, instead of serving bytes through the hub.
-        Ok(Some(FacadeObject {
-            redirect: Some(location),
-            ..
-        })) => match header::HeaderValue::from_str(&location) {
-            Ok(value) => (StatusCode::FOUND, [(header::LOCATION, value)]).into_response(),
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        },
-        Ok(Some(object)) => (
-            [
-                (header::CONTENT_TYPE, object.content_type),
-                (header::CACHE_CONTROL, object.cache_control),
-            ],
-            object.bytes,
-        )
-            .into_response(),
-        // Nothing served for the single-segment slug. If that slug is itself a
-        // flat registry, the path is genuinely absent (`404`). Otherwise the
-        // `/{slug}/{*path}` wildcard captured a NESTED-canonical URL — the slug
-        // spans `/` (e.g. `andyl/demo`) — so resolve it over the full path and
-        // dispatch to the shared browse/facade handlers. This is the Worker's
-        // equivalent of the native hub's `machine_path` nested fallthrough; the
-        // extra `registry_by_slug` lookup runs only on this cold (would-be-404)
-        // branch, never on a successful serve.
-        Ok(None) => {
-            if matches!(svc.db.registry_by_slug(&slug).await, Ok(Some(_))) {
-                StatusCode::NOT_FOUND.into_response()
-            } else {
-                nested_dispatch(svc, headers, &slug, &path, query).await
-            }
-        }
-        // A `not_found("registry")` for a single-segment slug that is itself a
-        // real registry is a genuine miss (`404`); otherwise it is the
-        // nested-canonical case the `Ok(None)` arm also handles. `facade_fetch`
-        // reports `Err(NotFound)` rather than `Ok(None)` precisely when the
-        // requested machine path is suffix-classified (`*.narinfo`) at the
-        // org-level slug — e.g. `/andyl/main/<hash>.narinfo` splits to
-        // `slug = "andyl"`, `path = "main/<hash>.narinfo"`, whose `.narinfo`
-        // suffix makes `is_machine_path` true even though `andyl` names no
-        // registry. Root machine pointers (`info/refs`, `HEAD`, `nar/…`) are
-        // dir/exact-classified and so reach `Ok(None)` and the nested
-        // fallthrough already; this arm extends that same fallthrough to the
-        // suffix-classified paths so a nested registry's narinfos resolve too.
-        Err(err) if matches!(err, RpcError::NotFound(_)) => {
-            if matches!(svc.db.registry_by_slug(&slug).await, Ok(Some(_))) {
-                error_response(&err)
-            } else {
-                nested_dispatch(svc, headers, &slug, &path, query).await
-            }
-        }
-        Err(err) => error_response(&err),
-    }
-}
-
-/// Dispatch a nested-canonical (`org/registry`, `acme/infra/cdn`) GET/HEAD
-/// request that the `/{slug}/{*path}` wildcard captured with a single-segment
-/// slug, reconstructing the full path from `slug` + `path`.
-///
-/// The reserved browse marker (`/-/`) takes precedence over machine resolution:
-/// a path containing it splits into the registry slug (left) and the page/`api/…`
-/// tail (right) and dispatches through [`browse_dispatch`], so the human
-/// namespace can never be shadowed by a machine path. Otherwise the longest
-/// registry-slug prefix is resolved ([`resolve_registry_prefix`]): an empty tail
-/// is the registry home (browse), a non-empty tail is a machine path served by
-/// recursing into [`facade`] with the now-flat resolved slug (which terminates —
-/// the resolved slug is a real registry, so its own `Ok(None)` is a plain `404`).
-/// An unresolvable path is a `404`.
-async fn nested_dispatch(
-    svc: Arc<RpcService>,
-    headers: HeaderMap,
-    slug: &str,
-    path: &str,
-    query: Option<String>,
-) -> Response {
-    let full = format!("{slug}/{path}");
-    let full = full.trim_end_matches('/');
-    if let Some((left, rest)) = split_browse_marker(full) {
-        let left = left.trim_end_matches('/').to_string();
-        return browse_dispatch(svc, headers, left, rest, query).await;
-    }
-    match resolve_registry_prefix(&svc, full).await {
-        Some((rslug, tail)) if tail.is_empty() => {
-            browse_dispatch(svc, headers, rslug, String::new(), query).await
-        }
-        Some((rslug, tail)) => Box::pin(facade(svc, headers, rslug, tail, query)).await,
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-/// Render a [`FacadeWrite`] outcome as the byte-identical HTTP response the
-/// upload protocol expects.
-///
-/// A success ([`FacadeWrite::Created`]/[`FacadeWrite::Overwritten`]) carries a
-/// small `{"path": …}` JSON body and `201`/`200`; every denial maps to its fixed
-/// status (`400`/`401`/`403`/`404`/`405`/`409`/`413`/`507`/`500`), preserving the
-/// prior hub facade's wire contract.
-fn facade_write_response(outcome: FacadeWrite, path: &str) -> Response {
-    match outcome {
-        FacadeWrite::Created => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({ "path": path })),
-        )
-            .into_response(),
-        FacadeWrite::Overwritten | FacadeWrite::Present => {
-            (StatusCode::OK, Json(serde_json::json!({ "path": path }))).into_response()
-        }
-        FacadeWrite::NotFound => StatusCode::NOT_FOUND.into_response(),
-        FacadeWrite::NotWritable(reason) => {
-            (StatusCode::METHOD_NOT_ALLOWED, reason).into_response()
-        }
-        FacadeWrite::BadPath(reason) => (StatusCode::BAD_REQUEST, reason).into_response(),
-        FacadeWrite::Unauthorized(reason) => (StatusCode::UNAUTHORIZED, reason).into_response(),
-        FacadeWrite::Forbidden => {
-            (StatusCode::FORBIDDEN, "insufficient permission").into_response()
-        }
-        FacadeWrite::LeaseConflict => (
-            StatusCode::CONFLICT,
-            "another publisher holds the registry publish lease",
-        )
-            .into_response(),
-        FacadeWrite::TooLarge => StatusCode::PAYLOAD_TOO_LARGE.into_response(),
-        FacadeWrite::QuotaExceeded => (
-            StatusCode::INSUFFICIENT_STORAGE,
-            "org storage quota exceeded",
-        )
-            .into_response(),
-        FacadeWrite::Internal => {
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-        }
-    }
-}
-
-/// Handle a facade `PUT` of one registry surface path through the shared write
-/// handler.
-///
-/// Delegates to
-/// [`RpcService::put_machine_path`](crate::service::RpcService::put_machine_path),
-/// which authorizes [`Permission::Publish`](crate::domain::Permission::Publish),
-/// enforces the quota and publish lease, writes through the
-/// [`SurfaceWriteProvider`](crate::surface_write::SurfaceWriteProvider), and
-/// re-indexes a completing pointer — so the same upload logic runs on the native
-/// hub and the Cloudflare Worker.
-async fn facade_put(
-    svc: Arc<RpcService>,
-    headers: HeaderMap,
-    slug: String,
-    path: String,
-    query: Option<String>,
-    body: Bytes,
-) -> Response {
-    let auth = auth_header(&headers);
-    // A multipart part upload (`?uploadId=…&partNumber=N`) streams this one part
-    // straight to the backend; any other `PUT` is a single-object write.
-    let mp = parse_multipart_query(query.as_deref());
-    if let (Some(upload_id), Some(part_number)) = (mp.upload_id.as_deref(), mp.part_number) {
-        return match svc
-            .upload_part(auth.as_deref(), &slug, &path, upload_id, part_number, &body)
-            .await
-        {
-            Ok(tag) => multipart_part_response(&tag),
-            Err(deny) => facade_write_response(deny, &path),
-        };
-    }
-    let outcome = svc
-        .put_machine_path(auth.as_deref(), &slug, &path, &body)
-        .await;
-    // A nested-canonical upload (`PUT /andyl/demo/nar/x`) arrives with the slug
-    // captured as the single leading segment, so the flat write misses the
-    // registry. When the single-segment slug names no flat registry, resolve the
-    // nested registry by longest prefix and retry the upload against it — the
-    // mirror of the read-path fallthrough in `facade`.
-    if matches!(outcome, FacadeWrite::NotFound)
-        && !matches!(svc.db.registry_by_slug(&slug).await, Ok(Some(_)))
-    {
-        let full = format!("{slug}/{path}");
-        if let Some((rslug, tail)) = resolve_registry_prefix(&svc, full.trim_end_matches('/')).await
-        {
-            if !tail.is_empty() {
-                let nested = svc
-                    .put_machine_path(auth.as_deref(), &rslug, &tail, &body)
-                    .await;
-                return facade_write_response(nested, &tail);
-            }
-        }
-    }
-    facade_write_response(outcome, &path)
-}
-
-/// Suggested multipart part size handed back at initiate (16 MiB): above the
-/// R2/S3 5 MiB minimum and under the Worker request-body cap, so each part is
-/// one bounded-memory request.
-const MULTIPART_PART_SIZE: u64 = 16 * 1024 * 1024;
-
-/// Maximum buffered facade request body (32 MiB): comfortably above the
-/// 16 MiB multipart part size (with headroom) yet far below the Worker isolate
-/// memory, so a single buffered part can never pressure it. Lifts axum's 2 MiB
-/// `DefaultBodyLimit`, which otherwise 413s every part.
-const MAX_FACADE_BODY_BYTES: usize = 32 * 1024 * 1024;
-
-/// Multipart query parameters parsed off a facade request's query string.
-///
-/// The facade overloads the `/{slug}/{*path}` route with the S3-style multipart
-/// query convention: `?uploads` initiates, `?uploadId=…&partNumber=N` uploads a
-/// part, `?uploadId=…` (POST) completes / (DELETE) aborts.
-struct MultipartQuery {
-    /// `?uploads` present — an initiate request.
-    initiate: bool,
-    /// `?uploadId=…` — names an in-progress upload (part/complete/abort).
-    upload_id: Option<String>,
-    /// `?partNumber=…` — the 1-based part index on a part `PUT`.
-    part_number: Option<u32>,
-}
-
-/// Parse the multipart query parameters from a raw query string.
-fn parse_multipart_query(query: Option<&str>) -> MultipartQuery {
-    let mut out = MultipartQuery {
-        initiate: false,
-        upload_id: None,
-        part_number: None,
-    };
-    if let Some(q) = query {
-        for (k, v) in url::form_urlencoded::parse(q.as_bytes()) {
-            match k.as_ref() {
-                "uploads" => out.initiate = true,
-                "uploadId" => out.upload_id = Some(v.into_owned()),
-                "partNumber" => out.part_number = v.parse().ok(),
-                _ => {}
-            }
-        }
-    }
-    out
-}
-
-/// Initiate (`?uploads`) / complete (`?uploadId`) of a multipart upload, on the
-/// facade `POST` to a surface path.
-async fn facade_post(
-    svc: Arc<RpcService>,
-    headers: HeaderMap,
-    slug: String,
-    path: String,
-    query: Option<String>,
-    body: Bytes,
-) -> Response {
-    let auth = auth_header(&headers);
-    let mp = parse_multipart_query(query.as_deref());
-    if mp.initiate {
-        return match svc.initiate_upload(auth.as_deref(), &slug, &path).await {
-            Ok(upload_id) => Json(MultipartInitiate {
-                upload_id,
-                part_size: MULTIPART_PART_SIZE,
-            })
-            .into_response(),
-            Err(deny) => facade_write_response(deny, &path),
-        };
-    }
-    if let Some(upload_id) = mp.upload_id.as_deref() {
-        let parts = match serde_json::from_slice::<MultipartComplete>(&body) {
-            Ok(req) => req
-                .parts
-                .into_iter()
-                .map(|p| crate::surface_write::PartTag {
-                    part_number: p.part_number,
-                    etag: p.etag,
-                })
-                .collect::<Vec<_>>(),
-            Err(_) => {
-                return (StatusCode::BAD_REQUEST, "invalid multipart complete body").into_response()
-            }
-        };
-        let outcome = svc
-            .complete_upload(auth.as_deref(), &slug, &path, upload_id, &parts)
-            .await;
-        return facade_write_response(outcome, &path);
-    }
-    (
-        StatusCode::BAD_REQUEST,
-        "unsupported POST to a surface path",
-    )
-        .into_response()
-}
-
-/// Abort (`?uploadId`) of a multipart upload, on the facade `DELETE` to a
-/// surface path.
-async fn facade_delete(
-    svc: Arc<RpcService>,
-    headers: HeaderMap,
-    slug: String,
-    path: String,
-    query: Option<String>,
-) -> Response {
-    let auth = auth_header(&headers);
-    let mp = parse_multipart_query(query.as_deref());
-    if let Some(upload_id) = mp.upload_id.as_deref() {
-        let outcome = svc
-            .abort_upload(auth.as_deref(), &slug, &path, upload_id)
-            .await;
-        return facade_write_response(outcome, &path);
-    }
-    (
-        StatusCode::BAD_REQUEST,
-        "unsupported DELETE to a surface path",
-    )
-        .into_response()
-}
-
-/// `200` JSON response to a multipart part upload (`PUT ?uploadId&partNumber`).
-fn multipart_part_response(tag: &crate::surface_write::PartTag) -> Response {
-    Json(MultipartPart {
-        part_number: tag.part_number,
-        etag: tag.etag.clone(),
-    })
-    .into_response()
-}
-
-/// Initiate response body: the opaque backend `upload_id` and the suggested
-/// `part_size`.
-#[derive(Serialize)]
-struct MultipartInitiate {
-    upload_id: String,
-    part_size: u64,
-}
-
-/// Part-upload response body: the part's number and backend `etag`.
-#[derive(Serialize)]
-struct MultipartPart {
-    part_number: u32,
-    etag: String,
-}
-
-/// Complete request body: the ordered parts (number + etag) to assemble.
-#[derive(serde::Deserialize)]
-struct MultipartComplete {
-    parts: Vec<MultipartCompletePart>,
-}
-
-/// One `(part_number, etag)` entry in a [`MultipartComplete`] body.
-#[derive(serde::Deserialize)]
-struct MultipartCompletePart {
-    part_number: u32,
-    etag: String,
-}
-
-/// Turn a [`Rendered`] browse outcome into an HTTP response.
-///
-/// [`Rendered::Html`] is a `200` `text/html` with the strict first-party CSP
-/// (`default-src 'self'; frame-ancestors 'none'` — no third-party origins, no
-/// framing); [`Rendered::Json`] is a `200` `application/json`;
-/// [`Rendered::Redirect`] is a `308 Permanent Redirect`;
-/// [`Rendered::TooManyRequests`] is a `429` with a `Retry-After`;
-/// [`Rendered::NotFound`] is a bare `404` (the visibility matrix returns this for
-/// a hidden registry alike, never disclosing "absent" from "private");
-/// [`Rendered::NotAcceptable`] is a `406` (content negotiation: a non-HTML client
-/// for a visible registry that ships no machine `index.html`).
+/// Converts a shared browse rendering into an HTTP response.
 fn browse_response(rendered: Rendered) -> Response {
     match rendered {
         Rendered::Html(body) => (
@@ -593,6 +297,7 @@ fn browse_response(rendered: Rendered) -> Response {
             .into_response(),
         Rendered::NotFound => StatusCode::NOT_FOUND.into_response(),
         Rendered::NotAcceptable => StatusCode::NOT_ACCEPTABLE.into_response(),
+        Rendered::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }
 
@@ -616,7 +321,7 @@ async fn browse_dispatch(
     let q = browse::BrowseQuery::parse(query.as_deref());
     // A cache slug routes to the managed-cache browse pages (caches and
     // registries share the `/{slug}/…` namespace but are disjoint slugs).
-    if matches!(svc.db.cache_by_slug(&slug).await, Ok(Some(_))) {
+    if matches!(svc.db.binary_cache_by_slug(&slug).await, Ok(Some(_))) {
         let rendered = match rest.strip_prefix("api/") {
             Some("objects") => browse::api_cache_objects(&svc, &slug, &q).await,
             Some(_) => Rendered::NotFound,
@@ -652,6 +357,7 @@ async fn browse_dispatch(
         None => match rest.as_str() {
             "" => browse::registry_home(&svc, &headers, &slug).await,
             "packages" => browse::packages(&svc, &headers, &slug, &q).await,
+            "images" => browse::images(&svc, &headers, &slug, &q).await,
             "channels" => browse::channels(&svc, &headers, &slug, &q).await,
             "releases" => browse::releases(&svc, &headers, &slug, &q).await,
             "health" => browse::health(&svc, &headers, &slug).await,
@@ -670,10 +376,10 @@ async fn browse_dispatch(
     browse_response(rendered)
 }
 
-/// Mount one `aos.registry.v1` method as a `POST` route delegating to the
+/// Mount one `aos.hub.v1` method as a `POST` route delegating to the
 /// same-named [`RpcService`] method.
 macro_rules! rpc_route {
-    ($router:expr, $path:literal, $method:ident) => {
+    ($router:expr, $path:expr, $method:ident) => {
         $router.route(
             $path,
             post(
@@ -688,331 +394,642 @@ macro_rules! rpc_route {
     };
 }
 
-/// Build the shared Connect-JSON router over the given [`RpcService`],
-/// including the machine-surface facade.
+/// Trusted transport facts supplied by the native listener or Worker runtime.
+/// Trusted transport facts supplied by the native listener or Worker runtime.
 ///
-/// Wires every ported `aos.registry.v1` method to `POST
-/// /aos.registry.v1.{Service}/{Method}`, including the three `GitService`
-/// methods served over the surface-read port
-/// ([`SurfaceProvider`](crate::fetch::SurfaceProvider)). It additionally mounts
-/// the machine-surface facade as a catch-all `GET`/`HEAD` `/{slug}/{*path}`
-/// route (delegating to
-/// [`RpcService::facade_fetch`](crate::service::RpcService::facade_fetch) over
-/// the same surface port), registered last so the static RPC method paths win
-/// over the wildcard by axum's static-over-dynamic precedence.
-///
-/// This is the variant the Cloudflare Worker mounts whole: it has no facade of
-/// its own, so the shared route is its only machine-surface serving path. The
-/// native hub instead mounts the facade-less [`rpc_router`] and keeps its own
-/// richer `/{slug}/{*path}` handler (filesystem autoindex, `http(s)` redirect,
-/// pull-through mirroring, producer-document inert serving, and session-cookie
-/// authorization), delegating only the plain fetch+serve to the same
-/// [`RpcService::facade_fetch`](crate::service::RpcService::facade_fetch). The
-/// returned router carries the service as axum state.
-#[must_use]
-/// Which serving target a frontend domain resolves to.
+/// These values are not inferred from forwarding headers. A trusted layer-7
+/// adapter may construct the evidence only after authenticating its ingress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryTransportEvidence {
+    /// Actual listener scheme.
+    pub scheme: String,
+    /// `hub` or `layer7`, matching the immutable endpoint revision.
+    pub ingress_kind: String,
+    /// TLS-verified DNS/IP identity. Absent for cleartext HTTP.
+    pub tls_identity: Option<crate::db::InboundEndpointHost>,
+}
+
+impl DeliveryTransportEvidence {
+    /// Builds transport evidence from a runtime-verified absolute request URL.
+    #[must_use]
+    pub fn from_verified_url(url: &url::Url, ingress_kind: &str) -> Option<Self> {
+        if !matches!(ingress_kind, "hub" | "layer7") {
+            return None;
+        }
+        let scheme = url.scheme();
+        if !matches!(scheme, "http" | "https") {
+            return None;
+        }
+        let host = canonical_endpoint_host(url.host_str()?).ok()?;
+        Some(Self {
+            scheme: scheme.to_owned(),
+            ingress_kind: ingress_kind.to_owned(),
+            tls_identity: (scheme == "https").then_some(host),
+        })
+    }
+}
+
+/// Trusted route-access assertion supplied by a configured ingress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryAccessEvidence {
+    /// Exact verified private-network boundary.
+    pub boundary: Option<(String, i64)>,
+    /// Exact verified external provider `(kind, resource, revision)`.
+    pub external_provider: Option<(String, String, String)>,
+}
+
+/// Capability selected by the shared path classifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FrontendKind {
-    /// A managed binary cache (gated on `serves_cache`).
-    Cache,
-    /// A registry's git/web surface (gated on `serves_git`/`serves_web`).
-    Registry,
+pub enum DeliveryAudience {
+    /// Registry Git protocol, immutable releases, and signed image objects.
+    Git,
+    /// Nix binary-cache protocol.
+    NixCache,
+    /// Human-readable Web surface.
+    Web,
 }
 
-/// A request resolved to a serving frontend by its `Host` and path.
-struct ResolvedFrontend {
-    /// The target's URL slug (the instance-internal `/{slug}/…` identity the
-    /// rewritten request is dispatched through).
-    slug: String,
-    /// Whether the target is a cache or a registry.
-    kind: FrontendKind,
-    /// The request path with the frontend's `base_path` stripped (no leading
-    /// slash).
-    surface_path: String,
-    /// The frontend's advertised surface subset.
-    serves_git: bool,
-    serves_cache: bool,
-    serves_web: bool,
+/// Typed route resolution carried to the internal delivery handler.
+#[derive(Debug, Clone)]
+pub struct ResolvedDeliveryRoute {
+    /// Exact immutable route snapshot selected for this request.
+    pub route: crate::db::InboundDeliveryRouteRecord,
+    /// Route-relative canonical path, without a leading slash.
+    pub surface_path: String,
+    /// Capability selected from the surface kind and path.
+    pub audience: DeliveryAudience,
 }
 
-impl ResolvedFrontend {
-    /// Whether this frontend serves the surface class of `surface_path`.
-    ///
-    /// A machine path ([`keymap::is_machine_path`](crate::keymap::is_machine_path))
-    /// is the cache (`serves_cache`) or git (`serves_git`) surface; anything else
-    /// is a browse/web page (`serves_web`).
-    ///
-    /// Classification runs on the **percent-decoded** path: a downstream
-    /// extractor decodes the path before serving, so gating on the raw encoded
-    /// form would let an encoded token (e.g. `%6Fbjects` for `objects`) dodge the
-    /// subset gate yet still resolve to the machine surface.
-    fn serves(&self) -> bool {
-        let decoded = percent_decode_path(&self.surface_path);
-        let machine = crate::keymap::is_machine_path(&decoded);
-        match self.kind {
-            FrontendKind::Cache => {
-                if machine {
-                    self.serves_cache
-                } else {
-                    self.serves_web
-                }
-            }
-            FrontendKind::Registry => {
-                if machine {
-                    self.serves_git
-                } else {
-                    self.serves_web
-                }
-            }
-        }
-    }
-}
-
-/// The hub's own host, parsed from [`RpcService::external_url`] and normalized
-/// the same way [`request_host`] normalizes the request `Host` (lowercased, no
-/// `:port`, no trailing dot), or `None` when `external_url` carries no host.
+/// Verifies a configured ingress assertion and replaces any existing evidence.
 ///
-/// Used by [`rewrite_for_frontend`] to recognize traffic on the instance's own
-/// domain — which is never a proxied frontend — and skip the per-request
-/// `frontends_by_domain` lookup for it.
-fn instance_host(svc: &RpcService) -> Option<String> {
-    let host = svc
-        .external_url
-        .parse::<Uri>()
-        .ok()
-        .and_then(|uri| uri.host().map(str::to_string))?;
-    let host = host.trim().trim_end_matches('.');
-    if host.is_empty() {
-        None
-    } else {
-        Some(host.to_ascii_lowercase())
-    }
-}
-
-/// The request `Host`, lowercased and without any `:port`, for frontend
-/// matching.
-///
-/// Prefers the URI authority (HTTP/2 `:authority`) and falls back to the `Host`
-/// header (HTTP/1.1). Returns `None` when neither is present.
-fn request_host(headers: &HeaderMap, uri: &Uri) -> Option<String> {
-    let raw = uri.host().map(str::to_string).or_else(|| {
-        headers
-            .get(header::HOST)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-    })?;
-    // Drop any `:port`, then a single FQDN trailing dot, so `cache.example.com`,
-    // `cache.example.com:8443`, and `cache.example.com.` all match one row.
-    let host = raw
-        .split(':')
-        .next()
-        .unwrap_or(&raw)
-        .trim()
-        .trim_end_matches('.');
-    if host.is_empty() {
-        None
-    } else {
-        Some(host.to_ascii_lowercase())
-    }
-}
-
-/// Percent-decode the `%XX` escapes in a surface path (lossy on invalid UTF-8).
-///
-/// Used to classify the surface class on the same decoded form a downstream
-/// extractor sees, so an encoded token cannot bypass the `serves_*` gate.
-fn percent_decode_path(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = |b: u8| match b {
-                b'0'..=b'9' => Some(b - b'0'),
-                b'a'..=b'f' => Some(b - b'a' + 10),
-                b'A'..=b'F' => Some(b - b'A' + 10),
-                _ => None,
-            };
-            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
-                out.push(hi * 16 + lo);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// One resolved frontend in the per-host routing projection (RFC-0004 ch.14
-/// Phase C): the bound target's slug + the surface gates, with its `base_path`.
-///
-/// The host→target resolution (the `frontends_by_domain` D1 read plus the
-/// per-frontend `cache_by_id`/`registry_by_id` slug lookups) is the expensive
-/// part; the `base_path` prefix match against the request path is pure. So the
-/// list of these per host is read-through cached under `fe:{host}`, and the
-/// per-request match runs over it with no database round-trip.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct FrontendRouteEntry {
-    /// The frontend's path prefix under the domain (matched on a segment
-    /// boundary).
-    base_path: String,
-    /// The bound target's internal slug.
-    slug: String,
-    /// Whether the target is a cache (`true`) or a registry (`false`).
-    is_cache: bool,
-    /// The advertised surface subset.
-    serves_git: bool,
-    serves_cache: bool,
-    serves_web: bool,
-}
-
-/// The per-host frontend routing entries, read-through cached in KV when a
-/// store is attached, else resolved live.
-///
-/// Returns an empty list when the host binds no frontend (or the read fails),
-/// which the caller treats as "not a frontend domain".
-async fn frontend_routes(svc: &RpcService, host: &str) -> Vec<FrontendRouteEntry> {
-    let load = || async {
-        let Ok(frontends) = svc.db.frontends_by_domain(host).await else {
-            return Ok(None);
-        };
-        let mut entries = Vec::new();
-        for fe in frontends {
-            let (slug, is_cache) = if let Some(cache_id) = fe.cache_id {
-                match svc.db.cache_by_id(cache_id).await {
-                    Ok(Some(cache)) => (cache.slug, true),
-                    _ => continue,
-                }
-            } else if let Some(registry_id) = fe.registry_id {
-                match svc.db.registry_by_id(registry_id).await {
-                    Ok(Some(reg)) => (reg.slug, false),
-                    _ => continue,
-                }
-            } else {
-                continue;
-            };
-            entries.push(FrontendRouteEntry {
-                base_path: fe.base_path,
-                slug,
-                is_cache,
-                serves_git: fe.serves_git,
-                serves_cache: fe.serves_cache,
-                serves_web: fe.serves_web,
-            });
-        }
-        Ok(Some(entries))
-    };
-    match &svc.kv {
-        Some(kv) => crate::cache::read_through(
-            kv.as_ref(),
-            &format!("fe:{host}"),
-            Some(crate::cache::HOT_TTL_SECS),
-            load,
-        )
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default(),
-        None => load().await.ok().flatten().unwrap_or_default(),
-    }
-}
-
-/// Resolve an incoming `(host, path)` to the registry/cache a serving frontend
-/// binds, or `None` when the host is not a frontend domain.
-///
-/// Picks the frontend whose `base_path` most specifically prefixes `path`
-/// (longest first), strips that prefix, and resolves the bound target's slug.
-/// The host→target resolution is served from the KV routing projection
-/// ([`frontend_routes`]) when a store is attached, off the D1 read path.
-async fn resolve_frontend_route(
-    svc: &RpcService,
-    host: &str,
-    path: &str,
-) -> Option<ResolvedFrontend> {
-    for fe in frontend_routes(svc, host).await {
-        let base = fe.base_path.trim_matches('/');
-        let trimmed = path.trim_start_matches('/');
-        // Match the base path on a *segment* boundary, so base `v1` matches
-        // `/v1` and `/v1/x` but never `/v10/x`.
-        let rest = if base.is_empty() {
-            Some(trimmed)
-        } else {
-            match trimmed.strip_prefix(base) {
-                Some(r) if r.is_empty() => Some(""),
-                Some(r) if r.starts_with('/') => Some(r.trim_start_matches('/')),
-                _ => None,
-            }
-        };
-        let Some(surface_path) = rest else {
-            continue;
-        };
-        return Some(ResolvedFrontend {
-            slug: fe.slug,
-            kind: if fe.is_cache {
-                FrontendKind::Cache
-            } else {
-                FrontendKind::Registry
-            },
-            surface_path: surface_path.to_string(),
-            serves_git: fe.serves_git,
-            serves_cache: fe.serves_cache,
-            serves_web: fe.serves_web,
-        });
-    }
-    None
-}
-
-/// Apply frontend domain-routing to `request`, returning the request to
-/// continue with (its URI rewritten to the bound `/{slug}/…` identity when the
-/// `Host` is a serving frontend domain) or an early [`Response`] (a `404` when
-/// the frontend does not serve the requested surface class).
-///
-/// When the request `Host` matches a serving frontend (a *proxied* per-registry
-/// or per-cache domain — a Direct frontend CNAMEs straight to the origin and
-/// never reaches the hub), this strips the frontend's `base_path`, enforces its
-/// `serves_git`/`serves_cache`/`serves_web` subset gate (a `404` for a surface
-/// the frontend does not advertise), and rewrites the request to the internal
-/// `/{slug}/{surface_path}` form so every existing handler (the cache/git
-/// facade, the browse pages) serves it unchanged. A request whose host is not a
-/// frontend (the instance's own domain, or any unrecognized host) is returned
-/// unchanged for normal slug routing.
-///
-/// This is the shared decision both shells run: the native hub wraps it in a
-/// [`with_frontend_dispatch`] middleware (its services are `Send`), and the
-/// Worker calls it directly from its request bridge (its services are `!Send`,
-/// which `axum::middleware::from_fn` would reject).
+/// An assertion header is always consumed. If no verifier is configured, its
+/// presence is treated as a spoof attempt rather than ignored.
 ///
 /// # Errors
 ///
-/// Returns `Err(response)` with a `404` when a frontend serves the host but not
-/// the requested surface class, or a `400` when the rewritten URI is invalid.
-pub async fn rewrite_for_frontend(
+/// Returns `401 Unauthorized` for an absent verifier, duplicate/malformed
+/// header, invalid signature, expired assertion, or request mismatch.
+pub fn apply_delivery_attestation(
+    mut request: Request,
+    verifier: Option<&crate::delivery_attestation::DeliveryAttestationVerifier>,
+    now: i64,
+) -> Result<Request, Response> {
+    use crate::delivery_attestation::DELIVERY_ATTESTATION_HEADER;
+
+    let values = request
+        .headers()
+        .get_all(DELIVERY_ATTESTATION_HEADER)
+        .iter()
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return Ok(request);
+    }
+    if values.len() != 1 {
+        return Err(StatusCode::UNAUTHORIZED.into_response());
+    }
+    let compact = values[0]
+        .to_str()
+        .map_err(|_| StatusCode::UNAUTHORIZED.into_response())?
+        .to_owned();
+    request.headers_mut().remove(DELIVERY_ATTESTATION_HEADER);
+    let verifier = verifier.ok_or_else(|| StatusCode::UNAUTHORIZED.into_response())?;
+    let uri_authority = request.uri().authority().map(|value| value.as_str());
+    let host_authority = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok());
+    if let (Some(uri), Some(host)) = (uri_authority, host_authority) {
+        if uri != host {
+            return Err(StatusCode::UNAUTHORIZED.into_response());
+        }
+    }
+    let authority = uri_authority
+        .or(host_authority)
+        .ok_or_else(|| StatusCode::UNAUTHORIZED.into_response())?;
+    let path_and_query = request
+        .uri()
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or(request.uri().path());
+    let verified = verifier
+        .verify(
+            &compact,
+            request.method().as_str(),
+            authority,
+            path_and_query,
+            now,
+        )
+        .map_err(|_| StatusCode::UNAUTHORIZED.into_response())?;
+    request.extensions_mut().insert(verified.transport.clone());
+    request.extensions_mut().insert(verified);
+    Ok(request)
+}
+
+/// Canonicalizes one raw HTTP request path under the RFC-0012 rules.
+fn canonical_request_path(raw: &str) -> Result<String, ()> {
+    if !raw.starts_with('/') || raw.contains(['\\', '\0']) || raw.contains("//") {
+        return Err(());
+    }
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            if bytes[index].is_ascii_control() {
+                return Err(());
+            }
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        if index + 2 >= bytes.len() {
+            return Err(());
+        }
+        let hex = |byte: u8| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        };
+        let Some(high) = hex(bytes[index + 1]) else {
+            return Err(());
+        };
+        let Some(low) = hex(bytes[index + 2]) else {
+            return Err(());
+        };
+        let byte = high * 16 + low;
+        // Encoded ASCII is never canonical. This includes `%25`, closing the
+        // double-encoding ambiguity before a second decoder can see it.
+        if byte.is_ascii() {
+            return Err(());
+        }
+        decoded.push(byte);
+        index += 3;
+    }
+    let decoded = String::from_utf8(decoded).map_err(|_| ())?;
+    let normalized = decoded.nfc().collect::<String>();
+    if normalized
+        .split('/')
+        .any(|segment| matches!(segment, "." | ".."))
+    {
+        return Err(());
+    }
+    Ok(normalized)
+}
+
+fn canonical_endpoint_host(host: &str) -> Result<crate::db::InboundEndpointHost, ()> {
+    use std::net::IpAddr;
+    use std::str::FromStr as _;
+
+    if host.is_empty()
+        || host.ends_with('.')
+        || host.contains(['%', '@'])
+        || host.bytes().any(|byte| byte.is_ascii_whitespace())
+    {
+        return Err(());
+    }
+    match IpAddr::from_str(host).ok() {
+        Some(IpAddr::V4(address)) => Ok(crate::db::InboundEndpointHost::Ipv4(
+            address.octets().to_vec(),
+        )),
+        Some(IpAddr::V6(address)) => {
+            if address.to_ipv4_mapped().is_some() {
+                return Err(());
+            }
+            Ok(crate::db::InboundEndpointHost::Ipv6(
+                address.octets().to_vec(),
+            ))
+        }
+        None => match url::Host::parse(host).map_err(|_| ())? {
+            url::Host::Domain(domain) if !domain.is_empty() => {
+                Ok(crate::db::InboundEndpointHost::Domain(domain))
+            }
+            _ => Err(()),
+        },
+    }
+}
+
+/// Extracts and canonicalizes the host from an already authenticated authority.
+pub(crate) fn attested_authority_host(
+    authority: &str,
+) -> Result<crate::db::InboundEndpointHost, ()> {
+    let authority = authority
+        .parse::<axum::http::uri::Authority>()
+        .map_err(|_| ())?;
+    if authority.as_str().contains('@') {
+        return Err(());
+    }
+    canonical_endpoint_host(authority.host())
+}
+
+/// Parses request authority using only actual listener evidence.
+fn request_endpoint(
+    request: &Request,
+) -> Result<Option<(crate::db::InboundEndpointHost, u16, String, String)>, ()> {
+    let Some(evidence) = request
+        .extensions()
+        .get::<DeliveryTransportEvidence>()
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let default_port = match evidence.scheme.as_str() {
+        "http" => 80,
+        "https" => 443,
+        _ => return Err(()),
+    };
+    let uri_authority = request.uri().authority().cloned();
+    let host_authority = request
+        .headers()
+        .get(header::HOST)
+        .map(|value| value.to_str().map_err(|_| ()))
+        .transpose()?
+        .map(|value| value.parse().map_err(|_| ()))
+        .transpose()?;
+    let Some(authority) = uri_authority.as_ref().or(host_authority.as_ref()) else {
+        return Ok(None);
+    };
+    let parse_authority = |authority: &axum::http::uri::Authority| {
+        if authority.as_str().contains('@') {
+            return Err(());
+        }
+        Ok((
+            canonical_endpoint_host(authority.host())?,
+            authority.port_u16().unwrap_or(default_port),
+        ))
+    };
+    let (host, port) = parse_authority(authority)?;
+    if let (Some(uri), Some(header)) = (uri_authority.as_ref(), host_authority.as_ref()) {
+        if parse_authority(uri)? != parse_authority(header)? {
+            return Err(());
+        }
+    }
+    if evidence.scheme == "https" && evidence.tls_identity.as_ref() != Some(&host) {
+        return Err(());
+    }
+    Ok(Some((host, port, evidence.scheme, evidence.ingress_kind)))
+}
+
+/// Strips a route base path on a segment boundary.
+fn strip_route_base_path<'a>(base_path: &str, request_path: &'a str) -> Option<&'a str> {
+    let base = base_path.trim_start_matches('/');
+    let path = request_path.trim_start_matches('/');
+    if base.is_empty() {
+        return Some(path);
+    }
+    match path.strip_prefix(base) {
+        Some("") => Some(""),
+        Some(rest) if rest.starts_with('/') => Some(&rest[1..]),
+        _ => None,
+    }
+}
+
+fn delivery_audience(surface: crate::db::SurfaceTarget, path: &str) -> DeliveryAudience {
+    let nix = path == "nix-cache-info"
+        || path.starts_with("nar/")
+        || path
+            .strip_suffix(".narinfo")
+            .is_some_and(|hash| !hash.is_empty() && !hash.contains('/'));
+    if nix {
+        return DeliveryAudience::NixCache;
+    }
+    if matches!(surface, crate::db::SurfaceTarget::Registry(_))
+        && (matches!(path, "HEAD" | "info/refs")
+            || path.starts_with("objects/")
+            || path.starts_with("releases/")
+            || path.starts_with("channels/")
+            || path.starts_with("images/"))
+    {
+        return DeliveryAudience::Git;
+    }
+    DeliveryAudience::Web
+}
+
+fn is_reserved_control_path(path: &str) -> bool {
+    let trimmed = path.trim_start_matches('/');
+    trimmed.is_empty()
+        || trimmed.split('/').any(|segment| segment == "-")
+        || matches!(
+            trimmed,
+            "_assets"
+                | "account"
+                | "activate"
+                | "auth"
+                | "healthz"
+                | "llms.txt"
+                | "login"
+                | "logout"
+                | "metrics"
+                | "robots.txt"
+        )
+        || trimmed.starts_with("_assets/")
+        || trimmed.starts_with("account/")
+        || trimmed.starts_with("activate/")
+        || trimmed.starts_with("auth/")
+        || trimmed.starts_with("login/")
+        || trimmed.starts_with("logout/")
+        || trimmed.starts_with("oauth2/")
+        || trimmed.starts_with("aos.hub.v1.")
+}
+
+async fn domain_probe_handler(
+    State(state): State<SharedState>,
+    Query(query): Query<DomainProbeQuery>,
+    request: Request,
+) -> Response {
+    let svc = from_state(state);
+    let Some((host, port, scheme, _ingress_kind)) = request_endpoint(&request).ok().flatten()
+    else {
+        return StatusCode::MISDIRECTED_REQUEST.into_response();
+    };
+    if scheme != "https" || port != 443 {
+        return StatusCode::MISDIRECTED_REQUEST.into_response();
+    }
+    let crate::db::InboundEndpointHost::Domain(host) = host else {
+        return StatusCode::MISDIRECTED_REQUEST.into_response();
+    };
+    match svc
+        .domain_probe_response(&host, &query.nonce, crate::clock::now_unix_secs())
+        .await
+    {
+        Ok(body) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+        Err(error) => {
+            tracing::warn!(
+                %host,
+                error = %format!("{error:#}"),
+                "domain probe responder rejected request"
+            );
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
+    }
+}
+
+/// Parses the configured external origin into its exact control-plane
+/// `(host, port, scheme)` authority.
+///
+/// The configured value is deployment state, unlike `Host`, `Forwarded`, or
+/// the request target. Requiring an origin (with no credentials, query,
+/// fragment, or non-root path) keeps control-plane admission independent from
+/// client-controlled forwarding metadata.
+fn configured_control_authority(
+    external_url: &str,
+) -> Result<(crate::db::InboundEndpointHost, u16, String), ()> {
+    let url = url::Url::parse(external_url).map_err(|_| ())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !matches!(url.path(), "" | "/")
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(());
+    }
+    let scheme = url.scheme().to_owned();
+    let port = url
+        .port_or_known_default()
+        .and_then(|port| u16::try_from(port).ok())
+        .ok_or(())?;
+    Ok((
+        canonical_endpoint_host(url.host_str().ok_or(())?)?,
+        port,
+        scheme,
+    ))
+}
+
+async fn require_route_access(
+    svc: &RpcService,
+    route: &crate::db::InboundDeliveryRouteRecord,
+    headers: HeaderMap,
+    attestation: Option<crate::delivery_attestation::VerifiedDeliveryAttestation>,
+) -> Result<(), RpcError> {
+    let authorization = headers
+        .get(header::AUTHORIZATION)
+        .map(|value| {
+            value.to_str().map(str::to_owned).map_err(|_| {
+                RpcError::Unauthenticated("Authorization header is not valid ASCII".into())
+            })
+        })
+        .transpose()?;
+    let session_secret = crate::web::session::session_secret_from_headers(&headers);
+    if let Some(attestation) = attestation.as_ref() {
+        if !attestation_matches_route(attestation, route) {
+            return Err(RpcError::PermissionDenied(
+                "delivery assertion belongs to another route configuration".into(),
+            ));
+        }
+        if !svc
+            .db
+            .claim_delivery_attestation_nonce(
+                &route.id,
+                &route.configuration_digest,
+                &attestation.nonce_digest,
+                attestation.expires_at,
+                crate::delivery_attestation::delivery_attestation_now(),
+            )
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::PermissionDenied(
+                "delivery assertion is stale or has already been used".into(),
+            ));
+        }
+    }
+    match route.access_policy_kind.as_str() {
+        "public" => Ok(()),
+        "hub_auth" => {
+            if let Some(value) = authorization.as_deref() {
+                svc.require_claims(Some(value)).map(|_| ())
+            } else {
+                let secret = session_secret.ok_or_else(|| {
+                    RpcError::Unauthenticated("authentication is required".into())
+                })?;
+                match svc
+                    .resolve_session_cached(&secret)
+                    .await
+                    .map_err(RpcError::internal)?
+                {
+                    Some(_) => Ok(()),
+                    None => Err(RpcError::Unauthenticated(
+                        "session is invalid or expired".into(),
+                    )),
+                }
+            }
+        }
+        "private_network" => attestation
+            .as_ref()
+            .filter(|attestation| attested_access_matches_route(&attestation.access, route))
+            .map(|_| ())
+            .ok_or_else(|| {
+                RpcError::PermissionDenied(
+                    "private-network route assertion is missing or stale".into(),
+                )
+            }),
+        "external_provider" => attestation
+            .as_ref()
+            .filter(|attestation| attested_access_matches_route(&attestation.access, route))
+            .map(|_| ())
+            .ok_or_else(|| {
+                RpcError::PermissionDenied(
+                    "external-provider route assertion is missing or stale".into(),
+                )
+            }),
+        _ => Err(RpcError::PermissionDenied(
+            "route access policy is not supported".into(),
+        )),
+    }
+}
+
+fn attestation_matches_route(
+    attestation: &crate::delivery_attestation::VerifiedDeliveryAttestation,
+    route: &crate::db::InboundDeliveryRouteRecord,
+) -> bool {
+    attestation.route_id == route.id
+        && attestation.route_configuration_digest == route.configuration_digest
+}
+
+fn attested_access_matches_route(
+    access: &DeliveryAccessEvidence,
+    route: &crate::db::InboundDeliveryRouteRecord,
+) -> bool {
+    match route.access_policy_kind.as_str() {
+        "private_network" => access.boundary.as_ref().is_some_and(|boundary| {
+            route.access_boundary_id.as_deref() == Some(boundary.0.as_str())
+                && route.access_boundary_revision == Some(boundary.1)
+        }),
+        "external_provider" => {
+            access
+                .external_provider
+                .as_ref()
+                .is_some_and(|(kind, resource, revision)| {
+                    Some(kind) == route.external_provider_kind.as_ref()
+                        && Some(resource) == route.external_provider_resource_id.as_ref()
+                        && Some(revision) == route.external_provider_revision.as_ref()
+                })
+        }
+        _ => false,
+    }
+}
+
+/// Applies typed delivery-route dispatch to one incoming request.
+///
+/// The most-specific enabled route on the exact domain/IP endpoint wins.
+/// Hub-proxy and Hub-redirect routes must have current healthy/degraded
+/// endpoint, route, and access observations. A direct route that reaches Hub
+/// is rejected with 421 Misdirected Request; it is never silently proxied.
+///
+/// # Errors
+///
+/// Returns an early 404 for a disallowed route capability, 421 for a direct
+/// route, 503 for an unready Hub route, or 400 for an invalid internal rewrite
+/// URI.
+pub async fn rewrite_for_delivery_route(
     svc: &RpcService,
     mut request: Request,
 ) -> Result<Request, Response> {
-    let Some(host) = request_host(request.headers(), request.uri()) else {
-        return Ok(request);
+    let endpoint = match request_endpoint(&request) {
+        Ok(endpoint) => endpoint,
+        Err(()) => return Err(StatusCode::BAD_REQUEST.into_response()),
     };
-    // The instance's own host is never a per-registry/per-cache frontend domain,
-    // so skip the `frontends_by_domain` D1 round-trip for it — the common case
-    // for browse/RPC traffic on the hub's own domain. Only genuinely foreign
-    // hosts (proxied frontend CNAMEs) hit the lookup. A no-custom-domain deploy
-    // serves on its `*.workers.dev` host with `external_url` set to match, so
-    // this still short-circuits there.
-    if instance_host(svc).as_deref() == Some(host.as_str()) {
-        return Ok(request);
+    let Some((host, port, scheme, ingress_kind)) = endpoint else {
+        return Err(StatusCode::MISDIRECTED_REQUEST.into_response());
+    };
+    let control_authority = match configured_control_authority(&svc.external_url) {
+        Ok(control) => control,
+        Err(()) => return Err(StatusCode::SERVICE_UNAVAILABLE.into_response()),
+    };
+    let is_control_authority = control_authority == (host.clone(), port, scheme.clone());
+    let Ok(routes) = svc
+        .db
+        .inbound_delivery_routes(&host, port, &scheme, &ingress_kind)
+        .await
+    else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE.into_response());
+    };
+    let host_is_delivery = if routes.is_empty() {
+        match svc.db.delivery_endpoint_host_exists(&host).await {
+            Ok(exists) => exists,
+            Err(_) => return Err(StatusCode::SERVICE_UNAVAILABLE.into_response()),
+        }
+    } else {
+        true
+    };
+    let request_path = match canonical_request_path(request.uri().path()) {
+        Ok(path) => path,
+        Err(()) => return Err(StatusCode::BAD_REQUEST.into_response()),
+    };
+    if request_path == DOMAIN_PROBE_PATH {
+        return if scheme == "https" && port == 443 && host_is_delivery {
+            Ok(request)
+        } else {
+            Err(StatusCode::MISDIRECTED_REQUEST.into_response())
+        };
     }
-    let path = request.uri().path().to_string();
-    let Some(route) = resolve_frontend_route(svc, &host, &path).await else {
-        return Ok(request);
+    if is_reserved_control_path(&request_path) {
+        return if is_control_authority {
+            Ok(request)
+        } else if host_is_delivery {
+            Err(StatusCode::NOT_FOUND.into_response())
+        } else {
+            Err(StatusCode::MISDIRECTED_REQUEST.into_response())
+        };
+    }
+    let Some((route, surface_path)) = routes.iter().find_map(|route| {
+        strip_route_base_path(&route.base_path, &request_path).map(|path| (route, path))
+    }) else {
+        // The exact control authority may continue into its RPC, console, and
+        // browse router. That router has no resource-slug byte fallback, so an
+        // unmatched machine path becomes an ordinary 404. Every non-control
+        // authority still requires an explicit delivery route.
+        return if is_control_authority {
+            Ok(request)
+        } else {
+            Err(StatusCode::MISDIRECTED_REQUEST.into_response())
+        };
     };
-    if !route.serves() {
+    if !matches!(*request.method(), Method::GET | Method::HEAD) {
+        return Err((
+            StatusCode::METHOD_NOT_ALLOWED,
+            [(header::ALLOW, "GET, HEAD")],
+        )
+            .into_response());
+    }
+    let audience = delivery_audience(route.surface, surface_path);
+    let serves = match audience {
+        DeliveryAudience::Git => route.serves_git,
+        DeliveryAudience::NixCache => route.serves_cache,
+        DeliveryAudience::Web => route.serves_web,
+    };
+    if !serves {
         return Err(StatusCode::NOT_FOUND.into_response());
     }
-    // Rewrite to the internal `/{slug}/{surface_path}` identity, preserving the
-    // query string, and re-dispatch through the normal routes.
-    let mut rewritten = format!("/{}/{}", route.slug, route.surface_path);
+    let access_headers = request.headers().clone();
+    let attestation = request
+        .extensions()
+        .get::<crate::delivery_attestation::VerifiedDeliveryAttestation>()
+        .cloned();
+    if let Err(error) = require_route_access(svc, route, access_headers, attestation).await {
+        return Err(error_response(&error));
+    }
+    if route.mode == "direct" {
+        return Err(StatusCode::MISDIRECTED_REQUEST.into_response());
+    }
+    if !route.ready {
+        return Err(StatusCode::SERVICE_UNAVAILABLE.into_response());
+    }
+    request.extensions_mut().insert(ResolvedDeliveryRoute {
+        route: route.clone(),
+        surface_path: surface_path.to_owned(),
+        audience,
+    });
+    let mut rewritten = "/_aos-internal/delivery".to_owned();
     if let Some(query) = request.uri().query() {
         rewritten.push('?');
         rewritten.push_str(query);
@@ -1024,33 +1041,211 @@ pub async fn rewrite_for_frontend(
     Ok(request)
 }
 
-/// The native [`with_frontend_dispatch`] middleware body: run the shared
-/// [`rewrite_for_frontend`] decision, then continue or short-circuit.
+/// Serves a route that has already passed exact transport/path/access checks.
+async fn serve_resolved_delivery(
+    svc: Arc<RpcService>,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    resolved: ResolvedDeliveryRoute,
+) -> Response {
+    let auth = auth_header(&headers);
+    let session_secret = crate::web::session::session_secret_from_headers(&headers);
+    let authorization = match (auth.as_deref(), session_secret.as_deref()) {
+        (Some(auth), _) => ReadAuthorization::AuthorizationHeader(Some(auth)),
+        (None, Some(secret)) => ReadAuthorization::SessionCookie(secret),
+        (None, None) => ReadAuthorization::AuthorizationHeader(None),
+    };
+    if resolved.route.mode == "hub_redirect" {
+        if let Err(error) = svc
+            .authorize_delivery_surface_read(authorization, resolved.route.surface)
+            .await
+        {
+            return error_response(&error);
+        }
+        let crate::db::SurfaceTarget::BinaryCache(cache_id) = resolved.route.surface else {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        };
+        let Some(placement_id) = resolved.route.placement_id else {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        };
+        let placement = match svc.db.surface_placement(placement_id).await {
+            Ok(Some(placement)) if placement.cache_id == Some(cache_id) => placement,
+            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+            Ok(Some(_)) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        };
+        let location = match svc
+            .presign_cache_read(
+                &placement,
+                &resolved.surface_path,
+                crate::clock::now_unix_secs(),
+            )
+            .await
+        {
+            Ok(Some(location)) => location,
+            Ok(None) | Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        };
+        return (
+            StatusCode::TEMPORARY_REDIRECT,
+            [
+                (header::LOCATION, location),
+                (header::CACHE_CONTROL, "private, no-store".to_owned()),
+                (header::REFERRER_POLICY, "no-referrer".to_owned()),
+            ],
+        )
+            .into_response();
+    }
+
+    if resolved.audience == DeliveryAudience::Web {
+        return browse_dispatch(
+            svc,
+            headers,
+            resolved.route.target_slug,
+            resolved.surface_path,
+            None,
+        )
+        .await;
+    }
+    match resolved.route.surface {
+        crate::db::SurfaceTarget::Registry(registry_id) => {
+            let registry = match svc.db.registry_by_id(registry_id).await {
+                Ok(Some(registry)) => registry,
+                Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+                Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            };
+            let now = match crate::delivery_http::HttpTimestamp::from_unix_seconds(
+                crate::clock::now_unix_secs(),
+            ) {
+                Ok(now) => now,
+                Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            };
+            let image_request = crate::image_http::ImageHttpRequest {
+                method: if method == axum::http::Method::HEAD {
+                    crate::delivery_http::DeliveryMethod::Head
+                } else {
+                    crate::delivery_http::DeliveryMethod::Get
+                },
+                range: headers.get(header::RANGE).map(HeaderValue::as_bytes),
+                if_match: headers.get(header::IF_MATCH).map(HeaderValue::as_bytes),
+                if_unmodified_since: headers
+                    .get(header::IF_UNMODIFIED_SINCE)
+                    .map(HeaderValue::as_bytes),
+                if_none_match: headers
+                    .get(header::IF_NONE_MATCH)
+                    .map(HeaderValue::as_bytes),
+                if_modified_since: headers
+                    .get(header::IF_MODIFIED_SINCE)
+                    .map(HeaderValue::as_bytes),
+                if_range: headers.get(header::IF_RANGE).map(HeaderValue::as_bytes),
+                now,
+            };
+            match svc
+                .registry_serve(
+                    authorization,
+                    &registry,
+                    &resolved.surface_path,
+                    image_request,
+                )
+                .await
+            {
+                Ok(RegistryServeOutcome::Response(response)) => response,
+                Ok(RegistryServeOutcome::NotFound) => StatusCode::NOT_FOUND.into_response(),
+                Err(error) => error_response(&error),
+            }
+        }
+        crate::db::SurfaceTarget::BinaryCache(cache_id) => {
+            let cache = match svc.db.binary_cache_by_id(cache_id).await {
+                Ok(Some(cache)) => cache,
+                Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+                Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            };
+            match svc
+                .cache_serve(
+                    authorization,
+                    &cache,
+                    &resolved.surface_path,
+                    headers
+                        .get(header::RANGE)
+                        .and_then(|value| value.to_str().ok()),
+                )
+                .await
+            {
+                Ok(Some(response)) => response,
+                Ok(None) => StatusCode::NOT_FOUND.into_response(),
+                Err(error) => error_response(&error),
+            }
+        }
+    }
+}
+
+async fn resolved_delivery_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    request: Request,
+) -> Response {
+    let method = request.method().clone();
+    let Some(resolved) = request.extensions().get::<ResolvedDeliveryRoute>().cloned() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    serve_resolved_delivery(from_state(state), method, headers, resolved).await
+}
+
+/// Runs typed delivery-route rewriting before native router dispatch.
 ///
 /// Native-only: `axum::middleware::from_fn` requires a `Send` future, which the
 /// Worker's `!Send` services cannot satisfy — the Worker instead calls
-/// [`rewrite_for_frontend`] directly from its request bridge.
+/// [`rewrite_for_delivery_route`] directly from its request bridge.
 #[cfg(not(target_arch = "wasm32"))]
-async fn dispatch_frontend_domain(svc: Arc<RpcService>, request: Request, next: Next) -> Response {
-    match rewrite_for_frontend(&svc, request).await {
+async fn dispatch_delivery_route(
+    svc: Arc<RpcService>,
+    verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let mut request = match apply_delivery_attestation(
+        request,
+        verifier.as_deref(),
+        crate::delivery_attestation::delivery_attestation_now(),
+    ) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    if request
+        .extensions()
+        .get::<DeliveryTransportEvidence>()
+        .is_none()
+    {
+        request.extensions_mut().insert(DeliveryTransportEvidence {
+            // The native server currently binds a plain TCP HTTP listener. An
+            // HTTPS/layer-7 deployment must insert authenticated evidence at
+            // its TLS/proxy adapter rather than trusting request-target text.
+            scheme: "http".to_owned(),
+            ingress_kind: "hub".to_owned(),
+            tls_identity: None,
+        });
+    }
+    match rewrite_for_delivery_route(&svc, request).await {
         Ok(request) => next.run(request).await,
         Err(response) => response,
     }
 }
 
-/// Wrap `router` with the [`dispatch_frontend_domain`] middleware so requests on
-/// a serving frontend's domain resolve to the bound registry/cache.
+/// Wraps `router` with typed domain/IP endpoint and delivery-route dispatch.
 ///
 /// Both shells apply this to their outermost router: the Worker over the shared
 /// [`router`], the native hub over its merged router (which carries its own
-/// machine facade). The middleware captures `service` directly, so it composes
+/// typed delivery handler). The middleware captures `service` directly, so it composes
 /// regardless of the wrapped router's axum state type.
 ///
-/// Native-only (see [`dispatch_frontend_domain`]); the Worker bridges
-/// [`rewrite_for_frontend`] directly.
+/// Native-only (see [`dispatch_delivery_route`]); the Worker bridges
+/// [`rewrite_for_delivery_route`] directly.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
-pub fn with_frontend_dispatch(router: Router, service: Arc<RpcService>) -> Router {
+pub fn with_delivery_route_dispatch(
+    router: Router,
+    service: Arc<RpcService>,
+    verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
+) -> Router {
     // The middleware must run *before* routing so its URI rewrite changes which
     // route matches. `Router::layer` runs *after* routing, so instead the inner
     // router becomes the fallback of a fresh outer router carrying the
@@ -1060,109 +1255,25 @@ pub fn with_frontend_dispatch(router: Router, service: Arc<RpcService>) -> Route
         .fallback_service(router)
         .layer(axum::middleware::from_fn(move |request, next| {
             let svc = Arc::clone(&service);
-            async move { dispatch_frontend_domain(svc, request, next).await }
+            let verifier = verifier.as_ref().map(Arc::clone);
+            async move { dispatch_delivery_route(svc, verifier, request, next).await }
         }))
 }
 
-/// Resolve the longest registry slug that is a path-segment prefix of `path`,
-/// returning `(slug, tail)` where `tail` is the remaining machine-path tail.
-///
-/// This mirrors the native hub's `resolve_by_prefix`, but stays shell-agnostic:
-/// it returns the resolved slug `String` (not the full registry record) so it
-/// composes with the shared [`browse_dispatch`]/[`facade`] handlers, which
-/// re-resolve the registry and enforce visibility downstream. `exists` is the
-/// "is there a registry with this exact slug" predicate (the wasm shell's
-/// service is `!Send`, so the loop takes the lookup as an `async` closure rather
-/// than borrowing a `Send` future across iterations).
-///
-/// `acme/infra/prod/cdn/objects/ab` resolves to `(acme/infra/prod/cdn,
-/// objects/ab)`; an exact match yields an empty tail (the registry home).
-/// Matching is on `/` boundaries, so `acme/infra/prod/cdn-staging` never
-/// resolves to `acme/infra/prod/cdn`.
-async fn resolve_prefix_with<'a, F, Fut>(path: &'a str, mut exists: F) -> Option<(String, String)>
-where
-    F: FnMut(&'a str) -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let mut candidate = path;
-    loop {
-        if exists(candidate).await {
-            let tail = path[candidate.len()..].trim_start_matches('/').to_string();
-            return Some((candidate.to_string(), tail));
-        }
-        match candidate.rsplit_once('/') {
-            Some((head, _)) => candidate = head,
-            None => return None,
-        }
-    }
-}
-
-/// Resolve `path` to the registry it names by longest registry-slug prefix.
-///
-/// Thin wrapper over [`resolve_prefix_with`] that uses the service's
-/// `registry_by_slug` read as the existence predicate. Returns `(slug, tail)`
-/// on a hit; `None` when no slug prefix of `path` names a registry (or on a
-/// database error, which the shared handlers surface as a `404` rather than
-/// leaking the error through the nested fallback).
-async fn resolve_registry_prefix(svc: &RpcService, path: &str) -> Option<(String, String)> {
-    resolve_prefix_with(path, |candidate| async move {
-        matches!(svc.db.registry_by_slug(candidate).await, Ok(Some(_)))
-    })
-    .await
-}
-
-/// Split a decoded path at the first browse marker (`/-/`, or a trailing `/-`),
-/// returning `(left, rest)` where `left` is the registry-slug portion and `rest`
-/// is the page/`api/…` tail after the marker (empty for a trailing marker).
-///
-/// Returns `None` when the path does not contain the reserved marker segment.
-fn split_browse_marker(path: &str) -> Option<(String, String)> {
-    let mid = format!("/{BROWSE_MARKER}/");
-    if let Some((left, rest)) = path.split_once(&mid) {
-        return Some((left.to_string(), rest.to_string()));
-    }
-    let end = format!("/{BROWSE_MARKER}");
-    path.strip_suffix(&end)
-        .map(|left| (left.to_string(), String::new()))
-}
-
+/// Builds the Worker router with browse and token exchange.
 pub fn router(service: Arc<RpcService>) -> Router {
-    // The Worker entry: browse + the machine facade. Nested-canonical (slashed)
-    // slugs are handled inside the [`facade`] wildcard handler (the route that
-    // captures them), which resolves the longest registry-slug prefix and
-    // dispatches to the shared browse/facade — so the Worker serves `org/registry`
-    // registries identically to flat ones. The native hub doesn't use this entry;
-    // it composes [`rpc_browse_router`] and keeps its own richer `nested_catch_all`.
+    // The Worker entry includes browse and its token exchange. Public bytes are
+    // still admitted only by `with_delivery_route_dispatch`.
     build(service, true, true)
 }
 
-/// Build the shared Connect-JSON router with neither the browse surface nor the
-/// machine-surface facade — the RPC methods only.
-///
-/// Omits the catch-all `/{slug}/{*path}` facade route *and* the browse routes,
-/// so it can be merged into a host that already owns those paths. Retained for
-/// any host that wants only the wire RPC; the native hub instead uses
-/// [`rpc_browse_router`] to take the shared session-aware browse while keeping
-/// its own richer machine facade. The returned router carries the service as
-/// axum state.
+/// Builds the Connect-JSON router without browse pages or token exchange.
 #[must_use]
 pub fn rpc_router(service: Arc<RpcService>) -> Router {
     build(service, false, false)
 }
 
-/// Build the shared Connect-JSON router *with* the session-aware browse surface
-/// but *without* the machine-surface facade.
-///
-/// This is the variant the native hub mounts (RFC-0004 Phase 5, console-dedup
-/// stage G): it takes the shared rich, branded, session-aware browse (the hub
-/// home `/`, the `/{slug}` redirect, the registry home `/{slug}/` and
-/// `/{slug}/-/`, the `/{slug}/-/…` pages, and the `/{slug}/-/api/…` JSON reads)
-/// so the native hub and the Worker serve the **identical** browse, while the
-/// hub keeps its own richer `/{slug}/{*path}` machine facade (filesystem
-/// autoindex, `http(s)` redirect, pull-through mirroring, inert
-/// producer-document serving, the upload `PUT`/`HEAD`) — so omitting the shared
-/// facade here avoids a wildcard collision on merge. The returned router carries
-/// the service as axum state.
+/// Builds the Connect-JSON router with the shared session-aware browse surface.
 #[must_use]
 pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
     build(service, true, false)
@@ -1187,6 +1298,7 @@ struct TokenExchangeResponse {
     access_token: String,
     token_type: &'static str,
     expires_in: i64,
+    capabilities: [&'static str; 2],
 }
 
 /// Exchange a provisioning secret for a short-TTL access JWT (`POST
@@ -1218,7 +1330,7 @@ async fn oauth2_token_exchange(svc: &RpcService, headers: &HeaderMap) -> Respons
         }
     };
     // RFC-0004 ch.14 Phase C: validate through the KV cache (with the revocation
-    // tombstone) when one is attached, off the D1 read path.
+    // tombstone) when one is attached, off the relational read path.
     let auth = match svc.validate_token_cached(secret).await {
         Ok(Some(auth)) => auth,
         Ok(None) => {
@@ -1233,257 +1345,1551 @@ async fn oauth2_token_exchange(svc: &RpcService, headers: &HeaderMap) -> Respons
             access_token,
             token_type: "Bearer",
             expires_in: ACCESS_TOKEN_TTL_SECS,
+            capabilities: ["aos.hub.topology.v1", "aos.multipart.v1"],
         })
         .into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "token creation error").into_response(),
     }
 }
 
-/// Build the shared router, optionally mounting the browse surface and/or the
-/// machine-surface facade.
+/// Builds the shared router with optional browse and token-exchange surfaces.
 ///
 /// `mount_browse` adds the no-JS browse routes (the hub home `/`, the `/{slug}`
 /// redirect, the registry home `/{slug}/` and `/{slug}/-/`, the `/{slug}/-/…`
-/// pages, and the `/{slug}/-/api/…` JSON read API). `mount_facade` adds the
-/// catch-all `GET`/`HEAD`/`PUT` `/{slug}/{*path}` machine-surface facade (which
-/// also resolves nested-canonical slugs internally; see [`facade`]). The Worker
-/// takes both ([`router`]); the native hub takes browse only
-/// ([`rpc_browse_router`]) and keeps its own facade + nested handling;
-/// [`rpc_router`] takes neither.
-fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Router {
-    let mut r = Router::new();
+/// pages, and the `/{slug}/-/api/…` JSON read API). `mount_oauth` adds the
+/// Worker-owned provisioning-token exchange; native mounts its hardened local
+/// exchange separately.
+fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Router {
+    // The route-dispatch middleware targets this typed-only handler. A direct
+    // external request has no `ResolvedDeliveryRoute` extension and receives
+    // 404, so the internal name is not an alternate public surface URL.
+    let mut r = Router::new()
+        .route(
+            "/_aos-internal/delivery",
+            get(
+                |state: State<SharedState>, headers: HeaderMap, request: Request| {
+                    send_bridge(resolved_delivery_handler(state, headers, request))
+                },
+            ),
+        )
+        .route(
+            DOMAIN_PROBE_PATH,
+            get(
+                |state: State<SharedState>, query: Query<DomainProbeQuery>, request: Request| {
+                    send_bridge(domain_probe_handler(state, query, request))
+                },
+            ),
+        );
     // RegistryService
     r = rpc_route!(
         r,
-        "/aos.registry.v1.RegistryService/ListRegistries",
+        "/aos.hub.v1.RegistryService/ListRegistries",
         list_registries
     );
+    r = rpc_route!(r, "/aos.hub.v1.RegistryService/GetRegistry", get_registry);
+    r = rpc_route!(r, "/aos.hub.v1.RegistryService/ListReleases", list_releases);
     r = rpc_route!(
         r,
-        "/aos.registry.v1.RegistryService/GetRegistry",
-        get_registry
+        "/aos.hub.v1.RegistryService/PlanCreateRegistry",
+        plan_create_registry
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.RegistryService/ListReleases",
-        list_releases
+        "/aos.hub.v1.RegistryService/CreateRegistry",
+        apply_create_registry
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.RegistryService/CreateRegistry",
-        create_registry
+        "/aos.hub.v1.RegistryService/PlanUpdateRegistry",
+        plan_update_registry
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.RegistryService/SetCrawlPolicy",
-        set_crawl_policy
+        "/aos.hub.v1.RegistryService/UpdateRegistry",
+        apply_update_registry
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.RegistryService/ChangeRegistryStorage",
-        change_registry_storage
+        "/aos.hub.v1.RegistryService/PlanDeleteRegistry",
+        plan_delete_registry
     );
-    // OrgService
-    r = rpc_route!(r, "/aos.registry.v1.OrgService/CreateOrg", create_org);
-    r = rpc_route!(r, "/aos.registry.v1.OrgService/GetOrg", get_org);
-    r = rpc_route!(r, "/aos.registry.v1.OrgService/ListOrgs", list_orgs);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryService/DeleteRegistry",
+        apply_delete_registry
+    );
+    // OrganizationService
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OrganizationService/ListOrganizations",
+        list_organizations
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OrganizationService/GetOrganization",
+        get_organization
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OrganizationService/PlanCreateOrganization",
+        plan_create_organization
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OrganizationService/CreateOrganization",
+        apply_create_organization
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OrganizationService/PlanUpdateOrganization",
+        plan_update_organization
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OrganizationService/UpdateOrganization",
+        apply_update_organization
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OrganizationService/PlanDeleteOrganization",
+        plan_delete_organization
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OrganizationService/DeleteOrganization",
+        apply_delete_organization
+    );
+    // SigningKeyService — immutable public generations and typed usage pins.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.SigningKeyService/ListSigningKeys",
+        list_signing_keys
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.SigningKeyService/GetSigningKey",
+        get_signing_key
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.SigningKeyService/PlanEnrollSigningKey",
+        plan_enroll_signing_key
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.SigningKeyService/EnrollSigningKey",
+        apply_enroll_signing_key
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.SigningKeyService/PlanRotateSigningKey",
+        plan_rotate_signing_key
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.SigningKeyService/RotateSigningKey",
+        apply_rotate_signing_key
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.SigningKeyService/PlanRetireSigningKey",
+        plan_retire_signing_key
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.SigningKeyService/RetireSigningKey",
+        apply_retire_signing_key
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.SigningKeyService/PlanSetSigningKeyUsage",
+        plan_set_signing_key_usage
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.SigningKeyService/SetSigningKeyUsage",
+        apply_set_signing_key_usage
+    );
+    // RegistryMirrorService — registry-owned upstream synchronization.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryMirrorService/GetRegistryMirror",
+        get_registry_mirror
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryMirrorService/PlanSetRegistryMirror",
+        plan_set_registry_mirror
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryMirrorService/SetRegistryMirror",
+        set_registry_mirror
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryMirrorService/PlanDeleteRegistryMirror",
+        plan_delete_registry_mirror
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryMirrorService/DeleteRegistryMirror",
+        delete_registry_mirror
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryMirrorService/PlanSyncRegistryMirror",
+        plan_sync_registry_mirror
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryMirrorService/SyncRegistryMirror",
+        sync_registry_mirror
+    );
     // ProjectService
+    r = rpc_route!(r, "/aos.hub.v1.ProjectService/ListProjects", list_projects);
+    r = rpc_route!(r, "/aos.hub.v1.ProjectService/GetProject", get_project);
     r = rpc_route!(
         r,
-        "/aos.registry.v1.ProjectService/CreateProject",
-        create_project
+        "/aos.hub.v1.ProjectService/PlanCreateProject",
+        plan_create_project
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.ProjectService/ListProjects",
-        list_projects
-    );
-    // StorageService
-    r = rpc_route!(
-        r,
-        "/aos.registry.v1.StorageService/CreateBinding",
-        create_binding
+        "/aos.hub.v1.ProjectService/CreateProject",
+        apply_create_project
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.StorageService/ListBindings",
-        list_bindings
+        "/aos.hub.v1.ProjectService/PlanDeleteProject",
+        plan_delete_project
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ProjectService/DeleteProject",
+        apply_delete_project
+    );
+    // StorageBindingService — final topology identity/spec lifecycle.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/ListStorageBindings",
+        list_storage_bindings_v1
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/GetStorageBinding",
+        get_storage_binding_v1
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/PlanCreateStorageBinding",
+        plan_create_storage_binding
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/CreateStorageBinding",
+        apply_create_storage_binding
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/PlanDeleteStorageBinding",
+        plan_delete_storage_binding
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/DeleteStorageBinding",
+        apply_delete_storage_binding
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/PlanSetStorageBindingCredential",
+        plan_set_storage_binding_credential
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/SetStorageBindingCredential",
+        apply_set_storage_binding_credential
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/PlanRotateStorageBindingCredential",
+        plan_rotate_storage_binding_credential
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/RotateStorageBindingCredential",
+        apply_rotate_storage_binding_credential
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/PlanValidateStorageBindingCredential",
+        plan_validate_storage_binding_credential
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/ValidateStorageBindingCredential",
+        validate_storage_binding_credential
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/PlanGrantStorageBindingScope",
+        plan_grant_storage_binding_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/GrantStorageBindingScope",
+        apply_grant_storage_binding_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/PlanRevokeStorageBindingScope",
+        plan_revoke_storage_binding_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/RevokeStorageBindingScope",
+        apply_revoke_storage_binding_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/ListStorageBindingWriteRevisions",
+        list_storage_binding_write_revisions
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/GetStorageBindingWriteRevision",
+        get_storage_binding_write_revision
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/GetInstanceDefaultStorageBinding",
+        get_instance_default_storage_binding
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/GetInstanceTopologyDefaults",
+        get_instance_topology_defaults
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/PlanSetInstanceTopologyDefaults",
+        plan_set_instance_topology_defaults
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/SetInstanceTopologyDefaults",
+        apply_set_instance_topology_defaults
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/GetOrganizationTopologyDefaults",
+        get_organization_topology_defaults
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/PlanSetOrganizationTopologyDefaults",
+        plan_set_organization_topology_defaults
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingService/SetOrganizationTopologyDefaults",
+        apply_set_organization_topology_defaults
+    );
+    // DomainService — immutable hostname identity and explicit desired/observed posture.
+    r = rpc_route!(r, "/aos.hub.v1.DomainService/ListDomains", list_domains);
+    r = rpc_route!(r, "/aos.hub.v1.DomainService/GetDomain", get_domain);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DomainService/PlanCreateDomain",
+        plan_create_domain
+    );
+    r = rpc_route!(r, "/aos.hub.v1.DomainService/CreateDomain", create_domain);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DomainService/PlanConfigureDomainDns",
+        plan_configure_domain_dns
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DomainService/ConfigureDomainDns",
+        configure_domain_dns
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DomainService/PlanConfigureDomainCertificate",
+        plan_configure_domain_certificate
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DomainService/ConfigureDomainCertificate",
+        configure_domain_certificate
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DomainService/PlanVerifyDomain",
+        plan_verify_domain
+    );
+    r = rpc_route!(r, "/aos.hub.v1.DomainService/VerifyDomain", verify_domain);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DomainService/PlanDeleteDomain",
+        plan_delete_domain
+    );
+    r = rpc_route!(r, "/aos.hub.v1.DomainService/DeleteDomain", delete_domain);
+    // NetworkBoundaryService — immutable identity, revision, and controller views.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/ListNetworkBoundaries",
+        list_network_boundaries
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/GetNetworkBoundary",
+        get_network_boundary
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/PlanCreateNetworkBoundary",
+        plan_create_network_boundary
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/CreateNetworkBoundary",
+        create_network_boundary
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/ListNetworkBoundaryRevisions",
+        list_network_boundary_revisions
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/GetNetworkBoundaryRevision",
+        get_network_boundary_revision
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/PlanReviseNetworkBoundary",
+        plan_revise_network_boundary
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/ReviseNetworkBoundary",
+        revise_network_boundary
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/PlanActivateNetworkBoundaryRevision",
+        plan_activate_network_boundary_revision
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/ActivateNetworkBoundaryRevision",
+        activate_network_boundary_revision
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/PlanRetireNetworkBoundaryRevision",
+        plan_retire_network_boundary_revision
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/RetireNetworkBoundaryRevision",
+        retire_network_boundary_revision
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/PlanGrantNetworkBoundaryScope",
+        plan_grant_network_boundary_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/GrantNetworkBoundaryScope",
+        apply_grant_network_boundary_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/PlanRevokeNetworkBoundaryScope",
+        plan_revoke_network_boundary_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/RevokeNetworkBoundaryScope",
+        apply_revoke_network_boundary_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/PlanDeleteNetworkBoundary",
+        plan_delete_network_boundary
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryService/DeleteNetworkBoundary",
+        delete_network_boundary
+    );
+    // DeliveryService — endpoint identity and controller-observation reads.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/ListDeliveryEndpoints",
+        list_delivery_endpoints
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/GetDeliveryEndpoint",
+        get_delivery_endpoint
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanCreateDeliveryEndpoint",
+        plan_create_delivery_endpoint
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/CreateDeliveryEndpoint",
+        apply_create_delivery_endpoint
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/ListDeliveryEndpointGenerations",
+        list_delivery_endpoint_generations
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/GetDeliveryEndpointGeneration",
+        get_delivery_endpoint_generation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanStageDeliveryEndpointGeneration",
+        plan_stage_delivery_endpoint_generation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/StageDeliveryEndpointGeneration",
+        stage_delivery_endpoint_generation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanActivateDeliveryEndpointGeneration",
+        plan_activate_delivery_endpoint_generation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/ActivateDeliveryEndpointGeneration",
+        activate_delivery_endpoint_generation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanGrantDeliveryEndpointScope",
+        plan_grant_delivery_endpoint_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/GrantDeliveryEndpointScope",
+        apply_grant_delivery_endpoint_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanRevokeDeliveryEndpointScope",
+        plan_revoke_delivery_endpoint_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/RevokeDeliveryEndpointScope",
+        apply_revoke_delivery_endpoint_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanDeleteDeliveryEndpoint",
+        plan_delete_delivery_endpoint
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/DeleteDeliveryEndpoint",
+        delete_delivery_endpoint
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/ListStorageGateways",
+        list_storage_gateways
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/GetStorageGateway",
+        get_storage_gateway
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanCreateStorageGateway",
+        plan_create_storage_gateway
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/CreateStorageGateway",
+        create_storage_gateway
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanUpdateStorageGateway",
+        plan_update_storage_gateway
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/UpdateStorageGateway",
+        update_storage_gateway
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanGrantStorageGatewayScope",
+        plan_grant_storage_gateway_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/GrantStorageGatewayScope",
+        grant_storage_gateway_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanRevokeStorageGatewayScope",
+        plan_revoke_storage_gateway_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/RevokeStorageGatewayScope",
+        revoke_storage_gateway_scope
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PreviewGatewayRoutes",
+        preview_gateway_routes
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanEnableStorageGateway",
+        plan_enable_storage_gateway
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/EnableStorageGateway",
+        enable_storage_gateway
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanDisableStorageGateway",
+        plan_disable_storage_gateway
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/DisableStorageGateway",
+        disable_storage_gateway
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanDeleteStorageGateway",
+        plan_delete_storage_gateway
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/DeleteStorageGateway",
+        delete_storage_gateway
+    );
+    // RouteService — explicit immutable route identities and plan/apply mutations.
+    r = rpc_route!(r, "/aos.hub.v1.RouteService/ListRoutes", list_routes);
+    r = rpc_route!(r, "/aos.hub.v1.RouteService/GetRoute", get_route);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RouteService/PlanCreateRoute",
+        plan_create_route
+    );
+    r = rpc_route!(r, "/aos.hub.v1.RouteService/CreateRoute", create_route);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RouteService/PlanUpdateRoute",
+        plan_update_route
+    );
+    r = rpc_route!(r, "/aos.hub.v1.RouteService/UpdateRoute", update_route);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RouteService/PlanReplaceRoute",
+        plan_replace_route
+    );
+    r = rpc_route!(r, "/aos.hub.v1.RouteService/ReplaceRoute", replace_route);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RouteService/PlanEnableRoute",
+        plan_enable_route
+    );
+    r = rpc_route!(r, "/aos.hub.v1.RouteService/EnableRoute", enable_route);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RouteService/PlanDisableRoute",
+        plan_disable_route
+    );
+    r = rpc_route!(r, "/aos.hub.v1.RouteService/DisableRoute", disable_route);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RouteService/PlanDeleteRoute",
+        plan_delete_route
+    );
+    r = rpc_route!(r, "/aos.hub.v1.RouteService/DeleteRoute", delete_route);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RouteService/PlanSetCanonicalRoute",
+        plan_set_canonical_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RouteService/SetCanonicalRoute",
+        set_canonical_route
+    );
+    r = rpc_route!(r, "/aos.hub.v1.RouteService/ExplainRoute", explain_route);
+    // TopologyService — typed registry/cache placement inventory.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/GetSurfaceTopology",
+        get_surface_topology
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/ExplainSurfaceRequest",
+        explain_surface_request
+    );
+    r = r.route(
+        LIST_PLACEMENTS_PATH,
+        post(
+            |State(state): State<SharedState>, headers: HeaderMap, body: Bytes| {
+                let svc = from_state(state);
+                send_bridge(unary(svc, headers, body, |svc, auth, req| async move {
+                    svc.list_placements(auth.as_deref(), req).await
+                }))
+            },
+        ),
+    );
+    r = r.route(
+        GET_PLACEMENT_PATH,
+        post(
+            |State(state): State<SharedState>, headers: HeaderMap, body: Bytes| {
+                let svc = from_state(state);
+                send_bridge(unary(svc, headers, body, |svc, auth, req| async move {
+                    svc.get_placement(auth.as_deref(), req).await
+                }))
+            },
+        ),
+    );
+    r = rpc_route!(r, PLAN_CREATE_PLACEMENT_PATH, plan_create_placement);
+    r = rpc_route!(r, CREATE_PLACEMENT_PATH, apply_create_placement);
+    r = rpc_route!(r, PLAN_UPDATE_PLACEMENT_PATH, plan_update_placement);
+    r = rpc_route!(r, UPDATE_PLACEMENT_PATH, apply_update_placement);
+    r = rpc_route!(r, GET_WRITE_AUTHORITY_PATH, get_write_authority);
+    r = rpc_route!(r, PLAN_PROMOTE_PLACEMENT_PATH, plan_promote_placement);
+    r = rpc_route!(r, PROMOTE_PLACEMENT_PATH, promote_placement);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/PlanCancelPlacementPromotion",
+        plan_cancel_placement_promotion
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/CancelPlacementPromotion",
+        cancel_placement_promotion
+    );
+    r = rpc_route!(
+        r,
+        PLAN_REMOVE_WRITE_AUTHORITY_PATH,
+        plan_remove_write_authority
+    );
+    r = rpc_route!(r, REMOVE_WRITE_AUTHORITY_PATH, remove_write_authority);
+    r = rpc_route!(r, PLAN_DRAIN_PLACEMENT_PATH, plan_drain_placement);
+    r = rpc_route!(r, DRAIN_PLACEMENT_PATH, drain_placement);
+    r = rpc_route!(
+        r,
+        PLAN_CANCEL_PLACEMENT_DRAIN_PATH,
+        plan_cancel_placement_drain
+    );
+    r = rpc_route!(r, CANCEL_PLACEMENT_DRAIN_PATH, cancel_placement_drain);
+    r = rpc_route!(r, PLAN_DELETE_PLACEMENT_PATH, plan_delete_placement);
+    r = rpc_route!(r, DELETE_PLACEMENT_PATH, apply_delete_placement);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/PlanScanPlacement",
+        plan_scan_placement
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/ScanPlacement",
+        scan_placement
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/PlanReplicatePlacement",
+        plan_replicate_placement
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/ReplicatePlacement",
+        replicate_placement
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/PlanRepairPlacement",
+        plan_repair_placement
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/RepairPlacement",
+        repair_placement
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/ListObjectPresence",
+        list_object_presence
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/ListPlacementPolicies",
+        list_placement_policies
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/GetPlacementPolicy",
+        get_placement_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/ListPlacementPolicyRevisions",
+        list_placement_policy_revisions
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/GetPlacementPolicyRevision",
+        get_placement_policy_revision
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/PlanCreatePlacementPolicy",
+        plan_create_placement_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/CreatePlacementPolicy",
+        create_placement_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/PlanRevisePlacementPolicy",
+        plan_revise_placement_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/RevisePlacementPolicy",
+        revise_placement_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/TestPlacementPolicyRevision",
+        test_placement_policy_revision
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/ListPlacementEquivalences",
+        list_placement_equivalences
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/PlanConfirmPlacementEquivalence",
+        plan_confirm_placement_equivalence
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/ConfirmPlacementEquivalence",
+        confirm_placement_equivalence
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/PlanDeletePlacementEquivalence",
+        plan_delete_placement_equivalence
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.TopologyService/DeletePlacementEquivalence",
+        delete_placement_equivalence
     );
     // PackageService
-    r = rpc_route!(
-        r,
-        "/aos.registry.v1.PackageService/ListPackages",
-        list_packages
-    );
-    r = rpc_route!(r, "/aos.registry.v1.PackageService/GetPackage", get_package);
+    r = rpc_route!(r, "/aos.hub.v1.PackageService/ListPackages", list_packages);
+    r = rpc_route!(r, "/aos.hub.v1.PackageService/GetPackage", get_package);
     // ChannelService
-    r = rpc_route!(
-        r,
-        "/aos.registry.v1.ChannelService/ListChannels",
-        list_channels
-    );
-    r = rpc_route!(r, "/aos.registry.v1.ChannelService/GetChannel", get_channel);
+    r = rpc_route!(r, "/aos.hub.v1.ChannelService/ListChannels", list_channels);
+    r = rpc_route!(r, "/aos.hub.v1.ChannelService/GetChannel", get_channel);
+    // ImageService — signed catalog discovery and immutable disk resolution.
+    r = rpc_route!(r, "/aos.hub.v1.ImageService/ListImages", list_images);
+    r = rpc_route!(r, "/aos.hub.v1.ImageService/GetImage", get_image);
+    r = rpc_route!(r, "/aos.hub.v1.ImageService/ResolveImage", resolve_image);
     // AuditService
-    r = rpc_route!(r, "/aos.registry.v1.AuditService/ListAudit", list_audit);
+    r = rpc_route!(r, "/aos.hub.v1.AuditService/ListAudit", list_audit);
     // InstanceService
     r = rpc_route!(
         r,
-        "/aos.registry.v1.InstanceService/GetInstanceSettings",
+        "/aos.hub.v1.InstanceService/GetInstanceSettings",
         get_instance_settings
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.InstanceService/UpdateInstanceSettings",
-        update_instance_settings
+        "/aos.hub.v1.InstanceService/PlanSetInstanceSettings",
+        plan_set_instance_settings
     );
-    // ConfigService
     r = rpc_route!(
         r,
-        "/aos.registry.v1.ConfigService/ListChangesets",
+        "/aos.hub.v1.InstanceService/SetInstanceSettings",
+        apply_set_instance_settings
+    );
+    // RegistryConfigurationService
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryConfigurationService/ListChangesets",
         list_changesets
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.ConfigService/GetChangeset",
+        "/aos.hub.v1.RegistryConfigurationService/GetChangeset",
         get_changeset
     );
-    r = rpc_route!(
-        r,
-        "/aos.registry.v1.ConfigService/RevertChangeset",
-        revert_changeset
-    );
-    // IamService — service-account / grant / token management (the machine API
+    // IdentityService — service-account / grant / token management (the machine API
     // behind the console's identity settings; RFC-0004 ch.14).
     r = rpc_route!(
         r,
-        "/aos.registry.v1.IamService/CreateServiceAccount",
-        create_service_account
+        "/aos.hub.v1.IdentityService/PlanCreateAutomationPrincipal",
+        plan_create_automation_principal
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.IamService/GrantMembership",
-        grant_membership
+        "/aos.hub.v1.IdentityService/CreateAutomationPrincipal",
+        apply_create_automation_principal
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.IamService/RevokeMembership",
-        revoke_membership
+        "/aos.hub.v1.IdentityService/GetMembership",
+        get_membership
     );
-    r = rpc_route!(r, "/aos.registry.v1.IamService/MintToken", mint_token);
-    r = rpc_route!(r, "/aos.registry.v1.IamService/RevokeToken", revoke_token);
-    r = rpc_route!(r, "/aos.registry.v1.IamService/ListTokens", list_tokens);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanSetMembership",
+        plan_set_membership
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/SetMembership",
+        apply_set_membership
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanIssueRegistryToken",
+        plan_issue_registry_token
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/IssueRegistryToken",
+        apply_issue_registry_token
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanRetireRegistryToken",
+        plan_retire_registry_token
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/RetireRegistryToken",
+        apply_retire_registry_token
+    );
+    r = rpc_route!(r, "/aos.hub.v1.IdentityService/ListTokens", list_tokens);
     // WebhookService
+    r = rpc_route!(r, "/aos.hub.v1.WebhookService/ListWebhooks", list_webhooks);
     r = rpc_route!(
         r,
-        "/aos.registry.v1.WebhookService/CreateWebhook",
-        create_webhook
+        "/aos.hub.v1.WebhookService/PlanCreateWebhook",
+        plan_create_webhook
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.WebhookService/ListWebhooks",
-        list_webhooks
+        "/aos.hub.v1.WebhookService/CreateWebhook",
+        apply_create_webhook
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.WebhookService/DeleteWebhook",
-        delete_webhook
+        "/aos.hub.v1.WebhookService/PlanDeleteWebhook",
+        plan_delete_webhook
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.WebhookService/DeleteWebhook",
+        apply_delete_webhook
     );
     // PublishService
     r = rpc_route!(
         r,
-        "/aos.registry.v1.PublishService/MintUploadCredentials",
-        mint_upload_credentials
+        "/aos.hub.v1.PublishService/BeginRegistryPublication",
+        begin_registry_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/GetRegistryPublication",
+        get_registry_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/CommitRegistryPublication",
+        commit_registry_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/AbortRegistryPublication",
+        abort_registry_publication
+    );
+    r = r.route(
+        "/aos.hub.v1.PublishService/UploadObject/{publication_id}/{object_id}",
+        put(
+            |State(state): State<SharedState>,
+             Path((publication_id, object_id)): Path<(String, i64)>,
+             headers: HeaderMap,
+             request: Request| {
+                let svc = from_state(state);
+                send_bridge(async move {
+                    match svc
+                        .upload_registry_publication_object(
+                            auth_header(&headers).as_deref(),
+                            &publication_id,
+                            object_id,
+                            request.into_body(),
+                        )
+                        .await
+                    {
+                        Ok(()) => StatusCode::CREATED.into_response(),
+                        Err(error) => error_response(&error),
+                    }
+                })
+            },
+        ),
     );
     // GitService
-    r = rpc_route!(r, "/aos.registry.v1.GitService/GitLog", git_log);
-    r = rpc_route!(r, "/aos.registry.v1.GitService/GitDiff", git_diff);
+    r = rpc_route!(r, "/aos.hub.v1.GitService/GitLog", git_log);
+    r = rpc_route!(r, "/aos.hub.v1.GitService/GitDiff", git_diff);
     r = rpc_route!(
         r,
-        "/aos.registry.v1.GitService/ListChangeRequests",
+        "/aos.hub.v1.GitService/ListChangeRequests",
         list_change_requests
     );
-    // CacheService (RFC-0004 "11-caches")
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/CreateCache", create_cache);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/GetCache", get_cache);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/ListCaches", list_caches);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/UpdateCache", update_cache);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/DeleteCache", delete_cache);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/LinkCache", link_cache);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/UnlinkCache", unlink_cache);
+    // BinaryCacheService
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/ListCacheLinks",
-        list_cache_links
+        "/aos.hub.v1.BinaryCacheService/ListBinaryCaches",
+        list_binary_caches
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/SetCacheGcPolicy",
-        set_cache_gc_policy
+        "/aos.hub.v1.BinaryCacheService/GetBinaryCache",
+        get_binary_cache
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/GetCacheGcPolicy",
+        "/aos.hub.v1.BinaryCacheService/PlanCreateBinaryCache",
+        plan_create_binary_cache
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/CreateBinaryCache",
+        create_binary_cache
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/PlanUpdateBinaryCache",
+        plan_update_binary_cache
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/UpdateBinaryCache",
+        update_binary_cache
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/PlanDeleteBinaryCache",
+        plan_delete_binary_cache
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/DeleteBinaryCache",
+        delete_binary_cache
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/GetCacheGcPolicy",
         get_cache_gc_policy
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/PinCachePath",
-        pin_cache_path
+        "/aos.hub.v1.BinaryCacheService/PlanSetCacheGcPolicy",
+        plan_set_cache_gc_policy
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/UnpinCachePath",
-        unpin_cache_path
+        "/aos.hub.v1.BinaryCacheService/SetCacheGcPolicy",
+        set_cache_gc_policy
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/ListCacheRoots",
-        list_cache_roots
+        "/aos.hub.v1.BinaryCacheService/PlanRunCacheGc",
+        plan_run_cache_gc
     );
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/SearchCache", search_cache);
+    r = rpc_route!(r, "/aos.hub.v1.BinaryCacheService/RunCacheGc", run_cache_gc);
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/GetCacheObject",
+        "/aos.hub.v1.BinaryCacheService/PlanAcknowledgeCacheGcFirstSweep",
+        plan_acknowledge_cache_gc_first_sweep
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/AcknowledgeCacheGcFirstSweep",
+        acknowledge_cache_gc_first_sweep
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/GetCacheGcPlan",
+        get_cache_gc_plan
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/GetCacheGcRun",
+        get_cache_gc_run
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/ListCacheGcRuns",
+        list_cache_gc_runs
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/GetCacheGcDeletionJob",
+        get_cache_gc_deletion_job
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/ListCacheGcDeletionJobs",
+        list_cache_gc_deletion_jobs
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/PlanRetryCacheGcDeletionJob",
+        plan_retry_cache_gc_deletion_job
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/RetryCacheGcDeletionJob",
+        retry_cache_gc_deletion_job
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/PlanAbandonCacheGcDeletionJob",
+        plan_abandon_cache_gc_deletion_job
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/AbandonCacheGcDeletionJob",
+        abandon_cache_gc_deletion_job
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/ListRootReasons",
+        list_root_reasons
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/GetRetentionRoot",
+        get_retention_root
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/ListRetentionRoots",
+        list_retention_roots
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/PlanCreateManualRetentionRoot",
+        plan_create_manual_retention_root
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/CreateManualRetentionRoot",
+        create_manual_retention_root
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/PlanRenewRetentionLease",
+        plan_renew_retention_lease
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/RenewRetentionLease",
+        renew_retention_lease
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/PlanRevokeRetentionLease",
+        plan_revoke_retention_lease
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/RevokeRetentionLease",
+        revoke_retention_lease
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/PlanDeleteManualRetentionRoot",
+        plan_delete_manual_retention_root
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/DeleteManualRetentionRoot",
+        delete_manual_retention_root
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/PlanRefreshAllRetention",
+        plan_refresh_all_retention
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/RefreshAllRetention",
+        refresh_all_retention
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/PlanRunPlacementEviction",
+        plan_run_placement_eviction
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/RunPlacementEviction",
+        run_placement_eviction
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/SearchCache",
+        search_cache
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/GetCacheObject",
         get_cache_object
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/ListCacheGcRuns",
-        list_cache_gc_runs
-    );
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/RunCacheGc", run_cache_gc);
-    r = rpc_route!(
-        r,
-        "/aos.registry.v1.CacheService/CacheClosure",
+        "/aos.hub.v1.BinaryCacheService/CacheClosure",
         cache_closure
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/ChangeCacheStorage",
-        change_cache_storage
+        "/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
+        create_cache_object_uploads
+    );
+    r = r.route(
+        "/aos.hub.v1.BinaryCacheService/UploadObject/{cache_id}/{ticket_id}/{encoded_path}",
+        put(
+            |State(state): State<SharedState>,
+             Path((cache_id, ticket_id, encoded_path)): Path<(String, String, String)>,
+             headers: HeaderMap,
+             body: Bytes| {
+                let svc = from_state(state);
+                send_bridge(async move {
+                    match svc
+                        .upload_cache_object(
+                            auth_header(&headers).as_deref(),
+                            &cache_id,
+                            &ticket_id,
+                            &encoded_path,
+                            &body,
+                        )
+                        .await
+                    {
+                        Ok(()) => StatusCode::CREATED.into_response(),
+                        Err(error) => error_response(&error),
+                    }
+                })
+            },
+        ),
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/MintCacheUploadCredentials",
-        mint_cache_upload_credentials
+        "/aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
+        begin_cache_multipart_upload
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/RegisterCacheNarinfos",
-        register_cache_narinfos
+        "/aos.hub.v1.BinaryCacheService/CompleteCacheMultipartUpload",
+        complete_cache_multipart_upload
     );
-    // The machine-surface facade: a catch-all `GET` (axum routes `HEAD` to it,
-    // eliding the body) for the registry machine path, registered LAST. The
-    // static `/aos.registry.v1.{Service}/{Method}` RPC routes above win over
-    // this `/{slug}/{*path}` wildcard by axum's static-over-dynamic precedence,
-    // so the facade only matches a registry URL. Omitted by [`rpc_router`] so a
-    // host with its own `/{slug}/{*path}` (the native hub) does not double-mount
-    // it.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/AbortCacheMultipartUpload",
+        abort_cache_multipart_upload
+    );
+    r = r.route(
+        "/aos.hub.v1.BinaryCacheService/UploadPart/{upload_id}/{part_number}",
+        put(
+            |State(state): State<SharedState>,
+             Path((upload_id, part_number)): Path<(String, u32)>,
+             headers: HeaderMap,
+             body: Bytes| {
+                let svc = from_state(state);
+                send_bridge(async move {
+                    match svc
+                        .upload_cache_multipart_part(
+                            auth_header(&headers).as_deref(),
+                            &upload_id,
+                            part_number,
+                            &body,
+                        )
+                        .await
+                    {
+                        Ok(part) => Json(part).into_response(),
+                        Err(error) => error_response(&error),
+                    }
+                })
+            },
+        ),
+    );
+    // CacheIntegrationService — independent publication, retention, and population facts.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/ListRegistryCacheIntegrations",
+        list_registry_cache_integrations
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/ListCacheRegistryIntegrations",
+        list_cache_registry_integrations
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/GetCacheRegistryIntegration",
+        get_cache_registry_integration
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/PreviewCacheIntegration",
+        preview_cache_integration
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/GetConsumerCacheStack",
+        get_consumer_cache_stack
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/ValidateConsumerCacheStack",
+        validate_consumer_cache_stack
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/PlanCreateConsumerCacheChangeset",
+        plan_create_consumer_cache_changeset
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/CreateConsumerCacheChangeset",
+        create_consumer_cache_changeset
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/GetRetentionSubscription",
+        get_retention_subscription
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/ListRetentionSubscriptions",
+        list_retention_subscriptions
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/PlanSetRetentionSubscription",
+        plan_set_retention_subscription
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/SetRetentionSubscription",
+        set_retention_subscription
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/PlanDeleteRetentionSubscription",
+        plan_delete_retention_subscription
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/DeleteRetentionSubscription",
+        delete_retention_subscription
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/PlanRefreshRetentionSubscription",
+        plan_refresh_retention_subscription
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/RefreshRetentionSubscription",
+        refresh_retention_subscription
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/ExplainRetention",
+        explain_retention
+    );
+    // CacheIntegrationService population and coverage
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/GetPopulationTarget",
+        get_population_target
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/ListPopulationTargets",
+        list_population_targets
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/PlanSetPopulationTarget",
+        plan_set_population_target
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/SetPopulationTarget",
+        set_population_target
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/PlanDeletePopulationTarget",
+        plan_delete_population_target
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/DeletePopulationTarget",
+        delete_population_target
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/PlanRunPopulation",
+        plan_run_population
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/RunPopulation",
+        run_population
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/GetCoverage",
+        get_coverage
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/PlanRunCoverageValidation",
+        plan_run_coverage_validation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/RunCoverageValidation",
+        run_coverage_validation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/PlanRunCoverageRepair",
+        plan_run_coverage_repair
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.CacheIntegrationService/RunCoverageRepair",
+        run_coverage_repair
+    );
+    // Controller-only observation services. Every handler independently
+    // requires a service-account token and an exact lease/generation/version fence.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageBindingControllerService/ReportStorageBindingWriteRevision",
+        report_storage_binding_write_revision
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryControllerService/CompleteNetworkBoundaryRevisionProbe",
+        complete_network_boundary_revision_probe
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.NetworkBoundaryControllerService/ReportNetworkBoundaryRevision",
+        report_network_boundary_revision
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryControllerService/CompleteDeliveryEndpointProbe",
+        complete_delivery_endpoint_probe
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryControllerService/ReportDeliveryEndpoint",
+        report_delivery_endpoint
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryControllerService/ReportStorageGateway",
+        report_storage_gateway
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RouteControllerService/CompleteRouteProbe",
+        complete_route_probe
+    );
+    r = rpc_route!(r, REPORT_WRITE_AUTHORITY_PATH, report_write_authority);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheUploadControllerService/ReportCacheUpload",
+        report_cache_upload
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheUploadControllerService/ReportCacheNarinfos",
+        report_cache_narinfos
+    );
+
+    // OperationService
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OperationService/GetOperation",
+        get_operation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OperationService/ListOperations",
+        list_operations
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OperationService/WatchOperation",
+        watch_operation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OperationService/CancelOperation",
+        cancel_operation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.OperationService/RetryOperation",
+        retry_operation
+    );
+    // Browse and static control-plane routes are mounted only when requested.
+    // Machine bytes are never selected by a slug wildcard; the outer typed
+    // delivery dispatcher resolves an exact endpoint and route before
+    // rewriting to the private delivery handler.
     if mount_browse {
         // First-party static assets (`/_assets/*`) the browse pages + console
         // link. Served from the shared router so the Worker exposes them too
-        // (otherwise its CSS/JS/fonts 404). Static-prefixed, so they outrank the
-        // facade wildcard.
+        // (otherwise its CSS/JS/fonts 404).
         use crate::web::assets;
         r = r
             .route("/_assets/style.css", get(assets::stylesheet))
@@ -1495,8 +2901,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
             .route("/_assets/jetbrains-mono-bold.woff2", get(assets::font_bold))
             .route("/_assets/OFL.txt", get(assets::font_license));
         // Crawler-control and LLM-summary documents, served from the shared
-        // router so both shells expose identical output. Static-prefixed, so
-        // they outrank the facade wildcard. The per-registry forms gate on
+        // router so both shells expose identical output. The per-registry forms gate on
         // public visibility inside the service (a non-public registry's document
         // is a `404`). Each is `text/plain` with a one-hour cache.
         r = r
@@ -1555,10 +2960,9 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
                 ),
             );
         // The no-JS browse surface: the hub home, the `/{slug}/-/…` pages, and
-        // the `/{slug}/-/api/…` JSON read API. These static-prefixed routes win
-        // over the facade wildcard below by axum's static-over-dynamic
-        // precedence, so the reserved `/-/` namespace can never be shadowed by a
-        // machine path. The bare `/{slug}/-/` registry-home route is registered
+        // the `/{slug}/-/api/…` JSON read API. The reserved `/-/` namespace is
+        // control-plane-only and cannot be shadowed by a delivery route. The
+        // bare `/{slug}/-/` registry-home route is registered
         // alongside the `/{slug}/-/{*rest}` wildcard because axum does not match
         // an empty `{*rest}` capture.
         r = r.route(
@@ -1580,6 +2984,23 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
             get(|Path(slug): Path<String>| {
                 send_bridge(async move { browse_response(Rendered::Redirect(format!("/{slug}/"))) })
             }),
+        );
+        r = r.route(
+            "/{org}/{registry}",
+            get(
+                |State(state): State<SharedState>,
+                 Path((org, registry)): Path<(String, String)>| {
+                    let svc = from_state(state);
+                    send_bridge(async move {
+                        let slug = format!("{org}/{registry}");
+                        match svc.db.registry_by_slug(&slug).await {
+                            Ok(Some(_)) => browse_response(Rendered::Redirect(format!("/{slug}/"))),
+                            Ok(None) => StatusCode::NOT_FOUND.into_response(),
+                            Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                        }
+                    })
+                },
+            ),
         );
         // The registry home is served both at `/{slug}/` (the canonical,
         // slash-terminated root the rich pages link to) and at the marker form
@@ -1618,85 +3039,93 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
                 },
             ),
         );
-    }
-    if mount_facade {
-        // The machine-surface facade: a catch-all `GET` (axum routes `HEAD` to
-        // it, eliding the body) for the registry machine path, registered LAST.
-        // The static `/aos.registry.v1.{Service}/{Method}` RPC routes and the
-        // browse routes above win over this `/{slug}/{*path}` wildcard by axum's
-        // static-over-dynamic precedence, so the facade only matches a machine
-        // URL. Omitted by [`rpc_router`]/[`rpc_browse_router`] so a host with its
-        // own `/{slug}/{*path}` (the native hub) does not double-mount it.
+        let organization_registry_home =
+            |State(state): State<SharedState>,
+             headers: HeaderMap,
+             Path((org, registry)): Path<(String, String)>,
+             uri: axum::http::Uri| {
+                let svc = from_state(state);
+                send_bridge(browse_dispatch(
+                    svc,
+                    headers,
+                    format!("{org}/{registry}"),
+                    String::new(),
+                    uri.query().map(str::to_owned),
+                ))
+            };
+        r = r.route("/{org}/{registry}/", get(organization_registry_home));
         r = r.route(
-            "/{slug}/{*path}",
+            &format!("/{{org}}/{{registry}}/{BROWSE_MARKER}/"),
+            get(organization_registry_home),
+        );
+        r = r.route(
+            &format!("/{{org}}/{{registry}}/{BROWSE_MARKER}/{{*rest}}"),
             get(
                 |State(state): State<SharedState>,
                  headers: HeaderMap,
-                 Path((slug, path)): Path<(String, String)>,
+                 Path((org, registry, rest)): Path<(String, String, String)>,
                  uri: axum::http::Uri| {
                     let svc = from_state(state);
-                    let query = uri.query().map(str::to_owned);
-                    send_bridge(facade(svc, headers, slug, path, query))
-                },
-            )
-            // The authenticated surface-upload `PUT` shares the wildcard so an
-            // `apr origin upload` / `apm` publish lands directly on the registry
-            // URL (RFC-0004 "like magic"). The body extractor is last so axum
-            // buffers it only for the write method. The Worker mounts this whole
-            // router, so this is how it stores published artifacts; the native
-            // hub keeps its own richer `/{slug}/{*path}` handler instead (this
-            // facade route is omitted for it via `mount_facade = false`).
-            .put(
-                |State(state): State<SharedState>,
-                 headers: HeaderMap,
-                 Path((slug, path)): Path<(String, String)>,
-                 uri: axum::http::Uri,
-                 body: Bytes| {
-                    let svc = from_state(state);
-                    let query = uri.query().map(str::to_owned);
-                    send_bridge(facade_put(svc, headers, slug, path, query, body))
-                },
-            )
-            // Multipart upload over the same wildcard (S3-style query
-            // convention): `POST ?uploads` initiates, `POST ?uploadId` completes,
-            // `DELETE ?uploadId` aborts; the parts ride the `PUT` above. Each
-            // part is a small, sub-cap body, so they upload with bounded memory
-            // even for NARs far larger than the request-body limit.
-            .post(
-                |State(state): State<SharedState>,
-                 headers: HeaderMap,
-                 Path((slug, path)): Path<(String, String)>,
-                 uri: axum::http::Uri,
-                 body: Bytes| {
-                    let svc = from_state(state);
-                    let query = uri.query().map(str::to_owned);
-                    send_bridge(facade_post(svc, headers, slug, path, query, body))
-                },
-            )
-            .delete(
-                |State(state): State<SharedState>,
-                 headers: HeaderMap,
-                 Path((slug, path)): Path<(String, String)>,
-                 uri: axum::http::Uri| {
-                    let svc = from_state(state);
-                    let query = uri.query().map(str::to_owned);
-                    send_bridge(facade_delete(svc, headers, slug, path, query))
+                    send_bridge(browse_dispatch(
+                        svc,
+                        headers,
+                        format!("{org}/{registry}"),
+                        rest,
+                        uri.query().map(str::to_owned),
+                    ))
                 },
             ),
         );
-        // Raise axum's 2 MiB default body limit for the worker facade: a
-        // multipart *part* (the client chunks at the server-suggested 16 MiB)
-        // must not be rejected. Multipart bounds each request — and thus the
-        // buffered body — to one part, so this is a safety ceiling, not the
-        // steady state; NARs larger than it upload as several parts.
-        r = r.layer(axum::extract::DefaultBodyLimit::max(MAX_FACADE_BODY_BYTES));
+        // Project-nested registry slugs have arbitrary depth. Axum wildcard
+        // routes overlap the explicit one- and two-segment browse routes, so
+        // unmatched GETs are decoded here after those more-specific routes
+        // have had first refusal. Delivery middleware still handles machine
+        // paths before routing; this fallback owns only nested registry homes
+        // and the reserved `/-/` browse namespace.
+        r = r.fallback(
+            |State(state): State<SharedState>,
+             method: Method,
+             headers: HeaderMap,
+             uri: axum::http::Uri| {
+                let svc = from_state(state);
+                send_bridge(async move {
+                    if method != Method::GET {
+                        return StatusCode::NOT_FOUND.into_response();
+                    }
+                    let nested = uri.path().trim_start_matches('/');
+                    let marker = format!("/{BROWSE_MARKER}/");
+                    if let Some((slug, rest)) = nested.split_once(&marker) {
+                        if slug.is_empty() || !slug.contains('/') {
+                            return StatusCode::NOT_FOUND.into_response();
+                        }
+                        return browse_dispatch(
+                            svc,
+                            headers,
+                            slug.to_string(),
+                            rest.to_string(),
+                            uri.query().map(str::to_owned),
+                        )
+                        .await;
+                    }
+                    let Some(slug) = nested.strip_suffix('/').filter(|slug| slug.contains('/'))
+                    else {
+                        return StatusCode::NOT_FOUND.into_response();
+                    };
+                    browse_dispatch(
+                        svc,
+                        headers,
+                        slug.to_string(),
+                        String::new(),
+                        uri.query().map(str::to_owned),
+                    )
+                    .await
+                })
+            },
+        );
     }
-    // `POST /oauth2/token` provisioning-secret -> JWT exchange. The native hub
-    // mounts its own rate-limited fragment in `server.rs`; the Worker has none,
-    // so the shared worker entry ([`router`], the only builder with
-    // `mount_facade`) mounts it here. Gated on `mount_facade` so the native
-    // `rpc_browse_router` (`mount_facade = false`) never double-mounts it.
-    if mount_facade {
+    // The native shell mounts its rate-limited exchange separately; Worker
+    // uses this shared route.
+    if mount_oauth {
         r = r.route(
             "/oauth2/token",
             post(|State(state): State<SharedState>, headers: HeaderMap| {
@@ -1705,75 +3134,392 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
             }),
         );
     }
-    r.with_state(into_state(service))
+    // Apply the same unary request ceiling in both runtimes.
+    r.layer(axum::extract::DefaultBodyLimit::max(
+        CONNECT_REQUEST_BODY_LIMIT_BYTES,
+    ))
+    .with_state(into_state(service))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use aos_proto_types as pb;
 
-    /// Run [`resolve_prefix_with`] against a fixed set of known slugs.
-    async fn resolve(path: &str, slugs: &[&str]) -> Option<(String, String)> {
-        resolve_prefix_with(path, |candidate| {
-            let hit = slugs.contains(&candidate);
-            async move { hit }
-        })
-        .await
-    }
-
-    #[tokio::test]
-    async fn longest_prefix_resolves_nested_slug_with_tail() {
-        let slugs = ["andyl/demo", "andyl"];
+    #[test]
+    fn topology_paths_use_the_public_hub_namespace() {
         assert_eq!(
-            resolve("andyl/demo/nar/x", &slugs).await,
-            Some(("andyl/demo".to_string(), "nar/x".to_string()))
+            LIST_PLACEMENTS_PATH,
+            "/aos.hub.v1.TopologyService/ListPlacements"
         );
-    }
-
-    #[tokio::test]
-    async fn exact_match_resolves_to_empty_tail() {
-        let slugs = ["andyl/demo", "andyl"];
         assert_eq!(
-            resolve("andyl/demo", &slugs).await,
-            Some(("andyl/demo".to_string(), String::new()))
+            GET_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/GetPlacement"
         );
-    }
-
-    #[tokio::test]
-    async fn falls_back_to_shorter_slug_prefix() {
-        let slugs = ["andyl/demo", "andyl"];
         assert_eq!(
-            resolve("andyl/other", &slugs).await,
-            Some(("andyl".to_string(), "other".to_string()))
+            PLAN_CREATE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/PlanCreatePlacement"
         );
-    }
-
-    #[tokio::test]
-    async fn unknown_path_resolves_to_none() {
-        let slugs = ["andyl/demo", "andyl"];
-        assert_eq!(resolve("acme/infra/cdn", &slugs).await, None);
-    }
-
-    #[tokio::test]
-    async fn segment_boundary_is_respected() {
-        // `andyl/demo-staging` must not resolve to `andyl/demo`.
-        let slugs = ["andyl/demo", "andyl"];
         assert_eq!(
-            resolve("andyl/demo-staging", &slugs).await,
-            Some(("andyl".to_string(), "demo-staging".to_string()))
+            CREATE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/CreatePlacement"
+        );
+        assert_eq!(
+            PLAN_UPDATE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/PlanUpdatePlacement"
+        );
+        assert_eq!(
+            UPDATE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/UpdatePlacement"
+        );
+        assert_eq!(
+            GET_WRITE_AUTHORITY_PATH,
+            "/aos.hub.v1.TopologyService/GetWriteAuthority"
+        );
+        assert_eq!(
+            PLAN_PROMOTE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/PlanPromotePlacement"
+        );
+        assert_eq!(
+            PROMOTE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/PromotePlacement"
+        );
+        assert_eq!(
+            REPORT_WRITE_AUTHORITY_PATH,
+            "/aos.hub.v1.TopologyControllerService/ReportWriteAuthority"
+        );
+        assert_eq!(
+            PLAN_REMOVE_WRITE_AUTHORITY_PATH,
+            "/aos.hub.v1.TopologyService/PlanRemoveWriteAuthority"
+        );
+        assert_eq!(
+            REMOVE_WRITE_AUTHORITY_PATH,
+            "/aos.hub.v1.TopologyService/RemoveWriteAuthority"
+        );
+        assert_eq!(
+            PLAN_DRAIN_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/PlanDrainPlacement"
+        );
+        assert_eq!(
+            DRAIN_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/DrainPlacement"
+        );
+        assert_eq!(
+            PLAN_CANCEL_PLACEMENT_DRAIN_PATH,
+            "/aos.hub.v1.TopologyService/PlanCancelPlacementDrain"
+        );
+        assert_eq!(
+            CANCEL_PLACEMENT_DRAIN_PATH,
+            "/aos.hub.v1.TopologyService/CancelPlacementDrain"
+        );
+        assert_eq!(
+            PLAN_DELETE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/PlanDeletePlacement"
+        );
+        assert_eq!(
+            DELETE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/DeletePlacement"
         );
     }
 
     #[test]
-    fn browse_marker_split_mid_and_trailing() {
+    fn public_schema_has_no_pre_topology_binding_or_placement_contracts() {
+        let schema = include_str!("../../aos-proto/src/proto/aos/hub/v1/hub.proto");
+        for forbidden in [
+            "message Binding {",
+            "message CreateBindingRequest {",
+            "message ListBindingsRequest {",
+            "message CreatePlacementRequest {",
+            "message UpdatePlacementRequest {",
+            "message DeletePlacementRequest {",
+            "message DrainPlacementRequest {",
+            "message DrainPlacementResponse {",
+            "message PlacementMutationPlan {",
+            "rpc CreateBinding(",
+            "rpc ListBindings(",
+        ] {
+            assert!(
+                !schema.contains(forbidden),
+                "legacy public contract remains in descriptor source: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_descriptor_procedure_is_declared_by_the_shared_router() {
+        let router_source = include_str!("connect.rs");
+        let missing = pb::EXPECTED_CONNECT_PATHS
+            .iter()
+            .copied()
+            .filter(|path| !router_source.contains(&format!("\"{path}\"")))
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "Connect procedures missing from the shared native/Worker router: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn surface_ref_uses_canonical_camel_case_oneof_json() {
+        let request = pb::ListPlacementsRequest {
+            surface: Some(pb::SurfaceRef {
+                target: Some(pb::surface_ref::Target::RegistrySlug(
+                    "andyl/main".to_string(),
+                )),
+            }),
+            page_size: 25,
+            page_token: "next".to_string(),
+        };
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["surface"]["registrySlug"], "andyl/main");
+        assert_eq!(json["pageSize"], 25);
+        assert_eq!(json["pageToken"], "next");
+        assert!(json["surface"].get("target").is_none());
+        assert!(json["surface"].get("registry_slug").is_none());
+    }
+
+    #[test]
+    fn connect_unary_headers_are_required_and_strict() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            "application/json; charset=utf-8".parse().unwrap(),
+        );
+        headers.insert(CONNECT_PROTOCOL_VERSION_HEADER, "1".parse().unwrap());
+        assert!(validate_connect_headers(&headers).is_ok());
+
+        let mut missing_version = headers.clone();
+        missing_version.remove(CONNECT_PROTOCOL_VERSION_HEADER);
+        assert!(validate_connect_headers(&missing_version).is_err());
+
+        let mut wrong_version = headers.clone();
+        wrong_version.insert(CONNECT_PROTOCOL_VERSION_HEADER, "2".parse().unwrap());
+        assert!(validate_connect_headers(&wrong_version).is_err());
+
+        let mut duplicate_version = headers.clone();
+        duplicate_version.append(CONNECT_PROTOCOL_VERSION_HEADER, "1".parse().unwrap());
+        assert!(validate_connect_headers(&duplicate_version).is_err());
+
+        let mut wrong_content_type = headers;
+        wrong_content_type.insert(header::CONTENT_TYPE, "application/proto".parse().unwrap());
         assert_eq!(
-            split_browse_marker("andyl/demo/-/packages"),
-            Some(("andyl/demo".to_string(), "packages".to_string()))
+            validate_connect_headers(&wrong_content_type)
+                .expect_err("unsupported codec must fail")
+                .status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+
+        let mut compressed = wrong_content_type;
+        compressed.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        compressed.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+        assert_eq!(
+            validate_connect_headers(&compressed)
+                .expect_err("unsupported compression must fail")
+                .status(),
+            StatusCode::NOT_IMPLEMENTED
+        );
+    }
+
+    #[test]
+    fn raw_delivery_path_parser_rejects_ambiguous_ascii_encodings() {
+        for invalid in [
+            "/a%2fb", "/a%252fb", "/a%5cb", "/a%2eb", "/a%00b", "/a%", "/a%0g", "/a\\b", "/a//b",
+            "/a/../b", "/a/./b",
+        ] {
+            assert!(
+                canonical_request_path(invalid).is_err(),
+                "accepted {invalid}"
+            );
+        }
+        assert_eq!(canonical_request_path("/caf%C3%A9").as_deref(), Ok("/café"));
+        assert_eq!(canonical_request_path("/café").as_deref(), Ok("/café"));
+    }
+
+    #[test]
+    fn unconfigured_delivery_assertion_is_rejected_not_ignored() {
+        let request = Request::builder()
+            .method("GET")
+            .uri("https://cache.example/nar/abc")
+            .header(
+                crate::delivery_attestation::DELIVERY_ATTESTATION_HEADER,
+                "client-controlled-value",
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = apply_delivery_attestation(request, None, 100)
+            .expect_err("an assertion without a configured verifier must fail closed");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn attested_access_is_bound_to_exact_route_and_revision() {
+        let route = crate::db::InboundDeliveryRouteRecord {
+            id: "route-1".into(),
+            configuration_generation: 3,
+            configuration_digest:
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            base_path: "/cache".into(),
+            surface: crate::db::SurfaceTarget::BinaryCache(1),
+            target_slug: "cache".into(),
+            mode: "hub_proxy".into(),
+            access_policy_kind: "private_network".into(),
+            access_boundary_id: Some("boundary-1".into()),
+            access_boundary_revision: Some(7),
+            external_provider_kind: None,
+            external_provider_resource_id: None,
+            external_provider_revision: None,
+            placement_id: Some(1),
+            placement_policy_revision_id: None,
+            serves_git: false,
+            serves_cache: true,
+            serves_web: false,
+            ready: true,
+        };
+        let verified = crate::delivery_attestation::VerifiedDeliveryAttestation {
+            transport: DeliveryTransportEvidence {
+                scheme: "https".into(),
+                ingress_kind: "layer7".into(),
+                tls_identity: Some(crate::db::InboundEndpointHost::Domain(
+                    "cache.example".into(),
+                )),
+            },
+            access: DeliveryAccessEvidence {
+                boundary: Some(("boundary-1".into(), 7)),
+                external_provider: None,
+            },
+            route_id: "route-1".into(),
+            route_configuration_digest: route.configuration_digest.clone(),
+            nonce_digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            expires_at: 130,
+        };
+        assert!(attestation_matches_route(&verified, &route));
+        assert!(attested_access_matches_route(&verified.access, &route));
+
+        let mut stale = verified.clone();
+        stale.access.boundary = Some(("boundary-1".into(), 6));
+        assert!(!attested_access_matches_route(&stale.access, &route));
+        stale.access.boundary = Some(("boundary-2".into(), 7));
+        assert!(!attested_access_matches_route(&stale.access, &route));
+        stale.route_configuration_digest =
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into();
+        assert!(!attestation_matches_route(&stale, &route));
+    }
+
+    #[test]
+    fn authority_requires_adapter_evidence_and_rejects_host_disagreement() {
+        let no_evidence = Request::builder()
+            .uri("https://cache.example/nix-cache-info")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(matches!(request_endpoint(&no_evidence), Ok(None)));
+
+        let host = crate::db::InboundEndpointHost::Domain("cache.example".into());
+        let evidence = DeliveryTransportEvidence {
+            scheme: "https".into(),
+            ingress_kind: "hub".into(),
+            tls_identity: Some(host.clone()),
+        };
+        let exact = Request::builder()
+            .uri("https://cache.example/nix-cache-info")
+            .header(header::HOST, "cache.example:443")
+            .extension(evidence.clone())
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            request_endpoint(&exact),
+            Ok(Some((host, 443, "https".into(), "hub".into())))
+        );
+
+        let mismatch = Request::builder()
+            .uri("https://cache.example/nix-cache-info")
+            .header(header::HOST, "other.example")
+            .extension(evidence)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(request_endpoint(&mismatch).is_err());
+    }
+
+    #[test]
+    fn configured_control_authority_is_an_exact_origin() {
+        let expected = (
+            crate::db::InboundEndpointHost::Domain("hub.example".into()),
+            443,
+            "https".to_string(),
         );
         assert_eq!(
-            split_browse_marker("andyl/demo/-"),
-            Some(("andyl/demo".to_string(), String::new()))
+            configured_control_authority("https://hub.example"),
+            Ok(expected.clone())
         );
-        assert_eq!(split_browse_marker("andyl/demo/packages"), None);
+        assert_eq!(
+            configured_control_authority("https://hub.example:443/"),
+            Ok(expected)
+        );
+        assert_ne!(
+            configured_control_authority("http://hub.example"),
+            configured_control_authority("https://hub.example")
+        );
+        for invalid in [
+            "https://user@hub.example",
+            "https://hub.example/control",
+            "https://hub.example?forwarded=evil.example",
+            "https://hub.example./",
+        ] {
+            assert!(
+                configured_control_authority(invalid).is_err(),
+                "accepted {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_control_plane_paths_bypass_delivery_resolution() {
+        assert!(!is_reserved_control_path(DOMAIN_PROBE_PATH));
+        for path in [
+            "/",
+            "/healthz",
+            "/metrics",
+            "/oauth2/token",
+            "/aos.hub.v1.RouteService/ListRoutes",
+            "/-/org/acme/caches",
+            "/acme/main/-/settings/delivery-routes",
+            "/_assets/style.css",
+            "/robots.txt",
+            "/llms.txt",
+        ] {
+            assert!(is_reserved_control_path(path), "rejected {path}");
+        }
+        for serving_path in [
+            "/acme/main",
+            "/acme/main/",
+            "/objects/aa/bb",
+            "/nar/archive.nar.zst",
+            "/hash.narinfo",
+        ] {
+            assert!(
+                !is_reserved_control_path(serving_path),
+                "admitted legacy serving path {serving_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn capability_classifier_separates_registry_git_nix_and_web() {
+        let registry = crate::db::SurfaceTarget::Registry(1);
+        assert_eq!(
+            delivery_audience(registry, "objects/aa/bb"),
+            DeliveryAudience::Git
+        );
+        assert_eq!(
+            delivery_audience(registry, "abc.narinfo"),
+            DeliveryAudience::NixCache
+        );
+        assert_eq!(
+            delivery_audience(registry, "-/packages"),
+            DeliveryAudience::Web
+        );
+        assert_eq!(
+            delivery_audience(crate::db::SurfaceTarget::BinaryCache(2), "objects/aa"),
+            DeliveryAudience::Web
+        );
     }
 }

@@ -73,8 +73,7 @@ pub fn verify_signed_tag(
 ///
 /// `target_type` must be `commit` (release tag) or `tag` (channel
 /// partition). Like [`super::sshsig::sign_armored`], this exists for
-/// fixture construction and the future hosted-key path — production
-/// signing is client-side.
+/// fixture construction and provider-custodied retained signing operations.
 ///
 /// # Errors
 ///
