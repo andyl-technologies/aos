@@ -190,6 +190,30 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
     // extractors, so they stay free of the wasm bridge details.
     DeclaredRouter::new()
         .route(
+            "/oauth2/device_authorization",
+            post(
+                |State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
+                    send_bridge(handlers::device_authorization(from_state(s), h, f))
+                },
+            ),
+        )
+        .route(
+            "/oauth2/token",
+            post(
+                |State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
+                    send_bridge(handlers::oauth_token(from_state(s), h, f))
+                },
+            ),
+        )
+        .route(
+            "/oauth2/revoke",
+            post(
+                |State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
+                    send_bridge(handlers::oauth_revoke(from_state(s), h, f))
+                },
+            ),
+        )
+        .route(
             "/login",
             get(|State(s): State<SharedState>, r: RequestStart| {
                 send_bridge(handlers::login_form(from_state(s), r))

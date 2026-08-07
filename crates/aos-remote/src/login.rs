@@ -7,6 +7,9 @@
 //! ```text
 //! POST /oauth2/token
 //! Authorization: Bearer <provisioning-secret>
+//! Content-Type: application/x-www-form-urlencoded
+//!
+//! grant_type=urn:aos:params:oauth:grant-type:provisioning-token
 //!
 //! 200 OK
 //! { "access_token": "<jwt>", "token_type": "Bearer", "expires_in": 900 }
@@ -62,6 +65,10 @@ pub async fn exchange_token(base_url: &str, provisioning_secret: &str) -> Result
     let response = client
         .post(&url)
         .bearer_auth(provisioning_secret)
+        .form(&[(
+            "grant_type",
+            "urn:aos:params:oauth:grant-type:provisioning-token",
+        )])
         .send()
         .await
         .with_context(|| format!("contacting the hub at {url}"))?;

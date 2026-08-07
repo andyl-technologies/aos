@@ -1,4 +1,4 @@
-//! Provisioning-token secrets: generation and hashing.
+//! Access and refresh-token secret generation and hashing.
 //!
 //! A provisioning token is the long-lived machine credential at the bottom
 //! of the auth chain. Its plaintext secret is shown exactly once — at
@@ -23,6 +23,12 @@
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
+/// Idle lifetime of a CLI refresh credential.
+pub const REFRESH_TOKEN_IDLE_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// Absolute lifetime of a CLI refresh-token family.
+pub const REFRESH_TOKEN_ABSOLUTE_TTL_SECS: i64 = 90 * 24 * 60 * 60;
+
 /// Generates a fresh provisioning-token secret and its storage hash.
 ///
 /// Returns `(secret, hash)`: the `secret` is the `aos_`-prefixed plaintext
@@ -43,6 +49,19 @@ use sha2::{Digest, Sha256};
 pub fn generate_token() -> (String, String) {
     let random_bytes: [u8; 20] = rand::rng().random();
     let secret = format!("aos_{}", hex::encode(random_bytes));
+    let hash = sha256_hex(&secret);
+    (secret, hash)
+}
+
+/// Generates a fresh opaque refresh credential and its storage hash.
+///
+/// The `aosr_` prefix distinguishes a refresh credential from an ordinary
+/// scoped access-token secret. The random portion contains 256 bits from the
+/// process CSPRNG. Only the returned hash may be persisted.
+#[must_use]
+pub fn generate_refresh_token() -> (String, String) {
+    let random_bytes: [u8; 32] = rand::rng().random();
+    let secret = format!("aosr_{}", hex::encode(random_bytes));
     let hash = sha256_hex(&secret);
     (secret, hash)
 }
@@ -82,6 +101,14 @@ mod tests {
         let (a, _) = generate_token();
         let (b, _) = generate_token();
         assert_ne!(a, b, "two secrets must not collide");
+    }
+
+    #[test]
+    fn refresh_token_has_distinct_prefix_and_full_entropy() {
+        let (secret, hash) = generate_refresh_token();
+        assert!(secret.starts_with("aosr_"));
+        assert_eq!(secret.len(), 69);
+        assert_eq!(hash, sha256_hex(&secret));
     }
 
     #[test]

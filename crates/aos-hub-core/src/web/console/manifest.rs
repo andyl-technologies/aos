@@ -112,6 +112,9 @@ pub struct ConsoleRouteMatched;
 
 /// Canonical console routes not scoped to one registry.
 pub const CONSOLE_ROUTES: &[RouteSpec] = &[
+    route("/oauth2/device_authorization", RouteMethods::Post),
+    route("/oauth2/token", RouteMethods::Post),
+    route("/oauth2/revoke", RouteMethods::Post),
     route("/login", RouteMethods::GetAndPost),
     route("/login/password", RouteMethods::Post),
     route("/auth/magic", RouteMethods::Get),

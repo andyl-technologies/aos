@@ -654,22 +654,18 @@ async fn activate_shows_scope_and_approves_with_clamped_token() {
     let resp = send(&app, "POST", "/activate", Some(&cookie), Some(&form)).await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
 
-    // The CLI poll now returns Approved with a token clamped to the user's
+    // The CLI poll now returns Approved with authority clamped to the user's
     // grants (the maintainer holds publish at acme, covering the
     // requested acme/infra/prod scope).
     let poll = db.poll_device(&device_code).await.unwrap();
-    let secret = match poll {
-        aos_hub::db::DevicePollResult::Approved(secret) => secret,
+    let grant = match poll {
+        aos_hub::db::DevicePollResult::Approved(grant) => grant,
         other => panic!("expected approval, got {other:?}"),
     };
-    let token = db
-        .validate_token(&secret)
-        .await
-        .unwrap()
-        .expect("minted token");
-    assert_eq!(token.owner, Principal::user(user));
-    assert!(token.permissions.contains(&Permission::Read));
-    assert!(token.permissions.contains(&Permission::Publish));
+    assert_eq!(grant.auth.owner, Principal::user(user));
+    assert!(grant.auth.permissions.contains(&Permission::Read));
+    assert!(grant.auth.permissions.contains(&Permission::Publish));
+    assert!(!grant.refresh_token.is_empty());
 }
 
 #[tokio::test]

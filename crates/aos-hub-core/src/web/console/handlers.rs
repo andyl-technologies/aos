@@ -46,7 +46,7 @@ use crate::clock::Instant;
 use std::sync::Arc;
 
 use axum::extract::{Form, Path, Query};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Json;
 use base64::Engine as _;
@@ -298,6 +298,354 @@ fn request_has_exact_origin(headers: &HeaderMap, external_url: &str) -> bool {
         && origin.path() == "/"
         && origin.query().is_none()
         && origin.fragment().is_none()
+}
+
+// -- OAuth device and refresh grants ---------------------------------------
+
+/// Public OAuth client identifier used by the AOS CLI.
+const CLI_CLIENT_ID: &str = "aos-cli";
+/// RFC 8628 device-code grant type.
+const DEVICE_CODE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+/// Explicit grant for exchanging an administrator-issued provisioning token.
+const PROVISIONING_TOKEN_GRANT: &str = "urn:aos:params:oauth:grant-type:provisioning-token";
+/// Lifetime of a CLI access JWT.
+const CLI_ACCESS_TOKEN_TTL_SECS: i64 = 3600;
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct DeviceAuthorizationForm {
+    client_id: String,
+    scope: Option<String>,
+    permission: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct DeviceAuthorizationResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: String,
+    expires_in: i64,
+    interval: i64,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct OAuthTokenForm {
+    #[serde(default)]
+    grant_type: String,
+    client_id: Option<String>,
+    device_code: Option<String>,
+    refresh_token: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct OAuthTokenResponse {
+    access_token: String,
+    token_type: &'static str,
+    expires_in: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refresh_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refresh_token_expires_in: Option<i64>,
+    capabilities: [&'static str; 2],
+}
+
+#[derive(serde::Serialize)]
+struct OAuthErrorResponse {
+    error: &'static str,
+    error_description: &'static str,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct OAuthRevokeForm {
+    token: String,
+    token_type_hint: Option<String>,
+    client_id: Option<String>,
+}
+
+fn oauth_response(response: impl IntoResponse) -> Response {
+    let mut response = response.into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response
+}
+
+fn oauth_error(status: StatusCode, error: &'static str, description: &'static str) -> Response {
+    oauth_response((
+        status,
+        Json(OAuthErrorResponse {
+            error,
+            error_description: description,
+        }),
+    ))
+}
+
+async fn oauth_rate_limit(
+    deps: &ConsoleDeps,
+    headers: &HeaderMap,
+    class: crate::ratelimit::RateClass,
+) -> Option<Response> {
+    let ip = resolved_client_ip(headers);
+    match deps
+        .ratelimit
+        .check(class, &ip, crate::clock::now_unix_secs())
+        .await
+    {
+        crate::ratelimit::RateDecision::Allowed => None,
+        crate::ratelimit::RateDecision::Limited { retry_after } => {
+            let mut response = oauth_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "slow_down",
+                "request rate limit exceeded",
+            );
+            if let Ok(value) = HeaderValue::from_str(&retry_after.max(1).to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+            Some(response)
+        }
+    }
+}
+
+/// Starts an RFC 8628 authorization grant for the public AOS CLI client.
+pub(crate) async fn device_authorization(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Form(form): Form<DeviceAuthorizationForm>,
+) -> Response {
+    if form.client_id != CLI_CLIENT_ID {
+        return oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_client",
+            "client_id must identify the AOS CLI",
+        );
+    }
+    if let Some(response) = oauth_rate_limit(
+        &deps,
+        &headers,
+        crate::ratelimit::RateClass::DeviceAuthorization,
+    )
+    .await
+    {
+        return response;
+    }
+
+    let scope = form
+        .scope
+        .unwrap_or_else(|| Scope::root().as_str().to_string());
+    if !Scope::is_canonical(&scope) {
+        return oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_scope",
+            "scope must be a canonical stable scope identity",
+        );
+    }
+    let permission_names = form.permission.as_deref().unwrap_or_default();
+    let permissions = if permission_names.is_empty() {
+        vec![Permission::Read]
+    } else {
+        let parsed = permission_names
+            .split_ascii_whitespace()
+            .map(crate::auth::permission_from_str)
+            .collect::<Option<Vec<_>>>();
+        let Some(parsed) = parsed else {
+            return oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_scope",
+                "permission contains an unknown verb",
+            );
+        };
+        parsed
+    };
+
+    match deps
+        .db
+        .start_device_authorization(&scope, &permissions)
+        .await
+    {
+        Ok((device_code, user_code, expires_in)) => {
+            let verification_uri = format!("{}/activate", deps.external_url.trim_end_matches('/'));
+            oauth_response(Json(DeviceAuthorizationResponse {
+                device_code,
+                verification_uri_complete: format!("{verification_uri}?user_code={user_code}"),
+                user_code,
+                verification_uri,
+                expires_in,
+                interval: 5,
+            }))
+        }
+        Err(error) => oauth_response(internal(error)),
+    }
+}
+
+/// Exchanges an explicit device, refresh, or provisioning grant for a JWT.
+pub(crate) async fn oauth_token(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Form(form): Form<OAuthTokenForm>,
+) -> Response {
+    if let Some(response) =
+        oauth_rate_limit(&deps, &headers, crate::ratelimit::RateClass::TokenExchange).await
+    {
+        return response;
+    }
+
+    match form.grant_type.as_str() {
+        DEVICE_CODE_GRANT => {
+            if form.client_id.as_deref() != Some(CLI_CLIENT_ID) {
+                return oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_client",
+                    "client_id must identify the AOS CLI",
+                );
+            }
+            let Some(device_code) = form.device_code.as_deref() else {
+                return oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "device_code is required",
+                );
+            };
+            match deps.db.poll_device(device_code).await {
+                Ok(crate::db::DevicePollResult::Pending) => oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "authorization_pending",
+                    "the user has not completed authorization",
+                ),
+                Ok(crate::db::DevicePollResult::SlowDown) => oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "slow_down",
+                    "poll no more often than the advertised interval",
+                ),
+                Ok(crate::db::DevicePollResult::Denied) => oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "access_denied",
+                    "the user denied authorization",
+                ),
+                Ok(crate::db::DevicePollResult::Expired) => oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "expired_token",
+                    "the device code is expired or already consumed",
+                ),
+                Ok(crate::db::DevicePollResult::Approved(grant)) => {
+                    oauth_access_grant(&deps, grant, true)
+                }
+                Err(error) => oauth_response(internal(error)),
+            }
+        }
+        "refresh_token" => {
+            if form.client_id.as_deref() != Some(CLI_CLIENT_ID) {
+                return oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_client",
+                    "client_id must identify the AOS CLI",
+                );
+            }
+            let Some(refresh_token) = form.refresh_token.as_deref() else {
+                return oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "refresh_token is required",
+                );
+            };
+            match deps.db.rotate_refresh_token(refresh_token).await {
+                Ok(crate::db::RefreshTokenResult::Rotated(grant)) => {
+                    oauth_access_grant(&deps, grant, true)
+                }
+                Ok(crate::db::RefreshTokenResult::Invalid)
+                | Ok(crate::db::RefreshTokenResult::Reused) => oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_grant",
+                    "the refresh credential is invalid",
+                ),
+                Err(error) => oauth_response(internal(error)),
+            }
+        }
+        PROVISIONING_TOKEN_GRANT => {
+            let secret = headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "));
+            let Some(secret) = secret else {
+                return oauth_error(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_client",
+                    "a provisioning bearer is required",
+                );
+            };
+            match deps.db.validate_token(secret).await {
+                Ok(Some(auth)) => oauth_access_token(&deps, &auth, None, None),
+                Ok(None) => oauth_error(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_grant",
+                    "the provisioning credential is invalid",
+                ),
+                Err(error) => oauth_response(internal(error)),
+            }
+        }
+        _ => oauth_error(
+            StatusCode::BAD_REQUEST,
+            "unsupported_grant_type",
+            "grant_type is not supported",
+        ),
+    }
+}
+
+fn oauth_access_grant(
+    deps: &ConsoleDeps,
+    grant: crate::db::DeviceTokenGrant,
+    include_refresh: bool,
+) -> Response {
+    let refresh_token = include_refresh.then_some(grant.refresh_token);
+    let refresh_expires_in = include_refresh.then_some(grant.refresh_expires_in);
+    oauth_access_token(deps, &grant.auth, refresh_token, refresh_expires_in)
+}
+
+fn oauth_access_token(
+    deps: &ConsoleDeps,
+    auth: &crate::db::TokenAuth,
+    refresh_token: Option<String>,
+    refresh_token_expires_in: Option<i64>,
+) -> Response {
+    match deps.jwt_keys.mint(auth, CLI_ACCESS_TOKEN_TTL_SECS) {
+        Ok(access_token) => oauth_response(Json(OAuthTokenResponse {
+            access_token,
+            token_type: "Bearer",
+            expires_in: CLI_ACCESS_TOKEN_TTL_SECS,
+            refresh_token,
+            refresh_token_expires_in,
+            capabilities: ["aos.hub.topology.v1", "aos.multipart.v1"],
+        })),
+        Err(error) => oauth_response(internal(error)),
+    }
+}
+
+/// Revokes the complete refresh-token family containing the supplied token.
+pub(crate) async fn oauth_revoke(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Form(form): Form<OAuthRevokeForm>,
+) -> Response {
+    if form.client_id.as_deref() != Some(CLI_CLIENT_ID)
+        || form.token_type_hint.as_deref() != Some("refresh_token")
+    {
+        return oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "client_id and refresh_token token_type_hint are required",
+        );
+    }
+    if let Some(response) =
+        oauth_rate_limit(&deps, &headers, crate::ratelimit::RateClass::TokenExchange).await
+    {
+        return response;
+    }
+    match deps.db.revoke_refresh_token(&form.token).await {
+        Ok(_) => oauth_response(StatusCode::OK),
+        Err(error) => oauth_response(internal(error)),
+    }
 }
 
 /// Resolves the exact settings-page permissions available in `scope` with one

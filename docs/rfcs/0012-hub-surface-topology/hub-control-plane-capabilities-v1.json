@@ -21,6 +21,15 @@
       "web_workflows": []
     },
     {
+      "id": "auth.revoke",
+      "audience": "end-user",
+      "interaction": "authentication",
+      "method": "POST",
+      "path": "/oauth2/revoke",
+      "cli_families": ["logout"],
+      "web_workflows": []
+    },
+    {
       "id": "auth.session-token",
       "audience": "end-user",
       "interaction": "authentication",
