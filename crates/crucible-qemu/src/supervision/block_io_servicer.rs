@@ -60,9 +60,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crucible::model::ContentHash;
 use crucible_device::block::{
-    BlockDurabilityConfig, BlockFaultState, BlockPersistenceMediaOutcome,
-    BlockPersistenceOpportunity, BlockRetainedRelease, BlockServiceCompletion,
-    ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
+    BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
+    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRetainedRelease,
+    BlockServiceCompletion, ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
 };
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockSnapshot, DeviceError, IoCore, Request,
@@ -387,6 +387,39 @@ impl QemuLiveBlockIoServicer {
     ) -> Result<(), QemuLiveBlockIoServicerError> {
         self.device
             .configure_storage_faults(config, require_directives)
+            .and_then(|()| {
+                if require_directives {
+                    self.device.require_storage_execution_opportunities()?;
+                    self.device
+                        .require_storage_persistence_media_opportunities()?;
+                }
+                Ok(())
+            })
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Returns the first request ready for resolve/persist evaluation.
+    #[must_use]
+    pub fn next_storage_execution_opportunity(
+        &self,
+        now_nanos: u64,
+    ) -> Option<BlockExecutionOpportunity> {
+        self.device.next_storage_execution_opportunity(now_nanos)
+    }
+
+    /// Installs the complete resolve/persist decision for one staged request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] when the directive is
+    /// stale, repeated, malformed, or belongs to another request.
+    pub fn install_storage_execution_directive(
+        &mut self,
+        request_sequence: u64,
+        directive: ResolvedBlockFaultDirective,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.device
+            .install_storage_execution_directive(request_sequence, directive)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
