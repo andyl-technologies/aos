@@ -192,6 +192,21 @@ pub mod hub_v1 {
 
 pub use hub_v1::*;
 
+#[cfg(test)]
+mod connect_path_tests {
+    use super::*;
+
+    #[test]
+    fn generated_method_constants_match_the_descriptor_inventory() {
+        assert_eq!(
+            IDENTITY_SERVICE_WHO_AM_I_PATH,
+            "/aos.hub.v1.IdentityService/WhoAmI"
+        );
+        assert!(EXPECTED_CONNECT_PATHS.contains(&IDENTITY_SERVICE_WHO_AM_I_PATH));
+        assert_eq!(EXPECTED_CONNECT_METHODS.len(), EXPECTED_CONNECT_PATHS.len());
+    }
+}
+
 macro_rules! impl_open_proto_enum {
     ($($enum:ty),+ $(,)?) => {
         $(
@@ -217,7 +232,8 @@ impl_open_proto_enum!(
 #[cfg(test)]
 mod tests {
     use super::{
-        endpoint_host, surface_ref, DeliveryEndpointRevisionSpec, EndpointHost,
+        endpoint_host, surface_ref, BrowserSessionGrant, BrowserSessionPrincipal,
+        BrowserSessionTokenResponse, DeliveryEndpointRevisionSpec, EndpointHost,
         EndpointIngressKind, GetRegistryResponse, PlanSetInstanceSettingsRequest, Platform,
         PolicyFailureContract, PolicyRetryCondition, SurfaceRef,
     };
@@ -412,5 +428,31 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn browser_session_bridge_uses_protojson_and_omits_no_security_context() {
+        let response = BrowserSessionTokenResponse {
+            access_token: "memory-only".into(),
+            token_type: "Bearer".into(),
+            expires_in: 300,
+            principal: Some(BrowserSessionPrincipal {
+                kind: "user".into(),
+                id: 42,
+                email: "owner@example.test".into(),
+            }),
+            grants: vec![BrowserSessionGrant {
+                scope: "instance".into(),
+                role: "owner".into(),
+            }],
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["accessToken"], "memory-only");
+        assert_eq!(json["expiresIn"], "300");
+        assert_eq!(json["principal"]["id"], "42");
+        assert_eq!(json["grants"][0]["scope"], "instance");
+
+        let decoded: BrowserSessionTokenResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, response);
     }
 }

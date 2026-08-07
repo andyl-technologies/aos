@@ -1,0 +1,28 @@
+[package]
+name = "aos-hub-console"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+description = "Typed Leptos management application for the AOS Hub control plane"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "aos-hub-console"
+path = "src/main.rs"
+
+[dependencies]
+aos-proto-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = { version = "0.6", default-features = false, features = ["http"] }
+leptos = { version = "0.7", features = ["csr"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+[lints]
+workspace = true

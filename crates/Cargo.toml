@@ -16,6 +16,7 @@ members = [
     "aos-registry-surface",
     "aos-registry-spa",
     "aos-hub-worker",
+    "aos-hub-console",
     "aos-profile",
     "aos-systemd",
     "crucible-cas",

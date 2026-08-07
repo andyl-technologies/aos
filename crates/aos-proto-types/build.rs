@@ -360,8 +360,41 @@ fn generate_connect_descriptors(descriptor: &FileDescriptorSet) -> BuildResult<(
         generated.push_str("\",\n");
     }
     generated.push_str("];\n");
+    for method in &methods {
+        generated.push_str("/// Canonical Connect path for the generated typed client method.\n");
+        generated.push_str("pub const ");
+        generated.push_str(&rust_constant_identifier(&format!(
+            "{}_{}_PATH",
+            method.service, method.method
+        )));
+        generated.push_str(": &str = \"");
+        generated.push_str(&method.path);
+        generated.push_str("\";\n");
+    }
     std::fs::write(out_dir()?.join("connect_paths.rs"), generated)?;
     Ok(())
+}
+
+/// Converts a protobuf CamelCase name to one collision-resistant Rust constant.
+fn rust_constant_identifier(value: &str) -> String {
+    let characters = value.chars().collect::<Vec<_>>();
+    let mut identifier = String::with_capacity(value.len() + 8);
+    for (index, character) in characters.iter().copied().enumerate() {
+        let previous = index.checked_sub(1).and_then(|index| characters.get(index));
+        let next = characters.get(index + 1);
+        let starts_word = character.is_ascii_uppercase()
+            && previous.is_some_and(|previous| {
+                previous.is_ascii_lowercase()
+                    || previous.is_ascii_digit()
+                    || (previous.is_ascii_uppercase()
+                        && next.is_some_and(|next| next.is_ascii_lowercase()))
+            });
+        if starts_word && !identifier.ends_with('_') {
+            identifier.push('_');
+        }
+        identifier.push(character.to_ascii_uppercase());
+    }
+    identifier
 }
 
 fn descriptor_connect_methods(descriptor: &FileDescriptorSet) -> BuildResult<Vec<ConnectMethod>> {
