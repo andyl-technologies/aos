@@ -124,6 +124,15 @@ pub enum DeviceError {
         available_bytes: u64,
     },
 
+    /// An integrated storage-service queue reached its configured request depth.
+    #[error("block storage-service queue for contributor {contributor:?} is full at depth {depth}")]
+    BlockServiceQueueFull {
+        /// Contributor whose independently constrained queue is full.
+        contributor: [u8; 32],
+        /// Exact configured active-plus-pending request limit.
+        depth: u32,
+    },
+
     /// The scheduler asked the clock to move backward.
     ///
     /// The virtual clock is monotonic and advanced only by the scheduler; a

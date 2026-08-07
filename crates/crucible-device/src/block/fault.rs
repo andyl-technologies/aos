@@ -18,6 +18,9 @@ use super::overlay::{BaseImage, CowOverlay};
 use super::persistence::{
     BlockPersistenceGraph, BlockWriteFragmentId, ResolvedBlockPersistenceTransform,
 };
+use super::service::{
+    BlockServiceCompletion, BlockServiceJob, BlockServiceState, ResolvedBlockServiceRule,
+};
 
 /// Hard maximum directives waiting for their exact request.
 pub const HARD_PENDING_BLOCK_FAULT_DIRECTIVES: usize = 1_048_576;
@@ -331,6 +334,8 @@ impl ResolvedBlockDuplicateCompletion {
 /// One fully resolved directive consumed by exactly one block request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedBlockFaultDirective {
+    /// Adapter-owned monotone opportunity sequence for queue identity.
+    pub request_sequence: u64,
     /// Expected wire operation; prevents directive/request aliasing.
     pub operation: BlockOp,
     /// Expected range start.
@@ -347,6 +352,8 @@ pub struct ResolvedBlockFaultDirective {
     pub error_result: Option<BlockFaultResult>,
     /// Dynamic service, latency, stall, and reorder delay.
     pub additional_latency_nanos: u64,
+    /// Canonically contributor-ordered service rules sampled at admission.
+    pub service_rules: Vec<ResolvedBlockServiceRule>,
     /// Exact virtual coordinate at which this request resolves in the adapter.
     pub execution_nanos: u64,
     /// Whether the primary completion remains retained after COMPUTE.
@@ -423,6 +430,7 @@ impl ResolvedBlockFaultDirective {
     #[must_use]
     pub fn fault_free(request: &BlockRequest, capacity: u64) -> Self {
         Self {
+            request_sequence: u64::from(request.request_id),
             operation: request.op,
             offset: request.offset,
             count: request.count,
@@ -431,6 +439,7 @@ impl ResolvedBlockFaultDirective {
             reported_capacity_bytes: capacity,
             error_result: None,
             additional_latency_nanos: 0,
+            service_rules: Vec::new(),
             execution_nanos: 0,
             retain_completion: false,
             retention_timeout_response: None,
@@ -576,10 +585,23 @@ impl ResolvedBlockFaultDirective {
             || self.media_rules.len() > HARD_BLOCK_WRITE_SPANS
             || self.persistence_transforms.len() > HARD_BLOCK_WRITE_SPANS
             || self.persistence_media_rules.len() > super::flash::HARD_BLOCK_FLASH_RULES
+            || self.service_rules.len() > super::service::HARD_BLOCK_SERVICE_RULES
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "directive violates static block bounds",
             });
+        }
+        if self
+            .service_rules
+            .windows(2)
+            .any(|pair| pair[0].contributor >= pair[1].contributor)
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "storage service rules are not in canonical contributor order",
+            });
+        }
+        for rule in &self.service_rules {
+            rule.validate()?;
         }
         if self.retain_completion && !self.duplicate_completions.is_empty() {
             return Err(DeviceError::InvalidBlockFaultDirective {
@@ -761,6 +783,28 @@ impl ResolvedBlockFaultDirective {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BlockServicePendingRequest {
+    request: BlockRequest,
+    request_icount: u64,
+    directive: ResolvedBlockFaultDirective,
+    remaining_contributors: BTreeSet<[u8; 32]>,
+    finished_nanos: u64,
+}
+
+/// One request released by integrated storage service and ready for scheduling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct BlockDeferredResponse {
+    /// Exact coordinate at which all service contributors released the request.
+    pub finished_nanos: u64,
+    /// Original request, retained byte-for-byte while queued.
+    pub request: BlockRequest,
+    /// Original requester coordinate retained for overflow diagnostics.
+    pub request_icount: u64,
+    /// Fully computed response after real device mutation at the release boundary.
+    pub computed: ComputedResponse,
+}
+
 /// One admitted volatile write fragment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockVolatileEntry {
@@ -845,6 +889,10 @@ pub struct BlockFaultState {
     execution_required: bool,
     pending: BTreeMap<u32, ResolvedBlockFaultDirective>,
     pending_bytes: u64,
+    service: BlockServiceState,
+    service_pending: BTreeMap<u64, BlockServicePendingRequest>,
+    service_pending_bytes: u64,
+    service_outcomes: Vec<BlockServiceCompletion>,
     controller: BTreeMap<u64, BlockControllerEntry>,
     controller_bytes: u64,
     media_queue: BTreeMap<u64, BlockControllerEntry>,
@@ -878,6 +926,10 @@ impl BlockFaultState {
             execution_required: false,
             pending: BTreeMap::new(),
             pending_bytes: 0,
+            service: BlockServiceState::default(),
+            service_pending: BTreeMap::new(),
+            service_pending_bytes: 0,
+            service_outcomes: Vec::new(),
             controller: BTreeMap::new(),
             controller_bytes: 0,
             media_queue: BTreeMap::new(),
@@ -918,6 +970,10 @@ impl BlockFaultState {
             execution_required: false,
             pending: BTreeMap::new(),
             pending_bytes: 0,
+            service: BlockServiceState::default(),
+            service_pending: BTreeMap::new(),
+            service_pending_bytes: 0,
+            service_outcomes: Vec::new(),
             controller: BTreeMap::new(),
             controller_bytes: 0,
             media_queue: BTreeMap::new(),
@@ -953,6 +1009,10 @@ impl BlockFaultState {
     pub fn is_pristine(&self) -> bool {
         self.pending.is_empty()
             && self.pending_bytes == 0
+            && self.service.continuations().is_empty()
+            && self.service_pending.is_empty()
+            && self.service_pending_bytes == 0
+            && self.service_outcomes.is_empty()
             && self.controller.is_empty()
             && self.controller_bytes == 0
             && self.media_queue.is_empty()
@@ -986,9 +1046,13 @@ impl BlockFaultState {
         self.config.validate()?;
         self.media.validate_restore(device_length)?;
         self.flash.validate_restore(device_length)?;
+        self.service.validate_restore()?;
         if self.config.length_bytes != device_length
             || self.pending.len() > HARD_PENDING_BLOCK_FAULT_DIRECTIVES
             || self.pending_bytes > HARD_PENDING_BLOCK_FAULT_BYTES
+            || self.service_pending.len() > super::service::HARD_BLOCK_SERVICE_JOBS
+            || self.service_pending_bytes > HARD_PENDING_BLOCK_FAULT_BYTES
+            || self.service_outcomes.len() > super::service::HARD_BLOCK_SERVICE_JOBS
             || self.volatile.len() > HARD_BLOCK_CACHE_ENTRIES
             || self.controller.len() > HARD_BLOCK_CONTROLLER_ENTRIES
             || self.media_queue.len() > HARD_BLOCK_CONTROLLER_ENTRIES
@@ -1022,6 +1086,62 @@ impl BlockFaultState {
         }
         for (request_id, directive) in &self.pending {
             directive.validate_static(*request_id, &self.config)?;
+        }
+        for (sequence, pending) in &self.service_pending {
+            pending
+                .directive
+                .validate_for(&pending.request, &self.config)?;
+            if *sequence != pending.directive.request_sequence
+                || pending.directive.service_rules.is_empty()
+                || pending.remaining_contributors.is_empty()
+                || pending.remaining_contributors.iter().any(|contributor| {
+                    !pending
+                        .directive
+                        .service_rules
+                        .iter()
+                        .any(|rule| rule.contributor == *contributor)
+                })
+            {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "restored queued storage service request is invalid",
+                });
+            }
+        }
+        let service_pending_bytes =
+            self.service_pending
+                .values()
+                .try_fold(0_u64, |total, pending| {
+                    total
+                        .checked_add(service_pending_owned_bytes(pending)?)
+                        .ok_or(DeviceError::InvalidBlockFaultDirective {
+                            reason: "restored service-pending byte accounting overflow",
+                        })
+                })?;
+        if service_pending_bytes != self.service_pending_bytes {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "restored service-pending byte accounting differs",
+            });
+        }
+        let expected_service_jobs = self
+            .service_pending
+            .iter()
+            .flat_map(|(sequence, pending)| {
+                pending
+                    .remaining_contributors
+                    .iter()
+                    .map(|contributor| (*contributor, *sequence))
+            })
+            .collect::<BTreeSet<_>>();
+        if self
+            .service
+            .live_job_keys()
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            != expected_service_jobs
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "restored service queue differs from request contributor joins",
+            });
         }
         let volatile_bytes = self.volatile.values().try_fold(0_u64, |total, entry| {
             validate_state_range(entry.offset, entry.bytes.len(), device_length)?;
@@ -1558,6 +1678,113 @@ impl BlockFaultState {
         Ok(())
     }
 
+    /// Returns the earliest exact integrated-service release coordinate.
+    #[must_use]
+    pub(super) fn next_service_completion_nanos(&self) -> Option<u64> {
+        self.service.next_completion_nanos()
+    }
+
+    /// Returns the earliest dependency-ready physical persistence boundary.
+    #[must_use]
+    pub(super) fn next_persistence_deadline_nanos(&self) -> Option<u64> {
+        self.media_queue
+            .keys()
+            .filter(|sequence| self.persistence.is_ready_at(**sequence, u64::MAX))
+            .filter_map(|sequence| self.persistence.deadline_nanos(*sequence))
+            .min()
+    }
+
+    /// Drains contributor-level service evidence in canonical completion order.
+    pub fn drain_service_outcomes(&mut self) -> Vec<BlockServiceCompletion> {
+        std::mem::take(&mut self.service_outcomes)
+    }
+
+    /// Advances service and executes every request released by all constraints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when service state is malformed, persistence at
+    /// an intervening boundary fails, or released device execution fails.
+    pub(super) fn advance_service_to(
+        &mut self,
+        base: &BaseImage,
+        durable: &mut CowOverlay,
+        now_nanos: u64,
+    ) -> Result<Vec<BlockDeferredResponse>, DeviceError> {
+        let mut next = self.clone();
+        let mut next_durable = durable.clone();
+        let outcomes = next.service.advance_to(now_nanos)?;
+        if next
+            .service_outcomes
+            .len()
+            .checked_add(outcomes.len())
+            .is_none_or(|count| count > super::service::HARD_BLOCK_SERVICE_JOBS)
+        {
+            return Err(DeviceError::BlockFaultStateLimit {
+                field: "block_service_outcomes",
+                hard: super::service::HARD_BLOCK_SERVICE_JOBS,
+            });
+        }
+        let mut ready = BTreeMap::<(u64, u64), u64>::new();
+        for outcome in &outcomes {
+            let pending = next.service_pending.get_mut(&outcome.sequence).ok_or(
+                DeviceError::InvalidBlockFaultDirective {
+                    reason: "service completion has no queued block request",
+                },
+            )?;
+            if !pending.remaining_contributors.remove(&outcome.contributor) {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "service contributor completed a request twice",
+                });
+            }
+            pending.finished_nanos = pending.finished_nanos.max(outcome.finished_nanos);
+            if pending.remaining_contributors.is_empty() {
+                ready.insert(
+                    (pending.finished_nanos, pending.directive.request_sequence),
+                    outcome.sequence,
+                );
+            }
+        }
+        next.service_outcomes.extend(outcomes);
+        let mut released = Vec::with_capacity(ready.len());
+        for ((finished_nanos, _request_sequence), sequence) in ready {
+            next.persist_due(base, &mut next_durable, finished_nanos)?;
+            let mut pending = next.service_pending.remove(&sequence).ok_or(
+                DeviceError::InvalidBlockFaultDirective {
+                    reason: "ready service request disappeared",
+                },
+            )?;
+            next.service_pending_bytes = next
+                .service_pending_bytes
+                .checked_sub(service_pending_owned_bytes(&pending)?)
+                .ok_or(DeviceError::InvalidBlockFaultDirective {
+                    reason: "service-pending byte accounting underflow",
+                })?;
+            pending.directive.service_rules.clear();
+            pending.directive.execution_nanos = finished_nanos;
+            if !pending.directive.persistence_transforms.is_empty() {
+                pending.directive.persistence_admitted_nanos = finished_nanos;
+            }
+            next.install(pending.request.request_id, pending.directive)?;
+            let computed = next.execute(
+                base,
+                &mut next_durable,
+                &pending.request,
+                pending.request_icount,
+            )?;
+            released.push(BlockDeferredResponse {
+                finished_nanos,
+                request: pending.request,
+                request_icount: pending.request_icount,
+                computed,
+            });
+        }
+        next.persist_due(base, &mut next_durable, now_nanos)?;
+        *self = next;
+        *durable = next_durable;
+        Ok(released)
+    }
+
     pub(super) fn execute(
         &mut self,
         base: &BaseImage,
@@ -1565,7 +1792,7 @@ impl BlockFaultState {
         request: &BlockRequest,
         request_icount: u64,
     ) -> Result<ComputedResponse, DeviceError> {
-        let directive = match self.pending.get(&request.request_id) {
+        let mut directive = match self.pending.get(&request.request_id) {
             Some(directive) => directive.clone(),
             None if self.execution_required => {
                 return Err(DeviceError::MissingBlockFaultDirective {
@@ -1589,6 +1816,86 @@ impl BlockFaultState {
                 field: "retained_completions",
                 hard: HARD_BLOCK_RETAINED_COMPLETIONS,
             });
+        }
+        if !directive.service_rules.is_empty()
+            && block_admission_error(request, &directive, &self.config).is_none()
+        {
+            if self
+                .service_pending
+                .values()
+                .any(|pending| pending.request.request_id == request.request_id)
+            {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "request identity is already queued for storage service",
+                });
+            }
+            let admitted_nanos = directive.execution_nanos;
+            let service_job = BlockServiceJob {
+                sequence: directive.request_sequence,
+                operation: request.op,
+                bytes: u64::from(request.count),
+                admitted_nanos,
+            };
+            let mut admitted_service = self.service.clone();
+            match admitted_service.admit(service_job, &directive.service_rules) {
+                Ok(()) => {}
+                Err(DeviceError::BlockServiceQueueFull { .. }) => {
+                    directive.service_rules.clear();
+                    directive.error_result = Some(BlockFaultResult::Busy);
+                }
+                Err(error) => return Err(error),
+            }
+            if directive.service_rules.is_empty() {
+                // Queue capacity is a modeled request rejection. Fall through
+                // to consume the directive and return the stable Busy result.
+            } else {
+                let mut next = self.clone();
+                if let Some(removed) = next.pending.remove(&request.request_id) {
+                    next.pending_bytes = next
+                        .pending_bytes
+                        .checked_sub(directive_owned_bytes(&removed)?)
+                        .ok_or(DeviceError::InvalidBlockFaultDirective {
+                            reason: "pending directive byte accounting underflow",
+                        })?;
+                }
+                next.service = admitted_service;
+                let remaining_contributors = directive
+                    .service_rules
+                    .iter()
+                    .map(|rule| rule.contributor)
+                    .collect();
+                let pending = BlockServicePendingRequest {
+                    request: request.clone(),
+                    request_icount,
+                    directive,
+                    remaining_contributors,
+                    finished_nanos: admitted_nanos,
+                };
+                let owned_bytes = service_pending_owned_bytes(&pending)?;
+                next.service_pending_bytes = next
+                    .service_pending_bytes
+                    .checked_add(owned_bytes)
+                    .filter(|total| *total <= HARD_PENDING_BLOCK_FAULT_BYTES)
+                    .ok_or(DeviceError::BlockFaultStateLimit {
+                        field: "block_service_pending_bytes",
+                        hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES).unwrap_or(usize::MAX),
+                    })?;
+                if next
+                    .service_pending
+                    .insert(pending.directive.request_sequence, pending)
+                    .is_some()
+                {
+                    return Err(DeviceError::InvalidBlockFaultDirective {
+                        reason: "storage service request sequence is repeated",
+                    });
+                }
+                *self = next;
+                return Ok(ComputedResponse {
+                    primary: None,
+                    additional: Vec::new(),
+                    additional_latency_nanos: 0,
+                });
+            }
         }
         let mut next = self.clone();
         if let Some(removed) = next.pending.remove(&request.request_id) {
@@ -1720,24 +2027,8 @@ impl BlockFaultState {
         request: &BlockRequest,
         directive: &ResolvedBlockFaultDirective,
     ) -> Result<(BlockResponse, u64), DeviceError> {
-        let admission_error = directive.error_result.or_else(|| {
-            (directive.availability == BlockFaultAvailability::Offline)
-                .then_some(BlockErrorCode::Offline)
-                .or_else(|| {
-                    (directive.availability == BlockFaultAvailability::ReadOnly
-                        && matches!(request.op, BlockOp::Write | BlockOp::Discard))
-                    .then_some(BlockErrorCode::ReadOnly)
-                })
-                .or_else(|| {
-                    (!request_in_capacity(request, directive.reported_capacity_bytes)
-                        || u64::from(request.count) > self.config.maximum_request_bytes
-                        || (request.op == BlockOp::Read
-                            && usize::try_from(request.count).unwrap_or(usize::MAX)
-                                > super::device::MAX_READ_BYTES))
-                        .then_some(BlockErrorCode::InvalidRange)
-                })
-        });
-        let media_error = if admission_error.is_none() {
+        let admission_error = block_admission_error(request, directive, &self.config);
+        let media_error = if admission_error.is_none() && directive.error_result.is_none() {
             self.media.apply(
                 request,
                 directive.execution_nanos,
@@ -1747,7 +2038,7 @@ impl BlockFaultState {
         } else {
             None
         };
-        let error = admission_error.or(media_error);
+        let error = admission_error.or(directive.error_result).or(media_error);
         if let Some(error) = error {
             return Ok((BlockResponse::error(request.request_id, error), 0));
         }
@@ -2912,6 +3203,28 @@ fn request_in_capacity(request: &BlockRequest, capacity: u64) -> bool {
     }
 }
 
+fn block_admission_error(
+    request: &BlockRequest,
+    directive: &ResolvedBlockFaultDirective,
+    config: &BlockDurabilityConfig,
+) -> Option<BlockErrorCode> {
+    (directive.availability == BlockFaultAvailability::Offline)
+        .then_some(BlockErrorCode::Offline)
+        .or_else(|| {
+            (directive.availability == BlockFaultAvailability::ReadOnly
+                && matches!(request.op, BlockOp::Write | BlockOp::Discard))
+            .then_some(BlockErrorCode::ReadOnly)
+        })
+        .or_else(|| {
+            (!request_in_capacity(request, directive.reported_capacity_bytes)
+                || u64::from(request.count) > config.maximum_request_bytes
+                || (request.op == BlockOp::Read
+                    && usize::try_from(request.count).unwrap_or(usize::MAX)
+                        > super::device::MAX_READ_BYTES))
+                .then_some(BlockErrorCode::InvalidRange)
+        })
+}
+
 fn validate_state_range(offset: u64, length: usize, device_length: u64) -> Result<(), DeviceError> {
     let length =
         u64::try_from(length).map_err(|_error| DeviceError::InvalidBlockFaultDirective {
@@ -3038,6 +3351,19 @@ fn directive_owned_bytes(directive: &ResolvedBlockFaultDirective) -> Result<u64,
                 reason: "pending directive byte count overflow",
             })?;
     }
+    for rule in &directive.service_rules {
+        for class in &rule.classes {
+            total = total
+                .checked_add(u64::try_from(class.operations.len()).map_err(|_error| {
+                    DeviceError::InvalidBlockFaultDirective {
+                        reason: "pending service operation-set length overflow",
+                    }
+                })?)
+                .ok_or(DeviceError::InvalidBlockFaultDirective {
+                    reason: "pending directive byte count overflow",
+                })?;
+        }
+    }
     total = total
         .checked_add(
             u64::try_from(
@@ -3065,6 +3391,17 @@ fn directive_owned_bytes(directive: &ResolvedBlockFaultDirective) -> Result<u64,
             })?;
     }
     Ok(total)
+}
+
+fn service_pending_owned_bytes(pending: &BlockServicePendingRequest) -> Result<u64, DeviceError> {
+    u64::try_from(pending.request.data.len())
+        .map_err(|_error| DeviceError::InvalidBlockFaultDirective {
+            reason: "queued service request length overflow",
+        })?
+        .checked_add(directive_owned_bytes(&pending.directive)?)
+        .ok_or(DeviceError::InvalidBlockFaultDirective {
+            reason: "queued service request byte count overflow",
+        })
 }
 
 fn block_response_fits_transport(response: &BlockResponse) -> bool {

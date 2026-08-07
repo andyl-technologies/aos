@@ -24,7 +24,9 @@ use thiserror::Error;
 
 use crucible::model::{ContentHash, ResolvedBindingAction, ResolvedFaultTarget};
 use crucible_device::block::{
-    BlockDurabilityConfig, BlockFaultState, BlockRetainedRelease, ResolvedBlockFaultDirective,
+    BlockDurabilityConfig, BlockFaultState, BlockPersistenceMediaOutcome,
+    BlockPersistenceOpportunity, BlockRetainedRelease, BlockServiceCompletion,
+    ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
 };
 
 use super::block_io_servicer::{
@@ -75,7 +77,19 @@ pub struct QemuLiveBlockHostWorkPool {
     work_in_flight: bool,
     pinned: Option<QemuLiveBlockIoHostWorkPin>,
     in_flight_pin: Option<QemuLiveBlockIoHostWorkPin>,
+    in_flight_storage_fault: bool,
     storage_device: Option<ContentHash>,
+}
+
+/// Atomic storage opportunities and outcomes observed on the owning worker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLiveBlockStorageEvents {
+    /// Next physical-media decision opportunity ready at the requested coordinate.
+    pub persistence_opportunity: Option<BlockPersistenceOpportunity>,
+    /// Completed physical-media mutations drained exactly once.
+    pub persistence_outcomes: Vec<BlockPersistenceMediaOutcome>,
+    /// Completed service contributions drained exactly once.
+    pub service_outcomes: Vec<BlockServiceCompletion>,
 }
 
 impl QemuLiveBlockHostWorkPool {
@@ -180,6 +194,7 @@ impl QemuLiveBlockHostWorkPool {
                 work_in_flight: false,
                 pinned: None,
                 in_flight_pin: None,
+                in_flight_storage_fault: false,
                 storage_device,
             }),
             Ok(Err(source)) => {
@@ -239,6 +254,7 @@ impl QemuLiveBlockHostWorkPool {
                 work_in_flight: false,
                 pinned: None,
                 in_flight_pin: None,
+                in_flight_storage_fault: false,
                 storage_device: None,
             }),
             Ok(Err(source)) => {
@@ -286,6 +302,7 @@ impl QemuLiveBlockHostWorkPool {
             | WorkerReply::Checkpoint(_)
             | WorkerReply::Mutated(_)
             | WorkerReply::StorageState(_)
+            | WorkerReply::StorageEvents(_)
             | WorkerReply::VolatileLoss(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "pin reply",
             }),
@@ -335,6 +352,7 @@ impl QemuLiveBlockHostWorkPool {
             .as_ref()
             .ok_or(QemuLiveBlockHostWorkPoolError::DispatchWithoutPin)?;
         validate_pinned_directive(pin, directive.as_ref())?;
+        let has_storage_fault = directive.is_some();
         let pin = self
             .pinned
             .take()
@@ -348,6 +366,7 @@ impl QemuLiveBlockHostWorkPool {
             .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
         self.work_in_flight = true;
         self.in_flight_pin = Some(pin);
+        self.in_flight_storage_fault = has_storage_fault;
         Ok(())
     }
 
@@ -367,9 +386,14 @@ impl QemuLiveBlockHostWorkPool {
             Ok(WorkerReply::Serviced(result)) => {
                 self.work_in_flight = false;
                 let pin = self.in_flight_pin.take();
+                let preserve_baseline_completion = !self.in_flight_storage_fault;
+                self.in_flight_storage_fault = false;
                 result
                     .map(|mut serviced| {
-                        if let Some(observed) = pin.and_then(|pinned| pinned.observed) {
+                        if let Some(observed) = pin
+                            .and_then(|pinned| pinned.observed)
+                            .filter(|_observed| preserve_baseline_completion)
+                        {
                             serviced.first_request_icount = Some(observed.request_icount);
                             serviced.computed_completion_icount = Some(observed.completion_icount);
                         }
@@ -381,6 +405,7 @@ impl QemuLiveBlockHostWorkPool {
             | Ok(WorkerReply::Checkpoint(_))
             | Ok(WorkerReply::Mutated(_))
             | Ok(WorkerReply::StorageState(_))
+            | Ok(WorkerReply::StorageEvents(_))
             | Ok(WorkerReply::VolatileLoss(_)) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "service reply",
             }),
@@ -433,6 +458,7 @@ impl QemuLiveBlockHostWorkPool {
             | WorkerReply::Serviced(_)
             | WorkerReply::Mutated(_)
             | WorkerReply::StorageState(_)
+            | WorkerReply::StorageEvents(_)
             | WorkerReply::VolatileLoss(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "checkpoint reply",
             }),
@@ -472,10 +498,62 @@ impl QemuLiveBlockHostWorkPool {
             | WorkerReply::Serviced(_)
             | WorkerReply::Checkpoint(_)
             | WorkerReply::Mutated(_)
+            | WorkerReply::StorageEvents(_)
             | WorkerReply::VolatileLoss(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "storage-state reply",
             }),
         }
+    }
+
+    /// Atomically observes the next persistence opportunity and drains evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error while work or a nonempty pin is outstanding, or when
+    /// the worker disconnects or violates its protocol.
+    pub fn storage_events(
+        &mut self,
+        now_nanos: u64,
+    ) -> Result<QemuLiveBlockStorageEvents, QemuLiveBlockHostWorkPoolError> {
+        self.require_storage_device_bound()?;
+        if self.work_in_flight {
+            return Err(QemuLiveBlockHostWorkPoolError::WorkAlreadyInFlight);
+        }
+        if self
+            .pinned
+            .as_ref()
+            .is_some_and(|pin| pin.observed.is_some())
+        {
+            return Err(QemuLiveBlockHostWorkPoolError::MutationWithPinnedRequest);
+        }
+        self.pinned = None;
+        self.commands
+            .send(WorkerCommand::StorageEvents { now_nanos })
+            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
+        match self
+            .replies
+            .recv()
+            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?
+        {
+            WorkerReply::StorageEvents(events) => Ok(events),
+            _ => Err(QemuLiveBlockHostWorkPoolError::Protocol {
+                expected: "storage-events reply",
+            }),
+        }
+    }
+
+    /// Installs the exact decision for one live physical-media opportunity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same worker-state, protocol, and device errors as other
+    /// storage mutations.
+    pub fn install_storage_persistence_media_directive(
+        &mut self,
+        directive: ResolvedBlockPersistenceMediaDirective,
+    ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
+        self.require_storage_device_bound()?;
+        self.mutate(StorageMutation::InstallPersistenceMedia(directive))
     }
 
     /// Drops exact volatile-cache entries on the worker-owned live device.
@@ -550,7 +628,8 @@ impl QemuLiveBlockHostWorkPool {
             | WorkerReply::Serviced(_)
             | WorkerReply::Checkpoint(_)
             | WorkerReply::Mutated(_)
-            | WorkerReply::StorageState(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
+            | WorkerReply::StorageState(_)
+            | WorkerReply::StorageEvents(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "volatile-cache loss reply",
             }),
         }
@@ -615,6 +694,7 @@ impl QemuLiveBlockHostWorkPool {
             | WorkerReply::Serviced(_)
             | WorkerReply::Checkpoint(_)
             | WorkerReply::StorageState(_)
+            | WorkerReply::StorageEvents(_)
             | WorkerReply::VolatileLoss(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "storage mutation reply",
             }),
@@ -696,6 +776,9 @@ enum WorkerCommand {
     },
     Mutate(StorageMutation),
     InspectStorageState,
+    StorageEvents {
+        now_nanos: u64,
+    },
     ResolveVolatileLoss {
         target: ResolvedFaultTarget,
         context: StorageFaultResolutionContext,
@@ -708,6 +791,7 @@ enum WorkerCommand {
 enum StorageMutation {
     LoseVolatile(Vec<u64>),
     LoseController(Vec<u64>),
+    InstallPersistenceMedia(ResolvedBlockPersistenceMediaDirective),
     ReleaseCompletion {
         request_id: u32,
         release: BlockRetainedRelease,
@@ -720,6 +804,7 @@ enum WorkerReply {
     Checkpoint(Box<Result<QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError>>),
     Mutated(Result<(), QemuLiveBlockIoServicerError>),
     StorageState(BlockFaultState),
+    StorageEvents(QemuLiveBlockStorageEvents),
     VolatileLoss(Result<ResolvedVolatileCacheLoss, VolatileLossWorkerError>),
 }
 
@@ -759,6 +844,9 @@ fn worker_loop(
                 StorageMutation::LoseController(sequences) => {
                     servicer.lose_storage_controller(&sequences)
                 }
+                StorageMutation::InstallPersistenceMedia(directive) => {
+                    servicer.install_storage_persistence_media_directive(directive)
+                }
                 StorageMutation::ReleaseCompletion {
                     request_id,
                     release,
@@ -766,6 +854,14 @@ fn worker_loop(
             }),
             WorkerCommand::InspectStorageState => {
                 WorkerReply::StorageState(servicer.storage_fault_state().clone())
+            }
+            WorkerCommand::StorageEvents { now_nanos } => {
+                WorkerReply::StorageEvents(QemuLiveBlockStorageEvents {
+                    persistence_opportunity: servicer
+                        .next_storage_persistence_opportunity(now_nanos),
+                    persistence_outcomes: servicer.drain_storage_persistence_media_outcomes(),
+                    service_outcomes: servicer.drain_storage_service_outcomes(),
+                })
             }
             WorkerCommand::ResolveVolatileLoss {
                 target,
