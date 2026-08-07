@@ -374,6 +374,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("auth_refresh.sql"),
     include_str!("invitation_lifecycle.sql"),
+    include_str!("identity_control.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -891,6 +892,10 @@ pub struct IdpConfigRecord {
     /// The role a JIT-provisioned user receives at the org scope when no
     /// group mapping applies.
     pub default_role: String,
+    /// Optimistic-concurrency version for retained-control mutations.
+    pub resource_version: i64,
+    /// Reviewed plan that produced the current state, when any.
+    pub mutation_plan_id: Option<String>,
 }
 
 /// A captured (DNS-TXT-verifiable) email domain bound to an org.
@@ -904,6 +909,10 @@ pub struct OrgDomainRecord {
     pub txt_challenge: String,
     /// Unix time the domain was verified, or `None` while unverified.
     pub verified_at: Option<i64>,
+    /// Optimistic-concurrency version for claim lifecycle mutations.
+    pub resource_version: i64,
+    /// Reviewed plan that produced the current state, when any.
+    pub mutation_plan_id: Option<String>,
 }
 
 /// An in-flight OIDC authorization-code request (system-of-record row).
@@ -9147,6 +9156,35 @@ impl Database {
             .query(
                 &format!("SELECT {PLAN_COLUMNS} FROM topology_plans WHERE plan_id = ?1"),
                 &vals![plan_id],
+            )
+            .await?;
+        rows.first().map(row_to_topology_plan).transpose()
+    }
+
+    /// Returns the plan bound to one actor, operation, and request idempotency key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid key material or database failure.
+    pub async fn topology_plan_for_request(
+        &self,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        plan_kind: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<TopologyPlanRecord>> {
+        validate_key_bytes(actor_kind, "topology plan actor kind", 32)?;
+        validate_key_bytes(plan_kind, "topology plan kind", 64)?;
+        validate_key_bytes(idempotency_key, "plan idempotency key", 128)?;
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {PLAN_COLUMNS} FROM topology_plans
+                      WHERE actor_kind = ?1 AND actor_id = ?2 AND plan_kind = ?3
+                        AND request_idempotency_key = ?4"
+                ),
+                &vals![actor_kind, actor_id, plan_kind, idempotency_key],
             )
             .await?;
         rows.first().map(row_to_topology_plan).transpose()
@@ -18370,6 +18408,8 @@ impl Database {
                  allow_jit = excluded.allow_jit,
                  enforce_sso = excluded.enforce_sso,
                  default_role = excluded.default_role,
+                 resource_version = org_idp_configs.resource_version + 1,
+                 mutation_plan_id = NULL,
                  updated_at = excluded.updated_at",
                 &vals![
                     config.org_id,
@@ -18409,6 +18449,175 @@ impl Database {
         Ok(n > 0)
     }
 
+    /// Applies an exact-version IdP replacement, audit append, and plan completion atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation, optimistic concurrency, plan fencing,
+    /// audit persistence, or database execution fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_identity_provider_set_plan(
+        &self,
+        config: &IdpConfigRecord,
+        baseline_resource_version: Option<i64>,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        crate::auth::oidc::validate_idp_config_record(config)?;
+        validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        validate_json_value(result_json, "apply result")?;
+        let now = unix_now();
+        let mutation = match baseline_resource_version {
+            Some(version) => Statement::new(
+                "UPDATE org_idp_configs SET
+                    issuer = ?2, authorization_endpoint = ?3, token_endpoint = ?4,
+                    jwks_uri = ?5, client_id = ?6, client_secret_enc = ?7,
+                    scopes = ?8, groups_claim = ?9, role_map_json = ?10,
+                    allow_jit = ?11, enforce_sso = ?12, default_role = ?13,
+                    resource_version = resource_version + 1,
+                    mutation_plan_id = ?14, updated_at = ?15
+                  WHERE org_id = ?1 AND resource_version = ?16",
+                vals![
+                    config.org_id,
+                    config.issuer,
+                    config.authorization_endpoint,
+                    config.token_endpoint,
+                    config.jwks_uri,
+                    config.client_id,
+                    config.client_secret_enc,
+                    config.scopes,
+                    config.groups_claim,
+                    config.role_map_json,
+                    config.allow_jit,
+                    config.enforce_sso,
+                    config.default_role,
+                    plan_id,
+                    now,
+                    version
+                ],
+            )
+            .expecting(1),
+            None => Statement::new(
+                "INSERT INTO org_idp_configs
+                 (org_id, issuer, authorization_endpoint, token_endpoint, jwks_uri,
+                  client_id, client_secret_enc, scopes, groups_claim, role_map_json,
+                  allow_jit, enforce_sso, default_role, created_at, updated_at,
+                  resource_version, mutation_plan_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                         ?13, ?14, ?14, 1, ?15)",
+                vals![
+                    config.org_id,
+                    config.issuer,
+                    config.authorization_endpoint,
+                    config.token_endpoint,
+                    config.jwks_uri,
+                    config.client_id,
+                    config.client_secret_enc,
+                    config.scopes,
+                    config.groups_claim,
+                    config.role_map_json,
+                    config.allow_jit,
+                    config.enforce_sso,
+                    config.default_role,
+                    now,
+                    plan_id
+                ],
+            )
+            .expecting(1),
+        };
+        self.backend
+            .checked_batch(&[
+                mutation,
+                Statement::new(
+                    "INSERT INTO audit_log
+                     (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
+                      action, scope, detail, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'idp.set', ?6, NULL, ?7)",
+                    vals![
+                        audit_event_id,
+                        plan_id,
+                        actor_kind,
+                        actor_id,
+                        sanitize_log_text(actor_label),
+                        sanitize_log_text(scope),
+                        now
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE topology_plans SET applied_at = ?4, apply_result_json = ?3
+                       WHERE plan_id = ?1 AND apply_idempotency_key = ?2
+                         AND applied_at IS NULL",
+                    vals![plan_id, apply_idempotency_key, result_json, now],
+                )
+                .expecting(1),
+            ])
+            .await
+    }
+
+    /// Removes an exact IdP revision and completes its reviewed plan atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the revision changed or persistence fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_identity_provider_remove_plan(
+        &self,
+        org_id: i64,
+        expected_resource_version: i64,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        validate_json_value(result_json, "apply result")?;
+        let now = unix_now();
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "DELETE FROM org_idp_configs WHERE org_id = ?1 AND resource_version = ?2",
+                    vals![org_id, expected_resource_version],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO audit_log
+                 (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
+                  action, scope, detail, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'idp.remove', ?6, NULL, ?7)",
+                    vals![
+                        audit_event_id,
+                        plan_id,
+                        actor_kind,
+                        actor_id,
+                        sanitize_log_text(actor_label),
+                        sanitize_log_text(scope),
+                        now
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE topology_plans SET applied_at = ?4, apply_result_json = ?3
+                   WHERE plan_id = ?1 AND apply_idempotency_key = ?2 AND applied_at IS NULL",
+                    vals![plan_id, apply_idempotency_key, result_json, now],
+                )
+                .expecting(1),
+            ])
+            .await
+    }
+
     /// Load an org's OIDC identity-provider configuration, if configured.
     ///
     /// # Errors
@@ -18419,7 +18628,8 @@ impl Database {
             .query_opt(
                 "SELECT org_id, issuer, authorization_endpoint, token_endpoint, jwks_uri,
                         client_id, client_secret_enc, scopes, groups_claim, role_map_json,
-                        allow_jit, enforce_sso, default_role
+                        allow_jit, enforce_sso, default_role,
+                        resource_version, mutation_plan_id
                  FROM org_idp_configs WHERE org_id = ?1",
                 &vals![org_id],
             )
@@ -18490,7 +18700,9 @@ impl Database {
                      ON CONFLICT(domain) DO UPDATE SET
                          org_id = excluded.org_id,
                          txt_challenge = excluded.txt_challenge,
-                         verified_at = NULL",
+                         verified_at = NULL,
+                         resource_version = org_domains.resource_version + 1,
+                         mutation_plan_id = NULL",
                     &vals![domain, org_id, challenge],
                 )
                 .await?;
@@ -18506,7 +18718,9 @@ impl Database {
                  ON CONFLICT(domain) DO UPDATE SET
                      org_id = excluded.org_id,
                      txt_challenge = excluded.txt_challenge,
-                     verified_at = NULL
+                     verified_at = NULL,
+                     resource_version = org_domains.resource_version + 1,
+                     mutation_plan_id = NULL
                  WHERE org_domains.org_id = excluded.org_id",
                     &vals![domain, org_id, challenge],
                 )
@@ -18527,7 +18741,8 @@ impl Database {
         let rows = self
             .backend
             .query(
-                "SELECT domain, org_id, txt_challenge, verified_at
+                "SELECT domain, org_id, txt_challenge, verified_at,
+                        resource_version, mutation_plan_id
              FROM org_domains WHERE org_id = ?1 ORDER BY domain",
                 &vals![org_id],
             )
@@ -18539,6 +18754,8 @@ impl Database {
                     org_id: row.get(1)?,
                     txt_challenge: row.get(2)?,
                     verified_at: row.get(3)?,
+                    resource_version: row.get(4)?,
+                    mutation_plan_id: row.get(5)?,
                 })
             })
             .collect()
@@ -18553,9 +18770,12 @@ impl Database {
         let domain = domain.trim().to_lowercase();
         self.backend
             .query_opt(
-                "SELECT domain, org_id, txt_challenge, verified_at FROM org_domains WHERE domain = ?1",
+                "SELECT domain, org_id, txt_challenge, verified_at,
+                        resource_version, mutation_plan_id
+                   FROM org_domains WHERE domain = ?1",
                 &vals![domain],
-            ).await
+            )
+            .await
             .context("loading org domain")?
             .map(|row| -> Result<OrgDomainRecord> {
                 Ok(OrgDomainRecord {
@@ -18563,6 +18783,8 @@ impl Database {
                     org_id: row.get(1)?,
                     txt_challenge: row.get(2)?,
                     verified_at: row.get(3)?,
+                    resource_version: row.get(4)?,
+                    mutation_plan_id: row.get(5)?,
                 })
             })
             .transpose()
@@ -18585,7 +18807,11 @@ impl Database {
         let n = self
             .backend
             .execute(
-                "UPDATE org_domains SET verified_at = ?2 WHERE domain = ?1",
+                "UPDATE org_domains
+                    SET verified_at = ?2,
+                        resource_version = resource_version + 1,
+                        mutation_plan_id = NULL
+                  WHERE domain = ?1",
                 &vals![domain, unix_now()],
             )
             .await?;
@@ -18608,6 +18834,211 @@ impl Database {
             )
             .await?;
         Ok(n > 0)
+    }
+
+    /// Applies a domain claim or challenge rotation and completes its plan atomically.
+    ///
+    /// A new claim is an insert-only operation on every backend, including
+    /// MySQL, so two organizations racing the same unclaimed domain cannot
+    /// overwrite each other. A rotation is fenced by owner and resource version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a conflicting claim, changed revision, invalid plan
+    /// metadata, or database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_org_domain_claim_plan(
+        &self,
+        record: &OrgDomainRecord,
+        baseline_resource_version: Option<i64>,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        validate_json_value(result_json, "apply result")?;
+        let mutation = match baseline_resource_version {
+            Some(version) => Statement::new(
+                "UPDATE org_domains SET txt_challenge = ?3, verified_at = NULL,
+                        resource_version = resource_version + 1, mutation_plan_id = ?4
+                  WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?5",
+                vals![
+                    record.domain,
+                    record.org_id,
+                    record.txt_challenge,
+                    plan_id,
+                    version
+                ],
+            )
+            .expecting(1),
+            None => Statement::new(
+                "INSERT INTO org_domains
+                 (domain, org_id, txt_challenge, verified_at, resource_version, mutation_plan_id)
+                 VALUES (?1, ?2, ?3, NULL, 1, ?4)",
+                vals![record.domain, record.org_id, record.txt_challenge, plan_id],
+            )
+            .expecting(1),
+        };
+        self.apply_org_domain_mutation_plan(
+            mutation,
+            "domain.claim",
+            &record.domain,
+            scope,
+            plan_id,
+            apply_idempotency_key,
+            result_json,
+            actor_kind,
+            actor_id,
+            actor_label,
+            audit_event_id,
+        )
+        .await
+    }
+
+    /// Verifies an exact pending domain challenge and completes its plan atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when ownership, challenge, revision, or plan state changed.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_org_domain_verify_plan(
+        &self,
+        record: &OrgDomainRecord,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        let now = unix_now();
+        let mutation = Statement::new(
+            "UPDATE org_domains SET verified_at = ?5,
+                    resource_version = resource_version + 1, mutation_plan_id = ?4
+              WHERE domain = ?1 AND org_id = ?2 AND txt_challenge = ?3
+                AND resource_version = ?6 AND verified_at IS NULL",
+            vals![
+                record.domain,
+                record.org_id,
+                record.txt_challenge,
+                plan_id,
+                now,
+                record.resource_version
+            ],
+        )
+        .expecting(1);
+        self.apply_org_domain_mutation_plan(
+            mutation,
+            "domain.verify",
+            &record.domain,
+            scope,
+            plan_id,
+            apply_idempotency_key,
+            result_json,
+            actor_kind,
+            actor_id,
+            actor_label,
+            audit_event_id,
+        )
+        .await
+    }
+
+    /// Releases an exact domain claim and completes its plan atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when ownership or revision changed or persistence fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_org_domain_release_plan(
+        &self,
+        record: &OrgDomainRecord,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        let mutation = Statement::new(
+            "DELETE FROM org_domains
+              WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?3",
+            vals![record.domain, record.org_id, record.resource_version],
+        )
+        .expecting(1);
+        self.apply_org_domain_mutation_plan(
+            mutation,
+            "domain.release",
+            &record.domain,
+            scope,
+            plan_id,
+            apply_idempotency_key,
+            result_json,
+            actor_kind,
+            actor_id,
+            actor_label,
+            audit_event_id,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_org_domain_mutation_plan(
+        &self,
+        mutation: CheckedStatement,
+        action: &str,
+        domain: &str,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        validate_json_value(result_json, "apply result")?;
+        let now = unix_now();
+        self.backend
+            .checked_batch(&[
+                mutation,
+                Statement::new(
+                    "INSERT INTO audit_log
+                 (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
+                  action, scope, detail, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    vals![
+                        audit_event_id,
+                        plan_id,
+                        actor_kind,
+                        actor_id,
+                        sanitize_log_text(actor_label),
+                        sanitize_log_text(action),
+                        sanitize_log_text(scope),
+                        sanitize_log_text(domain),
+                        now
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE topology_plans SET applied_at = ?4, apply_result_json = ?3
+                   WHERE plan_id = ?1 AND apply_idempotency_key = ?2 AND applied_at IS NULL",
+                    vals![plan_id, apply_idempotency_key, result_json, now],
+                )
+                .expecting(1),
+            ])
+            .await
     }
 
     /// Resolve the org that owns a **verified** domain, if any.
@@ -21659,6 +22090,8 @@ fn row_to_idp_config(row: &Row) -> Result<IdpConfigRecord> {
         allow_jit: row.get(10)?,
         enforce_sso: row.get(11)?,
         default_role: row.get(12)?,
+        resource_version: row.get(13)?,
+        mutation_plan_id: row.get(14)?,
     })
 }
 

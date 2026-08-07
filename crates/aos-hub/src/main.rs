@@ -584,6 +584,12 @@ async fn main() -> Result<()> {
             let route_http: Arc<dyn aos_hub_core::web::console::ports::HttpClient> = Arc::new(
                 aos_hub::coreports::HubHttpClient::new(app_state.http.clone()),
             );
+            app_state.identity_domain_verifier = Some(Arc::new(
+                aos_hub_core::topology_probe::DnsJsonIdentityDomainVerifier::new(
+                    Arc::clone(&route_http),
+                    endpoint.clone(),
+                ),
+            ));
             let mut controller = aos_hub_core::topology_probe::DomainProbeController::new(
                 Arc::clone(&app_state.db),
                 Arc::clone(&route_http),

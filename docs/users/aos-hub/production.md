@@ -120,11 +120,12 @@ Grant broader roles only when the operation requires them. Publishing package
 objects does not require instance administration.
 
 OIDC configuration supports issuer and endpoint metadata, JWKS, group-to-role
-mapping, enforced SSO, and optional just-in-time provisioning. Configure it
-through the authenticated web console when a client secret is required. The
-native `idp set` command currently takes that secret as a command-line
-argument, so it is unsuitable where process arguments or shell history are
-exposed.
+mapping, enforced SSO, and optional just-in-time provisioning. Use the
+authenticated Web console or the remote `aos hub org identity-provider`
+commands. The remote CLI reads a replacement credential from
+`AOS_OIDC_CLIENT_SECRET`; it does not require the secret in process arguments.
+Claim email domains separately with `aos hub org domain`. Verification resolves
+the exact reviewed DNS TXT challenge before the domain can route sign-ins.
 
 Retain a tested local owner recovery path before enforcing SSO. Verify issuer
 reachability, TLS, time synchronization, group claims, default role, and

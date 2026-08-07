@@ -429,6 +429,13 @@ invitation gets a dedicated workflow rather than a large form below the member
 table. Signing-key usage shows which registries, caches, and channel purposes
 pin each immutable generation before rotation or retirement.
 
+SSO is itself split into two related resources. The organization owns one
+redacted OIDC identity-provider configuration and any number of globally unique
+email-domain claims. Provider credentials are sealed before immutable plan
+persistence. Domain verification resolves the exact reviewed TXT challenge;
+there is no operator-only database stamp or alternate verification path. Both
+resources use exact revision plan/apply mutations in the Web UI, CLI, and API.
+
 ### Operations and audit
 
 Operations is live/asynchronous work with progress and retry. Audit log is the

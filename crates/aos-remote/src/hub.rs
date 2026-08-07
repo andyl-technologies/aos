@@ -639,6 +639,32 @@ enum HubTopologyMethod {
     PlanCancelInvitation,
     CancelInvitation,
     AcceptInvitation,
+    /// Selects redacted organization identity-provider inspection.
+    GetIdentityProvider,
+    /// Selects identity-provider replacement planning.
+    PlanSetIdentityProvider,
+    /// Selects identity-provider replacement apply.
+    SetIdentityProvider,
+    /// Selects identity-provider removal planning.
+    PlanRemoveIdentityProvider,
+    /// Selects identity-provider removal apply.
+    RemoveIdentityProvider,
+    /// Selects organization-domain listing.
+    ListOrganizationDomains,
+    /// Selects exact organization-domain inspection.
+    GetOrganizationDomain,
+    /// Selects organization-domain claim planning.
+    PlanClaimOrganizationDomain,
+    /// Selects organization-domain claim apply.
+    ClaimOrganizationDomain,
+    /// Selects organization-domain DNS verification planning.
+    PlanVerifyOrganizationDomain,
+    /// Selects organization-domain DNS verification apply.
+    VerifyOrganizationDomain,
+    /// Selects organization-domain release planning.
+    PlanReleaseOrganizationDomain,
+    /// Selects organization-domain release apply.
+    ReleaseOrganizationDomain,
     PlanIssueAccessToken,
     IssueAccessToken,
     PlanRetireAccessToken,
@@ -1122,6 +1148,23 @@ impl HubTopologyMethod {
             PlanCancelInvitation => "aos.hub.v1.IdentityService/PlanCancelInvitation",
             CancelInvitation => "aos.hub.v1.IdentityService/CancelInvitation",
             AcceptInvitation => "aos.hub.v1.IdentityService/AcceptInvitation",
+            GetIdentityProvider => "aos.hub.v1.IdentityService/GetIdentityProvider",
+            PlanSetIdentityProvider => "aos.hub.v1.IdentityService/PlanSetIdentityProvider",
+            SetIdentityProvider => "aos.hub.v1.IdentityService/SetIdentityProvider",
+            PlanRemoveIdentityProvider => "aos.hub.v1.IdentityService/PlanRemoveIdentityProvider",
+            RemoveIdentityProvider => "aos.hub.v1.IdentityService/RemoveIdentityProvider",
+            ListOrganizationDomains => "aos.hub.v1.IdentityService/ListOrganizationDomains",
+            GetOrganizationDomain => "aos.hub.v1.IdentityService/GetOrganizationDomain",
+            PlanClaimOrganizationDomain => "aos.hub.v1.IdentityService/PlanClaimOrganizationDomain",
+            ClaimOrganizationDomain => "aos.hub.v1.IdentityService/ClaimOrganizationDomain",
+            PlanVerifyOrganizationDomain => {
+                "aos.hub.v1.IdentityService/PlanVerifyOrganizationDomain"
+            }
+            VerifyOrganizationDomain => "aos.hub.v1.IdentityService/VerifyOrganizationDomain",
+            PlanReleaseOrganizationDomain => {
+                "aos.hub.v1.IdentityService/PlanReleaseOrganizationDomain"
+            }
+            ReleaseOrganizationDomain => "aos.hub.v1.IdentityService/ReleaseOrganizationDomain",
             PlanIssueAccessToken => "aos.hub.v1.IdentityService/PlanIssueAccessToken",
             IssueAccessToken => "aos.hub.v1.IdentityService/IssueAccessToken",
             PlanRetireAccessToken => "aos.hub.v1.IdentityService/PlanRetireAccessToken",
@@ -1495,6 +1538,19 @@ pub mod hub_rpc {
         PlanCancelInvitation: PlanCancelInvitationRequest => TopologyPlanResponse;
         CancelInvitation: ApplyTopologyPlanRequest => InvitationResponse;
         AcceptInvitation: AcceptInvitationRequest => AcceptInvitationResponse;
+        GetIdentityProvider: GetIdentityProviderRequest => IdentityProviderResponse;
+        PlanSetIdentityProvider: PlanSetIdentityProviderRequest => TopologyPlanResponse;
+        SetIdentityProvider: ApplyTopologyPlanRequest => IdentityProviderResponse;
+        PlanRemoveIdentityProvider: PlanRemoveIdentityProviderRequest => TopologyPlanResponse;
+        RemoveIdentityProvider: ApplyTopologyPlanRequest => DeleteTopologyResourceResponse;
+        ListOrganizationDomains: ListOrganizationDomainsRequest => ListOrganizationDomainsResponse;
+        GetOrganizationDomain: GetOrganizationDomainRequest => OrganizationDomainResponse;
+        PlanClaimOrganizationDomain: PlanClaimOrganizationDomainRequest => TopologyPlanResponse;
+        ClaimOrganizationDomain: ApplyTopologyPlanRequest => OrganizationDomainResponse;
+        PlanVerifyOrganizationDomain: PlanVerifyOrganizationDomainRequest => TopologyPlanResponse;
+        VerifyOrganizationDomain: ApplyTopologyPlanRequest => OrganizationDomainResponse;
+        PlanReleaseOrganizationDomain: PlanReleaseOrganizationDomainRequest => TopologyPlanResponse;
+        ReleaseOrganizationDomain: ApplyTopologyPlanRequest => DeleteTopologyResourceResponse;
         PlanIssueAccessToken: PlanIssueAccessTokenRequest => TopologyPlanResponse;
         IssueAccessToken: ApplyTopologyPlanRequest => AccessTokenResponse;
         PlanRetireAccessToken: PlanRetireAccessTokenRequest => TopologyPlanResponse;

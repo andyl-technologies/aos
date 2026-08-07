@@ -127,6 +127,21 @@ Connect responses carry `Cache-Control: no-store`, `Pragma: no-cache`, and
 `Referrer-Policy: no-referrer`, so secret-bearing mutation results are not
 retained by shared caches or leaked as referrers.
 
+Organization SSO uses two explicit `IdentityService` resources. The
+identity-provider surface consists of `GetIdentityProvider`, reviewed
+`PlanSetIdentityProvider`/`SetIdentityProvider`, and reviewed
+`PlanRemoveIdentityProvider`/`RemoveIdentityProvider`. Reads report only
+whether a client secret is configured. A plaintext replacement is accepted at
+the request edge, sealed before plan persistence, and never returned.
+
+Email-domain ownership uses `ListOrganizationDomains`,
+`GetOrganizationDomain`, and reviewed claim, verify, and release pairs. A new
+claim requires `expectedResourceVersion: "absent"`; subsequent operations use
+the exact returned resource version. Verification performs DNS resolution in
+both native and Worker deployments and commits only when the exact reviewed
+TXT challenge is present. Claim, audit, and plan completion are one atomic
+database transaction, including on MySQL.
+
 ## Scripting
 
 The remote client covers common calls and provides stable JSON output:

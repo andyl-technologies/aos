@@ -533,6 +533,45 @@ struct InvitationCancelPlanInput {
     baseline_created_at: i64,
 }
 
+/// Sealed desired state and exact baseline for one organization IdP mutation.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct IdentityProviderSetPlanInput {
+    org_id: i64,
+    org_slug: String,
+    issuer: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    jwks_uri: String,
+    client_id: String,
+    client_secret_enc: Option<String>,
+    client_secret_action: String,
+    scopes: String,
+    groups_claim: Option<String>,
+    role_map_json: String,
+    allow_jit: bool,
+    enforce_sso: bool,
+    default_role: String,
+    baseline_resource_version: Option<i64>,
+}
+
+/// Exact baseline for removing one organization IdP configuration.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct IdentityProviderRemovePlanInput {
+    org_id: i64,
+    org_slug: String,
+    baseline_resource_version: i64,
+}
+
+/// Exact ownership and revision sealed by an organization-domain plan.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct OrganizationDomainPlanInput {
+    org_id: i64,
+    org_slug: String,
+    domain: String,
+    txt_challenge: String,
+    baseline_resource_version: Option<i64>,
+}
+
 /// Immutable preconditions for issuing one scoped access-token generation.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct AccessTokenIssuePlanInput {
@@ -1733,6 +1772,46 @@ fn invitation_message(
     })
 }
 
+fn identity_provider_message(
+    org_slug: &str,
+    record: crate::db::IdpConfigRecord,
+) -> pb::IdentityProvider {
+    pb::IdentityProvider {
+        org_slug: org_slug.to_string(),
+        issuer: record.issuer,
+        authorization_endpoint: record.authorization_endpoint,
+        token_endpoint: record.token_endpoint,
+        jwks_uri: record.jwks_uri,
+        client_id: record.client_id,
+        client_secret_configured: record.client_secret_enc.is_some(),
+        scopes: record.scopes,
+        groups_claim: record.groups_claim.unwrap_or_default(),
+        role_map_json: record.role_map_json,
+        allow_jit: record.allow_jit,
+        enforce_sso: record.enforce_sso,
+        default_role: record.default_role,
+        resource_version: record.resource_version.to_string(),
+    }
+}
+
+fn organization_domain_message(
+    org_slug: &str,
+    record: crate::db::OrgDomainRecord,
+) -> pb::OrganizationDomain {
+    pb::OrganizationDomain {
+        org_slug: org_slug.to_string(),
+        domain: record.domain,
+        state: if record.verified_at.is_some() {
+            "verified".to_string()
+        } else {
+            "pending".to_string()
+        },
+        txt_challenge: record.txt_challenge,
+        verified_at: record.verified_at.unwrap_or_default(),
+        resource_version: record.resource_version.to_string(),
+    }
+}
+
 fn normalize_invitation_email(value: &str) -> Result<String, RpcError> {
     let email = value.trim().to_ascii_lowercase();
     if email.len() > 254 {
@@ -2287,6 +2366,8 @@ pub struct RpcService {
     /// ownership responder. Absent material makes the route fail closed.
     pub domain_probe_terminator:
         Option<Arc<dyn crate::topology_probe::DomainProbeTerminatorProvider>>,
+    /// Runtime DNS verifier for organization email-domain ownership challenges.
+    pub identity_domain_verifier: Option<Arc<dyn crate::topology_probe::IdentityDomainVerifier>>,
     /// Runtime-owned active and retained route-reservation HMAC keys.
     pub route_reservation_keyring: Option<Arc<dyn RouteReservationKeyring>>,
 }
@@ -3077,7 +3158,8 @@ impl RpcService {
                 (!observation.error.is_empty()).then_some(observation.error.as_str()),
                 expected,
             )
-            .await?;
+            .await
+            .map_err(RpcError::internal)?;
         Ok(pb::NetworkBoundaryRevisionResponse {
             revision: Some(Self::network_boundary_revision_message(record)?),
             coordination_operation: None,
@@ -9816,8 +9898,19 @@ impl RpcService {
             origin_fetch: None,
             kv: None,
             domain_probe_terminator: None,
+            identity_domain_verifier: None,
             route_reservation_keyring: None,
         }
+    }
+
+    /// Attaches the runtime DNS verifier for organization-domain challenges.
+    #[must_use]
+    pub fn with_identity_domain_verifier(
+        mut self,
+        verifier: Arc<dyn crate::topology_probe::IdentityDomainVerifier>,
+    ) -> Self {
+        self.identity_domain_verifier = Some(verifier);
+        self
     }
 
     /// Attaches the runtime provider for immutable secret-version references.
@@ -19714,6 +19807,970 @@ impl RpcService {
         })
     }
 
+    /// Reads an organization's redacted OIDC identity-provider configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, lookup, or persistence error.
+    pub async fn get_identity_provider(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetIdentityProviderRequest,
+    ) -> Result<pb::IdentityProviderResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let record = self
+            .db
+            .idp_config(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("identity provider"))?;
+        Ok(pb::IdentityProviderResponse {
+            identity_provider: Some(identity_provider_message(&org.slug, record)),
+        })
+    }
+
+    /// Plans an exact-version OIDC identity-provider replacement.
+    ///
+    /// Plaintext client credentials are sealed before the plan is serialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid configuration, a stale baseline, unavailable
+    /// secret sealing, insufficient authority, or persistence failure.
+    pub async fn plan_set_identity_provider(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanSetIdentityProviderRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        if req.idempotency_key.is_empty() {
+            return Err(RpcError::invalid("idempotency_key is required"));
+        }
+        if !req.replace_client_secret && !req.client_secret.is_empty() {
+            return Err(RpcError::invalid(
+                "client_secret requires replace_client_secret=true",
+            ));
+        }
+        if let Some(replayed) = self.replayed_identity_provider_plan(&claims, &req).await? {
+            return Ok(replayed);
+        }
+        let existing = self
+            .db
+            .idp_config(org.id)
+            .await
+            .map_err(RpcError::internal)?;
+        let baseline_resource_version = require_exact_optional_version(
+            &req.expected_resource_version,
+            existing.as_ref().map(|record| record.resource_version),
+        )?;
+        let client_secret_action = if !req.replace_client_secret {
+            "preserve"
+        } else if req.client_secret.is_empty() {
+            "clear"
+        } else {
+            "replace"
+        };
+        let client_secret_enc = if req.replace_client_secret {
+            if req.client_secret.is_empty() {
+                None
+            } else {
+                Some(
+                    self.sealer
+                        .as_ref()
+                        .ok_or_else(|| {
+                            RpcError::FailedPrecondition(
+                                "identity-provider credentials require durable secret sealing"
+                                    .into(),
+                            )
+                        })?
+                        .seal(&req.client_secret)
+                        .map_err(RpcError::internal)?,
+                )
+            }
+        } else {
+            existing
+                .as_ref()
+                .and_then(|record| record.client_secret_enc.clone())
+        };
+        let input = IdentityProviderSetPlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            issuer: req.issuer.trim().to_string(),
+            authorization_endpoint: req.authorization_endpoint.trim().to_string(),
+            token_endpoint: req.token_endpoint.trim().to_string(),
+            jwks_uri: req.jwks_uri.trim().to_string(),
+            client_id: req.client_id.trim().to_string(),
+            client_secret_enc,
+            client_secret_action: client_secret_action.to_string(),
+            scopes: req.scopes.trim().to_string(),
+            groups_claim: (!req.groups_claim.trim().is_empty())
+                .then(|| req.groups_claim.trim().to_string()),
+            role_map_json: if req.role_map_json.trim().is_empty() {
+                "{}".to_string()
+            } else {
+                req.role_map_json.trim().to_string()
+            },
+            allow_jit: req.allow_jit,
+            enforce_sso: req.enforce_sso,
+            default_role: req.default_role.trim().to_string(),
+            baseline_resource_version,
+        };
+        let candidate =
+            idp_record_from_plan(&input, input.baseline_resource_version.unwrap_or(0) + 1);
+        crate::auth::oidc::validate_idp_config_record(&candidate)
+            .map_err(|error| RpcError::invalid(format!("invalid identity provider: {error:#}")))?;
+        self.create_control_plan(
+            &claims,
+            "set_identity_provider",
+            scope.as_str(),
+            &input,
+            &req.idempotency_key,
+            vec![format!("set OIDC identity provider for {}", input.org_slug)],
+            vec!["SSO login behavior may change immediately after apply".to_string()],
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed OIDC identity-provider replacement exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reviewed baseline changed, authority is lost,
+    /// or the atomic mutation cannot be committed.
+    pub async fn apply_set_identity_provider(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::IdentityProviderResponse, RpcError> {
+        const KIND: &str = "set_identity_provider";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, IdentityProviderSetPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let version = input.baseline_resource_version.unwrap_or(0) + 1;
+        let config = idp_record_from_plan(&input, version);
+        let response = pb::IdentityProviderResponse {
+            identity_provider: Some(identity_provider_message(&org.slug, config.clone())),
+        };
+        let result_json = serde_json::to_string(&response).map_err(RpcError::internal)?;
+        let event_id = control_audit_event_id("idp:set", &plan.plan_id);
+        self.db
+            .apply_identity_provider_set_plan(
+                &config,
+                input.baseline_resource_version,
+                scope.as_str(),
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| {
+                RpcError::FailedPrecondition(format!(
+                    "identity provider changed after planning: {error:#}"
+                ))
+            })?;
+        Ok(response)
+    }
+
+    /// Plans removal of one exact OIDC identity-provider revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, lookup, version, or persistence error.
+    pub async fn plan_remove_identity_provider(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanRemoveIdentityProviderRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let current = self
+            .db
+            .idp_config(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("identity provider"))?;
+        let expected = parse_resource_version(&req.expected_resource_version, -1)?;
+        if expected != current.resource_version {
+            return Err(RpcError::FailedPrecondition(
+                "identity-provider revision changed".into(),
+            ));
+        }
+        let input = IdentityProviderRemovePlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            baseline_resource_version: current.resource_version,
+        };
+        self.create_control_plan(
+            &claims,
+            "remove_identity_provider",
+            scope.as_str(),
+            &input,
+            &req.idempotency_key,
+            vec![format!(
+                "remove OIDC identity provider for {}",
+                input.org_slug
+            )],
+            vec!["SSO login for captured domains will stop".to_string()],
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed OIDC identity-provider removal exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the revision changed or atomic apply fails.
+    pub async fn apply_remove_identity_provider(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::DeleteTopologyResourceResponse, RpcError> {
+        const KIND: &str = "remove_identity_provider";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, IdentityProviderRemovePlanInput) = self
+            .load_control_plan(auth, &req.plan_id, KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let response = pb::DeleteTopologyResourceResponse { deleted: true };
+        let result_json = serde_json::to_string(&response).map_err(RpcError::internal)?;
+        let event_id = control_audit_event_id("idp:remove", &plan.plan_id);
+        self.db
+            .apply_identity_provider_remove_plan(
+                org.id,
+                input.baseline_resource_version,
+                scope.as_str(),
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| {
+                RpcError::FailedPrecondition(format!(
+                    "identity provider changed after planning: {error:#}"
+                ))
+            })?;
+        Ok(response)
+    }
+
+    async fn replayed_identity_provider_plan(
+        &self,
+        claims: &Claims,
+        request: &pb::PlanSetIdentityProviderRequest,
+    ) -> Result<Option<pb::TopologyPlanResponse>, RpcError> {
+        let Some(plan) = self
+            .db
+            .topology_plan_for_request(
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                "set_identity_provider",
+                &request.idempotency_key,
+            )
+            .await
+            .map_err(RpcError::internal)?
+        else {
+            return Ok(None);
+        };
+        let input: IdentityProviderSetPlanInput =
+            serde_json::from_str(&plan.input_versions_json).map_err(RpcError::internal)?;
+        let role_map = if request.role_map_json.trim().is_empty() {
+            "{}"
+        } else {
+            request.role_map_json.trim()
+        };
+        let expected_version = input
+            .baseline_resource_version
+            .map_or_else(|| "absent".to_string(), |version| version.to_string());
+        let requested_action = if !request.replace_client_secret {
+            "preserve"
+        } else if request.client_secret.is_empty() {
+            "clear"
+        } else {
+            "replace"
+        };
+        let public_input_matches = input.org_slug == request.org_slug
+            && input.issuer == request.issuer.trim()
+            && input.authorization_endpoint == request.authorization_endpoint.trim()
+            && input.token_endpoint == request.token_endpoint.trim()
+            && input.jwks_uri == request.jwks_uri.trim()
+            && input.client_id == request.client_id.trim()
+            && input.client_secret_action == requested_action
+            && input.scopes == request.scopes.trim()
+            && input.groups_claim.as_deref().unwrap_or_default() == request.groups_claim.trim()
+            && input.role_map_json == role_map
+            && input.allow_jit == request.allow_jit
+            && input.enforce_sso == request.enforce_sso
+            && input.default_role == request.default_role.trim()
+            && expected_version == request.expected_resource_version;
+        let credential_matches = match requested_action {
+            "replace" => {
+                let sealed = input.client_secret_enc.as_deref().ok_or_else(|| {
+                    RpcError::internal(anyhow::anyhow!(
+                        "identity-provider replacement plan omitted its sealed credential"
+                    ))
+                })?;
+                self.sealer
+                    .as_ref()
+                    .ok_or_else(|| {
+                        RpcError::FailedPrecondition(
+                            "identity-provider credentials require durable secret sealing".into(),
+                        )
+                    })?
+                    .unseal(sealed)
+                    .map_err(RpcError::internal)?
+                    == request.client_secret
+            }
+            "clear" => input.client_secret_enc.is_none(),
+            "preserve" => true,
+            _ => false,
+        };
+        if !public_input_matches || !credential_matches {
+            return Err(RpcError::FailedPrecondition(
+                "plan idempotency key was already used for different input".into(),
+            ));
+        }
+        Self::control_plan_response(plan).map(Some)
+    }
+
+    /// Lists organization email-domain claims without exposing credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, paging, or persistence error.
+    pub async fn list_organization_domains(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListOrganizationDomainsRequest,
+    ) -> Result<pb::ListOrganizationDomainsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let domains = self
+            .db
+            .list_org_domains(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|record| organization_domain_message(&org.slug, record))
+            .collect();
+        let (domains, next_page_token) = paginate(domains, req.page_size, &req.page_token)?;
+        Ok(pb::ListOrganizationDomainsResponse {
+            domains,
+            next_page_token,
+        })
+    }
+
+    /// Reads one organization email-domain claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, lookup, or persistence error.
+    pub async fn get_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetOrganizationDomainRequest,
+    ) -> Result<pb::OrganizationDomainResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let domain = canonical_identity_domain(&req.domain)?;
+        let record = self
+            .db
+            .org_domain(&domain)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|record| record.org_id == org.id)
+            .ok_or_else(|| RpcError::not_found("organization domain"))?;
+        Ok(pb::OrganizationDomainResponse {
+            domain: Some(organization_domain_message(&org.slug, record)),
+        })
+    }
+
+    /// Plans a new domain claim or exact-version challenge rotation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, foreign ownership, a stale version,
+    /// insufficient authority, or persistence failure.
+    pub async fn plan_claim_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanClaimOrganizationDomainRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        if req.idempotency_key.is_empty() {
+            return Err(RpcError::invalid("idempotency_key is required"));
+        }
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let domain = canonical_identity_domain(&req.domain)?;
+        let existing = self
+            .db
+            .org_domain(&domain)
+            .await
+            .map_err(RpcError::internal)?;
+        if existing
+            .as_ref()
+            .is_some_and(|record| record.org_id != org.id)
+        {
+            return Err(RpcError::AlreadyExists(
+                "domain is claimed by another organization".into(),
+            ));
+        }
+        let baseline_resource_version = require_exact_optional_version(
+            &req.expected_resource_version,
+            existing.as_ref().map(|record| record.resource_version),
+        )?;
+        let challenge = format!(
+            "aos-domain-verify={}",
+            hex::encode(Sha256::digest(
+                format!("{}:{domain}:{}", org.stable_id, req.idempotency_key).as_bytes()
+            ))
+        );
+        let input = OrganizationDomainPlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            domain,
+            txt_challenge: challenge,
+            baseline_resource_version,
+        };
+        self.create_control_plan(
+            &claims,
+            "claim_organization_domain",
+            scope.as_str(),
+            &input,
+            &req.idempotency_key,
+            vec![format!("claim {} for {}", input.domain, input.org_slug)],
+            vec![
+                "the claim remains inactive until its exact DNS TXT challenge is verified"
+                    .to_string(),
+            ],
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed domain claim or challenge rotation exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when ownership or revision changed or atomic apply fails.
+    pub async fn apply_claim_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::OrganizationDomainResponse, RpcError> {
+        const KIND: &str = "claim_organization_domain";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, OrganizationDomainPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let record = crate::db::OrgDomainRecord {
+            domain: input.domain,
+            org_id: org.id,
+            txt_challenge: input.txt_challenge,
+            verified_at: None,
+            resource_version: input.baseline_resource_version.unwrap_or(0) + 1,
+            mutation_plan_id: Some(plan.plan_id.clone()),
+        };
+        let response = pb::OrganizationDomainResponse {
+            domain: Some(organization_domain_message(&org.slug, record.clone())),
+        };
+        let result_json = serde_json::to_string(&response).map_err(RpcError::internal)?;
+        let event_id = control_audit_event_id("domain:claim", &plan.plan_id);
+        self.db
+            .apply_org_domain_claim_plan(
+                &record,
+                input.baseline_resource_version,
+                scope.as_str(),
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| {
+                RpcError::FailedPrecondition(format!(
+                    "domain claim changed after planning: {error:#}"
+                ))
+            })?;
+        Ok(response)
+    }
+
+    /// Plans DNS verification of one exact pending domain revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, lookup, version, or persistence error.
+    pub async fn plan_verify_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanVerifyOrganizationDomainRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let (claims, org, record, scope) = self
+            .organization_domain_plan_context(
+                auth,
+                &req.org_slug,
+                &req.domain,
+                &req.expected_resource_version,
+            )
+            .await?;
+        if record.verified_at.is_some() {
+            return Err(RpcError::FailedPrecondition(
+                "domain is already verified".into(),
+            ));
+        }
+        let input = OrganizationDomainPlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            domain: record.domain,
+            txt_challenge: record.txt_challenge,
+            baseline_resource_version: Some(record.resource_version),
+        };
+        self.create_control_plan(
+            &claims,
+            "verify_organization_domain",
+            scope.as_str(),
+            &input,
+            &req.idempotency_key,
+            vec![format!("verify DNS ownership of {}", input.domain)],
+            Vec::new(),
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Resolves DNS and atomically verifies one reviewed domain challenge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when DNS lacks the exact challenge, the revision changed,
+    /// the runtime has no verifier, or atomic apply fails.
+    pub async fn apply_verify_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::OrganizationDomainResponse, RpcError> {
+        const KIND: &str = "verify_organization_domain";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, OrganizationDomainPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let current = self
+            .db
+            .org_domain(&input.domain)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|record| record.org_id == org.id)
+            .ok_or_else(|| RpcError::FailedPrecondition("domain claim disappeared".into()))?;
+        if current.resource_version != input.baseline_resource_version.unwrap_or(-1)
+            || current.txt_challenge != input.txt_challenge
+            || current.verified_at.is_some()
+        {
+            return Err(RpcError::FailedPrecondition(
+                "domain claim changed after planning".into(),
+            ));
+        }
+        let verifier = self.identity_domain_verifier.as_ref().ok_or_else(|| {
+            RpcError::FailedPrecondition("DNS domain verification is not configured".into())
+        })?;
+        if !verifier
+            .challenge_is_published(&current.domain, &current.txt_challenge)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::FailedPrecondition(
+                "the exact DNS TXT challenge is not published".into(),
+            ));
+        }
+        let verified_at = clock::now_unix_secs();
+        let mut verified = current.clone();
+        verified.verified_at = Some(verified_at);
+        verified.resource_version += 1;
+        verified.mutation_plan_id = Some(plan.plan_id.clone());
+        let response = pb::OrganizationDomainResponse {
+            domain: Some(organization_domain_message(&org.slug, verified)),
+        };
+        let result_json = serde_json::to_string(&response).map_err(RpcError::internal)?;
+        let event_id = control_audit_event_id("domain:verify", &plan.plan_id);
+        self.db
+            .apply_org_domain_verify_plan(
+                &current,
+                scope.as_str(),
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| {
+                RpcError::FailedPrecondition(format!(
+                    "domain claim changed after DNS verification: {error:#}"
+                ))
+            })?;
+        Ok(response)
+    }
+
+    /// Plans release of one exact organization-domain claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, lookup, version, or persistence error.
+    pub async fn plan_release_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanReleaseOrganizationDomainRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let (claims, org, record, scope) = self
+            .organization_domain_plan_context(
+                auth,
+                &req.org_slug,
+                &req.domain,
+                &req.expected_resource_version,
+            )
+            .await?;
+        let input = OrganizationDomainPlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            domain: record.domain,
+            txt_challenge: record.txt_challenge,
+            baseline_resource_version: Some(record.resource_version),
+        };
+        self.create_control_plan(
+            &claims,
+            "release_organization_domain",
+            scope.as_str(),
+            &input,
+            &req.idempotency_key,
+            vec![format!("release {} from {}", input.domain, input.org_slug)],
+            vec!["email-first SSO routing for this domain will stop".to_string()],
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed organization-domain release exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the claim changed or atomic apply fails.
+    pub async fn apply_release_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::DeleteTopologyResourceResponse, RpcError> {
+        const KIND: &str = "release_organization_domain";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, OrganizationDomainPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let current = self
+            .db
+            .org_domain(&input.domain)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|record| record.org_id == org.id)
+            .ok_or_else(|| RpcError::FailedPrecondition("domain claim disappeared".into()))?;
+        if current.resource_version != input.baseline_resource_version.unwrap_or(-1) {
+            return Err(RpcError::FailedPrecondition(
+                "domain claim changed after planning".into(),
+            ));
+        }
+        let response = pb::DeleteTopologyResourceResponse { deleted: true };
+        let result_json = serde_json::to_string(&response).map_err(RpcError::internal)?;
+        let event_id = control_audit_event_id("domain:release", &plan.plan_id);
+        self.db
+            .apply_org_domain_release_plan(
+                &current,
+                scope.as_str(),
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| {
+                RpcError::FailedPrecondition(format!(
+                    "domain claim changed after planning: {error:#}"
+                ))
+            })?;
+        Ok(response)
+    }
+
+    async fn organization_domain_plan_context(
+        &self,
+        auth: Option<&str>,
+        org_slug: &str,
+        domain: &str,
+        expected_resource_version: &str,
+    ) -> Result<
+        (
+            Claims,
+            crate::db::OrgRecord,
+            crate::db::OrgDomainRecord,
+            Scope,
+        ),
+        RpcError,
+    > {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let domain = canonical_identity_domain(domain)?;
+        let record = self
+            .db
+            .org_domain(&domain)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|record| record.org_id == org.id)
+            .ok_or_else(|| RpcError::not_found("organization domain"))?;
+        let expected = parse_resource_version(expected_resource_version, -1)?;
+        if expected != record.resource_version {
+            return Err(RpcError::FailedPrecondition(
+                "domain claim revision changed".into(),
+            ));
+        }
+        Ok((claims, org, record, scope))
+    }
+
     /// Persists an immutable plan for issuing a scoped access token.
     pub async fn plan_issue_access_token(
         &self,
@@ -25632,6 +26689,12 @@ impl RpcService {
             })
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        Self::control_plan_response(plan)
+    }
+
+    fn control_plan_response(
+        plan: crate::db::TopologyPlanRecord,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let effects = serde_json::from_str(&plan.effects_json).map_err(RpcError::internal)?;
         let warnings = serde_json::from_str(&plan.warnings_json).map_err(RpcError::internal)?;
         let input_value: serde_json::Value =
@@ -31754,6 +32817,60 @@ fn parse_resource_version(value: &str, default: i64) -> Result<i64, RpcError> {
         .map_err(|_| RpcError::invalid("expected_resource_version must be an integer"))
 }
 
+fn require_exact_optional_version(
+    supplied: &str,
+    current: Option<i64>,
+) -> Result<Option<i64>, RpcError> {
+    match current {
+        None if supplied == "absent" => Ok(None),
+        None => Err(RpcError::FailedPrecondition(
+            "new resource requires expected_resource_version=absent".into(),
+        )),
+        Some(version) => {
+            let supplied = parse_resource_version(supplied, -1)?;
+            if supplied == version {
+                Ok(Some(version))
+            } else {
+                Err(RpcError::FailedPrecondition(
+                    "resource revision changed".into(),
+                ))
+            }
+        }
+    }
+}
+
+fn canonical_identity_domain(value: &str) -> Result<String, RpcError> {
+    crate::db::canonical_delivery_hostname(value.trim())
+        .map_err(|error| RpcError::invalid(format!("invalid organization domain: {error:#}")))
+}
+
+fn idp_record_from_plan(
+    input: &IdentityProviderSetPlanInput,
+    resource_version: i64,
+) -> crate::db::IdpConfigRecord {
+    crate::db::IdpConfigRecord {
+        org_id: input.org_id,
+        issuer: input.issuer.clone(),
+        authorization_endpoint: input.authorization_endpoint.clone(),
+        token_endpoint: input.token_endpoint.clone(),
+        jwks_uri: input.jwks_uri.clone(),
+        client_id: input.client_id.clone(),
+        client_secret_enc: input.client_secret_enc.clone(),
+        scopes: input.scopes.clone(),
+        groups_claim: input.groups_claim.clone(),
+        role_map_json: input.role_map_json.clone(),
+        allow_jit: input.allow_jit,
+        enforce_sso: input.enforce_sso,
+        default_role: input.default_role.clone(),
+        resource_version,
+        mutation_plan_id: None,
+    }
+}
+
+fn control_audit_event_id(kind: &str, plan_id: &str) -> String {
+    hex::encode(Sha256::digest(format!("{kind}:{plan_id}").as_bytes()))
+}
+
 fn require_absent_resource_version(value: &str) -> Result<(), RpcError> {
     if value.is_empty() {
         Ok(())
@@ -32215,6 +33332,15 @@ mod cache_upload_tests {
         }
     }
 
+    struct PublishedIdentityDomain;
+
+    #[async_trait::async_trait]
+    impl crate::topology_probe::IdentityDomainVerifier for PublishedIdentityDomain {
+        async fn challenge_is_published(&self, _domain: &str, _challenge: &str) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
     async fn injected_service(
         fetch_behaviors: Vec<FetchBehavior>,
         write_behaviors: Vec<WriteBehavior>,
@@ -32275,7 +33401,8 @@ mod cache_upload_tests {
             Some(Arc::new(InjectedSealer {
                 behaviors: Mutex::new(sealer_behaviors.into()),
             })),
-        );
+        )
+        .with_identity_domain_verifier(Arc::new(PublishedIdentityDomain));
         (service, db, lease, format!("Bearer {token}"))
     }
 
@@ -32492,6 +33619,148 @@ mod cache_upload_tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn identity_provider_and_domain_lifecycles_are_reviewed_and_versioned() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        db.create_org("identity", "Identity").await.unwrap();
+
+        let idp_plan = service
+            .plan_set_identity_provider(
+                Some(&auth),
+                pb::PlanSetIdentityProviderRequest {
+                    org_slug: "identity".into(),
+                    issuer: "https://idp.example.test".into(),
+                    authorization_endpoint: "https://idp.example.test/authorize".into(),
+                    token_endpoint: "https://idp.example.test/token".into(),
+                    jwks_uri: "https://idp.example.test/jwks".into(),
+                    client_id: "hub".into(),
+                    client_secret: "credential".into(),
+                    replace_client_secret: true,
+                    scopes: "openid email profile".into(),
+                    groups_claim: "groups".into(),
+                    role_map_json: r#"{"admins":"admin"}"#.into(),
+                    allow_jit: true,
+                    enforce_sso: true,
+                    default_role: "viewer".into(),
+                    expected_resource_version: "absent".into(),
+                    idempotency_key: "plan-idp-set".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let replay = service
+            .plan_set_identity_provider(
+                Some(&auth),
+                pb::PlanSetIdentityProviderRequest {
+                    org_slug: "identity".into(),
+                    issuer: "https://idp.example.test".into(),
+                    authorization_endpoint: "https://idp.example.test/authorize".into(),
+                    token_endpoint: "https://idp.example.test/token".into(),
+                    jwks_uri: "https://idp.example.test/jwks".into(),
+                    client_id: "hub".into(),
+                    client_secret: "credential".into(),
+                    replace_client_secret: true,
+                    scopes: "openid email profile".into(),
+                    groups_claim: "groups".into(),
+                    role_map_json: r#"{"admins":"admin"}"#.into(),
+                    allow_jit: true,
+                    enforce_sso: true,
+                    default_role: "viewer".into(),
+                    expected_resource_version: "absent".into(),
+                    idempotency_key: "plan-idp-set".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(replay.plan_id, idp_plan.plan_id);
+        let idp = service
+            .apply_set_identity_provider(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: idp_plan.plan_id,
+                    confirmation_hash: idp_plan.confirmation_hash,
+                    idempotency_key: "apply-idp-set".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .identity_provider
+            .unwrap();
+        assert!(idp.client_secret_configured);
+        assert_eq!(idp.resource_version, "1");
+        let org = db.org_by_slug("identity").await.unwrap().unwrap();
+        let stored = db.idp_config(org.id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.client_secret_enc.as_deref(),
+            Some("sealed:credential")
+        );
+
+        let claim_plan = service
+            .plan_claim_organization_domain(
+                Some(&auth),
+                pb::PlanClaimOrganizationDomainRequest {
+                    org_slug: "identity".into(),
+                    domain: "login.example.test".into(),
+                    expected_resource_version: "absent".into(),
+                    idempotency_key: "plan-domain-claim".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let claimed = service
+            .apply_claim_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: claim_plan.plan_id,
+                    confirmation_hash: claim_plan.confirmation_hash,
+                    idempotency_key: "apply-domain-claim".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .domain
+            .unwrap();
+        assert_eq!(claimed.state, "pending");
+        assert_eq!(claimed.resource_version, "1");
+
+        let verify_plan = service
+            .plan_verify_organization_domain(
+                Some(&auth),
+                pb::PlanVerifyOrganizationDomainRequest {
+                    org_slug: "identity".into(),
+                    domain: claimed.domain,
+                    expected_resource_version: claimed.resource_version,
+                    idempotency_key: "plan-domain-verify".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let verified = service
+            .apply_verify_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: verify_plan.plan_id,
+                    confirmation_hash: verify_plan.confirmation_hash,
+                    idempotency_key: "apply-domain-verify".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .domain
+            .unwrap();
+        assert_eq!(verified.state, "verified");
+        assert_eq!(verified.resource_version, "2");
+        assert!(verified.verified_at > 0);
     }
 
     #[tokio::test]

@@ -2630,6 +2630,46 @@ service IdentityService {
   // Accept an invitation as the authenticated user named by it.
   rpc AcceptInvitation(AcceptInvitationRequest)
       returns (AcceptInvitationResponse);
+  // Inspect an organization's OIDC identity-provider configuration without
+  // exposing sealed or plaintext client credentials.
+  rpc GetIdentityProvider(GetIdentityProviderRequest)
+      returns (IdentityProviderResponse);
+  // Plan creation or exact-version replacement of one OIDC configuration.
+  rpc PlanSetIdentityProvider(PlanSetIdentityProviderRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed OIDC configuration plan exactly once.
+  rpc SetIdentityProvider(ApplyTopologyPlanRequest)
+      returns (IdentityProviderResponse);
+  // Plan removal of one exact OIDC configuration.
+  rpc PlanRemoveIdentityProvider(PlanRemoveIdentityProviderRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed OIDC configuration removal exactly once.
+  rpc RemoveIdentityProvider(ApplyTopologyPlanRequest)
+      returns (DeleteTopologyResourceResponse);
+  // List claimed email domains for one organization.
+  rpc ListOrganizationDomains(ListOrganizationDomainsRequest)
+      returns (ListOrganizationDomainsResponse);
+  // Inspect one organization email-domain claim.
+  rpc GetOrganizationDomain(GetOrganizationDomainRequest)
+      returns (OrganizationDomainResponse);
+  // Plan creation or challenge rotation of one email-domain claim.
+  rpc PlanClaimOrganizationDomain(PlanClaimOrganizationDomainRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed email-domain claim exactly once.
+  rpc ClaimOrganizationDomain(ApplyTopologyPlanRequest)
+      returns (OrganizationDomainResponse);
+  // Plan DNS-TXT verification of one exact domain challenge.
+  rpc PlanVerifyOrganizationDomain(PlanVerifyOrganizationDomainRequest)
+      returns (TopologyPlanResponse);
+  // Resolve DNS and commit verified state for one reviewed challenge.
+  rpc VerifyOrganizationDomain(ApplyTopologyPlanRequest)
+      returns (OrganizationDomainResponse);
+  // Plan release of one exact email-domain claim.
+  rpc PlanReleaseOrganizationDomain(PlanReleaseOrganizationDomainRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed email-domain release exactly once.
+  rpc ReleaseOrganizationDomain(ApplyTopologyPlanRequest)
+      returns (DeleteTopologyResourceResponse);
   // Plan issuance of a scoped bearer token.
   rpc PlanIssueAccessToken(PlanIssueAccessTokenRequest)
       returns (TopologyPlanResponse);
@@ -2815,13 +2855,124 @@ message Invitation {
 
 message InvitationResponse {
   Invitation invitation = 1;
-  // Returned once by CreateInvitation; absent from every read and replay.
+  // Returned by CreateInvitation and its exact idempotent retry while pending;
+  // absent from reads and erased after acceptance, cancellation, or expiry.
   string secret = 2;
 }
 
 message AcceptInvitationResponse {
   Invitation invitation = 1;
   MembershipResponse membership = 2;
+}
+
+message GetIdentityProviderRequest {
+  string org_slug = 1;
+}
+
+// Redacted organization OIDC configuration.
+message IdentityProvider {
+  string org_slug = 1;
+  string issuer = 2;
+  string authorization_endpoint = 3;
+  string token_endpoint = 4;
+  string jwks_uri = 5;
+  string client_id = 6;
+  bool client_secret_configured = 7;
+  string scopes = 8;
+  string groups_claim = 9;
+  // Canonical JSON object mapping IdP group names to Hub roles.
+  string role_map_json = 10;
+  bool allow_jit = 11;
+  bool enforce_sso = 12;
+  string default_role = 13;
+  string resource_version = 14;
+}
+
+message IdentityProviderResponse {
+  IdentityProvider identity_provider = 1;
+}
+
+message PlanSetIdentityProviderRequest {
+  string org_slug = 1;
+  string issuer = 2;
+  string authorization_endpoint = 3;
+  string token_endpoint = 4;
+  string jwks_uri = 5;
+  string client_id = 6;
+  // Plaintext credential accepted only at the request edge and sealed before
+  // the immutable plan is persisted.
+  string client_secret = 7;
+  // Replace the current credential with client_secret. An empty value clears
+  // it; false preserves an existing credential and creates a public client.
+  bool replace_client_secret = 8;
+  string scopes = 9;
+  string groups_claim = 10;
+  string role_map_json = 11;
+  bool allow_jit = 12;
+  bool enforce_sso = 13;
+  string default_role = 14;
+  // "absent" for creation, otherwise the exact current resource version.
+  string expected_resource_version = 15;
+  string idempotency_key = 16;
+}
+
+message PlanRemoveIdentityProviderRequest {
+  string org_slug = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+
+message ListOrganizationDomainsRequest {
+  string org_slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListOrganizationDomainsResponse {
+  repeated OrganizationDomain domains = 1;
+  string next_page_token = 2;
+}
+
+message GetOrganizationDomainRequest {
+  string org_slug = 1;
+  string domain = 2;
+}
+
+message OrganizationDomain {
+  string org_slug = 1;
+  string domain = 2;
+  // pending | verified.
+  string state = 3;
+  // Exact TXT value to publish while state is pending.
+  string txt_challenge = 4;
+  int64 verified_at = 5;
+  string resource_version = 6;
+}
+
+message OrganizationDomainResponse {
+  OrganizationDomain domain = 1;
+}
+
+message PlanClaimOrganizationDomainRequest {
+  string org_slug = 1;
+  string domain = 2;
+  // "absent" for a new claim; the exact version rotates an owned challenge.
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+message PlanVerifyOrganizationDomainRequest {
+  string org_slug = 1;
+  string domain = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+message PlanReleaseOrganizationDomainRequest {
+  string org_slug = 1;
+  string domain = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
 }
 
 message PlanIssueAccessTokenRequest {

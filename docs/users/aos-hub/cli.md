@@ -154,6 +154,34 @@ invitation `resource_version` returned by list or show. Accepting creates the
 membership atomically; creating an invitation never creates a user or grants
 authority. Use global `--json` for stable machine-readable output.
 
+Configure organization SSO as two explicit resources:
+
+```sh
+aos hub org identity-provider show acme
+AOS_OIDC_CLIENT_SECRET='<secret>' \
+  aos hub org identity-provider set plan acme \
+    --issuer https://idp.example.com \
+    --authorization-endpoint https://idp.example.com/authorize \
+    --token-endpoint https://idp.example.com/token \
+    --jwks-uri https://idp.example.com/jwks \
+    --client-id aos-hub \
+    --if-version absent \
+    --idempotency-key plan-acme-idp
+
+aos hub org domain claim plan acme login.example.com \
+  --if-version absent \
+  --idempotency-key plan-acme-domain
+```
+
+Apply the domain claim, publish the returned `txt_challenge`, then run
+`org domain verify plan` with the returned `resource_version`. Applying the
+verification plan resolves DNS and commits only an exact TXT match. Use
+`identity-provider set plan --clear-client-secret` to convert an existing
+confidential client to a public client; omitting both the environment variable
+and that flag preserves the existing sealed credential. Every set, remove,
+claim, verify, and release operation uses the same explicit `plan` then `apply`
+flow.
+
 The remote client includes registry, cache, organization, project, binding,
 webhook, instance, audit, changeset, and upload operations. Authorization is
 checked against current server-side grants for every request; approval never

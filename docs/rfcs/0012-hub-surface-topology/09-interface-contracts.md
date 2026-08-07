@@ -67,7 +67,9 @@ left as undocumented Web-only operations:
 | Settings owner | Final CLI family | Final `aos.hub.v1` API owner |
 | --- | --- | --- |
 | Organizations and projects | `org`, `project` | `OrganizationService`, `ProjectService` CRUD |
-| Members, invitations, roles, SSO | `org member`, `org sso` | `IdentityService` member and SSO methods |
+| Members, invitations, and roles | `org member`, `org invitation` | `IdentityService` membership and invitation methods |
+| OIDC identity provider | `org identity-provider` | `IdentityService` identity-provider methods |
+| SSO email-domain ownership | `org domain` | `IdentityService` organization-domain methods |
 | Hosted and surface signing keys | `signing-key` | `SigningKeyService` list/enroll/rotate/retire methods |
 | Webhooks | `org webhook` | `WebhookService` list plus plan/apply create/delete methods |
 | Audit | `audit` | `AuditService` |

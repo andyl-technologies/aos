@@ -252,9 +252,9 @@
     {
       "service": "IdentityService",
       "audience": "end-user",
-      "cli_families": ["org member", "org invitation", "org service-account", "access-token", "whoami"],
-      "web_workflows": ["identity-access", "memberships", "invitations", "service-accounts", "access-tokens", "organization-sso"],
-      "methods": ["WhoAmI", "ListServiceAccounts", "GetServiceAccount", "PlanCreateServiceAccount", "CreateServiceAccount", "PlanUpdateServiceAccount", "UpdateServiceAccount", "PlanDeleteServiceAccount", "DeleteServiceAccount", "GetMembership", "PlanSetMembership", "SetMembership", "ListInvitations", "GetInvitation", "PlanCreateInvitation", "CreateInvitation", "PlanCancelInvitation", "CancelInvitation", "AcceptInvitation", "PlanIssueAccessToken", "IssueAccessToken", "PlanRetireAccessToken", "RetireAccessToken", "ListAccessTokens"]
+      "cli_families": ["org member", "org invitation", "org service-account", "org identity-provider", "org domain", "access-token", "whoami"],
+      "web_workflows": ["identity-access", "memberships", "invitations", "service-accounts", "access-tokens", "organization-sso", "identity-provider", "organization-domains"],
+      "methods": ["WhoAmI", "ListServiceAccounts", "GetServiceAccount", "PlanCreateServiceAccount", "CreateServiceAccount", "PlanUpdateServiceAccount", "UpdateServiceAccount", "PlanDeleteServiceAccount", "DeleteServiceAccount", "GetMembership", "PlanSetMembership", "SetMembership", "ListInvitations", "GetInvitation", "PlanCreateInvitation", "CreateInvitation", "PlanCancelInvitation", "CancelInvitation", "AcceptInvitation", "GetIdentityProvider", "PlanSetIdentityProvider", "SetIdentityProvider", "PlanRemoveIdentityProvider", "RemoveIdentityProvider", "ListOrganizationDomains", "GetOrganizationDomain", "PlanClaimOrganizationDomain", "ClaimOrganizationDomain", "PlanVerifyOrganizationDomain", "VerifyOrganizationDomain", "PlanReleaseOrganizationDomain", "ReleaseOrganizationDomain", "PlanIssueAccessToken", "IssueAccessToken", "PlanRetireAccessToken", "RetireAccessToken", "ListAccessTokens"]
     }
   ]
 }

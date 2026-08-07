@@ -19,7 +19,7 @@
       "image"
    ],
    "cli_nested_families" : {
-      "org" : [ "audit", "identity", "invitation", "member", "project", "service-account", "webhook" ],
+      "org" : [ "audit", "domain", "identity", "identity-provider", "invitation", "member", "project", "service-account", "webhook" ],
       "registry" : [ "cache-stack", "channel", "configuration", "mirror", "package", "publish" ]
    },
    "cli_json_schema" : {
@@ -2280,6 +2280,97 @@
          "path" : "aos.hub.v1.IdentityService/AcceptInvitation",
          "request" : "AcceptInvitationRequest",
          "response" : "AcceptInvitationResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "GetIdentityProvider",
+         "path" : "aos.hub.v1.IdentityService/GetIdentityProvider",
+         "request" : "GetIdentityProviderRequest",
+         "response" : "IdentityProviderResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanSetIdentityProvider",
+         "path" : "aos.hub.v1.IdentityService/PlanSetIdentityProvider",
+         "request" : "PlanSetIdentityProviderRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "SetIdentityProvider",
+         "path" : "aos.hub.v1.IdentityService/SetIdentityProvider",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "IdentityProviderResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanRemoveIdentityProvider",
+         "path" : "aos.hub.v1.IdentityService/PlanRemoveIdentityProvider",
+         "request" : "PlanRemoveIdentityProviderRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "RemoveIdentityProvider",
+         "path" : "aos.hub.v1.IdentityService/RemoveIdentityProvider",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "ListOrganizationDomains",
+         "path" : "aos.hub.v1.IdentityService/ListOrganizationDomains",
+         "request" : "ListOrganizationDomainsRequest",
+         "response" : "ListOrganizationDomainsResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "GetOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/GetOrganizationDomain",
+         "request" : "GetOrganizationDomainRequest",
+         "response" : "OrganizationDomainResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanClaimOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/PlanClaimOrganizationDomain",
+         "request" : "PlanClaimOrganizationDomainRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "ClaimOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/ClaimOrganizationDomain",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "OrganizationDomainResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanVerifyOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/PlanVerifyOrganizationDomain",
+         "request" : "PlanVerifyOrganizationDomainRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "VerifyOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/VerifyOrganizationDomain",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "OrganizationDomainResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanReleaseOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/PlanReleaseOrganizationDomain",
+         "request" : "PlanReleaseOrganizationDomainRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "ReleaseOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/ReleaseOrganizationDomain",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "DeleteTopologyResourceResponse",
          "service" : "IdentityService"
       },
       {

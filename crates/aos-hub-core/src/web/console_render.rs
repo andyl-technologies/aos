@@ -31,10 +31,9 @@ use std::sync::{OnceLock, RwLock};
 
 use crate::db::{
     AuditRow, BinaryCache, CacheUsage, ChangesetRow, ChannelSummary, ConsumerScopeGrantRecord,
-    IdpConfigRecord, IndexStatus, MirrorSource, OrgDomainRecord, OrgRecord, ProjectRecord,
-    RegistryRecord, ReleaseRow, SignupPolicy, StorageBindingCredentialRevisionRecord,
-    StorageBindingReadDetail, StorageBindingReadSummary, StorageBindingRecord,
-    StorageBindingWriteObservationRecord, StorageBindingWriteRevisionRecord,
+    IndexStatus, MirrorSource, OrgRecord, ProjectRecord, RegistryRecord, ReleaseRow, SignupPolicy,
+    StorageBindingCredentialRevisionRecord, StorageBindingReadDetail, StorageBindingReadSummary,
+    StorageBindingRecord, StorageBindingWriteObservationRecord, StorageBindingWriteRevisionRecord,
     WebauthnCredentialRecord, WebhookRecord,
 };
 use crate::domain::{iam, Permission, Role, Scope};
@@ -1956,9 +1955,13 @@ pub fn topology_plan_page(
     topology_plan_page_with_operation(email, title, apply_action, csrf, plan, None, started)
 }
 
-/// Renders a signing-control plan while preserving its closed operation kind.
+/// Renders an immutable topology plan with a closed operation discriminator.
+///
+/// The discriminator is returned as a hidden field during confirmation so a
+/// shared apply endpoint can dispatch only the operation that produced the
+/// reviewed plan.
 #[must_use]
-pub fn signing_topology_plan_page(
+pub fn reviewed_operation_plan_page(
     email: &str,
     title: &str,
     apply_action: &str,
@@ -1976,6 +1979,20 @@ pub fn signing_topology_plan_page(
         Some(operation),
         started,
     )
+}
+
+/// Renders a signing-control plan while preserving its closed operation kind.
+#[must_use]
+pub fn signing_topology_plan_page(
+    email: &str,
+    title: &str,
+    apply_action: &str,
+    csrf: &str,
+    plan: &crate::web::console::ports::ReviewedPlan,
+    operation: &str,
+    started: Instant,
+) -> String {
+    reviewed_operation_plan_page(email, title, apply_action, csrf, plan, operation, started)
 }
 
 fn topology_plan_page_with_operation(
@@ -4596,16 +4613,15 @@ pub fn org_new_webhook_page(
 /// email domains that route logins to it.
 ///
 /// The client secret is **write-only** — the sealed value is never rendered;
-/// the form shows whether one is set and lets an admin replace it. `notice`
+/// the form shows whether one is set and lets an admin replace or clear it. `notice`
 /// echoes the result of the last action (e.g. a domain's DNS-TXT challenge).
 #[must_use]
 pub fn org_sso_page(
     email: &str,
     org: &OrgRecord,
     csrf: &str,
-    idp: Option<&IdpConfigRecord>,
-    domains: &[OrgDomainRecord],
-    can_verify_domains: bool,
+    idp: Option<&aos_proto_types::IdentityProvider>,
+    domains: &[aos_proto_types::OrganizationDomain],
     notice: Option<&str>,
     navigation_permissions: &NavigationPermissions,
     started: Instant,
@@ -4627,12 +4643,14 @@ pub fn org_sso_page(
     body.push_str("<h2>Identity provider</h2>\n");
     let val = |s: &str| escape(s);
     let secret_hint = match idp {
-        Some(c) if c.client_secret_enc.is_some() => {
+        Some(c) if c.client_secret_configured => {
             "a secret is set — leave blank to keep it, or enter a new one to replace"
         }
         _ => "leave blank for a public client",
     };
-    let cur = |get: &dyn Fn(&IdpConfigRecord) -> String| idp.map(get).unwrap_or_default();
+    let cur = |get: &dyn Fn(&aos_proto_types::IdentityProvider) -> String| {
+        idp.map(get).unwrap_or_default()
+    };
     let _ = write!(
         body,
         "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/sso\">\n{csrf}\
@@ -4646,6 +4664,8 @@ pub fn org_sso_page(
          <label>client id <input type=\"text\" name=\"client_id\" required value=\"{client}\"></label>\n\
          <label>client secret <input type=\"password\" name=\"client_secret\" \
          autocomplete=\"new-password\" placeholder=\"{secret_hint}\"></label>\n\
+         <label><input type=\"checkbox\" name=\"clear_client_secret\" value=\"1\"> \
+         clear the configured client secret</label>\n\
          <label>scopes <input type=\"text\" name=\"scopes\" value=\"{scopes}\"></label>\n\
          <label>groups claim <input type=\"text\" name=\"groups_claim\" value=\"{groups}\" \
          placeholder=\"groups\"></label>\n\
@@ -4660,7 +4680,7 @@ pub fn org_sso_page(
         jwks = val(&cur(&|c| c.jwks_uri.clone())),
         client = val(&cur(&|c| c.client_id.clone())),
         scopes = val(&idp.map_or("openid email profile".to_string(), |c| c.scopes.clone())),
-        groups = val(&cur(&|c| c.groups_claim.clone().unwrap_or_default())),
+        groups = val(&cur(&|c| c.groups_claim.clone())),
         rolemap = val(&idp.map_or("{}".to_string(), |c| c.role_map_json.clone())),
     );
     // default-role select
@@ -4708,7 +4728,7 @@ pub fn org_sso_page(
         let rows: Vec<Vec<String>> = domains
             .iter()
             .map(|d| {
-                let status = if d.verified_at.is_some() {
+                let status = if d.state == "verified" {
                     "<span class=\"ok\">verified</span>".to_string()
                 } else {
                     format!(
@@ -4718,22 +4738,32 @@ pub fn org_sso_page(
                     )
                 };
                 let mut actions = String::new();
-                // Verifying a domain routes other people's logins, so it is an
-                // instance-operator action (a trusted DNS check), never org
-                // self-service. Org admins capture; an operator verifies.
-                if d.verified_at.is_none() && can_verify_domains {
+                // The API resolves and compares the exact reviewed TXT value
+                // before it commits verified state.
+                if d.state != "verified" {
                     let _ = write!(
                         actions,
                         "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/sso\" \
                          style=\"display:inline\">{csrf}\
                          <input type=\"hidden\" name=\"op\" value=\"verify-domain\">\
                          <input type=\"hidden\" name=\"domain\" value=\"{dom}\">\
-                         <button>verify (operator)</button></form> ",
+                         <button>verify DNS</button></form> ",
                         org = escape(org_slug),
                         csrf = csrf_field(csrf),
                         dom = escape(&d.domain),
                     );
                 }
+                let _ = write!(
+                    actions,
+                    "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/sso\" \
+                     style=\"display:inline\">{csrf}\
+                     <input type=\"hidden\" name=\"op\" value=\"rotate-domain\">\
+                     <input type=\"hidden\" name=\"domain\" value=\"{dom}\">\
+                     <button>rotate challenge</button></form> ",
+                    org = escape(org_slug),
+                    csrf = csrf_field(csrf),
+                    dom = escape(&d.domain),
+                );
                 let _ = write!(
                     actions,
                     "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/sso\" \
@@ -4749,13 +4779,6 @@ pub fn org_sso_page(
             })
             .collect();
         body.push_str(&table(&["domain", "status", ""], &rows));
-    }
-    if !can_verify_domains {
-        body.push_str(
-            "<p class=\"dim\">Publish the TXT challenge above, then an instance operator \
-             verifies the domain (a trusted DNS check) — verification is not org self-service \
-             because a verified domain routes its users' logins.</p>\n",
-        );
     }
     let _ = write!(
         body,
@@ -6923,6 +6946,51 @@ mod cache_render_tests {
             resource_version: 1,
             updated_at: 1_700_000_000,
         }
+    }
+
+    #[test]
+    fn organization_sso_renders_redacted_provider_and_dns_backed_domains() {
+        let idp = aos_proto_types::IdentityProvider {
+            org_slug: "acme".into(),
+            issuer: "https://idp.example.test".into(),
+            authorization_endpoint: "https://idp.example.test/authorize".into(),
+            token_endpoint: "https://idp.example.test/token".into(),
+            jwks_uri: "https://idp.example.test/jwks".into(),
+            client_id: "hub".into(),
+            client_secret_configured: true,
+            scopes: "openid email profile".into(),
+            groups_claim: "groups".into(),
+            role_map_json: "{}".into(),
+            allow_jit: true,
+            enforce_sso: true,
+            default_role: "viewer".into(),
+            resource_version: "4".into(),
+        };
+        let domain = aos_proto_types::OrganizationDomain {
+            org_slug: "acme".into(),
+            domain: "login.example.test".into(),
+            state: "pending".into(),
+            txt_challenge: "aos-domain-verify=proof".into(),
+            verified_at: 0,
+            resource_version: "2".into(),
+        };
+        let html = org_sso_page(
+            "owner@example.test",
+            &org(),
+            "csrf",
+            Some(&idp),
+            &[domain],
+            None,
+            &all_navigation_permissions(),
+            Instant::now(),
+        );
+        assert!(html.contains("a secret is set"));
+        assert!(!html.contains("sealed:"));
+        assert!(html.contains("aos-domain-verify=proof"));
+        assert!(html.contains(">verify DNS</button>"));
+        assert!(html.contains(">rotate challenge</button>"));
+        assert!(html.contains("clear the configured client secret"));
+        assert!(!html.contains("instance operator"));
     }
 
     fn storage_bindings() -> Vec<StorageBindingRecord> {

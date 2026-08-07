@@ -473,6 +473,8 @@ async fn seed_sso_org(db: &Database, slug: &str, enforce_sso: bool) -> i64 {
         allow_jit: false,
         enforce_sso,
         default_role: "viewer".into(),
+        resource_version: 1,
+        mutation_plan_id: None,
     })
     .await
     .unwrap();

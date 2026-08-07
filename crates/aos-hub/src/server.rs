@@ -89,6 +89,9 @@ pub struct AppState {
     /// Runtime-owned signer material for the domain-probe well-known route.
     pub domain_probe_terminator:
         Option<Arc<dyn aos_hub_core::topology_probe::DomainProbeTerminatorProvider>>,
+    /// DNS resolver used to verify organization email-domain TXT challenges.
+    pub identity_domain_verifier:
+        Option<Arc<dyn aos_hub_core::topology_probe::IdentityDomainVerifier>>,
     /// Active and retained privacy keys for permanent route URL reservations.
     pub route_reservation_keyring: Option<Arc<dyn aos_hub_core::service::RouteReservationKeyring>>,
 }
@@ -128,6 +131,7 @@ impl AppState {
             trusted_proxy: false,
             delivery_attestation_verifier: None,
             domain_probe_terminator: None,
+            identity_domain_verifier: None,
             route_reservation_keyring: None,
         }
     }
@@ -263,6 +267,9 @@ pub async fn router(state: Arc<AppState>) -> Router {
     )));
     if let Some(provider) = &state.domain_probe_terminator {
         rpc_service = rpc_service.with_domain_probe_terminator(Arc::clone(provider));
+    }
+    if let Some(verifier) = &state.identity_domain_verifier {
+        rpc_service = rpc_service.with_identity_domain_verifier(Arc::clone(verifier));
     }
     let rpc_service = Arc::new(rpc_service);
     // The shared router owns `/aos.hub.v1.*` and browse routes and carries its
