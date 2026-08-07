@@ -113,9 +113,7 @@ in
                 fclose(result);
               }
               qemu_plugin_outs("crucible raw-state probe failed\n");
-              if (qemu_plugin_request_vmstop() != 0) {
-                qemu_plugin_request_shutdown(1);
-              }
+              qemu_plugin_request_shutdown(1);
             }
 
             static uint64_t

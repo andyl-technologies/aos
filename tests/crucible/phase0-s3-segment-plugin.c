@@ -47,6 +47,7 @@ static uint64_t segment_retired;
 static uint64_t stream_hash = FNV1A64_OFFSET;
 static bool segment_started;
 static bool stop_requested;
+static bool stop_admitted;
 static bool extended_fingerprint;
 static bool request_time_control;
 static bool time_control_requested;
@@ -437,6 +438,25 @@ static void
 request_pause(void)
 {
   stop_requested = true;
+}
+
+static uint64_t
+next_pause_boundary(void *userdata)
+{
+  (void)userdata;
+  return stop_requested ? qemu_plugin_icount_raw() : UINT64_MAX;
+}
+
+static void
+on_pause_boundary(uint64_t current_icount, void *userdata)
+{
+  (void)current_icount;
+  (void)userdata;
+
+  if (!stop_requested || stop_admitted) {
+    return;
+  }
+  stop_admitted = true;
   record_sample(true);
   if (qemu_plugin_request_vmstop() != 0) {
     qemu_plugin_request_shutdown(1);
@@ -693,6 +713,8 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
 
   qemu_plugin_register_vcpu_init_cb(id, on_vcpu_init);
   qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate);
+  qemu_plugin_register_sim_shmem_observer_cb(
+      on_pause_boundary, next_pause_boundary, NULL);
   qemu_plugin_register_atexit_cb(id, on_plugin_exit, NULL);
   return 0;
 }
