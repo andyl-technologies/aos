@@ -13,7 +13,7 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
-use super::resources::UnavailableWorkflow;
+use super::networking::NetworkingWorkflow;
 
 /// Renders infrastructure pages handled by this implementation boundary.
 #[component]
@@ -34,7 +34,7 @@ pub(super) fn InfrastructureWorkflow(route: ConsoleRoute, client: ApiClient) -> 
             <TopologyDefaultsEditor client=client organization=Some(slug.clone())/>
         }
         .into_any(),
-        _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
+        _ => view! { <NetworkingWorkflow route=route client=client/> }.into_any(),
     }
 }
 
