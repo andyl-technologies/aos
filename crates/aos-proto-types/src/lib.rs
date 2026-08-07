@@ -445,12 +445,14 @@ mod tests {
                 scope: "instance".into(),
                 role: "owner".into(),
             }],
+            route_permissions: vec!["read".into(), "iam.admin".into()],
         };
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["accessToken"], "memory-only");
         assert_eq!(json["expiresIn"], "300");
         assert_eq!(json["principal"]["id"], "42");
         assert_eq!(json["grants"][0]["scope"], "instance");
+        assert_eq!(json["routePermissions"][1], "iam.admin");
 
         let decoded: BrowserSessionTokenResponse = serde_json::from_value(json).unwrap();
         assert_eq!(decoded, response);
