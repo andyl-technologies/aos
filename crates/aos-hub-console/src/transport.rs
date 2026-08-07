@@ -284,6 +284,10 @@ async fn send_connect(
 ) -> Result<(u16, String), TransportError> {
     let response = Request::post(path)
         .header("authorization", &format!("Bearer {bearer}"))
+        .header(
+            aos_proto_types::CONNECT_PROTOCOL_VERSION_HEADER,
+            aos_proto_types::CONNECT_PROTOCOL_VERSION,
+        )
         .header("content-type", "application/json")
         .header("accept", "application/json")
         .body(body.to_string())
@@ -484,6 +488,15 @@ fn bounded_detail(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_connect_requests_use_the_required_protocol_version() {
+        assert_eq!(
+            aos_proto_types::CONNECT_PROTOCOL_VERSION_HEADER,
+            "connect-protocol-version"
+        );
+        assert_eq!(aos_proto_types::CONNECT_PROTOCOL_VERSION, "1");
+    }
 
     #[test]
     fn connect_paths_are_closed_and_error_details_are_bounded() {

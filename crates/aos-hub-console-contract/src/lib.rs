@@ -56,9 +56,9 @@ impl PageSpec {
             "audit" => "audit.read",
             "danger" | "sso" => "iam.admin",
             "tokens" => "tokens.self",
-            // Organization creation is governed by the instance signup policy,
-            // not by an IAM administration grant. The API evaluates that
-            // policy when the authenticated user submits a plan.
+            // Every authenticated user may open the organization bootstrap
+            // surface. The API evaluates invite and domain policy when the
+            // user submits a plan.
             "new" => "read",
             "projects-new" | "registries-new" => "registry.configure",
             "caches-new" => "registry.configure",
@@ -1014,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn creation_routes_require_their_api_write_permission() {
+    fn creation_routes_require_their_navigation_capability() {
         for (path, permission) in [
             ("/-/orgs/new", "read"),
             ("/-/org/acme/projects/new", "registry.configure"),

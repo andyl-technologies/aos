@@ -715,7 +715,7 @@ fn verify_web_method_coverage(
 
     for method in methods {
         let constant = rust_constant_identifier(&format!("{service_name}_{method}_PATH"));
-        let is_used = console_source.contains(&constant);
+        let is_used = rust_identifier_is_used(console_source, &constant);
         let is_excepted = exception_methods.contains(method);
         match (is_used, is_excepted) {
             (false, false) => {
@@ -732,6 +732,132 @@ fn verify_web_method_coverage(
         }
     }
     Ok(())
+}
+
+/// Returns whether Rust source uses `identifier` outside comments and literals.
+///
+/// This intentionally implements only the lexical boundary needed by the
+/// capability gate. It rejects identifiers mentioned in documentation,
+/// comments, ordinary strings, raw strings, and byte strings so prose cannot
+/// satisfy Web method coverage.
+fn rust_identifier_is_used(source: &str, identifier: &str) -> bool {
+    RustCode::new(source).any(|token| token == identifier)
+}
+
+struct RustCode<'a> {
+    source: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> RustCode<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            source: source.as_bytes(),
+            offset: 0,
+        }
+    }
+
+    fn skip_quoted(&mut self, quote: u8) {
+        self.offset += 1;
+        while self.offset < self.source.len() {
+            match self.source[self.offset] {
+                b'\\' => self.offset = (self.offset + 2).min(self.source.len()),
+                byte if byte == quote => {
+                    self.offset += 1;
+                    return;
+                }
+                _ => self.offset += 1,
+            }
+        }
+    }
+
+    fn skip_raw_string(&mut self) -> bool {
+        let start = self.offset;
+        if self.source.get(self.offset) == Some(&b'b') {
+            self.offset += 1;
+        }
+        if self.source.get(self.offset) != Some(&b'r') {
+            self.offset = start;
+            return false;
+        }
+        self.offset += 1;
+        let hashes = self.source[self.offset..]
+            .iter()
+            .take_while(|byte| **byte == b'#')
+            .count();
+        self.offset += hashes;
+        if self.source.get(self.offset) != Some(&b'"') {
+            self.offset = start;
+            return false;
+        }
+        self.offset += 1;
+        while self.offset < self.source.len() {
+            if self.source[self.offset] == b'"'
+                && self
+                    .source
+                    .get(self.offset + 1..self.offset + 1 + hashes)
+                    .is_some_and(|suffix| suffix.iter().all(|byte| *byte == b'#'))
+            {
+                self.offset += 1 + hashes;
+                return true;
+            }
+            self.offset += 1;
+        }
+        true
+    }
+}
+
+impl<'a> Iterator for RustCode<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.offset < self.source.len() {
+            if self.source[self.offset..].starts_with(b"//") {
+                self.offset += self.source[self.offset..]
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .unwrap_or(self.source.len() - self.offset);
+                continue;
+            }
+            if self.source[self.offset..].starts_with(b"/*") {
+                let mut depth = 1_u32;
+                self.offset += 2;
+                while self.offset < self.source.len() && depth > 0 {
+                    if self.source[self.offset..].starts_with(b"/*") {
+                        depth += 1;
+                        self.offset += 2;
+                    } else if self.source[self.offset..].starts_with(b"*/") {
+                        depth -= 1;
+                        self.offset += 2;
+                    } else {
+                        self.offset += 1;
+                    }
+                }
+                continue;
+            }
+            if self.skip_raw_string() {
+                continue;
+            }
+            if self.source[self.offset] == b'"' {
+                let quote = self.source[self.offset];
+                self.skip_quoted(quote);
+                continue;
+            }
+            if self.source[self.offset].is_ascii_alphabetic() || self.source[self.offset] == b'_' {
+                let start = self.offset;
+                self.offset += 1;
+                while self.offset < self.source.len()
+                    && (self.source[self.offset].is_ascii_alphanumeric()
+                        || self.source[self.offset] == b'_')
+                {
+                    self.offset += 1;
+                }
+                return std::str::from_utf8(&self.source[start..self.offset]).ok();
+            }
+            self.offset += 1;
+        }
+        None
+    }
 }
 
 fn verify_http_capabilities(manifest: &serde_json::Value) -> BuildResult<()> {

@@ -389,6 +389,61 @@
         || wasmBytes[3] !== 0x6d) {
       throw new Error("management console JavaScript/WASM artifact failed");
     }
+    const csrf = managementHtml.match(/name="aos-session-csrf" content="([^"]+)"/)?.[1];
+    if (!csrf) throw new Error("management shell omitted the browser CSRF proof");
+    const sessionResponse = await fetch(BASE + "/-/auth/session-token", {
+      method: "POST",
+      headers: {
+        ...cookieHeaders,
+        origin: BASE,
+        "x-aos-csrf": csrf,
+        "x-aos-console-route": "/-/orgs",
+      },
+    });
+    const browserSession = await sessionResponse.json();
+    if (sessionResponse.status !== 200
+        || browserSession.tokenType !== "Bearer"
+        || !browserSession.routePermissions?.includes("read")) {
+      throw new Error(`browser session exchange failed: ''${sessionResponse.status}`);
+    }
+    const browserHeaders = {
+      authorization: `Bearer ''${browserSession.accessToken}`,
+      "connect-protocol-version": "1",
+      "content-type": "application/json",
+      accept: "application/json",
+    };
+    async function browserRpc(method, request) {
+      const response = await fetch(BASE + `/aos.hub.v1.OrganizationService/''${method}`, {
+        method: "POST",
+        headers: browserHeaders,
+        body: JSON.stringify(request),
+      });
+      const text = await response.text();
+      return { response, text, value: text ? JSON.parse(text) : null };
+    }
+    const browserRead = await browserRpc("ListOrganizations", { pageSize: 100 });
+    if (browserRead.response.status !== 200 || !Array.isArray(browserRead.value.organizations)) {
+      throw new Error(`browser API read failed: ''${browserRead.response.status} ''${browserRead.text}`);
+    }
+    const browserIdempotencyKey = "worker-browser-organization-create";
+    const browserPlan = await browserRpc("PlanCreateOrganization", {
+      slug: "browser-e2e",
+      displayName: "Browser E2E",
+      idempotencyKey: browserIdempotencyKey,
+    });
+    const plan = browserPlan.value?.plan;
+    if (browserPlan.response.status !== 200 || !plan?.planId || !plan?.confirmationHash) {
+      throw new Error(`browser API plan failed: ''${browserPlan.response.status} ''${browserPlan.text}`);
+    }
+    const browserApply = await browserRpc("CreateOrganization", {
+      planId: plan.planId,
+      confirmationHash: plan.confirmationHash,
+      idempotencyKey: browserIdempotencyKey,
+    });
+    if (browserApply.response.status !== 200
+        || browserApply.value?.organization?.slug !== "browser-e2e") {
+      throw new Error(`browser API apply failed: ''${browserApply.response.status} ''${browserApply.text}`);
+    }
     for (const legacyAsset of [
       "/_assets/hub-console.js",
       "/_assets/hub-console-bootstrap.js",

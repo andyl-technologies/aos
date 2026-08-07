@@ -32,6 +32,7 @@
 
 use std::sync::Arc;
 
+use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
 use axum::body::Bytes;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
@@ -103,9 +104,6 @@ const DELETE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/DeletePlacement
 
 /// Maximum buffered body size for every unary Connect request on both shells.
 pub const CONNECT_REQUEST_BODY_LIMIT_BYTES: usize = 8 * 1024 * 1024;
-
-/// Connect unary protocol-version request header.
-const CONNECT_PROTOCOL_VERSION_HEADER: &str = "connect-protocol-version";
 
 #[cfg(target_arch = "wasm32")]
 use send_wrapper::SendWrapper;
@@ -230,7 +228,7 @@ fn validate_connect_headers(headers: &HeaderMap) -> Result<(), Response> {
     let version = versions
         .next()
         .ok_or_else(|| error_response(&RpcError::invalid("missing Connect-Protocol-Version: 1")))?;
-    if versions.next().is_some() || version.as_bytes() != b"1" {
+    if versions.next().is_some() || version.as_bytes() != CONNECT_PROTOCOL_VERSION.as_bytes() {
         return Err(error_response(&RpcError::invalid(
             "Connect-Protocol-Version must occur once with value 1",
         )));

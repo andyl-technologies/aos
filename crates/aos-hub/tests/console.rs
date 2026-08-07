@@ -340,6 +340,31 @@ async fn login_session_exchange_and_logout_preserve_identity_boundary() {
         .await
         .unwrap()
         .expect("magic login creates a user");
+    assert!(!db.user_has_any_membership(user_id).await.unwrap());
+
+    let bootstrap_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/-/auth/session-token")
+                .header(header::HOST, "127.0.0.1:8420")
+                .header(header::COOKIE, &cookie)
+                .header(header::ORIGIN, "http://127.0.0.1:8420")
+                .header("x-aos-csrf", &csrf)
+                .header("x-aos-console-route", "/-/orgs/new")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bootstrap_response.status(), StatusCode::OK);
+    let bootstrap_body = axum::body::to_bytes(bootstrap_response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let bootstrap: serde_json::Value = serde_json::from_slice(&bootstrap_body).unwrap();
+    assert_eq!(bootstrap["routePermissions"], serde_json::json!(["read"]));
+
     db.grant_membership("user", user_id, "instance", "owner")
         .await
         .unwrap();
