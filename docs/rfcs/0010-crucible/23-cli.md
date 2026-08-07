@@ -547,6 +547,10 @@ distinguish the resumed runtime boundary from the zero-time baked genesis.
     --watch         Stream the live status line (20 §9).
 ```
 
+The resumed-session interactive protocol uses the same agent-readable response
+shape as `run`: an accepted `query` is immediately followed by
+`interactive-query\tstate=<state>` rather than discarding the observed state.
+
 `resume` opens (or connects to) a session, `instantiate`s the savepoint's
 configuration (05 §5 — `loadvm` of its fat snapshot, or replay-from-nearest-fat-
 ancestor if thin, 07 §4), then `continue`s. The resumed configuration MUST
