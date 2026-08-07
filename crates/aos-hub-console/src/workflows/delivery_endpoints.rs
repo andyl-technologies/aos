@@ -240,18 +240,19 @@ fn EndpointGenerations(
         let endpoint_id = endpoint_id.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListDeliveryEndpointGenerationsResponse>(
+                .collect_pages::<_, aos_proto_types::ListDeliveryEndpointGenerationsResponse, _, _, _>(
                     aos_proto_types::DELIVERY_SERVICE_LIST_DELIVERY_ENDPOINT_GENERATIONS_PATH,
-                    &aos_proto_types::ListDeliveryEndpointGenerationsRequest {
-                        endpoint_id,
+                    move |page_token| aos_proto_types::ListDeliveryEndpointGenerationsRequest {
+                        endpoint_id: endpoint_id.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.generations, response.next_page_token),
                 )
                 .await
         }
     });
-    view! { <section class="subworkflow"><h4>"Endpoint generations"</h4><Suspense fallback=move || view! { <p class="loading-row">"Loading generations…"</p> }>{move || { let client = client.clone(); let endpoint_version = endpoint_version.clone(); Suspend::new(async move { match generations.await.as_ref() { Ok(response) => view! { <div class="compact-list">{response.generations.iter().cloned().map(|generation| view! { <EndpointGenerationRow client=client.clone() generation=generation endpoint_version=endpoint_version.clone()/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> }
+    view! { <section class="subworkflow"><h4>"Endpoint generations"</h4><Suspense fallback=move || view! { <p class="loading-row">"Loading generations…"</p> }>{move || { let client = client.clone(); let endpoint_version = endpoint_version.clone(); Suspend::new(async move { match generations.await.as_ref() { Ok(generations) => view! { <div class="compact-list">{generations.iter().cloned().map(|generation| view! { <EndpointGenerationRow client=client.clone() generation=generation endpoint_version=endpoint_version.clone()/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> }
 }
 
 #[component]

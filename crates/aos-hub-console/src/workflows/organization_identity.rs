@@ -43,13 +43,14 @@ fn ServiceAccounts(client: ApiClient, organization: String) -> impl IntoView {
         let org_slug = list_org.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListServiceAccountsResponse>(
+                .collect_pages::<_, aos_proto_types::ListServiceAccountsResponse, _, _, _>(
                     aos_proto_types::IDENTITY_SERVICE_LIST_SERVICE_ACCOUNTS_PATH,
-                    &aos_proto_types::ListServiceAccountsRequest {
-                        org_slug,
+                    move |page_token| aos_proto_types::ListServiceAccountsRequest {
+                        org_slug: org_slug.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.service_accounts, response.next_page_token),
                 )
                 .await
         }
@@ -66,8 +67,8 @@ fn ServiceAccounts(client: ApiClient, organization: String) -> impl IntoView {
                         let client = view_client.clone();
                         Suspend::new(async move {
                             match accounts.await.as_ref() {
-                                Ok(response) if response.service_accounts.is_empty() => view! { <p class="muted">"No service accounts in this organization."</p> }.into_any(),
-                                Ok(response) => view! { <div class="binding-list">{response.service_accounts.iter().cloned().map(|account| view! { <ServiceAccountCard client=client.clone() account=account/> }).collect_view()}</div> }.into_any(),
+                                Ok(accounts) if accounts.is_empty() => view! { <p class="muted">"No service accounts in this organization."</p> }.into_any(),
+                                Ok(accounts) => view! { <div class="binding-list">{accounts.iter().cloned().map(|account| view! { <ServiceAccountCard client=client.clone() account=account/> }).collect_view()}</div> }.into_any(),
                                 Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                             }
                         })
@@ -306,13 +307,14 @@ fn Invitations(client: ApiClient, organization: String) -> impl IntoView {
         let org_slug = list_org.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListInvitationsResponse>(
+                .collect_pages::<_, aos_proto_types::ListInvitationsResponse, _, _, _>(
                     aos_proto_types::IDENTITY_SERVICE_LIST_INVITATIONS_PATH,
-                    &aos_proto_types::ListInvitationsRequest {
-                        org_slug,
+                    move |page_token| aos_proto_types::ListInvitationsRequest {
+                        org_slug: org_slug.clone(),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.invitations, response.next_page_token),
                 )
                 .await
         }
@@ -328,8 +330,8 @@ fn Invitations(client: ApiClient, organization: String) -> impl IntoView {
                     let client = view_client.clone();
                     Suspend::new(async move {
                         match invitations.await.as_ref() {
-                            Ok(response) if response.invitations.is_empty() => view! { <p class="muted">"No invitation history."</p> }.into_any(),
-                            Ok(response) => view! { <div class="compact-list">{response.invitations.iter().cloned().map(|invitation| view! { <InvitationRow client=client.clone() invitation=invitation/> }).collect_view()}</div> }.into_any(),
+                            Ok(invitations) if invitations.is_empty() => view! { <p class="muted">"No invitation history."</p> }.into_any(),
+                            Ok(invitations) => view! { <div class="compact-list">{invitations.iter().cloned().map(|invitation| view! { <InvitationRow client=client.clone() invitation=invitation/> }).collect_view()}</div> }.into_any(),
                             Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                         }
                     })

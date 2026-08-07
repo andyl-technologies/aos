@@ -49,13 +49,14 @@ fn DeliveryRoutes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> im
         let surface = read_surface.clone();
         async move {
             client
-                .call::<_, aos_proto_types::ListRoutesResponse>(
+                .collect_pages::<_, aos_proto_types::ListRoutesResponse, _, _, _>(
                     aos_proto_types::ROUTE_SERVICE_LIST_ROUTES_PATH,
-                    &aos_proto_types::ListRoutesRequest {
-                        surface: Some(surface),
+                    move |page_token| aos_proto_types::ListRoutesRequest {
+                        surface: Some(surface.clone()),
                         page_size: 100,
-                        page_token: String::new(),
+                        page_token,
                     },
+                    |response| (response.routes, response.next_page_token),
                 )
                 .await
         }
@@ -84,7 +85,7 @@ fn DeliveryRoutes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> im
     let create_surface = surface;
 
     view! {
-        <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Simultaneous delivery paths"</p><h2>"Delivery routes"</h2><p>"Multiple Hub-proxied, redirected, CDN-fronted, and direct routes can serve the same logical surface concurrently."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading delivery routes…"</p> }>{move || { let client = view_client.clone(); let surface = view_surface.clone(); Suspend::new(async move { match routes.await.as_ref() { Ok(response) if response.routes.is_empty() => view! { <p class="muted">"No delivery routes for this surface."</p> }.into_any(), Ok(response) => view! { <div class="binding-list">{response.routes.iter().cloned().map(|route| view! { <RouteCard client=client.clone() surface=surface.clone() route=route/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section><Suspense fallback=move || view! { <section class="panel"><p class="loading-row">"Loading canonical routes…"</p></section> }>{move || { let client = canonical_client.clone(); let surface = canonical_surface.clone(); Suspend::new(async move { match topology.await.as_ref() { Ok(response) => view! { <CanonicalRoutes client=client surface=surface canonical=response.canonical_routes.clone() routes=response.routes.clone()/> }.into_any(), Err(failure) => view! { <section class="panel"><InlineError detail=failure.to_string()/></section> }.into_any() } }) }}</Suspense><RouteCreate client=create_client surface=create_surface/></div>
+        <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Simultaneous delivery paths"</p><h2>"Delivery routes"</h2><p>"Multiple Hub-proxied, redirected, CDN-fronted, and direct routes can serve the same logical surface concurrently."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading delivery routes…"</p> }>{move || { let client = view_client.clone(); let surface = view_surface.clone(); Suspend::new(async move { match routes.await.as_ref() { Ok(routes) if routes.is_empty() => view! { <p class="muted">"No delivery routes for this surface."</p> }.into_any(), Ok(routes) => view! { <div class="binding-list">{routes.iter().cloned().map(|route| view! { <RouteCard client=client.clone() surface=surface.clone() route=route/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section><Suspense fallback=move || view! { <section class="panel"><p class="loading-row">"Loading canonical routes…"</p></section> }>{move || { let client = canonical_client.clone(); let surface = canonical_surface.clone(); Suspend::new(async move { match topology.await.as_ref() { Ok(response) => view! { <CanonicalRoutes client=client surface=surface canonical=response.canonical_routes.clone() routes=response.routes.clone()/> }.into_any(), Err(failure) => view! { <section class="panel"><InlineError detail=failure.to_string()/></section> }.into_any() } }) }}</Suspense><RouteCreate client=create_client surface=create_surface/></div>
     }
 }
 
