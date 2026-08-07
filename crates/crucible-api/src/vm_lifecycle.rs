@@ -665,7 +665,9 @@ pub fn build_production_vm_lifecycle_loop(
     let fault_evaluation_cursor: SharedProductionFaultEvaluationCursor = Arc::new(
         std::sync::Mutex::new(ProductionFaultEvaluationCursor::default()),
     );
-    let storage_fault_observations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let storage_fault_observations = Arc::new(std::sync::Mutex::new(
+        storage_faults::ProductionFaultObservationJournal::default(),
+    ));
     for (node, block) in &block_bindings {
         backends
             .install_block_fault_coordinator(
@@ -696,6 +698,7 @@ pub fn build_production_vm_lifecycle_loop(
             ProductionFaultNetworkInterceptor::with_shared_runtime(
                 Arc::clone(&fault_runtime),
                 Arc::clone(&fault_evaluation_cursor),
+                Arc::clone(&storage_fault_observations),
                 source.world().fault_topology().clone(),
                 source.world().links().to_vec(),
             ),

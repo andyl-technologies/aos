@@ -15,8 +15,8 @@ use crucible::model::{
 };
 use crucible_device::block::{
     BaseImage, BlockDurabilityConfig, BlockOp, BlockPersistenceMediaOutcome, BlockRequest,
-    BlockServiceCompletion, ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective,
-    ResolvedBlockRequestPersistenceDirective,
+    BlockServiceCompletion, BlockStorageOutcome, ResolvedBlockDeliveryDirective,
+    ResolvedBlockExecutionDirective, ResolvedBlockRequestPersistenceDirective,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, QemuAsyncDriverRuntimeError, QemuBlockFaultCoordinator,
@@ -109,8 +109,110 @@ pub(super) fn block_binding_for_vm(
     }))
 }
 
-/// Durable observation queue drained by the lifecycle immediately after advance.
-pub(super) type ProductionStorageObservations = Arc<Mutex<Vec<FaultObservation>>>;
+/// Globally sequenced fault-observation journal shared by every live adapter.
+#[derive(Default)]
+pub(super) struct ProductionFaultObservationJournal {
+    batches: std::collections::BTreeMap<u64, Vec<FaultObservation>>,
+    observations: usize,
+}
+
+impl ProductionFaultObservationJournal {
+    fn ensure_capacity(&self, additional: usize) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.observations
+            .checked_add(additional)
+            .filter(|count| *count <= HARD_STORAGE_FAULT_OBSERVATIONS)
+            .map(|_count| ())
+            .ok_or_else(|| {
+                storage_error(
+                    "record fault observations",
+                    "fault observation journal exceeds its hard bound",
+                )
+            })
+    }
+
+    pub(super) fn append(
+        &mut self,
+        sequence: u64,
+        observations: Vec<FaultObservation>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.append_observation_batches(vec![(sequence, observations)])?;
+        Ok(())
+    }
+
+    pub(super) fn append_observation_batches(
+        &mut self,
+        batches: Vec<(u64, Vec<FaultObservation>)>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let additional = batches
+            .iter()
+            .try_fold(0_usize, |count, (_, batch)| count.checked_add(batch.len()));
+        let additional = additional.ok_or_else(|| {
+            storage_error(
+                "record fault observations",
+                "fault observation batch count overflow",
+            )
+        })?;
+        self.ensure_capacity(additional)?;
+        self.observations += additional;
+        for (sequence, observations) in batches {
+            self.batches
+                .entry(sequence)
+                .or_default()
+                .extend(observations);
+        }
+        Ok(())
+    }
+
+    fn append_batches(
+        &mut self,
+        batches: Vec<(u64, FaultObservation)>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.ensure_capacity(batches.len())?;
+        self.observations += batches.len();
+        for (sequence, observation) in batches {
+            self.batches.entry(sequence).or_default().push(observation);
+        }
+        Ok(())
+    }
+
+    pub(super) fn snapshot(&self) -> Vec<FaultObservation> {
+        self.batches.values().flatten().cloned().collect()
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.observations = 0;
+        self.batches.clear();
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.observations == 0
+    }
+
+    pub(super) fn contains_sequence(&self, sequence: u64) -> bool {
+        self.batches.contains_key(&sequence)
+    }
+
+    pub(super) fn rollback_sequence(
+        &mut self,
+        sequence: u64,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if let Some(observations) = self.batches.remove(&sequence) {
+            self.observations = self
+                .observations
+                .checked_sub(observations.len())
+                .ok_or_else(|| {
+                    storage_error(
+                        "roll back fault observations",
+                        "fault observation journal count is inconsistent",
+                    )
+                })?;
+        }
+        Ok(())
+    }
+}
+
+/// Shared owner of the globally sequenced observation journal.
+pub(super) type ProductionStorageObservations = Arc<Mutex<ProductionFaultObservationJournal>>;
 
 /// Coordinates one live block servicer with the authoritative signal runtime.
 pub(super) struct ProductionBlockFaultCoordinator {
@@ -252,18 +354,10 @@ impl ProductionBlockFaultCoordinator {
                 ));
             }
         };
-        if observations
-            .len()
-            .checked_add(evaluation.observations.len())
-            .is_none_or(|count| count > HARD_STORAGE_FAULT_OBSERVATIONS)
-        {
+        if let Err(error) = observations.append(sequence, evaluation.observations) {
             runtime.poison();
-            return Err(storage_error(
-                "record block fault observations",
-                "storage observation queue exceeds its hard bound",
-            ));
+            return Err(error);
         }
-        observations.extend(evaluation.observations);
         drop(runtime);
         Ok(actions)
     }
@@ -326,61 +420,92 @@ impl ProductionBlockFaultCoordinator {
         servicer: &mut QemuLiveBlockIoServicer,
         guest_icount: u64,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        let persistence = servicer.drain_storage_persistence_media_outcomes();
-        let service = servicer.drain_storage_service_outcomes();
-        if persistence.is_empty() && service.is_empty() {
+        let result = self.try_record_device_outcomes(servicer, guest_icount);
+        if result.is_err()
+            && let Ok(mut runtime) = self.runtime.lock()
+        {
+            runtime.poison();
+        }
+        result
+    }
+
+    fn try_record_device_outcomes(
+        &self,
+        servicer: &mut QemuLiveBlockIoServicer,
+        guest_icount: u64,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let outcomes = servicer
+            .storage_outcomes()
+            .map_err(|error| storage_error("inspect storage device outcomes", error))?;
+        if outcomes.is_empty() {
             return Ok(());
         }
-        let mut observations = Vec::with_capacity(persistence.len().saturating_add(service.len()));
-        for outcome in persistence {
-            observations.push(FaultObservation {
-                semantic_version: FAULT_RUNTIME_STATE_VERSION,
-                kind: FaultObservationKind::EffectApplied,
-                coordinate: FaultCoordinate {
-                    virtual_nanos: outcome.executed_nanos,
-                    retired_instructions: Some(
-                        self.retired_instructions_at(outcome.executed_nanos, guest_icount)?,
-                    ),
+        let mut observations = Vec::with_capacity(outcomes.len());
+        for outcome in &outcomes {
+            let (nanos, evidence) = match outcome {
+                BlockStorageOutcome::Service(outcome) => {
+                    (outcome.finished_nanos, storage_service_evidence(outcome))
+                }
+                BlockStorageOutcome::Persistence(outcome) => {
+                    (outcome.executed_nanos, persistence_media_evidence(outcome))
+                }
+            };
+            observations.push((
+                nanos,
+                FaultObservation {
+                    semantic_version: FAULT_RUNTIME_STATE_VERSION,
+                    kind: FaultObservationKind::EffectApplied,
+                    coordinate: FaultCoordinate {
+                        virtual_nanos: nanos,
+                        retired_instructions: Some(
+                            self.retired_instructions_at(nanos, guest_icount)?,
+                        ),
+                    },
+                    binding: None,
+                    target: Some(self.target.clone()),
+                    opportunity: None,
+                    evidence,
                 },
-                binding: None,
-                target: Some(self.target.clone()),
-                opportunity: None,
-                evidence: persistence_media_evidence(&outcome),
-            });
+            ));
         }
-        for outcome in service {
-            observations.push(FaultObservation {
-                semantic_version: FAULT_RUNTIME_STATE_VERSION,
-                kind: FaultObservationKind::EffectApplied,
-                coordinate: FaultCoordinate {
-                    virtual_nanos: outcome.finished_nanos,
-                    retired_instructions: Some(
-                        self.retired_instructions_at(outcome.finished_nanos, guest_icount)?,
-                    ),
-                },
-                binding: None,
-                target: Some(self.target.clone()),
-                opportunity: None,
-                evidence: storage_service_evidence(&outcome),
-            });
-        }
+        let mut cursor = self.cursor.lock().map_err(|_| {
+            storage_error(
+                "sequence storage device outcomes",
+                "production fault evaluation cursor lock is poisoned",
+            )
+        })?;
         let mut queued = self.observations.lock().map_err(|_| {
             storage_error(
                 "record storage device outcomes",
                 "storage observation queue lock is poisoned",
             )
         })?;
-        if queued
-            .len()
-            .checked_add(observations.len())
-            .is_none_or(|count| count > HARD_STORAGE_FAULT_OBSERVATIONS)
-        {
+        queued.ensure_capacity(observations.len())?;
+        let cursor_before = *cursor;
+        let mut batches = Vec::with_capacity(observations.len());
+        for (nanos, observation) in observations {
+            let sequence = match cursor.next_sequence(nanos) {
+                Ok(sequence) => sequence,
+                Err(error) => {
+                    *cursor = cursor_before;
+                    return Err(storage_error("sequence storage device outcomes", error));
+                }
+            };
+            batches.push((sequence, observation));
+        }
+        if let Err(error) = queued.append_batches(batches) {
+            *cursor = cursor_before;
+            return Err(error);
+        }
+        let drained = servicer
+            .drain_storage_outcomes()
+            .map_err(|error| storage_error("acknowledge storage device outcomes", error))?;
+        if drained != outcomes {
             return Err(storage_error(
                 "record storage device outcomes",
-                "storage observation queue exceeds its hard bound",
+                "storage outcome queues changed during their atomic journal commit",
             ));
         }
-        queued.extend(observations);
         Ok(())
     }
 
@@ -606,6 +731,7 @@ impl ProductionBlockFaultCoordinator {
                 .advance_storage_to(guest_icount)
                 .map_err(|error| storage_error("advance coordinated block device", error))?;
             absorb_delivery(aggregate, delivery)?;
+            self.record_device_outcomes(servicer, guest_icount)?;
             let mut delivery_installed = false;
             while let Some(opportunity) = servicer.next_storage_delivery_opportunity(now_nanos) {
                 let coordinate = FaultCoordinate {
@@ -658,6 +784,7 @@ impl ProductionBlockFaultCoordinator {
                     storage_error("publish coordinated block completion", error)
                 })?;
                 absorb_delivery(aggregate, delivery)?;
+                self.record_device_outcomes(servicer, guest_icount)?;
             }
             if !installed {
                 return Ok(());
@@ -675,6 +802,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         &mut self,
         servicer: &mut QemuLiveBlockIoServicer,
         _coordinate: FaultCoordinate,
+        evaluation_sequence: u64,
         actions: &[ResolvedBindingAction],
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let matching = actions
@@ -739,21 +867,11 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                 "storage observation queue lock is poisoned",
             )
         })?;
-        if queued
-            .len()
-            .checked_add(observations.len())
-            .is_none_or(|count| count > HARD_STORAGE_FAULT_OBSERVATIONS)
-        {
-            return Err(storage_error(
-                "record volatile-cache loss boundary",
-                "storage observation queue exceeds its hard bound",
-            ));
-        }
+        queued.ensure_capacity(observations.len())?;
         servicer
             .lose_storage_volatile(&selected)
             .map_err(|error| storage_error("apply volatile-cache loss boundary", error))?;
-        queued.extend(observations);
-        Ok(())
+        queued.append(evaluation_sequence, observations)
     }
 
     fn service_block_io(
@@ -762,6 +880,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         guest_icount: u64,
     ) -> Result<QemuLiveBlockIoServiceStep, QemuAsyncDriverRuntimeError> {
         let now_nanos = self.virtual_nanos(guest_icount)?;
+        self.record_device_outcomes(servicer, guest_icount)?;
         self.admit_head_request(servicer)?;
         let intake = servicer
             .process_one_storage_request()
@@ -769,7 +888,6 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         let mut aggregate = QemuLiveBlockIoServiceStep::default();
         absorb_intake(&mut aggregate, intake)?;
         self.settle_opportunities(servicer, guest_icount, now_nanos, &mut aggregate)?;
-        self.record_device_outcomes(servicer, guest_icount)?;
         Ok(aggregate)
     }
 }
@@ -943,4 +1061,68 @@ fn storage_error(
     error: impl std::fmt::Display,
 ) -> QemuAsyncDriverRuntimeError {
     QemuAsyncDriverRuntimeError::new(operation, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn observation(evidence: &'static [u8]) -> FaultObservation {
+        FaultObservation {
+            semantic_version: FAULT_RUNTIME_STATE_VERSION,
+            kind: FaultObservationKind::EffectApplied,
+            coordinate: FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            binding: None,
+            target: None,
+            opportunity: None,
+            evidence: ContentHash::from_bytes(evidence),
+        }
+    }
+
+    #[test]
+    fn observation_journal_drains_batches_in_global_sequence_order() {
+        let earlier = observation(b"authorizing-evaluation");
+        let same_sequence = observation(b"authorized-mutation");
+        let later = observation(b"later");
+        let mut journal = ProductionFaultObservationJournal::default();
+
+        journal
+            .append(9, vec![later.clone()])
+            .unwrap_or_else(|error| panic!("later observation should append: {error}"));
+        journal
+            .append(3, vec![earlier.clone()])
+            .unwrap_or_else(|error| panic!("earlier observations should append: {error}"));
+        journal
+            .append(3, vec![same_sequence.clone()])
+            .unwrap_or_else(|error| panic!("same-sequence mutation should append: {error}"));
+
+        assert_eq!(journal.snapshot(), vec![earlier, same_sequence, later]);
+        journal.clear();
+        assert!(journal.is_empty());
+        assert!(journal.snapshot().is_empty());
+    }
+
+    #[test]
+    fn observation_journal_rolls_back_one_boundary_sequence_exactly() {
+        let retained = observation(b"retained-before-boundary");
+        let evaluation = observation(b"rolled-back-evaluation");
+        let mutation = observation(b"rolled-back-mutation");
+        let mut journal = ProductionFaultObservationJournal::default();
+        journal
+            .append(4, vec![retained.clone()])
+            .unwrap_or_else(|error| panic!("prior observation should append: {error}"));
+        journal
+            .append(5, vec![evaluation, mutation])
+            .unwrap_or_else(|error| panic!("boundary observations should append: {error}"));
+
+        journal
+            .rollback_sequence(5)
+            .unwrap_or_else(|error| panic!("boundary sequence should roll back: {error}"));
+
+        assert_eq!(journal.snapshot(), vec![retained]);
+        assert!(!journal.contains_sequence(5));
+    }
 }

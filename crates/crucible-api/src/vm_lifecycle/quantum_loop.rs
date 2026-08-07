@@ -152,21 +152,22 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             }
         }
         let mut outcome = crucible_session::drive_engine_quantum(&mut self.inner, request)?;
-        let storage_observations = {
-            let mut queued = self.storage_fault_observations.lock().map_err(|_| {
-                SchedulerError::BoundaryViolation {
-                    message: String::from("storage fault observation queue lock is poisoned"),
-                }
+        let observations = Arc::clone(&self.storage_fault_observations);
+        let mut queued = observations
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production fault observation journal lock is poisoned"),
             })?;
-            std::mem::take(&mut *queued)
-        };
+        let storage_observations = queued.snapshot();
         if !storage_observations.is_empty() {
             let append = self
                 .inner
                 .loop_impl_mut()
                 .append_fault_observations(storage_observations)?;
+            queued.clear();
             merge_event_log_append(&mut outcome, append);
         }
+        drop(queued);
         if !pre_quantum_decisions.is_empty() {
             let mut decisions = pre_quantum_decisions;
             decisions.extend(std::mem::take(&mut outcome.decisions));

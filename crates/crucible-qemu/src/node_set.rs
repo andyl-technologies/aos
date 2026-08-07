@@ -24,7 +24,59 @@ pub struct QemuNodeSet {
     nodes: BTreeMap<NodeId, QemuNode>,
 }
 
+/// Exact per-node block state captured around one scheduler boundary.
+#[cfg(target_os = "linux")]
+pub struct QemuNodeSetBlockBoundaryCheckpoint {
+    states: BTreeMap<NodeId, Option<crucible_device::block::BlockFaultState>>,
+}
+
 impl QemuNodeSet {
+    /// Captures every node's block state before a boundary transaction.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn checkpoint_block_boundary_state(&self) -> QemuNodeSetBlockBoundaryCheckpoint {
+        QemuNodeSetBlockBoundaryCheckpoint {
+            states: self
+                .nodes
+                .iter()
+                .map(|(id, node)| (id.clone(), node.checkpoint_block_boundary_state()))
+                .collect(),
+        }
+    }
+
+    /// Restores every node's exact pre-boundary block state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when node membership changed or any host-I/O
+    /// runtime cannot restore its captured state.
+    #[cfg(target_os = "linux")]
+    pub fn restore_block_boundary_state(
+        &mut self,
+        checkpoint: QemuNodeSetBlockBoundaryCheckpoint,
+    ) -> Result<(), BackendError> {
+        if checkpoint.states.len() != self.nodes.len()
+            || checkpoint
+                .states
+                .keys()
+                .any(|id| !self.nodes.contains_key(id))
+        {
+            return Err(BackendError::Rejected {
+                message: String::from("block boundary rollback node membership changed"),
+            });
+        }
+        for (id, state) in checkpoint.states {
+            self.nodes
+                .get_mut(&id)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: String::from("block rollback node disappeared"),
+                })?
+                .restore_block_boundary_state(state)
+                .map_err(BackendError::from)?;
+        }
+        Ok(())
+    }
+
     /// Applies one batch of storage boundary actions to every live coordinator.
     ///
     /// Each coordinator filters the batch by its authenticated World target;
@@ -37,11 +89,17 @@ impl QemuNodeSet {
     pub fn apply_block_boundary_actions(
         &mut self,
         coordinate: crucible::model::FaultCoordinate,
+        evaluation_sequence: u64,
         actions: &[crucible::model::ResolvedBindingAction],
     ) -> Result<(), BackendError> {
+        let rollback = self.checkpoint_block_boundary_state();
         for node in self.nodes.values_mut() {
-            node.apply_block_boundary_actions(coordinate, actions)
-                .map_err(BackendError::from)?;
+            if let Err(error) =
+                node.apply_block_boundary_actions(coordinate, evaluation_sequence, actions)
+            {
+                self.restore_block_boundary_state(rollback)?;
+                return Err(BackendError::from(error));
+            }
         }
         Ok(())
     }

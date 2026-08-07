@@ -62,8 +62,8 @@ use crucible::model::ContentHash;
 use crucible_device::block::{
     BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
-    BlockRetainedRelease, BlockServiceCompletion, ResolvedBlockDeliveryDirective,
-    ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
+    BlockRetainedRelease, BlockServiceCompletion, BlockStorageOutcome,
+    ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
     ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
 };
 use crucible_device::{
@@ -668,6 +668,11 @@ impl QemuLiveBlockIoServicer {
         self.device.storage_fault_state()
     }
 
+    /// Restores an exact state captured before an uncommitted host transaction.
+    pub(crate) fn restore_storage_fault_state(&mut self, state: BlockFaultState) {
+        self.device.restore_storage_fault_state(state);
+    }
+
     /// Returns the next physical persistence opportunity ready at `now_nanos`.
     #[must_use]
     pub fn next_storage_persistence_opportunity(
@@ -699,9 +704,49 @@ impl QemuLiveBlockIoServicer {
         self.device.drain_storage_persistence_media_outcomes()
     }
 
+    /// Borrows completed physical-media outcomes without acknowledging them.
+    #[must_use]
+    pub fn storage_persistence_media_outcomes(&self) -> &[BlockPersistenceMediaOutcome] {
+        self.device.storage_persistence_media_outcomes()
+    }
+
     /// Drains integrated storage-service evidence for durable event recording.
     pub fn drain_storage_service_outcomes(&mut self) -> Vec<BlockServiceCompletion> {
         self.device.drain_storage_service_outcomes()
+    }
+
+    /// Borrows integrated storage-service evidence without acknowledging it.
+    #[must_use]
+    pub fn storage_service_outcomes(&self) -> &[BlockServiceCompletion] {
+        self.device.storage_service_outcomes()
+    }
+
+    /// Returns all pending storage outcomes in exact causal generation order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] when checkpointed
+    /// outcome-order state is invalid.
+    pub fn storage_outcomes(
+        &self,
+    ) -> Result<Vec<BlockStorageOutcome>, QemuLiveBlockIoServicerError> {
+        self.device
+            .storage_outcomes()
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Drains all storage outcomes in exact causal generation order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] without mutation when
+    /// checkpointed outcome-order state is invalid.
+    pub fn drain_storage_outcomes(
+        &mut self,
+    ) -> Result<Vec<BlockStorageOutcome>, QemuLiveBlockIoServicerError> {
+        self.device
+            .drain_storage_outcomes()
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
     /// Drops exact volatile-cache entries at a scheduler-authorized boundary.

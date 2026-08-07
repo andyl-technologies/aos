@@ -36,9 +36,9 @@ use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, RESPONS
 use super::fault::{
     BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
-    BlockRetainedRelease, ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective,
-    ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
-    ResolvedBlockRequestPersistenceDirective,
+    BlockRetainedRelease, BlockStorageOutcome, ResolvedBlockDeliveryDirective,
+    ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
+    ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
 };
 use super::overlay::{BaseImage, CowOverlay};
 use super::service::BlockServiceCompletion;
@@ -273,6 +273,11 @@ impl BlockDevice {
         &self.storage_faults
     }
 
+    /// Restores an exact trusted storage-fault state during host transaction rollback.
+    pub fn restore_storage_fault_state(&mut self, state: BlockFaultState) {
+        self.storage_faults = state;
+    }
+
     /// Replaces durability configuration before request execution begins.
     ///
     /// # Errors
@@ -444,9 +449,40 @@ impl BlockDevice {
         self.storage_faults.drain_persistence_media_outcomes()
     }
 
+    /// Borrows completed physical-media outcomes without acknowledging them.
+    #[must_use]
+    pub fn storage_persistence_media_outcomes(&self) -> &[BlockPersistenceMediaOutcome] {
+        self.storage_faults.persistence_media_outcomes()
+    }
+
     /// Drains integrated-service completion evidence in canonical order.
     pub fn drain_storage_service_outcomes(&mut self) -> Vec<BlockServiceCompletion> {
         self.storage_faults.drain_service_outcomes()
+    }
+
+    /// Borrows integrated-service completion evidence without acknowledging it.
+    #[must_use]
+    pub fn storage_service_outcomes(&self) -> &[BlockServiceCompletion] {
+        self.storage_faults.service_outcomes()
+    }
+
+    /// Returns all pending storage outcomes in exact causal generation order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when checkpointed outcome-order state is invalid.
+    pub fn storage_outcomes(&self) -> Result<Vec<BlockStorageOutcome>, DeviceError> {
+        self.storage_faults.storage_outcomes()
+    }
+
+    /// Drains all storage outcomes in exact causal generation order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] without mutation when checkpointed outcome-order
+    /// state is invalid.
+    pub fn drain_storage_outcomes(&mut self) -> Result<Vec<BlockStorageOutcome>, DeviceError> {
+        self.storage_faults.drain_storage_outcomes()
     }
 
     /// Returns the earliest response, service, or persistence event coordinate.

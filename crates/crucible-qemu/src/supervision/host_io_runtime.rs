@@ -90,6 +90,7 @@ pub trait QemuBlockFaultCoordinator: Send {
         &mut self,
         servicer: &mut QemuLiveBlockIoServicer,
         coordinate: crucible::model::FaultCoordinate,
+        evaluation_sequence: u64,
         actions: &[crucible::model::ResolvedBindingAction],
     ) -> Result<(), QemuAsyncDriverRuntimeError>;
 
@@ -361,9 +362,33 @@ impl QemuLiveHostIoRuntime {
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn checkpoint_block_boundary_state(&self) -> Option<crucible_device::block::BlockFaultState> {
+        self.block
+            .as_ref()
+            .map(|block| block.servicer.storage_fault_state().clone())
+    }
+
+    fn restore_block_boundary_state(
+        &mut self,
+        state: Option<crucible_device::block::BlockFaultState>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        match (self.block.as_mut(), state) {
+            (Some(block), Some(state)) => {
+                block.servicer.restore_storage_fault_state(state);
+                Ok(())
+            }
+            (None, None) => Ok(()),
+            _ => Err(QemuAsyncDriverRuntimeError::new(
+                "restore block boundary state",
+                "captured block state does not match the live host-I/O topology",
+            )),
+        }
+    }
+
     fn apply_block_boundary_actions(
         &mut self,
         coordinate: crucible::model::FaultCoordinate,
+        evaluation_sequence: u64,
         actions: &[crucible::model::ResolvedBindingAction],
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let Some(block) = self.block.as_mut() else {
@@ -375,7 +400,12 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 "live block servicer has no signal coordinator",
             ));
         };
-        coordinator.apply_boundary_actions(&mut block.servicer, coordinate, actions)
+        coordinator.apply_boundary_actions(
+            &mut block.servicer,
+            coordinate,
+            evaluation_sequence,
+            actions,
+        )
     }
 
     fn install_block_fault_coordinator(
