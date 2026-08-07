@@ -239,6 +239,7 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
         net_send: Some(test_net_send),
         net_flush: Some(test_net_flush),
         register_block: Some(test_register_block),
+        register_block_event: Some(test_register_block_event),
         register_block_wait: Some(test_register_block_wait),
         register_ninep: Some(test_register_ninep),
         fault_commands: crate::fault_command::QemuFaultCommandApis::test_stub(),
@@ -405,6 +406,15 @@ extern "C" fn test_net_flush() -> std::os::raw::c_int {
 extern "C" fn test_register_block(
     _submit: Option<crate::QemuBlkSubmitCbFn>,
     _poll: Option<crate::QemuBlkPollCbFn>,
+    _userdata: *mut std::ffi::c_void,
+) {
+}
+
+extern "C" fn test_register_block_event(
+    _poll: Option<crate::QemuBlkEventPollCbFn>,
+    _commit: Option<crate::QemuBlkEventCommitCbFn>,
+    _save: Option<crate::QemuBlkTransportSaveCbFn>,
+    _restore: Option<crate::QemuBlkTransportRestoreCbFn>,
     _userdata: *mut std::ffi::c_void,
 ) {
 }

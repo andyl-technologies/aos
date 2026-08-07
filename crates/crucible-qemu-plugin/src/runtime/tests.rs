@@ -639,6 +639,20 @@ extern "C" fn capture_block_registration(
     LIVE_BLOCK_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
 }
 
+extern "C" fn capture_block_event_registration(
+    poll: Option<crate::QemuBlkEventPollCbFn>,
+    commit: Option<crate::QemuBlkEventCommitCbFn>,
+    save: Option<crate::QemuBlkTransportSaveCbFn>,
+    restore: Option<crate::QemuBlkTransportRestoreCbFn>,
+    userdata: *mut std::ffi::c_void,
+) {
+    assert!(poll.is_some());
+    assert!(commit.is_some());
+    assert!(save.is_some());
+    assert!(restore.is_some());
+    assert!(!userdata.is_null());
+}
+
 extern "C" fn capture_block_wait_registration(
     wait: Option<crate::QemuBlkWaitCbFn>,
     userdata: *mut std::ffi::c_void,
@@ -870,6 +884,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 net_send: Some(live_network_send_ok),
                 net_flush: Some(live_network_flush_ok),
                 register_block: Some(capture_block_registration),
+                register_block_event: Some(capture_block_event_registration),
                 register_block_wait: Some(capture_block_wait_registration),
                 register_ninep: Some(capture_ninep_registration),
                 fault_commands: crate::fault_command::QemuFaultCommandApis::test_stub(),

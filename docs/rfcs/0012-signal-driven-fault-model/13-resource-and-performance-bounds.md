@@ -112,6 +112,8 @@ index. A frame traverses at most `network_path_hops` plus
 | `storage_flash_blocks_per_device` | 16,777,216 | 67,108,864 |
 | `storage_array_members` | 256 | 4,096 |
 | `storage_retries_per_operation` | 64 | 1,024 |
+| `storage_completed_history_epochs` | 1,048,576 | 1,048,576 |
+| `storage_completed_history_gaps` | 1,048,576 | 1,048,576 |
 | `ninep_sessions_per_device` | 65,536 | 262,144 |
 | `ninep_fids_per_session` | 65,536 | 262,144 |
 | `ninep_object_versions` | 1,048,576 | 4,194,304 |

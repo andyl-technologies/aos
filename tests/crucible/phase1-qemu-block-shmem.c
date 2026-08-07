@@ -12,6 +12,8 @@ typedef enum TestOutcome {
     TEST_OUTCOME_ERROR,
     TEST_OUTCOME_TOO_LARGE,
     TEST_OUTCOME_TYPED_ERROR,
+    TEST_OUTCOME_RETRY_PRESERVE_THEN_SUCCESS,
+    TEST_OUTCOME_DROP_COMPLETION,
 } TestOutcome;
 
 typedef struct TestBackend {
@@ -25,6 +27,9 @@ typedef struct TestBackend {
     uint8_t submitted_payload[16];
     size_t submitted_payload_len;
     uint32_t submitted_request_id;
+    uint64_t submitted_epoch;
+    uint32_t first_submitted_request_id;
+    uint64_t first_submitted_epoch;
     uint32_t submitted_op;
     uint64_t submitted_offset;
     size_t submitted_len;
@@ -32,11 +37,14 @@ typedef struct TestBackend {
     int submit_count;
     int poll_count;
     int typed_errno;
+    BDRVCrucibleShmemState *retry_state;
 } TestBackend;
 
 static AioContext fixture_aio_context;
 static unsigned int fixture_schedule_count;
 static unsigned int fixture_yield_count;
+static unsigned int fixture_topology_notifications;
+static int64_t fixture_clock_ns;
 static BlockDriver *fixture_registered_driver;
 
 void fixture_co_queue_init(CoQueue *queue)
@@ -78,6 +86,24 @@ AioContext *bdrv_get_aio_context(BlockDriverState *bs)
 {
     (void)bs;
     return &fixture_aio_context;
+}
+
+int64_t qemu_clock_get_ns(int clock)
+{
+    (void)clock;
+    return fixture_clock_ns;
+}
+
+void qemu_co_sleep_ns(int clock, int64_t duration)
+{
+    (void)clock;
+    fixture_clock_ns += duration;
+}
+
+void bdrv_notify_topology_change(BlockDriverState *bs)
+{
+    (void)bs;
+    fixture_topology_notifications++;
 }
 
 void aio_co_schedule(AioContext *ctx, void *co)
@@ -123,13 +149,27 @@ static int expect_bool(bool condition, const char *message)
     return condition ? 0 : fail(message);
 }
 
+#ifdef QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID
+static int test_submit(uint64_t epoch, uint32_t request_id, uint32_t op,
+                       uint64_t offset,
+#else
 static int test_submit(uint32_t request_id, uint32_t op, uint64_t offset,
+#endif
                        const uint8_t *data, size_t len, void *userdata)
 {
     TestBackend *backend = userdata;
 
     backend->submit_count++;
+    if (backend->submit_count == 1) {
+        backend->first_submitted_request_id = request_id;
+#ifdef QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID
+        backend->first_submitted_epoch = epoch;
+#endif
+    }
     backend->submitted_request_id = request_id;
+#ifdef QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID
+    backend->submitted_epoch = epoch;
+#endif
     backend->submitted_op = op;
     backend->submitted_offset = offset;
     backend->submitted_len = len;
@@ -148,7 +188,12 @@ static int test_submit(uint32_t request_id, uint32_t op, uint64_t offset,
     return 0;
 }
 
+#ifdef QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID
+static int64_t test_poll(uint64_t epoch, uint32_t request_id, uint8_t *data,
+                         size_t capacity,
+#else
 static int64_t test_poll(uint32_t request_id, uint8_t *data, size_t capacity,
+#endif
                          void *userdata)
 {
     TestBackend *backend = userdata;
@@ -157,6 +202,11 @@ static int64_t test_poll(uint32_t request_id, uint8_t *data, size_t capacity,
     if (request_id != backend->submitted_request_id) {
         return -1;
     }
+#ifdef QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID
+    if (epoch != backend->submitted_epoch) {
+        return -1;
+    }
+#endif
     if (backend->pending_before_ready > 0) {
         backend->pending_before_ready--;
         return QEMU_PLUGIN_BLK_POLL_PENDING;
@@ -181,6 +231,23 @@ static int64_t test_poll(uint32_t request_id, uint8_t *data, size_t capacity,
 #else
         return -1;
 #endif
+    case TEST_OUTCOME_RETRY_PRESERVE_THEN_SUCCESS:
+#ifdef QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID
+        if (backend->poll_count == 1 && backend->retry_state != NULL) {
+            backend->retry_state->recovery_deadline_ns = fixture_clock_ns + 50;
+            backend->retry_state->recovery_unadmitted = 1;
+            return QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID;
+        }
+        return 0;
+#else
+        return -1;
+#endif
+    case TEST_OUTCOME_DROP_COMPLETION:
+#ifdef QEMU_PLUGIN_BLK_DROP_COMPLETION
+        return QEMU_PLUGIN_BLK_DROP_COMPLETION;
+#else
+        return -1;
+#endif
     }
     return -1;
 }
@@ -196,6 +263,121 @@ static void reset_backend(TestBackend *backend, uint32_t op, uint64_t offset,
     backend->outcome = outcome;
 }
 
+#ifdef QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID
+typedef struct TestEventBackend {
+    uint8_t frame[CRUCIBLE_BLOCK_EVENT_SIZE];
+    bool ready;
+    int commit_result;
+    unsigned int commit_count;
+    unsigned int restore_count;
+    int restore_result;
+    uint64_t state_epoch;
+    uint32_t state_next_request_id;
+} TestEventBackend;
+
+static void put_u16_le(uint8_t *data, uint16_t value)
+{
+    data[0] = (uint8_t)value;
+    data[1] = (uint8_t)(value >> 8);
+}
+
+static void put_u32_le(uint8_t *data, uint32_t value)
+{
+    data[0] = (uint8_t)value;
+    data[1] = (uint8_t)(value >> 8);
+    data[2] = (uint8_t)(value >> 16);
+    data[3] = (uint8_t)(value >> 24);
+}
+
+static void put_u64_le(uint8_t *data, uint64_t value)
+{
+    put_u32_le(data, (uint32_t)value);
+    put_u32_le(data + 4, (uint32_t)(value >> 32));
+}
+
+static void reset_event(TestEventBackend *event, uint64_t next_epoch,
+                        uint64_t recovery_ns, uint8_t unadmitted)
+{
+    uint8_t *reset;
+
+    memset(event, 0, sizeof(*event));
+    event->frame[0] = CRUCIBLE_BLOCK_STATUS_RESET;
+    event->frame[1] = CRUCIBLE_BLOCK_WIRE_VERSION;
+    put_u32_le(event->frame + 16, 32);
+    reset = event->frame + CRUCIBLE_BLOCK_RESPONSE_HEADER_SIZE;
+    put_u64_le(reset, next_epoch);
+    put_u64_le(reset + 8, recovery_ns);
+    reset[16] = 1;
+    reset[17] = 1;
+    reset[19] = 5;
+    reset[20] = unadmitted;
+    event->ready = true;
+}
+
+static int64_t test_event_poll(uint8_t *data, size_t capacity, void *userdata)
+{
+    TestEventBackend *event = userdata;
+
+    if (!event->ready) {
+        return 0;
+    }
+    if (capacity < sizeof(event->frame)) {
+        return -1;
+    }
+    memcpy(data, event->frame, sizeof(event->frame));
+    return sizeof(event->frame);
+}
+
+static int test_event_commit(void *userdata)
+{
+    TestEventBackend *event = userdata;
+
+    if (event->commit_result != 0) {
+        return event->commit_result;
+    }
+    event->ready = false;
+    event->commit_count++;
+    return 0;
+}
+
+static int64_t test_transport_save(uint8_t *data, size_t capacity,
+                                   void *userdata)
+{
+    TestEventBackend *event = userdata;
+
+    if (!data && capacity == 0) {
+        return CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE;
+    }
+    if (!data || capacity < CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE) {
+        return -1;
+    }
+    memset(data, 0, CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE);
+    memcpy(data, "CBTS", 4);
+    put_u16_le(data + 4, 1);
+    put_u64_le(data + 8, event->state_epoch);
+    put_u32_le(data + 16, event->state_next_request_id);
+    return CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE;
+}
+
+static int test_transport_restore(const uint8_t *data, size_t len,
+                                  uint64_t epoch, uint32_t next_request_id,
+                                  void *userdata)
+{
+    TestEventBackend *event = userdata;
+
+    if (event->restore_result != 0) {
+        return event->restore_result;
+    }
+    if (!data || len != CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE ||
+        memcmp(data, "CBTS", 4) != 0 || epoch != event->state_epoch ||
+        next_request_id != event->state_next_request_id) {
+        return -1;
+    }
+    event->restore_count++;
+    return 0;
+}
+#endif
+
 static int exercise_driver(void)
 {
     BDRVCrucibleShmemState state;
@@ -207,6 +389,9 @@ static int exercise_driver(void)
         .size = 64,
     };
     TestBackend backend;
+#ifdef QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID
+    TestEventBackend event;
+#endif
     Error *err = NULL;
     uint8_t read_target[4] = {0};
     uint8_t write_source[3] = {9, 8, 7};
@@ -250,6 +435,111 @@ static int exercise_driver(void)
     }
 
     qemu_plugin_register_blk_cb(test_submit, test_poll, &backend);
+
+#ifdef QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID
+    fixture_clock_ns = 1000;
+    fixture_topology_notifications = 0;
+    reset_event(&event, 1, 100, 0);
+    event.state_epoch = 1;
+    event.state_next_request_id = 0;
+    qemu_plugin_register_blk_event_cb(test_event_poll, test_event_commit,
+                                      test_transport_save,
+                                      test_transport_restore, &event);
+    if (!crucible_shmem_poll_events(&state) ||
+        expect_bool(state.request_epoch == 1, "reset epoch mismatch") ||
+        expect_bool(state.next_request_id == 0, "reset allocator mismatch") ||
+        expect_bool(state.recovery_deadline_ns == 1100,
+                    "reset recovery deadline mismatch") ||
+        expect_bool(state.recovery_failure == 5,
+                    "reset failure result mismatch") ||
+        expect_bool(crucible_shmem_failure_errno(1) == ENOMEDIUM,
+                    "first typed reset error mapping mismatch") ||
+        expect_bool(crucible_shmem_failure_errno(11) == ESTALE,
+                    "last typed reset error mapping mismatch") ||
+        expect_bool(fixture_topology_notifications == 1,
+                    "declared topology was not re-enumerated") ||
+        expect_bool(event.commit_count == 1,
+                    "accepted reset event was not committed exactly once") ||
+        expect_bool(crucible_shmem_admit_after_recovery(&state) == -ETIMEDOUT,
+                    "reject recovery policy mismatch")) {
+        return 1;
+    }
+    state.recovery_unadmitted = 1;
+    if (expect_bool(crucible_shmem_admit_after_recovery(&state) == 0,
+                    "wait recovery policy failed") ||
+        expect_bool(fixture_clock_ns == 1100,
+                    "wait recovery did not reach exact deadline")) {
+        return 1;
+    }
+    reset_event(&event, 2, 100, 0);
+    event.frame[CRUCIBLE_BLOCK_EVENT_SIZE - 1] = 1;
+    if (expect_bool(!crucible_shmem_poll_events(&state),
+                    "nonzero reset reserved byte was accepted") ||
+        expect_bool(state.request_epoch == 1,
+                    "malformed reset mutated epoch")) {
+        return 1;
+    }
+    event.frame[CRUCIBLE_BLOCK_EVENT_SIZE - 1] = 0;
+    event.commit_result = -1;
+    if (expect_bool(!crucible_shmem_poll_events(&state),
+                    "rejected event commit was accepted") ||
+        expect_bool(state.request_epoch == 1,
+                    "rejected event commit mutated epoch") ||
+        expect_bool(event.ready,
+                    "rejected event commit consumed the event")) {
+        return 1;
+    }
+    event.commit_result = 0;
+    event.ready = false;
+    event.state_epoch = state.request_epoch;
+    event.state_next_request_id = state.next_request_id;
+
+    if (expect_bool(crucible_shmem_pre_save(&state) == 0,
+                    "transport continuation save failed") ||
+        expect_bool(state.vmstate_plugin_state_len ==
+                        CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE,
+                    "transport continuation length mismatch")) {
+        return 1;
+    }
+    state.vmstate_next_request_id = 1;
+    if (expect_bool(crucible_shmem_post_load(&state, 1) == -EINVAL,
+                    "mismatched transport continuation was restored") ||
+        expect_bool(event.restore_count == 0,
+                    "mismatched continuation reached plugin restore") ||
+        expect_bool(state.next_request_id == 0,
+                    "failed restore mutated active allocator")) {
+        return 1;
+    }
+    state.vmstate_next_request_id = 0;
+    state.vmstate_recovery_unadmitted = 2;
+    if (expect_bool(crucible_shmem_post_load(&state, 1) == -EINVAL,
+                    "invalid recovery admission was restored") ||
+        expect_bool(state.recovery_unadmitted == 1,
+                    "invalid recovery restore mutated active admission")) {
+        return 1;
+    }
+    state.vmstate_recovery_unadmitted = 1;
+    event.restore_result = -1;
+    if (expect_bool(crucible_shmem_post_load(&state, 1) == -EINVAL,
+                    "plugin-rejected continuation was restored") ||
+        expect_bool(state.next_request_id == 0 &&
+                        state.recovery_unadmitted == 1,
+                    "plugin-rejected restore mutated active QEMU state")) {
+        return 1;
+    }
+    event.restore_result = 0;
+    if (expect_bool(crucible_shmem_post_load(&state, 1) == 0,
+                    "paired transport continuation restore failed") ||
+        expect_bool(event.restore_count == 1,
+                    "paired continuation did not restore exactly once") ||
+        expect_bool(crucible_shmem_pre_load(&state) == 0,
+                    "transport continuation pre-load cleanup failed") ||
+        expect_bool(state.vmstate_plugin_state == NULL &&
+                        state.vmstate_plugin_state_len == 0,
+                    "transport continuation pre-load did not clear state")) {
+        return 1;
+    }
+#endif
 
     reset_backend(&backend, QEMU_PLUGIN_BLK_OP_READ, 8, sizeof(read_target), 2,
                   TEST_OUTCOME_READ);
@@ -316,6 +606,45 @@ static int exercise_driver(void)
         expect_bool(backend.poll_count == 1, "discard poll count mismatch")) {
         return 1;
     }
+#endif
+#ifdef QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID
+    reset_backend(&backend, QEMU_PLUGIN_BLK_OP_FLUSH, 0, 0, 0,
+                  TEST_OUTCOME_RETRY_PRESERVE_THEN_SUCCESS);
+    backend.retry_state = &state;
+    fixture_clock_ns = 2000;
+    state.recovery_deadline_ns = fixture_clock_ns;
+    if (crucible_shmem_co_flush(&bs) != 0 ||
+        expect_bool(backend.submit_count == 2,
+                    "preserved retry did not submit exactly twice") ||
+        expect_bool(backend.submitted_epoch == backend.first_submitted_epoch &&
+                        backend.submitted_request_id ==
+                            backend.first_submitted_request_id,
+                    "preserved retry changed request identity") ||
+        expect_bool(fixture_clock_ns == 2050,
+                    "preserved retry bypassed recovery admission")) {
+        return 1;
+    }
+    reset_backend(&backend, QEMU_PLUGIN_BLK_OP_FLUSH, 0, 0, 0,
+                  TEST_OUTCOME_DROP_COMPLETION);
+    if (expect_bool(crucible_shmem_co_flush(&bs) == -ECANCELED,
+                    "dropped completion did not reach frontend sentinel") ||
+        expect_bool(bdrv_crucible_shmem.bdrv_guest_completion_dropped(
+                        &bs, ECANCELED),
+                    "drop sentinel was not recognized by block driver") ||
+        expect_bool(!bdrv_crucible_shmem.bdrv_guest_completion_dropped(
+                        &bs, EIO),
+                    "ordinary I/O error was mistaken for dropped completion")) {
+        return 1;
+    }
+    puts("transport_reset_transactional=true");
+    puts("transport_reset_recovery_exact=true");
+    puts("transport_reset_reserved_rejected=true");
+    puts("transport_reset_topology_notified=true");
+    puts("transport_reset_error_range_exact=true");
+    puts("transport_reset_commit_rejection_transactional=true");
+    puts("transport_reset_vmstate_paired=true");
+    puts("transport_reset_preserve_retry_admitted=true");
+    puts("transport_reset_drop_sentinel_exact=true");
 #endif
 
     reset_backend(&backend, QEMU_PLUGIN_BLK_OP_READ, 0, sizeof(read_target), 0,

@@ -231,9 +231,18 @@ pub enum LiveVcpuTimeCallbackError {
     /// QEMU reported vCPU resume before the queued idle jump completed.
     #[error("vCPU resumed while an idle time advance was still pending")]
     ResumeWhileIdleAdvancePending,
-    /// The pending idle-advance slot was re-entered from another callback.
-    #[error("live time callback was re-entered while pending state was borrowed")]
-    CallbackReentered,
+    /// The idle-advance completion callback was entered recursively.
+    #[error("live idle-advance completion callback was re-entered")]
+    IdleAdvanceCompletionReentered,
+    /// The pending idle-advance slot was borrowed by another callback.
+    #[error("live pending idle-advance state was already borrowed")]
+    PendingIdleAdvanceBorrowed,
+    /// The per-vCPU halt tracker was borrowed by another callback.
+    #[error("live per-vCPU halt state was already borrowed")]
+    HaltStateBorrowed,
+    /// The fault-command bridge was borrowed without an owned nested pump.
+    #[error("live fault-command bridge was already borrowed")]
+    FaultCommandStateBorrowed,
     /// A prior panic poisoned the pending idle-advance slot.
     #[error("live time callback pending state is poisoned")]
     CallbackStatePoisoned,

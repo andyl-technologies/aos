@@ -36,7 +36,8 @@ pub use device_host_work::{
     QemuLiveBlockStorageEvents,
 };
 pub use host_io_runtime::{
-    QemuBlockFaultCoordinator, QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError,
+    QemuBlockFaultCoordinator, QemuHostIoCheckpoint, QemuLiveHostIoRuntime,
+    QemuLiveHostIoRuntimeError,
 };
 pub use host_parallel_gate::{
     QemuLiveHostParallelGateError, QemuLiveHostParallelReport, run_qemu_live_host_parallel_gate,

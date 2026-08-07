@@ -1,0 +1,950 @@
+diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+index afc442b..d73c79c 100644
+--- a/block/crucible-shmem.c
++++ b/block/crucible-shmem.c
+@@ -15,6 +15,8 @@
+ #include "qemu/iov.h"
+ #include "qemu/module.h"
+ #include "qemu/thread.h"
++#include "qemu/timer.h"
++#include "migration/vmstate.h"
+ #include "system/crucible-plugin-wake.h"
+ #include "qemu/option.h"
+ #include "block/aio.h"
+@@ -24,23 +26,54 @@
+ 
+ #define CRUCIBLE_SHMEM_OPT_SIZE BLOCK_OPT_SIZE
+ #define CRUCIBLE_SHMEM_DEFAULT_SIZE (1ULL << 30)
++#define CRUCIBLE_BLOCK_EVENT_SIZE 52
++#define CRUCIBLE_BLOCK_RESPONSE_HEADER_SIZE 20
++#define CRUCIBLE_BLOCK_WIRE_VERSION 4
++#define CRUCIBLE_BLOCK_STATUS_RESET 2
++#define CRUCIBLE_BLOCK_STATUS_DUPLICATE_IGNORED 3
++#define CRUCIBLE_BLOCK_STATUS_DUPLICATE_ERROR 4
++#define CRUCIBLE_BLOCK_ERROR_MIN 1
++#define CRUCIBLE_BLOCK_ERROR_MAX 11
++#define CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE 28
++#define CRUCIBLE_BLOCK_TRANSPORT_STATE_MAX (32U * 1024U * 1024U)
+ 
+ typedef struct BDRVCrucibleShmemState {
++    BlockDriverState *bs;
+     int64_t length;
++    uint64_t request_epoch;
+     uint32_t next_request_id;
++    int64_t recovery_deadline_ns;
++    uint8_t recovery_unadmitted;
++    uint8_t recovery_failure;
++    uint64_t vmstate_request_epoch;
++    uint32_t vmstate_next_request_id;
++    int64_t vmstate_recovery_deadline_ns;
++    uint8_t vmstate_recovery_unadmitted;
++    uint8_t vmstate_recovery_failure;
++    uint8_t *vmstate_plugin_state;
++    uint32_t vmstate_plugin_state_len;
+     QemuMutex pending_lock;
+     CoQueue pending_requests;
+     uint64_t wake_generation;
+     Notifier wake_notifier;
+     bool wake_registered;
+     bool wake_failed;
++    bool vmstate_registered;
+ } BDRVCrucibleShmemState;
+ 
++static const VMStateDescription vmstate_crucible_shmem;
++
+ static qemu_plugin_blk_submit_cb_t crucible_blk_submit_cb;
+ static qemu_plugin_blk_poll_cb_t crucible_blk_poll_cb;
+ static void *crucible_blk_userdata;
+ static qemu_plugin_blk_wait_cb_t crucible_blk_wait_cb;
+ static void *crucible_blk_wait_userdata;
++static qemu_plugin_blk_event_poll_cb_t crucible_blk_event_cb;
++static qemu_plugin_blk_event_commit_cb_t crucible_blk_event_commit_cb;
++static qemu_plugin_blk_transport_save_cb_t crucible_blk_transport_save_cb;
++static qemu_plugin_blk_transport_restore_cb_t crucible_blk_transport_restore_cb;
++static void *crucible_blk_event_userdata;
++static BDRVCrucibleShmemState *crucible_blk_state;
+ 
+ static QemuOptsList crucible_shmem_runtime_opts = {
+     .name = "crucible-shmem",
+@@ -71,11 +104,176 @@ void qemu_plugin_register_blk_wait_cb(qemu_plugin_blk_wait_cb_t wait_cb,
+     crucible_blk_wait_cb = wait_cb;
+ }
+ 
++void qemu_plugin_register_blk_event_cb(
++    qemu_plugin_blk_event_poll_cb_t event_cb,
++    qemu_plugin_blk_event_commit_cb_t commit_cb,
++    qemu_plugin_blk_transport_save_cb_t save_cb,
++    qemu_plugin_blk_transport_restore_cb_t restore_cb,
++    void *userdata)
++{
++    crucible_blk_event_userdata = userdata;
++    crucible_blk_event_cb = event_cb;
++    crucible_blk_event_commit_cb = commit_cb;
++    crucible_blk_transport_save_cb = save_cb;
++    crucible_blk_transport_restore_cb = restore_cb;
++}
++
+ static bool crucible_blk_callbacks_ready(void)
+ {
+     return crucible_blk_submit_cb != NULL && crucible_blk_poll_cb != NULL;
+ }
+ 
++static int crucible_shmem_failure_errno(uint8_t failure)
++{
++    static const int errors[] = {
++        ENOMEDIUM, EROFS, EINVAL, EBUSY, ETIMEDOUT, EIO,
++        EILSEQ, EIO, ENOSPC, ENOENT, ESTALE,
++    };
++
++    return failure >= CRUCIBLE_BLOCK_ERROR_MIN &&
++           failure <= G_N_ELEMENTS(errors) ? errors[failure - 1] : EIO;
++}
++
++static bool crucible_shmem_response_header_valid(const uint8_t *event,
++                                                 size_t len)
++{
++    uint32_t count;
++
++    if (len < CRUCIBLE_BLOCK_RESPONSE_HEADER_SIZE ||
++        event[1] != CRUCIBLE_BLOCK_WIRE_VERSION || event[2] != 0 ||
++        event[3] != 0) {
++        return false;
++    }
++    count = ldl_le_p(event + 16);
++    return count == len - CRUCIBLE_BLOCK_RESPONSE_HEADER_SIZE;
++}
++
++typedef struct CrucibleBlockResetDecoded {
++    uint64_t next_epoch;
++    int64_t recovery_deadline_ns;
++    uint8_t request_id_rule;
++    uint8_t unadmitted;
++    uint8_t failure;
++    bool notify_topology;
++} CrucibleBlockResetDecoded;
++
++static bool crucible_shmem_validate_reset(BDRVCrucibleShmemState *s,
++                                          const uint8_t *event, size_t len,
++                                          CrucibleBlockResetDecoded *decoded)
++{
++    const uint8_t *reset;
++    uint64_t next_epoch;
++    uint64_t recovery_ns;
++    int64_t now_ns;
++
++    if (len != CRUCIBLE_BLOCK_EVENT_SIZE ||
++        !crucible_shmem_response_header_valid(event, len) ||
++        event[0] != CRUCIBLE_BLOCK_STATUS_RESET) {
++        return false;
++    }
++    reset = event + 20;
++    next_epoch = ldq_le_p(reset);
++    recovery_ns = ldq_le_p(reset + 8);
++    if ((reset[16] == 0 && next_epoch != s->request_epoch) ||
++        (reset[16] == 1 &&
++         (s->request_epoch == UINT64_MAX || next_epoch != s->request_epoch + 1)) ||
++        reset[16] > 1 || reset[17] > 1 || reset[18] > 1 ||
++        reset[20] > 1 || reset[21] > 2 || reset[22] > 2 ||
++        reset[19] < CRUCIBLE_BLOCK_ERROR_MIN ||
++        reset[19] > CRUCIBLE_BLOCK_ERROR_MAX || reset[23] > 3 ||
++        reset[24] > 4 || reset[25] > 1 || reset[26] > 1 ||
++        !buffer_is_zero(reset + 27, 5)) {
++        return false;
++    }
++    now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    if (recovery_ns > INT64_MAX || now_ns > INT64_MAX - (int64_t)recovery_ns) {
++        return false;
++    }
++
++    decoded->next_epoch = next_epoch;
++    decoded->recovery_deadline_ns = now_ns + (int64_t)recovery_ns;
++    decoded->request_id_rule = reset[16];
++    decoded->unadmitted = reset[20];
++    decoded->failure = reset[19];
++    decoded->notify_topology = reset[17] == 1;
++    return true;
++}
++
++static void crucible_shmem_apply_reset(BDRVCrucibleShmemState *s,
++                                       const CrucibleBlockResetDecoded *reset)
++{
++    qemu_mutex_lock(&s->pending_lock);
++    s->request_epoch = reset->next_epoch;
++    if (reset->request_id_rule == 1) {
++        s->next_request_id = 0;
++    }
++    s->recovery_deadline_ns = reset->recovery_deadline_ns;
++    s->recovery_unadmitted = reset->unadmitted;
++    s->recovery_failure = reset->failure;
++    qemu_mutex_unlock(&s->pending_lock);
++}
++
++static bool crucible_shmem_poll_events(BDRVCrucibleShmemState *s)
++{
++    uint8_t event[CRUCIBLE_BLOCK_EVENT_SIZE];
++    int64_t ret;
++
++    if (!crucible_blk_event_cb) {
++        return true;
++    }
++    do {
++        CrucibleBlockResetDecoded reset = { 0 };
++        bool is_reset = false;
++
++        ret = crucible_blk_event_cb(event, sizeof(event),
++                                    crucible_blk_event_userdata);
++        if (ret < 0) {
++            return false;
++        }
++        if (ret == 0) {
++            continue;
++        }
++        if (!crucible_shmem_response_header_valid(event, ret)) {
++            return false;
++        }
++        switch (event[0]) {
++        case CRUCIBLE_BLOCK_STATUS_RESET:
++            if (!crucible_shmem_validate_reset(s, event, ret, &reset)) {
++                return false;
++            }
++            is_reset = true;
++            break;
++        case CRUCIBLE_BLOCK_STATUS_DUPLICATE_IGNORED:
++            if (ret != CRUCIBLE_BLOCK_RESPONSE_HEADER_SIZE) {
++                return false;
++            }
++            break;
++        case CRUCIBLE_BLOCK_STATUS_DUPLICATE_ERROR:
++            if (ret != CRUCIBLE_BLOCK_RESPONSE_HEADER_SIZE + 1 ||
++                event[CRUCIBLE_BLOCK_RESPONSE_HEADER_SIZE] <
++                    CRUCIBLE_BLOCK_ERROR_MIN ||
++                event[CRUCIBLE_BLOCK_RESPONSE_HEADER_SIZE] >
++                    CRUCIBLE_BLOCK_ERROR_MAX) {
++                return false;
++            }
++            break;
++        default:
++            return false;
++        }
++        if (!crucible_blk_event_commit_cb ||
++            crucible_blk_event_commit_cb(crucible_blk_event_userdata) != 0) {
++            return false;
++        }
++        if (is_reset) {
++            crucible_shmem_apply_reset(s, &reset);
++        }
++        if (is_reset && reset.notify_topology) {
++            bdrv_notify_topology_change(s->bs);
++        }
++    } while (ret > 0);
++    return true;
++}
++
+ static void crucible_shmem_wake(Notifier *notifier, void *data)
+ {
+     BDRVCrucibleShmemState *s = container_of(notifier,
+@@ -84,6 +282,9 @@ static void crucible_shmem_wake(Notifier *notifier, void *data)
+     CoQueue waiters;
+     QemuPluginWakeEvent event = (QemuPluginWakeEvent)(intptr_t)data;
+ 
++    if (!crucible_shmem_poll_events(s)) {
++        event = QEMU_PLUGIN_WAKE_EVENT_FAILED;
++    }
+     qemu_mutex_lock(&s->pending_lock);
+     if (event == QEMU_PLUGIN_WAKE_EVENT_FAILED) {
+         s->wake_failed = true;
+@@ -122,16 +323,35 @@ static int crucible_shmem_open(BlockDriverState *bs, QDict *options,
+         error_setg(errp, "crucible-shmem size is invalid");
+         return -EINVAL;
+     }
++    if (crucible_blk_state) {
++        error_setg(errp, "only one crucible-shmem block backend is supported");
++        return -EBUSY;
++    }
+ 
++    s->bs = bs;
+     s->length = length;
++    s->request_epoch = 0;
+     s->next_request_id = 0;
++    s->recovery_deadline_ns = 0;
++    s->recovery_unadmitted = 0;
++    s->recovery_failure = 7;
++    s->vmstate_plugin_state = NULL;
++    s->vmstate_plugin_state_len = 0;
+     qemu_mutex_init(&s->pending_lock);
+     qemu_co_queue_init(&s->pending_requests);
+     s->wake_generation = 0;
+     s->wake_notifier.notify = crucible_shmem_wake;
+     s->wake_failed = false;
++    s->vmstate_registered = false;
++    if (vmstate_register_any(NULL, &vmstate_crucible_shmem, s) < 0) {
++        qemu_mutex_destroy(&s->pending_lock);
++        error_setg(errp, "cannot register crucible-shmem migration state");
++        return -EINVAL;
++    }
++    s->vmstate_registered = true;
+     s->wake_registered = true;
+     qemu_plugin_wake_notifier_add(&s->wake_notifier);
++    crucible_blk_state = s;
+     bs->bl.request_alignment = 1;
+     return 0;
+ }
+@@ -144,11 +364,20 @@ static void crucible_shmem_close(BlockDriverState *bs)
+         qemu_plugin_wake_notifier_remove(&s->wake_notifier);
+         s->wake_registered = false;
+     }
++    if (s->vmstate_registered) {
++        vmstate_unregister(NULL, &vmstate_crucible_shmem, s);
++        s->vmstate_registered = false;
++    }
+     /* Block graph draining must finish every request before close. */
+     qemu_mutex_lock(&s->pending_lock);
+     g_assert(qemu_co_queue_empty(&s->pending_requests));
+     qemu_mutex_unlock(&s->pending_lock);
+     qemu_mutex_destroy(&s->pending_lock);
++    g_free(s->vmstate_plugin_state);
++    s->vmstate_plugin_state = NULL;
++    s->vmstate_plugin_state_len = 0;
++    g_assert(crucible_blk_state == s);
++    crucible_blk_state = NULL;
+ }
+ 
+ static int64_t coroutine_fn
+@@ -176,17 +405,47 @@ static int crucible_shmem_check_range(BlockDriverState *bs, int64_t offset,
+     return 0;
+ }
+ 
+-static int crucible_shmem_next_request_id(BDRVCrucibleShmemState *s,
+-                                          uint32_t *request_id)
++static int crucible_shmem_next_request_identity(BDRVCrucibleShmemState *s,
++                                                uint64_t *epoch,
++                                                uint32_t *request_id)
+ {
++    qemu_mutex_lock(&s->pending_lock);
+     if (s->next_request_id == UINT32_MAX) {
++        qemu_mutex_unlock(&s->pending_lock);
+         return -EOVERFLOW;
+     }
+ 
++    *epoch = s->request_epoch;
+     *request_id = s->next_request_id++;
++    qemu_mutex_unlock(&s->pending_lock);
+     return 0;
+ }
+ 
++static int coroutine_fn
++crucible_shmem_admit_after_recovery(BDRVCrucibleShmemState *s)
++{
++    while (true) {
++        int64_t deadline;
++        int64_t now;
++        uint8_t unadmitted;
++        uint8_t failure;
++
++        qemu_mutex_lock(&s->pending_lock);
++        deadline = s->recovery_deadline_ns;
++        unadmitted = s->recovery_unadmitted;
++        failure = s->recovery_failure;
++        qemu_mutex_unlock(&s->pending_lock);
++        now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++        if (now >= deadline) {
++            return 0;
++        }
++        if (unadmitted == 0) {
++            return -crucible_shmem_failure_errno(failure);
++        }
++        qemu_co_sleep_ns(QEMU_CLOCK_VIRTUAL, deadline - now);
++    }
++}
++
+ static void coroutine_fn
+ crucible_shmem_wait_one_poll(BlockDriverState *bs,
+                              uint64_t observed_generation)
+@@ -203,7 +462,8 @@ crucible_shmem_wait_one_poll(BlockDriverState *bs,
+ }
+ 
+ static int64_t coroutine_fn
+-crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
++crucible_shmem_poll_until_ready(BlockDriverState *bs, uint64_t epoch,
++                                uint32_t request_id,
+                                 uint8_t *data, size_t capacity)
+ {
+     BDRVCrucibleShmemState *s = bs->opaque;
+@@ -221,7 +481,7 @@ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
+         if (!crucible_blk_callbacks_ready()) {
+             return -ENODEV;
+         }
+-        ret = crucible_blk_poll_cb(request_id, data, capacity,
++        ret = crucible_blk_poll_cb(epoch, request_id, data, capacity,
+                                    crucible_blk_userdata);
+         if (ret != QEMU_PLUGIN_BLK_POLL_PENDING) {
+             return ret;
+@@ -265,6 +525,7 @@ crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
+                                size_t in_capacity)
+ {
+     BDRVCrucibleShmemState *s = bs->opaque;
++    uint64_t epoch;
+     uint32_t request_id;
+     int ret;
+     int64_t poll_ret;
+@@ -273,19 +534,39 @@ crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
+         return -ENOMEDIUM;
+     }
+ 
+-    ret = crucible_shmem_next_request_id(s, &request_id);
++retry_new_identity:
++    ret = crucible_shmem_admit_after_recovery(s);
++    if (ret < 0) {
++        return ret;
++    }
++    ret = crucible_shmem_next_request_identity(s, &epoch, &request_id);
+     if (ret < 0) {
+         return ret;
+     }
+ 
+-    ret = crucible_blk_submit_cb(request_id, op, offset, out_data, out_len,
++submit_identity:
++    ret = crucible_blk_submit_cb(epoch, request_id, op, offset,
++                                 out_data, out_len,
+                                  crucible_blk_userdata);
+     if (ret != 0) {
+         return -EIO;
+     }
+ 
+-    poll_ret = crucible_shmem_poll_until_ready(bs, request_id, in_data,
++    poll_ret = crucible_shmem_poll_until_ready(bs, epoch, request_id, in_data,
+                                                in_capacity);
++    if (poll_ret == QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID) {
++        ret = crucible_shmem_admit_after_recovery(s);
++        if (ret < 0) {
++            return ret;
++        }
++        goto submit_identity;
++    }
++    if (poll_ret == QEMU_PLUGIN_BLK_RETRY_NEW_ID) {
++        goto retry_new_identity;
++    }
++    if (poll_ret == QEMU_PLUGIN_BLK_DROP_COMPLETION) {
++        return -ECANCELED;
++    }
+     return crucible_shmem_decode_poll_result(poll_ret, in_capacity);
+ }
+ 
+@@ -383,6 +664,130 @@ static void crucible_shmem_refresh_filename(BlockDriverState *bs)
+             "crucible-shmem://");
+ }
+ 
++static bool crucible_shmem_plugin_state_matches(
++    const uint8_t *state, uint32_t state_len, uint64_t request_epoch,
++    uint32_t next_request_id)
++{
++    return state &&
++           state_len >= CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE &&
++           memcmp(state, "CBTS", 4) == 0 && lduw_le_p(state + 4) == 1 &&
++           lduw_le_p(state + 6) == 0 &&
++           ldq_le_p(state + 8) == request_epoch &&
++           ldl_le_p(state + 16) == next_request_id;
++}
++
++static int crucible_shmem_pre_save(void *opaque)
++{
++    BDRVCrucibleShmemState *s = opaque;
++    int64_t len;
++    int64_t written;
++
++    if (!crucible_blk_transport_save_cb ||
++        !crucible_blk_transport_restore_cb) {
++        return -ENODEV;
++    }
++    qemu_mutex_lock(&s->pending_lock);
++    s->vmstate_request_epoch = s->request_epoch;
++    s->vmstate_next_request_id = s->next_request_id;
++    s->vmstate_recovery_deadline_ns = s->recovery_deadline_ns;
++    s->vmstate_recovery_unadmitted = s->recovery_unadmitted;
++    s->vmstate_recovery_failure = s->recovery_failure;
++    qemu_mutex_unlock(&s->pending_lock);
++    len = crucible_blk_transport_save_cb(NULL, 0,
++                                         crucible_blk_event_userdata);
++    if (len < CRUCIBLE_BLOCK_TRANSPORT_STATE_HEADER_SIZE ||
++        len > CRUCIBLE_BLOCK_TRANSPORT_STATE_MAX || len > UINT32_MAX) {
++        return -EINVAL;
++    }
++    g_free(s->vmstate_plugin_state);
++    s->vmstate_plugin_state = g_try_malloc(len);
++    if (!s->vmstate_plugin_state) {
++        s->vmstate_plugin_state_len = 0;
++        return -ENOMEM;
++    }
++    s->vmstate_plugin_state_len = len;
++    written = crucible_blk_transport_save_cb(s->vmstate_plugin_state,
++                                              s->vmstate_plugin_state_len,
++                                              crucible_blk_event_userdata);
++    if (written != len ||
++        !crucible_shmem_plugin_state_matches(
++            s->vmstate_plugin_state, s->vmstate_plugin_state_len,
++            s->vmstate_request_epoch, s->vmstate_next_request_id)) {
++        return -EINVAL;
++    }
++    return 0;
++}
++
++static int crucible_shmem_pre_load(void *opaque)
++{
++    BDRVCrucibleShmemState *s = opaque;
++
++    g_free(s->vmstate_plugin_state);
++    s->vmstate_plugin_state = NULL;
++    s->vmstate_plugin_state_len = 0;
++    return 0;
++}
++
++static int crucible_shmem_post_load(void *opaque, int version_id)
++{
++    BDRVCrucibleShmemState *s = opaque;
++
++    if (version_id != 1 ||
++        s->vmstate_recovery_unadmitted > 1 ||
++        s->vmstate_recovery_failure < CRUCIBLE_BLOCK_ERROR_MIN ||
++        s->vmstate_recovery_failure > CRUCIBLE_BLOCK_ERROR_MAX ||
++        s->vmstate_plugin_state_len > CRUCIBLE_BLOCK_TRANSPORT_STATE_MAX ||
++        !crucible_shmem_plugin_state_matches(
++            s->vmstate_plugin_state, s->vmstate_plugin_state_len,
++            s->vmstate_request_epoch, s->vmstate_next_request_id) ||
++        !crucible_blk_transport_restore_cb) {
++        return -EINVAL;
++    }
++    if (crucible_blk_transport_restore_cb(
++            s->vmstate_plugin_state, s->vmstate_plugin_state_len,
++            s->vmstate_request_epoch, s->vmstate_next_request_id,
++            crucible_blk_event_userdata) != 0) {
++        return -EINVAL;
++    }
++    qemu_mutex_lock(&s->pending_lock);
++    s->request_epoch = s->vmstate_request_epoch;
++    s->next_request_id = s->vmstate_next_request_id;
++    s->recovery_deadline_ns = s->vmstate_recovery_deadline_ns;
++    s->recovery_unadmitted = s->vmstate_recovery_unadmitted;
++    s->recovery_failure = s->vmstate_recovery_failure;
++    qemu_mutex_unlock(&s->pending_lock);
++    return 0;
++}
++
++static bool crucible_shmem_guest_completion_dropped(BlockDriverState *bs,
++                                                     int error)
++{
++    (void)bs;
++    return error == ECANCELED;
++}
++
++static const VMStateDescription vmstate_crucible_shmem = {
++    .name = "block/crucible-shmem",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .pre_load = crucible_shmem_pre_load,
++    .post_load = crucible_shmem_post_load,
++    .pre_save = crucible_shmem_pre_save,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT64(vmstate_request_epoch, BDRVCrucibleShmemState),
++        VMSTATE_UINT32(vmstate_next_request_id, BDRVCrucibleShmemState),
++        VMSTATE_INT64(vmstate_recovery_deadline_ns,
++                      BDRVCrucibleShmemState),
++        VMSTATE_UINT8(vmstate_recovery_unadmitted,
++                      BDRVCrucibleShmemState),
++        VMSTATE_UINT8(vmstate_recovery_failure, BDRVCrucibleShmemState),
++        VMSTATE_VBUFFER_ALLOC_UINT32(vmstate_plugin_state,
++                                     BDRVCrucibleShmemState, 1, NULL,
++                                     vmstate_plugin_state_len),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
+ static BlockDriver bdrv_crucible_shmem = {
+     .format_name            = "crucible-shmem",
+     .protocol_name          = "crucible-shmem",
+@@ -396,6 +801,8 @@ static BlockDriver bdrv_crucible_shmem = {
+     .bdrv_co_flush_to_disk  = crucible_shmem_co_flush,
+     .bdrv_co_pdiscard       = crucible_shmem_co_pdiscard,
+     .bdrv_refresh_filename  = crucible_shmem_refresh_filename,
++    .bdrv_guest_completion_dropped =
++        crucible_shmem_guest_completion_dropped,
+ };
+ 
+ static void bdrv_crucible_shmem_init(void)
+diff --git a/block/io.c b/block/io.c
+index 1ba8d1a..d2e5041 100644
+--- a/block/io.c
++++ b/block/io.c
+@@ -3533,6 +3533,12 @@ bdrv_parent_cb_resize(BlockDriverState *bs)
+     }
+ }
+ 
++void coroutine_fn GRAPH_RDLOCK
++bdrv_co_notify_topology_change(BlockDriverState *bs)
++{
++    bdrv_parent_cb_resize(bs);
++}
++
+ /**
+  * Truncate file to 'offset' bytes (needed only for file protocols)
+  *
+diff --git a/hw/block/virtio-blk.c b/hw/block/virtio-blk.c
+index b69d099..449956c 100644
+--- a/hw/block/virtio-blk.c
++++ b/hw/block/virtio-blk.c
+@@ -74,8 +74,19 @@ static int virtio_blk_handle_rw_error(VirtIOBlockReq *req, int error,
+     bool is_read, bool acct_failed)
+ {
+     VirtIOBlock *s = req->dev;
++    BlockDriverState *bs = blk_bs(s->blk);
+     BlockErrorAction action = blk_get_error_action(s->blk, is_read, error);
+ 
++    if (bs && bs->drv && bs->drv->bdrv_guest_completion_dropped &&
++        bs->drv->bdrv_guest_completion_dropped(bs, error)) {
++        req->mr_next = NULL;
++        WITH_QEMU_LOCK_GUARD(&s->rq_lock) {
++            req->next = s->dropped_rq;
++            s->dropped_rq = req;
++        }
++        return true;
++    }
++
+     if (action == BLOCK_ERROR_ACTION_STOP) {
+         /* Break the link as the next request is going to be parsed from the
+          * ring again. Otherwise we may end up doing a double completion! */
+@@ -1127,30 +1138,43 @@ static void virtio_blk_dma_restart_cb(void *opaque, bool running,
+     }
+ }
+ 
+-static void virtio_blk_reset(VirtIODevice *vdev)
++static void virtio_blk_purge_retained_requests(VirtIOBlock *s)
+ {
+-    VirtIOBlock *s = VIRTIO_BLK(vdev);
+     VirtIOBlockReq *req;
+ 
+-    /* Dataplane has stopped... */
+-    assert(!s->ioeventfd_started);
+-
+-    /* ...but requests may still be in flight. */
+-    blk_drain(s->blk);
+-
+-    /* We drop queued requests after blk_drain() because blk_drain() itself can
+-     * produce them. */
+     WITH_QEMU_LOCK_GUARD(&s->rq_lock) {
+         while (s->rq) {
+             req = s->rq;
+             s->rq = req->next;
+ 
+-            /* No other threads can access req->vq here */
++            /* The stopped device owns req->vq exclusively. */
+             virtqueue_detach_element(req->vq, &req->elem, 0);
++            g_free(req);
++        }
++        while (s->dropped_rq) {
++            req = s->dropped_rq;
++            s->dropped_rq = req->next;
+ 
++            /* A reset discards the permanently unresolved guest request. */
++            virtqueue_detach_element(req->vq, &req->elem, 0);
+             g_free(req);
+         }
+     }
++}
++
++static void virtio_blk_reset(VirtIODevice *vdev)
++{
++    VirtIOBlock *s = VIRTIO_BLK(vdev);
++
++    /* Dataplane has stopped... */
++    assert(!s->ioeventfd_started);
++
++    /* ...but requests may still be in flight. */
++    blk_drain(s->blk);
++
++    /* We drop queued requests after blk_drain() because blk_drain() itself can
++     * produce them. */
++    virtio_blk_purge_retained_requests(s);
+ 
+     blk_set_enable_write_cache(s->blk, s->original_wce);
+ }
+@@ -1345,6 +1369,23 @@ static void virtio_blk_save_device(VirtIODevice *vdev, QEMUFile *f)
+     }
+ 
+     qemu_put_sbyte(f, 0);
++
++    WITH_QEMU_LOCK_GUARD(&s->rq_lock) {
++        VirtIOBlockReq *req = s->dropped_rq;
++
++        while (req) {
++            qemu_put_sbyte(f, 1);
++
++            if (s->conf.num_queues > 1) {
++                qemu_put_be32(f, virtio_get_queue_index(req->vq));
++            }
++
++            qemu_put_virtqueue_element(vdev, f, &req->elem);
++            req = req->next;
++        }
++    }
++
++    qemu_put_sbyte(f, 0);
+ }
+ 
+ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
+@@ -1352,6 +1393,10 @@ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
+ {
+     VirtIOBlock *s = VIRTIO_BLK(vdev);
+ 
++    if (version_id != 3) {
++        return -EINVAL;
++    }
++
+     while (qemu_get_sbyte(f)) {
+         unsigned nvqs = s->conf.num_queues;
+         unsigned vq_idx = 0;
+@@ -1376,6 +1421,31 @@ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
+         }
+     }
+ 
++    while (qemu_get_sbyte(f)) {
++        unsigned nvqs = s->conf.num_queues;
++        unsigned vq_idx = 0;
++        VirtIOBlockReq *req;
++
++        if (nvqs > 1) {
++            vq_idx = qemu_get_be32(f);
++
++            if (vq_idx >= nvqs) {
++                error_report(
++                    "Invalid virtqueue index in dropped request list: %#x",
++                    vq_idx);
++                return -EINVAL;
++            }
++        }
++
++        req = qemu_get_virtqueue_element(vdev, f, sizeof(VirtIOBlockReq));
++        virtio_blk_init_request(s, virtio_get_queue(vdev, vq_idx), req);
++
++        WITH_QEMU_LOCK_GUARD(&s->rq_lock) {
++            req->next = s->dropped_rq;
++            s->dropped_rq = req;
++        }
++    }
++
+     return 0;
+ }
+ 
+@@ -1796,6 +1866,7 @@ static void virtio_blk_device_realize(DeviceState *dev, Error **errp)
+ 
+     s->blk = conf->conf.blk;
+     s->rq = NULL;
++    s->dropped_rq = NULL;
+     s->sector_mask = (s->conf.conf.logical_block_size / BDRV_SECTOR_SIZE) - 1;
+ 
+     for (i = 0; i < conf->num_queues; i++) {
+@@ -1844,6 +1915,7 @@ static void virtio_blk_device_unrealize(DeviceState *dev)
+     unsigned i;
+ 
+     blk_drain(s->blk);
++    virtio_blk_purge_retained_requests(s);
+     del_boot_device_lchs(dev, "/disk@0,0");
+     virtio_blk_vq_aio_context_cleanup(s);
+     for (i = 0; i < conf->num_queues; i++) {
+@@ -1868,8 +1940,8 @@ static void virtio_blk_instance_init(Object *obj)
+ 
+ static const VMStateDescription vmstate_virtio_blk = {
+     .name = "virtio-blk",
+-    .minimum_version_id = 2,
+-    .version_id = 2,
++    .minimum_version_id = 3,
++    .version_id = 3,
+     .fields = (const VMStateField[]) {
+         VMSTATE_VIRTIO_DEVICE,
+         VMSTATE_END_OF_LIST()
+diff --git a/include/block/block_int-common.h b/include/block/block_int-common.h
+index ebb4e56..deeb3e8 100644
+--- a/include/block/block_int-common.h
++++ b/include/block/block_int-common.h
+@@ -379,6 +379,13 @@ struct BlockDriver {
+     void (*bdrv_drain_begin)(BlockDriverState *bs);
+     void (*bdrv_drain_end)(BlockDriverState *bs);
+ 
++    /*
++     * Returns true when @error represents a deliberately dropped completion
++     * that a virtio-blk frontend must retain as an unresolved request. The
++     * frontend retains the request in its non-restarting migration class.
++     */
++    bool (*bdrv_guest_completion_dropped)(BlockDriverState *bs, int error);
++
+     /**
+      * Try to get @bs's logical and physical block size.
+      * On success, store them in @bsz and return zero.
+diff --git a/include/block/block_int-io.h b/include/block/block_int-io.h
+index 4a7cf2b..401b0ee 100644
+--- a/include/block/block_int-io.h
++++ b/include/block/block_int-io.h
+@@ -130,6 +130,12 @@ bdrv_co_refresh_total_sectors(BlockDriverState *bs, int64_t hint);
+ int co_wrapper_mixed_bdrv_rdlock
+ bdrv_refresh_total_sectors(BlockDriverState *bs, int64_t hint);
+ 
++void coroutine_fn GRAPH_RDLOCK
++bdrv_co_notify_topology_change(BlockDriverState *bs);
++
++void co_wrapper_mixed_bdrv_rdlock
++bdrv_notify_topology_change(BlockDriverState *bs);
++
+ BdrvChild * GRAPH_RDLOCK bdrv_cow_child(BlockDriverState *bs);
+ BdrvChild * GRAPH_RDLOCK bdrv_filter_child(BlockDriverState *bs);
+ BdrvChild * GRAPH_RDLOCK bdrv_filter_or_cow_child(BlockDriverState *bs);
+diff --git a/include/hw/virtio/virtio-blk.h b/include/hw/virtio/virtio-blk.h
+index 3d8dee7..881c160 100644
+--- a/include/hw/virtio/virtio-blk.h
++++ b/include/hw/virtio/virtio-blk.h
+@@ -56,6 +56,7 @@ struct VirtIOBlock {
+     BlockBackend *blk;
+     QemuMutex rq_lock;
+     struct VirtIOBlockReq *rq; /* protected by rq_lock */
++    struct VirtIOBlockReq *dropped_rq; /* protected by rq_lock */
+     VirtIOBlkConf conf;
+     unsigned short sector_mask;
+     bool original_wce;
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 24e2822..08c2352 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -220,7 +220,8 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
+ 
+ /**
+  * typedef qemu_plugin_blk_submit_cb_t - shmem block submit callback
+- * @request_id: driver-assigned request id
++ * @epoch: driver transport generation
++ * @request_id: driver-assigned request id within @epoch
+  * @op: one of QEMU_PLUGIN_BLK_OP_*
+  * @offset: byte offset for read, write, and discard requests
+  * @data: write payload, or NULL for read, flush, and discard
+@@ -229,7 +230,8 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
+  *
+  * Returns: 0 when the request was accepted, nonzero on fail-loud rejection.
+  */
+-typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,
++typedef int (*qemu_plugin_blk_submit_cb_t)(uint64_t epoch,
++                                           uint32_t request_id,
+                                            uint32_t op,
+                                            uint64_t offset,
+                                            const uint8_t *data,
+@@ -238,7 +240,8 @@ typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,
+ 
+ /**
+  * typedef qemu_plugin_blk_poll_cb_t - shmem block completion poll callback
+- * @request_id: request id being polled
++ * @epoch: request transport generation
++ * @request_id: request id being polled within @epoch
+  * @data: read response output buffer, or NULL for zero-payload completions
+  * @capacity: byte capacity of @data
+  * @userdata: a pointer supplied when callbacks were registered
+@@ -249,7 +252,8 @@ typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,
+  * response is ready yet.  @errno must be in the inclusive range 1 through
+  * QEMU_PLUGIN_BLK_POLL_ERROR_MAX.
+  */
+-typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
++typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint64_t epoch,
++                                             uint32_t request_id,
+                                              uint8_t *data,
+                                              size_t capacity,
+                                              void *userdata);
+@@ -266,11 +270,68 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
+ typedef void (*qemu_plugin_blk_wait_cb_t)(uint32_t request_id,
+                                           void *userdata);
+ 
++/**
++ * typedef qemu_plugin_blk_event_poll_cb_t - poll an asynchronous block event
++ * @data: output buffer for one complete versioned event frame
++ * @capacity: byte capacity of @data
++ * @userdata: a pointer supplied when the callback was registered
++ *
++ * The callback prepares but does not consume the event.  It must return the
++ * same bytes until the paired commit callback succeeds.
++ *
++ * Returns: zero when no event is ready, a positive encoded byte length when
++ * one event is prepared, or a negative fail-loud error.
++ */
++typedef int64_t (*qemu_plugin_blk_event_poll_cb_t)(uint8_t *data,
++                                                   size_t capacity,
++                                                   void *userdata);
++
++/**
++ * typedef qemu_plugin_blk_event_commit_cb_t - commit a prepared block event
++ * @userdata: a pointer supplied when callbacks were registered
++ *
++ * Called only after QEMU has completely validated the event returned by the
++ * poll callback.  A zero return consumes that exact event; nonzero leaves it
++ * prepared and prevents any QEMU transport-state mutation.
++ */
++typedef int (*qemu_plugin_blk_event_commit_cb_t)(void *userdata);
++
++/**
++ * typedef qemu_plugin_blk_transport_save_cb_t - save plugin block transport
++ * @data: output buffer, or NULL for a length query
++ * @capacity: byte capacity of @data, or zero for a length query
++ * @userdata: a pointer supplied when callbacks were registered
++ *
++ * Returns: the required byte length for (NULL, 0), the exact encoded byte
++ * length after filling a sufficient buffer, or a negative fail-loud error.
++ */
++typedef int64_t (*qemu_plugin_blk_transport_save_cb_t)(uint8_t *data,
++                                                       size_t capacity,
++                                                       void *userdata);
++
++/**
++ * typedef qemu_plugin_blk_transport_restore_cb_t - restore plugin transport
++ * @data: complete versioned plugin continuation paired with QEMU VMState
++ * @len: exact byte length of @data
++ * @epoch: restored QEMU request epoch
++ * @next_request_id: restored QEMU allocator cursor within @epoch
++ * @userdata: a pointer supplied when callbacks were registered
++ *
++ * Returns: zero only after atomically accepting a continuation whose allocator
++ * identity equals @epoch and @next_request_id; nonzero fails the VMState load.
++ */
++typedef int (*qemu_plugin_blk_transport_restore_cb_t)(
++    const uint8_t *data, size_t len, uint64_t epoch,
++    uint32_t next_request_id, void *userdata);
++
+ #define QEMU_PLUGIN_BLK_OP_READ 0u
+ #define QEMU_PLUGIN_BLK_OP_WRITE 1u
+ #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
+ #define QEMU_PLUGIN_BLK_OP_DISCARD 3u
+ #define QEMU_PLUGIN_BLK_POLL_PENDING (-2)
++#define QEMU_PLUGIN_BLK_RETRY_PRESERVE_ID (-3)
++#define QEMU_PLUGIN_BLK_RETRY_NEW_ID (-4)
++#define QEMU_PLUGIN_BLK_DROP_COMPLETION (-5)
+ #define QEMU_PLUGIN_BLK_POLL_ERROR_BASE INT64_C(4096)
+ #define QEMU_PLUGIN_BLK_POLL_ERROR_MAX INT64_C(4095)
+ #define QEMU_PLUGIN_BLK_POLL_ERROR(error_number) \
+@@ -1125,6 +1186,27 @@ void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
+                                  qemu_plugin_blk_poll_cb_t poll_cb,
+                                  void *userdata);
+ 
++/**
++ * qemu_plugin_register_blk_event_cb() - register asynchronous block event poll
++ * @event_cb: callback returning one versioned event, or NULL to disable events
++ * @commit_cb: callback committing the last prepared event
++ * @save_cb: callback saving plugin transport continuation bytes
++ * @restore_cb: callback restoring plugin transport continuation bytes
++ * @userdata: opaque pointer passed to every callback
++ *
++ * Events are polled only from the normal QEMU main-loop wake boundary.  The
++ * driver validates an event before calling @commit_cb and mutates QEMU state
++ * only after that commit succeeds.  Migration fails closed unless both state
++ * callbacks are registered and the plugin allocator matches QEMU VMState.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_blk_event_cb(
++    qemu_plugin_blk_event_poll_cb_t event_cb,
++    qemu_plugin_blk_event_commit_cb_t commit_cb,
++    qemu_plugin_blk_transport_save_cb_t save_cb,
++    qemu_plugin_blk_transport_restore_cb_t restore_cb,
++    void *userdata);
++
+ /**
+  * qemu_plugin_register_blk_wait_cb() - register the shmem block wait hook
+  * @wait_cb: callback fired before a pending block coroutine parks

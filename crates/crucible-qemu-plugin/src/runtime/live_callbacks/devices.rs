@@ -5,7 +5,7 @@
 //! device-I/O freeze state so block requests and 9p bursts cannot clear each
 //! other's virtual-time hold.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::raw::{c_int, c_void};
 use std::sync::{MutexGuard, TryLockError};
 
@@ -14,13 +14,13 @@ use thiserror::Error;
 
 use crate::{
     BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,
-    BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestToken, BlockResponse,
-    BlockResponseErrorCode, BlockResponseStatus, BlockWireError, NinePGuestCompletion,
-    NinePGuestCompletionError, NinePInboundRing, NinePIoError, NinePOutboundRing, NinePPoll,
-    NinePRequest, NinePRequestToken, NinePResponse, PluginBlockIo, PluginDeviceIoFreeze,
-    PluginNinePIo, handle_9p_burst_done_callback, handle_9p_burst_start_callback,
-    handle_9p_poll_callback, handle_9p_submit_callback, handle_block_poll_callback,
-    handle_block_submit_callback,
+    BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestIdentity, BlockRequestToken,
+    BlockResponse, BlockResponseErrorCode, BlockResponseStatus, BlockWireError,
+    NinePGuestCompletion, NinePGuestCompletionError, NinePInboundRing, NinePIoError,
+    NinePOutboundRing, NinePPoll, NinePRequest, NinePRequestToken, NinePResponse,
+    PendingBlockTransportEvent, PluginBlockIo, PluginDeviceIoFreeze, PluginNinePIo,
+    handle_9p_burst_done_callback, handle_9p_burst_start_callback, handle_9p_poll_callback,
+    handle_9p_submit_callback, handle_block_poll_callback, handle_block_submit_callback,
 };
 
 use super::{
@@ -29,14 +29,20 @@ use super::{
 };
 
 const QEMU_PLUGIN_BLOCK_POLL_PENDING: i64 = -2;
+const QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID: i64 = -3;
+const QEMU_PLUGIN_BLOCK_RETRY_NEW_ID: i64 = -4;
+const QEMU_PLUGIN_BLOCK_DROP_COMPLETION: i64 = -5;
 const QEMU_PLUGIN_BLOCK_ERROR_BASE: i64 = 4096;
+const QEMU_PLUGIN_BLOCK_EVENT_CAPACITY: usize = 52;
 const QEMU_PLUGIN_NINEP_POLL_PENDING: i64 = -2;
 
 pub(super) struct LiveDeviceCallbackState {
     freeze: PluginDeviceIoFreeze,
     block: PluginBlockIo,
     block_rings: LiveDirectedRingPair,
-    block_tokens: BTreeMap<u32, BlockRequestToken>,
+    block_tokens: BTreeMap<BlockRequestIdentity, BlockRequestToken>,
+    block_retry_preserve: BTreeSet<BlockRequestIdentity>,
+    pending_block_event: Option<PendingBlockTransportEvent>,
     ninep: PluginNinePIo,
     ninep_rings: LiveDirectedRingPair,
     ninep_tokens: BTreeMap<u32, PendingNinePRequest>,
@@ -70,6 +76,8 @@ impl LiveDeviceCallbackState {
             block,
             block_rings,
             block_tokens: BTreeMap::new(),
+            block_retry_preserve: BTreeSet::new(),
+            pending_block_event: None,
             ninep,
             ninep_rings,
             ninep_tokens: BTreeMap::new(),
@@ -85,41 +93,65 @@ impl LiveDeviceCallbackState {
         &mut self,
         slot: &NodeSlot,
         current_icount: u64,
+        qemu_epoch: u64,
         qemu_request_id: u32,
         operation: u32,
         offset: u64,
         data: Option<&[u8]>,
         len: usize,
     ) -> Result<(), LiveDeviceCallbackError> {
-        if self.block.next_request_id() != qemu_request_id
-            || self.block_tokens.contains_key(&qemu_request_id)
+        let qemu_identity = BlockRequestIdentity::new(qemu_epoch, qemu_request_id);
+        let plugin_identity =
+            BlockRequestIdentity::new(self.block.request_epoch(), self.block.next_request_id());
+        let retry_preserve = self.block_retry_preserve.contains(&qemu_identity);
+        if (!retry_preserve && plugin_identity != qemu_identity)
+            || self.block_tokens.contains_key(&qemu_identity)
         {
             return Err(LiveDeviceCallbackError::RequestIdMismatch {
                 family: "block",
+                qemu_epoch,
                 qemu_request_id,
+                plugin_epoch: plugin_identity.epoch(),
                 plugin_request_id: self.block.next_request_id(),
             });
         }
         let request = block_request(operation, offset, data, len)?;
         let mut outbound = self.block_rings.outbound.block_outbound();
-        let submit = handle_block_submit_callback(
-            &self.block,
-            &mut self.freeze,
-            slot,
-            &mut outbound,
-            current_icount,
-            &request,
-        )
+        let submit = if retry_preserve {
+            self.block.submit_retry_request(
+                &mut self.freeze,
+                slot,
+                &mut outbound,
+                current_icount,
+                &request,
+                qemu_identity,
+            )
+        } else {
+            handle_block_submit_callback(
+                &self.block,
+                &mut self.freeze,
+                slot,
+                &mut outbound,
+                current_icount,
+                &request,
+            )
+        }
         .map_err(|source| LiveDeviceCallbackError::Block { source })?;
-        if submit.request_id() != qemu_request_id {
+        let token = submit.into_token();
+        if token.identity() != qemu_identity {
             return Err(LiveDeviceCallbackError::RequestIdMismatch {
                 family: "block",
+                qemu_epoch,
                 qemu_request_id,
-                plugin_request_id: submit.request_id(),
+                plugin_epoch: token.identity().epoch(),
+                plugin_request_id: token.request_id(),
             });
         }
-        self.block_tokens
-            .insert(qemu_request_id, submit.into_token());
+        self.block_tokens.insert(qemu_identity, token);
+        if retry_preserve {
+            let removed = self.block_retry_preserve.remove(&qemu_identity);
+            debug_assert!(removed, "successful preserved retry had authorization");
+        }
         Ok(())
     }
 
@@ -127,15 +159,19 @@ impl LiveDeviceCallbackState {
         &mut self,
         slot: &NodeSlot,
         current_icount: u64,
+        epoch: u64,
         request_id: u32,
         output: &mut [u8],
     ) -> Result<i64, LiveDeviceCallbackError> {
-        let token = self.block_tokens.remove(&request_id).ok_or(
-            LiveDeviceCallbackError::UnknownRequest {
-                family: "block",
-                request_id,
-            },
-        )?;
+        let identity = BlockRequestIdentity::new(epoch, request_id);
+        let token =
+            self.block_tokens
+                .remove(&identity)
+                .ok_or(LiveDeviceCallbackError::UnknownRequest {
+                    family: "block",
+                    epoch,
+                    request_id,
+                })?;
         let inbound = self.block_rings.inbound.block_inbound();
         let mut completion = BlockOutput { output };
         match handle_block_poll_callback(
@@ -150,7 +186,7 @@ impl LiveDeviceCallbackState {
         .map_err(|source| LiveDeviceCallbackError::Block { source })?
         {
             BlockPoll::NotReady { token } => {
-                self.block_tokens.insert(request_id, token);
+                self.block_tokens.insert(identity, token);
                 Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING)
             }
             BlockPoll::Completed { response, .. } => match response.status() {
@@ -170,8 +206,123 @@ impl LiveDeviceCallbackState {
                     })?);
                     Ok(-(QEMU_PLUGIN_BLOCK_ERROR_BASE + errno))
                 }
+                BlockResponseStatus::TransportReset => {
+                    Err(LiveDeviceCallbackError::UnexpectedBlockResetPrimary {
+                        request_id: response.request_id(),
+                    })
+                }
+                BlockResponseStatus::DuplicateIgnored
+                | BlockResponseStatus::DuplicateProtocolError => {
+                    Err(LiveDeviceCallbackError::UnexpectedBlockDuplicatePrimary {
+                        request_id: response.request_id(),
+                    })
+                }
+                BlockResponseStatus::RetryPreserveId => {
+                    self.block_retry_preserve.insert(identity);
+                    Ok(QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID)
+                }
+                BlockResponseStatus::RetryNewId => Ok(QEMU_PLUGIN_BLOCK_RETRY_NEW_ID),
+                BlockResponseStatus::DropCompletion => Ok(QEMU_PLUGIN_BLOCK_DROP_COMPLETION),
             },
         }
+    }
+
+    fn poll_block_event(
+        &mut self,
+        slot: &NodeSlot,
+        current_icount: u64,
+        output: &mut [u8],
+    ) -> Result<i64, LiveDeviceCallbackError> {
+        if output.len() < QEMU_PLUGIN_BLOCK_EVENT_CAPACITY {
+            return Err(LiveDeviceCallbackError::ResponseBufferTooSmall {
+                family: "block event",
+                required: QEMU_PLUGIN_BLOCK_EVENT_CAPACITY,
+                observed: output.len(),
+            });
+        }
+        if self.pending_block_event.is_none() {
+            let inbound = self.block_rings.inbound.block_inbound();
+            self.pending_block_event = self
+                .block
+                .peek_transport_event(&inbound, current_icount)
+                .map_err(|source| LiveDeviceCallbackError::Block { source })?;
+        }
+        let Some(event) = self.pending_block_event else {
+            return Ok(0);
+        };
+        let _slot = slot;
+        let encoded = event
+            .encode()
+            .map_err(|source| LiveDeviceCallbackError::BlockWire { source })?;
+        output[..encoded.len()].copy_from_slice(&encoded);
+        i64::try_from(encoded.len()).map_err(|_error| {
+            LiveDeviceCallbackError::ResponseLengthOverflow {
+                family: "block event",
+                len: encoded.len(),
+            }
+        })
+    }
+
+    fn commit_block_event(&mut self) -> Result<(), LiveDeviceCallbackError> {
+        let pending = self
+            .pending_block_event
+            .ok_or(LiveDeviceCallbackError::NoPreparedBlockEvent)?;
+        let inbound = self.block_rings.inbound.block_inbound();
+        self.block
+            .commit_transport_event(&inbound, pending)
+            .map_err(|source| LiveDeviceCallbackError::Block { source })?;
+        self.pending_block_event = None;
+        Ok(())
+    }
+
+    fn save_block_transport(&self, output: &mut [u8]) -> Result<usize, LiveDeviceCallbackError> {
+        if !self.block_tokens.is_empty()
+            || !self.block_retry_preserve.is_empty()
+            || self.pending_block_event.is_some()
+        {
+            return Err(LiveDeviceCallbackError::TransportContinuationBusy {
+                block_tokens: self.block_tokens.len(),
+                retry_authorizations: self.block_retry_preserve.len(),
+                prepared_event: self.pending_block_event.is_some(),
+            });
+        }
+        let encoded = self
+            .block
+            .encode_transport_continuation()
+            .map_err(|source| LiveDeviceCallbackError::Block { source })?;
+        if output.is_empty() {
+            return Ok(encoded.len());
+        }
+        if output.len() < encoded.len() {
+            return Err(LiveDeviceCallbackError::ResponseBufferTooSmall {
+                family: "block transport continuation",
+                required: encoded.len(),
+                observed: output.len(),
+            });
+        }
+        output[..encoded.len()].copy_from_slice(&encoded);
+        Ok(encoded.len())
+    }
+
+    fn restore_block_transport(
+        &mut self,
+        encoded: &[u8],
+        qemu_epoch: u64,
+        qemu_next_request_id: u32,
+    ) -> Result<(), LiveDeviceCallbackError> {
+        if !self.block_tokens.is_empty()
+            || !self.block_retry_preserve.is_empty()
+            || self.pending_block_event.is_some()
+        {
+            return Err(LiveDeviceCallbackError::TransportContinuationBusy {
+                block_tokens: self.block_tokens.len(),
+                retry_authorizations: self.block_retry_preserve.len(),
+                prepared_event: self.pending_block_event.is_some(),
+            });
+        }
+        self.block
+            .restore_transport_continuation(encoded, qemu_epoch, qemu_next_request_id)
+            .map_err(|source| LiveDeviceCallbackError::Block { source })
     }
 
     fn begin_ninep_burst(&mut self, slot: &NodeSlot) -> Result<(), LiveDeviceCallbackError> {
@@ -199,7 +350,9 @@ impl LiveDeviceCallbackState {
         {
             return Err(LiveDeviceCallbackError::RequestIdMismatch {
                 family: "9p",
+                qemu_epoch: 0,
                 qemu_request_id,
+                plugin_epoch: 0,
                 plugin_request_id: self.ninep.next_request_id(),
             });
         }
@@ -217,7 +370,9 @@ impl LiveDeviceCallbackState {
         if submit.request_id() != qemu_request_id {
             return Err(LiveDeviceCallbackError::RequestIdMismatch {
                 family: "9p",
+                qemu_epoch: 0,
                 qemu_request_id,
+                plugin_epoch: 0,
                 plugin_request_id: submit.request_id(),
             });
         }
@@ -243,6 +398,7 @@ impl LiveDeviceCallbackState {
             .get(&request_id)
             .ok_or(LiveDeviceCallbackError::UnknownRequest {
                 family: "9p",
+                epoch: 0,
                 request_id,
             })?
             .response_capacity;
@@ -257,6 +413,7 @@ impl LiveDeviceCallbackState {
         let pending = self.ninep_tokens.remove(&request_id).ok_or(
             LiveDeviceCallbackError::UnknownRequest {
                 family: "9p",
+                epoch: 0,
                 request_id,
             },
         )?;
@@ -514,6 +671,7 @@ impl LiveVcpuTimeCallbackState {
 
     fn block_submit(
         &self,
+        epoch: u64,
         request_id: u32,
         operation: u32,
         offset: u64,
@@ -525,6 +683,7 @@ impl LiveVcpuTimeCallbackState {
             .submit_block(
                 self.slot.get(),
                 current_icount,
+                epoch,
                 request_id,
                 operation,
                 offset,
@@ -542,15 +701,51 @@ impl LiveVcpuTimeCallbackState {
 
     fn block_poll(
         &self,
+        epoch: u64,
         request_id: u32,
         output: &mut [u8],
     ) -> Result<i64, LiveVcpuTimeCallbackError> {
-        if self.idle_advance_is_pending()? {
+        if self.idle_advance_is_pending() {
             return Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING);
         }
         let current_icount = self.callback_current_icount()?;
         self.lock_devices()?
-            .poll_block(self.slot.get(), current_icount, request_id, output)
+            .poll_block(self.slot.get(), current_icount, epoch, request_id, output)
+            .map_err(LiveVcpuTimeCallbackError::live_device)
+    }
+
+    fn block_event_poll(&self, output: &mut [u8]) -> Result<i64, LiveVcpuTimeCallbackError> {
+        // A wake carrying a transport event is edge-triggered. When it races
+        // QEMU's queued idle-advance completion, deferring the poll would lose
+        // the only wake and strand the event in the inbound ring. Device events
+        // belong to the already-authorized advance target, just like requests
+        // dispatched from the same main-loop timer slice.
+        let current_icount = self.device_callback_icount()?;
+        self.lock_devices()?
+            .poll_block_event(self.slot.get(), current_icount, output)
+            .map_err(LiveVcpuTimeCallbackError::live_device)
+    }
+
+    fn block_event_commit(&self) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.lock_devices()?
+            .commit_block_event()
+            .map_err(LiveVcpuTimeCallbackError::live_device)
+    }
+
+    fn block_transport_save(&self, output: &mut [u8]) -> Result<usize, LiveVcpuTimeCallbackError> {
+        self.lock_devices()?
+            .save_block_transport(output)
+            .map_err(LiveVcpuTimeCallbackError::live_device)
+    }
+
+    fn block_transport_restore(
+        &self,
+        encoded: &[u8],
+        qemu_epoch: u64,
+        qemu_next_request_id: u32,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.lock_devices()?
+            .restore_block_transport(encoded, qemu_epoch, qemu_next_request_id)
             .map_err(LiveVcpuTimeCallbackError::live_device)
     }
 
@@ -583,7 +778,7 @@ impl LiveVcpuTimeCallbackState {
         request_id: u32,
         output: &mut [u8],
     ) -> Result<i64, LiveVcpuTimeCallbackError> {
-        if self.idle_advance_is_pending()? {
+        if self.idle_advance_is_pending() {
             return Ok(QEMU_PLUGIN_NINEP_POLL_PENDING);
         }
         let current_icount = self.callback_current_icount()?;
@@ -604,6 +799,7 @@ impl LiveVcpuTimeCallbackState {
 }
 
 pub(super) extern "C" fn crucible_qemu_plugin_live_block_submit_cb(
+    epoch: u64,
     request_id: u32,
     operation: u32,
     offset: u64,
@@ -618,13 +814,14 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_submit_cb(
     // SAFETY: QEMU owns the callback input and keeps it readable for `len`
     // bytes until this callback returns.
     let data = unsafe { input_payload(data, len) };
-    if let Err(error) = state.block_submit(request_id, operation, offset, data, len) {
+    if let Err(error) = state.block_submit(epoch, request_id, operation, offset, data, len) {
         abort_live_callback(error);
     }
     0
 }
 
 pub(super) extern "C" fn crucible_qemu_plugin_live_block_poll_cb(
+    epoch: u64,
     request_id: u32,
     output: *mut u8,
     capacity: usize,
@@ -639,9 +836,101 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_poll_cb(
     let output = unsafe { output_buffer(output, capacity, "block") }.unwrap_or_else(|source| {
         abort_live_callback(LiveVcpuTimeCallbackError::live_device(source))
     });
-    match state.block_poll(request_id, output) {
+    match state.block_poll(epoch, request_id, output) {
         Ok(result) => result,
         Err(error) => abort_live_callback(error),
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_block_event_poll_cb(
+    output: *mut u8,
+    capacity: usize,
+    userdata: *mut c_void,
+) -> i64 {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    // SAFETY: QEMU grants this callback exclusive access to the output buffer
+    // for `capacity` bytes until this callback returns.
+    let output =
+        unsafe { output_buffer(output, capacity, "block event") }.unwrap_or_else(|source| {
+            abort_live_callback(LiveVcpuTimeCallbackError::live_device(source))
+        });
+    match state.block_event_poll(output) {
+        Ok(result) => result,
+        Err(error) => abort_live_callback(error),
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_block_event_commit_cb(
+    userdata: *mut c_void,
+) -> c_int {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    match state.block_event_commit() {
+        Ok(()) => 0,
+        Err(error) => abort_live_callback(error),
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_block_transport_save_cb(
+    output: *mut u8,
+    capacity: usize,
+    userdata: *mut c_void,
+) -> i64 {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    // SAFETY: QEMU grants exclusive writable access for `capacity` bytes. A
+    // null pointer is valid only for the zero-capacity size query.
+    let output = unsafe { output_buffer(output, capacity, "block transport continuation") }
+        .unwrap_or_else(|source| {
+            abort_live_callback(LiveVcpuTimeCallbackError::live_device(source))
+        });
+    match state.block_transport_save(output) {
+        Ok(len) => i64::try_from(len).unwrap_or_else(|_error| {
+            abort_live_callback(LiveVcpuTimeCallbackError::live_device(
+                LiveDeviceCallbackError::ResponseLengthOverflow {
+                    family: "block transport continuation",
+                    len,
+                },
+            ))
+        }),
+        Err(error) => abort_live_callback(error),
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_block_transport_restore_cb(
+    input: *const u8,
+    len: usize,
+    qemu_epoch: u64,
+    qemu_next_request_id: u32,
+    userdata: *mut c_void,
+) -> c_int {
+    let Some(state) = std::ptr::NonNull::new(userdata.cast::<LiveVcpuTimeCallbackState>()) else {
+        return -1;
+    };
+    // SAFETY: the registrar passes only the pinned live callback allocation
+    // retained by `OwnedCallbackRuntimeState` for the QEMU process lifetime.
+    let state = unsafe { state.as_ref() };
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    // SAFETY: QEMU keeps this VMState-owned input readable for `len` bytes for
+    // the duration of the callback.
+    let Some(input) = (unsafe { input_payload(input, len) }) else {
+        return -1;
+    };
+    match state.block_transport_restore(input, qemu_epoch, qemu_next_request_id) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("crucible-qemu-plugin: rejected block transport restore: {error}");
+            -1
+        }
     }
 }
 
@@ -762,6 +1051,33 @@ pub enum LiveDeviceCallbackError {
         /// Underlying block wire error.
         source: BlockWireError,
     },
+    /// A transport reset appeared where the driver expected a primary result.
+    #[error("block request {request_id} returned reset as its primary completion")]
+    UnexpectedBlockResetPrimary {
+        /// Request whose primary completion was invalid.
+        request_id: u32,
+    },
+    /// A duplicate-only status appeared in a primary request poll.
+    #[error("block request {request_id} returned a duplicate-only primary completion")]
+    UnexpectedBlockDuplicatePrimary {
+        /// Request whose primary completion was invalid.
+        request_id: u32,
+    },
+    /// QEMU attempted to commit without first preparing a block event.
+    #[error("no block transport event is prepared for commit")]
+    NoPreparedBlockEvent,
+    /// VMState attempted to save or restore while transport state was in flight.
+    #[error(
+        "block transport continuation is busy: {block_tokens} requests, {retry_authorizations} retry authorizations, prepared_event={prepared_event}"
+    )]
+    TransportContinuationBusy {
+        /// Submitted requests not yet terminally polled.
+        block_tokens: usize,
+        /// Preserve-ID retry authorizations not yet resubmitted.
+        retry_authorizations: usize,
+        /// Whether an event was prepared but not committed.
+        prepared_event: bool,
+    },
     /// Registration-fixed 9p state or callback handling failed.
     #[error("live 9p callback failed: {source}")]
     NineP {
@@ -779,21 +1095,27 @@ pub enum LiveDeviceCallbackError {
     StatePoisoned,
     /// QEMU and the plugin's fixed request sequence disagreed.
     #[error(
-        "live {family} request id mismatch: QEMU supplied {qemu_request_id}, plugin expected {plugin_request_id}"
+        "live {family} request identity mismatch: QEMU supplied ({qemu_epoch}, {qemu_request_id}), plugin expected ({plugin_epoch}, {plugin_request_id})"
     )]
     RequestIdMismatch {
         /// Device callback family.
         family: &'static str,
+        /// Driver-supplied request epoch.
+        qemu_epoch: u64,
         /// Driver-supplied request id.
         qemu_request_id: u32,
+        /// Plugin's current request epoch.
+        plugin_epoch: u64,
         /// Plugin's next fixed request id.
         plugin_request_id: u32,
     },
     /// QEMU polled a request that was not retained after submit.
-    #[error("live {family} poll named unknown request {request_id}")]
+    #[error("live {family} poll named unknown request ({epoch}, {request_id})")]
     UnknownRequest {
         /// Device callback family.
         family: &'static str,
+        /// Unknown request epoch.
+        epoch: u64,
         /// Unknown request id.
         request_id: u32,
     },
@@ -864,6 +1186,16 @@ pub enum LiveDeviceCallbackError {
         family: &'static str,
         /// Unrepresentable response length.
         len: usize,
+    },
+    /// QEMU supplied a buffer too small for a fixed response envelope.
+    #[error("live {family} buffer has {observed} bytes but requires at least {required}")]
+    ResponseBufferTooSmall {
+        /// Device callback family.
+        family: &'static str,
+        /// Minimum fixed capacity.
+        required: usize,
+        /// Supplied capacity.
+        observed: usize,
     },
     /// QEMU changed a retained 9p response capacity before polling.
     #[error(

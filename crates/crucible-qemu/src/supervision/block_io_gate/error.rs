@@ -55,6 +55,12 @@ pub enum QemuLiveBlockIoGateError {
     /// The plugin setup acknowledgement did not permit scheduling.
     #[error("plugin setup acknowledgement did not permit scheduling")]
     SetupAckNotReady,
+    /// The output-only guest console could not be connected or read.
+    #[error("capture guest console failed: {source}")]
+    Console {
+        /// Underlying console socket error.
+        source: std::io::Error,
+    },
     /// The block-I/O servicer could not be built.
     #[error("build block-I/O servicer failed")]
     BlockServicer {
@@ -78,6 +84,12 @@ pub enum QemuLiveBlockIoGateError {
     DriveSlot {
         /// Underlying mapped-region access error.
         source: crucible_shmem::MappedSetupRegionAccessError,
+    },
+    /// A live request coordinate could not be projected to virtual nanoseconds.
+    #[error("project block request coordinate failed: {source}")]
+    VirtualTime {
+        /// Underlying fixed-shift conversion error.
+        source: crucible_shmem::NodeSlotError,
     },
     /// The drive mapped hot-path adapter could not bind the region.
     #[error("bind drive mapped hot path failed")]
@@ -128,6 +140,20 @@ pub enum QemuLiveBlockIoGateError {
     SecondRunDiverged {
         /// Human-readable divergence detail.
         reason: String,
+    },
+    /// The live reset did not produce exact guest-visible evidence.
+    #[error(
+        "live block reset evidence mismatch: injected={injected}, errno={guest_errno:?}, config_irq_delta={config_interrupt_delta:?}, console={console:?}"
+    )]
+    TransportResetEvidence {
+        /// Whether the host installed the reset on a live write.
+        injected: bool,
+        /// Guest-observed errno from the recovery-window request.
+        guest_errno: Option<i32>,
+        /// Guest-observed virtio configuration interrupt increment.
+        config_interrupt_delta: Option<u64>,
+        /// Complete captured guest console.
+        console: String,
     },
 }
 

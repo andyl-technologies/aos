@@ -32,7 +32,10 @@ use crate::fault::{DeviceRng, IoFaultOutcome, IoFaults};
 use crate::request::{ComputedResponse, LatencyModel, Request, Response, ResponseStatus};
 use crate::subnode::{IoCore, IoSubNode, ShmemDeliveryResult, ShmemInboxProcess};
 
-use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, RESPONSE_HEADER_LEN};
+use super::codec::{
+    BlockErrorCode, BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse, RESPONSE_HEADER_LEN,
+};
+use super::codec::{BlockStatus, BlockTransportReset, BlockTransportUndelivered};
 use super::fault::{
     BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
@@ -164,6 +167,12 @@ pub struct BlockDevice {
     rng_position: u64,
 }
 
+struct PreparedBlockTransportReset {
+    storage_faults: BlockFaultState,
+    inflight: Vec<crate::inflight::PendingResponse>,
+    immediate: Vec<Response>,
+}
+
 /// Atomically submits a write whose bytes are redirected to another block device.
 ///
 /// The source produces the sole guest completion and remains unchanged; the
@@ -202,7 +211,7 @@ pub fn submit_cross_device_misdirected_write(
         request.data.clone(),
     )?;
     directive.write_disposition = super::fault::BlockFaultWriteDisposition::Lost;
-    next_source.install_storage_fault_directive(request.request_id, directive)?;
+    next_source.install_storage_fault_directive(request.identity(), directive)?;
     next_source.submit(request_icount, request)?;
     *source = next_source;
     *destination = next_destination;
@@ -216,7 +225,8 @@ impl BlockDevice {
     /// starts empty so every read falls through to the base.
     #[must_use]
     pub fn new(core: IoCore, base: BaseImage, latency: BlockLatency) -> Self {
-        let storage_faults = BlockFaultState::write_through(base.len());
+        let mut storage_faults = BlockFaultState::write_through(base.len());
+        storage_faults.set_icount_shift(core.shift_bits());
         Self {
             core,
             base,
@@ -298,6 +308,7 @@ impl BlockDevice {
             });
         }
         let mut state = BlockFaultState::new(config)?;
+        state.set_icount_shift(self.core.shift_bits());
         state.require_directives(require_directives);
         self.storage_faults = state;
         Ok(())
@@ -344,10 +355,10 @@ impl BlockDevice {
     /// Returns [`DeviceError`] for duplicate identity or bounded-state failure.
     pub fn install_storage_fault_directive(
         &mut self,
-        request_id: u32,
+        identity: BlockRequestIdentity,
         directive: ResolvedBlockFaultDirective,
     ) -> Result<(), DeviceError> {
-        self.storage_faults.install(request_id, directive)
+        self.storage_faults.install(identity, directive)
     }
 
     /// Returns the first request ready for resolve/persist evaluation.
@@ -543,11 +554,11 @@ impl BlockDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::InvalidBlockFaultDirective`] when `request_id` is
+    /// Returns [`DeviceError::InvalidBlockFaultDirective`] when `identity` is
     /// not retained, or propagates the delivery core's scheduling error.
     pub fn release_storage_completion(
         &mut self,
-        request_id: u32,
+        identity: super::codec::BlockRequestIdentity,
         release: BlockRetainedRelease,
     ) -> Result<(), DeviceError> {
         let mut next_faults = self.storage_faults.clone();
@@ -556,7 +567,7 @@ impl BlockDevice {
         let response = next_faults.resolve_retained_completion(
             &self.base,
             &mut next_overlay,
-            request_id,
+            identity,
             release,
             now_nanos,
         )?;
@@ -656,6 +667,16 @@ impl BlockDevice {
         request_icount: u64,
         request: &BlockRequest,
     ) -> Result<(), DeviceError> {
+        let mut next_faults = self.storage_faults.clone();
+        if let Some(response) =
+            next_faults.dispose_retired_transport_request_if_needed(request.identity())?
+        {
+            let mut next_core = self.core.clone();
+            next_core.schedule_response_now(response)?;
+            self.storage_faults = next_faults;
+            self.core = next_core;
+            return Ok(());
+        }
         self.advance_storage_service_before_admission(request_icount)?;
         let wire = request.encode().map_err(DeviceError::Codec)?;
         let uniform = Request::new(request_icount, request.request_id, wire);
@@ -731,6 +752,31 @@ impl BlockDevice {
         producer_slot: &NodeSlot,
     ) -> Result<ShmemInboxProcess, DeviceError> {
         if let Some(frame) = inbox.peek(inbox_entries)? {
+            let payload = frame.payload()?;
+            let request_kind = payload.first().copied();
+            let request = BlockRequest::decode(payload).map_err(DeviceError::Codec)?;
+            let mut next_faults = self.storage_faults.clone();
+            if let Some(response) =
+                next_faults.dispose_retired_transport_request_if_needed(request.identity())?
+            {
+                let mut next_core = self.core.clone();
+                next_core.schedule_response_now(response)?;
+                let committed = inbox
+                    .dequeue(inbox_entries)?
+                    .ok_or(DeviceError::InvalidComputedResponse)?;
+                if committed != frame {
+                    return Err(DeviceError::InvalidComputedResponse);
+                }
+                let wake = producer_slot.wake_for_device_io_release()?;
+                self.storage_faults = next_faults;
+                self.core = next_core;
+                return Ok(ShmemInboxProcess {
+                    processed: 1,
+                    request_kinds: vec![request_kind],
+                    first_request_icount: Some(frame.delivery_icount),
+                    producer_wakes: vec![wake],
+                });
+            }
             self.advance_storage_service_before_admission(frame.delivery_icount)?;
         }
         let mut node = BlockServer {
@@ -784,6 +830,199 @@ impl BlockDevice {
         Ok(())
     }
 
+    fn prepare_transport_reset(
+        core: &IoCore,
+        storage_faults: &BlockFaultState,
+        event: &crate::inflight::PendingResponse,
+        reset: BlockTransportReset,
+        delivered_icount: u64,
+    ) -> Result<PreparedBlockTransportReset, DeviceError> {
+        let mut next_faults = storage_faults.clone();
+        let delivered_nanos = icount_to_virtual_ns(delivered_icount, core.shift_bits())?;
+        let qemu_virtual_limit = i64::MAX as u64;
+        if delivered_nanos > qemu_virtual_limit
+            || reset.recovery_nanos > qemu_virtual_limit
+            || delivered_nanos
+                .checked_add(reset.recovery_nanos)
+                .is_none_or(|deadline| deadline > qemu_virtual_limit)
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "block transport recovery exceeds QEMU virtual-clock range",
+            });
+        }
+        let immediate = next_faults.apply_transport_reset(reset, delivered_nanos)?;
+        core.check_response_sequence_capacity(immediate.len())?;
+
+        let mut inflight = Vec::with_capacity(core.inflight_len().saturating_sub(1));
+        for mut pending in core.take_inflight_from_snapshot() {
+            if pending.key == event.key {
+                continue;
+            }
+            if pending.key > event.key {
+                let response =
+                    BlockResponse::decode(&pending.response.payload).map_err(DeviceError::Codec)?;
+                if matches!(response.status, BlockStatus::Ok | BlockStatus::Error)
+                    && reset.completed_undelivered != BlockTransportUndelivered::Complete
+                {
+                    let replacement = match reset.completed_undelivered {
+                        BlockTransportUndelivered::Complete => response,
+                        BlockTransportUndelivered::Fail => {
+                            BlockResponse::error_for(response.identity(), reset.failure_result)
+                        }
+                        BlockTransportUndelivered::RetryPreserveId => {
+                            BlockResponse::reset_disposition(
+                                response.identity(),
+                                BlockStatus::RetryPreserveId,
+                            )
+                        }
+                        BlockTransportUndelivered::RetryNewId => BlockResponse::reset_disposition(
+                            response.identity(),
+                            BlockStatus::RetryNewId,
+                        ),
+                        BlockTransportUndelivered::DropCompletion => {
+                            BlockResponse::reset_disposition(
+                                response.identity(),
+                                BlockStatus::DropCompletion,
+                            )
+                        }
+                    };
+                    pending.response = block_response_to_uniform_device(&replacement)?;
+                }
+            }
+            inflight.push(pending);
+        }
+        Ok(PreparedBlockTransportReset {
+            storage_faults: next_faults,
+            inflight,
+            immediate,
+        })
+    }
+
+    fn commit_transport_reset(
+        core: &mut IoCore,
+        storage_faults: &mut BlockFaultState,
+        prepared: PreparedBlockTransportReset,
+    ) -> Result<(), DeviceError> {
+        let _discarded = core.take_inflight();
+        core.replace_inflight(prepared.inflight);
+        *storage_faults = prepared.storage_faults;
+        for response in prepared.immediate {
+            core.schedule_response_now(response)?;
+        }
+        Ok(())
+    }
+
+    fn deliver_local_with_resets(
+        core: &mut IoCore,
+        storage_faults: &mut BlockFaultState,
+        limit: u64,
+    ) -> Result<usize, DeviceError> {
+        let mut delivered = 0;
+        loop {
+            let Some(head) = core.next_pending_response().cloned() else {
+                break;
+            };
+            if head.delivery_icount() > limit {
+                break;
+            }
+            let publish_at = head.delivery_icount().max(core.current_icount());
+            let decoded =
+                BlockResponse::decode(&head.response.payload).map_err(DeviceError::Codec)?;
+            let prepared = if decoded.status == BlockStatus::TransportReset {
+                let reset = decoded
+                    .transport_reset_directive()
+                    .map_err(DeviceError::Codec)?;
+                Some(Self::prepare_transport_reset(
+                    core,
+                    storage_faults,
+                    &head,
+                    reset,
+                    publish_at,
+                )?)
+            } else {
+                None
+            };
+            if core.deliver_one(publish_at)?.is_none() {
+                break;
+            }
+            delivered += 1;
+            if let Some(prepared) = prepared {
+                Self::commit_transport_reset(core, storage_faults, prepared)?;
+            }
+        }
+        if core.current_icount() < limit {
+            let _ = core.deliver_one(limit)?;
+        }
+        Ok(delivered)
+    }
+
+    fn deliver_shmem_with_resets(
+        core: &mut IoCore,
+        storage_faults: &mut BlockFaultState,
+        limit: u64,
+        outbox: &RingHeader,
+        outbox_entries: &mut [FrameEntry],
+        consumer_slot: &NodeSlot,
+    ) -> Result<ShmemDeliveryResult, DeviceError> {
+        let mut delivered = 0;
+        let mut consumer_wake = None;
+        loop {
+            let Some(head) = core.next_pending_response().cloned() else {
+                break;
+            };
+            if head.delivery_icount() > limit {
+                break;
+            }
+            let publish_at = head.delivery_icount().max(core.current_icount());
+            let decoded =
+                BlockResponse::decode(&head.response.payload).map_err(DeviceError::Codec)?;
+            let prepared = if decoded.status == BlockStatus::TransportReset {
+                let reset = decoded
+                    .transport_reset_directive()
+                    .map_err(DeviceError::Codec)?;
+                Some(Self::prepare_transport_reset(
+                    core,
+                    storage_faults,
+                    &head,
+                    reset,
+                    publish_at,
+                )?)
+            } else {
+                None
+            };
+            let published =
+                core.deliver_one_shmem(publish_at, outbox, outbox_entries, consumer_slot);
+            let Some(_published) = (match published {
+                Ok(published) => published,
+                Err(error) => {
+                    if delivered != 0 {
+                        let _ = consumer_slot.wake_for_frame_delivery()?;
+                    }
+                    return Err(error);
+                }
+            }) else {
+                break;
+            };
+            delivered += 1;
+            if let Some(prepared) = prepared {
+                Self::commit_transport_reset(core, storage_faults, prepared)?;
+            }
+        }
+        if core.current_icount() < limit {
+            let published = core.deliver_one_shmem(limit, outbox, outbox_entries, consumer_slot)?;
+            if let Some(_response) = published {
+                delivered += 1;
+            }
+        }
+        if delivered != 0 {
+            consumer_wake = Some(consumer_slot.wake_for_frame_delivery()?);
+        }
+        Ok(ShmemDeliveryResult {
+            delivered,
+            consumer_wake,
+        })
+    }
+
     /// Advances the clock to `limit` and DELIVERs every due response ([IO-2]).
     ///
     /// # Errors
@@ -825,7 +1064,7 @@ impl BlockDevice {
             next_core
                 .schedule_computed_response_at_nanos(base_completion_nanos, released.computed)?;
         }
-        let delivered = next_core.advance_to(limit)?;
+        let delivered = Self::deliver_local_with_resets(&mut next_core, &mut next_faults, limit)?;
         self.storage_faults = next_faults;
         self.overlay = next_overlay;
         self.core = next_core;
@@ -884,8 +1123,14 @@ impl BlockDevice {
         self.storage_faults = next_faults;
         self.overlay = next_overlay;
         self.core = next_core;
-        self.core
-            .advance_to_shmem(limit, outbox, outbox_entries, consumer_slot)
+        Self::deliver_shmem_with_resets(
+            &mut self.core,
+            &mut self.storage_faults,
+            limit,
+            outbox,
+            outbox_entries,
+            consumer_slot,
+        )
     }
 
     fn reject_advance_past_unresolved_execution(
@@ -1109,6 +1354,19 @@ impl BlockDevice {
     pub fn materialize(&self) -> Vec<u8> {
         self.overlay.materialize(&self.base)
     }
+}
+
+fn block_response_to_uniform_device(response: &BlockResponse) -> Result<Response, DeviceError> {
+    let status = if response.status == BlockStatus::Ok {
+        ResponseStatus::Ok
+    } else {
+        ResponseStatus::Error
+    };
+    Ok(Response::new(
+        response.request_id,
+        status,
+        response.encode().map_err(DeviceError::Codec)?,
+    ))
 }
 
 fn ceil_nanos_to_valid_icount(target_nanos: u64, shift_bits: u8) -> u64 {

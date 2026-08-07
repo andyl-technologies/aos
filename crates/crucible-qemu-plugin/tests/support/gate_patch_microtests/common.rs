@@ -63,6 +63,12 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0044-crucible-time-advance-enqueue-kick.patch",
     "0045-crucible-time-advance-arm-at-vcpu-boundary.patch",
     "0046-crucible-translation-prefetch-helper.patch",
+    "0047-crucible-fault-command-abi.patch",
+    "0048-crucible-fault-safe-boundary.patch",
+    "0049-crucible-memory-boundary-mutate.patch",
+    "0060-crucible-block-typed-errors.patch",
+    "0061-crucible-block-discard.patch",
+    "0062-crucible-block-transport-reset.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

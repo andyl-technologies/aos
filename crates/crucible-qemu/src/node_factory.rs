@@ -103,6 +103,18 @@ pub enum QemuNodeFactoryError {
         /// Underlying VMState restore channel error.
         source: QemuNodeChannelError,
     },
+    /// The host-I/O half did not match before QMP was allowed to change state.
+    #[error("QEMU host-I/O checkpoint prevalidation failed")]
+    HostIoCheckpointValidation {
+        /// Exact host runtime validation failure.
+        source: crate::QemuAsyncDriverRuntimeError,
+    },
+    /// The prevalidated host-I/O half could not be committed after QMP restore.
+    #[error("QEMU host-I/O checkpoint restore failed after VMState restore")]
+    HostIoCheckpointRestore {
+        /// Exact host runtime commit failure.
+        source: crate::QemuAsyncDriverRuntimeError,
+    },
     /// The authorization token did not match the restore admission kind.
     #[error("QEMU VMState restore authorization does not match admission kind, got {purpose:?}")]
     VmStateRestoreAuthorization {
@@ -520,17 +532,26 @@ where
         shutdown_policy,
         async_policy,
         crash_detector,
-        host_io_runtime,
+        mut host_io_runtime,
     } = runtime;
     let QemuNodeRestorePlan {
         checkpoint,
         authorization,
         admission,
+        host_io_checkpoint,
     } = restore;
     validate_runtime_restore_authorization(authorization, admission)?;
     let prepared_setup = prepare_qemu_node_setup(setup, shmem_config, send_authorizer)?;
+    let no_block_checkpoint = crate::QemuHostIoCheckpoint::without_block(checkpoint.id);
+    let host_io_checkpoint = host_io_checkpoint.unwrap_or(&no_block_checkpoint);
+    host_io_runtime
+        .validate_host_io_checkpoint(checkpoint.id, host_io_checkpoint)
+        .map_err(|source| QemuNodeFactoryError::HostIoCheckpointValidation { source })?;
     qmp.restore_checkpoint_vmstate(checkpoint, authorization)
         .map_err(|source| QemuNodeFactoryError::VmStateRestore { source })?;
+    host_io_runtime
+        .restore_host_io_checkpoint(checkpoint.id, host_io_checkpoint)
+        .map_err(|source| QemuNodeFactoryError::HostIoCheckpointRestore { source })?;
 
     Ok(build_qemu_node_from_prepared_setup(
         child,

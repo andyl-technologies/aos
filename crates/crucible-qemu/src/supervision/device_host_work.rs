@@ -25,9 +25,10 @@ use thiserror::Error;
 use crucible::model::{ContentHash, ResolvedBindingAction, ResolvedFaultTarget};
 use crucible_device::block::{
     BaseImage, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
-    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
-    BlockRetainedRelease, BlockServiceCompletion, ResolvedBlockExecutionDirective,
-    ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
+    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestIdentity,
+    BlockRequestPersistenceOpportunity, BlockRetainedRelease, BlockServiceCompletion,
+    ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
+    ResolvedBlockPersistenceMediaDirective,
 };
 
 use super::block_io_servicer::{
@@ -350,7 +351,7 @@ impl QemuLiveBlockHostWorkPool {
         &mut self,
         guest_icount: u64,
         delay: QemuDeviceHostWorkDelay,
-        directive: Option<(u32, ResolvedBlockFaultDirective)>,
+        directive: Option<(BlockRequestIdentity, ResolvedBlockFaultDirective)>,
     ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
         if self.work_in_flight {
             return Err(QemuLiveBlockHostWorkPoolError::WorkAlreadyInFlight);
@@ -682,14 +683,11 @@ impl QemuLiveBlockHostWorkPool {
     /// not retained or its response cannot be scheduled.
     pub fn release_storage_completion(
         &mut self,
-        request_id: u32,
+        identity: BlockRequestIdentity,
         release: BlockRetainedRelease,
     ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
         self.require_storage_device_bound()?;
-        self.mutate(StorageMutation::ReleaseCompletion {
-            request_id,
-            release,
-        })
+        self.mutate(StorageMutation::ReleaseCompletion { identity, release })
     }
 
     fn mutate(&mut self, mutation: StorageMutation) -> Result<(), QemuLiveBlockHostWorkPoolError> {
@@ -753,9 +751,9 @@ impl QemuLiveBlockHostWorkPool {
 
 fn validate_pinned_directive(
     pin: &QemuLiveBlockIoHostWorkPin,
-    directive: Option<&(u32, ResolvedBlockFaultDirective)>,
+    directive: Option<&(BlockRequestIdentity, ResolvedBlockFaultDirective)>,
 ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
-    let Some((request_id, directive)) = directive else {
+    let Some((identity, directive)) = directive else {
         return Ok(());
     };
     let observed = pin
@@ -766,7 +764,7 @@ fn validate_pinned_directive(
         .request
         .as_ref()
         .ok_or(QemuLiveBlockHostWorkPoolError::MalformedPinnedRequest)?;
-    if request.request_id != *request_id
+    if request.identity() != *identity
         || directive.operation != request.op
         || directive.offset != request.offset
         || directive.count != request.count
@@ -774,7 +772,7 @@ fn validate_pinned_directive(
     {
         return Err(QemuLiveBlockHostWorkPoolError::DirectivePinMismatch {
             pinned_request_id: request.request_id,
-            directive_request_id: *request_id,
+            directive_request_id: identity.request_id,
         });
     }
     Ok(())
@@ -797,7 +795,7 @@ enum WorkerCommand {
     Service {
         guest_icount: u64,
         delay: QemuDeviceHostWorkDelay,
-        directive: Option<(u32, ResolvedBlockFaultDirective)>,
+        directive: Option<(BlockRequestIdentity, ResolvedBlockFaultDirective)>,
     },
     Mutate(StorageMutation),
     InspectStorageState,
@@ -819,7 +817,7 @@ enum StorageMutation {
     InstallPersistenceMedia(ResolvedBlockPersistenceMediaDirective),
     InstallExecution(ResolvedBlockExecutionDirective),
     ReleaseCompletion {
-        request_id: u32,
+        identity: BlockRequestIdentity,
         release: BlockRetainedRelease,
     },
 }
@@ -876,10 +874,9 @@ fn worker_loop(
                 StorageMutation::InstallExecution(directive) => {
                     servicer.install_storage_execution_directive(directive)
                 }
-                StorageMutation::ReleaseCompletion {
-                    request_id,
-                    release,
-                } => servicer.release_storage_completion(request_id, release),
+                StorageMutation::ReleaseCompletion { identity, release } => {
+                    servicer.release_storage_completion(identity, release)
+                }
             }),
             WorkerCommand::InspectStorageState => {
                 WorkerReply::StorageState(servicer.storage_fault_state().clone())
@@ -1032,8 +1029,11 @@ mod tests {
     fn exact_directive_matches_pinned_request() {
         let request = BlockRequest::read(7, 512, 512);
         let directive = ResolvedBlockFaultDirective::fault_free(&request, 4096);
-        validate_pinned_directive(&pin(request), Some(&(7, directive)))
-            .unwrap_or_else(|error| panic!("exact directive should match: {error}"));
+        validate_pinned_directive(
+            &pin(request),
+            Some(&(BlockRequestIdentity::new(0, 7), directive)),
+        )
+        .unwrap_or_else(|error| panic!("exact directive should match: {error}"));
     }
 
     #[test]
@@ -1041,7 +1041,10 @@ mod tests {
         let request = BlockRequest::read(7, 512, 512);
         let other = BlockRequest::read(8, 512, 512);
         let directive = ResolvedBlockFaultDirective::fault_free(&other, 4096);
-        let error = match validate_pinned_directive(&pin(request), Some(&(8, directive))) {
+        let error = match validate_pinned_directive(
+            &pin(request),
+            Some(&(BlockRequestIdentity::new(0, 8), directive)),
+        ) {
             Ok(()) => panic!("request alias must fail closed"),
             Err(error) => error,
         };

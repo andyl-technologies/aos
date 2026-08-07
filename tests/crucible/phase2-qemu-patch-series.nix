@@ -377,6 +377,13 @@
       enforces = "STOR-DISCARD,DET-16,PATCH-26";
       capability = "payload-free block discard transported through the deterministic shmem completion path";
     }
+    {
+      file = "0062-crucible-block-transport-reset.patch";
+      catalogName = "crucible-block-transport-reset";
+      class = "F";
+      enforces = "STOR-RESET,STOR-RESULT,DET-16,PATCH-26";
+      capability = "transactional epoch-scoped block reset, recovery admission, retry dispositions, and declared topology re-enumeration";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
