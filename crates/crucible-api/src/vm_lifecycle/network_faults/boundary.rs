@@ -587,10 +587,10 @@ impl BoundaryNetworkState {
         now: u64,
         application: &mut BoundaryNetworkApplication,
     ) -> Result<bool, SchedulerError> {
-        if !self
+        if self
             .control_planes
             .get(&action.target)
-            .is_some_and(|control| !control.contributions.is_empty())
+            .is_none_or(|control| control.contributions.is_empty())
         {
             return Ok(false);
         }

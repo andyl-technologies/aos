@@ -1756,7 +1756,7 @@ fn control_opportunity_matches(
         }) => Some((technology, operations)),
         _ => None,
     };
-    let control_payload_matches = match opportunity.map(FaultOpportunity::payload) {
+    match opportunity.map(FaultOpportunity::payload) {
         Some(OpportunityPayload::NetworkControl { technology, .. }) => control_transform
             .is_some_and(|(expected_technology, operations)| {
                 expected_technology == technology
@@ -1764,8 +1764,7 @@ fn control_opportunity_matches(
             }),
         Some(_) => control_transform.is_none(),
         None => true,
-    };
-    control_payload_matches
+    }
 }
 
 fn binding_phases(binding: &FaultBinding) -> Vec<FaultPhase> {

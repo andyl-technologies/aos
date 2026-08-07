@@ -50,7 +50,7 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" blockIo [
       {
         label = "wire version";
-        needle = "const BLOCK_WIRE_VERSION: u8 = 1";
+        needle = "const BLOCK_WIRE_VERSION: u8 = 2";
       }
       {
         label = "request header length";
@@ -321,7 +321,7 @@ in
             tasks=${taskList}
             component=crucible-block-wire-abi
             gate=gate:abi-conformance,gate:layer1-injection
-            block_wire_version=1
+            block_wire_version=2
             fixed_endianness=little
             reserved_bytes=zero-emit-reject-on-receive
             route=vm-slot-to-SLOT_BLK_IO-and-back

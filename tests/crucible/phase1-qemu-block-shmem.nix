@@ -5,6 +5,7 @@
   qemuPackage ? null,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
+  series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-qemu-block-shmem.c;
@@ -28,13 +29,18 @@
       qemu_package=${qemuPackage}
       qemu_package_version=${qemuPackage.version}
     '';
-  tPatch12PatchNames = [
-    "0015-crucible-blk-shmem.patch"
-    "0016-crucible-blk-shmem-io-fixes.patch"
-    "0017-crucible-blk-write-sentinel.patch"
-  ];
+  tPatch12PatchNames =
+    if patchName == "0060-crucible-block-typed-errors.patch"
+    then [patchName]
+    else [
+      "0015-crucible-blk-shmem.patch"
+      "0016-crucible-blk-shmem-io-fixes.patch"
+      "0017-crucible-blk-write-sentinel.patch"
+    ];
   patchContextNames =
-    [
+    if patchName == "0060-crucible-block-typed-errors.patch"
+    then series.patchFiles
+    else [
       "0001-crucible-sim-accel.patch"
       "0002-crucible-rr-fingerprint-helpers.patch"
       "0003-crucible-icount-no-realtime.patch"
@@ -51,7 +57,10 @@
       "0014-crucible-plugin-tcg-exec-cb.patch"
     ]
     ++ tPatch12PatchNames;
-  taskIds = ["T-PATCH-12"];
+  taskIds =
+    if patchName == "0060-crucible-block-typed-errors.patch"
+    then ["T-QEMU-0060"]
+    else ["T-PATCH-12"];
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -102,7 +111,8 @@
         needle = "qemu_coroutine_yield()";
       }
     ]
-    else [
+    else if patchName == "0017-crucible-blk-write-sentinel.patch"
+    then [
       {
         label = "pending sentinel distinct from zero";
         needle = "#define QEMU_PLUGIN_BLK_POLL_PENDING (-2)";
@@ -110,6 +120,20 @@
       {
         label = "old conflated sentinel removed";
         needle = "-#define QEMU_PLUGIN_BLK_POLL_PENDING 0";
+      }
+    ]
+    else [
+      {
+        label = "typed block callback error encoding";
+        needle = "QEMU_PLUGIN_BLK_POLL_ERROR(error_number)";
+      }
+      {
+        label = "typed block result decoder";
+        needle = "crucible_shmem_decode_poll_result";
+      }
+      {
+        label = "out-of-range typed result rejection";
+        needle = "return -EOVERFLOW";
       }
     ];
 
@@ -122,7 +146,7 @@
       tPatch12PatchNames
     )
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource patchRequirements
-    ++ failuresFor "tests/crucible/phase1-qemu-block-shmem.c" microtestSource [
+    ++ failuresFor "tests/crucible/phase1-qemu-block-shmem.c" microtestSource ([
       {
         label = "patched driver include";
         needle = "#include \"block/crucible-shmem.c\"";
@@ -148,6 +172,16 @@
         needle = "stock_negative_control_block_symbols_absent=true";
       }
     ]
+    ++ lib.optionals (patchName == "0060-crucible-block-typed-errors.patch") [
+      {
+        label = "typed errno mapping exercised";
+        needle = "typed_error_errno_mapping_exact=true";
+      }
+      {
+        label = "typed errno range rejection exercised";
+        needle = "typed_error_out_of_range_fails_closed=true";
+      }
+    ])
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
       {
         label = "block shmem patch catalog";
@@ -245,9 +279,11 @@ in
             grep -F -q 'block_init(bdrv_crucible_shmem_init)' block/crucible-shmem.c
             grep -q 'qemu_plugin_register_blk_cb' include/qemu/qemu-plugin.h
             grep -q '#define QEMU_PLUGIN_BLK_POLL_PENDING (-2)' include/qemu/qemu-plugin.h
-            grep -q 'aio_co_schedule(bdrv_get_aio_context(bs), qemu_coroutine_self())' block/crucible-shmem.c
+            ${lib.optionalString (patchName != "0060-crucible-block-typed-errors.patch") ''
+              grep -q 'aio_co_schedule(bdrv_get_aio_context(bs), qemu_coroutine_self())' block/crucible-shmem.c
+            ''}
 
-            mkdir -p fixture/include/block fixture/include/qapi fixture/include/qemu fixture/include/qobject
+            mkdir -p fixture/include/block fixture/include/qapi fixture/include/qemu fixture/include/qobject fixture/include/system
             cat > fixture/include/qemu/osdep.h <<'OSDEP_FIXTURE'
             #ifndef QEMU_OSDEP_H
             #define QEMU_OSDEP_H
@@ -262,6 +298,9 @@ in
             #include <string.h>
 
             #define g_autofree
+            #define g_assert(condition) do { if (!(condition)) abort(); } while (0)
+            #define container_of(pointer, type, member) \
+                ((type *)((char *)(pointer) - offsetof(type, member)))
 
             static inline void *g_malloc(size_t size)
             {
@@ -270,6 +309,64 @@ in
 
             #endif
             OSDEP_FIXTURE
+
+            cat > fixture/include/qemu/thread.h <<'THREAD_FIXTURE'
+            #ifndef QEMU_THREAD_H
+            #define QEMU_THREAD_H
+
+            typedef struct QemuMutex {
+                int unused;
+            } QemuMutex;
+
+            static inline void qemu_mutex_init(QemuMutex *mutex)
+            {
+                mutex->unused = 0;
+            }
+
+            static inline void qemu_mutex_destroy(QemuMutex *mutex)
+            {
+                (void)mutex;
+            }
+
+            static inline void qemu_mutex_lock(QemuMutex *mutex)
+            {
+                (void)mutex;
+            }
+
+            static inline void qemu_mutex_unlock(QemuMutex *mutex)
+            {
+                (void)mutex;
+            }
+
+            #endif
+            THREAD_FIXTURE
+
+            cat > fixture/include/system/crucible-plugin-wake.h <<'WAKE_FIXTURE'
+            #ifndef SYSTEM_CRUCIBLE_PLUGIN_WAKE_H
+            #define SYSTEM_CRUCIBLE_PLUGIN_WAKE_H
+
+            typedef struct Notifier Notifier;
+            struct Notifier {
+                void (*notify)(Notifier *notifier, void *data);
+            };
+
+            typedef enum QemuPluginWakeEvent {
+                QEMU_PLUGIN_WAKE_EVENT_DRAINED,
+                QEMU_PLUGIN_WAKE_EVENT_FAILED,
+            } QemuPluginWakeEvent;
+
+            static inline void qemu_plugin_wake_notifier_add(Notifier *notifier)
+            {
+                (void)notifier;
+            }
+
+            static inline void qemu_plugin_wake_notifier_remove(Notifier *notifier)
+            {
+                (void)notifier;
+            }
+
+            #endif
+            WAKE_FIXTURE
 
             cat > fixture/include/qemu/cutils.h <<'CUTILS_FIXTURE'
             #ifndef QEMU_CUTILS_H
@@ -323,8 +420,22 @@ in
 
             #define coroutine_fn
 
+            typedef struct CoQueue {
+                int unused;
+            } CoQueue;
+            typedef struct QemuMutex QemuMutex;
+
             void *qemu_coroutine_self(void);
             void qemu_coroutine_yield(void);
+            void fixture_co_queue_init(CoQueue *queue);
+            bool fixture_co_queue_empty(const CoQueue *queue);
+            void fixture_co_queue_wait(CoQueue *queue, QemuMutex *mutex);
+            void fixture_co_enter_all(CoQueue *queue, void *lockable);
+
+            #define qemu_co_queue_init fixture_co_queue_init
+            #define qemu_co_queue_empty fixture_co_queue_empty
+            #define qemu_co_queue_wait fixture_co_queue_wait
+            #define qemu_co_enter_all fixture_co_enter_all
 
             #endif
             COROUTINE_FIXTURE
@@ -468,6 +579,7 @@ in
                 size_t instance_size;
                 int (*bdrv_open)(BlockDriverState *bs, QDict *options,
                                   int flags, Error **errp);
+                void (*bdrv_close)(BlockDriverState *bs);
                 int64_t (*bdrv_co_getlength)(BlockDriverState *bs);
                 int (*bdrv_co_preadv)(BlockDriverState *bs, int64_t offset,
                                       int64_t bytes, QEMUIOVector *qiov,
@@ -510,6 +622,10 @@ in
             grep -q '^oversized_completion_fails_closed=true$' "$out/qemu-block-shmem-microtest"
             grep -q '^range_checks_fail_closed=true$' "$out/qemu-block-shmem-microtest"
             grep -q '^stock_negative_control_block_symbols_absent=true$' "$out/qemu-block-shmem-microtest"
+            ${lib.optionalString (patchName == "0060-crucible-block-typed-errors.patch") ''
+              grep -q '^typed_error_errno_mapping_exact=true$' "$out/qemu-block-shmem-microtest"
+              grep -q '^typed_error_out_of_range_fails_closed=true$' "$out/qemu-block-shmem-microtest"
+            ''}
 
             cp stock-block-negative.err "$out/stock-negative-control.err"
             cp block/crucible-shmem.c "$out/crucible-shmem.c.patched"
@@ -532,6 +648,7 @@ in
             bounded_poll_cadence_microtest=true
             zero_length_success_distinct_from_pending=true
             pending_sentinel=-2
+            ${lib.optionalString (patchName == "0060-crucible-block-typed-errors.patch") ''typed_error_errno_mapping_exact=true''}
             apply_clean_patch_fuzz=0
             RESULT
           '';

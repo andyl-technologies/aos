@@ -15,7 +15,7 @@ use crucible::{
     SingleScheduler, VirtualTime, apply_combined_node_crash_to_scheduler,
 };
 use crucible_device::{
-    BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore, LinkFaults, NetLink,
+    BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockResponse, IoCore, LinkFaults, NetLink,
 };
 
 #[test]
@@ -678,9 +678,7 @@ fn discarded_block_completion(
         },
         source_node: 1,
         sequence,
-        payload: vec![
-            0, 1, 0, 0, 1, 0, 0, 0, 8, 0, 0, 0, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,
-        ],
+        payload: ok(BlockResponse::ok(1, vec![0x5a; 8]).encode()),
     }
 }
 

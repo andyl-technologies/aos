@@ -427,7 +427,7 @@ impl QemuLiveBlockHostWorkPool {
             .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?
         {
             WorkerReply::Checkpoint(result) => {
-                result.map_err(|source| QemuLiveBlockHostWorkPoolError::Servicer { source })
+                (*result).map_err(|source| QemuLiveBlockHostWorkPoolError::Servicer { source })
             }
             WorkerReply::Pinned(_)
             | WorkerReply::Serviced(_)
@@ -528,7 +528,7 @@ impl QemuLiveBlockHostWorkPool {
             .send(WorkerCommand::ResolveVolatileLoss {
                 target,
                 context,
-                action,
+                action: Box::new(action),
                 replay,
             })
             .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
@@ -699,7 +699,7 @@ enum WorkerCommand {
     ResolveVolatileLoss {
         target: ResolvedFaultTarget,
         context: StorageFaultResolutionContext,
-        action: ResolvedBindingAction,
+        action: Box<ResolvedBindingAction>,
         replay: VolatileCacheLossReplay,
     },
     Shutdown,
@@ -717,7 +717,7 @@ enum StorageMutation {
 enum WorkerReply {
     Pinned(Result<QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoServicerError>),
     Serviced(Result<QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicerError>),
-    Checkpoint(Result<QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError>),
+    Checkpoint(Box<Result<QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError>>),
     Mutated(Result<(), QemuLiveBlockIoServicerError>),
     StorageState(BlockFaultState),
     VolatileLoss(Result<ResolvedVolatileCacheLoss, VolatileLossWorkerError>),
@@ -737,7 +737,7 @@ fn worker_loop(
         let reply = match command {
             WorkerCommand::Pin => WorkerReply::Pinned(servicer.pin_next_request_completion()),
             WorkerCommand::Checkpoint { execution_binding } => {
-                WorkerReply::Checkpoint(servicer.checkpoint(execution_binding))
+                WorkerReply::Checkpoint(Box::new(servicer.checkpoint(execution_binding)))
             }
             WorkerCommand::Service {
                 guest_icount,
@@ -830,7 +830,7 @@ pub enum QemuLiveBlockHostWorkPoolError {
     #[error("signal-driven storage mutation selected a non-block target")]
     StorageTargetKind,
     /// The selected block target belongs to another live device worker.
-    #[error("storage target device mismatch: worker {expected}, selected {actual}")]
+    #[error("storage target device mismatch: worker {expected:?}, selected {actual:?}")]
     StorageTargetMismatch {
         /// Device hash bound when the worker was constructed.
         expected: ContentHash,
@@ -913,8 +913,10 @@ mod tests {
         let request = BlockRequest::read(7, 512, 512);
         let other = BlockRequest::read(8, 512, 512);
         let directive = ResolvedBlockFaultDirective::fault_free(&other, 4096);
-        let error = validate_pinned_directive(&pin(request), Some(&(8, directive)))
-            .expect_err("request alias must fail closed");
+        let error = match validate_pinned_directive(&pin(request), Some(&(8, directive))) {
+            Ok(()) => panic!("request alias must fail closed"),
+            Err(error) => error,
+        };
         assert!(matches!(
             error,
             QemuLiveBlockHostWorkPoolError::DirectivePinMismatch {

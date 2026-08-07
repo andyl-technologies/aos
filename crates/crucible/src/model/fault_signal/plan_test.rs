@@ -1164,9 +1164,10 @@ fn world_validation_rejects_unrepresentable_binding_wakeups() {
     let plan = FaultSignalPlan::new(vec![program], vec![binding])
         .unwrap_or_else(|error| panic!("fault plan: {error}"));
 
-    let error = plan
-        .validate_for_world(&test_world_with_shift(2))
-        .expect_err("6ns cannot be represented when one instruction is 4ns");
+    let error = match plan.validate_for_world(&test_world_with_shift(2)) {
+        Ok(()) => panic!("6ns cannot be represented when one instruction is 4ns"),
+        Err(error) => error,
+    };
     assert!(error.to_string().contains("is not representable"));
     plan.validate_for_world(&test_world())
         .unwrap_or_else(|error| {

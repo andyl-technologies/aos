@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "fad46e74c7dd4b548065bb8cdd858f21260a80ff3c3bdc278ce9b8641814288e";
+  patchBranchBundleSha256 = "b99c97513c0262fa58f285fb88e9f82113c7f930e8873fa6d899ca6bfd5b5b86";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "9ba24a083be276e6e57e05ea4607919c25d22d96";
+  patchBranchHeadCommit = "791d642095d321c05e7f4fbe0930d54a4fbf7acc";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -450,12 +450,22 @@ let
     }
     {
       file = "0049-crucible-memory-boundary-mutate.patch";
+      branchSubject = "crucible: atomically mutate guest memory batches";
       branchCommit = "9ba24a083be276e6e57e05ea4607919c25d22d96";
       branchTree = "9c6a1a62248c140c0258a006078e0a4417d4111a";
       catalogName = "crucible-memory-boundary-mutate";
       class = "F";
       enforces = "QFP-MEM-1,QFP-MEM-2,FAULT-ORDER";
       capability = "atomic ordered GPA/GVA mutation batches with translation, RAM-map, dirty-page, and TB evidence";
+    }
+    {
+      file = "0060-crucible-block-typed-errors.patch";
+      branchCommit = "791d642095d321c05e7f4fbe0930d54a4fbf7acc";
+      branchTree = "6a09907ebef5f0e8b96df7f006a6e4671b33cf5f";
+      catalogName = "crucible-block-typed-errors";
+      class = "F";
+      enforces = "STOR-RESULT,IO-8,PATCH-26";
+      capability = "closed block result ABI translated to exact guest-visible Linux errno values";
     }
   ];
   catalogOnlyCapabilities = [

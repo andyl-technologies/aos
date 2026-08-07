@@ -363,6 +363,13 @@
       enforces = "QFP-MEM-1,QFP-MEM-2,FAULT-ORDER";
       capability = "atomic GPA/GVA mutation with translation, RAM-map, dirty-page, and TB evidence";
     }
+    {
+      file = "0060-crucible-block-typed-errors.patch";
+      catalogName = "crucible-block-typed-errors";
+      class = "F";
+      enforces = "STOR-RESULT,IO-8,PATCH-26";
+      capability = "closed block result ABI translated to exact guest-visible Linux errno values";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

@@ -646,10 +646,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
 
     fn drain_emitted_outbound(&mut self) -> Result<Vec<QemuNodeEmittedFrame>, QemuQuantumError> {
         let mut frames = Vec::new();
-        loop {
-            let Some(frame) = self.dequeue_authorized_emitted_outbound()? else {
-                break;
-            };
+        while let Some(frame) = self.dequeue_authorized_emitted_outbound()? {
             frames.push(frame);
         }
         Ok(frames)

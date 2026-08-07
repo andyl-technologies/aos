@@ -10,7 +10,7 @@
 //! ```text
 //! BlockRequest  (VM slot -> SLOT_BLK_IO), little-endian, header = 20 bytes
 //!   off 0   u8   op          -- 0=read, 1=write, 2=flush, 3=get_length
-//!   off 1   u8   version     -- block wire ABI version (= 1)
+//!   off 1   u8   version     -- block wire ABI version (= 2)
 //!   off 2   u16  _reserved   -- zero on emit, ignored on receive
 //!   off 4   u32  request_id  -- correlates response to request
 //!   off 8   u64  offset      -- byte offset (read/write; 0 otherwise)
@@ -19,11 +19,11 @@
 //!
 //! BlockResponse (SLOT_BLK_IO -> VM slot), little-endian, header = 12 bytes
 //!   off 0   u8   status      -- 0=ok, 1=error
-//!   off 1   u8   version     -- block wire ABI version (= 1)
+//!   off 1   u8   version     -- block wire ABI version (= 2)
 //!   off 2   u16  _reserved   -- zero on emit, ignored on receive
 //!   off 4   u32  request_id  -- echoes the request
 //!   off 8   u32  count       -- response data length
-//!   off 12  [count bytes]    -- payload (read / get-length), empty otherwise
+//!   off 12  [count bytes]    -- success data, or one typed-error byte on error
 //! ```
 //!
 //! The encoded bytes are carried as the opaque
@@ -38,7 +38,7 @@
 ///
 /// A decoder rejects any message whose version byte differs from this constant
 /// ([IO-8]); bumping it is a breaking ABI change gated by `gate:abi-conformance`.
-pub const BLOCK_ABI_VERSION: u8 = 1;
+pub const BLOCK_ABI_VERSION: u8 = 2;
 
 /// The fixed size in bytes of an encoded [`BlockRequest`] header.
 pub const REQUEST_HEADER_LEN: usize = 20;
@@ -99,6 +99,75 @@ pub enum BlockStatus {
     Ok,
     /// The operation failed; the payload, if any, carries device error context.
     Error,
+}
+
+/// Closed protocol-neutral block error carried by every failed response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockErrorCode {
+    /// The device is unavailable.
+    Offline,
+    /// A write targeted read-only storage.
+    ReadOnly,
+    /// The addressed range is invalid.
+    InvalidRange,
+    /// The controller or queue is temporarily busy.
+    Busy,
+    /// The operation exceeded its modeled deadline.
+    Timeout,
+    /// The medium reported an uncorrectable error.
+    MediumError,
+    /// Data-integrity verification failed.
+    IntegrityError,
+    /// A nonspecific device I/O error occurred.
+    IoError,
+    /// Capacity or allocation was exhausted.
+    NoSpace,
+    /// A namespace or object does not exist.
+    NotFound,
+    /// A retained identity is stale.
+    Stale,
+}
+
+impl BlockErrorCode {
+    /// Returns the stable wire byte for this typed result.
+    #[must_use]
+    pub const fn to_wire(self) -> u8 {
+        match self {
+            Self::Offline => 1,
+            Self::ReadOnly => 2,
+            Self::InvalidRange => 3,
+            Self::Busy => 4,
+            Self::Timeout => 5,
+            Self::MediumError => 6,
+            Self::IntegrityError => 7,
+            Self::IoError => 8,
+            Self::NoSpace => 9,
+            Self::NotFound => 10,
+            Self::Stale => 11,
+        }
+    }
+
+    /// Decodes one stable typed-result byte.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockCodecError::UnknownErrorCode`] for an undefined byte.
+    pub fn from_wire(byte: u8) -> Result<Self, BlockCodecError> {
+        match byte {
+            1 => Ok(Self::Offline),
+            2 => Ok(Self::ReadOnly),
+            3 => Ok(Self::InvalidRange),
+            4 => Ok(Self::Busy),
+            5 => Ok(Self::Timeout),
+            6 => Ok(Self::MediumError),
+            7 => Ok(Self::IntegrityError),
+            8 => Ok(Self::IoError),
+            9 => Ok(Self::NoSpace),
+            10 => Ok(Self::NotFound),
+            11 => Ok(Self::Stale),
+            other => Err(BlockCodecError::UnknownErrorCode { code: other }),
+        }
+    }
 }
 
 impl BlockStatus {
@@ -302,7 +371,7 @@ pub struct BlockResponse {
     pub status: BlockStatus,
     /// The correlation id echoed from the request.
     pub request_id: u32,
-    /// The response payload (read data / length bytes, empty for write/flush).
+    /// Success data or the single typed-error byte for a failed response.
     pub data: Vec<u8>,
 }
 
@@ -320,14 +389,30 @@ impl BlockResponse {
         }
     }
 
-    /// Builds an error response (empty payload).
+    /// Builds an error response carrying its exact protocol-neutral result.
     #[must_use]
-    pub fn error(request_id: u32) -> Self {
+    pub fn error(request_id: u32, error: BlockErrorCode) -> Self {
         Self {
             status: BlockStatus::Error,
             request_id,
-            data: Vec::new(),
+            data: vec![error.to_wire()],
         }
+    }
+
+    /// Returns the typed result of an error response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockCodecError::InvalidErrorPayload`] unless this is an error
+    /// response with exactly one defined typed-result byte.
+    pub fn error_code(&self) -> Result<BlockErrorCode, BlockCodecError> {
+        if self.status != BlockStatus::Error || self.data.len() != 1 {
+            return Err(BlockCodecError::InvalidErrorPayload {
+                status: self.status.to_wire(),
+                len: self.data.len(),
+            });
+        }
+        BlockErrorCode::from_wire(self.data[0])
     }
 
     /// Encodes this response into its little-endian wire bytes.
@@ -391,11 +476,15 @@ impl BlockResponse {
                 available: payload.len(),
             });
         }
-        Ok(Self {
+        let response = Self {
             status,
             request_id,
             data: payload[..want].to_vec(),
-        })
+        };
+        if status == BlockStatus::Error {
+            response.error_code()?;
+        }
+        Ok(response)
     }
 }
 
@@ -450,6 +539,22 @@ pub enum BlockCodecError {
     UnknownStatus {
         /// The undefined status byte.
         status: u8,
+    },
+
+    /// The typed block error byte is undefined.
+    #[error("unknown block error code {code}")]
+    UnknownErrorCode {
+        /// Undefined typed-result byte.
+        code: u8,
+    },
+
+    /// An error response does not carry exactly one typed-result byte.
+    #[error("invalid block error payload for status {status}: length {len}")]
+    InvalidErrorPayload {
+        /// Response status wire byte.
+        status: u8,
+        /// Actual payload length.
+        len: usize,
     },
 
     /// The version byte does not match the supported ABI version.

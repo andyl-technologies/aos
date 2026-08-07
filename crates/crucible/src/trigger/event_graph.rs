@@ -1342,6 +1342,10 @@ pub(super) fn validate_condition_references(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the condition validator receives the complete set of independently typed symbol tables"
+)]
 pub(super) fn validate_compound_condition_references(
     event: &Event,
     kind: &'static str,

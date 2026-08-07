@@ -1871,22 +1871,22 @@ fn validate_network_effect_policy_references(
                     actual: None,
                 }
             })?;
-            if let NetworkPolicyArtifactKind::ContactPlan { intervals } = &declaration.artifact {
-                if intervals.iter().any(|interval| {
+            if let NetworkPolicyArtifactKind::ContactPlan { intervals } = &declaration.artifact
+                && intervals.iter().any(|interval| {
                     beams.as_slice().binary_search(&interval.beam).is_err()
                         || gateways
                             .as_slice()
                             .binary_search(&interval.gateway)
                             .is_err()
-                }) {
-                    return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
-                        binding: binding.id().as_str().to_owned(),
-                        reference: declaration.id.as_str().to_owned(),
-                        field: "intervals.beam/gateway",
-                        expected: String::from("members of the effect beam and gateway sets"),
-                        actual: Some("undeclared contact member"),
-                    });
-                }
+                })
+            {
+                return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                    binding: binding.id().as_str().to_owned(),
+                    reference: declaration.id.as_str().to_owned(),
+                    field: "intervals.beam/gateway",
+                    expected: String::from("members of the effect beam and gateway sets"),
+                    actual: Some("undeclared contact member"),
+                });
             }
         }
         NetworkEffectSpecification::CustodyQueue {

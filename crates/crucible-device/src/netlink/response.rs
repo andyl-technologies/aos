@@ -702,7 +702,8 @@ mod tests {
         let mut frame = ethernet(0x0800);
         frame.resize(ETHERNET_HEADER + IPV4_HEADER, 0);
         frame[14] = 0x45;
-        let length = u16::try_from(IPV4_HEADER + payload.len()).unwrap();
+        let length = u16::try_from(IPV4_HEADER + payload.len())
+            .unwrap_or_else(|error| panic!("test IPv4 payload must fit u16: {error}"));
         frame[16..18].copy_from_slice(&length.to_be_bytes());
         frame[20..22].copy_from_slice(&flags_offset.to_be_bytes());
         frame[22] = 32;
@@ -719,7 +720,8 @@ mod tests {
         let mut frame = ethernet(0x86dd);
         frame.resize(ETHERNET_HEADER + IPV6_HEADER, 0);
         frame[14] = 0x60;
-        let length = u16::try_from(payload.len()).unwrap();
+        let length = u16::try_from(payload.len())
+            .unwrap_or_else(|error| panic!("test IPv6 payload must fit u16: {error}"));
         frame[18..20].copy_from_slice(&length.to_be_bytes());
         frame[20] = next_header;
         frame[21] = 32;
@@ -749,7 +751,7 @@ mod tests {
                 headers: headers(),
             },
         )
-        .unwrap()
+        .unwrap_or_else(|error| panic!("test response must be valid: {error}"))
     }
 
     #[test]
@@ -817,7 +819,8 @@ mod tests {
         assert_eq!(&frame[58..62], &1_280_u32.to_be_bytes());
         assert_eq!(&frame[62..], &request[14..56]);
         assert_eq!(
-            transport_checksum_ipv6(V6_DESTINATION, V6_SOURCE, 58, &frame[54..]).unwrap(),
+            transport_checksum_ipv6(V6_DESTINATION, V6_SOURCE, 58, &frame[54..])
+                .unwrap_or_else(|error| panic!("test ICMPv6 checksum must be valid: {error}")),
             0
         );
     }
@@ -861,7 +864,8 @@ mod tests {
         assert_eq!(&frame[38..42], &900_u32.to_be_bytes());
         assert_eq!(frame[47], 0x04);
         assert_eq!(
-            transport_checksum_ipv4(V4_DESTINATION, V4_SOURCE, 6, &frame[34..]).unwrap(),
+            transport_checksum_ipv4(V4_DESTINATION, V4_SOURCE, 6, &frame[34..])
+                .unwrap_or_else(|error| panic!("test TCPv4 checksum must be valid: {error}")),
             0
         );
 
@@ -887,7 +891,8 @@ mod tests {
         };
         assert_eq!(&frame[58..62], &77_u32.to_be_bytes());
         assert_eq!(
-            transport_checksum_ipv6(V6_DESTINATION, V6_SOURCE, 6, &frame[54..]).unwrap(),
+            transport_checksum_ipv6(V6_DESTINATION, V6_SOURCE, 6, &frame[54..])
+                .unwrap_or_else(|error| panic!("test TCPv6 checksum must be valid: {error}")),
             0
         );
         assert_eq!(

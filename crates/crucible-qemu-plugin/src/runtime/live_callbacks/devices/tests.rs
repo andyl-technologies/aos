@@ -15,6 +15,28 @@ use crucible_shmem::{
 static FORCE_VCPU_EXIT_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
+fn typed_block_errors_map_to_stable_linux_errno_values() {
+    let cases = [
+        (BlockResponseErrorCode::Offline, 123),
+        (BlockResponseErrorCode::ReadOnly, 30),
+        (BlockResponseErrorCode::InvalidRange, 22),
+        (BlockResponseErrorCode::Busy, 16),
+        (BlockResponseErrorCode::Timeout, 110),
+        (BlockResponseErrorCode::MediumError, 5),
+        (BlockResponseErrorCode::IntegrityError, 84),
+        (BlockResponseErrorCode::IoError, 5),
+        (BlockResponseErrorCode::NoSpace, 28),
+        (BlockResponseErrorCode::NotFound, 2),
+        (BlockResponseErrorCode::Stale, 116),
+    ];
+    for (error, errno) in cases {
+        assert_eq!(block_error_errno(error), errno);
+        assert_ne!(-(QEMU_PLUGIN_BLOCK_ERROR_BASE + errno), -1);
+        assert_ne!(-(QEMU_PLUGIN_BLOCK_ERROR_BASE + errno), -2);
+    }
+}
+
+#[test]
 fn live_device_adapters_retain_tokens_and_complete_block_and_ninep() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)

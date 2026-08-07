@@ -86,9 +86,9 @@ pub mod subnode;
 
 pub use backpressure::{BackpressureState, BoundedQueue, PushError};
 pub use block::{
-    BLOCK_ABI_VERSION, BaseImage, BlockCodecError, BlockDevice, BlockLatency, BlockOp,
-    BlockRequest, BlockResponse, BlockSnapshot, BlockStatus, CowOverlay, OverlayDelta, PAGE_SIZE,
-    submit_cross_device_misdirected_write,
+    BLOCK_ABI_VERSION, BaseImage, BlockCodecError, BlockDevice, BlockErrorCode, BlockLatency,
+    BlockOp, BlockRequest, BlockResponse, BlockSnapshot, BlockStatus, CowOverlay, OverlayDelta,
+    PAGE_SIZE, submit_cross_device_misdirected_write,
 };
 pub use clock::{VirtualClock, ceil_ns_to_icount};
 pub use error::DeviceError;

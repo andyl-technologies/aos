@@ -32,7 +32,7 @@ use crate::fault::{DeviceRng, IoFaultOutcome, IoFaults};
 use crate::request::{ComputedResponse, LatencyModel, Request, Response, ResponseStatus};
 use crate::subnode::{IoCore, IoSubNode, ShmemDeliveryResult, ShmemInboxProcess};
 
-use super::codec::{BlockOp, BlockRequest, BlockResponse, RESPONSE_HEADER_LEN};
+use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, RESPONSE_HEADER_LEN};
 use super::fault::{
     BlockDurabilityConfig, BlockFaultState, BlockRetainedRelease, ResolvedBlockFaultDirective,
 };
@@ -778,7 +778,7 @@ impl<'a> IoSubNode for BlockServer<'a> {
                 request.request_icount,
             ),
             Err(_) => {
-                let wire = BlockResponse::error(request.request_id);
+                let wire = BlockResponse::error(request.request_id, BlockErrorCode::IoError);
                 let encoded = wire.encode().map_err(DeviceError::Codec)?;
                 Ok(ComputedResponse::primary(Response::new(
                     request.request_id,

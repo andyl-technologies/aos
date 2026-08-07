@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::error::DeviceError;
 use crate::request::{AdditionalCompletion, ComputedResponse, Response, ResponseStatus};
 
-use super::codec::{BlockOp, BlockRequest, BlockResponse, BlockStatus};
+use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, BlockStatus};
 use super::overlay::{BaseImage, CowOverlay};
 
 /// Hard maximum directives waiting for their exact request.
@@ -189,7 +189,7 @@ pub enum BlockFaultFlushDisposition {
     /// Persists the captured cache frontier before completing.
     Honest,
     /// Returns an error without changing durability.
-    Error,
+    Error(BlockFaultResult),
     /// Returns success without advancing the actual durable frontier.
     Lie,
     /// Retains the completion until a later recovery event.
@@ -217,49 +217,7 @@ pub enum BlockFaultDirtyEviction {
 }
 
 /// Protocol-neutral modeled result retained in block error evidence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BlockFaultResult {
-    /// The device is unavailable.
-    Offline,
-    /// A write targeted read-only storage.
-    ReadOnly,
-    /// The addressed range is invalid.
-    InvalidRange,
-    /// The controller or queue is temporarily busy.
-    Busy,
-    /// The operation exceeded its modeled deadline.
-    Timeout,
-    /// The medium reported an uncorrectable error.
-    MediumError,
-    /// Data-integrity verification failed.
-    IntegrityError,
-    /// A nonspecific device I/O error occurred.
-    IoError,
-    /// Capacity or allocation was exhausted.
-    NoSpace,
-    /// A namespace or object does not exist.
-    NotFound,
-    /// A retained identity is stale.
-    Stale,
-}
-
-impl BlockFaultResult {
-    const fn evidence_code(self) -> u8 {
-        match self {
-            Self::Offline => 1,
-            Self::ReadOnly => 2,
-            Self::InvalidRange => 3,
-            Self::Busy => 4,
-            Self::Timeout => 5,
-            Self::MediumError => 6,
-            Self::IntegrityError => 7,
-            Self::IoError => 8,
-            Self::NoSpace => 9,
-            Self::NotFound => 10,
-            Self::Stale => 11,
-        }
-    }
-}
+pub type BlockFaultResult = BlockErrorCode;
 
 enum BlockWriteOutcome {
     Applied,
@@ -347,7 +305,7 @@ pub struct ResolvedBlockFaultDirective {
     /// Effective guest-visible capacity.
     pub reported_capacity_bytes: u64,
     /// Terminal result forced before data or durability mutation.
-    pub force_error: bool,
+    pub error_result: Option<BlockFaultResult>,
     /// Dynamic service, latency, stall, and reorder delay.
     pub additional_latency_nanos: u64,
     /// Whether the primary completion remains retained after COMPUTE.
@@ -377,7 +335,7 @@ impl ResolvedBlockFaultDirective {
             request_digest: request_digest(request),
             availability: BlockFaultAvailability::Online,
             reported_capacity_bytes: capacity,
-            force_error: false,
+            error_result: None,
             additional_latency_nanos: 0,
             retain_completion: false,
             retention_timeout_response: None,
@@ -601,13 +559,15 @@ impl ResolvedBlockFaultDirective {
             });
         }
         if self.operation != BlockOp::Flush
-            && self.flush_disposition != BlockFaultFlushDisposition::Honest
+            && !matches!(self.flush_disposition, BlockFaultFlushDisposition::Honest)
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "flush dispositions require a flush request",
             });
         }
-        if self.flush_disposition == BlockFaultFlushDisposition::Stall && !self.retain_completion {
+        if matches!(self.flush_disposition, BlockFaultFlushDisposition::Stall)
+            && !self.retain_completion
+        {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "a stalled flush must retain its completion",
             });
@@ -1236,8 +1196,11 @@ impl BlockFaultState {
                     request_icount,
                     additional_latency_nanos: directive.additional_latency_nanos,
                     persist_through_on_recovery: (request.op == BlockOp::Flush
-                        && directive.flush_disposition == BlockFaultFlushDisposition::Stall)
-                        .then_some(next.next_cache_sequence),
+                        && matches!(
+                            directive.flush_disposition,
+                            BlockFaultFlushDisposition::Stall
+                        ))
+                    .then_some(next.next_cache_sequence),
                 },
             );
         }
@@ -1322,17 +1285,25 @@ impl BlockFaultState {
         request: &BlockRequest,
         directive: &ResolvedBlockFaultDirective,
     ) -> Result<BlockResponse, DeviceError> {
-        if directive.force_error
-            || directive.availability == BlockFaultAvailability::Offline
-            || (directive.availability == BlockFaultAvailability::ReadOnly
-                && request.op == BlockOp::Write)
-            || !request_in_capacity(request, directive.reported_capacity_bytes)
-            || u64::from(request.count) > self.config.maximum_request_bytes
-            || (request.op == BlockOp::Read
-                && usize::try_from(request.count).unwrap_or(usize::MAX)
-                    > super::device::MAX_READ_BYTES)
-        {
-            return Ok(BlockResponse::error(request.request_id));
+        let error = directive.error_result.or_else(|| {
+            (directive.availability == BlockFaultAvailability::Offline)
+                .then_some(BlockErrorCode::Offline)
+                .or_else(|| {
+                    (directive.availability == BlockFaultAvailability::ReadOnly
+                        && request.op == BlockOp::Write)
+                        .then_some(BlockErrorCode::ReadOnly)
+                })
+                .or_else(|| {
+                    (!request_in_capacity(request, directive.reported_capacity_bytes)
+                        || u64::from(request.count) > self.config.maximum_request_bytes
+                        || (request.op == BlockOp::Read
+                            && usize::try_from(request.count).unwrap_or(usize::MAX)
+                                > super::device::MAX_READ_BYTES))
+                        .then_some(BlockErrorCode::InvalidRange)
+                })
+        });
+        if let Some(error) = error {
+            return Ok(BlockResponse::error(request.request_id, error));
         }
         match request.op {
             BlockOp::Read => {
@@ -1343,11 +1314,9 @@ impl BlockFaultState {
             }
             BlockOp::Write => match self.apply_write(base, durable, request, directive)? {
                 BlockWriteOutcome::Applied => Ok(BlockResponse::ok(request.request_id, Vec::new())),
-                BlockWriteOutcome::Rejected(result) => Ok(BlockResponse {
-                    status: BlockStatus::Error,
-                    request_id: request.request_id,
-                    data: vec![result.evidence_code()],
-                }),
+                BlockWriteOutcome::Rejected(result) => {
+                    Ok(BlockResponse::error(request.request_id, result))
+                }
             },
             BlockOp::Flush => match directive.flush_disposition {
                 BlockFaultFlushDisposition::Honest => {
@@ -1355,7 +1324,9 @@ impl BlockFaultState {
                     self.reported_durable_frontier = self.actual_durable_frontier;
                     Ok(BlockResponse::ok(request.request_id, Vec::new()))
                 }
-                BlockFaultFlushDisposition::Error => Ok(BlockResponse::error(request.request_id)),
+                BlockFaultFlushDisposition::Error(error) => {
+                    Ok(BlockResponse::error(request.request_id, error))
+                }
                 BlockFaultFlushDisposition::Lie => {
                     self.reported_durable_frontier = self.next_cache_sequence;
                     Ok(BlockResponse::ok(request.request_id, Vec::new()))
@@ -1559,14 +1530,17 @@ impl BlockFaultState {
                     let available_entries = usize::try_from(self.config.cache_entries)
                         .unwrap_or(usize::MAX)
                         .saturating_sub(self.volatile.len());
-                    (resolved.len() <= available_entries
+                    if resolved.len() <= available_entries
                         && admitted_bytes
                             <= self
                                 .config
                                 .volatile_cache_bytes
-                                .saturating_sub(self.volatile_bytes))
-                    .then_some(None)
-                    .unwrap_or(Some(BlockFaultResult::Busy))
+                                .saturating_sub(self.volatile_bytes)
+                    {
+                        None
+                    } else {
+                        Some(BlockFaultResult::Busy)
+                    }
                 }
             };
             if let Some(result) = rejection {
@@ -2072,8 +2046,8 @@ fn validate_write_disposition(
             });
         }
         if !allow_subatomic
-            && (!boundaries.binary_search(&span.start).is_ok()
-                || !boundaries.binary_search(&end).is_ok())
+            && (boundaries.binary_search(&span.start).is_err()
+                || boundaries.binary_search(&end).is_err())
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "resolved write span splits an atomic-write fragment",
@@ -2460,7 +2434,10 @@ mod tests {
         let mut directive = ResolvedBlockFaultDirective::fault_free(&flush, base.len());
         directive.flush_disposition = BlockFaultFlushDisposition::Stall;
         directive.retain_completion = true;
-        directive.retention_timeout_response = Some(BlockResponse::error(flush.request_id));
+        directive.retention_timeout_response = Some(BlockResponse::error(
+            flush.request_id,
+            BlockErrorCode::Timeout,
+        ));
         state
             .install(flush.request_id, directive)
             .unwrap_or_else(|error| panic!("directive installs: {error}"));
@@ -2521,7 +2498,10 @@ mod tests {
         let mut directive = ResolvedBlockFaultDirective::fault_free(&flush, base.len());
         directive.flush_disposition = BlockFaultFlushDisposition::Stall;
         directive.retain_completion = true;
-        directive.retention_timeout_response = Some(BlockResponse::error(flush.request_id));
+        directive.retention_timeout_response = Some(BlockResponse::error(
+            flush.request_id,
+            BlockErrorCode::Timeout,
+        ));
         state
             .install(flush.request_id, directive)
             .unwrap_or_else(|error| panic!("directive installs: {error}"));
@@ -2668,7 +2648,7 @@ mod tests {
             },
         );
         assert_eq!(failed.status, BlockStatus::Error);
-        assert_eq!(failed.data, vec![BlockFaultResult::NoSpace.evidence_code()]);
+        assert_eq!(failed.error_code(), Ok(BlockFaultResult::NoSpace));
         assert_eq!(state.volatile_entries().len(), 1);
         assert_eq!(read(&mut state, &base, &mut durable, 3, 0, 8), b"aaaaefgh");
     }
@@ -2819,7 +2799,7 @@ mod tests {
         let mut state = state(BlockCompletionDurability::Durable);
         let original = ResolvedBlockFaultDirective::fault_free(&request, 32);
         let mut replacement = original.clone();
-        replacement.force_error = true;
+        replacement.error_result = Some(BlockFaultResult::IoError);
         state
             .install(request.request_id, original.clone())
             .unwrap_or_else(|error| panic!("first directive installs: {error}"));
@@ -2932,7 +2912,10 @@ mod tests {
                 request.request_id,
                 1,
                 17,
-                BlockDuplicatePolicy::ProtocolError(BlockResponse::error(request.request_id)),
+                BlockDuplicatePolicy::ProtocolError(BlockResponse::error(
+                    request.request_id,
+                    BlockErrorCode::IoError,
+                )),
             )
             .unwrap_or_else(|error| panic!("protocol-error policy resolves: {error}"));
         state

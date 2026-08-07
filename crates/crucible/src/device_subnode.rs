@@ -59,7 +59,7 @@ mod reseed;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::WorldCompletionDurability;
-use crucible_device::block::{BlockCompletionDurability, BlockDurabilityConfig};
+use crucible_device::block::{BlockCompletionDurability, BlockDurabilityConfig, BlockErrorCode};
 use crucible_device::ninep::codec as ninep_codec;
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockResponse, DeviceError, FsTree,
@@ -376,7 +376,7 @@ pub enum WorldIoInstantiationError {
         node: NodeId,
         /// Artifact, family, or runtime-core binding failure.
         #[source]
-        source: DeviceSubNodeBindingError,
+        source: Box<DeviceSubNodeBindingError>,
     },
 }
 
@@ -434,7 +434,7 @@ pub fn instantiate_world_io_sub_nodes(
         }
         .map_err(|source| WorldIoInstantiationError::Binding {
             node: node.id.clone(),
-            source,
+            source: Box::new(source),
         })?;
         sub_nodes.push(sub_node);
     }
@@ -729,7 +729,7 @@ impl DeviceSchedulingSubNode {
             sub_node,
             target,
             device_id,
-            device: ScheduledDevice::Block(device),
+            device: ScheduledDevice::Block(Box::new(device)),
             seed,
             modeled: Vec::new(),
             resolved: Vec::new(),
@@ -759,7 +759,7 @@ impl DeviceSchedulingSubNode {
             sub_node,
             target,
             device_id,
-            device: ScheduledDevice::Ninep(device),
+            device: ScheduledDevice::Ninep(Box::new(device)),
             seed,
             modeled: Vec::new(),
             resolved: Vec::new(),
@@ -1173,9 +1173,9 @@ fn world_io_core(
 #[derive(Clone, Debug)]
 enum ScheduledDevice {
     /// A block device sub-node.
-    Block(BlockDevice),
+    Block(Box<BlockDevice>),
     /// A 9p filesystem sub-node.
-    Ninep(NinepDevice),
+    Ninep(Box<NinepDevice>),
 }
 
 impl ScheduledDevice {
@@ -1278,7 +1278,9 @@ impl ScheduledDevice {
 
 fn block_error_payload(modeled_payload: &[u8]) -> Option<Vec<u8>> {
     let response = BlockResponse::decode(modeled_payload).ok()?;
-    BlockResponse::error(response.request_id).encode().ok()
+    BlockResponse::error(response.request_id, BlockErrorCode::IoError)
+        .encode()
+        .ok()
 }
 
 fn ninep_error_payload(modeled_payload: &[u8], failure_errno: Option<u32>) -> Option<Vec<u8>> {

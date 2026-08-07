@@ -101,7 +101,7 @@ pub fn fragment_ethernet_ipv4(
     if flags_offset & 0x4000 != 0 {
         return Ok(Ipv4FragmentationOutcome::DontFragment);
     }
-    if original_more_fragments && data.len() % 8 != 0 {
+    if original_more_fragments && !data.len().is_multiple_of(8) {
         return Err(Ipv4FragmentationError::InvalidNonFinalLength);
     }
     let maximum_ip_length = mtu

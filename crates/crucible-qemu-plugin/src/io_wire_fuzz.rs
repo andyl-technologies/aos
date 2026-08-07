@@ -14,49 +14,49 @@ use crate::{
 pub const NINEP_FUZZ_MSIZE: u32 = 15;
 
 const BLOCK_REQUEST_UNKNOWN_OP: [u8; 20] = [
-    9, 1, 0, 0, // type/version/reserved
+    9, 2, 0, 0, // type/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     0, 0, 0, 0, // count
 ];
 const BLOCK_REQUEST_BAD_VERSION: [u8; 20] = [
-    0, 2, 0, 0, // type/version/reserved
+    0, 99, 0, 0, // type/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     1, 0, 0, 0, // count
 ];
 const BLOCK_REQUEST_NONZERO_RESERVED: [u8; 20] = [
-    0, 1, 1, 0, // type/version/reserved
+    0, 2, 1, 0, // type/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     1, 0, 0, 0, // count
 ];
 const BLOCK_REQUEST_WRITE_COUNT_EXCEEDS: [u8; 22] = [
-    1, 1, 0, 0, // type/version/reserved
+    1, 2, 0, 0, // type/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     4, 0, 0, 0, // count
     b'a', b'b',
 ];
 const BLOCK_REQUEST_READ_TRAILING_PAYLOAD: [u8; 21] = [
-    0, 1, 0, 0, // type/version/reserved
+    0, 2, 0, 0, // type/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     1, 0, 0, 0, // count
     b'x',
 ];
 const BLOCK_RESPONSE_UNKNOWN_STATUS: [u8; 12] = [
-    2, 1, 0, 0, // status/version/reserved
+    2, 2, 0, 0, // status/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, // count
 ];
 const BLOCK_RESPONSE_COUNT_EXCEEDS: [u8; 12] = [
-    0, 1, 0, 0, // status/version/reserved
+    0, 2, 0, 0, // status/version/reserved
     1, 0, 0, 0, // request_id
     4, 0, 0, 0, // count
 ];
 const BLOCK_RESPONSE_TRAILING_PAYLOAD: [u8; 13] = [
-    0, 1, 0, 0, // status/version/reserved
+    0, 2, 0, 0, // status/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, // count
     b'!',
@@ -295,7 +295,7 @@ mod tests {
     fn structure_aware_malformed_wire_frames_never_panic() {
         for operation in [0, 1, 2, 3, 4, u8::MAX] {
             for payload_len in [0, 1, 2, 4, 8] {
-                let frame = structured_block_request(operation, 1, 0, 7, 4096, 3, payload_len);
+                let frame = structured_block_request(operation, 2, 0, 7, 4096, 3, payload_len);
                 let outcome = assert_clean_reject_or_deterministic_decode(&frame);
                 if operation > 3 {
                     assert!(outcome.block_request.is_err());
@@ -305,7 +305,7 @@ mod tests {
 
         for status in [0, 1, 2, u8::MAX] {
             for payload_len in [0, 1, 2, 4, 8] {
-                let frame = structured_block_response(status, 1, 0, 7, 3, payload_len);
+                let frame = structured_block_response(status, 2, 0, 7, 3, payload_len);
                 let outcome = assert_clean_reject_or_deterministic_decode(&frame);
                 if status > 1 {
                     assert!(outcome.block_response.is_err());
@@ -451,7 +451,7 @@ mod tests {
             BlockResponse::new(BlockResponseStatus::Ok, 0, Vec::new()),
             BlockResponse::new(BlockResponseStatus::Ok, 1, b"abcd".to_vec()),
             BlockResponse::new(BlockResponseStatus::Ok, 2, 4096_u64.to_le_bytes().to_vec()),
-            BlockResponse::new(BlockResponseStatus::Error, 3, Vec::new()),
+            BlockResponse::new(BlockResponseStatus::Error, 3, vec![8]),
         ]
     }
 

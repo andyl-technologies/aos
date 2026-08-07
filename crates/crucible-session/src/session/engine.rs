@@ -848,19 +848,15 @@ impl<L> Engine<L> {
     }
 
     fn plan_breakpoint_action(action: &Action) -> Result<Vec<ControlOperationKind>, SessionError> {
-        let mut scheduler_controls = Vec::new();
-        Self::plan_breakpoint_action_into(action, &mut scheduler_controls)?;
-        Ok(scheduler_controls)
+        Self::validate_breakpoint_action(action)?;
+        Ok(Vec::new())
     }
 
-    fn plan_breakpoint_action_into(
-        action: &Action,
-        scheduler_controls: &mut Vec<ControlOperationKind>,
-    ) -> Result<(), SessionError> {
+    fn validate_breakpoint_action(action: &Action) -> Result<(), SessionError> {
         match action {
             Action::Group(actions) => {
                 for action in actions {
-                    Self::plan_breakpoint_action_into(action, scheduler_controls)?;
+                    Self::validate_breakpoint_action(action)?;
                 }
             }
             Action::ArmTimer { .. }

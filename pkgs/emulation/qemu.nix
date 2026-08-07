@@ -40,6 +40,7 @@
         branchCommit
         branchTree
         ;
+      branchSubject = patch.branchSubject or (lib.removeSuffix ".patch" patch.file);
     })
     series.patches;
   patchBranchMaterial = builtins.toJSON {
@@ -207,6 +208,7 @@
   # patch -p1 < ${./qemu-patches/0047-crucible-fault-command-abi.patch}
   # patch -p1 < ${./qemu-patches/0048-crucible-fault-safe-boundary.patch}
   # patch -p1 < ${./qemu-patches/0049-crucible-memory-boundary-mutate.patch}
+  # patch -p1 < ${./qemu-patches/0060-crucible-block-typed-errors.patch}
 in
   mkDerivation {
     inherit pname;

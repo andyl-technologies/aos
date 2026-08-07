@@ -278,7 +278,7 @@ impl FaultActionSink for HostFaultActionSink {
         &mut self,
         transaction: ContentHash,
     ) -> Result<PreparedActionBatch, FaultActionCommitError> {
-        let prepared = self.prepared.take().ok_or_else(|| {
+        let prepared = self.prepared.take().ok_or({
             FaultActionCommitError::Fatal(FaultRuntimeError::UnknownAdapterTransaction)
         })?;
         if prepared.transaction != transaction {
