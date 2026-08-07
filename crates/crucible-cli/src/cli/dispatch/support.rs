@@ -384,33 +384,71 @@ pub(crate) fn persist_savepoint_closure_artifact(
             format_content_hash_ref(oracle.fat_checkpoint)
         )));
     }
-    let artifact = crucible::ReproductionArtifact::capture(
-        plan.run_plan.scenario.scenario_form(),
-        &oracle.schedule,
-    )
-    .map_err(|error| {
-        artifact_error(format!(
-            "savepoint closure artifact capture failed for {}: {error}",
-            format_content_hash_ref(savepoint)
-        ))
-    })?;
     let configuration = crucible::Configuration {
-        def: artifact.scenario_def(),
-        schedule: artifact.schedule().clone(),
+        def: plan.run_plan.scenario.scenario_def().clone(),
+        schedule: oracle.schedule.clone(),
     };
+    persist_checkpoint_closure_artifact(
+        &plan.store_root,
+        plan.run_plan.scenario.scenario_form(),
+        &configuration,
+        oracle.frontier,
+        savepoint,
+    )
+}
+
+/// Persists the replayable closure and lookup index for a terminal checkpoint.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when scenario or checkpoint identities disagree, the
+/// replay artifact cannot be captured, or the DAG store cannot persist its
+/// artifact and checkpoint index.
+pub(crate) fn persist_checkpoint_closure_artifact(
+    store_root: &Path,
+    scenario_form: &crucible::ScenarioDefForm,
+    configuration: &crucible::Configuration,
+    frontier: crucible::VirtualTime,
+    savepoint: crucible::ContentHash,
+) -> Result<SavepointClosureStoreReport, CliError> {
+    if configuration.def.id() != scenario_form.scenario_def().id() {
+        return Err(CliError::Identity(format!(
+            "savepoint closure scenario {} did not match terminal configuration scenario {}",
+            scenario_form.scenario_def().id().to_hex(),
+            configuration.def.id().to_hex()
+        )));
+    }
     if configuration.id() != savepoint {
         return Err(CliError::Identity(format!(
-            "savepoint closure artifact reconstructed {}, expected {}",
+            "savepoint closure terminal configuration {} did not match checkpoint {}",
             format_content_hash_ref(configuration.id()),
             format_content_hash_ref(savepoint)
         )));
     }
-    let store = crucible::LocalDagStore::new(plan.store_root.clone());
+    let artifact = crucible::ReproductionArtifact::capture(scenario_form, &configuration.schedule)
+        .map_err(|error| {
+            artifact_error(format!(
+                "savepoint closure artifact capture failed for {}: {error}",
+                format_content_hash_ref(savepoint)
+            ))
+        })?;
+    let reconstructed = crucible::Configuration {
+        def: artifact.scenario_def(),
+        schedule: artifact.schedule().clone(),
+    };
+    if reconstructed.id() != savepoint {
+        return Err(CliError::Identity(format!(
+            "savepoint closure artifact reconstructed {}, expected {}",
+            format_content_hash_ref(reconstructed.id()),
+            format_content_hash_ref(savepoint)
+        )));
+    }
+    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
     let artifact_key = store
         .put(&artifact.to_compact_binary())
         .map_err(CliError::Store)?;
     let index_key = store
-        .write_checkpoint_closure_index(savepoint, artifact_key, oracle.frontier)
+        .write_checkpoint_closure_index(savepoint, artifact_key, frontier)
         .map_err(CliError::Store)?;
     Ok(SavepointClosureStoreReport {
         artifact: artifact_key,

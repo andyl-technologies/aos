@@ -1062,7 +1062,8 @@ branch on the verdict without parsing output:
   derives terminal status from session `OutcomeKind`, enforces
   virtual-time budgets from live counters and exact paused boundaries for
   quantum budgets, emits user-visible `--watch` status, materializes real
-  terminal savepoint handles for `--save-on`, maps
+  terminal savepoint handles for `--save-on`, persists their replayable closure
+  and checkpoint index in the selected DAG store before advertising them, maps
   non-passing outcomes to reproduction artifacts and exit codes, and provides
   incremental stdin acknowledgements for interactive commands.
 - [x] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +

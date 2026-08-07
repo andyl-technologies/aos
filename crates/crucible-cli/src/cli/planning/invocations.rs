@@ -94,6 +94,7 @@ pub(crate) const SERVE_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(1)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RunInvocationPlan {
     pub(crate) scenario: RunScenarioRef,
+    pub(crate) save_store_root: Option<PathBuf>,
     pub(crate) request_seed: Option<crucible::Seed>,
     pub(crate) terminal_condition: RunTerminalCondition,
     pub(crate) max_virtual_time: Option<String>,
@@ -834,6 +835,7 @@ pub(crate) fn plan_run_invocation(
 
     Ok(RunInvocationPlan {
         scenario,
+        save_store_root: Some(store_root.to_path_buf()),
         request_seed: None,
         terminal_condition,
         max_virtual_time: args.max_virtual_time.clone(),
@@ -960,7 +962,7 @@ pub(crate) fn plan_save_invocation(
         max_virtual_time: args.max_virtual_time.clone(),
         max_quanta: None,
         interactive: false,
-        save_on: RunSaveOnArg::Always,
+        save_on: RunSaveOnArg::Never,
         watch: false,
         #[cfg(any(test, feature = "test-double"))]
         emit_mock_failure_artifact: false,

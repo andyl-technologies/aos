@@ -769,6 +769,7 @@ fn qemu_fuzz_iteration_plan(sequence: u64, form: crucible::ScenarioDefForm) -> R
     let scenario = form.scenario_def();
     RunInvocationPlan {
         request_seed: Some(scenario.seed()),
+        save_store_root: None,
         scenario: RunScenarioRef::BuiltInExample {
             name: format!("fuzz-iteration-{sequence}"),
             form,
@@ -869,6 +870,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
         .collect();
     let run_plan = RunInvocationPlan {
         request_seed: Some(scenario_def.seed()),
+        save_store_root: None,
         scenario: RunScenarioRef::BuiltInExample {
             name: String::from("artifact-replay"),
             form: scenario.clone(),

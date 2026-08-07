@@ -2650,7 +2650,7 @@ pub(super) fn cli_save_workflow_plans_quiescence_and_virtual_time_savepoints()
     assert_eq!(plan.at, SaveAtArg::Quiescence);
     assert_eq!(plan.label, "release-candidate");
     assert_eq!(plan.output, SaveOutputTarget::Explicit(out));
-    assert_eq!(plan.run_plan.save_policy, RunSavePolicy::Always);
+    assert_eq!(plan.run_plan.save_policy, RunSavePolicy::Never);
     assert_eq!(
         plan.run_plan.terminal_condition,
         RunTerminalCondition::Quiescence
