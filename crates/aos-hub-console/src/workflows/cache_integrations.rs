@@ -11,6 +11,7 @@ use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
 use super::cache_integration_preview::CacheIntegrationPreview;
+use super::cache_population::CachePopulation;
 use super::cache_retention::CacheRetentionWorkflow;
 use super::cache_stack::RegistryCacheStack;
 use super::resources::UnavailableWorkflow;
@@ -108,7 +109,8 @@ fn CacheIntegrations(client: ApiClient, cache_id: String) -> impl IntoView {
                 })}
             </Suspense>
         </section>
-        <CacheIntegrationPreview client=client cache_id=cache_id/>
+        <CacheIntegrationPreview client=client.clone() cache_id=cache_id.clone()/>
+        <CachePopulation client=client cache_id=cache_id/>
         </div>
     }
 }
