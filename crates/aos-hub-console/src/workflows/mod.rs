@@ -9,6 +9,7 @@ mod cache_integrations;
 mod cache_manual_roots;
 mod cache_population;
 mod cache_retention;
+mod cache_retention_refresh;
 mod cache_root_reasons;
 mod cache_stack;
 mod delivery_endpoints;
