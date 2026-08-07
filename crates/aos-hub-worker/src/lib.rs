@@ -183,7 +183,10 @@ mod entry {
     };
 
     use aos_hub_core::auth::jwt::JwtKeys;
-    use aos_hub_core::db::{Database, TokenAuth};
+    use aos_hub_core::db::Database;
+    #[cfg(feature = "do-e2e")]
+    use aos_hub_core::db::TokenAuth;
+    #[cfg(feature = "do-e2e")]
     use aos_hub_core::domain::{Permission, Principal, Role, Scope};
     use aos_hub_core::ratelimit::RateLimiter;
     use aos_hub_core::service::RpcService;

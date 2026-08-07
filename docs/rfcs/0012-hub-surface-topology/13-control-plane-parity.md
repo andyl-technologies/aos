@@ -153,6 +153,20 @@ The provisioning-secret bootstrap is an explicit token grant for initial
 automation. The old untyped exchange and provisioning-secret-only login syntax
 are not retained.
 
+The three runtime-identical endpoints are:
+
+- `POST /oauth2/device_authorization` with `client_id=aos-cli`, a canonical
+  stable resource `scope`, and an optional space-separated `permission` set;
+- `POST /oauth2/token` with an explicit RFC 8628 device-code,
+  `refresh_token`, or
+  `urn:aos:params:oauth:grant-type:provisioning-token` grant; and
+- `POST /oauth2/revoke` with `client_id=aos-cli`, the refresh credential, and
+  `token_type_hint=refresh_token`.
+
+Every response from these credential endpoints is non-cacheable. Unknown,
+expired, denied, replayed, and rate-limited grants use structured OAuth error
+responses; a consumed device code never remains usable as an opaque bearer.
+
 ## Service accounts and access tokens
 
 Service accounts are organization-owned principals with list, get, create,

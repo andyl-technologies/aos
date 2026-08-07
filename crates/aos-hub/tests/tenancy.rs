@@ -336,8 +336,8 @@ async fn static_routes_still_resolve_alongside_catch_all() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // The oauth2 fragment is mounted: a credential-less POST is a 401, not a
-    // 404 (which would mean the route is absent).
+    // The shared OAuth surface is mounted: a provisioning grant without its
+    // credential is a 401, not a 404 (which would mean the route is absent).
     let resp = app
         .clone()
         .oneshot(
@@ -345,7 +345,10 @@ async fn static_routes_still_resolve_alongside_catch_all() {
                 .method("POST")
                 .uri("/oauth2/token")
                 .header(header::HOST, "127.0.0.1:8420")
-                .body(Body::empty())
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "grant_type=urn%3Aaos%3Aparams%3Aoauth%3Agrant-type%3Aprovisioning-token",
+                ))
                 .unwrap(),
         )
         .await

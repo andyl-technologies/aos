@@ -272,20 +272,12 @@ pub async fn router(state: Arc<AppState>) -> Router {
     let dispatch_service = Arc::clone(&rpc_service);
     let rpc_router = aos_hub_core::connect::rpc_browse_router(rpc_service);
 
-    // The `/oauth2/token` exchange fragment runs on Arc<AuthState>; bind its
-    // state up front so it merges into the AppState-typed router below.
-    let oauth2 = crate::auth::extract::oauth2_router().with_state(Arc::clone(&state.auth));
-
     // Public bytes never resolve from a resource slug. The outer delivery-route
     // dispatcher rewrites a matched endpoint to the typed internal delivery
     // handler; this router owns only control-plane routes and console pages.
     let router = Router::new()
         .route("/healthz", get(healthz))
-        .route("/metrics", get(metrics))
-        .route(
-            "/oauth2/device_authorization",
-            axum::routing::post(device_authorization),
-        );
+        .route("/metrics", get(metrics));
     // The shared producer-console router (RFC-0004 Phase 5, console-dedup stage
     // B): the wasm-clean management handlers, built over the hub's database,
     // JWT keys, rate limiter, mailer, sealer, the hardened reqwest `HttpClient`
@@ -317,7 +309,6 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // Kept for the outermost client-IP injection layer below.
     let ip_state = Arc::clone(&state);
     let app = router
-        .merge(oauth2)
         // Resolve the request's session once and put the user's email in a
         // task-local, so every page's masthead reflects the login + shows
         // navigation without threading the identity through each handler.
@@ -452,51 +443,6 @@ pub(crate) fn internal(err: anyhow::Error) -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
 }
 
-/// Current Unix time in seconds.
-pub(crate) fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// A `429 Too Many Requests` response carrying a `Retry-After` header.
-pub(crate) fn too_many_requests(retry_after: i64) -> Response {
-    (
-        StatusCode::TOO_MANY_REQUESTS,
-        [(header::RETRY_AFTER, retry_after.max(1).to_string())],
-        "rate limit exceeded",
-    )
-        .into_response()
-}
-
-/// The connecting client's TCP peer address, when the serving stack provides
-/// it via [`ConnectInfo`].
-///
-/// An infallible [`FromRequestParts`](axum::extract::FromRequestParts)
-/// extractor: it reads the [`ConnectInfo<SocketAddr>`] extension injected by
-/// `into_make_service_with_connect_info` in production, and is simply `None`
-/// when no connect-info is present (e.g. `Router::oneshot` in tests). Used as
-/// the safe rate-limit key when the deployment does not trust a proxy.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PeerAddr(pub Option<SocketAddr>);
-
-impl<S: Send + Sync> axum::extract::FromRequestParts<S> for PeerAddr {
-    type Rejection = std::convert::Infallible;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(PeerAddr(
-            parts
-                .extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|ci| ci.0),
-        ))
-    }
-}
-
 /// Resolve the request's client IP for rate-limiting from the TCP `peer`
 /// address and, only when the deployment trusts its proxy, `X-Forwarded-For`.
 ///
@@ -565,68 +511,6 @@ async fn inject_client_ip(
 async fn healthz(State(state): State<Arc<AppState>>) -> Response {
     match state.db.list_registries().await {
         Ok(regs) => (StatusCode::OK, format!("ok ({} registries)\n", regs.len())).into_response(),
-        Err(err) => internal(err),
-    }
-}
-
-/// `POST /oauth2/device_authorization` form (RFC 8628).
-#[derive(Debug, Default, serde::Deserialize)]
-struct DeviceAuthForm {
-    /// Requested stable scope identity (defaults to the instance root when omitted).
-    scope: Option<String>,
-    /// Requested permission verb (repeatable via the form encoding; defaults
-    /// to `read`).
-    #[serde(default)]
-    permission: Vec<String>,
-}
-
-/// `POST /oauth2/device_authorization` — start an RFC 8628 device grant.
-///
-/// Anonymous and **rate-limited per source IP** (the abuse surface the RFC
-/// calls out): a flood from one IP is `429`d with `Retry-After`. On success it
-/// returns the RFC 8628 JSON (`device_code`, `user_code`,
-/// `verification_uri`, `expires_in`, `interval`). The requested scope and
-/// permissions are recorded but not authorized here — the approving user's
-/// grants clamp them at `/activate`.
-async fn device_authorization(
-    State(state): State<Arc<AppState>>,
-    PeerAddr(peer): PeerAddr,
-    headers: HeaderMap,
-    axum::extract::Form(form): axum::extract::Form<DeviceAuthForm>,
-) -> Response {
-    let ip = client_ip_for(&headers, peer, state.trusted_proxy);
-    if let crate::ratelimit::RateDecision::Limited { retry_after } = state.ratelimit.check(
-        crate::ratelimit::RateClass::DeviceAuthorization,
-        &ip,
-        now_secs(),
-    ) {
-        return too_many_requests(retry_after);
-    }
-    let scope = form
-        .scope
-        .unwrap_or_else(|| crate::domain::Scope::root().as_str().to_string());
-    let perms: Vec<Permission> = if form.permission.is_empty() {
-        vec![Permission::Read]
-    } else {
-        form.permission
-            .iter()
-            .filter_map(|p| crate::auth::permission_from_str(p))
-            .collect()
-    };
-    match state.db.start_device_authorization(&scope, &perms).await {
-        Ok((device_code, user_code, expires_in)) => {
-            let verification_uri = format!("{}/activate", state.external_url.trim_end_matches('/'));
-            let verification_uri_complete = format!("{verification_uri}?user_code={user_code}");
-            axum::Json(serde_json::json!({
-                "device_code": device_code,
-                "user_code": user_code,
-                "verification_uri": verification_uri,
-                "verification_uri_complete": verification_uri_complete,
-                "expires_in": expires_in,
-                "interval": 5,
-            }))
-            .into_response()
-        }
         Err(err) => internal(err),
     }
 }

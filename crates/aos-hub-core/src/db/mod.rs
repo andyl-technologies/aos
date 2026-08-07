@@ -367,9 +367,10 @@ fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// Ordered schema migrations; index = version - 1.
 /// Squashed fresh-install schema for the final Hub topology.
 ///
-/// Upgrade/cutover is deliberately an offline artifact: steady-state native
-/// and Worker runtimes create and understand only this schema.
-pub const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
+/// Upgrade/cutover is deliberately an offline artifact. The first migration
+/// establishes the topology hard-cutover schema; subsequent entries are
+/// forward-only additions shared by native SQLite and Cloudflare D1.
+pub const MIGRATIONS: &[&str] = &[include_str!("schema.sql"), include_str!("auth_refresh.sql")];
 
 /// Identity stamped into databases created by the topology hard-cutover
 /// schema. Unlike the historical integer version, this value cannot collide
@@ -16222,16 +16223,29 @@ impl Database {
     /// Returns an error on database failure or a malformed stored row.
     pub async fn validate_token(&self, secret: &str) -> Result<Option<TokenAuth>> {
         let hash = crate::auth::token::sha256_hex(secret);
+        let row = self
+            .backend
+            .query_opt("SELECT id FROM tokens WHERE hash = ?1", &vals![hash])
+            .await
+            .context("loading token by hash")?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let id: String = row.get(0)?;
+        self.live_token_auth_by_id(&id, true).await
+    }
+
+    async fn live_token_auth_by_id(&self, id: &str, touch: bool) -> Result<Option<TokenAuth>> {
         let now = unix_now();
         let row = self
             .backend
             .query_opt(
-                "SELECT t.id, t.owner_kind, t.owner_id, t.scope_key, t.permissions,
+                "SELECT t.owner_kind, t.owner_id, t.scope_key, t.permissions,
                         t.expires_at, t.revoked_at, t.rotated_at
                  FROM tokens t
                  JOIN authorization_scopes a ON a.scope_key = t.scope_key
                  LEFT JOIN orgs o ON o.id = a.org_id
-                 WHERE t.hash = ?1 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
+                 WHERE t.id = ?1 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
                    AND ((t.owner_kind = 'user' AND EXISTS (
                           SELECT 1 FROM users u
                            WHERE u.id = t.owner_id AND u.deleted_at IS NULL))
@@ -16239,21 +16253,20 @@ impl Database {
                           SELECT 1 FROM service_accounts s
                           JOIN orgs owner_org ON owner_org.id = s.org_id
                            WHERE s.id = t.owner_id AND owner_org.deleted_at IS NULL)))",
-                &vals![hash],
+                &vals![id],
             )
             .await
-            .context("loading token by hash")?;
+            .context("loading live token by id")?;
         let Some(row) = row else {
             return Ok(None);
         };
-        let id: String = row.get(0)?;
-        let owner_kind: String = row.get(1)?;
-        let owner_id: i64 = row.get(2)?;
-        let scope: String = row.get(3)?;
-        let perms_json: String = row.get(4)?;
-        let expires_at: Option<i64> = row.get(5)?;
-        let revoked_at: Option<i64> = row.get(6)?;
-        let rotated_at: Option<i64> = row.get(7)?;
+        let owner_kind: String = row.get(0)?;
+        let owner_id: i64 = row.get(1)?;
+        let scope: String = row.get(2)?;
+        let perms_json: String = row.get(3)?;
+        let expires_at: Option<i64> = row.get(4)?;
+        let revoked_at: Option<i64> = row.get(5)?;
+        let rotated_at: Option<i64> = row.get(6)?;
         if let Some(exp) = expires_at {
             if now >= exp {
                 return Ok(None);
@@ -16294,18 +16307,20 @@ impl Database {
         // decision: a failure here (e.g. a schema drift on the touch column)
         // must never turn a valid token into an authentication error. Log and
         // continue so the caller still receives the resolved `TokenAuth`.
-        if let Err(e) = self
-            .backend
-            .execute(
-                "UPDATE tokens SET last_used_at = ?2 WHERE id = ?1",
-                &vals![id, now],
-            )
-            .await
-        {
-            tracing::warn!(error = %e, token_id = %id, "failed to stamp token last_used_at");
+        if touch {
+            if let Err(e) = self
+                .backend
+                .execute(
+                    "UPDATE tokens SET last_used_at = ?2 WHERE id = ?1",
+                    &vals![id, now],
+                )
+                .await
+            {
+                tracing::warn!(error = %e, token_id = %id, "failed to stamp token last_used_at");
+            }
         }
         Ok(Some(TokenAuth {
-            token_id: id,
+            token_id: id.to_string(),
             owner: principal,
             scope: crate::domain::Scope::parse(&scope),
             permissions,
@@ -17119,9 +17134,10 @@ impl Database {
         }
         let token_id = uuid::Uuid::new_v4().to_string();
         let perms_out = serde_json::to_string(&permission_names(&granted))?;
-        // The device-code secret becomes the opaque token secret after approval.
-        // Approval therefore needs only the already-persisted SHA-256 hash; no
-        // recoverable token material is ever written to durable storage.
+        // This token is the durable authority behind short-lived access JWTs
+        // and refresh-token families. Discard its generated plaintext so the
+        // one-time device code can never be replayed as an ordinary bearer.
+        let (_discarded_secret, authority_hash) = crate::auth::token::generate_token();
         self.backend
             .checked_batch(&[
                 Statement::new(
@@ -17135,8 +17151,8 @@ impl Database {
                     "INSERT INTO tokens
                  (id, hash, owner_kind, owner_id, scope_key, permissions, comment, created_at,
                   expires_at, revoked_at, last_used_at)
-                 SELECT ?1, device.device_code_hash, ?2, ?3, a.scope_key, ?5,
-                        NULL, ?6, NULL, NULL, NULL
+                 SELECT ?1, ?8, ?2, ?3, a.scope_key, ?5,
+                        'OAuth device authorization', ?6, ?9, NULL, NULL
                  FROM device_codes device
                  JOIN authorization_scopes a ON a.scope_key = ?4
                  LEFT JOIN orgs o ON o.id = a.org_id
@@ -17157,7 +17173,9 @@ impl Database {
                         requested_scope.as_str(),
                         perms_out,
                         now,
-                        user_code
+                        user_code,
+                        authority_hash,
+                        now + crate::auth::token::REFRESH_TOKEN_ABSOLUTE_TTL_SECS,
                     ]
                     .to_vec(),
                 )
@@ -17196,11 +17214,11 @@ impl Database {
     /// Poll a device grant by its device-code secret.
     ///
     /// Returns [`DevicePollResult::Pending`] while the user has neither
-    /// approved nor denied (or after expiry with no resolution),
-    /// [`DevicePollResult::Denied`] on denial, and
-    /// [`DevicePollResult::Approved`] carrying the original device-code secret
-    /// once approved. That secret is also the minted token secret; the token id
-    /// is used only to verify that the resulting credential is still live.
+    /// approved nor denied, [`DevicePollResult::SlowDown`] when the caller
+    /// polls faster than the advertised interval, [`DevicePollResult::Denied`]
+    /// or [`DevicePollResult::Expired`] for terminal failures, and
+    /// [`DevicePollResult::Approved`] with a live token identity and new
+    /// rotating refresh credential after approval.
     ///
     /// # Errors
     ///
@@ -17210,59 +17228,236 @@ impl Database {
         let row = self
             .backend
             .query_opt(
-                "SELECT denied, approved_by_user, expires_at, delivered_at, issued_token_id
+                "SELECT denied, approved_by_user, expires_at, delivered_at, issued_token_id,
+                        last_polled_at
                  FROM device_codes WHERE device_code_hash = ?1",
                 &vals![hash],
             )
             .await
             .context("loading device code for poll")?;
         let Some(row) = row else {
-            return Ok(DevicePollResult::Pending);
+            return Ok(DevicePollResult::Expired);
         };
         let denied: i64 = row.get(0)?;
         let approved_by: Option<i64> = row.get(1)?;
         let expires_at: i64 = row.get(2)?;
         let delivered_at: Option<i64> = row.get(3)?;
         let issued_token_id: Option<String> = row.get(4)?;
+        let last_polled_at: Option<i64> = row.get(5)?;
+        let now = unix_now();
+        if expires_at <= now || delivered_at.is_some() {
+            return Ok(DevicePollResult::Expired);
+        }
+        if last_polled_at.is_some_and(|last| now.saturating_sub(last) < 5) {
+            return Ok(DevicePollResult::SlowDown);
+        }
         if denied != 0 {
             return Ok(DevicePollResult::Denied);
         }
         if approved_by.is_none() || issued_token_id.is_none() {
-            // Pending whether or not the window has lapsed; an expired-and-
-            // unapproved grant simply never resolves.
+            self.backend
+                .execute(
+                    "UPDATE device_codes SET last_polled_at = ?2
+                     WHERE device_code_hash = ?1 AND delivered_at IS NULL",
+                    &vals![hash, now],
+                )
+                .await?;
             return Ok(DevicePollResult::Pending);
         }
-        if expires_at <= unix_now() || delivered_at.is_some() {
-            return Ok(DevicePollResult::Pending);
-        }
-        let now = unix_now();
-        let changed = self
+        let token_id = issued_token_id.context("approved device has no token id")?;
+        let Some(auth) = self.live_token_auth_by_id(&token_id, false).await? else {
+            return Ok(DevicePollResult::Expired);
+        };
+        let family_id = uuid::Uuid::new_v4().to_string();
+        let (refresh_token, refresh_hash) = crate::auth::token::generate_refresh_token();
+        let absolute_expires_at = now + crate::auth::token::REFRESH_TOKEN_ABSOLUTE_TTL_SECS;
+        let refresh_expires_at = now + crate::auth::token::REFRESH_TOKEN_IDLE_TTL_SECS;
+        let delivered = self
             .backend
-            .execute(
-                "UPDATE device_codes SET delivered_at = ?2
-             WHERE device_code_hash = ?1 AND delivered_at IS NULL AND expires_at > ?2
-               AND EXISTS (SELECT 1 FROM tokens token
-                 JOIN authorization_scopes scope ON scope.scope_key = token.scope_key
-                 LEFT JOIN orgs scope_org ON scope_org.id = scope.org_id
-                 WHERE token.id = device_codes.issued_token_id
-                   AND token.revoked_at IS NULL
-                   AND scope.retired_at IS NULL
-                   AND (scope.org_id IS NULL OR scope_org.deleted_at IS NULL)
-                   AND ((token.owner_kind = 'user' AND EXISTS (
-                     SELECT 1 FROM users owner WHERE owner.id = token.owner_id
-                       AND owner.deleted_at IS NULL))
-                   OR (token.owner_kind = 'service_account' AND EXISTS (
-                     SELECT 1 FROM service_accounts owner
-                     JOIN orgs owner_org ON owner_org.id = owner.org_id
-                     WHERE owner.id = token.owner_id AND owner_org.deleted_at IS NULL))))",
-                &vals![hash, now],
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE device_codes SET delivered_at = ?2, last_polled_at = ?2
+                     WHERE device_code_hash = ?1 AND delivered_at IS NULL
+                       AND expires_at > ?2",
+                    vals![hash, now],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO refresh_token_families
+                     (id, token_id, created_at, last_used_at, absolute_expires_at, revoked_at)
+                     VALUES (?1, ?2, ?3, ?3, ?4, NULL)",
+                    vals![family_id, token_id, now, absolute_expires_at],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO refresh_tokens
+                     (hash, family_id, created_at, expires_at, consumed_at)
+                     VALUES (?1, ?2, ?3, ?4, NULL)",
+                    vals![refresh_hash, family_id, now, refresh_expires_at],
+                )
+                .expecting(1),
+            ])
+            .await;
+        match delivered {
+            Ok(()) => Ok(DevicePollResult::Approved(DeviceTokenGrant {
+                auth,
+                refresh_token,
+                refresh_expires_in: refresh_expires_at - now,
+            })),
+            Err(error) => {
+                let already_delivered = self
+                    .backend
+                    .query_opt(
+                        "SELECT delivered_at FROM device_codes WHERE device_code_hash = ?1",
+                        &vals![crate::auth::token::sha256_hex(device_code_secret)],
+                    )
+                    .await?
+                    .and_then(|row| row.get::<Option<i64>>(0).ok())
+                    .flatten()
+                    .is_some();
+                if already_delivered {
+                    Ok(DevicePollResult::Expired)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    /// Rotates one OAuth refresh credential and returns a fresh credential pair.
+    ///
+    /// Refresh credentials are single-use. Presenting a consumed credential
+    /// revokes its complete family, preventing an attacker and the legitimate
+    /// client from racing indefinitely after credential theft.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed stored credential
+    /// metadata.
+    pub async fn rotate_refresh_token(&self, secret: &str) -> Result<RefreshTokenResult> {
+        let hash = crate::auth::token::sha256_hex(secret);
+        let now = unix_now();
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT refresh.family_id, refresh.expires_at, refresh.consumed_at,
+                        family.token_id, family.absolute_expires_at, family.revoked_at
+                 FROM refresh_tokens refresh
+                 JOIN refresh_token_families family ON family.id = refresh.family_id
+                 WHERE refresh.hash = ?1",
+                &vals![hash],
+            )
+            .await
+            .context("loading OAuth refresh credential")?;
+        let Some(row) = row else {
+            return Ok(RefreshTokenResult::Invalid);
+        };
+        let family_id: String = row.get(0)?;
+        let expires_at: i64 = row.get(1)?;
+        let consumed_at: Option<i64> = row.get(2)?;
+        let token_id: String = row.get(3)?;
+        let absolute_expires_at: i64 = row.get(4)?;
+        let revoked_at: Option<i64> = row.get(5)?;
+        if consumed_at.is_some() {
+            self.revoke_refresh_family(&family_id, now).await?;
+            return Ok(RefreshTokenResult::Reused);
+        }
+        if revoked_at.is_some() || expires_at <= now || absolute_expires_at <= now {
+            return Ok(RefreshTokenResult::Invalid);
+        }
+        let Some(auth) = self.live_token_auth_by_id(&token_id, false).await? else {
+            self.revoke_refresh_family(&family_id, now).await?;
+            return Ok(RefreshTokenResult::Invalid);
+        };
+
+        let (refresh_token, refresh_hash) = crate::auth::token::generate_refresh_token();
+        let next_expires_at =
+            (now + crate::auth::token::REFRESH_TOKEN_IDLE_TTL_SECS).min(absolute_expires_at);
+        let rotated = self
+            .backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE refresh_tokens SET consumed_at = ?2
+                     WHERE hash = ?1 AND consumed_at IS NULL AND expires_at > ?2",
+                    vals![hash, now],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO refresh_tokens
+                     (hash, family_id, created_at, expires_at, consumed_at)
+                     VALUES (?1, ?2, ?3, ?4, NULL)",
+                    vals![refresh_hash, family_id, now, next_expires_at],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE refresh_token_families SET last_used_at = ?2
+                     WHERE id = ?1 AND revoked_at IS NULL AND absolute_expires_at > ?2",
+                    vals![family_id, now],
+                )
+                .expecting(1),
+            ])
+            .await;
+        match rotated {
+            Ok(()) => Ok(RefreshTokenResult::Rotated(DeviceTokenGrant {
+                auth,
+                refresh_token,
+                refresh_expires_in: next_expires_at - now,
+            })),
+            Err(error) => {
+                let consumed = self
+                    .backend
+                    .query_opt(
+                        "SELECT consumed_at FROM refresh_tokens WHERE hash = ?1",
+                        &vals![crate::auth::token::sha256_hex(secret)],
+                    )
+                    .await?
+                    .and_then(|row| row.get::<Option<i64>>(0).ok())
+                    .flatten()
+                    .is_some();
+                if consumed {
+                    self.revoke_refresh_family(&family_id, now).await?;
+                    Ok(RefreshTokenResult::Reused)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    /// Revokes the refresh-token family containing `secret`.
+    ///
+    /// Returns `false` for an unknown credential and `true` when the family is
+    /// known, including an already-revoked family.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn revoke_refresh_token(&self, secret: &str) -> Result<bool> {
+        let hash = crate::auth::token::sha256_hex(secret);
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT family_id FROM refresh_tokens WHERE hash = ?1",
+                &vals![hash],
             )
             .await?;
-        if changed == 1 {
-            Ok(DevicePollResult::Approved(device_code_secret.to_string()))
-        } else {
-            Ok(DevicePollResult::Pending)
-        }
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let family_id: String = row.get(0)?;
+        self.revoke_refresh_family(&family_id, unix_now()).await?;
+        Ok(true)
+    }
+
+    async fn revoke_refresh_family(&self, family_id: &str, now: i64) -> Result<()> {
+        self.backend
+            .execute(
+                "UPDATE refresh_token_families SET revoked_at = ?2
+                 WHERE id = ?1 AND revoked_at IS NULL",
+                &vals![family_id, now],
+            )
+            .await?;
+        Ok(())
     }
 
     // -- auth: magic links --------------------------------------------------
@@ -20149,14 +20344,40 @@ impl Database {
 }
 
 /// The outcome of polling a device-authorization grant (RFC 8628).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum DevicePollResult {
     /// The user has neither approved nor denied yet.
     Pending,
+    /// The client polled faster than the advertised interval.
+    SlowDown,
     /// The user denied the request.
     Denied,
-    /// The user approved; carries the minted token's secret.
-    Approved(String),
+    /// The device code is unknown, expired, or was already delivered.
+    Expired,
+    /// The user approved and the credential pair was delivered exactly once.
+    Approved(DeviceTokenGrant),
+}
+
+/// Credentials issued by one successful device-code poll.
+#[derive(Debug, Clone)]
+pub struct DeviceTokenGrant {
+    /// Live authorization projected into the short-lived access JWT.
+    pub auth: TokenAuth,
+    /// Opaque rotating refresh credential returned exactly once.
+    pub refresh_token: String,
+    /// Remaining idle lifetime of the refresh credential, in seconds.
+    pub refresh_expires_in: i64,
+}
+
+/// Outcome of rotating an OAuth refresh credential.
+#[derive(Debug, Clone)]
+pub enum RefreshTokenResult {
+    /// The credential rotated successfully.
+    Rotated(DeviceTokenGrant),
+    /// The credential is unknown, expired, revoked, or has no live authority.
+    Invalid,
+    /// A consumed credential was reused; its complete family was revoked.
+    Reused,
 }
 
 /// The wire names of a permission slice, for JSON storage.
@@ -21284,17 +21505,15 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn fresh_schema_is_squashed_final_and_foreign_key_clean() {
-        assert_eq!(
-            MIGRATIONS.len(),
-            1,
-            "fresh installs have one schema baseline"
-        );
+    fn fresh_schema_is_final_and_foreign_key_clean() {
+        assert!(!MIGRATIONS.is_empty(), "the schema has a baseline");
         let connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch("PRAGMA foreign_keys = ON;")
             .unwrap();
-        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        for migration in MIGRATIONS {
+            connection.execute_batch(migration).unwrap();
+        }
 
         let identity: String = connection
             .query_row("SELECT identity FROM hub_schema_identity", [], |row| {
@@ -22983,10 +23202,10 @@ source_nar_hash = ""
         assert_eq!(user_code.len(), 9);
 
         // Pending before approval.
-        assert_eq!(
+        assert!(matches!(
             db.poll_device(&device_code).await.unwrap(),
             DevicePollResult::Pending
-        );
+        ));
 
         // Approve as the maintainer.
         assert!(db
@@ -22994,22 +23213,44 @@ source_nar_hash = ""
             .await
             .unwrap());
 
-        // Poll returns Approved with a token secret.
+        // Simulate the client's advertised five-second polling interval.
+        db.backend
+            .execute(
+                "UPDATE device_codes SET last_polled_at = ?1 WHERE user_code = ?2",
+                &vals![unix_now() - 5, user_code],
+            )
+            .await
+            .unwrap();
+
+        // Poll returns a live authorization and rotating refresh credential.
         let result = db.poll_device(&device_code).await.unwrap();
-        let DevicePollResult::Approved(token_secret) = result else {
+        let DevicePollResult::Approved(grant) = result else {
             panic!("expected Approved, got {result:?}");
         };
-        assert_eq!(token_secret, device_code);
 
-        // The minted token is owned by the approver and clamped: it has
-        // read+publish but NOT
-        // members.manage.
-        let auth = db.validate_token(&token_secret).await.unwrap().unwrap();
-        assert_eq!(auth.owner, Principal::user(approver));
-        assert_eq!(auth.scope.as_str(), "instance");
-        assert!(auth.permissions.contains(&Permission::Read));
-        assert!(auth.permissions.contains(&Permission::Publish));
-        assert!(!auth.permissions.contains(&Permission::MembersManage));
+        // The device code is never an ordinary bearer. The durable authority
+        // is owned by the approver and clamped to the requested intersection.
+        assert!(db.validate_token(&device_code).await.unwrap().is_none());
+        assert_eq!(grant.auth.owner, Principal::user(approver));
+        assert_eq!(grant.auth.scope.as_str(), "instance");
+        assert!(grant.auth.permissions.contains(&Permission::Read));
+        assert!(grant.auth.permissions.contains(&Permission::Publish));
+        assert!(!grant.auth.permissions.contains(&Permission::MembersManage));
+
+        // Refresh credentials rotate once. Reuse revokes the complete family,
+        // including the credential most recently returned to the client.
+        let rotated = db.rotate_refresh_token(&grant.refresh_token).await.unwrap();
+        let RefreshTokenResult::Rotated(next) = rotated else {
+            panic!("expected refresh rotation, got {rotated:?}");
+        };
+        assert!(matches!(
+            db.rotate_refresh_token(&grant.refresh_token).await.unwrap(),
+            RefreshTokenResult::Reused
+        ));
+        assert!(matches!(
+            db.rotate_refresh_token(&next.refresh_token).await.unwrap(),
+            RefreshTokenResult::Invalid
+        ));
     }
 
     #[tokio::test]
@@ -23021,10 +23262,10 @@ source_nar_hash = ""
             .await
             .unwrap();
         assert!(db.deny_device(&user_code).await.unwrap());
-        assert_eq!(
+        assert!(matches!(
             db.poll_device(&device_code).await.unwrap(),
             DevicePollResult::Denied
-        );
+        ));
 
         // An unknown user_code cannot be approved or denied.
         assert!(!db
@@ -23032,11 +23273,11 @@ source_nar_hash = ""
             .await
             .unwrap());
         assert!(!db.deny_device("ZZZZ-9999").await.unwrap());
-        // An unknown device_code polls as Pending.
-        assert_eq!(
+        // An unknown device_code is terminal rather than polling forever.
+        assert!(matches!(
             db.poll_device("unknown").await.unwrap(),
-            DevicePollResult::Pending
-        );
+            DevicePollResult::Expired
+        ));
     }
 
     #[tokio::test]
@@ -23087,7 +23328,7 @@ source_nar_hash = ""
             .await
             .unwrap());
         assert_eq!(db.list_tokens_for(principal).await.unwrap().len(), 1);
-        let DevicePollResult::Approved(first_secret) = db.poll_device(&device_code).await.unwrap()
+        let DevicePollResult::Approved(first_grant) = db.poll_device(&device_code).await.unwrap()
         else {
             panic!("expected Approved after first approval");
         };
@@ -23102,12 +23343,11 @@ source_nar_hash = ""
             1,
             "no second token minted on re-approval"
         );
-        assert_eq!(first_secret, device_code);
-        assert_eq!(
+        assert!(!first_grant.refresh_token.is_empty());
+        assert!(matches!(
             db.poll_device(&device_code).await.unwrap(),
-            DevicePollResult::Pending,
-            "the token secret is delivered exactly once"
-        );
+            DevicePollResult::Expired
+        ));
     }
 
     /// M-3: a denied grant cannot subsequently be approved (the claim's
