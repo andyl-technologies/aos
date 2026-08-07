@@ -429,28 +429,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Run(_) => Ok(()),
         Commands::Selftest(args) => {
             let report = run_selftest(cli, args)?;
-            if !cli.quiet {
-                for gate in &report.gates {
-                    println!(
-                        "crucible: selftest gate={} status={} runner={} corpus={} runs-per-entry={} qemu={} live-icount={} live-fingerprint={}",
-                        gate.name,
-                        gate.status.label(),
-                        gate.runner.label(),
-                        gate.corpus_entries,
-                        gate.runs_per_entry,
-                        gate.qemu_build_id.as_deref().unwrap_or("none"),
-                        gate.live_qemu_icount
-                            .map_or_else(|| String::from("none"), |value| value.to_string()),
-                        gate.live_qemu_fingerprint.as_deref().unwrap_or("none")
-                    );
-                }
-                for verified in report.verified {
-                    println!(
-                        "crucible: selftest {} PASS runs={}",
-                        verified.scenario_name, verified.runs
-                    );
-                }
-            }
+            emit_selftest_report(cli, &report)?;
             Ok(())
         }
         Commands::Verify(_)
@@ -495,6 +474,59 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
     }
+}
+
+fn emit_selftest_report(cli: &Cli, report: &SelftestReport) -> Result<(), CliError> {
+    let mut entries = Vec::with_capacity(report.gates.len() + report.verified.len() + 1);
+    for gate in &report.gates {
+        entries.push(CanonicalLogEntry {
+            sequence: entries.len() as u64,
+            virtual_time_ticks: entries.len() as u64,
+            node: String::from("selftest"),
+            kind: String::from("selftest_gate"),
+            summary: format!(
+                "gate={} status={} runner={} corpus={} runs-per-entry={} qemu={} live-icount={} live-fingerprint={}",
+                gate.name,
+                gate.status.label(),
+                gate.runner.label(),
+                gate.corpus_entries,
+                gate.runs_per_entry,
+                gate.qemu_build_id.as_deref().unwrap_or("none"),
+                gate.live_qemu_icount
+                    .map_or_else(|| String::from("none"), |value| value.to_string()),
+                gate.live_qemu_fingerprint.as_deref().unwrap_or("none")
+            ),
+        });
+    }
+    for verified in &report.verified {
+        entries.push(CanonicalLogEntry {
+            sequence: entries.len() as u64,
+            virtual_time_ticks: entries.len() as u64,
+            node: String::from("selftest"),
+            kind: String::from("selftest_scenario"),
+            summary: format!(
+                "scenario={} status=PASS runs={}",
+                verified.scenario_name, verified.runs
+            ),
+        });
+    }
+    let digest = canonical_log_digest(&entries);
+    entries.push(CanonicalLogEntry {
+        sequence: entries.len() as u64,
+        virtual_time_ticks: entries.len() as u64,
+        node: String::from("cli"),
+        kind: String::from("final_outcome"),
+        summary: format!(
+            "subcommand=selftest status=passed exit_code=0 canonical_log={digest} artifact=none"
+        ),
+    });
+    emit_canonical_trace(
+        cli.output_format(),
+        &entries,
+        cli.trace.as_deref(),
+        !cli.quiet,
+    )?;
+    Ok(())
 }
 
 #[path = "dispatch/support.rs"]
