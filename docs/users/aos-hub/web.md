@@ -45,6 +45,12 @@ After signing in, use:
 - the organization and instance settings under `/-/` for administrative work;
 - `/<org>/<registry>/-/settings` for registry configuration.
 
+Organization resource inventories keep creation separate from browsing:
+`/-/org/<org>/projects/new`, `/-/org/<org>/registries/new`, and
+`/-/org/<org>/caches/new` open focused reviewed-creation workflows. The
+inventory pages link to those routes and do not mix full create forms into the
+resource list.
+
 The management console uses the same `aos.hub.v1` Connect API, reviewed
 plan/apply mutations, and IAM checks as the CLI. It exchanges the HttpOnly
 browser session and page CSRF proof for a five-minute bearer held only in
@@ -52,7 +58,10 @@ memory; it never stores that bearer in local storage or IndexedDB. Canonical
 management deep links therefore load the same client application, while login
 and account-security ceremonies remain ordinary server-rendered pages.
 
-The console uses the same IAM roles and scope inheritance as the API.
+The console uses the same IAM roles and scope inheritance as the API. Its
+navigation is filtered using live permissions evaluated by the Hub for the
+exact current resource; typing a sensitive deep link directly does not reveal
+the page when that permission is absent.
 Permissions inherit down the scope tree, from the instance to an organization,
 project, and registry. Roles are task-oriented rather than a simple ladder:
 Admin manages organization settings, while Maintainer owns publishing,

@@ -2751,6 +2751,9 @@ message BrowserSessionTokenResponse {
   int64 expires_in = 3;
   BrowserSessionPrincipal principal = 4;
   repeated BrowserSessionGrant grants = 5;
+  // Effective live permissions on the canonical management route supplied
+  // during this exchange. Empty when the route is absent or unresolved.
+  repeated string route_permissions = 6;
 }
 
 // One live role grant held directly by the authenticated principal.

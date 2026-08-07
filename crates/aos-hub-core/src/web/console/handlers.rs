@@ -201,6 +201,18 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
         Ok(grants) => grants,
         Err(error) => return internal(error),
     };
+    let route_permissions = match route_permissions(
+        &deps.db,
+        &grants,
+        headers
+            .get("x-aos-console-route")
+            .and_then(|value| value.to_str().ok()),
+    )
+    .await
+    {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
     let auth = crate::db::TokenAuth {
         token_id: format!("browser-session-{}", session.auth.user_id),
         owner: session.principal(),
@@ -227,6 +239,7 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
                 role: role.as_str().to_string(),
             })
             .collect(),
+        route_permissions,
     };
     (
         [
@@ -236,6 +249,61 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
         Json(body),
     )
         .into_response()
+}
+
+async fn route_permissions(
+    db: &Database,
+    grants: &[(Scope, Role)],
+    route: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
+    let Some(route) = route.and_then(aos_hub_console_contract::ConsoleRoute::resolve) else {
+        return Ok(Vec::new());
+    };
+    if matches!(
+        route.scope,
+        aos_hub_console_contract::ConsoleScope::Organizations
+    ) {
+        let mut permissions = std::collections::BTreeSet::new();
+        for (_, role) in grants {
+            permissions.extend(
+                iam::role_grants(*role)
+                    .iter()
+                    .map(|permission| permission.as_str().to_string()),
+            );
+        }
+        return Ok(permissions.into_iter().collect());
+    }
+    let scope = match route.scope {
+        aos_hub_console_contract::ConsoleScope::Instance => Some(Scope::root()),
+        aos_hub_console_contract::ConsoleScope::Organizations => None,
+        aos_hub_console_contract::ConsoleScope::Organization { slug } => db
+            .org_by_slug(&slug)
+            .await?
+            .map(|org| Scope::parse(&org.stable_id)),
+        aos_hub_console_contract::ConsoleScope::Registry { path } => db
+            .registry_by_slug(&path)
+            .await?
+            .map(|registry| Scope::parse(&registry.scope_key)),
+        aos_hub_console_contract::ConsoleScope::Cache {
+            organization,
+            cache,
+        } => db
+            .binary_cache_by_slug(&format!("{organization}/{cache}"))
+            .await?
+            .map(|cache| Scope::parse(&cache.scope_key)),
+    };
+    let Some(scope) = scope else {
+        return Ok(Vec::new());
+    };
+    let Some(context) = db.authorization_context(scope.as_str()).await? else {
+        return Ok(Vec::new());
+    };
+    Ok(iam::role_grants(Role::Owner)
+        .iter()
+        .copied()
+        .filter(|permission| iam::allow(grants, *permission, &context))
+        .map(|permission| permission.as_str().to_string())
+        .collect())
 }
 
 /// Serves the authenticated browser-application shell for a canonical route.
