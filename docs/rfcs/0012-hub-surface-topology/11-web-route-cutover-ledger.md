@@ -100,3 +100,13 @@ application deep link has no capability-backed workflow, a removed path is
 rendered, or an unrecognized path receives the application shell. Retained
 authentication and public routes are enumerated exceptions, not prefix-wide
 fallbacks.
+
+The executable negative inventories live in
+`crates/aos-hub/tests/fixtures/removed-management-paths-v1.json` and
+`removed-management-posts-v1.json`. The first contains concrete representatives
+of every removed or renamed management route class and is tested with GET,
+POST, PUT, PATCH, DELETE, and HEAD. The second contains every form POST mounted
+by the final pre-cutover console, including POSTs whose path remains a canonical
+GET deep link. Native router tests and the real `workerd` fixture consume the
+same files, so the two runtimes cannot silently retain different compatibility
+surfaces.

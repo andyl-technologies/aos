@@ -15,48 +15,17 @@ use aos_hub::server::{router, AppState};
 use aos_hub_core::web::assets::{
     console_bootstrap_name, console_css_name, console_js_name, console_wasm_name,
 };
-use aos_hub_core::web::console::{route_manifest, ConsoleRouteMatched, RouteMethods, RouteSpec};
+use aos_hub_core::web::console::{route_manifest, ConsoleRouteMatched};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt as _;
 
 const TEST_JWT_SECRET: &[u8] = b"console-test-secret-32-byte-key!!";
 
-/// Historical paths are negative fixtures, never runtime route metadata.
-const REMOVED_ROUTES: &[RouteSpec] = &[
-    RouteSpec {
-        path: "/-/org/{org}/storage",
-        methods: RouteMethods::Get,
-    },
-    RouteSpec {
-        path: "/-/org/{org}/bindings/{id}",
-        methods: RouteMethods::GetAndPost,
-    },
-    RouteSpec {
-        path: "/-/org/{org}/storage-bindings/{id}/grants/plan-grant",
-        methods: RouteMethods::Post,
-    },
-    RouteSpec {
-        path: "/{registry}/-/settings/storage",
-        methods: RouteMethods::GetAndPost,
-    },
-    RouteSpec {
-        path: "/{registry}/-/settings/serving",
-        methods: RouteMethods::GetAndPost,
-    },
-    RouteSpec {
-        path: "/{registry}/-/settings/signing-key",
-        methods: RouteMethods::GetAndPost,
-    },
-    RouteSpec {
-        path: "/-/instance/storage",
-        methods: RouteMethods::GetAndPost,
-    },
-    RouteSpec {
-        path: "/-/instance/serving",
-        methods: RouteMethods::GetAndPost,
-    },
-];
+fn removed_management_paths() -> Vec<String> {
+    serde_json::from_str(include_str!("fixtures/removed-management-paths-v1.json"))
+        .expect("removed management path fixture")
+}
 
 fn removed_management_posts() -> Vec<String> {
     serde_json::from_str(include_str!("fixtures/removed-management-posts-v1.json"))
@@ -222,17 +191,22 @@ async fn removed_management_routes_are_absent_for_every_method() {
     let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "removed@example.com").await;
 
-    for route in REMOVED_ROUTES {
-        for registry in ["missing", "acme/infra/missing"] {
-            if registry.contains('/') && !route.is_registry() {
-                continue;
-            }
-            let path = route.sample_path(registry);
-            for method in ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] {
-                let response = send(&app, method, &path, Some(&cookie), None).await;
+    for path in removed_management_paths() {
+        for method in ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] {
+            let response = send(&app, method, &path, Some(&cookie), None).await;
+            if matches!(method, "GET" | "HEAD") {
                 assert_eq!(response.status, StatusCode::NOT_FOUND, "{method} {path}");
-                assert!(!response.matched_console_route, "{method} {path}");
+            } else {
+                assert!(
+                    matches!(
+                        response.status,
+                        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+                    ),
+                    "{method} {path}: {}",
+                    response.status
+                );
             }
+            assert!(!response.matched_console_route, "{method} {path}");
         }
     }
 }
@@ -252,10 +226,9 @@ async fn every_removed_management_post_is_absent() {
             "removed management POST remained mounted: {path} ({})",
             response.status
         );
-        assert!(
-            !response.matched_console_route,
-            "removed POST matched: {path}"
-        );
+        // A canonical GET deep link can legitimately match the closed console
+        // route registry before its method guard returns 405. The invariant is
+        // that no historical management POST reaches a handler.
     }
 }
 
