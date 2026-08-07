@@ -133,6 +133,24 @@ where
     gate.lock_owned().await
 }
 
+/// Runs an authorized actor operation while retaining its session gate after caller cancellation.
+async fn complete_debug_operation<T>(
+    guard: OwnedMutexGuard<()>,
+    operation: impl Future<Output = T> + Send + 'static,
+) -> Result<T, LifecycleApiError>
+where
+    T: Send + 'static,
+{
+    tokio::spawn(async move {
+        let _guard = guard;
+        operation.await
+    })
+    .await
+    .map_err(|error| LifecycleApiError::ActorFailed {
+        message: format!("debug operation task failed: {error}"),
+    })
+}
+
 /// Serves a [`LifecycleControlPlane`] over the Crucible HTTP/2 RPC transport.
 ///
 /// The function binds no sockets itself; callers supply an already-bound
@@ -480,7 +498,7 @@ where
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
-    let _operation_guard = debug_operation_guard(&state, session).await;
+    let operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease {
         client: client.clone(),
         generation,
@@ -506,7 +524,13 @@ where
             Err(error) => return lifecycle_error_response(error),
         }
     };
-    let result = dispatch.fork(node).await;
+    let result =
+        match complete_debug_operation(operation_guard, async move { dispatch.fork(node).await })
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => return lifecycle_error_response(error),
+        };
     match result {
         Ok(report) => match (
             report.guest_introspection_features,
@@ -568,7 +592,7 @@ where
             Ok(request) => request,
             Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
         };
-    let _operation_guard = debug_operation_guard(&state, session).await;
+    let operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease {
         client: client.clone(),
         generation,
@@ -591,7 +615,14 @@ where
             Err(error) => return lifecycle_error_response(error),
         }
     };
-    let response = dispatch.exchange(node, channel_id, record).await;
+    let response = match complete_debug_operation(operation_guard, async move {
+        dispatch.exchange(node, channel_id, record).await
+    })
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => return lifecycle_error_response(error),
+    };
     let response = match response {
         Ok(response) => response,
         Err(error) => return lifecycle_error_response(error),
@@ -696,13 +727,14 @@ where
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
-    let _operation_guard = debug_operation_guard(&state, session).await;
+    let operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease { client, generation };
     if let Err(response) = authorize_debug_holder(&state, session, &lease, holder).await {
         return response;
     }
-    {
-        let control_plane = state.control_plane.lock().await;
+    let operation_state = state.clone();
+    let response = complete_debug_operation(operation_guard, async move {
+        let control_plane = operation_state.control_plane.lock().await;
         if let Err(error) = control_plane.authorize_debug_controller_operation(
             session,
             &lease,
@@ -751,8 +783,13 @@ where
             }
             Err(error) => return lifecycle_error_response(error),
         }
+        http2_response(StatusCode::OK, "crucible.rpc/debug-attach-response\n")
+    })
+    .await;
+    match response {
+        Ok(response) => response,
+        Err(error) => lifecycle_error_response(error),
     }
-    http2_response(StatusCode::OK, "crucible.rpc/debug-attach-response\n")
 }
 
 async fn handle_debug_controller_release<L, F>(

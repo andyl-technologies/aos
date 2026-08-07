@@ -26,7 +26,7 @@ where
         Ok(parsed) => parsed,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
-    let _operation_guard = debug_operation_guard(&state, session).await;
+    let operation_guard = debug_operation_guard(&state, session).await;
     let dispatch = match authorized_reposition_dispatch(
         &state,
         identity.as_ref(),
@@ -39,7 +39,17 @@ where
         Ok(dispatch) => dispatch,
         Err(response) => return response,
     };
-    match dispatch.goto(coordinate).await {
+    let result =
+        match complete_debug_operation(
+            operation_guard,
+            async move { dispatch.goto(coordinate).await },
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => return lifecycle_error_response(error),
+        };
+    match result {
         Ok(report) => {
             debug_reposition_response("crucible.rpc/debug-goto-response", Some(&report), None)
         }
@@ -67,7 +77,7 @@ where
         Ok(parsed) => parsed,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
-    let _operation_guard = debug_operation_guard(&state, session).await;
+    let operation_guard = debug_operation_guard(&state, session).await;
     let dispatch = match authorized_reposition_dispatch(
         &state,
         identity.as_ref(),
@@ -80,7 +90,15 @@ where
         Ok(dispatch) => dispatch,
         Err(response) => return response,
     };
-    match dispatch.reverse_step(grain).await {
+    let result = match complete_debug_operation(operation_guard, async move {
+        dispatch.reverse_step(grain).await
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => return lifecycle_error_response(error),
+    };
+    match result {
         Ok(report) => debug_reposition_response(
             "crucible.rpc/debug-reverse-step-response",
             Some(&report.goto),
@@ -111,7 +129,7 @@ where
         Ok(parsed) => parsed,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
-    let _operation_guard = debug_operation_guard(&state, session).await;
+    let operation_guard = debug_operation_guard(&state, session).await;
     let dispatch = match authorized_reposition_dispatch(
         &state,
         identity.as_ref(),
@@ -124,7 +142,15 @@ where
         Ok(dispatch) => dispatch,
         Err(response) => return response,
     };
-    match dispatch.reverse_continue(condition).await {
+    let result = match complete_debug_operation(operation_guard, async move {
+        dispatch.reverse_continue(condition).await
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => return lifecycle_error_response(error),
+    };
+    match result {
         Ok(report) => {
             let event_sequence = report
                 .matched

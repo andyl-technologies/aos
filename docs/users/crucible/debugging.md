@@ -312,17 +312,20 @@ For example:
   disconnects, the gateway reconnects and revalidates the private QEMU RSP
   endpoint, so a new `attach-gdb` invocation can inspect the same paused runtime
   without an intervening `goto`.
-- The shipped fixtures do not start the debug guest agent at fork time, so
-  remote `exec`, `pty`, and `ssh` currently reach the bounded response-idle
-  error instead of executing a command.
+- The shipped fixtures activate the debug guest agent only after `fork-debug`
+  commits the non-canonical branch. The packaged manual matrix requires feature
+  negotiation and successful `exec`, PTY, resize, and SSH bridging on both
+  architectures. A custom image without the activation hook still reaches the
+  bounded response-idle error instead of hanging indefinitely.
 - A successful debugger runtime reposition invalidates every active guest
   channel and the next channel poll returns a typed `ClosedChannel` error.
-- `goto` currently reports the target configuration identity, not the requested
-  runtime coordinate. Two virtual-time or instruction-count coordinates can
-  therefore print the same identity when no schedule decision separates them;
-  this does not prove that reverse history exists. Reverse-step requires an
-  earlier recorded schedule or event coordinate and returns exit `4` when none
-  is available, including a branch opened at genesis with an empty schedule.
+- `goto` reports the requested coordinate separately from the landed
+  configuration, runtime state, virtual time, schedule/event prefixes, and
+  per-node instruction counts. Two requested coordinates may still share a
+  configuration identity when no schedule decision separates them, so compare
+  the complete landed tuple. Reverse-step requires an earlier recorded schedule
+  or event coordinate and returns exit `4` when none is available, including a
+  branch opened at genesis with an empty schedule.
 - Guest transcripts are operator-owned files. Runtime reposition closes the
   recorded channel; reopen a new channel and choose a new transcript path after
   repositioning.
