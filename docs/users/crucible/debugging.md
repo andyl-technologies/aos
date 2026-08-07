@@ -249,7 +249,9 @@ normal exit path, and forwards `SIGWINCH` size changes to the guest PTY.
 
 `ssh` is a transport byte bridge to the SSH server configured in the guest
 agent; it is intended as an SSH `ProxyCommand`, not as an interactive SSH client
-by itself. For example, wrap the Crucible invocation in a script and configure:
+by itself. The suite exposes its AOS-built client as `./result/bin/ssh`, so this
+workflow does not depend on a host OpenSSH installation. For example, wrap the
+Crucible invocation in a script and configure:
 
 ```text
 Host crucible-guest

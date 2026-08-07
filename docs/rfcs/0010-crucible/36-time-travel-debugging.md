@@ -1516,8 +1516,9 @@ complete from model-double evidence.
   Completed by `checks.crucible.phase7.debuggerPackage`: GNU GDB 17.2 is built
   from pinned source using only AOS packages, with Python scripting, TUI,
   compressed debug-section support, and the all-target BFD/GDB configuration.
-  The `crucible` suite exposes the matching `gdb` and `gdbserver`; the package
-  gate executes Python and selects both x86_64 and aarch64 architectures. The
+  The `crucible` suite exposes the matching `gdb` and `gdbserver`, plus the
+  AOS-built OpenSSH client used with the guest bridge; the package gate executes
+  Python and selects both x86_64 and aarch64 architectures. The
   local and authenticated remote relay workflows, symbol ownership, reverse
   commands, and guest exec/PTY/SSH workflows are documented for operators.
 - [ ] **T-DBG-14** Pass live x86_64 and aarch64 gates for read-only neutrality,
