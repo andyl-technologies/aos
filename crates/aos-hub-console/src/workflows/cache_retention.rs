@@ -245,15 +245,50 @@ fn RetentionEditor(client: ApiClient, cache_id: String) -> impl IntoView {
             <form class="editor-form" on:submit=on_submit>
                 <label><span>"Registry stable ID"</span><input required prop:value=move || fields.registry_id.get() on:input=move |event| fields.registry_id.set(event_target_value(&event))/></label>
                 <label><span>"Expected version (empty when creating)"</span><input prop:value=move || fields.expected_version.get() on:input=move |event| fields.expected_version.set(event_target_value(&event))/></label>
-                <label class="checkbox-row"><input type="checkbox" prop:checked=move || fields.current_catalog.get() on:change=move |event| fields.current_catalog.set(event_target_checked(&event))/><span>"Current signed catalog"</span></label>
-                <label class="checkbox-row"><input type="checkbox" prop:checked=move || fields.all_channels.get() on:change=move |event| fields.all_channels.set(event_target_checked(&event))/><span>"All channels"</span></label>
+                <label class="checkbox-row">
+                    <input
+                        type="checkbox"
+                        prop:checked=move || fields.current_catalog.get()
+                        on:change=move |event| fields.current_catalog.set(event_target_checked(&event))
+                    />
+                    <span>"Current signed catalog"</span>
+                </label>
+                <label class="checkbox-row">
+                    <input
+                        type="checkbox"
+                        prop:checked=move || fields.all_channels.get()
+                        on:change=move |event| fields.all_channels.set(event_target_checked(&event))
+                    />
+                    <span>"All channels"</span>
+                </label>
                 <label><span>"Channel names (comma-separated)"</span><input prop:value=move || fields.channels.get() on:input=move |event| fields.channels.set(event_target_value(&event))/></label>
                 <label><span>"Recent releases"</span><input type="number" min="1" prop:value=move || fields.recent_count.get() on:input=move |event| fields.recent_count.set(event_target_value(&event))/></label>
-                <label class="checkbox-row"><input type="checkbox" prop:checked=move || fields.recent_prereleases.get() on:change=move |event| fields.recent_prereleases.set(event_target_checked(&event))/><span>"Include recent prereleases"</span></label>
+                <label class="checkbox-row">
+                    <input
+                        type="checkbox"
+                        prop:checked=move || fields.recent_prereleases.get()
+                        on:change=move |event| fields.recent_prereleases.set(event_target_checked(&event))
+                    />
+                    <span>"Include recent prereleases"</span>
+                </label>
                 <label><span>"Release tags (comma-separated)"</span><input prop:value=move || fields.release_tags.get() on:input=move |event| fields.release_tags.set(event_target_value(&event))/></label>
                 <label><span>"Semantic-version requirement"</span><input placeholder=">=1.0, <2.0" prop:value=move || fields.semver.get() on:input=move |event| fields.semver.set(event_target_value(&event))/></label>
-                <label class="checkbox-row"><input type="checkbox" prop:checked=move || fields.semver_prereleases.get() on:change=move |event| fields.semver_prereleases.set(event_target_checked(&event))/><span>"Include matching prereleases"</span></label>
-                <label class="checkbox-row"><input type="checkbox" prop:checked=move || fields.all_releases.get() on:change=move |event| fields.all_releases.set(event_target_checked(&event))/><span>"Retain all releases"</span></label>
+                <label class="checkbox-row">
+                    <input
+                        type="checkbox"
+                        prop:checked=move || fields.semver_prereleases.get()
+                        on:change=move |event| fields.semver_prereleases.set(event_target_checked(&event))
+                    />
+                    <span>"Include matching prereleases"</span>
+                </label>
+                <label class="checkbox-row">
+                    <input
+                        type="checkbox"
+                        prop:checked=move || fields.all_releases.get()
+                        on:change=move |event| fields.all_releases.set(event_target_checked(&event))
+                    />
+                    <span>"Retain all releases"</span>
+                </label>
                 <label><span>"Removal grace (seconds)"</span><input type="number" min="1" required prop:value=move || fields.removal_grace.get() on:input=move |event| fields.removal_grace.set(event_target_value(&event))/></label>
                 <button class="secondary-button" type="submit" disabled=move || busy.get()>"Review subscription"</button>
             </form>
