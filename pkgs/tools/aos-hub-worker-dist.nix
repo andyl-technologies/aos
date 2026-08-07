@@ -338,12 +338,26 @@ in
           cp aos-hub-core/src/web/static_assets/JetBrainsMono-Bold.woff2 \
             "$out/assets/_assets/jetbrains-mono-bold.woff2"
           cp aos-hub-core/src/web/static_assets/OFL.txt   "$out/assets/_assets/OFL.txt"
+          cat aos-hub-core/src/web/static_assets/style.css \
+            aos-hub-core/src/web/static_assets/app.js \
+            ${aos-hub-console-dist}/hub-console.js \
+            ${aos-hub-console-dist}/hub-console_bg.wasm \
+            ${aos-hub-console-dist}/hub-console.css \
+            > "$TMPDIR/hub-console-version-input"
+          sha256sum "$TMPDIR/hub-console-version-input" \
+            > "$TMPDIR/hub-console-version-hash"
+          cut -c1-8 "$TMPDIR/hub-console-version-hash" \
+            > "$TMPDIR/hub-console-version"
+          read -r console_version < "$TMPDIR/hub-console-version"
           cp ${aos-hub-console-dist}/hub-console.js \
-            "$out/assets/_assets/hub-console.js"
+            "$out/assets/_assets/hub-console-$console_version.js"
           cp ${aos-hub-console-dist}/hub-console_bg.wasm \
-            "$out/assets/_assets/hub-console_bg.wasm"
+            "$out/assets/_assets/hub-console-''${console_version}_bg.wasm"
           cp ${aos-hub-console-dist}/hub-console.css \
-            "$out/assets/_assets/hub-console.css"
+            "$out/assets/_assets/hub-console-$console_version.css"
+          printf "import init from './hub-console-%s.js';\n\nawait init(new URL('./hub-console-%s_bg.wasm', import.meta.url));\n" \
+            "$console_version" "$console_version" \
+            > "$out/assets/_assets/hub-console-bootstrap-$console_version.js"
           printf '/_assets/*\n  Cache-Control: public, max-age=86400\n\n/_assets/hub-console*\n  Cache-Control: public, max-age=31536000, immutable\n' \
             > "$out/assets/_headers"
         '';

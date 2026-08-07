@@ -264,18 +264,24 @@ exposing partial state.
 - [x] Replace combined “Serving & mirror,” “Linked registries,” and “GC & pins”
       pages with the single-responsibility pages defined by
       `10-settings-information-architecture.md`.
-- [x] Move resource creation, credential rotation, migration, and destructive
+- [ ] Move resource creation, credential rotation, migration, and destructive
       operations to dedicated workflows; remove full create forms from list
-      pages.
-- [x] Implement the wide settings workspace and responsive context rail while
+      pages. Organization, project, registry, and binary-cache creation are
+      separated; infrastructure creation and several advanced actions remain.
+- [ ] Implement the wide settings workspace and responsive context rail while
       preserving the existing visual language. Login, account security,
-      activation, and public browse retain their server-rendered operation.
-- [x] Add role-aware grouped-nav snapshots, root-route/active-item tests,
+      activation, and public browse retain their server-rendered operation. The
+      two-column responsive shell is present; topology context rails remain.
+- [ ] Add role-aware grouped-nav snapshots, root-route/active-item tests,
       canonical-row ordering tests, shared-component parity tests, and wide,
-      medium, and narrow layout snapshots.
-- [x] Generate the final SPA deep-link manifest and exhaustive old-route
+      medium, and narrow layout snapshots. Root/default ordering and closed
+      route tests are present; grant filtering and rendered layout snapshots
+      remain.
+- [ ] Generate the final SPA deep-link manifest and exhaustive old-route
       deletion manifest; assert no removed management POST is mounted by the
-      native runtime or Worker.
+      native runtime or Worker. The positive manifest is shared and selected
+      removals are negative-tested; the exhaustive machine-readable deletion
+      ledger and Worker method matrix remain.
 - [x] Check a capability manifest that maps every remote end-user operation to
       its permission, API owner, CLI command, Web workflow, and runtime support.
 - [x] Remove old settings route names, handlers, templates, nav labels, and

@@ -129,6 +129,9 @@ pub const CONSOLE_ROUTES: &[RouteSpec] = &[
     route("/-/orgs/new", RouteMethods::Get),
     route("/-/org/{org}", RouteMethods::Get),
     route("/-/org/{org}/{page}", RouteMethods::Get),
+    route("/-/org/{org}/projects/new", RouteMethods::Get),
+    route("/-/org/{org}/registries/new", RouteMethods::Get),
+    route("/-/org/{org}/caches/new", RouteMethods::Get),
     route("/-/org/{org}/caches/{cache}", RouteMethods::Get),
     route("/-/org/{org}/caches/{cache}/{page}", RouteMethods::Get),
     route("/-/org/{org}/invitations/accept", RouteMethods::GetAndPost),
@@ -175,6 +178,9 @@ fn is_management_shell_template(path: &str) -> bool {
             | "/-/orgs/new"
             | "/-/org/{org}"
             | "/-/org/{org}/{page}"
+            | "/-/org/{org}/projects/new"
+            | "/-/org/{org}/registries/new"
+            | "/-/org/{org}/caches/new"
             | "/-/org/{org}/caches/{cache}"
             | "/-/org/{org}/caches/{cache}/{page}"
     )

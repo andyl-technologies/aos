@@ -314,6 +314,9 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         .route("/-/orgs/new", management_get())
         .route("/-/org/{org}", management_get())
         .route("/-/org/{org}/{page}", management_get())
+        .route("/-/org/{org}/projects/new", management_get())
+        .route("/-/org/{org}/registries/new", management_get())
+        .route("/-/org/{org}/caches/new", management_get())
         .route("/-/org/{org}/caches/{cache}", management_get())
         .route("/-/org/{org}/caches/{cache}/{page}", management_get())
         .route(

@@ -7,12 +7,11 @@
 //!
 //! Every asset is first-party and same-origin: it loads under the strict
 //! `default-src 'self'` CSP with no third-party origin, and there are no font
-//! CDNs. URLs are stable (not content-hashed), so the cache lifetime is a
-//! conservative hour (CSS/JS) / day (fonts) rather than `immutable`, letting a
-//! hub upgrade reship them. The console shell appends the combined content
-//! identity and the console assets use immutable caching.
+//! CDNs. Browse-asset URLs are stable and use bounded caching. Browser-console
+//! filenames contain the bundle's content identity and use immutable caching.
 
-use axum::http::header;
+use axum::extract::Path;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 /// The single first-party stylesheet (`/_assets/style.css`).
@@ -32,16 +31,7 @@ pub const CONSOLE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hub-co
 /// The browser-console stylesheet.
 pub const CONSOLE_CSS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hub-console.css"));
 
-/// A short content hash of the CSS + JS bundle, for cache-busting asset URLs.
-///
-/// `/_assets/style.css` and `/_assets/app.js` are served at stable paths by the
-/// deployment's static-asset layer with a multi-hour/day cache, so a browser
-/// would keep the old CSS/JS for up to a day after a hub upgrade. Linking them
-/// as `…/style.css?v=<version>` makes the URL change whenever the asset's bytes
-/// change, so a deploy's new styles/scripts reach browsers immediately (the
-/// query is ignored for asset matching but is part of the browser cache key).
-///
-/// Computed once from the embedded bytes; stable for a given build.
+/// Returns the short content identity used in every console asset filename.
 #[must_use]
 pub fn asset_version() -> &'static str {
     use sha2::{Digest, Sha256};
@@ -56,6 +46,30 @@ pub fn asset_version() -> &'static str {
         hasher.update(CONSOLE_CSS);
         hex::encode(hasher.finalize())[..8].to_string()
     })
+}
+
+/// Returns the content-addressed console JavaScript filename.
+#[must_use]
+pub fn console_js_name() -> String {
+    format!("hub-console-{}.js", asset_version())
+}
+
+/// Returns the content-addressed console WebAssembly filename.
+#[must_use]
+pub fn console_wasm_name() -> String {
+    format!("hub-console-{}_bg.wasm", asset_version())
+}
+
+/// Returns the content-addressed console stylesheet filename.
+#[must_use]
+pub fn console_css_name() -> String {
+    format!("hub-console-{}.css", asset_version())
+}
+
+/// Returns the content-addressed console bootstrap filename.
+#[must_use]
+pub fn console_bootstrap_name() -> String {
+    format!("hub-console-bootstrap-{}.js", asset_version())
 }
 
 /// JetBrains Mono Regular (OFL), self-hosted — no font CDNs, ever.
@@ -91,35 +105,36 @@ pub async fn app_js() -> Response {
         .into_response()
 }
 
-/// Serves the browser-console ES module.
-pub async fn console_js() -> Response {
-    immutable_asset("text/javascript; charset=utf-8", CONSOLE_JS)
-}
-
-/// Serves the browser-console WebAssembly module.
-pub async fn console_wasm() -> Response {
-    immutable_asset("application/wasm", CONSOLE_WASM)
-}
-
-/// Serves the browser-console stylesheet.
-pub async fn console_css() -> Response {
-    immutable_asset("text/css; charset=utf-8", CONSOLE_CSS)
-}
-
-/// Serves the small browser-console bootstrap module.
-pub async fn console_bootstrap_js() -> Response {
-    let version = asset_version();
-    let source = format!(
-        "import init from './hub-console.js?v={version}';\n\nawait init(new URL('./hub-console_bg.wasm?v={version}', import.meta.url));\n"
-    );
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-        ],
-        source,
-    )
-        .into_response()
+/// Serves one exact content-addressed browser-console asset.
+///
+/// Unknown and stable legacy filenames return `404`; this keeps the immutable
+/// cache contract honest across both native and Worker deployments.
+pub async fn console_asset(Path(asset): Path<String>) -> Response {
+    if asset == console_js_name() {
+        return immutable_asset("text/javascript; charset=utf-8", CONSOLE_JS);
+    }
+    if asset == console_wasm_name() {
+        return immutable_asset("application/wasm", CONSOLE_WASM);
+    }
+    if asset == console_css_name() {
+        return immutable_asset("text/css; charset=utf-8", CONSOLE_CSS);
+    }
+    if asset == console_bootstrap_name() {
+        let source = format!(
+            "import init from './{}';\n\nawait init(new URL('./{}', import.meta.url));\n",
+            console_js_name(),
+            console_wasm_name(),
+        );
+        return (
+            [
+                (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            source,
+        )
+            .into_response();
+    }
+    StatusCode::NOT_FOUND.into_response()
 }
 
 fn immutable_asset(content_type: &'static str, bytes: &'static [u8]) -> Response {

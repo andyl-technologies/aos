@@ -1200,18 +1200,28 @@ async fn serve_control_image(
     path: String,
 ) -> Response {
     if !path.starts_with("images/") {
-        return StatusCode::NOT_FOUND.into_response();
+        return private_control_response(StatusCode::NOT_FOUND.into_response());
     }
     let registry = match svc.db.registry_by_id(registry_id).await {
         Ok(Some(registry)) => registry,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Ok(None) => return private_control_response(StatusCode::NOT_FOUND.into_response()),
+        Err(_) => {
+            return private_control_response(StatusCode::SERVICE_UNAVAILABLE.into_response());
+        }
     };
+    let private = registry.visibility != "public";
     let now =
         match crate::delivery_http::HttpTimestamp::from_unix_seconds(crate::clock::now_unix_secs())
         {
             Ok(now) => now,
-            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            Err(_) => {
+                let response = StatusCode::SERVICE_UNAVAILABLE.into_response();
+                return if private {
+                    private_control_response(response)
+                } else {
+                    response
+                };
+            }
         };
     let auth_header = auth_header(&headers);
     let session_secret = crate::web::session::session_secret_from_headers(&headers);
@@ -1240,14 +1250,31 @@ async fn serve_control_image(
         if_range: headers.get(header::IF_RANGE).map(HeaderValue::as_bytes),
         now,
     };
-    match svc
+    let response = match svc
         .registry_serve(authorization, &registry, &path, request)
         .await
     {
         Ok(RegistryServeOutcome::Response(response)) => response,
         Ok(RegistryServeOutcome::NotFound) => StatusCode::NOT_FOUND.into_response(),
         Err(error) => error_response(&error),
+    };
+    if private {
+        private_control_response(response)
+    } else {
+        response
     }
+}
+
+fn private_control_response(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response.headers_mut().insert(
+        header::VARY,
+        HeaderValue::from_static("Authorization, Cookie"),
+    );
+    response
 }
 
 async fn resolved_delivery_handler(
@@ -3070,13 +3097,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r = r
             .route("/_assets/style.css", get(assets::stylesheet))
             .route("/_assets/app.js", get(assets::app_js))
-            .route("/_assets/hub-console.js", get(assets::console_js))
-            .route(
-                "/_assets/hub-console-bootstrap.js",
-                get(assets::console_bootstrap_js),
-            )
-            .route("/_assets/hub-console_bg.wasm", get(assets::console_wasm))
-            .route("/_assets/hub-console.css", get(assets::console_css))
+            .route("/_assets/{asset}", get(assets::console_asset))
             .route(
                 "/_assets/jetbrains-mono-regular.woff2",
                 get(assets::font_regular),
@@ -3505,6 +3526,19 @@ mod tests {
         }
         assert_eq!(canonical_request_path("/caf%C3%A9").as_deref(), Ok("/café"));
         assert_eq!(canonical_request_path("/café").as_deref(), Ok("/café"));
+    }
+
+    #[test]
+    fn private_control_responses_are_never_shared_cached() {
+        let response = private_control_response(StatusCode::UNAUTHORIZED.into_response());
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("private, no-store"))
+        );
+        assert_eq!(
+            response.headers().get(header::VARY),
+            Some(&HeaderValue::from_static("Authorization, Cookie"))
+        );
     }
 
     #[test]

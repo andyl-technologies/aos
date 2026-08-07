@@ -184,7 +184,8 @@
         },
         body: JSON.stringify(body),
       });
-      return { response, text: await response.text() };
+      const text = await response.text();
+      return { response, text, value: text ? JSON.parse(text) : null };
     }
 
     const publicList = await imageRpc("ListImages", {
@@ -321,28 +322,55 @@
       throw new Error(`Worker Images page: ''${imagesPage.status} ''${imagesHtml}`);
     }
 
-    const privateUrl = BASE + "/failure/images-private/" + bootstrapState.qcow2_key;
-    const privateAnonymous = await fetch(privateUrl);
-    if (privateAnonymous.status === 200) {
-      throw new Error("private image was anonymously downloadable");
-    }
-    const privateDownload = await fetch(privateUrl, { headers });
     const qcow2Bytes = new Uint8Array(fs.readFileSync(fs.readFileSync(path.join(fixtureRoot, "qcow2-path"), "utf8").trim()));
     const qcow2Digest = new Uint8Array(await crypto.subtle.digest("SHA-256", qcow2Bytes));
     const qcow2Sha256 = Array.from(qcow2Digest, byte => byte.toString(16).padStart(2, "0")).join("");
-    const downloadedQcow2 = new Uint8Array(await privateDownload.arrayBuffer());
-    if (privateDownload.status !== 200
-        || downloadedQcow2.length !== qcow2Bytes.length
-        || !downloadedQcow2.every((byte, index) => byte === qcow2Bytes[index])
-        || !privateDownload.headers.get("content-disposition")?.includes("aos-e2e.qcow2")
-        || privateDownload.headers.get("x-aos-sha256") !== qcow2Sha256
-        || !privateDownload.headers.get("cache-control")?.includes("no-store")
-        || privateDownload.headers.get("vary") !== "Authorization, Cookie") {
-      throw new Error(`private image download contract: ''${privateDownload.status}`);
-    }
     const cookieHeaders = {
       cookie: `__Host-aos_session=''${bootstrapState.session}`,
     };
+    const managementShell = await fetch(BASE + "/-/instance", { headers: cookieHeaders });
+    const managementHtml = await managementShell.text();
+    const bootstrapPath = managementHtml.match(/src="(\/_assets\/hub-console-bootstrap-[a-f0-9]{8}\.js)"/)?.[1];
+    const stylesheetPath = managementHtml.match(/href="(\/_assets\/hub-console-[a-f0-9]{8}\.css)"/)?.[1];
+    if (managementShell.status !== 200 || !bootstrapPath || !stylesheetPath) {
+      throw new Error(`management shell omitted content-addressed assets: ''${managementShell.status}`);
+    }
+    const bootstrapAsset = await fetch(BASE + bootstrapPath);
+    const bootstrapSource = await bootstrapAsset.text();
+    const wasmName = bootstrapSource.match(/hub-console-[a-f0-9]{8}_bg\.wasm/)?.[0];
+    const moduleName = bootstrapSource.match(/hub-console-[a-f0-9]{8}\.js/)?.[0];
+    const stylesheetAsset = await fetch(BASE + stylesheetPath);
+    if (bootstrapAsset.status !== 200
+        || !bootstrapAsset.headers.get("cache-control")?.includes("immutable")
+        || stylesheetAsset.status !== 200
+        || !wasmName
+        || !moduleName) {
+      throw new Error("management console bootstrap/CSS assets failed");
+    }
+    const [wasmAsset, moduleAsset] = await Promise.all([
+      fetch(BASE + "/_assets/" + wasmName),
+      fetch(BASE + "/_assets/" + moduleName),
+    ]);
+    const wasmBytes = new Uint8Array(await wasmAsset.arrayBuffer());
+    if (wasmAsset.status !== 200
+        || moduleAsset.status !== 200
+        || wasmBytes.length < 4
+        || wasmBytes[0] !== 0x00
+        || wasmBytes[1] !== 0x61
+        || wasmBytes[2] !== 0x73
+        || wasmBytes[3] !== 0x6d) {
+      throw new Error("management console JavaScript/WASM artifact failed");
+    }
+    for (const legacyAsset of [
+      "/_assets/hub-console.js",
+      "/_assets/hub-console-bootstrap.js",
+      "/_assets/hub-console_bg.wasm",
+      "/_assets/hub-console.css",
+    ]) {
+      if ((await fetch(BASE + legacyAsset)).status !== 404) {
+        throw new Error(`legacy console asset remained deployed: ''${legacyAsset}`);
+      }
+    }
     const privateImagesPage = await fetch(
       BASE + "/failure/images-private/-/images",
       { headers: cookieHeaders },
@@ -352,15 +380,6 @@
         || !privateImagesHtml.includes("Download")
         || !privateImagesHtml.includes(bootstrapState.qcow2_key)) {
       throw new Error(`private cookie Images page: ''${privateImagesPage.status} ''${privateImagesHtml}`);
-    }
-    const cookieDownload = await fetch(privateUrl, { headers: cookieHeaders });
-    const cookieBytes = new Uint8Array(await cookieDownload.arrayBuffer());
-    if (cookieDownload.status !== 200
-        || cookieBytes.length !== qcow2Bytes.length
-        || !cookieBytes.every((byte, index) => byte === qcow2Bytes[index])
-        || !cookieDownload.headers.get("cache-control")?.includes("no-store")
-        || cookieDownload.headers.get("vary") !== "Authorization, Cookie") {
-      throw new Error(`private cookie image download: ''${cookieDownload.status}`);
     }
     const privateAnonymousApi = await imageRpc("ListImages", {
       slug: "failure/images-private",
@@ -374,6 +393,52 @@
     }, true);
     if (privateApi.response.status !== 200 || !privateApi.text.includes(bootstrapState.qcow2_key)) {
       throw new Error(`private image API: ''${privateApi.response.status} ''${privateApi.text}`);
+    }
+    const privateUrl = privateApi.value?.images?.[0]?.downloadUrl;
+    if (typeof privateUrl !== "string"
+        || !privateUrl.startsWith(BASE + "/-/images/")
+        || !privateUrl.includes("/images/")) {
+      throw new Error(`private API did not return a same-origin control download URL: ''${privateUrl}`);
+    }
+    const privateAnonymous = await fetch(privateUrl);
+    if (privateAnonymous.status === 200
+        || privateAnonymous.headers.get("cache-control") !== "private, no-store"
+        || privateAnonymous.headers.get("vary") !== "Authorization, Cookie") {
+      throw new Error("private image anonymous denial was cacheable or successful");
+    }
+    const privateDownload = await fetch(privateUrl, { headers });
+    const downloadedQcow2 = new Uint8Array(await privateDownload.arrayBuffer());
+    if (privateDownload.status !== 200
+        || downloadedQcow2.length !== qcow2Bytes.length
+        || !downloadedQcow2.every((byte, index) => byte === qcow2Bytes[index])
+        || !privateDownload.headers.get("content-disposition")?.includes("aos-e2e.qcow2")
+        || privateDownload.headers.get("x-aos-sha256") !== qcow2Sha256
+        || privateDownload.headers.get("cache-control") !== "private, no-store"
+        || privateDownload.headers.get("vary") !== "Authorization, Cookie") {
+      throw new Error(`private image download contract: ''${privateDownload.status}`);
+    }
+    const privateRange = await fetch(privateUrl, { headers: { ...headers, range: "bytes=2-7" } });
+    const privateRangeBytes = new Uint8Array(await privateRange.arrayBuffer());
+    if (privateRange.status !== 206
+        || privateRange.headers.get("content-range") !== `bytes 2-7/''${qcow2Bytes.length}`
+        || !privateRangeBytes.every((byte, index) => byte === qcow2Bytes[index + 2])) {
+      throw new Error(`private range contract: ''${privateRange.status}`);
+    }
+    const privateHead = await fetch(privateUrl, { method: "HEAD", headers });
+    if (privateHead.status !== 200
+        || Number(privateHead.headers.get("content-length")) !== qcow2Bytes.length
+        || privateHead.headers.get("x-aos-sha256") !== qcow2Sha256
+        || (await privateHead.arrayBuffer()).byteLength !== 0) {
+      throw new Error(`private HEAD contract: ''${privateHead.status}`);
+    }
+    const cookieDownload = await fetch(privateUrl, { headers: cookieHeaders });
+    const cookieBytes = new Uint8Array(await cookieDownload.arrayBuffer());
+    if (cookieDownload.status !== 200
+        || cookieBytes.length !== qcow2Bytes.length
+        || !cookieBytes.every((byte, index) => byte === qcow2Bytes[index])
+        || cookieDownload.headers.get("cache-control") !== "private, no-store"
+        || cookieDownload.headers.get("vary") !== "Authorization, Cookie") {
+      throw new Error(`private cookie image download: ''${cookieDownload.status}`);
     }
 
     async function cacheRpc(method, body) {
