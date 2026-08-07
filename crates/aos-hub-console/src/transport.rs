@@ -24,6 +24,7 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
+    /// Constructs a client around one synthetic session for pure UI tests.
     #[cfg(test)]
     pub(crate) fn for_test(session: aos_proto_types::BrowserSessionTokenResponse) -> Self {
         Self {

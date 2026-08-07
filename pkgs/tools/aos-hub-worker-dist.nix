@@ -327,9 +327,8 @@ in
           # Lay them out under `_assets/` so the on-edge path matches the URL the
           # browse pages + stylesheet reference (e.g. /_assets/style.css), and
           # rename the fonts to the lowercase-hyphenated URL names. The `_headers`
-          # file sets a browser cache lifetime; Cloudflare edge-caches them
-          # regardless. (Names are stable, not content-hashed, so the lifetime is
-          # bounded rather than `immutable` — hashing is the follow-on if needed.)
+          # file gives stable browse assets a bounded lifetime and the generated,
+          # content-addressed console bundle an immutable lifetime.
           mkdir -p "$out/assets/_assets"
           cp aos-hub-core/src/web/static_assets/style.css "$out/assets/_assets/style.css"
           cp aos-hub-core/src/web/static_assets/app.js    "$out/assets/_assets/app.js"

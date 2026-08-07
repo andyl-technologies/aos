@@ -93,6 +93,7 @@ fn StorageBindings(
     organization_slug: Option<String>,
     creation_only: bool,
 ) -> impl IntoView {
+    let can_create = client.allows("storage_binding.manage");
     let list_client = client.clone();
     let list_scope = owner_scope_key.clone();
     let inventory = LocalResource::new(move || {
@@ -123,7 +124,7 @@ fn StorageBindings(
                         <h2>"Storage bindings"</h2>
                         <p>"Bindings name provider storage and its capability/credential lifecycle. Placements decide which surfaces use each binding."</p>
                     </div>
-                    {organization_slug.as_ref().map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/storage-bindings/new")>"Create storage binding"</a> })}
+                    {organization_slug.as_ref().filter(|_| can_create).map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/storage-bindings/new")>"Create storage binding"</a> })}
                 </div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading storage bindings…"</p> }>
                     {move || {

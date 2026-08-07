@@ -23,6 +23,10 @@ pub(super) fn NetworkingWorkflow(route: ConsoleRoute, client: ApiClient) -> impl
         (ConsoleScope::Instance, "domains") => {
             view! { <Domains client=client owner_scope_key="instance".to_string()/> }.into_any()
         }
+        (ConsoleScope::Instance, "domains-new") => view! {
+            <Domains client=client owner_scope_key="instance".to_string() creation_only=true/>
+        }
+        .into_any(),
         (ConsoleScope::Organization { slug }, "domains") => {
             view! { <OrganizationDomains client=client organization=slug.clone() creation_only=false/> }.into_any()
         }
@@ -40,6 +44,7 @@ fn OrganizationDomains(
     creation_only: bool,
 ) -> impl IntoView {
     let resolve_client = client.clone();
+    let view_organization = organization.clone();
     let scope = LocalResource::new(move || {
         let client = resolve_client.clone();
         let slug = organization.clone();
@@ -50,10 +55,11 @@ fn OrganizationDomains(
         <Suspense fallback=move || view! { <p class="loading-row">"Resolving organization scope…"</p> }>
             {move || {
                 let client = client.clone();
+                let organization = view_organization.clone();
                 Suspend::new(async move {
                     match scope.await.as_ref() {
                         Ok(owner_scope_key) => view! {
-                            <Domains client=client owner_scope_key=owner_scope_key.clone() organization=Some(organization.clone()) creation_only=creation_only/>
+        <Domains client=client owner_scope_key=owner_scope_key.clone() organization=organization.clone() creation_only=creation_only/>
                         }
                         .into_any(),
                         Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
@@ -71,6 +77,13 @@ fn Domains(
     #[prop(optional)] organization: Option<String>,
     #[prop(optional)] creation_only: bool,
 ) -> impl IntoView {
+    let can_create = client.allows("domain.manage");
+    let create_href = can_create.then(|| {
+        organization.as_ref().map_or_else(
+            || "/-/instance/domains/new".to_string(),
+            |slug| format!("/-/org/{slug}/domains/new"),
+        )
+    });
     let list_client = client.clone();
     let list_scope = owner_scope_key.clone();
     let inventory = LocalResource::new(move || {
@@ -95,7 +108,7 @@ fn Domains(
     view! {
         <div class="workflow-stack">
             {(!creation_only).then(|| view! { <section class="panel resource-panel">
-                <div class="section-heading"><div><p class="section-kicker">"Naming and certificates"</p><h2>"Domains"</h2><p>"Domains capture DNS and certificate intent. Endpoints choose a domain and a network boundary independently."</p></div>{organization.as_ref().map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/domains/new")>"Add domain"</a> })}</div>
+                <div class="section-heading"><div><p class="section-kicker">"Naming and certificates"</p><h2>"Domains"</h2><p>"Domains capture DNS and certificate intent. Endpoints choose a domain and a network boundary independently."</p></div>{create_href.map(|href| view! { <a class="button" href=href>"Add domain"</a> })}</div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading domains…"</p> }>
                     {move || { let client = inventory_client.clone(); Suspend::new(async move {
                         match inventory.await.as_ref() {

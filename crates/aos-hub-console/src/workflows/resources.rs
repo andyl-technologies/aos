@@ -84,6 +84,7 @@ pub(crate) fn ResourceWorkflow(route: ConsoleRoute, client: ApiClient) -> impl I
 
 #[component]
 fn OrganizationInventory(client: ApiClient) -> impl IntoView {
+    let can_create = client.allows("read");
     let inventory = LocalResource::new(move || {
         let client = client.clone();
         async move {
@@ -108,7 +109,7 @@ fn OrganizationInventory(client: ApiClient) -> impl IntoView {
                     <h2>"Organizations"</h2>
                     <p>"Organizations own projects, registries, caches, and scoped infrastructure grants."</p>
                 </div>
-                <a class="button" href="/-/orgs/new">"Create organization"</a>
+                {can_create.then(|| view! { <a class="button" href="/-/orgs/new">"Create organization"</a> })}
             </div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading organizations…"</p> }>
                 {move || Suspend::new(async move {
@@ -393,6 +394,7 @@ fn OrganizationEditor(
 
 #[component]
 fn ProjectInventory(client: ApiClient, organization: String, creation_only: bool) -> impl IntoView {
+    let can_create = client.allows("registry.configure");
     let inventory_org = organization.clone();
     let inventory_client = client.clone();
     let inventory = LocalResource::new(move || {
@@ -477,7 +479,7 @@ fn ProjectInventory(client: ApiClient, organization: String, creation_only: bool
     view! {
         <div class="workflow-stack">
             {(!creation_only).then(|| view! { <section class="panel resource-panel">
-                <div class="section-heading"><div><p class="section-kicker">"Resource hierarchy"</p><h2>"Projects"</h2><p>"Projects create nested ownership paths without conflating storage or delivery."</p></div><a class="button" href=format!("/-/org/{organization}/projects/new")>"Create project"</a></div>
+                <div class="section-heading"><div><p class="section-kicker">"Resource hierarchy"</p><h2>"Projects"</h2><p>"Projects create nested ownership paths without conflating storage or delivery."</p></div>{can_create.then(|| view! { <a class="button" href=format!("/-/org/{organization}/projects/new")>"Create project"</a> })}</div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading projects…"</p> }>
                     {move || {
                         let client = client.clone();
@@ -592,6 +594,7 @@ fn RegistryInventory(
     organization: String,
     creation_only: bool,
 ) -> impl IntoView {
+    let can_create = client.allows("registry.configure");
     let inventory_client = client.clone();
     let prefix = format!("{organization}/");
     let inventory = LocalResource::new(move || {
@@ -676,7 +679,7 @@ fn RegistryInventory(
     view! {
         <div class="workflow-stack">
             {(!creation_only).then(|| view! { <section class="panel resource-panel">
-                <div class="section-heading"><div><p class="section-kicker">"Signed package surfaces"</p><h2>"Registries"</h2><p>"A registry owns signed releases and consumer configuration; placements and cache stacks are configured separately."</p></div><a class="button" href=format!("/-/org/{organization}/registries/new")>"Create registry"</a></div>
+                <div class="section-heading"><div><p class="section-kicker">"Signed package surfaces"</p><h2>"Registries"</h2><p>"A registry owns signed releases and consumer configuration; placements and cache stacks are configured separately."</p></div>{can_create.then(|| view! { <a class="button" href=format!("/-/org/{organization}/registries/new")>"Create registry"</a> })}</div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading registries…"</p> }>{move || {
                     let prefix = prefix.clone();
                     Suspend::new(async move { match inventory.await.as_ref() {
@@ -735,6 +738,7 @@ fn CacheInventory(
     owner_scope_key: String,
     creation_only: bool,
 ) -> impl IntoView {
+    let can_create = client.allows("registry.configure");
     let inventory_client = client.clone();
     let list_scope = owner_scope_key.clone();
     let inventory = LocalResource::new(move || {
@@ -833,7 +837,7 @@ fn CacheInventory(
             busy.set(false);
         });
     });
-    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Reusable object stores"</p><h2>"Binary caches"</h2><p>"Caches may stand alone or be shared by several registry consumer stacks and retention subscriptions."</p></div><a class="button" href=format!("/-/org/{organization}/caches/new")>"Create binary cache"</a></div><Suspense fallback=move || view! { <p class="loading-row">"Loading caches…"</p> }>{move || { let organization = organization.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(caches) if caches.is_empty() => view! { <p class="muted">"No binary caches in this organization."</p> }.into_any(), Ok(caches) => view! { <div class="resource-grid">{caches.iter().cloned().map(|cache| { let href = format!("/-/org/{}/caches/{}", organization, cache.slug.rsplit('/').next().unwrap_or(&cache.slug)); view! { <a class="resource-card" href=href><div><span class="resource-kind">{cache.visibility}</span><h3>{cache.name}</h3><code>{cache.slug}</code><p class="resource-metric">{format!("{} objects · {} placements", cache.object_count, cache.placement_count)}</p></div><span class="card-arrow">"→"</span></a> } }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}
+    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Reusable object stores"</p><h2>"Binary caches"</h2><p>"Caches may stand alone or be shared by several registry consumer stacks and retention subscriptions."</p></div>{can_create.then(|| view! { <a class="button" href=format!("/-/org/{organization}/caches/new")>"Create binary cache"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading caches…"</p> }>{move || { let organization = organization.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(caches) if caches.is_empty() => view! { <p class="muted">"No binary caches in this organization."</p> }.into_any(), Ok(caches) => view! { <div class="resource-grid">{caches.iter().cloned().map(|cache| { let href = format!("/-/org/{}/caches/{}", organization, cache.slug.rsplit('/').next().unwrap_or(&cache.slug)); view! { <a class="resource-card" href=href><div><span class="resource-kind">{cache.visibility}</span><h3>{cache.name}</h3><code>{cache.slug}</code><p class="resource-metric">{format!("{} objects · {} placements", cache.object_count, cache.placement_count)}</p></div><span class="card-arrow">"→"</span></a> } }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}
     {creation_only.then(|| view! { <section class="panel editor-panel"><h2>"Create binary cache"</h2><form class="editor-form compact-form" on:submit=on_plan><label><span>"Cache slug"</span><input required placeholder="build" prop:value=move || cache_name.get() on:input=move |event| cache_name.set(event_target_value(&event))/></label><label><span>"Display name"</span><input required prop:value=move || display_name.get() on:input=move |event| display_name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><option value="private">"Private"</option><option value="internal">"Internal"</option><option value="public">"Public"</option></select></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> })}</div> }
 }
 
