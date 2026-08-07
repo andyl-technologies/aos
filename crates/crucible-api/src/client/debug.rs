@@ -111,16 +111,15 @@ impl RpcControlClient {
         session: SessionRef,
         lease: &DebugControllerLease,
         target: &crucible::DebugCoordinate,
-    ) -> Result<String, ControlClientError> {
+    ) -> Result<crate::DebugRepositionResult, ControlClientError> {
         let body = self
             .post_rpc_body(
                 DEBUG_GOTO_RPC_PATH,
                 encode_debug_goto_request(session, lease.generation, target)?,
             )
             .await?;
-        let (target, _) =
-            decode_debug_reposition_response(&body, "crucible.rpc/debug-goto-response")?;
-        target.ok_or_else(|| rpc_decode("debug goto response omitted its target configuration"))
+        decode_debug_reposition_response(&body, "crucible.rpc/debug-goto-response")?
+            .ok_or_else(|| rpc_decode("debug goto response omitted its landed runtime coordinate"))
     }
 
     /// Reverse-steps an attached debugger by one deterministic grain.
@@ -134,18 +133,17 @@ impl RpcControlClient {
         session: SessionRef,
         lease: &DebugControllerLease,
         grain: crucible::DebugReverseStepGrain,
-    ) -> Result<String, ControlClientError> {
+    ) -> Result<crate::DebugRepositionResult, ControlClientError> {
         let body = self
             .post_rpc_body(
                 DEBUG_REVERSE_STEP_RPC_PATH,
                 encode_debug_reverse_step_request(session, lease.generation, grain),
             )
             .await?;
-        let (target, _) =
-            decode_debug_reposition_response(&body, "crucible.rpc/debug-reverse-step-response")?;
-        target.ok_or_else(|| {
-            rpc_decode("debug reverse-step response omitted its target configuration")
-        })
+        decode_debug_reposition_response(&body, "crucible.rpc/debug-reverse-step-response")?
+            .ok_or_else(|| {
+                rpc_decode("debug reverse-step response omitted its landed runtime coordinate")
+            })
     }
 
     /// Reverse-continues to the latest prior event prefix matching `condition`.
@@ -161,18 +159,14 @@ impl RpcControlClient {
         session: SessionRef,
         lease: &DebugControllerLease,
         condition: &crucible::Predicate,
-    ) -> Result<Option<String>, ControlClientError> {
+    ) -> Result<Option<crate::DebugRepositionResult>, ControlClientError> {
         let body = self
             .post_rpc_body(
                 DEBUG_REVERSE_CONTINUE_RPC_PATH,
                 encode_debug_reverse_continue_request(session, lease.generation, condition),
             )
             .await?;
-        let (target, _) = decode_debug_reposition_response(
-            &body,
-            "crucible.rpc/debug-reverse-continue-response",
-        )?;
-        Ok(target)
+        decode_debug_reposition_response(&body, "crucible.rpc/debug-reverse-continue-response")
     }
 
     /// Opens a daemon-side connection to the session's stable local GDB gateway.
@@ -458,7 +452,7 @@ fn encode_debug_reverse_continue_request(
 fn decode_debug_reposition_response(
     body: &[u8],
     header: &'static str,
-) -> Result<(Option<String>, Option<u64>), ControlClientError> {
+) -> Result<Option<crate::DebugRepositionResult>, ControlClientError> {
     let text = response_text(body)?;
     let mut lines = text.lines();
     expect_header(lines.next(), header)?;
@@ -474,8 +468,98 @@ fn decode_debug_reposition_response(
                 .map_err(|error| rpc_decode(format!("invalid event sequence: {error}")))?,
         )
     };
+    let Some(configuration) = target else {
+        reject_trailing(lines.next())?;
+        return Ok(None);
+    };
+    let requested_coordinate =
+        parse_prefixed_line(lines.next(), "requested-coordinate=")?.to_owned();
+    let runtime_state = parse_prefixed_line(lines.next(), "runtime-state=")?.to_owned();
+    let virtual_time_ticks = parse_u64_response_line(
+        parse_prefixed_line(lines.next(), "virtual-time-ticks=")?,
+        "virtual time ticks",
+    )?;
+    let schedule_prefix_len = parse_prefixed_line(lines.next(), "schedule-prefix-len=")?
+        .parse::<usize>()
+        .map_err(|error| rpc_decode(format!("invalid schedule prefix length: {error}")))?;
+    let event_log_prefix = parse_prefixed_line(lines.next(), "event-log-prefix=")?.to_owned();
+    let event_log_bytes = parse_u64_response_line(
+        parse_prefixed_line(lines.next(), "event-log-bytes=")?,
+        "event-log byte offset",
+    )?;
+    let event_log_events = parse_u64_response_line(
+        parse_prefixed_line(lines.next(), "event-log-events=")?,
+        "event-log event count",
+    )?;
+    let node_count = parse_prefixed_line(lines.next(), "node-icount-count=")?
+        .parse::<usize>()
+        .map_err(|error| rpc_decode(format!("invalid node icount count: {error}")))?;
+    let mut node_icounts = BTreeMap::new();
+    for index in 0..node_count {
+        let encoded_name =
+            parse_dynamic_prefixed_line(lines.next(), &format!("node-icount-{index}-name="))?;
+        let name = parse_hex_string(encoded_name)?;
+        let retired = parse_u64_response_line(
+            parse_dynamic_prefixed_line(lines.next(), &format!("node-icount-{index}-retired="))?,
+            "node retired instruction count",
+        )?;
+        if node_icounts.insert(name.clone(), retired).is_some() {
+            return Err(rpc_decode(format!(
+                "debug reposition response repeated node `{name}`"
+            )));
+        }
+    }
+    let gateway_generation = parse_u64_response_line(
+        parse_prefixed_line(lines.next(), "gateway-generation=")?,
+        "gateway generation",
+    )?;
+    if gateway_generation == 0 {
+        return Err(rpc_decode(
+            "debug reposition response reported zero gateway generation",
+        ));
+    }
+    let retired_world_cleanup =
+        parse_prefixed_line(lines.next(), "retired-world-cleanup=")?.to_owned();
+    if !matches!(
+        retired_world_cleanup.as_str(),
+        "reaped" | "detached-cleanup-pending"
+    ) {
+        return Err(rpc_decode(format!(
+            "invalid retired-world cleanup state `{retired_world_cleanup}`"
+        )));
+    }
     reject_trailing(lines.next())?;
-    Ok((target, event))
+    Ok(Some(crate::DebugRepositionResult {
+        landed: crate::DebugLandedRuntimeCoordinate {
+            requested_coordinate,
+            configuration,
+            runtime_state,
+            virtual_time_ticks,
+            schedule_prefix_len,
+            event_log_prefix,
+            event_log_bytes,
+            event_log_events,
+            node_icounts,
+            gateway_generation,
+            retired_world_cleanup,
+        },
+        target_event_sequence: event,
+    }))
+}
+
+fn parse_u64_response_line(value: &str, field: &'static str) -> Result<u64, ControlClientError> {
+    value
+        .parse::<u64>()
+        .map_err(|error| rpc_decode(format!("invalid {field}: {error}")))
+}
+
+fn parse_dynamic_prefixed_line<'a>(
+    line: Option<&'a str>,
+    prefix: &str,
+) -> Result<&'a str, ControlClientError> {
+    let line = line.ok_or_else(|| rpc_decode(format!("missing `{prefix}` line")))?;
+    line.strip_prefix(prefix)
+        .ok_or_else(|| rpc_decode(format!("expected `{prefix}` line, got `{line}`")))
 }
 
 fn encode_debug_attach_request(session: SessionRef, generation: u64, node: &NodeId) -> Vec<u8> {

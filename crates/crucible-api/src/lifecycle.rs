@@ -45,6 +45,42 @@ pub const LIFECYCLE_SESSION_MAILBOX_CAPACITY: usize = 16;
 /// Default actor-yield budget for lifecycle startup commands.
 pub const LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS: u64 = 128;
 
+/// Operator-visible evidence for the exact live runtime boundary selected by a debugger reposition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DebugLandedRuntimeCoordinate {
+    /// Coordinate selector resolved by the session actor.
+    pub requested_coordinate: String,
+    /// Content address of the landed configuration.
+    pub configuration: String,
+    /// Content address of the production-bound runtime state.
+    pub runtime_state: String,
+    /// Scheduler virtual time at the landed boundary.
+    pub virtual_time_ticks: u64,
+    /// Number of schedule decisions in the landed prefix.
+    pub schedule_prefix_len: usize,
+    /// Content address of the landed event-log prefix.
+    pub event_log_prefix: String,
+    /// Byte offset of the landed event-log cursor.
+    pub event_log_bytes: u64,
+    /// Event count of the landed event-log cursor.
+    pub event_log_events: u64,
+    /// Per-node retired instruction counters at the landed boundary.
+    pub node_icounts: BTreeMap<String, u64>,
+    /// Gateway generation committed for the selected production backend.
+    pub gateway_generation: u64,
+    /// Stable description of the retired world's observed cleanup state.
+    pub retired_world_cleanup: String,
+}
+
+/// Result returned to a remote debugger after a live reposition operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DebugRepositionResult {
+    /// Exact production-bound runtime coordinate reached by the operation.
+    pub landed: DebugLandedRuntimeCoordinate,
+    /// Matched event sequence for reverse operations, when applicable.
+    pub target_event_sequence: Option<u64>,
+}
+
 /// Authorized actor dispatch handle captured without retaining the global registry lock.
 #[derive(Clone)]
 pub struct GuestIntrospectionDispatch {

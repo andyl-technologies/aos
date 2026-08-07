@@ -2177,6 +2177,10 @@ pub struct DebugGotoReport {
     pub target_coordinate: DebugCoordinate,
     /// Configuration reached by the operation.
     pub target_configuration: ContentHash,
+    /// Scheduler virtual time at the landed runtime boundary.
+    pub landed_virtual_time: VirtualTime,
+    /// Number of schedule decisions in the landed runtime prefix.
+    pub landed_schedule_prefix_len: usize,
     /// Configuration restored before forward replay.
     pub restore_configuration: ContentHash,
     /// Checkpoint restored before forward replay.
@@ -2189,6 +2193,8 @@ pub struct DebugGotoReport {
     pub target_checkpoint: ContentHash,
     /// Replay-oracle proof that the rewound coordinate matches forward replay.
     pub replay_oracle: ReplayOracleCheck,
+    /// Production gateway-promotion evidence, when a live backend was replaced.
+    pub live_reposition: Option<DebugRuntimeRepositionReport>,
 }
 
 impl DebugGotoReport {
