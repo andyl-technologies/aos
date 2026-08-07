@@ -675,7 +675,9 @@ long-held locks.
   frontier and replay-validates both children in fresh two-node QEMU sessions.
   The fuzz family excludes pre-boot faults so a real guest quantum commits
   plugin coverage before feedback is evaluated. Neither fixture modifies
-  Linux.
+  Linux. An explicit `--findings-out` path is materialized as a valid signed v3
+  ledger even when the campaign retains zero findings; the implicit default
+  remains absent for a zero-finding campaign.
   `T-CLI-17` is complete under `checks.crucible.phase5.cliTriageWorkflow`: the
   thin `triage <FINDINGS>` parser/planner loads empty and signed engine-owned
   property findings ledgers through the local DagStore, drives triage-engine
