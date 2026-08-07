@@ -246,6 +246,14 @@
         needle = "CONFIG_VIRTIO_NET=y";
       }
       {
+        label = "virtio console";
+        needle = "CONFIG_VIRTIO_CONSOLE=y";
+      }
+      {
+        label = "fork-time debug agent uevent helper";
+        needle = "CONFIG_UEVENT_HELPER=y";
+      }
+      {
         label = "virtio 9p transport";
         needle = "CONFIG_NET_9P_VIRTIO=y";
       }
@@ -374,6 +382,8 @@ in
             require_config '^CONFIG_VIRTIO_PCI=y$' 'virtio PCI'
             require_config '^CONFIG_VIRTIO_BLK=y$' 'virtio block'
             require_config '^CONFIG_VIRTIO_NET=y$' 'virtio net'
+            require_config '^CONFIG_VIRTIO_CONSOLE=y$' 'virtio console'
+            require_config '^CONFIG_UEVENT_HELPER=y$' 'debug-agent uevent helper'
             require_config '^CONFIG_NET_9P_VIRTIO=y$' 'virtio 9p transport'
             require_config '^CONFIG_9P_FS=y$' '9p filesystem built in'
             require_config '^CONFIG_EXT4_FS=y$' 'ext4 fixture root image support'
