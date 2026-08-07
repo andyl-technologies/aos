@@ -454,7 +454,14 @@ fn default_platform() -> String {
 /// Introspect a store path using `nix path-info --json --closure-size`.
 fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
     let output = nix_command("nix")
-        .args(["path-info", "--json", "--closure-size", store_path])
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "path-info",
+            "--json",
+            "--closure-size",
+            store_path,
+        ])
         .output()
         .with_context(|| format!("running nix path-info on {store_path}"))?;
 
@@ -817,7 +824,14 @@ struct ClosureMemberNar {
 /// `nix path-info --json --recursive` invocation.
 fn introspect_closure_nars(store_path: &str) -> Result<Vec<ClosureMemberNar>> {
     let output = nix_command("nix")
-        .args(["path-info", "--json", "--recursive", store_path])
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "path-info",
+            "--json",
+            "--recursive",
+            store_path,
+        ])
         .output()
         .with_context(|| format!("running nix path-info --recursive on {store_path}"))?;
     if !output.status.success() {
