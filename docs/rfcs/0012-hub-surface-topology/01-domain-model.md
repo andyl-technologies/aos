@@ -43,7 +43,7 @@ A storage binding describes how the Hub reaches an origin:
 StorageBinding
   id
   org_id or instance scope
-  kind = local_fs | s3 | r2
+  kind = local_fs | s3 | r2 | deployment_r2
   bucket/root
   API endpoint
   region
@@ -73,6 +73,14 @@ StorageBindingWriteObservation
 The API endpoint is never a consumer URL. Public readability is a capability
 of an origin or external gateway, not a substitute for an explicit delivery
 route.
+
+`deployment_r2` names a Cloudflare Worker R2 binding and has no HTTP endpoint
+or object-store credential. It is the Worker-native storage path. `r2` names
+the same storage class reached through its S3-compatible API and therefore has
+the ordinary endpoint, signing-region, access-mode, and purpose-scoped
+credential lifecycle. Native and Worker runtimes accept both portable API
+bindings and their runtime-native optional bindings; choosing one never changes
+the placement, route, retention, or consumer-cache model above it.
 
 Read, write, credential-minting, and administrative authority remain separate
 because their blast radii differ. Credentials should be scoped to a placement

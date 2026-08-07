@@ -182,6 +182,26 @@ and that flag preserves the existing sealed credential. Every set, remove,
 claim, verify, and release operation uses the same explicit `plan` then `apply`
 flow.
 
+Manage storage as a named binding rather than embedding provider credentials in
+a registry or cache. A Worker deployment can refer directly to one of its R2
+bindings; no S3 endpoint or R2 API token is needed for that provider kind:
+
+```sh
+aos hub storage-binding create \
+  --org acme \
+  --name worker-objects \
+  --kind deployment-r2 \
+  --bucket-binding STORAGE \
+  --plan \
+  --idempotency-key plan-worker-objects
+```
+
+Review the returned effects and apply the exact plan with `--plan-id`,
+`--confirm-hash`, and `--yes`. Use `--kind s3` or `--kind r2` with `--bucket`,
+`--endpoint`, `--region`, and `--access` when the Hub reaches storage through
+an HTTP object API. Credentials are separate purpose-scoped secret-version
+references and can be rotated or validated without replacing the binding.
+
 The remote client includes registry, cache, organization, project, binding,
 webhook, instance, audit, changeset, and upload operations. Authorization is
 checked against current server-side grants for every request; approval never
