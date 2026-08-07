@@ -1090,8 +1090,9 @@ branch on the verdict without parsing output:
   in-process-double and `--daemon` HTTP/2 RPC sessions through the same typed
   control-client workflow, streams non-empty scheduler event/state frames,
   derives terminal status from session `OutcomeKind`, enforces
-  virtual-time budgets from live counters and exact paused boundaries for
-  quantum budgets, emits user-visible `--watch` status, materializes real
+  virtual-time budgets from exact paused boundaries for both virtual-time and
+  quantum limits so observation latency cannot add a replay-visible final
+  quantum, emits user-visible `--watch` status, materializes real
   terminal savepoint handles for `--save-on`, persists their replayable closure
   and checkpoint index in the selected DAG store before advertising them, maps
   non-passing outcomes to reproduction artifacts and exit codes, and provides

@@ -94,6 +94,9 @@ backend, reapplies recorded branch, fault, and network inputs, executes the
 recorded non-interactive startup and initial controls, and
 requires the terminal tuple, event stream, and fingerprint stream to match the
 producer byte-for-byte. There is no production model-only success path.
+Virtual-time- and quantum-bounded runs advance through exact paused quantum
+boundaries, so frontend polling latency cannot change the recorded terminal
+quantum between production and replay.
 
 Interactive failure-artifact capture is not supported yet. Crucible rejects it
 instead of recording command names without the exact decision/frontier timing

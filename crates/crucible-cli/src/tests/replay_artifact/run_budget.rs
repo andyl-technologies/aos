@@ -176,6 +176,50 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
             .any(|line| line.starts_with("run-store\tcheckpoint=blake3:"))
     );
 
+    let virtual_time_only_cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("double"),
+        String::from("--seed"),
+        String::from("22"),
+        String::from("run"),
+        scenario.display().to_string(),
+        String::from("--until"),
+        String::from("virtual-time"),
+        String::from("--max-virtual-time"),
+        String::from("2ticks"),
+    ]);
+    let Commands::Run(virtual_time_only_args) = &virtual_time_only_cli.command else {
+        panic!("expected run command");
+    };
+    let virtual_time_only_run = plan_run_invocation(virtual_time_only_args, temp.path())?;
+    let virtual_time_only_report = runtime.block_on(run_control_client_workflow_async(
+        &client,
+        &virtual_time_only_run,
+        &[],
+    ))?;
+
+    assert_eq!(
+        virtual_time_only_report.status,
+        BackendCommandStatus::Timeout
+    );
+    assert_eq!(virtual_time_only_report.final_frontier_ticks, 2);
+    assert_eq!(virtual_time_only_report.final_quanta, 2);
+    assert!(virtual_time_only_report.budget_timed_out);
+    assert!(
+        !virtual_time_only_report
+            .acknowledged_commands
+            .contains(&SessionCommandKind::Continue)
+    );
+    assert_eq!(
+        virtual_time_only_report
+            .acknowledged_commands
+            .iter()
+            .filter(|command| **command == SessionCommandKind::StepQuantum)
+            .count(),
+        2
+    );
+
     let quantum_timeout_cli = Cli::parse_from([
         String::from("crucible"),
         String::from("--backend"),
