@@ -41,12 +41,28 @@
         needle = "qemu-crucible";
       }
       {
+        label = "native x86_64 QEMU executable";
+        needle = ''"x86_64-linux" = "qemu-system-x86_64";'';
+      }
+      {
+        label = "native aarch64 QEMU executable";
+        needle = ''"aarch64-linux" = "qemu-system-aarch64";'';
+      }
+      {
+        label = "unsupported native QEMU system fails closed";
+        needle = "or (throw \"crucible: unsupported native QEMU system '" + "$" + "{stdenv.hostPlatform.system}'\")";
+      }
+      {
         label = "plugin package argument";
         needle = "crucible-qemu-plugin";
       }
       {
         label = "suite runtime closure keeps controller and QEMU-side outputs separate";
-        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];";
+        needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb]";
+      }
+      {
+        label = "suite runtime closure retains AArch64 guest artifacts";
+        needle = "[aarch64Linux aarch64Fixtures]";
       }
       {
         label = "runtime QEMU wrapper configuration";
@@ -57,12 +73,20 @@
         needle = "CRUCIBLE_PLUGIN:=";
       }
       {
+        label = "runtime AArch64 kernel wrapper configuration";
+        needle = "CRUCIBLE_KERNEL_AARCH64:=";
+      }
+      {
+        label = "runtime AArch64 root-image wrapper configuration";
+        needle = "CRUCIBLE_ROOT_IMAGE_AARCH64:=";
+      }
+      {
         label = "QEMU package build-info field";
         needle = "qemu_package=qemu-crucible";
       }
       {
         label = "QEMU path build-info field";
-        needle = "qemu_path=" + "$" + "{qemu-crucible}/bin/qemu-system-x86_64";
+        needle = "qemu_path=" + "$" + "{nativeQemuPath}";
       }
       {
         label = "plugin package build-info field";
@@ -186,7 +210,7 @@
       }
       {
         label = "output smoke checks QEMU path metadata";
-        needle = "grep -q '^qemu_path=" + "$" + "{packages.qemu-crucible}/bin/qemu-system-x86_64$'";
+        needle = "grep -q '^qemu_path=" + "$" + "{packages.qemu-crucible}/bin/" + "$" + "{nativeQemuSystemBinary}$'";
       }
       {
         label = "output smoke checks plugin package metadata";

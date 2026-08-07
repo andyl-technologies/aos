@@ -975,8 +975,8 @@ where
     };
     if args.production_qemu {
         let backend = require_selftest_qemu_backend(cli)?;
-        let config =
-            production_qemu_lifecycle_config(&backend)?.with_debug_gdbstub(None, "127.0.0.1:0");
+        let config = production_qemu_lifecycle_config(&backend)?
+            .with_debug_gdbstubs_for_all_nodes("127.0.0.1:0");
         let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
             "crucible-cli-qemu-daemon",
             Vec::new(),

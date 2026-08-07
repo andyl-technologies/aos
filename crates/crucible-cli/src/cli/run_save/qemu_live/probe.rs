@@ -311,3 +311,29 @@ pub(super) fn live_qemu_kernel_cmdline() -> Option<String> {
         .ok()
         .or_else(|| option_env!("CRUCIBLE_AOS_KERNEL_CMDLINE").map(str::to_owned))
 }
+
+/// Resolves the packaged AArch64 guest artifact triplet when it is available.
+pub(super) fn live_qemu_aarch64_assets()
+-> Result<Option<(PathBuf, PathBuf, Option<String>)>, CliError> {
+    let kernel = optional_live_qemu_asset(
+        "CRUCIBLE_KERNEL_AARCH64",
+        option_env!("CRUCIBLE_AOS_KERNEL_AARCH64"),
+        "AArch64 kernel",
+    )?;
+    let root_image = optional_live_qemu_asset(
+        "CRUCIBLE_ROOT_IMAGE_AARCH64",
+        option_env!("CRUCIBLE_AOS_ROOT_IMAGE_AARCH64"),
+        "AArch64 root image",
+    )?;
+    let kernel_cmdline = std::env::var("CRUCIBLE_KERNEL_CMDLINE_AARCH64")
+        .ok()
+        .or_else(|| option_env!("CRUCIBLE_AOS_KERNEL_CMDLINE_AARCH64").map(str::to_owned));
+
+    match (kernel, root_image) {
+        (Some(kernel), Some(root_image)) => Ok(Some((kernel, root_image, kernel_cmdline))),
+        (None, None) if kernel_cmdline.is_none() => Ok(None),
+        _ => Err(backend_error(
+            "AArch64 guest support requires CRUCIBLE_KERNEL_AARCH64 and CRUCIBLE_ROOT_IMAGE_AARCH64 together",
+        )),
+    }
+}

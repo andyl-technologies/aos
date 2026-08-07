@@ -488,6 +488,7 @@
     meta ? {},
     storeDir ? "/nix/store",
     system ? defaultSystem,
+    buildExecutionSystem ? null,
     shell ? builderPath,
     outputs ? ["out"],
     configureFlags ? "",
@@ -631,6 +632,7 @@
       "meta"
       "storeDir"
       "system"
+      "buildExecutionSystem"
       "shell"
       "outputs"
       "configureFlags"
@@ -660,7 +662,12 @@
     ];
 
     # ── Chaining constraint validation ────────────────────────────────
-    buildPlatform = mkPlatform system;
+    schedulingPlatform = mkPlatform system;
+    buildPlatform = mkPlatform (
+      if buildExecutionSystem != null
+      then buildExecutionSystem
+      else system
+    );
 
     # Effective compiler-hardening token set, exported to the builder for
     # the cc-wrapper to translate into flags. Tokens are filtered for the
@@ -687,7 +694,10 @@
     in
       dc.execute
       == null
-      || throwIfNot (canRun buildPlatform dc.execute)
+      || throwIfNot (
+        canRun buildPlatform dc.execute
+        || canRun schedulingPlatform dc.execute
+      )
       "mkDerivation (${name}): build dep '${depName}' cannot execute on ${system}"
       true;
 

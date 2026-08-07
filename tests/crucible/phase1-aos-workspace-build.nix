@@ -10,7 +10,7 @@
     "qemu-crucible-source"
   ];
 
-  attrFailures =
+  requiredAttrFailures =
     lib.concatMap (
       attr:
         lib.optionals (!(builtins.hasAttr attr pkgs)) [
@@ -19,12 +19,31 @@
     )
     requiredAttrs;
 
+  guestMatrixFailures =
+    lib.optionals (
+      pkgs.stdenv.hostPlatform.system == "x86_64-linux"
+      && !(builtins.hasAttr "aarch64-linux" pkgs.guestPackageSets)
+    ) ["pkgs.guestPackageSets must retain the AArch64 guest closure"]
+    ++ lib.optionals (
+      pkgs.stdenv.hostPlatform.system == "x86_64-linux"
+      && builtins.hasAttr "aarch64-linux" pkgs.guestPackageSets
+      && pkgs.guestPackageSets."aarch64-linux".stdenv.hostPlatform.system != "aarch64-linux"
+    ) ["the retained AArch64 guest closure must target aarch64-linux"];
+
+  attrFailures = requiredAttrFailures ++ guestMatrixFailures;
+
   packages =
     if attrFailures == []
     then {
       inherit (pkgs) crucible crucible-controller crucible-qemu-plugin qemu-crucible qemu-crucible-source;
     }
     else {};
+  nativeQemuSystemBinary =
+    {
+      "x86_64-linux" = "qemu-system-x86_64";
+      "aarch64-linux" = "qemu-system-aarch64";
+    }.${pkgs.stdenv.hostPlatform.system}
+    or (throw "crucible phase1 AOS workspace build does not support ${pkgs.stdenv.hostPlatform.system}");
 in
   if attrFailures != []
   then throw "crucible phase1 AOS workspace build lint failed:\n${builtins.concatStringsSep "\n" attrFailures}"
@@ -75,7 +94,7 @@ in
               ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^qemu_package=qemu-crucible$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^qemu_path=${packages.qemu-crucible}/bin/qemu-system-x86_64$' \
+            grep -q '^qemu_path=${packages.qemu-crucible}/bin/${nativeQemuSystemBinary}$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^plugin_package=crucible-qemu-plugin$' \
               ${packages.crucible}/nix-support/crucible-build-info

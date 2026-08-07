@@ -927,6 +927,14 @@ pub(crate) fn production_qemu_lifecycle_config(
     if let Some(kernel_cmdline) = live_qemu_kernel_cmdline() {
         config = config.with_kernel_cmdline_prefix(kernel_cmdline);
     }
+    if let Some((kernel, root_image, kernel_cmdline)) = live_qemu_aarch64_assets()? {
+        config = config.with_guest_assets(
+            crucible::VmArchitecture::Aarch64,
+            kernel,
+            root_image,
+            kernel_cmdline,
+        );
+    }
     if let Some(initrd) = optional_live_qemu_asset(
         "CRUCIBLE_INITRD",
         option_env!("CRUCIBLE_AOS_INITRD"),

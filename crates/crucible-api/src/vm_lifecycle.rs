@@ -28,7 +28,7 @@ use crucible::{
     QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RestartPolicy, RuntimeState,
     ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
     SchedulerLivenessScenario, SchedulerState, SearchFrontierChoices, Seed, Shift, SimInstant,
-    SimulationBackend, SingleScheduler, VirtualTime, World,
+    SimulationBackend, SingleScheduler, VirtualTime, VmArchitecture, World,
 };
 
 use crate::LifecycleApiError;
@@ -48,8 +48,7 @@ const MAX_TRIGGER_SETTLE_BATCHES: usize = 1_024;
 pub struct ProductionVmLifecycleConfig {
     executable: PathBuf,
     plugin: PathBuf,
-    kernel: PathBuf,
-    root_image: PathBuf,
+    guest_assets: BTreeMap<VmArchitecture, ProductionVmGuestAssets>,
     initrd: Option<PathBuf>,
     kernel_cmdline_prefix: Option<String>,
     root_image_format: ProductionRootImageFormat,
@@ -64,11 +63,20 @@ pub struct ProductionVmLifecycleConfig {
     branch_network_choices: Vec<crucible::OverrideDecision>,
 }
 
+/// Immutable boot artifacts selected for one guest architecture.
+#[derive(Clone, Debug)]
+struct ProductionVmGuestAssets {
+    kernel: PathBuf,
+    root_image: PathBuf,
+    kernel_cmdline_prefix: Option<String>,
+}
+
 /// Debugger channel requested for one production QEMU lifecycle node.
 #[derive(Clone, Debug)]
 struct ProductionVmDebugConfig {
     node: Option<String>,
     operator_listen: String,
+    all_nodes: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -121,11 +129,19 @@ impl ProductionVmLifecycleConfig {
         kernel: impl Into<PathBuf>,
         root_image: impl Into<PathBuf>,
     ) -> Self {
+        let mut guest_assets = BTreeMap::new();
+        guest_assets.insert(
+            VmArchitecture::X86_64,
+            ProductionVmGuestAssets {
+                kernel: kernel.into(),
+                root_image: root_image.into(),
+                kernel_cmdline_prefix: None,
+            },
+        );
         Self {
             executable: executable.into(),
             plugin: plugin.into(),
-            kernel: kernel.into(),
-            root_image: root_image.into(),
+            guest_assets,
             initrd: None,
             kernel_cmdline_prefix: None,
             root_image_format: ProductionRootImageFormat::Qcow2,
@@ -152,6 +168,26 @@ impl ProductionVmLifecycleConfig {
     #[must_use]
     pub fn with_kernel_cmdline_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.kernel_cmdline_prefix = Some(prefix.into());
+        self
+    }
+
+    /// Returns this configuration with boot artifacts for another guest architecture.
+    #[must_use]
+    pub fn with_guest_assets(
+        mut self,
+        architecture: VmArchitecture,
+        kernel: impl Into<PathBuf>,
+        root_image: impl Into<PathBuf>,
+        kernel_cmdline_prefix: Option<String>,
+    ) -> Self {
+        self.guest_assets.insert(
+            architecture,
+            ProductionVmGuestAssets {
+                kernel: kernel.into(),
+                root_image: root_image.into(),
+                kernel_cmdline_prefix,
+            },
+        );
         self
     }
 
@@ -215,6 +251,22 @@ impl ProductionVmLifecycleConfig {
         self.debug = Some(ProductionVmDebugConfig {
             node,
             operator_listen: operator_listen.into(),
+            all_nodes: false,
+        });
+        self
+    }
+
+    /// Returns this configuration with mediated gdbstub backends for every node.
+    ///
+    /// The operator listener is still created lazily for one requested node at
+    /// a time. This mode is intended for a long-lived daemon whose submitted
+    /// scenarios are not known when the server configuration is constructed.
+    #[must_use]
+    pub fn with_debug_gdbstubs_for_all_nodes(mut self, operator_listen: impl Into<String>) -> Self {
+        self.debug = Some(ProductionVmDebugConfig {
+            node: None,
+            operator_listen: operator_listen.into(),
+            all_nodes: true,
         });
         self
     }
@@ -313,7 +365,7 @@ pub struct ProductionVmLifecycleLoop {
     node_indexes: BTreeMap<NodeId, usize>,
     restart_generations: BTreeMap<NodeId, u64>,
     executable: PathBuf,
-    root_image: PathBuf,
+    root_images: BTreeMap<NodeId, PathBuf>,
     scenario: ScenarioDef,
     source: ScenarioDefForm,
     config: ProductionVmLifecycleConfig,
@@ -397,6 +449,7 @@ pub fn build_production_vm_lifecycle_loop(
     let mut backends = ProductionNodeSet::new();
     let mut launch_configs = BTreeMap::new();
     let mut node_indexes = BTreeMap::new();
+    let mut root_images = BTreeMap::new();
     let mut debug_backend_paths = BTreeMap::new();
     let mut initial_ticks = None;
     let scenario_seed = scenario.seed().bytes();
@@ -404,6 +457,12 @@ pub fn build_production_vm_lifecycle_loop(
     launch_seed_bytes.copy_from_slice(&scenario_seed[..8]);
     let launch_seed = u64::from_le_bytes(launch_seed_bytes);
     for (index, vm) in nodes.iter().enumerate() {
+        let guest_assets = config.guest_assets.get(&vm.arch).ok_or_else(|| {
+            loop_factory_error(format!(
+                "production QEMU lifecycle has no boot artifacts for {:?}",
+                vm.arch
+            ))
+        })?;
         let node_directory = run_directory.path().join(format!("node-{index}"));
         fs::create_dir_all(&node_directory).map_err(|error| {
             loop_factory_error(format!(
@@ -411,8 +470,16 @@ pub fn build_production_vm_lifecycle_loop(
                 node_directory.display()
             ))
         })?;
-        prepare_root_overlay(&config.executable, &config.root_image, &node_directory)?;
-        let kernel_cmdline = match &config.kernel_cmdline_prefix {
+        prepare_root_overlay(
+            &config.executable,
+            &guest_assets.root_image,
+            &node_directory,
+        )?;
+        let kernel_cmdline_prefix = guest_assets
+            .kernel_cmdline_prefix
+            .as_ref()
+            .or(config.kernel_cmdline_prefix.as_ref());
+        let kernel_cmdline = match kernel_cmdline_prefix {
             Some(prefix) if !prefix.trim().is_empty() => {
                 format!("{} {}", prefix.trim(), vm.cmdline.trim())
             }
@@ -423,8 +490,8 @@ pub fn build_production_vm_lifecycle_loop(
         let mut launch = ProductionLiveNodeStepGateConfig::new_with_root_image(
             qemu_executable,
             &config.plugin,
-            &config.kernel,
-            &config.root_image,
+            &guest_assets.kernel,
+            &guest_assets.root_image,
             &node_directory,
         )
         .with_guest_architecture(production_guest_architecture(vm.arch))
@@ -458,10 +525,11 @@ pub fn build_production_vm_lifecycle_loop(
             launch = launch.with_initrd(initrd);
         }
         if config.debug.as_ref().is_some_and(|debug| {
-            debug
-                .node
-                .as_deref()
-                .map_or(index == 0, |selected| selected == vm.id.name)
+            debug.all_nodes
+                || debug
+                    .node
+                    .as_deref()
+                    .map_or(index == 0, |selected| selected == vm.id.name)
         }) {
             let debug = config.debug.as_ref().ok_or_else(|| {
                 loop_factory_error("debug configuration disappeared during QEMU launch")
@@ -478,6 +546,7 @@ pub fn build_production_vm_lifecycle_loop(
         }
         launch_configs.insert(vm.id.clone(), launch.clone());
         node_indexes.insert(vm.id.clone(), index);
+        root_images.insert(vm.id.clone(), guest_assets.root_image.clone());
         let mut backend = launch_production_live_node(
             &launch,
             &node_directory,
@@ -569,7 +638,7 @@ pub fn build_production_vm_lifecycle_loop(
         node_indexes,
         restart_generations: BTreeMap::new(),
         executable: config.executable.clone(),
-        root_image: config.root_image.clone(),
+        root_images,
         scenario: scenario.clone(),
         source: source.clone(),
         config: config.clone(),

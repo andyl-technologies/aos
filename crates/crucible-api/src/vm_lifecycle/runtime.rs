@@ -602,11 +602,20 @@ impl ProductionVmLifecycleLoop {
                 node_directory.display()
             ),
         })?;
-        prepare_root_overlay(&self.executable, &self.root_image, &node_directory).map_err(
-            |error| SchedulerError::BoundaryViolation {
+        let root_image =
+            self.root_images
+                .get(node)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "production QEMU restart has no root image for `{}`",
+                        node.name
+                    ),
+                })?;
+        prepare_root_overlay(&self.executable, root_image, &node_directory).map_err(|error| {
+            SchedulerError::BoundaryViolation {
                 message: format!("prepare QEMU restart overlay for `{}`: {error}", node.name),
-            },
-        )?;
+            }
+        })?;
         let white_box_enabled = self
             .trigger_world
             .vm_nodes()

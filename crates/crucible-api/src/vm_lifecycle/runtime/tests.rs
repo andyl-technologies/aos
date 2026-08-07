@@ -94,7 +94,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         node_indexes: BTreeMap::new(),
         restart_generations: BTreeMap::new(),
         executable: PathBuf::from("qemu"),
-        root_image: PathBuf::from("root"),
+        root_images: BTreeMap::new(),
         scenario,
         source: source.clone(),
         config,
@@ -114,6 +114,38 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         _run_directory: tempfile::tempdir()
             .unwrap_or_else(|error| panic!("test run directory should build: {error}")),
     }
+}
+
+#[test]
+fn production_guest_assets_are_kept_per_architecture() {
+    let config =
+        ProductionVmLifecycleConfig::new("qemu-system-x86_64", "plugin", "x86-kernel", "x86-root")
+            .with_kernel_cmdline_prefix("console=ttyS0")
+            .with_guest_assets(
+                VmArchitecture::Aarch64,
+                "arm-kernel",
+                "arm-root",
+                Some(String::from("console=ttyAMA0")),
+            );
+
+    let x86 = config
+        .guest_assets
+        .get(&VmArchitecture::X86_64)
+        .unwrap_or_else(|| panic!("x86_64 assets should remain configured"));
+    assert_eq!(x86.kernel, PathBuf::from("x86-kernel"));
+    assert_eq!(x86.root_image, PathBuf::from("x86-root"));
+    assert_eq!(x86.kernel_cmdline_prefix, None);
+
+    let arm = config
+        .guest_assets
+        .get(&VmArchitecture::Aarch64)
+        .unwrap_or_else(|| panic!("AArch64 assets should be configured"));
+    assert_eq!(arm.kernel, PathBuf::from("arm-kernel"));
+    assert_eq!(arm.root_image, PathBuf::from("arm-root"));
+    assert_eq!(
+        arm.kernel_cmdline_prefix.as_deref(),
+        Some("console=ttyAMA0")
+    );
 }
 
 fn graph_runtime(configuration: ContentHash, reduced_state: ContentHash) -> RuntimeState {

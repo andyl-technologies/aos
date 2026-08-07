@@ -1,6 +1,7 @@
 ##! crucible-fixtures — minimal RFC-0010 guest root-image fixtures
 {
   lib,
+  stdenv,
   mkDerivation,
   bash,
   coreutils,
@@ -21,6 +22,12 @@
   hostStoreMountTag = "crucible-store";
   ext4FeatureFlags = "^has_journal,^metadata_csum,^64bit";
   entropySeedMechanism = "scenario-seed-fw_cfg-plus-seeded-qemu-rng";
+  fixtureConsole =
+    {
+      "x86_64-linux" = "ttyS0";
+      "aarch64-linux" = "ttyAMA0";
+    }.${stdenv.hostPlatform.system}
+    or (throw "crucible-fixtures: unsupported system '${stdenv.hostPlatform.system}'");
 
   fixtureClosureDeps = [
     bash
@@ -78,7 +85,7 @@
 
   qemuLaunchFragment = ''
     -kernel $CRUCIBLE_KERNEL
-    -append "$CRUCIBLE_KERNEL_CMDLINE root=/dev/vda init=/init console=ttyS0"
+    -append "$CRUCIBLE_KERNEL_CMDLINE root=/dev/vda init=/init console=${fixtureConsole}"
     -drive id=crucible-root,file=$COW_OVERLAY,format=qcow2,if=none,cache=unsafe,discard=unmap
     -device virtio-blk-pci,drive=crucible-root,id=crucible-root0
     -fsdev local,id=crucible-store,path=/nix/store,security_model=none,readonly=on
@@ -128,6 +135,7 @@ in
       crucibleFixtureCopyOnWriteBoot = true;
       crucibleFixtureEntropySeedMechanism = entropySeedMechanism;
       crucibleFixtureEntropySeedFileName = entropySeedFileName;
+      crucibleFixtureConsole = fixtureConsole;
       crucibleFixtureNodes = fixtureNodes;
       crucibleFixtureThirdPartyGuestPath = thirdPartyGuestPath;
       crucibleFixtureQemuLaunchFragment = qemuLaunchFragment;
