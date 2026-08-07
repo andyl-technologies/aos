@@ -28,11 +28,12 @@ in
         export PATH="${prev.coreutils}/bin:${crossGccStage2}/bin:${crossBinutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin:${prev.m4}/bin:${prev.flex}/bin:${prev.bison}/bin:${prev.texinfo}/bin"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
 
-        # The fetched source can be backed by a read-only filesystem whose
-        # chmod implementation returns ENOSYS. The next command deliberately
-        # makes the private copy writable, so preserving source metadata here
-        # is both unnecessary and less portable across remote builders.
-        cp -r --no-preserve=mode,ownership,timestamps ${src} "$TMPDIR/src"
+        # Do not ask old coreutils `cp` to restore directory permissions: its
+        # fallback chmod syscall is unavailable on some sandbox filesystems.
+        # The next command deliberately makes this private copy writable.
+        mkdir -p "$TMPDIR/src"
+        (cd ${src} && tar cf - .) \
+          | (cd "$TMPDIR/src" && tar --no-same-owner --no-same-permissions -xf -)
         chmod -R u+w "$TMPDIR/src"
 
         # Touch all files first, then touch generated .c/.h to prevent regeneration

@@ -49,15 +49,23 @@ in
               export PATH="${prev.coreutils}/bin:${crossGccStage2}/bin:${crossBinutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin:${prev.m4}/bin:${prev.flex}/bin:${prev.bison}/bin:${prev.texinfo}/bin"
               export CONFIG_SHELL="${prev.bash}/bin/bash"
 
-              cp -r --no-preserve=mode,ownership,timestamps ${gccSrc} "$TMPDIR/gcc-4.8.5"
+              copy_tree() {
+                source_dir="$1"
+                destination_dir="$2"
+                mkdir -p "$destination_dir"
+                (cd "$source_dir" && tar cf - .) \
+                  | (cd "$destination_dir" && tar --no-same-owner --no-same-permissions -xf -)
+              }
+
+              copy_tree ${gccSrc} "$TMPDIR/gcc-4.8.5"
               chmod -R u+w "$TMPDIR/gcc-4.8.5"
 
               # In-tree GMP, MPFR, MPC
-              cp -r --no-preserve=mode,ownership,timestamps ${gmpSrc} "$TMPDIR/gcc-4.8.5/gmp"
+              copy_tree ${gmpSrc} "$TMPDIR/gcc-4.8.5/gmp"
               chmod -R u+w "$TMPDIR/gcc-4.8.5/gmp"
-              cp -r --no-preserve=mode,ownership,timestamps ${mpfrSrc} "$TMPDIR/gcc-4.8.5/mpfr"
+              copy_tree ${mpfrSrc} "$TMPDIR/gcc-4.8.5/mpfr"
               chmod -R u+w "$TMPDIR/gcc-4.8.5/mpfr"
-              cp -r --no-preserve=mode,ownership,timestamps ${mpcSrc} "$TMPDIR/gcc-4.8.5/mpc"
+              copy_tree ${mpcSrc} "$TMPDIR/gcc-4.8.5/mpc"
               chmod -R u+w "$TMPDIR/gcc-4.8.5/mpc"
 
               SRC="$TMPDIR/gcc-4.8.5"
