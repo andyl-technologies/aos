@@ -805,6 +805,15 @@ pub struct BlockExecutionOpportunity {
     pub ready_nanos: u64,
 }
 
+/// Exact resolve/persist decision authenticated to one live request opportunity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedBlockExecutionDirective {
+    /// Complete opportunity identity observed before signal evaluation.
+    pub opportunity: BlockExecutionOpportunity,
+    /// Resolved request mutation for that exact coordinate.
+    pub directive: ResolvedBlockFaultDirective,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BlockExecutionPendingRequest {
     opportunity: BlockExecutionOpportunity,
@@ -1064,28 +1073,29 @@ impl BlockFaultState {
     /// already installed.
     pub fn install_execution_directive(
         &mut self,
-        request_sequence: u64,
-        mut directive: ResolvedBlockFaultDirective,
+        resolved: ResolvedBlockExecutionDirective,
     ) -> Result<(), DeviceError> {
+        let request_sequence = resolved.opportunity.request_sequence;
+        let directive = resolved.directive;
         let pending = self.execution_pending.get(&request_sequence).ok_or(
             DeviceError::InvalidBlockFaultDirective {
                 reason: "execution directive has no ready request opportunity",
             },
         )?;
         directive.validate_for(&pending.opportunity.request, &self.config)?;
-        if directive.request_sequence != request_sequence
+        if resolved.opportunity != pending.opportunity
+            || directive.request_sequence != request_sequence
             || pending.execution.is_some()
             || !directive.service_rules.is_empty()
+            || directive.execution_nanos != pending.opportunity.ready_nanos
+            || (!directive.persistence_transforms.is_empty()
+                && directive.persistence_admitted_nanos != pending.opportunity.ready_nanos)
             || directive.availability != pending.admission.availability
             || directive.reported_capacity_bytes != pending.admission.reported_capacity_bytes
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "execution directive identity or phase is invalid",
             });
-        }
-        directive.execution_nanos = pending.opportunity.ready_nanos;
-        if !directive.persistence_transforms.is_empty() {
-            directive.persistence_admitted_nanos = pending.opportunity.ready_nanos;
         }
         let mut next = self.clone();
         let next_pending = next.execution_pending.get_mut(&request_sequence).ok_or(
@@ -1871,6 +1881,7 @@ impl BlockFaultState {
     pub(super) fn next_execution_deadline_nanos(&self) -> Option<u64> {
         self.execution_pending
             .values()
+            .filter(|pending| pending.execution.is_none())
             .map(|pending| pending.opportunity.ready_nanos)
             .min()
     }
@@ -5314,9 +5325,20 @@ mod tests {
 
         let mut execution = ResolvedBlockFaultDirective::fault_free(&request, 32);
         execution.request_sequence = 900;
-        execution.execution_nanos = 999;
+        execution.execution_nanos = 18;
+        assert!(matches!(
+            storage.install_execution_directive(ResolvedBlockExecutionDirective {
+                opportunity: opportunity.clone(),
+                directive: execution.clone(),
+            }),
+            Err(DeviceError::InvalidBlockFaultDirective { .. })
+        ));
+        execution.execution_nanos = 17;
         storage
-            .install_execution_directive(900, execution)
+            .install_execution_directive(ResolvedBlockExecutionDirective {
+                opportunity,
+                directive: execution,
+            })
             .unwrap_or_else(|error| panic!("execution directive should install: {error}"));
         storage
             .validate_restore(32)

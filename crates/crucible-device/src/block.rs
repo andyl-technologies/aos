@@ -47,6 +47,7 @@ pub use service::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DeviceError;
     use crate::subnode::IoCore;
 
     /// Unwraps a result in tests, panicking with the error on failure.
@@ -169,6 +170,45 @@ mod tests {
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].sequence, 700);
         assert_eq!(outcomes[0].finished_nanos, 10);
+    }
+
+    #[test]
+    fn unresolved_storage_execution_is_a_hard_advance_horizon() {
+        let core = ok(IoCore::new(0, crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
+        let latency = BlockLatency::new(0, 0, 0, 0, 0);
+        let mut device = BlockDevice::new(core, ramp_base(PAGE_SIZE), latency);
+        ok(device.configure_storage_faults(
+            BlockDurabilityConfig::write_through(PAGE_SIZE as u64),
+            true,
+        ));
+        ok(device.require_storage_execution_opportunities());
+        let request = BlockRequest::write(60, 0, vec![0xa5; 4]);
+        let mut admission = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
+        admission.request_sequence = 950;
+        ok(device.install_storage_fault_directive(request.request_id, admission));
+        ok(device.submit(0, &request));
+
+        assert_eq!(ok(device.advance_to(0)), 0);
+        assert_eq!(
+            device.advance_to(1),
+            Err(DeviceError::UnresolvedBlockFaultOpportunity {
+                ready_nanos: 0,
+                requested_nanos: 1,
+            })
+        );
+        assert_eq!(device.core().current_icount(), 0);
+        let opportunity = device
+            .next_storage_execution_opportunity(0)
+            .unwrap_or_else(|| panic!("execution opportunity should remain live"));
+        let mut execution = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
+        execution.request_sequence = 950;
+        ok(
+            device.install_storage_execution_directive(ResolvedBlockExecutionDirective {
+                opportunity,
+                directive: execution,
+            }),
+        );
+        assert_eq!(ok(device.advance_to(1)), 1);
     }
 
     #[test]

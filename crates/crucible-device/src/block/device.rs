@@ -36,7 +36,8 @@ use super::codec::{BlockErrorCode, BlockOp, BlockRequest, BlockResponse, RESPONS
 use super::fault::{
     BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRetainedRelease,
-    ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
+    ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
+    ResolvedBlockPersistenceMediaDirective,
 };
 use super::overlay::{BaseImage, CowOverlay};
 use super::service::BlockServiceCompletion;
@@ -360,11 +361,9 @@ impl BlockDevice {
     /// opportunity, repeats queue service, or violates storage bounds.
     pub fn install_storage_execution_directive(
         &mut self,
-        request_sequence: u64,
-        directive: ResolvedBlockFaultDirective,
+        directive: ResolvedBlockExecutionDirective,
     ) -> Result<(), DeviceError> {
-        self.storage_faults
-            .install_execution_directive(request_sequence, directive)
+        self.storage_faults.install_execution_directive(directive)
     }
 
     /// Returns the next physical persistence opportunity ready at `now_nanos`.
@@ -656,6 +655,7 @@ impl BlockDevice {
         request_icount: u64,
     ) -> Result<(), DeviceError> {
         let now_nanos = icount_to_virtual_ns(request_icount, self.core.shift_bits())?;
+        self.reject_advance_past_unresolved_execution(now_nanos)?;
         let mut next_faults = self.storage_faults.clone();
         let mut next_overlay = self.overlay.clone();
         let mut next_core = self.core.clone();
@@ -693,6 +693,7 @@ impl BlockDevice {
     /// icount.
     pub fn advance_to(&mut self, limit: u64) -> Result<usize, DeviceError> {
         let now_nanos = icount_to_virtual_ns(limit, self.core.shift_bits())?;
+        self.reject_advance_past_unresolved_execution(now_nanos)?;
         let mut next_faults = self.storage_faults.clone();
         let mut next_overlay = self.overlay.clone();
         let mut next_core = self.core.clone();
@@ -745,6 +746,7 @@ impl BlockDevice {
         consumer_slot: &NodeSlot,
     ) -> Result<ShmemDeliveryResult, DeviceError> {
         let now_nanos = icount_to_virtual_ns(limit, self.core.shift_bits())?;
+        self.reject_advance_past_unresolved_execution(now_nanos)?;
         let mut next_faults = self.storage_faults.clone();
         let mut next_overlay = self.overlay.clone();
         let mut next_core = self.core.clone();
@@ -773,6 +775,21 @@ impl BlockDevice {
         self.core = next_core;
         self.core
             .advance_to_shmem(limit, outbox, outbox_entries, consumer_slot)
+    }
+
+    fn reject_advance_past_unresolved_execution(
+        &self,
+        requested_nanos: u64,
+    ) -> Result<(), DeviceError> {
+        if let Some(ready_nanos) = self.storage_faults.next_execution_deadline_nanos()
+            && ready_nanos < requested_nanos
+        {
+            return Err(DeviceError::UnresolvedBlockFaultOpportunity {
+                ready_nanos,
+                requested_nanos,
+            });
+        }
+        Ok(())
     }
 
     /// Pops the next delivered response, decoding it from wire bytes.
