@@ -49,7 +49,7 @@
       }
       {
         label = "pinned vendored dependency hash binding";
-        needle = "cargoDepsHash = \"sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=\";";
+        needle = "cargoDepsHash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
       }
       {
         label = "vendored dependency hash consumed by cargo deps";
