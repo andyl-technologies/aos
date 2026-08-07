@@ -397,6 +397,13 @@ pub const ORGANIZATION_PAGES: &[PageSpec] = &[
 pub const REGISTRY_PAGES: &[PageSpec] = &[
     PageSpec::new("overview", "Overview", "", "", "registry-overview"),
     PageSpec::new(
+        "images",
+        "Images",
+        "Publishing",
+        "images",
+        "registry-images",
+    ),
+    PageSpec::new(
         "placements",
         "Storage & replicas",
         "Topology",
