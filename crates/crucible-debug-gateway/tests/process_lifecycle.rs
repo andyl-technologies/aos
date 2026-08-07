@@ -137,6 +137,66 @@ fn stable_gdb_connection_survives_backend_replacement() {
         .unwrap_or_else(|_| panic!("second fake backend should not panic"));
 }
 
+#[test]
+fn operator_reconnect_restores_the_active_qemu_backend() {
+    let executable = Path::new(env!("CARGO_BIN_EXE_crucible-debug-gateway"));
+    let directory = tempfile::tempdir()
+        .unwrap_or_else(|error| panic!("temporary backend directory should open: {error}"));
+    let backend_path = directory.path().join("reconnecting.sock");
+    let backend = spawn_reconnecting_fake_qemu_backend(backend_path.clone());
+    let trusted_listen = "127.0.0.1:0"
+        .parse()
+        .unwrap_or_else(|error| panic!("trusted loopback should parse: {error}"));
+    let mut process = DebugGatewayProcess::launch_with_trusted_loopback(executable, trusted_listen)
+        .unwrap_or_else(|error| panic!("gateway should launch: {error}"));
+    process
+        .promote_backend(&backend_path)
+        .unwrap_or_else(|error| panic!("backend should promote: {error}"));
+    let operator_listen = process
+        .operator_listen()
+        .unwrap_or_else(|| panic!("trusted gateway should expose a gdb listener"));
+
+    let mut first = TcpStream::connect(operator_listen)
+        .unwrap_or_else(|error| panic!("first operator should connect: {error}"));
+    first
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap_or_else(|error| panic!("first operator timeout should set: {error}"));
+    assert_eq!(read_rsp_payload(&mut first), b"T05");
+    first
+        .write_all(b"+")
+        .unwrap_or_else(|error| panic!("first stop should acknowledge: {error}"));
+    first
+        .write_all(&encode_rsp_packet(b"Hg1"))
+        .unwrap_or_else(|error| panic!("thread selection should write: {error}"));
+    assert_eq!(read_rsp_payload(&mut first), b"OK");
+    first
+        .write_all(&encode_rsp_packet(b"g"))
+        .unwrap_or_else(|error| panic!("first register query should write: {error}"));
+    assert_eq!(read_rsp_payload(&mut first), b"0102");
+    drop(first);
+
+    let mut second = TcpStream::connect(operator_listen)
+        .unwrap_or_else(|error| panic!("second operator should connect: {error}"));
+    second
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap_or_else(|error| panic!("second operator timeout should set: {error}"));
+    assert_eq!(read_rsp_payload(&mut second), b"T05");
+    second
+        .write_all(b"+")
+        .unwrap_or_else(|error| panic!("second stop should acknowledge: {error}"));
+    second
+        .write_all(&encode_rsp_packet(b"g"))
+        .unwrap_or_else(|error| panic!("second register query should write: {error}"));
+    assert_eq!(read_rsp_payload(&mut second), b"0102");
+
+    process
+        .shutdown()
+        .unwrap_or_else(|error| panic!("gateway should shut down: {error}"));
+    backend
+        .join()
+        .unwrap_or_else(|_| panic!("reconnecting fake backend should not panic"));
+}
+
 fn poll_run_control(process: &mut DebugGatewayProcess) -> Vec<u8> {
     for _attempt in 0..100 {
         let routed = process
@@ -180,6 +240,41 @@ fn spawn_fake_qemu_backend(
             .unwrap_or_else(|error| panic!("request reply should write: {error}"));
         let mut drain = [0_u8; 64];
         while stream.read(&mut drain).is_ok_and(|read| read != 0) {}
+    })
+}
+
+fn spawn_reconnecting_fake_qemu_backend(path: PathBuf) -> JoinHandle<()> {
+    let listener = UnixListener::bind(&path)
+        .unwrap_or_else(|error| panic!("fake QEMU backend should bind: {error}"));
+    thread::spawn(move || {
+        for _connection in 0..2 {
+            let (mut stream, _) = listener
+                .accept()
+                .unwrap_or_else(|error| panic!("gateway backend should connect: {error}"));
+            assert_eq!(read_rsp_payload(&mut stream), b"?");
+            stream
+                .write_all(b"+")
+                .unwrap_or_else(|error| panic!("validation acknowledgement should write: {error}"));
+            stream
+                .write_all(&encode_rsp_packet(b"T05"))
+                .unwrap_or_else(|error| panic!("validation stop should write: {error}"));
+            assert_eq!(read_rsp_payload(&mut stream), b"Hg1");
+            stream
+                .write_all(b"+")
+                .unwrap_or_else(|error| panic!("thread acknowledgement should write: {error}"));
+            stream
+                .write_all(&encode_rsp_packet(b"OK"))
+                .unwrap_or_else(|error| panic!("thread selection reply should write: {error}"));
+            assert_eq!(read_rsp_payload(&mut stream), b"g");
+            stream
+                .write_all(b"+")
+                .unwrap_or_else(|error| panic!("request acknowledgement should write: {error}"));
+            stream
+                .write_all(&encode_rsp_packet(b"0102"))
+                .unwrap_or_else(|error| panic!("register reply should write: {error}"));
+            let mut drain = [0_u8; 64];
+            while stream.read(&mut drain).is_ok_and(|read| read != 0) {}
+        }
     })
 }
 

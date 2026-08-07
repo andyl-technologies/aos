@@ -269,7 +269,10 @@ For example:
   session for the persistent GDB relay.
 - Packaged GDB can inspect registers and threads through a live x86_64 daemon
   relay. QEMU currently rejects GDB's optional trace-status and detach packets;
-  GDB reports those packet errors even though inspection succeeds.
+  GDB reports those packet errors even though inspection succeeds. After GDB
+  disconnects, the gateway reconnects and revalidates the private QEMU RSP
+  endpoint, so a new `attach-gdb` invocation can inspect the same paused runtime
+  without an intervening `goto`.
 - The shipped fixtures do not start the debug guest agent at fork time, so
   remote `exec`, `pty`, and `ssh` currently reach the bounded response-idle
   error instead of executing a command.
@@ -345,7 +348,13 @@ The CLI acquires the session's exclusive controller lease, asks the daemon to
 attach its private standalone gateway, binds the requested client-side loopback
 listener, and prints the actual address. Connect ordinary GDB to that address in
 a second terminal. Closing GDB or pressing Ctrl-C closes the relay and releases
-the lease. Retrying attachment for the same live session is idempotent.
+the lease. Retrying attachment for the same live session is idempotent: the
+gateway reconnects the private QEMU RSP endpoint, verifies its paused state, and
+replays acknowledged thread selections and hardware breakpoints before serving
+the next GDB client. If a state-changing RSP reply or scheduler operation was
+still pending at disconnect, or reconnection fails, the gateway deactivates the
+backend and rejects later RSP requests until a runtime reposition promotes a
+fresh backend.
 
 The daemon-local address is never exposed directly to the remote operator. All
 GDB bytes cross either mutual-TLS HTTP/2 or the explicitly trusted cleartext

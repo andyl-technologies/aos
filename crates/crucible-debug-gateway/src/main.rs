@@ -479,7 +479,7 @@ fn operator_listener_loop(process: &SharedGatewayProcess, listener: TcpListener)
         match connection {
             Ok(stream) => {
                 let result = serve_operator_connection(process, stream);
-                let cleanup = deactivate_unrecoverable_backend(process);
+                let cleanup = restore_backend_after_operator_disconnect(process, result.is_ok());
                 if let Err(error) = result {
                     eprintln!(
                         "crucible-debug-gateway: operator gdb connection closed: {}",
@@ -503,17 +503,76 @@ fn operator_listener_loop(process: &SharedGatewayProcess, listener: TcpListener)
     }
 }
 
-fn deactivate_unrecoverable_backend(process: &SharedGatewayProcess) -> Result<(), String> {
-    with_gateway(process, |gateway| {
-        gateway.model.deactivate_backend();
+fn restore_backend_after_operator_disconnect(
+    process: &SharedGatewayProcess,
+    relay_closed_cleanly: bool,
+) -> Result<(), String> {
+    let reconnect = with_gateway(process, |gateway| {
+        let recovery_is_unambiguous = relay_closed_cleanly
+            && gateway.rsp_responses_pending == 0
+            && gateway.run_control_requests.is_empty()
+            && gateway.run_control_inflight.is_none()
+            && gateway.scheduler_response_pending.is_none();
+        let active = recovery_is_unambiguous
+            .then(|| gateway.model.active().cloned())
+            .flatten();
+        if !recovery_is_unambiguous {
+            gateway.model.deactivate_backend();
+        }
         gateway.active = None;
         gateway.operator_writer = None;
         gateway.rsp_responses_pending = 0;
         gateway.run_control_requests.clear();
         gateway.run_control_inflight = None;
         gateway.scheduler_response_pending = None;
-        Ok(())
-    })
+        Ok(active.map(|active| {
+            (
+                active.generation,
+                active.endpoint,
+                gateway.model.rsp_state().clone(),
+                gateway.rsp_state_epoch,
+            )
+        }))
+    })?;
+    let Some((generation, endpoint, state, state_epoch)) = reconnect else {
+        return Ok(());
+    };
+
+    let restored = connect_candidate(&endpoint).and_then(|mut stream| {
+        validate_and_hydrate_candidate(&mut stream, &state)?;
+        with_gateway(process, |gateway| {
+            if gateway.active.is_some() {
+                return Ok(true);
+            }
+            let unchanged = gateway.model.active().is_some_and(|active| {
+                active.generation == generation && active.endpoint == endpoint
+            }) && gateway.rsp_state_epoch == state_epoch;
+            if !unchanged {
+                return Ok(false);
+            }
+            gateway.active = Some((generation, stream));
+            Ok(true)
+        })
+    });
+    match restored {
+        Ok(true) => Ok(()),
+        Ok(false) => Ok(()),
+        Err(error) => {
+            with_gateway(process, |gateway| {
+                let failed_backend_is_still_active = gateway.active.is_none()
+                    && gateway.model.active().is_some_and(|active| {
+                        active.generation == generation && active.endpoint == endpoint
+                    });
+                if failed_backend_is_still_active {
+                    gateway.model.deactivate_backend();
+                }
+                Ok(())
+            })?;
+            Err(format!(
+                "restore QEMU RSP backend after operator disconnect: {error}"
+            ))
+        }
+    }
 }
 
 fn serve_operator_connection(
@@ -1091,6 +1150,83 @@ mod tests {
                 .parse()
                 .unwrap_or_else(|error| panic!("test listener should parse: {error}")),
         ))))
+    }
+
+    fn configure_active_backend(process: &SharedGatewayProcess, endpoint: &str) -> UnixStream {
+        let (stream, peer) = UnixStream::pair()
+            .unwrap_or_else(|error| panic!("backend stream pair should open: {error}"));
+        with_gateway(process, |gateway| {
+            let prepared = gateway
+                .model
+                .prepare_backend(QemuRspEndpoint::new(endpoint).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
+            gateway
+                .model
+                .commit_backend(prepared.generation)
+                .map_err(|error| error.to_string())?;
+            gateway.active = Some((prepared.generation, stream));
+            Ok(())
+        })
+        .unwrap_or_else(|error| panic!("active backend should configure: {error}"));
+        peer
+    }
+
+    #[test]
+    fn operator_disconnect_deactivates_backend_with_ambiguous_qemu_response() {
+        let process = test_process();
+        let _peer = configure_active_backend(&process, "/run/crucible/pending-rsp.sock");
+        with_gateway(&process, |gateway| {
+            gateway.rsp_responses_pending = 1;
+            Ok(())
+        })
+        .unwrap_or_else(|error| panic!("pending response should configure: {error}"));
+
+        restore_backend_after_operator_disconnect(&process, true)
+            .unwrap_or_else(|error| panic!("ambiguous response cleanup should succeed: {error}"));
+
+        let active = with_gateway(&process, |gateway| {
+            Ok((gateway.model.active().cloned(), gateway.active.is_some()))
+        })
+        .unwrap_or_else(|error| panic!("gateway state should inspect: {error}"));
+        assert_eq!(active, (None, false));
+    }
+
+    #[test]
+    fn operator_disconnect_deactivates_backend_with_inflight_run_control() {
+        let process = test_process();
+        let _peer = configure_active_backend(&process, "/run/crucible/inflight-control.sock");
+        with_gateway(&process, |gateway| {
+            gateway.run_control_inflight = Some((1, gateway.operator_epoch, b"s".to_vec()));
+            Ok(())
+        })
+        .unwrap_or_else(|error| panic!("run control should configure: {error}"));
+
+        restore_backend_after_operator_disconnect(&process, true)
+            .unwrap_or_else(|error| panic!("inflight control cleanup should succeed: {error}"));
+
+        let active = with_gateway(&process, |gateway| {
+            Ok((gateway.model.active().cloned(), gateway.active.is_some()))
+        })
+        .unwrap_or_else(|error| panic!("gateway state should inspect: {error}"));
+        assert_eq!(active, (None, false));
+    }
+
+    #[test]
+    fn operator_disconnect_deactivates_backend_when_reconnect_fails() {
+        let process = test_process();
+        let _peer = configure_active_backend(&process, "/missing/crucible/qemu-rsp.sock");
+
+        let error = match restore_backend_after_operator_disconnect(&process, true) {
+            Ok(()) => panic!("missing backend endpoint must fail reconnect"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("restore QEMU RSP backend"));
+        let active = with_gateway(&process, |gateway| {
+            Ok((gateway.model.active().cloned(), gateway.active.is_some()))
+        })
+        .unwrap_or_else(|error| panic!("gateway state should inspect: {error}"));
+        assert_eq!(active, (None, false));
     }
 
     #[test]
