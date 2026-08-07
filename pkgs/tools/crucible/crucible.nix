@@ -16,6 +16,7 @@
   bash,
   qemu-crucible-source,
   gdb,
+  openssh,
   controllerOnly ? false,
 }: let
   version = "0.1.0";
@@ -280,7 +281,7 @@
     src = null;
     buildDeps = [bash];
     runtimeDeps =
-      [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb]
+      [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh]
       ++ lib.optionals (aarch64Guests != null) [aarch64Linux aarch64Fixtures];
     propagatedDeps = [];
     phases = [
@@ -331,6 +332,7 @@
           chmod +x "$out/bin/crucible"
           ln -s ${gdb}/bin/gdb "$out/bin/gdb"
           ln -s ${gdb}/bin/gdbserver "$out/bin/gdbserver"
+          ln -s ${openssh}/bin/ssh "$out/bin/ssh"
 
           cat > "$out/share/aos/crucible/release-manifest.env" <<'CRUCIBLE_RELEASE_MANIFEST'
           ${releaseManifest.envText}

@@ -58,7 +58,7 @@
       }
       {
         label = "suite runtime closure keeps controller and QEMU-side outputs separate";
-        needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb]";
+        needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh]";
       }
       {
         label = "suite runtime closure retains AArch64 guest artifacts";
