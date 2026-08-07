@@ -57,6 +57,7 @@ uuid = { workspace = true }
 # and the trusted-key fingerprint line; aos-registry-surface is the wasm-clean
 # surface reader already shared with the Worker.
 aos-registry-surface = { workspace = true }
+aos-hub-console-contract = { workspace = true }
 # The wasm-clean Connect-JSON message structs (prost-build + serde) for the
 # aos.hub.v1 API. The shared `service` layer speaks these on both the
 # native hub and the Cloudflare Worker (RFC-0004 Phase 5, single transport).

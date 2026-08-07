@@ -1,7 +1,7 @@
 ##! wasm-bindgen-cli — generates JS/TS bindings for a wasm-bindgen-built wasm
 ##!
 ##! Version-locked to the `wasm-bindgen` crate the worker compiles against
-##! (see `crates/Cargo.lock`: `wasm-bindgen` 0.2.125). The CLI emits the JS
+##! (see `crates/Cargo.lock`: `wasm-bindgen` 0.2.126). The CLI emits the JS
 ##! glue that the wasm module's imports/exports are wired against, so a CLI
 ##! that drifts from the crate version produces bindings that break at
 ##! runtime. Keep this in lockstep with the locked `wasm-bindgen` version.
@@ -10,7 +10,7 @@
   fetchurl,
   fetchCargoDeps,
 }: let
-  version = "0.2.125";
+  version = "0.2.126";
   src = fetchurl {
     # The published `wasm-bindgen-cli` crate is a self-contained package with
     # its own Cargo.lock (unlike the rustwasm/wasm-bindgen git tree, which
@@ -21,7 +21,7 @@
     urls = [
       "https://static.crates.io/crates/wasm-bindgen-cli/wasm-bindgen-cli-${version}.crate"
     ];
-    hash = "sha256-RUeUL+/rMfEdMu9mrxjWiQ4iE+0YMs3BXjOWx/NevJg=";
+    hash = "sha256-ji6/bu+Hw05mI0fx3d++pUEwS7cpRxHtLCrNh0bMW1A=";
   };
 in
   mkCargoPackage {
@@ -30,7 +30,7 @@ in
 
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-rhpPCBagkQaEY2tGRr8wOfoD2IFfxn+6vkPsi2pgy7Y=";
+      hash = "sha256-/XRQHfg6zmnzt1tkkbbACDcNHNwLZogQRAXhnRdaBRo=";
     };
 
     doCheck = false;

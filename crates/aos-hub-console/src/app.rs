@@ -11,9 +11,6 @@ use crate::route::{ConsoleRoute, ConsoleScope, PageSpec};
 use crate::transport::ApiClient;
 use crate::workflows::ResourceWorkflow;
 
-/// Bundled stylesheet used by native and Worker application shells.
-pub const STYLE_CSS: &str = include_str!("../assets/app.css");
-
 /// Mounts the closed management application for the current canonical path.
 #[component]
 pub fn App() -> impl IntoView {
@@ -25,7 +22,6 @@ pub fn App() -> impl IntoView {
     });
 
     view! {
-        <style>{STYLE_CSS}</style>
         {match route {
             Some(route) => {
                 let fallback_route = route.clone();

@@ -2,8 +2,8 @@
 
 This document defines one settings system for instance administration,
 organizations, registries, and binary caches. It preserves the current visual
-language—paper-like content, thin rules, compact chips, plain forms, dense
-legible tables, and no-JS operation—but replaces inconsistent navigation,
+language—paper-like content, thin rules, compact chips, plain forms, and dense
+legible tables—but replaces inconsistent navigation,
 overloaded panels, and hidden topology relationships.
 
 ## Problems in the current UI
@@ -717,8 +717,8 @@ work, and administratively leaked bytes.
 Before the first destructive sweep, the collection page offers a separate
 plan/acknowledge flow bound to one valid reviewed GC plan. It shows that the
 acknowledgement intentionally stales that plan and that a new plan is required
-to run collection. Ordinary run confirmation and no-JS `--yes` equivalents do
-not create this durable acknowledgement implicitly.
+to run collection. Ordinary run confirmation and CLI `--yes` do not create
+this durable acknowledgement implicitly.
 
 Placement eviction is linked from this page but edited under Storage &
 replicas. A local tier quota never appears as permission to collect a logically
@@ -857,8 +857,9 @@ Forms use the existing visual style. Improve hierarchy through structure:
 - one primary submit button with a precise verb; and
 - impact review before high-consequence apply.
 
-JavaScript may update previews and conditional fields. The server renders the
-same valid defaults and validates the full state without JavaScript.
+The Leptos client updates previews and conditional fields, then submits typed
+requests to the canonical API. The server remains the sole validator and
+authorization authority; no management form POST fallback is mounted.
 
 ## Empty, loading, and degraded states
 
@@ -913,7 +914,8 @@ visible and place remediation beside the failing row.
   “Frontend” do not appear in final canonical nav/help text.
 - Wide, medium, and narrow layout snapshots cover long domains, endpoints,
   nested registry slugs, warning banners, and empty states.
-- Every page works without JavaScript and exposes the same operations as the
-  CLI/API permission model.
+- Every management page exposes the same operations as the CLI/API permission
+  model. With JavaScript disabled it fails explicitly instead of silently
+  falling back to a second mutation implementation.
 - Page titles, breadcrumb labels, nav labels, CLI nouns, and API resources use
   the same terminology.

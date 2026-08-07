@@ -22,6 +22,7 @@
   pkg-config,
   protobuf,
   zlib,
+  aos-hub-console-dist,
 }: let
   version = "0.1.0";
   repoRoot = ../../..;
@@ -79,6 +80,9 @@ in
       export OPENSSL_NO_VENDOR=1
       export OPENSSL_STATIC=0
       export PROTOC="${protobuf}/bin/protoc"
+      export AOS_HUB_CONSOLE_JS="${aos-hub-console-dist}/hub-console.js"
+      export AOS_HUB_CONSOLE_WASM="${aos-hub-console-dist}/hub-console_bg.wasm"
+      export AOS_HUB_CONSOLE_CSS="${aos-hub-console-dist}/hub-console.css"
     '';
 
     # The workspace test suite is exercised by the `aos` package's

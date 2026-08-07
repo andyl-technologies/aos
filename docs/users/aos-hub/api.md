@@ -71,11 +71,11 @@ All OAuth credential responses carry `Cache-Control: no-store`. Native and
 Cloudflare Worker deployments mount the same handlers and return the same
 structured pending, slow-down, denial, expiry, and invalid-grant errors.
 
-The current CLI and console do not provide an initial instance-admin bearer
-token. Bootstrap administration through the local `aos-hub` command on native
-deployments or the web console on either runtime. Treat administrative API
-methods as integration points for clients that already have a suitably scoped
-credential.
+The CLI obtains user credentials through `aos hub login`; the browser console
+obtains a short-lived bearer from its signed-in session without exposing it to
+the user. Bootstrap administration through the local `aos-hub` command on
+native deployments or the web console on either runtime. Non-browser API
+clients still need a suitably scoped device-flow or provisioning credential.
 
 Browser authentication uses an opaque session cookie and is intentionally
 separate from API bearer tokens.

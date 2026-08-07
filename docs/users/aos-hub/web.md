@@ -1,10 +1,11 @@
 # Use the AOS Hub web interface
 
-The Hub web interface is rendered on the server. Its browse and management
-forms work without JavaScript; passkey sign-in uses a small first-party script.
-Public registry pages can be read anonymously. Account, organization, project,
-registry, and instance changes require a signed-in account with permission on
-the relevant scope.
+The Hub has two browser surfaces. Public registry browsing and the login,
+account-security, invitation, and device-approval ceremonies are rendered on
+the server. Authenticated resource management uses the first-party AOS Hub
+console and requires JavaScript. Public registry pages can be read anonymously.
+Account, organization, project, registry, and instance changes require a
+signed-in account with permission on the relevant scope.
 
 ## Browse published data
 
@@ -19,11 +20,18 @@ named `cdn` in the `acme` organization:
 | Channels | `/acme/cdn/-/channels` |
 | Channel detail | `/acme/cdn/-/channels/<name>` |
 | Releases | `/acme/cdn/-/releases` |
+| System images | `/acme/cdn/-/images` |
 | Registry health | `/acme/cdn/-/health` |
 
 The `/-/` segment keeps human-facing routes separate from the machine facade at
 the registry root. Git objects, AOS releases and channels, Nix cache metadata,
 and NARs therefore keep their native paths.
+
+The Images page presents signed release encodings as end-user disk downloads,
+including architecture, format, compatible target, size, checksum, and
+verification state. Public downloads may use a ready CDN or direct delivery
+route. Private downloads stay on the Hub origin so the signed-in browser can
+authorize the exact disk bytes with its session cookie.
 
 ## Sign in and administer a Hub
 
@@ -36,6 +44,13 @@ After signing in, use:
 - `/-/account` for the current account;
 - the organization and instance settings under `/-/` for administrative work;
 - `/<org>/<registry>/-/settings` for registry configuration.
+
+The management console uses the same `aos.hub.v1` Connect API, reviewed
+plan/apply mutations, and IAM checks as the CLI. It exchanges the HttpOnly
+browser session and page CSRF proof for a five-minute bearer held only in
+memory; it never stores that bearer in local storage or IndexedDB. Canonical
+management deep links therefore load the same client application, while login
+and account-security ceremonies remain ordinary server-rendered pages.
 
 The console uses the same IAM roles and scope inheritance as the API.
 Permissions inherit down the scope tree, from the instance to an organization,

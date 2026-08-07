@@ -267,7 +267,9 @@ dependencies = [
  "aos-core",
  "aos-hub-core",
  "aos-package",
+ "aos-proto-types",
  "aos-registry-surface",
+ "aos-remote",
  "argon2",
  "async-trait",
  "axum",
@@ -310,11 +312,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-hub-console"
+version = "0.1.0"
+dependencies = [
+ "aos-hub-console-contract",
+ "aos-proto-types",
+ "gloo-net",
+ "js-sys",
+ "leptos",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "aos-hub-console-contract"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "aos-hub-core"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "aos-hub-console-contract",
  "aos-proto-types",
  "aos-registry-surface",
  "argon2",
