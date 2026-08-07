@@ -552,6 +552,8 @@ struct IdentityProviderSetPlanInput {
     enforce_sso: bool,
     default_role: String,
     baseline_resource_version: Option<i64>,
+    baseline_incarnation_id: Option<String>,
+    incarnation_id: String,
 }
 
 /// Exact baseline for removing one organization IdP configuration.
@@ -560,6 +562,7 @@ struct IdentityProviderRemovePlanInput {
     org_id: i64,
     org_slug: String,
     baseline_resource_version: i64,
+    baseline_incarnation_id: Option<String>,
 }
 
 /// Exact ownership and revision sealed by an organization-domain plan.
@@ -570,6 +573,8 @@ struct OrganizationDomainPlanInput {
     domain: String,
     txt_challenge: String,
     baseline_resource_version: Option<i64>,
+    baseline_incarnation_id: Option<String>,
+    incarnation_id: String,
 }
 
 /// Immutable preconditions for issuing one scoped access-token generation.
@@ -1790,7 +1795,10 @@ fn identity_provider_message(
         allow_jit: record.allow_jit,
         enforce_sso: record.enforce_sso,
         default_role: record.default_role,
-        resource_version: record.resource_version.to_string(),
+        resource_version: identity_resource_version(
+            record.resource_version,
+            record.incarnation_id.as_deref(),
+        ),
     }
 }
 
@@ -1808,7 +1816,10 @@ fn organization_domain_message(
         },
         txt_challenge: record.txt_challenge,
         verified_at: record.verified_at.unwrap_or_default(),
-        resource_version: record.resource_version.to_string(),
+        resource_version: identity_resource_version(
+            record.resource_version,
+            record.incarnation_id.as_deref(),
+        ),
     }
 }
 
@@ -19876,10 +19887,18 @@ impl RpcService {
             .idp_config(org.id)
             .await
             .map_err(RpcError::internal)?;
-        let baseline_resource_version = require_exact_optional_version(
+        let baseline_resource_version = require_exact_identity_version(
             &req.expected_resource_version,
-            existing.as_ref().map(|record| record.resource_version),
+            existing
+                .as_ref()
+                .map(|record| (record.resource_version, record.incarnation_id.as_deref())),
         )?;
+        let baseline_incarnation_id = existing
+            .as_ref()
+            .and_then(|record| record.incarnation_id.clone());
+        let incarnation_id = baseline_incarnation_id
+            .clone()
+            .unwrap_or_else(|| format!("idp-incarnation-{}", uuid::Uuid::new_v4()));
         let client_secret_action = if !req.replace_client_secret {
             "preserve"
         } else if req.client_secret.is_empty() {
@@ -19931,6 +19950,8 @@ impl RpcService {
             enforce_sso: req.enforce_sso,
             default_role: req.default_role.trim().to_string(),
             baseline_resource_version,
+            baseline_incarnation_id,
+            incarnation_id,
         };
         let candidate =
             idp_record_from_plan(&input, input.baseline_resource_version.unwrap_or(0) + 1);
@@ -20010,6 +20031,7 @@ impl RpcService {
             .apply_identity_provider_set_plan(
                 &config,
                 input.baseline_resource_version,
+                input.baseline_incarnation_id.as_deref(),
                 scope.as_str(),
                 &plan.plan_id,
                 &req.idempotency_key,
@@ -20048,14 +20070,24 @@ impl RpcService {
         let scope = Scope::parse(&org.stable_id);
         self.require_permission(&claims, Permission::IamAdmin, &scope)
             .await?;
+        if let Some(replayed) = self
+            .replayed_identity_provider_remove_plan(&claims, &req)
+            .await?
+        {
+            return Ok(replayed);
+        }
         let current = self
             .db
             .idp_config(org.id)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("identity provider"))?;
-        let expected = parse_resource_version(&req.expected_resource_version, -1)?;
-        if expected != current.resource_version {
+        if req.expected_resource_version
+            != identity_resource_version(
+                current.resource_version,
+                current.incarnation_id.as_deref(),
+            )
+        {
             return Err(RpcError::FailedPrecondition(
                 "identity-provider revision changed".into(),
             ));
@@ -20064,6 +20096,7 @@ impl RpcService {
             org_id: org.id,
             org_slug: org.slug,
             baseline_resource_version: current.resource_version,
+            baseline_incarnation_id: current.incarnation_id,
         };
         self.create_control_plan(
             &claims,
@@ -20079,6 +20112,35 @@ impl RpcService {
             Some(control_confirmation_hash(&input)?),
         )
         .await
+    }
+
+    async fn replayed_identity_provider_remove_plan(
+        &self,
+        claims: &Claims,
+        request: &pb::PlanRemoveIdentityProviderRequest,
+    ) -> Result<Option<pb::TopologyPlanResponse>, RpcError> {
+        let Some((plan, input)) = self
+            .replayed_control_plan_input::<IdentityProviderRemovePlanInput>(
+                claims,
+                "remove_identity_provider",
+                &request.idempotency_key,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let expected_version = identity_resource_version(
+            input.baseline_resource_version,
+            input.baseline_incarnation_id.as_deref(),
+        );
+        if input.org_slug != request.org_slug
+            || expected_version != request.expected_resource_version
+        {
+            return Err(RpcError::FailedPrecondition(
+                "plan idempotency key was already used for different input".into(),
+            ));
+        }
+        Self::control_plan_response(plan).map(Some)
     }
 
     /// Applies one reviewed OIDC identity-provider removal exactly once.
@@ -20137,6 +20199,7 @@ impl RpcService {
             .apply_identity_provider_remove_plan(
                 org.id,
                 input.baseline_resource_version,
+                input.baseline_incarnation_id.as_deref(),
                 scope.as_str(),
                 &plan.plan_id,
                 &req.idempotency_key,
@@ -20180,9 +20243,10 @@ impl RpcService {
         } else {
             request.role_map_json.trim()
         };
-        let expected_version = input
-            .baseline_resource_version
-            .map_or_else(|| "absent".to_string(), |version| version.to_string());
+        let expected_version = input.baseline_resource_version.map_or_else(
+            || "absent".to_string(),
+            |version| identity_resource_version(version, input.baseline_incarnation_id.as_deref()),
+        );
         let requested_action = if !request.replace_client_secret {
             "preserve"
         } else if request.client_secret.is_empty() {
@@ -20325,6 +20389,19 @@ impl RpcService {
         self.require_permission(&claims, Permission::IamAdmin, &scope)
             .await?;
         let domain = canonical_identity_domain(&req.domain)?;
+        if let Some(replayed) = self
+            .replayed_organization_domain_plan(
+                &claims,
+                "claim_organization_domain",
+                &req.org_slug,
+                &domain,
+                &req.expected_resource_version,
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(replayed);
+        }
         let existing = self
             .db
             .org_domain(&domain)
@@ -20338,10 +20415,18 @@ impl RpcService {
                 "domain is claimed by another organization".into(),
             ));
         }
-        let baseline_resource_version = require_exact_optional_version(
+        let baseline_resource_version = require_exact_identity_version(
             &req.expected_resource_version,
-            existing.as_ref().map(|record| record.resource_version),
+            existing
+                .as_ref()
+                .map(|record| (record.resource_version, record.incarnation_id.as_deref())),
         )?;
+        let baseline_incarnation_id = existing
+            .as_ref()
+            .and_then(|record| record.incarnation_id.clone());
+        let incarnation_id = baseline_incarnation_id
+            .clone()
+            .unwrap_or_else(|| format!("domain-incarnation-{}", uuid::Uuid::new_v4()));
         let challenge = format!(
             "aos-domain-verify={}",
             hex::encode(Sha256::digest(
@@ -20354,6 +20439,8 @@ impl RpcService {
             domain,
             txt_challenge: challenge,
             baseline_resource_version,
+            baseline_incarnation_id,
+            incarnation_id,
         };
         self.create_control_plan(
             &claims,
@@ -20426,6 +20513,7 @@ impl RpcService {
             txt_challenge: input.txt_challenge,
             verified_at: None,
             resource_version: input.baseline_resource_version.unwrap_or(0) + 1,
+            incarnation_id: Some(input.incarnation_id),
             mutation_plan_id: Some(plan.plan_id.clone()),
         };
         let response = pb::OrganizationDomainResponse {
@@ -20437,6 +20525,7 @@ impl RpcService {
             .apply_org_domain_claim_plan(
                 &record,
                 input.baseline_resource_version,
+                input.baseline_incarnation_id.as_deref(),
                 scope.as_str(),
                 &plan.plan_id,
                 &req.idempotency_key,
@@ -20465,13 +20554,32 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::PlanVerifyOrganizationDomainRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        let (claims, org, record, scope) = self
-            .organization_domain_plan_context(
-                auth,
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let domain = canonical_identity_domain(&req.domain)?;
+        if let Some(replayed) = self
+            .replayed_organization_domain_plan(
+                &claims,
+                "verify_organization_domain",
                 &req.org_slug,
-                &req.domain,
+                &domain,
                 &req.expected_resource_version,
+                &req.idempotency_key,
             )
+            .await?
+        {
+            return Ok(replayed);
+        }
+        let record = self
+            .organization_domain_revision(&org, &domain, &req.expected_resource_version)
             .await?;
         if record.verified_at.is_some() {
             return Err(RpcError::FailedPrecondition(
@@ -20484,6 +20592,11 @@ impl RpcService {
             domain: record.domain,
             txt_challenge: record.txt_challenge,
             baseline_resource_version: Some(record.resource_version),
+            baseline_incarnation_id: record.incarnation_id.clone(),
+            incarnation_id: record
+                .incarnation_id
+                .clone()
+                .unwrap_or_else(|| format!("domain-incarnation-{}", uuid::Uuid::new_v4())),
         };
         self.create_control_plan(
             &claims,
@@ -20556,6 +20669,7 @@ impl RpcService {
             .filter(|record| record.org_id == org.id)
             .ok_or_else(|| RpcError::FailedPrecondition("domain claim disappeared".into()))?;
         if current.resource_version != input.baseline_resource_version.unwrap_or(-1)
+            || current.incarnation_id != input.baseline_incarnation_id
             || current.txt_challenge != input.txt_challenge
             || current.verified_at.is_some()
         {
@@ -20579,6 +20693,7 @@ impl RpcService {
         let mut verified = current.clone();
         verified.verified_at = Some(verified_at);
         verified.resource_version += 1;
+        verified.incarnation_id = Some(input.incarnation_id.clone());
         verified.mutation_plan_id = Some(plan.plan_id.clone());
         let response = pb::OrganizationDomainResponse {
             domain: Some(organization_domain_message(&org.slug, verified)),
@@ -20588,6 +20703,8 @@ impl RpcService {
         self.db
             .apply_org_domain_verify_plan(
                 &current,
+                &input.incarnation_id,
+                verified_at,
                 scope.as_str(),
                 &plan.plan_id,
                 &req.idempotency_key,
@@ -20616,13 +20733,32 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::PlanReleaseOrganizationDomainRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        let (claims, org, record, scope) = self
-            .organization_domain_plan_context(
-                auth,
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let domain = canonical_identity_domain(&req.domain)?;
+        if let Some(replayed) = self
+            .replayed_organization_domain_plan(
+                &claims,
+                "release_organization_domain",
                 &req.org_slug,
-                &req.domain,
+                &domain,
                 &req.expected_resource_version,
+                &req.idempotency_key,
             )
+            .await?
+        {
+            return Ok(replayed);
+        }
+        let record = self
+            .organization_domain_revision(&org, &domain, &req.expected_resource_version)
             .await?;
         let input = OrganizationDomainPlanInput {
             org_id: org.id,
@@ -20630,6 +20766,11 @@ impl RpcService {
             domain: record.domain,
             txt_challenge: record.txt_challenge,
             baseline_resource_version: Some(record.resource_version),
+            baseline_incarnation_id: record.incarnation_id.clone(),
+            incarnation_id: record
+                .incarnation_id
+                .clone()
+                .unwrap_or_else(|| format!("domain-incarnation-{}", uuid::Uuid::new_v4())),
         };
         self.create_control_plan(
             &claims,
@@ -20700,7 +20841,9 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .filter(|record| record.org_id == org.id)
             .ok_or_else(|| RpcError::FailedPrecondition("domain claim disappeared".into()))?;
-        if current.resource_version != input.baseline_resource_version.unwrap_or(-1) {
+        if current.resource_version != input.baseline_resource_version.unwrap_or(-1)
+            || current.incarnation_id != input.baseline_incarnation_id
+        {
             return Err(RpcError::FailedPrecondition(
                 "domain claim changed after planning".into(),
             ));
@@ -20729,46 +20872,61 @@ impl RpcService {
         Ok(response)
     }
 
-    async fn organization_domain_plan_context(
+    async fn organization_domain_revision(
         &self,
-        auth: Option<&str>,
-        org_slug: &str,
+        org: &crate::db::OrgRecord,
         domain: &str,
         expected_resource_version: &str,
-    ) -> Result<
-        (
-            Claims,
-            crate::db::OrgRecord,
-            crate::db::OrgDomainRecord,
-            Scope,
-        ),
-        RpcError,
-    > {
-        let claims = self.require_claims(auth)?;
-        let org = self
-            .db
-            .org_by_slug(org_slug)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("organization"))?;
-        let scope = Scope::parse(&org.stable_id);
-        self.require_permission(&claims, Permission::IamAdmin, &scope)
-            .await?;
-        let domain = canonical_identity_domain(domain)?;
+    ) -> Result<crate::db::OrgDomainRecord, RpcError> {
         let record = self
             .db
-            .org_domain(&domain)
+            .org_domain(domain)
             .await
             .map_err(RpcError::internal)?
             .filter(|record| record.org_id == org.id)
             .ok_or_else(|| RpcError::not_found("organization domain"))?;
-        let expected = parse_resource_version(expected_resource_version, -1)?;
-        if expected != record.resource_version {
+        if expected_resource_version
+            != identity_resource_version(record.resource_version, record.incarnation_id.as_deref())
+        {
             return Err(RpcError::FailedPrecondition(
                 "domain claim revision changed".into(),
             ));
         }
-        Ok((claims, org, record, scope))
+        Ok(record)
+    }
+
+    async fn replayed_organization_domain_plan(
+        &self,
+        claims: &Claims,
+        kind: &str,
+        org_slug: &str,
+        domain: &str,
+        expected_resource_version: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<pb::TopologyPlanResponse>, RpcError> {
+        let Some((plan, input)) = self
+            .replayed_control_plan_input::<OrganizationDomainPlanInput>(
+                claims,
+                kind,
+                idempotency_key,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let expected_version = input.baseline_resource_version.map_or_else(
+            || "absent".to_string(),
+            |version| identity_resource_version(version, input.baseline_incarnation_id.as_deref()),
+        );
+        if input.org_slug != org_slug
+            || input.domain != domain
+            || expected_version != expected_resource_version
+        {
+            return Err(RpcError::FailedPrecondition(
+                "plan idempotency key was already used for different input".into(),
+            ));
+        }
+        Self::control_plan_response(plan).map(Some)
     }
 
     /// Persists an immutable plan for issuing a scoped access token.
@@ -26690,6 +26848,32 @@ impl RpcService {
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         Self::control_plan_response(plan)
+    }
+
+    async fn replayed_control_plan_input<T: serde::de::DeserializeOwned>(
+        &self,
+        claims: &Claims,
+        plan_kind: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<(crate::db::TopologyPlanRecord, T)>, RpcError> {
+        if idempotency_key.is_empty() {
+            return Err(RpcError::invalid("idempotency_key is required"));
+        }
+        let Some(plan) = self
+            .db
+            .topology_plan_for_request(
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                plan_kind,
+                idempotency_key,
+            )
+            .await
+            .map_err(RpcError::internal)?
+        else {
+            return Ok(None);
+        };
+        let input = serde_json::from_str(&plan.input_versions_json).map_err(RpcError::internal)?;
+        Ok(Some((plan, input)))
     }
 
     fn control_plan_response(
@@ -32817,18 +33001,21 @@ fn parse_resource_version(value: &str, default: i64) -> Result<i64, RpcError> {
         .map_err(|_| RpcError::invalid("expected_resource_version must be an integer"))
 }
 
-fn require_exact_optional_version(
+fn identity_resource_version(version: i64, incarnation_id: Option<&str>) -> String {
+    format!("{version}@{}", incarnation_id.unwrap_or("legacy"))
+}
+
+fn require_exact_identity_version(
     supplied: &str,
-    current: Option<i64>,
+    current: Option<(i64, Option<&str>)>,
 ) -> Result<Option<i64>, RpcError> {
     match current {
         None if supplied == "absent" => Ok(None),
         None => Err(RpcError::FailedPrecondition(
             "new resource requires expected_resource_version=absent".into(),
         )),
-        Some(version) => {
-            let supplied = parse_resource_version(supplied, -1)?;
-            if supplied == version {
+        Some((version, incarnation_id)) => {
+            if supplied == identity_resource_version(version, incarnation_id) {
                 Ok(Some(version))
             } else {
                 Err(RpcError::FailedPrecondition(
@@ -32863,6 +33050,7 @@ fn idp_record_from_plan(
         enforce_sso: input.enforce_sso,
         default_role: input.default_role.clone(),
         resource_version,
+        incarnation_id: Some(input.incarnation_id.clone()),
         mutation_plan_id: None,
     }
 }
@@ -33626,54 +33814,32 @@ mod cache_upload_tests {
         let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
         db.create_org("identity", "Identity").await.unwrap();
 
+        let idp_request = pb::PlanSetIdentityProviderRequest {
+            org_slug: "identity".into(),
+            issuer: "https://idp.example.test".into(),
+            authorization_endpoint: "https://idp.example.test/authorize".into(),
+            token_endpoint: "https://idp.example.test/token".into(),
+            jwks_uri: "https://idp.example.test/jwks".into(),
+            client_id: "hub".into(),
+            client_secret: "credential".into(),
+            replace_client_secret: true,
+            scopes: "openid email profile".into(),
+            groups_claim: "groups".into(),
+            role_map_json: r#"{"admins":"admin"}"#.into(),
+            allow_jit: true,
+            enforce_sso: true,
+            default_role: "viewer".into(),
+            expected_resource_version: "absent".into(),
+            idempotency_key: "plan-idp-set".into(),
+        };
         let idp_plan = service
-            .plan_set_identity_provider(
-                Some(&auth),
-                pb::PlanSetIdentityProviderRequest {
-                    org_slug: "identity".into(),
-                    issuer: "https://idp.example.test".into(),
-                    authorization_endpoint: "https://idp.example.test/authorize".into(),
-                    token_endpoint: "https://idp.example.test/token".into(),
-                    jwks_uri: "https://idp.example.test/jwks".into(),
-                    client_id: "hub".into(),
-                    client_secret: "credential".into(),
-                    replace_client_secret: true,
-                    scopes: "openid email profile".into(),
-                    groups_claim: "groups".into(),
-                    role_map_json: r#"{"admins":"admin"}"#.into(),
-                    allow_jit: true,
-                    enforce_sso: true,
-                    default_role: "viewer".into(),
-                    expected_resource_version: "absent".into(),
-                    idempotency_key: "plan-idp-set".into(),
-                },
-            )
+            .plan_set_identity_provider(Some(&auth), idp_request.clone())
             .await
             .unwrap()
             .plan
             .unwrap();
         let replay = service
-            .plan_set_identity_provider(
-                Some(&auth),
-                pb::PlanSetIdentityProviderRequest {
-                    org_slug: "identity".into(),
-                    issuer: "https://idp.example.test".into(),
-                    authorization_endpoint: "https://idp.example.test/authorize".into(),
-                    token_endpoint: "https://idp.example.test/token".into(),
-                    jwks_uri: "https://idp.example.test/jwks".into(),
-                    client_id: "hub".into(),
-                    client_secret: "credential".into(),
-                    replace_client_secret: true,
-                    scopes: "openid email profile".into(),
-                    groups_claim: "groups".into(),
-                    role_map_json: r#"{"admins":"admin"}"#.into(),
-                    allow_jit: true,
-                    enforce_sso: true,
-                    default_role: "viewer".into(),
-                    expected_resource_version: "absent".into(),
-                    idempotency_key: "plan-idp-set".into(),
-                },
-            )
+            .plan_set_identity_provider(Some(&auth), idp_request.clone())
             .await
             .unwrap()
             .plan
@@ -33683,8 +33849,8 @@ mod cache_upload_tests {
             .apply_set_identity_provider(
                 Some(&auth),
                 pb::ApplyTopologyPlanRequest {
-                    plan_id: idp_plan.plan_id,
-                    confirmation_hash: idp_plan.confirmation_hash,
+                    plan_id: idp_plan.plan_id.clone(),
+                    confirmation_hash: idp_plan.confirmation_hash.clone(),
                     idempotency_key: "apply-idp-set".into(),
                 },
             )
@@ -33693,7 +33859,14 @@ mod cache_upload_tests {
             .identity_provider
             .unwrap();
         assert!(idp.client_secret_configured);
-        assert_eq!(idp.resource_version, "1");
+        assert!(idp.resource_version.starts_with("1@idp-incarnation-"));
+        let replay = service
+            .plan_set_identity_provider(Some(&auth), idp_request)
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(replay.plan_id, idp_plan.plan_id);
         let org = db.org_by_slug("identity").await.unwrap().unwrap();
         let stored = db.idp_config(org.id).await.unwrap().unwrap();
         assert_eq!(
@@ -33701,16 +33874,14 @@ mod cache_upload_tests {
             Some("sealed:credential")
         );
 
+        let claim_request = pb::PlanClaimOrganizationDomainRequest {
+            org_slug: "identity".into(),
+            domain: "login.example.test".into(),
+            expected_resource_version: "absent".into(),
+            idempotency_key: "plan-domain-claim".into(),
+        };
         let claim_plan = service
-            .plan_claim_organization_domain(
-                Some(&auth),
-                pb::PlanClaimOrganizationDomainRequest {
-                    org_slug: "identity".into(),
-                    domain: "login.example.test".into(),
-                    expected_resource_version: "absent".into(),
-                    idempotency_key: "plan-domain-claim".into(),
-                },
-            )
+            .plan_claim_organization_domain(Some(&auth), claim_request.clone())
             .await
             .unwrap()
             .plan
@@ -33719,8 +33890,8 @@ mod cache_upload_tests {
             .apply_claim_organization_domain(
                 Some(&auth),
                 pb::ApplyTopologyPlanRequest {
-                    plan_id: claim_plan.plan_id,
-                    confirmation_hash: claim_plan.confirmation_hash,
+                    plan_id: claim_plan.plan_id.clone(),
+                    confirmation_hash: claim_plan.confirmation_hash.clone(),
                     idempotency_key: "apply-domain-claim".into(),
                 },
             )
@@ -33729,18 +33900,25 @@ mod cache_upload_tests {
             .domain
             .unwrap();
         assert_eq!(claimed.state, "pending");
-        assert_eq!(claimed.resource_version, "1");
+        assert!(claimed
+            .resource_version
+            .starts_with("1@domain-incarnation-"));
+        let replay = service
+            .plan_claim_organization_domain(Some(&auth), claim_request)
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(replay.plan_id, claim_plan.plan_id);
 
+        let verify_request = pb::PlanVerifyOrganizationDomainRequest {
+            org_slug: "identity".into(),
+            domain: claimed.domain.clone(),
+            expected_resource_version: claimed.resource_version.clone(),
+            idempotency_key: "plan-domain-verify".into(),
+        };
         let verify_plan = service
-            .plan_verify_organization_domain(
-                Some(&auth),
-                pb::PlanVerifyOrganizationDomainRequest {
-                    org_slug: "identity".into(),
-                    domain: claimed.domain,
-                    expected_resource_version: claimed.resource_version,
-                    idempotency_key: "plan-domain-verify".into(),
-                },
-            )
+            .plan_verify_organization_domain(Some(&auth), verify_request.clone())
             .await
             .unwrap()
             .plan
@@ -33749,8 +33927,8 @@ mod cache_upload_tests {
             .apply_verify_organization_domain(
                 Some(&auth),
                 pb::ApplyTopologyPlanRequest {
-                    plan_id: verify_plan.plan_id,
-                    confirmation_hash: verify_plan.confirmation_hash,
+                    plan_id: verify_plan.plan_id.clone(),
+                    confirmation_hash: verify_plan.confirmation_hash.clone(),
                     idempotency_key: "apply-domain-verify".into(),
                 },
             )
@@ -33759,8 +33937,219 @@ mod cache_upload_tests {
             .domain
             .unwrap();
         assert_eq!(verified.state, "verified");
-        assert_eq!(verified.resource_version, "2");
+        assert!(verified
+            .resource_version
+            .starts_with("2@domain-incarnation-"));
         assert!(verified.verified_at > 0);
+        let replay = service
+            .plan_verify_organization_domain(Some(&auth), verify_request)
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(replay.plan_id, verify_plan.plan_id);
+    }
+
+    #[tokio::test]
+    async fn identity_revisions_reject_delete_recreate_aba() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        db.create_org("identity-aba", "Identity ABA").await.unwrap();
+        let idp_request = |idempotency_key: &str| pb::PlanSetIdentityProviderRequest {
+            org_slug: "identity-aba".into(),
+            issuer: "https://idp.example.test".into(),
+            authorization_endpoint: "https://idp.example.test/authorize".into(),
+            token_endpoint: "https://idp.example.test/token".into(),
+            jwks_uri: "https://idp.example.test/jwks".into(),
+            client_id: "hub".into(),
+            client_secret: String::new(),
+            replace_client_secret: false,
+            scopes: "openid email".into(),
+            groups_claim: String::new(),
+            role_map_json: "{}".into(),
+            allow_jit: false,
+            enforce_sso: false,
+            default_role: "viewer".into(),
+            expected_resource_version: "absent".into(),
+            idempotency_key: idempotency_key.into(),
+        };
+        let create = service
+            .plan_set_identity_provider(Some(&auth), idp_request("idp-create"))
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let idp = service
+            .apply_set_identity_provider(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: create.plan_id,
+                    confirmation_hash: create.confirmation_hash,
+                    idempotency_key: "idp-create-apply".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .identity_provider
+            .unwrap();
+        let remove_request = |idempotency_key: &str| pb::PlanRemoveIdentityProviderRequest {
+            org_slug: "identity-aba".into(),
+            expected_resource_version: idp.resource_version.clone(),
+            idempotency_key: idempotency_key.into(),
+        };
+        let stale_remove = service
+            .plan_remove_identity_provider(Some(&auth), remove_request("idp-remove-stale"))
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let winning_remove_request = remove_request("idp-remove-winning");
+        let winning_remove = service
+            .plan_remove_identity_provider(Some(&auth), winning_remove_request.clone())
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        service
+            .apply_remove_identity_provider(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: winning_remove.plan_id.clone(),
+                    confirmation_hash: winning_remove.confirmation_hash.clone(),
+                    idempotency_key: "idp-remove-winning-apply".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let replay = service
+            .plan_remove_identity_provider(Some(&auth), winning_remove_request)
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(replay.plan_id, winning_remove.plan_id);
+
+        let recreate = service
+            .plan_set_identity_provider(Some(&auth), idp_request("idp-recreate"))
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        service
+            .apply_set_identity_provider(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: recreate.plan_id,
+                    confirmation_hash: recreate.confirmation_hash,
+                    idempotency_key: "idp-recreate-apply".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let error = service
+            .apply_remove_identity_provider(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: stale_remove.plan_id,
+                    confirmation_hash: stale_remove.confirmation_hash,
+                    idempotency_key: "idp-remove-stale-apply".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RpcError::FailedPrecondition(_)));
+
+        let claim_request = |idempotency_key: &str| pb::PlanClaimOrganizationDomainRequest {
+            org_slug: "identity-aba".into(),
+            domain: "aba.example.test".into(),
+            expected_resource_version: "absent".into(),
+            idempotency_key: idempotency_key.into(),
+        };
+        let claim = service
+            .plan_claim_organization_domain(Some(&auth), claim_request("domain-claim"))
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let domain = service
+            .apply_claim_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: claim.plan_id,
+                    confirmation_hash: claim.confirmation_hash,
+                    idempotency_key: "domain-claim-apply".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .domain
+            .unwrap();
+        let release_request = |idempotency_key: &str| pb::PlanReleaseOrganizationDomainRequest {
+            org_slug: "identity-aba".into(),
+            domain: domain.domain.clone(),
+            expected_resource_version: domain.resource_version.clone(),
+            idempotency_key: idempotency_key.into(),
+        };
+        let stale_release = service
+            .plan_release_organization_domain(Some(&auth), release_request("domain-release-stale"))
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let winning_release_request = release_request("domain-release-winning");
+        let winning_release = service
+            .plan_release_organization_domain(Some(&auth), winning_release_request.clone())
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        service
+            .apply_release_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: winning_release.plan_id.clone(),
+                    confirmation_hash: winning_release.confirmation_hash.clone(),
+                    idempotency_key: "domain-release-winning-apply".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let replay = service
+            .plan_release_organization_domain(Some(&auth), winning_release_request)
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(replay.plan_id, winning_release.plan_id);
+
+        let recreate = service
+            .plan_claim_organization_domain(Some(&auth), claim_request("domain-recreate"))
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        service
+            .apply_claim_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: recreate.plan_id,
+                    confirmation_hash: recreate.confirmation_hash,
+                    idempotency_key: "domain-recreate-apply".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let error = service
+            .apply_release_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: stale_release.plan_id,
+                    confirmation_hash: stale_release.confirmation_hash,
+                    idempotency_key: "domain-release-stale-apply".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RpcError::FailedPrecondition(_)));
     }
 
     #[tokio::test]

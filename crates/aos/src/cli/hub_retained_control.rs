@@ -237,7 +237,6 @@ pub enum HubInstanceSettingsMutationCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Organization-owned service-account commands.
 #[derive(Subcommand)]
 pub enum HubServiceAccountCmd {
     /// List an organization's service accounts.
@@ -304,7 +303,6 @@ pub enum HubServiceAccountDeleteCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Explicit plan/apply flow for service-account creation.
 #[derive(Subcommand)]
 pub enum HubServiceAccountCreateCmd {
     /// Create and print an immutable service-account plan.
@@ -324,7 +322,6 @@ pub enum HubServiceAccountCreateCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Organization invitation inventory and lifecycle commands.
 #[derive(Subcommand)]
 pub enum HubInvitationCmd {
     /// List invitation history for an organization.
@@ -362,7 +359,6 @@ pub enum HubInvitationCmd {
     },
 }
 
-/// Organization OIDC identity-provider commands.
 #[derive(Subcommand)]
 pub enum HubIdentityProviderCmd {
     /// Show the redacted identity-provider configuration.
@@ -383,7 +379,6 @@ pub enum HubIdentityProviderCmd {
     },
 }
 
-/// Explicit plan/apply flow for identity-provider replacement.
 #[derive(Subcommand)]
 pub enum HubIdentityProviderSetCmd {
     /// Create and print an immutable replacement plan.
@@ -424,7 +419,6 @@ pub enum HubIdentityProviderSetCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Explicit plan/apply flow for identity-provider removal.
 #[derive(Subcommand)]
 pub enum HubIdentityProviderRemoveCmd {
     /// Create and print an immutable removal plan.
@@ -439,7 +433,6 @@ pub enum HubIdentityProviderRemoveCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Organization email-domain inventory and lifecycle commands.
 #[derive(Subcommand)]
 pub enum HubOrganizationDomainCmd {
     /// List claimed domains for an organization.
@@ -474,7 +467,6 @@ pub enum HubOrganizationDomainCmd {
     },
 }
 
-/// Explicit plan/apply flow for claiming an organization domain.
 #[derive(Subcommand)]
 pub enum HubOrganizationDomainClaimCmd {
     /// Create and print an immutable claim plan.
@@ -490,7 +482,6 @@ pub enum HubOrganizationDomainClaimCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Explicit plan/apply flow for verifying an organization domain.
 #[derive(Subcommand)]
 pub enum HubOrganizationDomainVerifyCmd {
     /// Create and print an immutable DNS verification plan.
@@ -506,7 +497,6 @@ pub enum HubOrganizationDomainVerifyCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Explicit plan/apply flow for releasing an organization domain.
 #[derive(Subcommand)]
 pub enum HubOrganizationDomainReleaseCmd {
     /// Create and print an immutable release plan.
@@ -639,7 +629,6 @@ pub enum HubMembershipRemoveCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Scoped access-token inventory and lifecycle commands.
 #[derive(Subcommand)]
 pub enum HubAccessTokenCmd {
     /// List token metadata without secret material.
@@ -665,7 +654,6 @@ pub enum HubAccessTokenCmd {
     },
 }
 
-/// Explicit plan/apply flow for access-token issuance.
 #[derive(Subcommand)]
 pub enum HubAccessTokenIssueCmd {
     /// Create and print an immutable token-issuance plan.
@@ -695,7 +683,6 @@ pub enum HubAccessTokenIssueCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Explicit plan/apply flow for access-token retirement.
 #[derive(Subcommand)]
 pub enum HubAccessTokenRetireCmd {
     /// Create and print an immutable token-retirement plan.

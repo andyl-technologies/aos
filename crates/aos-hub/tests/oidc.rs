@@ -238,6 +238,7 @@ async fn seed_org(
         enforce_sso,
         default_role: "viewer".into(),
         resource_version: 1,
+        incarnation_id: None,
         mutation_plan_id: None,
     })
     .await
@@ -576,6 +577,7 @@ async fn begin_login_sets_pkce_s256_and_records_flow() {
         enforce_sso: false,
         default_role: "viewer".into(),
         resource_version: 1,
+        incarnation_id: None,
         mutation_plan_id: None,
     })
     .await
@@ -618,6 +620,7 @@ fn idp_config_from_record_parses_role_map() {
         enforce_sso: true,
         default_role: "developer".into(),
         resource_version: 1,
+        incarnation_id: None,
         mutation_plan_id: None,
     };
     let config = IdpConfig::from_record(record);

@@ -62,6 +62,16 @@ Stale plans are never silently recomputed during apply. A client may preserve
 the user's draft while requesting a new plan, but it must present the new
 effects for confirmation.
 
+Resource versions are opaque compare-and-swap tokens. For resources that can
+be deleted and recreated under the same logical key, the token binds both the
+monotonic row revision and an immutable incarnation. Numeric equality alone is
+not sufficient: a plan for revision one of a deleted incarnation must fail
+against revision one of its replacement. Plan-request idempotency is checked
+before reading mutable target state, so retrying the exact request returns the
+original plan even after that plan has changed or deleted the resource. The
+service and its atomic apply transaction are the only production mutation
+path; direct table seed helpers are compiled only into test fixtures.
+
 ## Capability manifest
 
 `hub-control-plane-capabilities-v1.json` is the closed, versioned parity

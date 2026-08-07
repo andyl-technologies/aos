@@ -363,6 +363,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<aos_proto_types::MembershipResponse, crate::service::RpcError>;
 
     /// Lists invitation history visible to an organization member manager.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, or persistence error.
     async fn invitations(
         &self,
         bearer: &str,
@@ -370,6 +374,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<Vec<aos_proto_types::Invitation>, crate::service::RpcError>;
 
     /// Plans creation of one pending organization invitation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, authorization, or persistence error.
     async fn plan_invitation(
         &self,
         bearer: &str,
@@ -377,6 +385,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<ReviewedPlan, crate::service::RpcError>;
 
     /// Applies one reviewed invitation-creation plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plan-fencing, authorization, or persistence error.
     async fn apply_invitation(
         &self,
         bearer: &str,
@@ -386,6 +398,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<aos_proto_types::InvitationResponse, crate::service::RpcError>;
 
     /// Plans cancellation of one pending organization invitation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lookup, validation, authorization, or persistence error.
     async fn plan_invitation_cancellation(
         &self,
         bearer: &str,
@@ -393,6 +409,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<ReviewedPlan, crate::service::RpcError>;
 
     /// Applies one reviewed invitation-cancellation plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plan-fencing, authorization, or persistence error.
     async fn apply_invitation_cancellation(
         &self,
         bearer: &str,
@@ -402,6 +422,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<aos_proto_types::InvitationResponse, crate::service::RpcError>;
 
     /// Accepts one invitation as the authenticated matching user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, invitation validation, or persistence error.
     async fn accept_invitation(
         &self,
         bearer: &str,
@@ -409,6 +433,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<aos_proto_types::AcceptInvitationResponse, crate::service::RpcError>;
 
     /// Reads the redacted organization identity-provider configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, lookup, or persistence error.
     async fn identity_provider(
         &self,
         bearer: &str,
@@ -416,6 +444,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<aos_proto_types::IdentityProviderResponse, crate::service::RpcError>;
 
     /// Plans an exact organization identity-provider replacement.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, sealing, authorization, or persistence error.
     async fn plan_identity_provider(
         &self,
         bearer: &str,
@@ -423,6 +455,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<ReviewedPlan, crate::service::RpcError>;
 
     /// Applies one reviewed identity-provider replacement.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plan-fencing, authorization, or persistence error.
     async fn apply_identity_provider(
         &self,
         bearer: &str,
@@ -432,6 +468,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<aos_proto_types::IdentityProviderResponse, crate::service::RpcError>;
 
     /// Plans removal of one exact identity-provider revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lookup, revision, authorization, or persistence error.
     async fn plan_identity_provider_removal(
         &self,
         bearer: &str,
@@ -439,6 +479,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<ReviewedPlan, crate::service::RpcError>;
 
     /// Applies one reviewed identity-provider removal.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plan-fencing, authorization, or persistence error.
     async fn apply_identity_provider_removal(
         &self,
         bearer: &str,
@@ -448,6 +492,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<aos_proto_types::DeleteTopologyResourceResponse, crate::service::RpcError>;
 
     /// Lists organization email-domain claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, or persistence error.
     async fn organization_domains(
         &self,
         bearer: &str,
@@ -455,6 +503,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<Vec<aos_proto_types::OrganizationDomain>, crate::service::RpcError>;
 
     /// Plans a new organization-domain claim or challenge rotation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, ownership, revision, authorization, or persistence error.
     async fn plan_organization_domain_claim(
         &self,
         bearer: &str,
@@ -462,6 +514,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<ReviewedPlan, crate::service::RpcError>;
 
     /// Plans verification of one exact organization-domain challenge.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lookup, revision, authorization, or persistence error.
     async fn plan_organization_domain_verification(
         &self,
         bearer: &str,
@@ -469,6 +525,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<ReviewedPlan, crate::service::RpcError>;
 
     /// Plans release of one exact organization-domain claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lookup, revision, authorization, or persistence error.
     async fn plan_organization_domain_release(
         &self,
         bearer: &str,
@@ -476,6 +536,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<ReviewedPlan, crate::service::RpcError>;
 
     /// Applies one reviewed organization-domain claim or challenge rotation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plan-fencing, ownership, authorization, or persistence error.
     async fn apply_organization_domain_claim(
         &self,
         bearer: &str,
@@ -485,6 +549,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<aos_proto_types::OrganizationDomainResponse, crate::service::RpcError>;
 
     /// Applies one reviewed organization-domain DNS verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns a DNS, plan-fencing, authorization, or persistence error.
     async fn apply_organization_domain_verification(
         &self,
         bearer: &str,
@@ -494,6 +562,10 @@ pub trait TopologyConsole: BackendBounds {
     ) -> Result<aos_proto_types::OrganizationDomainResponse, crate::service::RpcError>;
 
     /// Applies one reviewed organization-domain release.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plan-fencing, authorization, or persistence error.
     async fn apply_organization_domain_release(
         &self,
         bearer: &str,

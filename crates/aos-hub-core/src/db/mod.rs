@@ -375,6 +375,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("auth_refresh.sql"),
     include_str!("invitation_lifecycle.sql"),
     include_str!("identity_control.sql"),
+    include_str!("identity_incarnation.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -894,6 +895,8 @@ pub struct IdpConfigRecord {
     pub default_role: String,
     /// Optimistic-concurrency version for retained-control mutations.
     pub resource_version: i64,
+    /// Immutable incarnation that changes when a deleted resource is recreated.
+    pub incarnation_id: Option<String>,
     /// Reviewed plan that produced the current state, when any.
     pub mutation_plan_id: Option<String>,
 }
@@ -911,6 +914,8 @@ pub struct OrgDomainRecord {
     pub verified_at: Option<i64>,
     /// Optimistic-concurrency version for claim lifecycle mutations.
     pub resource_version: i64,
+    /// Immutable incarnation that changes when a released domain is reclaimed.
+    pub incarnation_id: Option<String>,
     /// Reviewed plan that produced the current state, when any.
     pub mutation_plan_id: Option<String>,
 }
@@ -18374,7 +18379,7 @@ impl Database {
 
     // -- auth: per-org OIDC SSO ---------------------------------------------
 
-    /// Create or replace an org's OIDC identity-provider configuration.
+    /// Seeds an org's OIDC identity-provider configuration for a test fixture.
     ///
     /// One IdP per org (the `org_id` primary key); re-calling overwrites the
     /// existing configuration and bumps `updated_at`. `client_secret_enc`
@@ -18385,6 +18390,7 @@ impl Database {
     ///
     /// Returns an error on database failure, including a foreign-key
     /// violation when `org_id` does not reference an org.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn upsert_idp_config(&self, config: &IdpConfigRecord) -> Result<()> {
         crate::auth::oidc::validate_idp_config_record(config)?;
         let now = unix_now();
@@ -18432,12 +18438,12 @@ impl Database {
         Ok(())
     }
 
-    /// Remove an org's OIDC identity-provider configuration; returns whether a
-    /// row was deleted.
+    /// Removes an identity-provider row while constructing a test fixture.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn delete_idp_config(&self, org_id: i64) -> Result<bool> {
         let n = self
             .backend
@@ -18460,6 +18466,7 @@ impl Database {
         &self,
         config: &IdpConfigRecord,
         baseline_resource_version: Option<i64>,
+        baseline_incarnation_id: Option<&str>,
         scope: &str,
         plan_id: &str,
         apply_idempotency_key: &str,
@@ -18470,6 +18477,10 @@ impl Database {
         audit_event_id: &str,
     ) -> Result<()> {
         crate::auth::oidc::validate_idp_config_record(config)?;
+        let incarnation_id = config
+            .incarnation_id
+            .as_deref()
+            .context("reviewed identity-provider mutation has no incarnation")?;
         validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
         validate_key_bytes(audit_event_id, "audit event id", 64)?;
         validate_json_value(result_json, "apply result")?;
@@ -18482,8 +18493,10 @@ impl Database {
                     scopes = ?8, groups_claim = ?9, role_map_json = ?10,
                     allow_jit = ?11, enforce_sso = ?12, default_role = ?13,
                     resource_version = resource_version + 1,
-                    mutation_plan_id = ?14, updated_at = ?15
-                  WHERE org_id = ?1 AND resource_version = ?16",
+                    incarnation_id = ?14, mutation_plan_id = ?15, updated_at = ?16
+                  WHERE org_id = ?1 AND resource_version = ?17
+                    AND (incarnation_id = ?18
+                         OR (incarnation_id IS NULL AND ?18 IS NULL))",
                 vals![
                     config.org_id,
                     config.issuer,
@@ -18498,9 +18511,11 @@ impl Database {
                     config.allow_jit,
                     config.enforce_sso,
                     config.default_role,
+                    incarnation_id,
                     plan_id,
                     now,
-                    version
+                    version,
+                    baseline_incarnation_id
                 ],
             )
             .expecting(1),
@@ -18509,9 +18524,9 @@ impl Database {
                  (org_id, issuer, authorization_endpoint, token_endpoint, jwks_uri,
                   client_id, client_secret_enc, scopes, groups_claim, role_map_json,
                   allow_jit, enforce_sso, default_role, created_at, updated_at,
-                  resource_version, mutation_plan_id)
+                  resource_version, incarnation_id, mutation_plan_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                         ?13, ?14, ?14, 1, ?15)",
+                         ?13, ?14, ?14, 1, ?15, ?16)",
                 vals![
                     config.org_id,
                     config.issuer,
@@ -18527,6 +18542,7 @@ impl Database {
                     config.enforce_sso,
                     config.default_role,
                     now,
+                    incarnation_id,
                     plan_id
                 ],
             )
@@ -18572,6 +18588,7 @@ impl Database {
         &self,
         org_id: i64,
         expected_resource_version: i64,
+        expected_incarnation_id: Option<&str>,
         scope: &str,
         plan_id: &str,
         apply_idempotency_key: &str,
@@ -18588,8 +18605,11 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "DELETE FROM org_idp_configs WHERE org_id = ?1 AND resource_version = ?2",
-                    vals![org_id, expected_resource_version],
+                    "DELETE FROM org_idp_configs
+                      WHERE org_id = ?1 AND resource_version = ?2
+                        AND (incarnation_id = ?3
+                             OR (incarnation_id IS NULL AND ?3 IS NULL))",
+                    vals![org_id, expected_resource_version, expected_incarnation_id],
                 )
                 .expecting(1),
                 Statement::new(
@@ -18629,7 +18649,7 @@ impl Database {
                 "SELECT org_id, issuer, authorization_endpoint, token_endpoint, jwks_uri,
                         client_id, client_secret_enc, scopes, groups_claim, role_map_json,
                         allow_jit, enforce_sso, default_role,
-                        resource_version, mutation_plan_id
+                        resource_version, incarnation_id, mutation_plan_id
                  FROM org_idp_configs WHERE org_id = ?1",
                 &vals![org_id],
             )
@@ -18639,7 +18659,7 @@ impl Database {
             .transpose()
     }
 
-    /// Claim a domain for an org with a fresh DNS-TXT challenge.
+    /// Seeds a domain claim with a fresh DNS-TXT challenge for a test fixture.
     ///
     /// Returns the generated `txt_challenge` value the org must publish as a
     /// TXT record at the domain to prove control; the domain starts
@@ -18658,6 +18678,7 @@ impl Database {
     ///
     /// Returns an error on database failure, or if the domain is already
     /// claimed by a different organization.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn add_org_domain(&self, org_id: i64, domain: &str) -> Result<String> {
         let domain = domain.trim().to_lowercase();
         let challenge = format!(
@@ -18742,7 +18763,7 @@ impl Database {
             .backend
             .query(
                 "SELECT domain, org_id, txt_challenge, verified_at,
-                        resource_version, mutation_plan_id
+                        resource_version, incarnation_id, mutation_plan_id
              FROM org_domains WHERE org_id = ?1 ORDER BY domain",
                 &vals![org_id],
             )
@@ -18755,7 +18776,8 @@ impl Database {
                     txt_challenge: row.get(2)?,
                     verified_at: row.get(3)?,
                     resource_version: row.get(4)?,
-                    mutation_plan_id: row.get(5)?,
+                    incarnation_id: row.get(5)?,
+                    mutation_plan_id: row.get(6)?,
                 })
             })
             .collect()
@@ -18771,7 +18793,7 @@ impl Database {
         self.backend
             .query_opt(
                 "SELECT domain, org_id, txt_challenge, verified_at,
-                        resource_version, mutation_plan_id
+                        resource_version, incarnation_id, mutation_plan_id
                    FROM org_domains WHERE domain = ?1",
                 &vals![domain],
             )
@@ -18784,13 +18806,14 @@ impl Database {
                     txt_challenge: row.get(2)?,
                     verified_at: row.get(3)?,
                     resource_version: row.get(4)?,
-                    mutation_plan_id: row.get(5)?,
+                    incarnation_id: row.get(5)?,
+                    mutation_plan_id: row.get(6)?,
                 })
             })
             .transpose()
     }
 
-    /// Mark a claimed domain verified (stamp `verified_at = now`).
+    /// Marks a fixture domain verified without resolving DNS.
     ///
     /// This is the **persistence hook**: the actual DNS-TXT lookup is the
     /// caller's responsibility (an ops tool or the CLI resolving the TXT
@@ -18802,6 +18825,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn verify_org_domain(&self, domain: &str) -> Result<bool> {
         let domain = domain.trim().to_lowercase();
         let n = self
@@ -18818,12 +18842,12 @@ impl Database {
         Ok(n > 0)
     }
 
-    /// Release a claimed domain (verified or not); returns whether a row was
-    /// removed. Scoped by `org_id` so one org cannot drop another's claim.
+    /// Removes a domain row while constructing a test fixture.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn delete_org_domain(&self, org_id: i64, domain: &str) -> Result<bool> {
         let domain = domain.trim().to_lowercase();
         let n = self
@@ -18851,6 +18875,7 @@ impl Database {
         &self,
         record: &OrgDomainRecord,
         baseline_resource_version: Option<i64>,
+        baseline_incarnation_id: Option<&str>,
         scope: &str,
         plan_id: &str,
         apply_idempotency_key: &str,
@@ -18866,22 +18891,34 @@ impl Database {
         let mutation = match baseline_resource_version {
             Some(version) => Statement::new(
                 "UPDATE org_domains SET txt_challenge = ?3, verified_at = NULL,
-                        resource_version = resource_version + 1, mutation_plan_id = ?4
-                  WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?5",
+                        resource_version = resource_version + 1,
+                        incarnation_id = ?4, mutation_plan_id = ?5
+                  WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?6
+                    AND (incarnation_id = ?7
+                         OR (incarnation_id IS NULL AND ?7 IS NULL))",
                 vals![
                     record.domain,
                     record.org_id,
                     record.txt_challenge,
+                    record.incarnation_id,
                     plan_id,
-                    version
+                    version,
+                    baseline_incarnation_id
                 ],
             )
             .expecting(1),
             None => Statement::new(
                 "INSERT INTO org_domains
-                 (domain, org_id, txt_challenge, verified_at, resource_version, mutation_plan_id)
-                 VALUES (?1, ?2, ?3, NULL, 1, ?4)",
-                vals![record.domain, record.org_id, record.txt_challenge, plan_id],
+                 (domain, org_id, txt_challenge, verified_at, resource_version,
+                  incarnation_id, mutation_plan_id)
+                 VALUES (?1, ?2, ?3, NULL, 1, ?4, ?5)",
+                vals![
+                    record.domain,
+                    record.org_id,
+                    record.txt_challenge,
+                    record.incarnation_id,
+                    plan_id
+                ],
             )
             .expecting(1),
         };
@@ -18910,6 +18947,8 @@ impl Database {
     pub async fn apply_org_domain_verify_plan(
         &self,
         record: &OrgDomainRecord,
+        incarnation_id: &str,
+        verified_at: i64,
         scope: &str,
         plan_id: &str,
         apply_idempotency_key: &str,
@@ -18919,19 +18958,23 @@ impl Database {
         actor_label: &str,
         audit_event_id: &str,
     ) -> Result<()> {
-        let now = unix_now();
         let mutation = Statement::new(
-            "UPDATE org_domains SET verified_at = ?5,
-                    resource_version = resource_version + 1, mutation_plan_id = ?4
+            "UPDATE org_domains SET verified_at = ?6,
+                    resource_version = resource_version + 1,
+                    incarnation_id = ?4, mutation_plan_id = ?5
               WHERE domain = ?1 AND org_id = ?2 AND txt_challenge = ?3
-                AND resource_version = ?6 AND verified_at IS NULL",
+                AND resource_version = ?7 AND verified_at IS NULL
+                AND (incarnation_id = ?8
+                     OR (incarnation_id IS NULL AND ?8 IS NULL))",
             vals![
                 record.domain,
                 record.org_id,
                 record.txt_challenge,
+                incarnation_id,
                 plan_id,
-                now,
-                record.resource_version
+                verified_at,
+                record.resource_version,
+                record.incarnation_id
             ],
         )
         .expecting(1);
@@ -18971,8 +19014,15 @@ impl Database {
     ) -> Result<()> {
         let mutation = Statement::new(
             "DELETE FROM org_domains
-              WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?3",
-            vals![record.domain, record.org_id, record.resource_version],
+              WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?3
+                AND (incarnation_id = ?4
+                     OR (incarnation_id IS NULL AND ?4 IS NULL))",
+            vals![
+                record.domain,
+                record.org_id,
+                record.resource_version,
+                record.incarnation_id
+            ],
         )
         .expecting(1);
         self.apply_org_domain_mutation_plan(
@@ -22091,7 +22141,8 @@ fn row_to_idp_config(row: &Row) -> Result<IdpConfigRecord> {
         enforce_sso: row.get(11)?,
         default_role: row.get(12)?,
         resource_version: row.get(13)?,
-        mutation_plan_id: row.get(14)?,
+        incarnation_id: row.get(14)?,
+        mutation_plan_id: row.get(15)?,
     })
 }
 
