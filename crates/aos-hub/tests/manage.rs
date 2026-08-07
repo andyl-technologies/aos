@@ -27,6 +27,19 @@ use tower::ServiceExt;
 
 const TEST_JWT_SECRET: &[u8] = b"manage-test-secret-32-byte-key!!!";
 
+struct PublishedIdentityDomain;
+
+#[async_trait::async_trait]
+impl aos_hub_core::topology_probe::IdentityDomainVerifier for PublishedIdentityDomain {
+    async fn challenge_is_published(
+        &self,
+        _domain: &str,
+        _challenge: &str,
+    ) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+}
+
 /// Build an [`AppState`] over `db` in dev mode with deterministic JWT keys.
 async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
@@ -51,7 +64,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         dev: true,
         delivery_attestation_verifier: None,
         domain_probe_terminator: None,
-        identity_domain_verifier: None,
+        identity_domain_verifier: Some(Arc::new(PublishedIdentityDomain)),
         route_reservation_keyring: None,
     })
 }
@@ -160,6 +173,11 @@ async fn apply_reviewed_plan(app: &axum::Router, cookie: &str, plan: Resp) -> Re
     let action = reviewed_plan_action(&plan.body);
     let plan_id = hidden_value(&plan.body, "plan_id");
     let confirmation_hash = hidden_value(&plan.body, "confirmation_hash");
+    let operation = plan
+        .body
+        .split_once("name=\"operation\" value=\"")
+        .and_then(|(_, tail)| tail.split_once('"'))
+        .map_or("", |(value, _)| value);
     let csrf = csrf_for(cookie);
     send(
         app,
@@ -167,7 +185,7 @@ async fn apply_reviewed_plan(app: &axum::Router, cookie: &str, plan: Resp) -> Re
         &action,
         Some(cookie),
         Some(&format!(
-            "csrf={csrf}&plan_id={plan_id}&confirmation_hash={confirmation_hash}"
+            "csrf={csrf}&plan_id={plan_id}&confirmation_hash={confirmation_hash}&operation={operation}"
         )),
     )
     .await
@@ -997,7 +1015,7 @@ async fn non_admin_member_cannot_manage_webhooks() {
 }
 
 #[tokio::test]
-async fn owner_configures_sso_and_captures_domain() {
+async fn owner_configures_sso_and_verifies_domain_with_dns_proof() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.create_org("acme", "Acme").await.unwrap();
     let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
@@ -1015,7 +1033,7 @@ async fn owner_configures_sso_and_captures_domain() {
     let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
 
     // Configure the IdP with a client secret.
-    let resp = send(
+    let plan = send(
         &app,
         "POST",
         "/-/org/acme/sso",
@@ -1028,6 +1046,7 @@ async fn owner_configures_sso_and_captures_domain() {
         )),
     )
     .await;
+    let resp = apply_reviewed_plan(&app, &cookie, plan).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     let cfg = db
         .idp_config(org_id)
@@ -1040,7 +1059,7 @@ async fn owner_configures_sso_and_captures_domain() {
     assert_ne!(sealed, "topsecret", "secret is sealed, not plaintext");
 
     // Editing other fields with a blank secret keeps the sealed secret.
-    let resp = send(
+    let plan = send(
         &app,
         "POST",
         "/-/org/acme/sso",
@@ -1048,11 +1067,12 @@ async fn owner_configures_sso_and_captures_domain() {
         Some(&format!(
             "csrf={csrf}&op=set-idp&issuer=https%3A%2F%2Fidp.test&\
              auth_url=https%3A%2F%2Fidp.test%2Fa&token_url=https%3A%2F%2Fidp.test%2Ft&\
-             jwks_uri=https%3A%2F%2Fidp.test%2Fj&client_id=cid2&client_secret=&\
+             jwks_uri=https%3A%2F%2Fidp.test%2Fj&client_id=cid2&client_secret=&scopes=openid+email&\
              role_map=%7B%7D&default_role=viewer"
         )),
     )
     .await;
+    let resp = apply_reviewed_plan(&app, &cookie, plan).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     let cfg = db.idp_config(org_id).await.unwrap().unwrap();
     assert_eq!(cfg.client_id, "cid2");
@@ -1063,7 +1083,7 @@ async fn owner_configures_sso_and_captures_domain() {
     );
 
     // Capture a domain; it lands unverified.
-    let resp = send(
+    let plan = send(
         &app,
         "POST",
         "/-/org/acme/sso",
@@ -1071,6 +1091,7 @@ async fn owner_configures_sso_and_captures_domain() {
         Some(&format!("csrf={csrf}&op=add-domain&domain=acme.com")),
     )
     .await;
+    let resp = apply_reviewed_plan(&app, &cookie, plan).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(db
         .org_domain("acme.com")
@@ -1080,8 +1101,9 @@ async fn owner_configures_sso_and_captures_domain() {
         .verified_at
         .is_none());
 
-    // An org owner (not an instance admin) cannot verify — it routes logins.
-    let resp = send(
+    // An org owner can apply the reviewed verification once the exact DNS
+    // challenge is visible to the runtime verifier.
+    let plan = send(
         &app,
         "POST",
         "/-/org/acme/sso",
@@ -1089,14 +1111,15 @@ async fn owner_configures_sso_and_captures_domain() {
         Some(&format!("csrf={csrf}&op=verify-domain&domain=acme.com")),
     )
     .await;
-    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    let resp = apply_reviewed_plan(&app, &cookie, plan).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(db
         .org_domain("acme.com")
         .await
         .unwrap()
         .unwrap()
         .verified_at
-        .is_none());
+        .is_some());
 }
 
 #[tokio::test]
@@ -1122,7 +1145,7 @@ async fn instance_admin_verifies_a_captured_domain() {
     let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     db.add_org_domain(org_id, "acme.com").await.unwrap();
 
-    let resp = send(
+    let plan = send(
         &app,
         "POST",
         "/-/org/acme/sso",
@@ -1130,6 +1153,7 @@ async fn instance_admin_verifies_a_captured_domain() {
         Some(&format!("csrf={csrf}&op=verify-domain&domain=acme.com")),
     )
     .await;
+    let resp = apply_reviewed_plan(&app, &cookie, plan).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(db
         .org_domain("acme.com")
@@ -1630,7 +1654,7 @@ async fn trust_ops_require_sudo() {
         Some(&format!(
             "csrf={s_csrf}&op=set-idp&issuer=https%3A%2F%2Fidp.test&\
              auth_url=https%3A%2F%2Fidp.test%2Fa&token_url=https%3A%2F%2Fidp.test%2Ft&\
-             jwks_uri=https%3A%2F%2Fidp.test%2Fj&client_id=cid&client_secret=x&\
+             jwks_uri=https%3A%2F%2Fidp.test%2Fj&client_id=cid&client_secret=x&scopes=openid+email&\
              role_map=%7B%7D&default_role=viewer"
         )),
     )
@@ -1677,7 +1701,7 @@ async fn trust_ops_require_sudo() {
     assert!(resp.body.contains("invitation created"));
     assert!(db.user_by_email("new@acme.com").await.unwrap().is_none());
 
-    let resp = send(
+    let plan = send(
         &app,
         "POST",
         "/-/org/acme/sso",
@@ -1685,11 +1709,12 @@ async fn trust_ops_require_sudo() {
         Some(&format!(
             "csrf={f_csrf}&op=set-idp&issuer=https%3A%2F%2Fidp.test&\
              auth_url=https%3A%2F%2Fidp.test%2Fa&token_url=https%3A%2F%2Fidp.test%2Ft&\
-             jwks_uri=https%3A%2F%2Fidp.test%2Fj&client_id=cid&client_secret=x&\
+             jwks_uri=https%3A%2F%2Fidp.test%2Fj&client_id=cid&client_secret=x&scopes=openid+email&\
              role_map=%7B%7D&default_role=viewer"
         )),
     )
     .await;
+    let resp = apply_reviewed_plan(&app, &fresh, plan).await;
     assert_eq!(resp.status, StatusCode::OK, "set-idp fresh: {}", resp.body);
     assert!(db
         .idp_config(db.org_by_slug("acme").await.unwrap().unwrap().id)
