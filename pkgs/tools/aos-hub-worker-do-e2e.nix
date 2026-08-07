@@ -52,6 +52,7 @@
   dist = callPackage ./aos-hub-worker-dist.nix {cargoFeatures = "do-e2e";};
 
   egressFixture = ./aos-hub-direct-egress-fixture.mjs;
+  removedManagementPaths = ../../crates/aos-hub/tests/fixtures/removed-management-paths-v1.json;
   removedManagementPosts = ../../crates/aos-hub/tests/fixtures/removed-management-posts-v1.json;
 
   # The workerd config: a module worker (shim.mjs + index.wasm) with the two DO
@@ -174,6 +175,20 @@
     if (bootstrapState.gc_root_count !== 4) throw new Error("published images were not GC roots");
     const token = bootstrapState.token;
     const headers = { authorization: `Bearer ''${token}` };
+    const removedManagementPaths = JSON.parse(
+      fs.readFileSync("${removedManagementPaths}", "utf8"),
+    );
+    for (const removedPath of removedManagementPaths) {
+      for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]) {
+        const removed = await fetch(BASE + removedPath, { method, headers });
+        const expected = method === "GET" || method === "HEAD"
+          ? removed.status === 404
+          : removed.status === 404 || removed.status === 405;
+        if (!expected) {
+          throw new Error(`removed management path remained mounted: ''${method} ''${removedPath} (''${removed.status})`);
+        }
+      }
+    }
     const removedManagementPosts = JSON.parse(
       fs.readFileSync("${removedManagementPosts}", "utf8"),
     );
