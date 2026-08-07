@@ -167,6 +167,31 @@ fn production_native_aarch64_assets_do_not_create_an_x86_fallback() {
     assert_eq!(arm.root_image, PathBuf::from("arm-root"));
 }
 
+#[test]
+fn architecture_override_does_not_inherit_the_native_kernel_cmdline() {
+    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "x86-kernel", "x86-root")
+        .with_kernel_cmdline_prefix("console=ttyS0")
+        .with_guest_assets(VmArchitecture::Aarch64, "arm-kernel", "arm-root", None);
+
+    let x86 = config
+        .guest_assets
+        .get(&VmArchitecture::X86_64)
+        .unwrap_or_else(|| panic!("native x86 assets should be configured"));
+    let arm = config
+        .guest_assets
+        .get(&VmArchitecture::Aarch64)
+        .unwrap_or_else(|| panic!("AArch64 assets should be configured"));
+
+    assert_eq!(
+        production_kernel_cmdline_prefix(&config, VmArchitecture::X86_64, x86),
+        Some("console=ttyS0")
+    );
+    assert_eq!(
+        production_kernel_cmdline_prefix(&config, VmArchitecture::Aarch64, arm),
+        None
+    );
+}
+
 fn graph_runtime(configuration: ContentHash, reduced_state: ContentHash) -> RuntimeState {
     RuntimeState {
         id: reduced_state,

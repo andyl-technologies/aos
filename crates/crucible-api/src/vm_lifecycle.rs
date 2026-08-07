@@ -48,6 +48,7 @@ const MAX_TRIGGER_SETTLE_BATCHES: usize = 1_024;
 pub struct ProductionVmLifecycleConfig {
     executable: PathBuf,
     plugin: PathBuf,
+    native_guest_architecture: VmArchitecture,
     guest_assets: BTreeMap<VmArchitecture, ProductionVmGuestAssets>,
     initrd: Option<PathBuf>,
     kernel_cmdline_prefix: Option<String>,
@@ -121,6 +122,19 @@ struct ProductionVmRecordedControl {
     control: Vec<ControlOperation>,
 }
 
+/// Selects a command-line prefix without crossing guest architectures.
+fn production_kernel_cmdline_prefix<'a>(
+    config: &'a ProductionVmLifecycleConfig,
+    architecture: VmArchitecture,
+    guest_assets: &'a ProductionVmGuestAssets,
+) -> Option<&'a str> {
+    guest_assets.kernel_cmdline_prefix.as_deref().or_else(|| {
+        (architecture == config.native_guest_architecture)
+            .then_some(config.kernel_cmdline_prefix.as_deref())
+            .flatten()
+    })
+}
+
 impl ProductionVmLifecycleConfig {
     /// Builds a local-QEMU lifecycle configuration with bounded defaults.
     #[must_use]
@@ -160,6 +174,7 @@ impl ProductionVmLifecycleConfig {
         Self {
             executable: executable.into(),
             plugin: plugin.into(),
+            native_guest_architecture: architecture,
             guest_assets,
             initrd: None,
             kernel_cmdline_prefix: None,
@@ -498,10 +513,7 @@ pub fn build_production_vm_lifecycle_loop(
             &guest_assets.root_image,
             &node_directory,
         )?;
-        let kernel_cmdline_prefix = guest_assets
-            .kernel_cmdline_prefix
-            .as_ref()
-            .or(config.kernel_cmdline_prefix.as_ref());
+        let kernel_cmdline_prefix = production_kernel_cmdline_prefix(config, vm.arch, guest_assets);
         let kernel_cmdline = match kernel_cmdline_prefix {
             Some(prefix) if !prefix.trim().is_empty() => {
                 format!("{} {}", prefix.trim(), vm.cmdline.trim())
