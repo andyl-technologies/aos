@@ -568,10 +568,10 @@ async fn browser_session_exchange_requires_origin_and_csrf_and_returns_no_store_
         .await
         .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(value["token_type"], "Bearer");
-    assert_eq!(value["expires_in"], 300);
+    assert_eq!(value["tokenType"], "Bearer");
+    assert_eq!(value["expiresIn"], "300");
     assert_eq!(value["principal"]["email"], "browser@acme.com");
-    let token = value["access_token"].as_str().unwrap();
+    let token = value["accessToken"].as_str().unwrap();
     let claims = JwtKeys::from_secret(TEST_JWT_SECRET).verify(token).unwrap();
     assert_eq!(
         claims.owner_id,
