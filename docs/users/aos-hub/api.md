@@ -8,7 +8,7 @@ JSON bodies and responses use JSON; clients do not need a gRPC runtime.
 Methods are mounted at:
 
 ```text
-POST /aos.registry.v1.<Service>/<Method>
+POST /aos.hub.v1.<Service>/<Method>
 ```
 
 For example:
@@ -17,7 +17,7 @@ For example:
 curl -fsS \
   -H 'Content-Type: application/json' \
   -d '{"slug":"acme/cdn"}' \
-  https://hub.example.com/aos.registry.v1.RegistryService/GetRegistry
+  https://hub.example.com/aos.hub.v1.RegistryService/GetRegistry
 ```
 
 An empty request may be sent as `{}`. API errors use a JSON envelope with a
@@ -27,7 +27,7 @@ The service families cover registries, organizations, projects, storage,
 packages, channels, audits, instance settings, identity and access, webhooks,
 publishing, Git surfaces, and binary caches. The complete request and response
 schema is in
-[`registry.proto`](../../../crates/aos-proto/src/proto/aos/registry/v1/registry.proto).
+[`hub.proto`](../../../crates/aos-proto/src/proto/aos/hub/v1/hub.proto).
 
 ## Authentication
 
@@ -79,6 +79,20 @@ credential.
 
 Browser authentication uses an opaque session cookie and is intentionally
 separate from API bearer tokens.
+
+Inspect a bearer without exposing its secret through
+`IdentityService/WhoAmI`:
+
+```sh
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <access-token>' \
+  -d '{}' \
+  https://hub.example.com/aos.hub.v1.IdentityService/WhoAmI
+```
+
+The response identifies the live user or service account, lists current role
+grants, and separately reports this token's scope, permissions, and expiry.
 
 ## Scripting
 

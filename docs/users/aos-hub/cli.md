@@ -67,8 +67,13 @@ Hub becomes the active profile, so authenticated commands need no repeated
 connection flags:
 
 ```sh
+./result/bin/aos hub whoami
 ./result/bin/aos hub org list
 ```
+
+`whoami` reports the principal reference, current live role grants, and the
+scope, permissions, and expiry carried by the access token. This makes a
+server-side role and a deliberately narrower token easy to distinguish.
 
 The access token lasts one hour. The CLI refreshes it automatically before
 expiry and rotates the stored refresh credential. Sign out and revoke the

@@ -472,6 +472,16 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
             }
             Ok(())
         }
+        HubCmd::Whoami { access } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read(
+                printer,
+                &client,
+                HubTopologyMethod::WhoAmI,
+                &hub_types::WhoAmIRequest {},
+            )
+            .await
+        }
         HubCmd::Topology { command } => match command {
             HubTopologyCmd::Cutover { command } => match command {
                 HubTopologyCutoverCmd::MaterializeVerifier(args) => {

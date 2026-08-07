@@ -2580,6 +2580,9 @@ message CacheNarinfoRegistrationResponse {
 // intersected with the owning principal's grants — a token can never exceed its
 // owner's authority.
 service IdentityService {
+  // Describe the authenticated principal, its live grants, and this access
+  // token's authority. The response contains no token secret.
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
   // Plan creation of an org-owned non-human automation principal.
   rpc PlanCreateAutomationPrincipal(PlanCreateAutomationPrincipalRequest)
       returns (TopologyPlanResponse);
@@ -2606,6 +2609,33 @@ service IdentityService {
       returns (RegistryTokenRetirementResponse);
   // List the tokens visible at a scope (metadata only — never the secret).
   rpc ListTokens(ListTokensRequest) returns (ListTokensResponse);
+}
+
+message WhoAmIRequest {}
+
+// One live role grant held directly by the authenticated principal.
+message IdentityGrant {
+  // Canonical stable authorization scope.
+  string scope = 1;
+  // Role name: owner | admin | maintainer | developer | viewer.
+  string role = 2;
+}
+
+message WhoAmIResponse {
+  // "user" or "service_account".
+  string principal_kind = 1;
+  // Stable human-facing reference: email or "<org>/<service-account>".
+  string principal_ref = 2;
+  // User email; empty for a service account.
+  string email = 3;
+  // Current live role grants, ordered by canonical scope.
+  repeated IdentityGrant grants = 4;
+  // Canonical scope carried by this access token.
+  string access_scope = 5;
+  // Permission verbs carried by this access token.
+  repeated string access_permissions = 6;
+  // Unix seconds when this access token expires.
+  int64 access_expires_at = 7;
 }
 
 message PlanCreateAutomationPrincipalRequest {

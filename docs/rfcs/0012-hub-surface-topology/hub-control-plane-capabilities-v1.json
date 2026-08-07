@@ -254,7 +254,7 @@
       "audience": "end-user",
       "cli_families": ["org member", "org service-account", "access-token", "whoami"],
       "web_workflows": ["identity-access", "memberships", "service-accounts", "access-tokens", "organization-sso"],
-      "methods": ["PlanCreateAutomationPrincipal", "CreateAutomationPrincipal", "GetMembership", "PlanSetMembership", "SetMembership", "PlanIssueRegistryToken", "IssueRegistryToken", "PlanRetireRegistryToken", "RetireRegistryToken", "ListTokens"]
+      "methods": ["WhoAmI", "PlanCreateAutomationPrincipal", "CreateAutomationPrincipal", "GetMembership", "PlanSetMembership", "SetMembership", "PlanIssueRegistryToken", "IssueRegistryToken", "PlanRetireRegistryToken", "RetireRegistryToken", "ListTokens"]
     }
   ]
 }
