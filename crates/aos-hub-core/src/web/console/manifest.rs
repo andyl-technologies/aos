@@ -132,6 +132,11 @@ pub const CONSOLE_ROUTES: &[RouteSpec] = &[
     route("/-/org/{org}/projects/new", RouteMethods::Get),
     route("/-/org/{org}/registries/new", RouteMethods::Get),
     route("/-/org/{org}/caches/new", RouteMethods::Get),
+    route("/-/org/{org}/storage-bindings/new", RouteMethods::Get),
+    route("/-/org/{org}/domains/new", RouteMethods::Get),
+    route("/-/org/{org}/network-boundaries/new", RouteMethods::Get),
+    route("/-/org/{org}/delivery-endpoints/new", RouteMethods::Get),
+    route("/-/org/{org}/storage-gateways/new", RouteMethods::Get),
     route("/-/org/{org}/caches/{cache}", RouteMethods::Get),
     route("/-/org/{org}/caches/{cache}/{page}", RouteMethods::Get),
     route("/-/org/{org}/invitations/accept", RouteMethods::GetAndPost),
@@ -181,6 +186,11 @@ fn is_management_shell_template(path: &str) -> bool {
             | "/-/org/{org}/projects/new"
             | "/-/org/{org}/registries/new"
             | "/-/org/{org}/caches/new"
+            | "/-/org/{org}/storage-bindings/new"
+            | "/-/org/{org}/domains/new"
+            | "/-/org/{org}/network-boundaries/new"
+            | "/-/org/{org}/delivery-endpoints/new"
+            | "/-/org/{org}/storage-gateways/new"
             | "/-/org/{org}/caches/{cache}"
             | "/-/org/{org}/caches/{cache}/{page}"
     )

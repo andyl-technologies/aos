@@ -24,14 +24,21 @@ pub(super) fn NetworkingWorkflow(route: ConsoleRoute, client: ApiClient) -> impl
             view! { <Domains client=client owner_scope_key="instance".to_string()/> }.into_any()
         }
         (ConsoleScope::Organization { slug }, "domains") => {
-            view! { <OrganizationDomains client=client organization=slug.clone()/> }.into_any()
+            view! { <OrganizationDomains client=client organization=slug.clone() creation_only=false/> }.into_any()
+        }
+        (ConsoleScope::Organization { slug }, "domains-new") => {
+            view! { <OrganizationDomains client=client organization=slug.clone() creation_only=true/> }.into_any()
         }
         _ => view! { <NetworkBoundaryWorkflow route=route client=client/> }.into_any(),
     }
 }
 
 #[component]
-fn OrganizationDomains(client: ApiClient, organization: String) -> impl IntoView {
+fn OrganizationDomains(
+    client: ApiClient,
+    organization: String,
+    creation_only: bool,
+) -> impl IntoView {
     let resolve_client = client.clone();
     let scope = LocalResource::new(move || {
         let client = resolve_client.clone();
@@ -46,7 +53,7 @@ fn OrganizationDomains(client: ApiClient, organization: String) -> impl IntoView
                 Suspend::new(async move {
                     match scope.await.as_ref() {
                         Ok(owner_scope_key) => view! {
-                            <Domains client=client owner_scope_key=owner_scope_key.clone()/>
+                            <Domains client=client owner_scope_key=owner_scope_key.clone() organization=Some(organization.clone()) creation_only=creation_only/>
                         }
                         .into_any(),
                         Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
@@ -58,7 +65,12 @@ fn OrganizationDomains(client: ApiClient, organization: String) -> impl IntoView
 }
 
 #[component]
-fn Domains(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+fn Domains(
+    client: ApiClient,
+    owner_scope_key: String,
+    #[prop(optional)] organization: Option<String>,
+    #[prop(optional)] creation_only: bool,
+) -> impl IntoView {
     let list_client = client.clone();
     let list_scope = owner_scope_key.clone();
     let inventory = LocalResource::new(move || {
@@ -82,8 +94,8 @@ fn Domains(client: ApiClient, owner_scope_key: String) -> impl IntoView {
 
     view! {
         <div class="workflow-stack">
-            <section class="panel resource-panel">
-                <div class="section-heading"><div><p class="section-kicker">"Naming and certificates"</p><h2>"Domains"</h2><p>"Domains capture DNS and certificate intent. Endpoints choose a domain and a network boundary independently."</p></div></div>
+            {(!creation_only).then(|| view! { <section class="panel resource-panel">
+                <div class="section-heading"><div><p class="section-kicker">"Naming and certificates"</p><h2>"Domains"</h2><p>"Domains capture DNS and certificate intent. Endpoints choose a domain and a network boundary independently."</p></div>{organization.as_ref().map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/domains/new")>"Add domain"</a> })}</div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading domains…"</p> }>
                     {move || { let client = inventory_client.clone(); Suspend::new(async move {
                         match inventory.await.as_ref() {
@@ -93,8 +105,8 @@ fn Domains(client: ApiClient, owner_scope_key: String) -> impl IntoView {
                         }
                     }) }}
                 </Suspense>
-            </section>
-            <DomainCreate client=client owner_scope_key=owner_scope_key/>
+            </section> })}
+            {creation_only.then(|| view! { <DomainCreate client=client owner_scope_key=owner_scope_key/> })}
         </div>
     }
 }

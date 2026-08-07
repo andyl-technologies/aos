@@ -317,6 +317,11 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         .route("/-/org/{org}/projects/new", management_get())
         .route("/-/org/{org}/registries/new", management_get())
         .route("/-/org/{org}/caches/new", management_get())
+        .route("/-/org/{org}/storage-bindings/new", management_get())
+        .route("/-/org/{org}/domains/new", management_get())
+        .route("/-/org/{org}/network-boundaries/new", management_get())
+        .route("/-/org/{org}/delivery-endpoints/new", management_get())
+        .route("/-/org/{org}/storage-gateways/new", management_get())
         .route("/-/org/{org}/caches/{cache}", management_get())
         .route("/-/org/{org}/caches/{cache}/{page}", management_get())
         .route(

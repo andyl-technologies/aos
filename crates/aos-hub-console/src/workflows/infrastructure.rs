@@ -25,11 +25,16 @@ pub(super) fn InfrastructureWorkflow(route: ConsoleRoute, client: ApiClient) -> 
                 client=client
                 owner_scope_key="instance".to_string()
                 organization_slug=None
+                creation_only=false
             />
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "storage") => view! {
-            <OrganizationStorageBindings client=client organization=slug.clone()/>
+            <OrganizationStorageBindings client=client organization=slug.clone() creation_only=false/>
+        }
+        .into_any(),
+        (ConsoleScope::Organization { slug }, "storage-new") => view! {
+            <OrganizationStorageBindings client=client organization=slug.clone() creation_only=true/>
         }
         .into_any(),
         (ConsoleScope::Instance, "defaults") => {
@@ -44,7 +49,11 @@ pub(super) fn InfrastructureWorkflow(route: ConsoleRoute, client: ApiClient) -> 
 }
 
 #[component]
-fn OrganizationStorageBindings(client: ApiClient, organization: String) -> impl IntoView {
+fn OrganizationStorageBindings(
+    client: ApiClient,
+    organization: String,
+    creation_only: bool,
+) -> impl IntoView {
     let resolve_client = client.clone();
     let resolve_slug = organization.clone();
     let scope = LocalResource::new(move || {
@@ -65,6 +74,7 @@ fn OrganizationStorageBindings(client: ApiClient, organization: String) -> impl 
                                 client=client
                                 owner_scope_key=owner_scope_key.clone()
                                 organization_slug=Some(organization)
+                                creation_only=creation_only
                             />
                         }
                         .into_any(),
@@ -81,6 +91,7 @@ fn StorageBindings(
     client: ApiClient,
     owner_scope_key: String,
     organization_slug: Option<String>,
+    creation_only: bool,
 ) -> impl IntoView {
     let list_client = client.clone();
     let list_scope = owner_scope_key.clone();
@@ -105,13 +116,14 @@ fn StorageBindings(
 
     view! {
         <div class="workflow-stack">
-            <section class="panel resource-panel">
+            {(!creation_only).then(|| view! { <section class="panel resource-panel">
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">"Storage identity"</p>
                         <h2>"Storage bindings"</h2>
                         <p>"Bindings name provider storage and its capability/credential lifecycle. Placements decide which surfaces use each binding."</p>
                     </div>
+                    {organization_slug.as_ref().map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/storage-bindings/new")>"Create storage binding"</a> })}
                 </div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading storage bindings…"</p> }>
                     {move || {
@@ -132,8 +144,8 @@ fn StorageBindings(
                         })
                     }}
                 </Suspense>
-            </section>
-            <StorageBindingCreate client=client owner_scope_key=owner_scope_key/>
+            </section> })}
+            {creation_only.then(|| view! { <StorageBindingCreate client=client owner_scope_key=owner_scope_key/> })}
         </div>
     }
 }

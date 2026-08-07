@@ -27,7 +27,11 @@ pub(super) fn DeliveryEndpointWorkflow(route: ConsoleRoute, client: ApiClient) -
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "endpoints") => view! {
-            <OrganizationDeliveryEndpoints client=client organization=slug.clone()/>
+            <OrganizationDeliveryEndpoints client=client organization=slug.clone() creation_only=false/>
+        }
+        .into_any(),
+        (ConsoleScope::Organization { slug }, "endpoints-new") => view! {
+            <OrganizationDeliveryEndpoints client=client organization=slug.clone() creation_only=true/>
         }
         .into_any(),
         _ => view! { <StorageGatewayWorkflow route=route client=client/> }.into_any(),
@@ -35,7 +39,11 @@ pub(super) fn DeliveryEndpointWorkflow(route: ConsoleRoute, client: ApiClient) -
 }
 
 #[component]
-fn OrganizationDeliveryEndpoints(client: ApiClient, organization: String) -> impl IntoView {
+fn OrganizationDeliveryEndpoints(
+    client: ApiClient,
+    organization: String,
+    creation_only: bool,
+) -> impl IntoView {
     let resolve_client = client.clone();
     let scope = LocalResource::new(move || {
         let client = resolve_client.clone();
@@ -50,7 +58,7 @@ fn OrganizationDeliveryEndpoints(client: ApiClient, organization: String) -> imp
                 Suspend::new(async move {
                     match scope.await.as_ref() {
                         Ok(owner_scope_key) => view! {
-                            <DeliveryEndpoints client=client owner_scope_key=owner_scope_key.clone()/>
+                            <DeliveryEndpoints client=client owner_scope_key=owner_scope_key.clone() organization=Some(organization.clone()) creation_only=creation_only/>
                         }
                         .into_any(),
                         Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
@@ -62,7 +70,12 @@ fn OrganizationDeliveryEndpoints(client: ApiClient, organization: String) -> imp
 }
 
 #[component]
-fn DeliveryEndpoints(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+fn DeliveryEndpoints(
+    client: ApiClient,
+    owner_scope_key: String,
+    #[prop(optional)] organization: Option<String>,
+    #[prop(optional)] creation_only: bool,
+) -> impl IntoView {
     let list_client = client.clone();
     let list_scope = owner_scope_key.clone();
     let inventory = LocalResource::new(move || {
@@ -83,7 +96,7 @@ fn DeliveryEndpoints(client: ApiClient, owner_scope_key: String) -> impl IntoVie
         }
     });
     let view_client = client.clone();
-    view! { <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><h2>"Delivery endpoints"</h2><p>"Endpoints bind one stable host identity to exact network-boundary and listener/TLS generations."</p></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading delivery endpoints…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No delivery endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <DeliveryEndpointCard client=client.clone() endpoint=endpoint/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section><DeliveryEndpointCreate client=client owner_scope_key=owner_scope_key/></div> }
+    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><h2>"Delivery endpoints"</h2><p>"Endpoints bind one stable host identity to exact network-boundary and listener/TLS generations."</p></div>{organization.as_ref().map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/delivery-endpoints/new")>"Create delivery endpoint"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading delivery endpoints…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No delivery endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <DeliveryEndpointCard client=client.clone() endpoint=endpoint/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <DeliveryEndpointCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
 }
 
 #[derive(Clone, Debug)]
