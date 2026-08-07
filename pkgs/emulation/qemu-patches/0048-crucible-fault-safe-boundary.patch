@@ -91,7 +91,7 @@ index 4ba3752..926623a 100644
  
  #endif
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 0689e65..2bcd09c 100644
+index bd4f5e6..999a102 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -164,6 +164,17 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,
@@ -112,7 +112,7 @@ index 0689e65..2bcd09c 100644
  /**
   * typedef qemu_plugin_vcpu_idle_resume_cb_t - sim idle/resume callback
   * @vcpu_index: the vCPU index entering or leaving the all-idle boundary
-@@ -1920,6 +1931,19 @@ int qemu_plugin_crucible_fault_poll(
+@@ -1908,6 +1919,19 @@ int qemu_plugin_crucible_fault_poll(
      struct qemu_plugin_crucible_fault_result *result,
      uint8_t *payload, size_t payload_capacity, size_t *payload_length);
  

@@ -1,7 +1,7 @@
 {
   pkgs,
   lib,
-  attrPath ? "checks.crucible.phase4.faultTestDoubleGate",
+  attrPath ? "checks.crucible.phase4.faultProductionDeviceCoreGate",
   taskIds ? ["T-FAULT-16"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -11,7 +11,7 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  gateTest = builtins.readFile ../../crates/crucible/tests/fault_test_double_gate.rs;
+  gateTest = builtins.readFile ../../crates/crucible/tests/fault_production_device_core_gate.rs;
   faultDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17-fault-injection.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,21 +22,21 @@
     failuresFor "docs/rfcs/0010-crucible/17-fault-injection.md" faultDoc [
       {
         label = "T-FAULT-16 completion note";
-        needle = "Completed by `checks.crucible.phase4.faultTestDoubleGate`";
+        needle = "Completed by `checks.crucible.phase4.faultProductionDeviceCoreGate`";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/fault_test_double_gate.rs" gateTest [
+    ++ failuresFor "crates/crucible/tests/fault_production_device_core_gate.rs" gateTest [
       {
-        label = "network fault double gate";
-        needle = "fault_test_double_exercises_each_network_fault_kind";
+        label = "network production device-core gate";
+        needle = "production_device_core_exercises_each_network_fault_kind";
       }
       {
-        label = "block fault double gate";
-        needle = "fault_test_double_exercises_each_block_fault_kind";
+        label = "block production device-core gate";
+        needle = "production_device_core_exercises_each_block_fault_kind";
       }
       {
-        label = "9p fault double gate";
-        needle = "fault_test_double_exercises_each_9p_fault_kind";
+        label = "9p production device-core gate";
+        needle = "production_device_core_exercises_each_9p_fault_kind";
       }
       {
         label = "network A-to-B partition coverage";
@@ -141,15 +141,15 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "phase4 fault test double gate import";
-        needle = "faultTestDoubleGate = import ./phase4-fault-test-double-gate.nix";
+        label = "phase4 production device-core gate import";
+        needle = "faultProductionDeviceCoreGate = import ./phase4-fault-production-device-core-gate.nix";
       }
       {
-        label = "phase4 fault test double gate attr path";
-        needle = "attrPath = \"checks.crucible.phase4.faultTestDoubleGate\"";
+        label = "phase4 production device-core gate attr path";
+        needle = "attrPath = \"checks.crucible.phase4.faultProductionDeviceCoreGate\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/fault_test_double_gate.rs" gateTest [
+    ++ forbiddenFor "crates/crucible/tests/fault_production_device_core_gate.rs" gateTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -165,10 +165,10 @@
     ];
 in
   if failures != []
-  then throw "crucible phase4 fault-test-double-gate check failed:\n${builtins.concatStringsSep "\n" failures}"
+  then throw "crucible phase4 production-device-core gate failed:\n${builtins.concatStringsSep "\n" failures}"
   else
     pkgs.mkDerivation {
-      pname = "crucible-phase4-fault-test-double-gate";
+      pname = "crucible-phase4-fault-production-device-core-gate";
       version = "0";
       src = crucibleSrc;
 
@@ -205,7 +205,7 @@ in
           '';
         }
         {
-          name = "run-fault-test-double-gate";
+          name = "run-fault-production-device-core-gate";
           script = ''
             set -eu
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
@@ -215,9 +215,9 @@ in
             cargo test \
               --frozen \
               --offline \
-              --target-dir "$TMPDIR/crucible-fault-test-double-gate-target" \
+              --target-dir "$TMPDIR/crucible-fault-production-device-core-gate-target" \
               -p crucible \
-              --test fault_test_double_gate \
+              --test fault_production_device_core_gate \
               -- --test-threads=1
           '';
         }
@@ -230,7 +230,7 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
-            gate=fault-test-double
+            gate=fault-production-device-core
             run_twice=true
             RESULT
           '';

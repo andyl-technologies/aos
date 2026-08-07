@@ -2628,36 +2628,29 @@ pub struct DebugCheckpointCadenceRequest {
     pub current: Configuration,
     /// Non-zero checkpoint stride.
     pub stride: DebugCheckpointStride,
-    /// Savevm hedge that decides whether cadence points may be fat.
-    pub hedge: SavevmCompletenessHedge,
+    /// Advisory cache budget used for selected cadence points.
+    pub policy: MaterializationPolicy,
 }
 
 impl DebugCheckpointCadenceRequest {
-    /// Builds a checkpoint-cadence request with an explicit savevm hedge.
+    /// Builds a checkpoint-cadence request with an explicit cache policy.
     #[must_use]
-    pub fn with_hedge(
+    pub fn with_policy(
         current: Configuration,
         stride: DebugCheckpointStride,
-        hedge: SavevmCompletenessHedge,
+        policy: MaterializationPolicy,
     ) -> Self {
         Self {
             current,
             stride,
-            hedge,
+            policy,
         }
     }
 
-    /// Builds the default S3-conservative cadence request.
+    /// Builds a cadence request that retains every selected point as thin.
     #[must_use]
-    pub fn thin_replay_until_full_s3(
-        current: Configuration,
-        stride: DebugCheckpointStride,
-    ) -> Self {
-        Self::with_hedge(
-            current,
-            stride,
-            SavevmCompletenessHedge::thin_replay_until_full_s3(),
-        )
+    pub fn thin_only(current: Configuration, stride: DebugCheckpointStride) -> Self {
+        Self::with_policy(current, stride, MaterializationPolicy::thin_only())
     }
 }
 
@@ -2668,8 +2661,8 @@ pub struct DebugCheckpointCadenceReport {
     pub current_configuration: ContentHash,
     /// Non-zero stride that selected candidate prefixes.
     pub stride: DebugCheckpointStride,
-    /// Savevm hedge used for every candidate prefix.
-    pub hedge: SavevmCompletenessHedge,
+    /// Cache policy used for every candidate prefix.
+    pub policy: MaterializationPolicy,
     /// Candidate prefix configuration ids selected by the stride.
     pub candidate_configurations: Vec<ContentHash>,
     /// Candidate ids cached as fat checkpoints.
@@ -2683,11 +2676,10 @@ pub struct DebugCheckpointCadenceReport {
 }
 
 impl DebugCheckpointCadenceReport {
-    /// Returns whether the S3-conservative default kept all cadence points thin.
+    /// Returns whether the cache policy kept every cadence point thin.
     #[must_use]
-    pub fn defaults_to_thin_replay_until_full_s3(&self) -> bool {
-        !self.hedge.fat_snapshot_default()
-            && self.fat_checkpoints.is_empty()
+    pub fn kept_all_thin(&self) -> bool {
+        self.fat_checkpoints.is_empty()
             && self.thin_checkpoints.len() == self.candidate_configurations.len()
     }
 

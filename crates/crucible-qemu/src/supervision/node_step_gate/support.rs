@@ -193,6 +193,7 @@ pub(super) fn bounded_prime_polls(timeout: Duration) -> u64 {
 pub(super) fn connect_qmp_priming_main_loop(
     setup: &crate::QemuHostPluginSetup,
     socket_path: &Path,
+    command_timeout: Duration,
 ) -> Result<crate::QemuQmpVmStateControlChannel<UnixStream>, QmpError> {
     let stop = AtomicBool::new(false);
     thread::scope(|scope| {
@@ -204,7 +205,11 @@ pub(super) fn connect_qmp_priming_main_loop(
                 thread::sleep(QMP_PRIMER_WAKE_INTERVAL);
             }
         });
-        let result = crate::QemuQmpVmStateControlChannel::connect_unix_socket(socket_path);
+        let result = crate::QemuQmpVmStateControlChannel::connect_unix_socket_with_policies(
+            socket_path,
+            crate::QmpJobPollPolicy::default(),
+            crate::QmpIoTimeoutPolicy::from_command_timeout(command_timeout),
+        );
         stop.store(true, Ordering::Relaxed);
         let _ = primer.join();
         result
@@ -217,20 +222,29 @@ pub(super) fn vm_launch_config(
     node_name: &str,
 ) -> QemuVmLaunchConfig {
     let kernel = launch_artifact("kernel", &config.kernel);
-    let vm = match &config.root_image {
-        Some(root_image) => {
-            QemuVmLaunchConfig::new(node_name, kernel, launch_artifact("root-image", root_image))
-                .with_root_image_format(config.root_image_format)
-        }
-        None => QemuVmLaunchConfig::new_diskless(
+    let vm = if config.firmware_boot {
+        QemuVmLaunchConfig::new_firmware_boot(
             node_name,
-            kernel,
             launch_artifact("firmware", &config.firmware),
-        ),
+        )
+    } else {
+        match &config.root_image {
+            Some(root_image) => QemuVmLaunchConfig::new(
+                node_name,
+                kernel,
+                launch_artifact("root-image", root_image),
+            )
+            .with_root_image_format(config.root_image_format),
+            None => QemuVmLaunchConfig::new_diskless(
+                node_name,
+                kernel,
+                launch_artifact("firmware", &config.firmware),
+            ),
+        }
     };
-    let vm = match &config.initrd {
-        Some(initrd) => vm.with_initrd(launch_artifact("initrd", initrd)),
-        None => vm,
+    let vm = match (&config.initrd, config.firmware_boot) {
+        (Some(_), true) | (None, _) => vm,
+        (Some(initrd), false) => vm.with_initrd(launch_artifact("initrd", initrd)),
     };
     let vm = match &config.shmem_network_mac {
         Some(mac) => {

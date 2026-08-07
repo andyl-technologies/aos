@@ -945,9 +945,9 @@ in rec {
       attrPath = "checks.crucible.phase4.faultDeterminismGate";
       taskIds = ["T-FAULT-15"];
     };
-    faultTestDoubleGate = import ./phase4-fault-test-double-gate.nix {
+    faultProductionDeviceCoreGate = import ./phase4-fault-production-device-core-gate.nix {
       inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultTestDoubleGate";
+      attrPath = "checks.crucible.phase4.faultProductionDeviceCoreGate";
       taskIds = ["T-FAULT-16"];
     };
     propertyVocabulary = import ./phase4-property-vocabulary.nix {
@@ -1832,11 +1832,11 @@ in rec {
         phase6.advancedDependencyLadder
       ];
     };
-    savevmCompleteness = greenBeforeAdvance {
-      attrPath = "checks.crucible.phase6.savevmCompleteness";
-      gate = import ./phase6-savevm-completeness.nix {
+    checkpointMaterialization = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.checkpointMaterialization";
+      gate = import ./phase6-checkpoint-materialization.nix {
         inherit pkgs lib;
-        attrPath = "checks.crucible.phase6.savevmCompleteness";
+        attrPath = "checks.crucible.phase6.checkpointMaterialization";
         taskIds = ["T-ADV-6"];
         dependencies = [
           phase4.gates.replayOracle.rawGate
@@ -1860,14 +1860,14 @@ in rec {
           phase4.gates.replayOracle.rawGate
           phase4.gates.e2eDeterminism.rawGate
           phase6.explorationLifecycle.rawGate
-          phase6.savevmCompleteness.rawGate
+          phase6.checkpointMaterialization.rawGate
         ];
       };
       dependencies = [
         phase4.gates.replayOracle
         phase4.gates.e2eDeterminism
         phase6.explorationLifecycle
-        phase6.savevmCompleteness
+        phase6.checkpointMaterialization
       ];
     };
     stateSpaceSearch = greenBeforeAdvance {
@@ -1880,7 +1880,7 @@ in rec {
           phase4.gates.replayOracle.rawGate
           phase4.gates.e2eDeterminism.rawGate
           phase6.restoreStrategies.rawGate
-          phase6.savevmCompleteness.rawGate
+          phase6.checkpointMaterialization.rawGate
           phase6.gates.replayOracle.rawGate
         ];
       };
@@ -1888,7 +1888,7 @@ in rec {
         phase4.gates.replayOracle
         phase4.gates.e2eDeterminism
         phase6.restoreStrategies
-        phase6.savevmCompleteness
+        phase6.checkpointMaterialization
         phase6.gates.replayOracle
       ];
     };

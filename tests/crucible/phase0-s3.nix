@@ -950,12 +950,13 @@ in
             echo risk8_status=mitigated_by_fallback_not_retired_for_fat_snapshot
             echo risk9_status=retired_thin_replay_default
             echo s3_fallback_adopted=true
+            echo policy_scope=historical_phase0_spike_not_runtime_policy
           } > "$out/result"
         '';
       }
     ];
 
     meta = {
-      description = "Crucible Phase 0 S3 savevm/loadvm completeness and fallback spike";
+      description = "Historical Crucible Phase 0 S3 savevm/loadvm completeness spike";
     };
   }

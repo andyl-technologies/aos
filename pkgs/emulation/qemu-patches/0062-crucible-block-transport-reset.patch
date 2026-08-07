@@ -1,17 +1,18 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index afc442b..be75047 100644
+index afc442b..157a655 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
-@@ -15,6 +15,8 @@
+@@ -15,6 +15,9 @@
  #include "qemu/iov.h"
  #include "qemu/module.h"
  #include "qemu/thread.h"
 +#include "qemu/timer.h"
++#include "migration/qemu-file.h"
 +#include "migration/vmstate.h"
  #include "system/crucible-plugin-wake.h"
  #include "qemu/option.h"
  #include "block/aio.h"
-@@ -24,23 +26,54 @@
+@@ -24,23 +27,54 @@
  
  #define CRUCIBLE_SHMEM_OPT_SIZE BLOCK_OPT_SIZE
  #define CRUCIBLE_SHMEM_DEFAULT_SIZE (1ULL << 30)
@@ -66,7 +67,7 @@ index afc442b..be75047 100644
  
  static QemuOptsList crucible_shmem_runtime_opts = {
      .name = "crucible-shmem",
-@@ -71,11 +104,176 @@ void qemu_plugin_register_blk_wait_cb(qemu_plugin_blk_wait_cb_t wait_cb,
+@@ -71,11 +105,176 @@ void qemu_plugin_register_blk_wait_cb(qemu_plugin_blk_wait_cb_t wait_cb,
      crucible_blk_wait_cb = wait_cb;
  }
  
@@ -243,7 +244,7 @@ index afc442b..be75047 100644
  static void crucible_shmem_wake(Notifier *notifier, void *data)
  {
      BDRVCrucibleShmemState *s = container_of(notifier,
-@@ -84,6 +282,9 @@ static void crucible_shmem_wake(Notifier *notifier, void *data)
+@@ -84,6 +283,9 @@ static void crucible_shmem_wake(Notifier *notifier, void *data)
      CoQueue waiters;
      QemuPluginWakeEvent event = (QemuPluginWakeEvent)(intptr_t)data;
  
@@ -253,7 +254,7 @@ index afc442b..be75047 100644
      qemu_mutex_lock(&s->pending_lock);
      if (event == QEMU_PLUGIN_WAKE_EVENT_FAILED) {
          s->wake_failed = true;
-@@ -122,16 +323,35 @@ static int crucible_shmem_open(BlockDriverState *bs, QDict *options,
+@@ -122,16 +324,35 @@ static int crucible_shmem_open(BlockDriverState *bs, QDict *options,
          error_setg(errp, "crucible-shmem size is invalid");
          return -EINVAL;
      }
@@ -289,7 +290,7 @@ index afc442b..be75047 100644
      bs->bl.request_alignment = 1;
      return 0;
  }
-@@ -144,11 +364,20 @@ static void crucible_shmem_close(BlockDriverState *bs)
+@@ -144,11 +365,20 @@ static void crucible_shmem_close(BlockDriverState *bs)
          qemu_plugin_wake_notifier_remove(&s->wake_notifier);
          s->wake_registered = false;
      }
@@ -310,7 +311,7 @@ index afc442b..be75047 100644
  }
  
  static int64_t coroutine_fn
-@@ -176,17 +405,47 @@ static int crucible_shmem_check_range(BlockDriverState *bs, int64_t offset,
+@@ -176,17 +406,47 @@ static int crucible_shmem_check_range(BlockDriverState *bs, int64_t offset,
      return 0;
  }
  
@@ -360,7 +361,7 @@ index afc442b..be75047 100644
  static void coroutine_fn
  crucible_shmem_wait_one_poll(BlockDriverState *bs,
                               uint64_t observed_generation)
-@@ -203,7 +462,8 @@ crucible_shmem_wait_one_poll(BlockDriverState *bs,
+@@ -203,7 +463,8 @@ crucible_shmem_wait_one_poll(BlockDriverState *bs,
  }
  
  static int64_t coroutine_fn
@@ -370,7 +371,7 @@ index afc442b..be75047 100644
                                  uint8_t *data, size_t capacity)
  {
      BDRVCrucibleShmemState *s = bs->opaque;
-@@ -221,9 +481,19 @@ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
+@@ -221,9 +482,19 @@ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
          if (!crucible_blk_callbacks_ready()) {
              return -ENODEV;
          }
@@ -391,7 +392,7 @@ index afc442b..be75047 100644
              return ret;
          }
          if (crucible_blk_wait_cb) {
-@@ -265,6 +535,7 @@ crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
+@@ -265,6 +536,7 @@ crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
                                 size_t in_capacity)
  {
      BDRVCrucibleShmemState *s = bs->opaque;
@@ -399,7 +400,7 @@ index afc442b..be75047 100644
      uint32_t request_id;
      int ret;
      int64_t poll_ret;
-@@ -273,19 +544,39 @@ crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
+@@ -273,19 +545,39 @@ crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
          return -ENOMEDIUM;
      }
  
@@ -442,7 +443,7 @@ index afc442b..be75047 100644
      return crucible_shmem_decode_poll_result(poll_ret, in_capacity);
  }
  
-@@ -383,6 +674,194 @@ static void crucible_shmem_refresh_filename(BlockDriverState *bs)
+@@ -383,6 +675,194 @@ static void crucible_shmem_refresh_filename(BlockDriverState *bs)
              "crucible-shmem://");
  }
  
@@ -637,7 +638,7 @@ index afc442b..be75047 100644
  static BlockDriver bdrv_crucible_shmem = {
      .format_name            = "crucible-shmem",
      .protocol_name          = "crucible-shmem",
-@@ -396,6 +875,8 @@ static BlockDriver bdrv_crucible_shmem = {
+@@ -396,6 +876,8 @@ static BlockDriver bdrv_crucible_shmem = {
      .bdrv_co_flush_to_disk  = crucible_shmem_co_flush,
      .bdrv_co_pdiscard       = crucible_shmem_co_pdiscard,
      .bdrv_refresh_filename  = crucible_shmem_refresh_filename,
@@ -1027,7 +1028,7 @@ index 6386910..4f544f0 100644
                                  VirtQueueElement *elem);
  int virtqueue_avail_bytes(VirtQueue *vq, unsigned int in_bytes,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 24e2822..08c2352 100644
+index 0c907fd..7b654a0 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -220,7 +220,8 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
@@ -1167,3 +1168,53 @@ index 24e2822..08c2352 100644
  /**
   * qemu_plugin_register_blk_wait_cb() - register the shmem block wait hook
   * @wait_cb: callback fired before a pending block coroutine parks
+diff --git a/qapi/block-core.json b/qapi/block-core.json
+index b193778..724dc27 100644
+--- a/qapi/block-core.json
++++ b/qapi/block-core.json
+@@ -3184,6 +3184,8 @@
+ #
+ # @copy-on-read: Since 3.0
+ #
++# @crucible-shmem: AOS deterministic shared-memory block transport
++#
+ # @blklogwrites: Since 3.0
+ #
+ # @blkreplay: Since 4.2
+@@ -3204,7 +3206,7 @@
+ { 'enum': 'BlockdevDriver',
+   'data': [ 'blkdebug', 'blklogwrites', 'blkreplay', 'blkverify', 'bochs',
+             'cloop', 'compress', 'copy-before-write', 'copy-on-read', 'dmg',
+-            'file', 'snapshot-access', 'ftp', 'ftps',
++            'crucible-shmem', 'file', 'snapshot-access', 'ftp', 'ftps',
+             {'name': 'gluster', 'features': [ 'deprecated' ] },
+             {'name': 'host_cdrom', 'if': 'HAVE_HOST_BLOCK_DEVICE' },
+             {'name': 'host_device', 'if': 'HAVE_HOST_BLOCK_DEVICE' },
+@@ -4569,6 +4571,19 @@
+   'base': 'BlockdevOptionsGenericFormat',
+   'data': { '*offset': 'int', '*size': 'int' } }
+ 
++##
++# @BlockdevOptionsCrucibleShmem:
++#
++# Driver-specific options for the AOS deterministic shared-memory block
++# transport.
++#
++# @size: fixed virtual device size in bytes
++#
++# Since: 10.0
++##
++{ 'struct': 'BlockdevOptionsCrucibleShmem',
++  'data': { 'size': 'size' } }
++
+ ##
+ # @BlockdevOptionsThrottle:
+ #
+@@ -4730,6 +4745,7 @@
+       'compress':   'BlockdevOptionsGenericFormat',
+       'copy-before-write':'BlockdevOptionsCbw',
+       'copy-on-read':'BlockdevOptionsCor',
++      'crucible-shmem':'BlockdevOptionsCrucibleShmem',
+       'dmg':        'BlockdevOptionsGenericFormat',
+       'file':       'BlockdevOptionsFile',
+       'ftp':        'BlockdevOptionsCurlFtp',

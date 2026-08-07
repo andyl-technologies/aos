@@ -144,6 +144,12 @@ pub enum QemuNodeError {
         /// Deterministic event-log failure diagnostic.
         message: String,
     },
+    /// A coordinated QEMU/host-I/O checkpoint transaction failed.
+    #[error("QEMU exact checkpoint failed: {message}")]
+    Checkpoint {
+        /// Deterministic capture, binding, or cleanup failure detail.
+        message: String,
+    },
     /// A live QEMU fault command violated its admitted boundary contract.
     #[error("QEMU fault command failed closed: {message}")]
     FaultCommand {
@@ -180,6 +186,14 @@ impl QemuNodeError {
     pub fn from_gdbstub_proxy(operation: &'static str, message: impl Into<String>) -> Self {
         Self::GdbstubProxy {
             operation,
+            message: message.into(),
+        }
+    }
+
+    /// Creates a coordinated checkpoint error.
+    #[must_use]
+    pub fn checkpoint(message: impl Into<String>) -> Self {
+        Self::Checkpoint {
             message: message.into(),
         }
     }

@@ -174,10 +174,10 @@ index cd07a05..4add523 100644
  
      /* Calculate space for cmdlines, bootloader name, and mb_mods */
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 3a850aa..1c0888f 100644
+index 3a850aa..00ebbbe 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -931,6 +931,146 @@ QEMU_PLUGIN_API
+@@ -931,6 +931,134 @@ QEMU_PLUGIN_API
  int qemu_plugin_read_register(struct qemu_plugin_register *handle,
                                GByteArray *buf);
  
@@ -308,18 +308,6 @@ index 3a850aa..1c0888f 100644
 + */
 +QEMU_PLUGIN_API
 +uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
-+
-+/**
-+ * qemu_plugin_crucible_pause_vm() - request a VM stop at the current icount
-+ *
-+ * This lets a fingerprint plugin request a stop after recording a fixed-horizon
-+ * sample, so QMP can inspect or migrate the stable VM state where the stop
-+ * takes effect.
-+ *
-+ * This AOS Crucible extension is available only in system emulation.
-+ */
-+QEMU_PLUGIN_API
-+void qemu_plugin_crucible_pause_vm(void);
 +
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
@@ -484,7 +472,7 @@ index 138c39a..58761d8 100644
  int qemu_loadvm_state(QEMUFile *f);
  void qemu_loadvm_state_cleanup(MigrationIncomingState *mis);
 diff --git a/plugins/api.c b/plugins/api.c
-index 604ce06..18391d9 100644
+index 604ce06..9276590 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -39,8 +39,18 @@
@@ -506,7 +494,7 @@ index 604ce06..18391d9 100644
  #include "exec/target_page.h"
  #include "exec/translation-block.h"
  #include "exec/translator.h"
-@@ -462,6 +472,509 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+@@ -462,6 +472,504 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
      return gdb_read_register(current_cpu, buf, GPOINTER_TO_INT(reg) - 1);
  }
  
@@ -674,11 +662,6 @@ index 604ce06..18391d9 100644
 +        status = close_status;
 +    }
 +    return status;
-+}
-+
-+void qemu_plugin_crucible_pause_vm(void)
-+{
-+    (void)vm_stop(RUN_STATE_PAUSED);
 +}
 +
 +struct CrucibleSha256Ram {
@@ -1016,6 +999,11 @@ index 604ce06..18391d9 100644
  struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size)
  {
      return plugin_scoreboard_new(element_size);
+@@ -514,4 +1022,3 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
+     }
+     return total;
+ }
+-
 diff --git a/qemu-options.hx b/qemu-options.hx
 index c860453..c0e288a 100644
 --- a/qemu-options.hx

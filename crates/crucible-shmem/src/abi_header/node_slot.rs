@@ -24,7 +24,11 @@ pub(super) fn emit_node_slot(out: &mut String) {
     out.push_str("    _Atomic uint32_t preemption_arg0;\n");
     out.push_str("    _Atomic uint32_t preemption_arg1;\n");
     out.push_str("    _Atomic uint8_t preemption_kind;\n");
-    out.push_str("    uint8_t reserved[CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_LEN];\n");
+    out.push_str("    uint8_t pad2[7];\n");
+    out.push_str("    _Atomic uint64_t logical_time_raw_icount;\n");
+    out.push_str("    _Atomic uint64_t logical_time_restore_target;\n");
+    out.push_str("    _Atomic uint32_t logical_time_restore_request;\n");
+    out.push_str("    _Atomic uint32_t logical_time_restore_ack;\n");
     out.push_str("} crucible_shmem_node_slot;\n\n");
 
     emit_static_asserts(
@@ -60,7 +64,14 @@ pub(super) fn emit_node_slot(out: &mut String) {
             ("preemption_arg0", "PREEMPTION_ARG0"),
             ("preemption_arg1", "PREEMPTION_ARG1"),
             ("preemption_kind", "PREEMPTION_KIND"),
-            ("reserved", "RESERVED"),
+            ("pad2", "PAD2"),
+            ("logical_time_raw_icount", "LOGICAL_TIME_RAW_ICOUNT"),
+            ("logical_time_restore_target", "LOGICAL_TIME_RESTORE_TARGET"),
+            (
+                "logical_time_restore_request",
+                "LOGICAL_TIME_RESTORE_REQUEST",
+            ),
+            ("logical_time_restore_ack", "LOGICAL_TIME_RESTORE_ACK"),
         ],
     );
 }

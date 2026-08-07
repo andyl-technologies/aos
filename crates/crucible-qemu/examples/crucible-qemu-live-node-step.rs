@@ -83,7 +83,7 @@ fn run() -> Result<(), String> {
     println!("plugin_loaded=rust-control-cdylib");
     println!("node_kind=live-qemu-node");
     println!("host_io_runtime=qemu-live-host-io-runtime");
-    println!("qmp_channel=vmstate-shutdown-only");
+    println!("qmp_channel=vmstate-exact-snapshot");
     println!("quantum_count={}", report.quanta.len());
     for (index, step) in report.quanta.iter().enumerate() {
         // Raw-versus-logical accounting: target is the raw scheduler ceiling,

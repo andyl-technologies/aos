@@ -11,8 +11,8 @@ use crucible::{
 
 use super::*;
 use crate::{
-    QemuBakedGenesisSnapshot, QemuLoadvmCommandPurpose, QemuNodeRestoreAdmission,
-    QemuReplayOracleValidation, QemuSavevmCompletenessPolicy,
+    QemuBakedGenesisSnapshot, QemuExactSnapshotPolicy, QemuLoadvmCommandPurpose,
+    QemuNodeRestoreAdmission, QemuReplayOracleValidation,
 };
 
 type SharedLog = Rc<RefCell<Vec<NodeExecutorCall>>>;
@@ -217,10 +217,10 @@ fn qemu_node_realization_executor_loads_probe_without_runtime_admission()
     let log = shared_log();
     let node = node_id();
     let config = Configuration::genesis(scenario("probe"));
-    let snapshot = QemuVmSnapshot {
-        checkpoint: checkpoint_for_config("probe", &config, &node, 0, CheckpointKind::Fat)?,
-        replay_oracle_validation: QemuReplayOracleValidation::NotRun,
-    };
+    let snapshot = QemuVmSnapshot::diskless(
+        checkpoint_for_config("probe", &config, &node, 0, CheckpointKind::Fat)?,
+        QemuReplayOracleValidation::NotRun,
+    );
     let runtime_id = hash("runtime", "probe");
     let launcher = scripted_launcher(Rc::clone(&log), runtime_id, 0);
     let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
@@ -228,7 +228,7 @@ fn qemu_node_realization_executor_loads_probe_without_runtime_admission()
     let runtime = executor.load_exact_snapshot_for_replay_oracle_probe(
         &config,
         &snapshot,
-        QemuSavevmCompletenessPolicy::complete().authorize_loadvm_probe(),
+        QemuExactSnapshotPolicy::production().authorize_loadvm_probe(),
     )?;
 
     assert_eq!(runtime.id, runtime_id);
@@ -239,8 +239,8 @@ fn qemu_node_realization_executor_loads_probe_without_runtime_admission()
             NodeExecutorCall::Launch {
                 config: config.id(),
                 checkpoint: snapshot.checkpoint.id,
-                authorization: QemuLoadvmCommandPurpose::SnapshotCompletenessProbe,
-                admission: QemuNodeRestoreAdmission::SnapshotCompletenessProbe,
+                authorization: QemuLoadvmCommandPurpose::ReplayOracleProbe,
+                admission: QemuNodeRestoreAdmission::ReplayOracleProbe,
             },
             NodeExecutorCall::Fingerprint,
         ]

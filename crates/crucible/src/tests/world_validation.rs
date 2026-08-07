@@ -1031,12 +1031,6 @@ pub(super) fn seeded_stream_map(
         .collect()
 }
 
-pub(super) fn device_id(name: &str) -> DeviceId {
-    DeviceId {
-        name: name.to_owned(),
-    }
-}
-
 pub(super) fn generated_schedule(seed: u64, len: u64) -> Schedule {
     let mut schedule = Schedule::empty();
     for index in 0..len {
@@ -1170,29 +1164,6 @@ pub(super) fn fat_checkpoint_for(configuration: &Configuration) -> Checkpoint {
         Ok(checkpoint) => checkpoint,
         Err(error) => panic!("test checkpoint should be recorded-shaped: {error}"),
     }
-}
-
-pub(super) fn fat_checkpoint_with_device_overlay(
-    configuration: &Configuration,
-    device: DeviceId,
-) -> Checkpoint {
-    let mut checkpoint = fat_checkpoint_for(configuration);
-    checkpoint.state = Some(MaterializedState::from_components(
-        std::collections::BTreeMap::new(),
-        std::collections::BTreeMap::from([(device.clone(), device_overlay(&device.name))]),
-        SchedulerState::empty(),
-        DecisionRngState::empty(),
-        EventLogOffset::default(),
-    ));
-    checkpoint
-}
-
-pub(super) fn device_overlay(label: &str) -> DeviceOverlayDelta {
-    let parent = ContentHash::from_canonical_material("crucible.test.device-overlay.parent", label);
-    let delta = ContentHash::from_canonical_material("crucible.test.device-overlay.delta", label);
-    let resolved =
-        ContentHash::from_canonical_material("crucible.test.device-overlay.resolved", label);
-    DeviceOverlayDelta::new(parent, delta, resolved, DeviceRngState::empty())
 }
 
 pub(super) fn genesis_checkpoint_for(configuration: &Configuration) -> GenesisCheckpoint {

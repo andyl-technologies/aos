@@ -211,6 +211,7 @@
   # patch -p1 < ${./qemu-patches/0060-crucible-block-typed-errors.patch}
   # patch -p1 < ${./qemu-patches/0061-crucible-block-discard.patch}
   # patch -p1 < ${./qemu-patches/0062-crucible-block-transport-reset.patch}
+  # patch -p1 < ${./qemu-patches/0063-crucible-plugin-vmstop.patch}
 in
   mkDerivation {
     inherit pname;

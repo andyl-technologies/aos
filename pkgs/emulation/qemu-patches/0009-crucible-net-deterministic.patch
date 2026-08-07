@@ -17,7 +17,7 @@ index 2e686b1..7709f15 100644
                                 NetClientState *sender,
                                 unsigned flags,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 26abdbf..5dd4d8e 100644
+index c3a6c95..128f8c3 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -728,6 +728,52 @@ const void *qemu_plugin_request_time_control(void);

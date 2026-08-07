@@ -284,8 +284,8 @@
         needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_KIND_OFFSET == 96);";
       }
       {
-        label = "node slot reserved Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 97);";
+        label = "node slot logical-time raw Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET == 104);";
       }
       {
         label = "node slot size Rust static assertion";
@@ -580,8 +580,8 @@
         needle = "offsetof(crucible_shmem_node_slot, preemption_kind) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_KIND_OFFSET";
       }
       {
-        label = "node slot reserved offset static assert";
-        needle = "offsetof(crucible_shmem_node_slot, reserved) == CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_OFFSET";
+        label = "node slot logical-time restore acknowledgement static assert";
+        needle = "offsetof(crucible_shmem_node_slot, logical_time_restore_ack) == CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET";
       }
       {
         label = "ring header static assert";

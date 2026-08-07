@@ -1219,6 +1219,22 @@ impl BlockFaultState {
         }
     }
 
+    /// Reports whether accepted storage mutation remains outside durable media.
+    ///
+    /// This excludes request-phase and delivery queues: callers can combine it
+    /// with transport quiescence to identify a checkpoint boundary at which the
+    /// guest-visible operation has completed but controller, cache, or media
+    /// work must still survive in the host continuation.
+    #[must_use]
+    pub fn has_pending_durability_continuation(&self) -> bool {
+        !self.controller.is_empty()
+            || !self.media_queue.is_empty()
+            || !self.volatile.is_empty()
+            || !self.pending_persistence_media.is_empty()
+            || self.pending_barrier_frontier.is_some()
+            || self.pending_honest_flush_frontier.is_some()
+    }
+
     /// Creates a validated fault-free write-through state.
     ///
     /// # Errors
@@ -5965,6 +5981,26 @@ mod tests {
         assert_eq!(response.status, BlockStatus::Error);
         assert!(state.volatile_entries().is_empty());
         assert_eq!(durable, before_durable);
+    }
+
+    #[test]
+    fn pending_durability_continuation_tracks_acknowledged_cache_write() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let mut durable = CowOverlay::new();
+        let mut state = state(BlockCompletionDurability::VolatileCacheAccepted);
+
+        assert!(!state.has_pending_durability_continuation());
+        let write = BlockRequest::write(1, 8, b"cache".to_vec());
+        let completed = response(&mut state, &base, &mut durable, &write, |_| {});
+        assert_eq!(completed.status, BlockStatus::Ok);
+        assert!(state.has_pending_durability_continuation());
+        assert_eq!(durable.read(&base, 8, 5).unwrap_or_default(), b"ijklm");
+
+        let flush = BlockRequest::flush(2);
+        let completed = response(&mut state, &base, &mut durable, &flush, |_| {});
+        assert_eq!(completed.status, BlockStatus::Ok);
+        assert!(!state.has_pending_durability_continuation());
+        assert_eq!(durable.read(&base, 8, 5).unwrap_or_default(), b"cache");
     }
 
     #[test]

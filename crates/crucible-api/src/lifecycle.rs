@@ -908,10 +908,9 @@ where
 
     /// Realizes resumed sessions by deterministic replay from genesis.
     ///
-    /// Production QEMU uses this mode while arbitrary exact `loadvm` remains
-    /// disabled by the savevm completeness policy. The control plane verifies
-    /// the replayed configuration and virtual-time boundary before publishing
-    /// the resumed session.
+    /// Production QEMU uses this mode when the persisted session has no exact
+    /// snapshot. The control plane verifies the replayed configuration and
+    /// virtual-time boundary before publishing the resumed session.
     #[must_use]
     pub const fn with_thin_replay_resume(mut self) -> Self {
         self.resume_via_thin_replay = true;

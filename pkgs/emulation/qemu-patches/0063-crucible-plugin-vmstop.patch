@@ -1,0 +1,47 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 7b654a0..62ea6f3 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1042,6 +1042,20 @@ int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,
+ QEMU_PLUGIN_API
+ void qemu_plugin_force_vcpu_exit(void);
+ 
++/**
++ * qemu_plugin_request_vmstop() - stop the VM from an exact plugin boundary
++ *
++ * Requests QEMU's native RUN_STATE_PAUSED transition and stops the current
++ * vCPU. This is the handoff used after a Crucible plugin has published an
++ * exact checkpoint boundary: the vCPU releases the execution path so the main
++ * loop can complete QMP stop/save operations without retiring another guest
++ * instruction.
++ *
++ * Returns: 0 on success, nonzero outside precise single-threaded sim RR.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_request_vmstop(void);
++
+ /**
+  * qemu_plugin_crucible_single_threaded_rr() - report the live sim execution mode
+  *
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index df9ebab..e43cd42 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -318,6 +318,17 @@ void qemu_plugin_force_vcpu_exit(void)
+     }
+ }
+ 
++int qemu_plugin_request_vmstop(void)
++{
++    if (!current_cpu ||
++        icount_enabled() != ICOUNT_PRECISE ||
++        !qemu_plugin_crucible_single_threaded_rr()) {
++        return -1;
++    }
++
++    return vm_stop(RUN_STATE_PAUSED);
++}
++
+ int qemu_plugin_crucible_single_threaded_rr(void)
+ {
+     return strcmp(current_accel_name(), "sim") == 0 &&

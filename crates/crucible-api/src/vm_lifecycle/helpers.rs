@@ -1,6 +1,7 @@
 //! Private construction and event-log helpers for production VM lifecycles.
 
 use super::*;
+use std::io::Read;
 
 pub(super) const fn production_whitebox_switch(
     policy: crucible::WhiteBoxPolicy,
@@ -158,6 +159,22 @@ pub(super) fn prepare_root_overlay(
         output.status,
         String::from_utf8_lossy(&output.stderr).trim()
     )))
+}
+
+pub(super) fn hash_file(path: &Path) -> Result<crucible::ContentHash, std::io::Error> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(crucible::ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    })
 }
 
 pub(super) fn loop_factory_error(message: impl Into<String>) -> LifecycleApiError {

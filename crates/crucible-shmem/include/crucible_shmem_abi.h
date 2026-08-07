@@ -16,7 +16,7 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 7u
+#define CRUCIBLE_SHMEM_ABI_VERSION 8u
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
@@ -81,8 +81,11 @@
 #define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_ARG0_OFFSET 88u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_ARG1_OFFSET 92u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_KIND_OFFSET 96u
-#define CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_OFFSET 97u
-#define CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_LEN 31u
+#define CRUCIBLE_SHMEM_NODE_SLOT_PAD2_OFFSET 97u
+#define CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET 104u
+#define CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET 112u
+#define CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET 120u
+#define CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET 124u
 
 #define CRUCIBLE_SHMEM_RING_HEADER_SIZE 128u
 #define CRUCIBLE_SHMEM_RING_HEADER_ALIGN 128u
@@ -189,7 +192,11 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot {
     _Atomic uint32_t preemption_arg0;
     _Atomic uint32_t preemption_arg1;
     _Atomic uint8_t preemption_kind;
-    uint8_t reserved[CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_LEN];
+    uint8_t pad2[7];
+    _Atomic uint64_t logical_time_raw_icount;
+    _Atomic uint64_t logical_time_restore_target;
+    _Atomic uint32_t logical_time_restore_request;
+    _Atomic uint32_t logical_time_restore_ack;
 } crucible_shmem_node_slot;
 
 CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_node_slot) == CRUCIBLE_SHMEM_NODE_SLOT_SIZE, "crucible_shmem_node_slot size");
@@ -213,7 +220,11 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_consu
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_arg0) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_ARG0_OFFSET, "crucible_shmem_node_slot.preemption_arg0 offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_arg1) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_ARG1_OFFSET, "crucible_shmem_node_slot.preemption_arg1 offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_kind) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_KIND_OFFSET, "crucible_shmem_node_slot.preemption_kind offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, reserved) == CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_OFFSET, "crucible_shmem_node_slot.reserved offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, pad2) == CRUCIBLE_SHMEM_NODE_SLOT_PAD2_OFFSET, "crucible_shmem_node_slot.pad2 offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, logical_time_raw_icount) == CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET, "crucible_shmem_node_slot.logical_time_raw_icount offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, logical_time_restore_target) == CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET, "crucible_shmem_node_slot.logical_time_restore_target offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, logical_time_restore_request) == CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET, "crucible_shmem_node_slot.logical_time_restore_request offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, logical_time_restore_ack) == CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET, "crucible_shmem_node_slot.logical_time_restore_ack offset");
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_ring_header {
     _Atomic uint64_t read_idx;

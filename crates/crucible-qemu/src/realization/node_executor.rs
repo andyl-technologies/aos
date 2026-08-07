@@ -206,7 +206,9 @@ where
         authorization: QemuLoadvmCommandAuthorization,
         admission: QemuLoadvmRealizationAdmission,
     ) -> Result<RuntimeState, QemuVmRealizationError> {
-        let restore = QemuNodeRestorePlan::new(&snapshot.checkpoint, authorization, admission);
+        let restore = QemuNodeRestorePlan::new(&snapshot.checkpoint, authorization, admission)
+            .with_host_io_checkpoint(&snapshot.host_io)
+            .with_node_continuation(&snapshot.node);
         let runtime_id =
             self.launch_and_install(config, restore, "load exact QEMU node snapshot")?;
         let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
@@ -221,7 +223,9 @@ where
         authorization: QemuLoadvmCommandAuthorization,
     ) -> Result<RuntimeState, QemuVmRealizationError> {
         let restore =
-            QemuNodeRestorePlan::snapshot_completeness_probe(&snapshot.checkpoint, authorization);
+            QemuNodeRestorePlan::snapshot_completeness_probe(&snapshot.checkpoint, authorization)
+                .with_host_io_checkpoint(&snapshot.host_io)
+                .with_node_continuation(&snapshot.node);
         let runtime_id = self.launch_and_install(
             config,
             restore,

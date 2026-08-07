@@ -372,6 +372,18 @@ pub enum LiveVcpuTimeCallbackError {
         /// Underlying node-slot contract error.
         source: NodeSlotError,
     },
+    /// Publishing exact coordinated-pause quiescence failed.
+    #[error("publishing live callback pause-quiesced state failed: {source}")]
+    PublishPause {
+        /// Underlying node-slot contract error.
+        source: NodeSlotError,
+    },
+    /// QEMU rejected the native stopped-runstate handoff.
+    #[error("QEMU rejected checkpoint VM-stop with status {status}")]
+    CheckpointVmStopRejected {
+        /// Status returned by the GPL-side QEMU capability.
+        status: i32,
+    },
 }
 
 impl LiveVcpuTimeCallbackError {

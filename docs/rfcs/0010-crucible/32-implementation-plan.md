@@ -708,8 +708,9 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   `T-DBG-5` is green through `checks.crucible.phase6.debugScopedTimeTravel`,
   which proves per-node exact-icount travel leaves other nodes untouched,
   whole-world travel lands at a prefix/fork-minus-divergence coordinate, and
-  `--checkpoint-stride` remains a performance-only cache cadence, including safe
-  fat eviction, defaulting to thin/replay until S3 is green;
+  `--checkpoint-stride` remains a performance-only cache cadence under an
+  explicit thin-only or budgeted exact-materialization policy, including safe
+  fat eviction;
   `T-DBG-6` is green through `checks.crucible.phase6.debugNonCanonicalBranch`,
   which proves mutating/operator-controlled debugging records a visibly
   non-canonical branch from the instantiated attach runtime, preserves the

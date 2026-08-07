@@ -362,6 +362,25 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         self.view.node_slot.snapshot()
     }
 
+    /// Arms the shared slot for a quiesced VMState restore without waking QEMU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuQuantumError`] when the restored instruction counter is
+    /// behind the shared slot's currently published counter.
+    pub fn arm_vmstate_restore_ceiling(
+        &self,
+        restored_icount: u64,
+    ) -> Result<(), QemuQuantumError> {
+        self.view
+            .node_slot
+            .arm_external_state_restore_ceiling(restored_icount)
+            .map_err(|source| QemuQuantumError::NodeSlot {
+                operation: "arm VMState restore ceiling",
+                source,
+            })
+    }
+
     /// Returns the recorded operation log.
     #[must_use]
     pub fn operation_log(&self) -> &[QemuQuantumOperation] {
@@ -802,6 +821,19 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
     fn current_icount(&mut self) -> Result<Icount, QemuNodeChannelError> {
         self.record(QemuQuantumOperation::ReadNodeReport);
         Ok(self.current_icount_from_slot())
+    }
+
+    fn logical_time_calibration(
+        &mut self,
+    ) -> Result<crate::QemuLogicalTimeCalibration, QemuNodeChannelError> {
+        self.record(QemuQuantumOperation::ReadNodeReport);
+        let snapshot = self.node_snapshot();
+        let calibration = crate::QemuLogicalTimeCalibration {
+            logical_icount: snapshot.current_icount,
+            raw_icount: snapshot.logical_time_raw_icount,
+        };
+        let _offset = calibration.offset()?;
+        Ok(calibration)
     }
 
     fn start_quantum(

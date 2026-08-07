@@ -268,6 +268,7 @@ fn idle_loop_rejects_late_inbound_ring_before_direct_advance() {
             cause: IdleWakeCause::InboundFrame,
         },
         futex_wait: FutexWait::Runnable,
+        icount_shift: clock.icount_shift(),
     };
     let before = slot.snapshot();
     set_blocked_direct_advance_ns(-1);
@@ -312,6 +313,7 @@ fn idle_loop_rejects_late_materialized_frame_before_direct_advance() {
             cause: IdleWakeCause::InboundFrame,
         },
         futex_wait: FutexWait::Runnable,
+        icount_shift: clock.icount_shift(),
     };
     let before = slot.snapshot();
     set_blocked_direct_advance_ns(-1);
@@ -447,6 +449,7 @@ fn idle_loop_direct_advance_range_failure_leaves_clock_and_slot_unchanged() {
             cause: IdleWakeCause::TimerDeadline,
         },
         futex_wait: FutexWait::Runnable,
+        icount_shift: clock.icount_shift(),
     };
 
     assert_eq!(

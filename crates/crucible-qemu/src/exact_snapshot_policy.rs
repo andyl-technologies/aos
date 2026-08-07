@@ -10,16 +10,17 @@ use crucible::ContentHash;
 use thiserror::Error;
 
 /// Gate proving paired QEMU VMState and host-I/O exact restore.
-pub const QEMU_SAVEVM_COMPLETENESS_CHECK: &str = "checks.crucible.phase2.qemuExactSnapshotRestore";
+pub const QEMU_EXACT_SNAPSHOT_RESTORE_CHECK: &str =
+    "checks.crucible.phase2.qemuExactSnapshotRestore";
 
 /// Default policy for using QEMU `savevm`/`loadvm` in Crucible.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct QemuSavevmCompletenessPolicy;
+pub struct QemuExactSnapshotPolicy;
 
-impl QemuSavevmCompletenessPolicy {
+impl QemuExactSnapshotPolicy {
     /// Returns the production policy for complete paired fat checkpoints.
     #[must_use]
-    pub const fn complete() -> Self {
+    pub const fn production() -> Self {
         Self
     }
 
@@ -32,11 +33,11 @@ impl QemuSavevmCompletenessPolicy {
     pub fn accept_loadvm_realized_runtime(
         self,
         validation: QemuReplayOracleValidation,
-    ) -> Result<QemuLoadvmRealizationAdmission, QemuSavevmPolicyError> {
+    ) -> Result<QemuLoadvmRealizationAdmission, QemuExactSnapshotPolicyError> {
         validate_loadvm_realized_runtime(validation)
     }
 
-    /// Authorizes the low-level QMP `loadvm` command for snapshot-completeness probes.
+    /// Authorizes the low-level QMP `loadvm` command for replay-oracle probes.
     ///
     /// This authorization is only for the independent completeness probe that
     /// compares a loaded VMState suffix to deterministic replay. It is not a
@@ -44,13 +45,13 @@ impl QemuSavevmCompletenessPolicy {
     #[must_use]
     pub const fn authorize_loadvm_probe(self) -> QemuLoadvmCommandAuthorization {
         QemuLoadvmCommandAuthorization {
-            purpose: QemuLoadvmCommandPurpose::SnapshotCompletenessProbe,
+            purpose: QemuLoadvmCommandPurpose::ReplayOracleProbe,
         }
     }
 
     /// Authorizes the low-level QMP `loadvm` command for exact runtime realization.
     #[must_use]
-    pub const fn authorize_loadvm_runtime(self) -> QemuLoadvmCommandAuthorization {
+    pub(crate) const fn authorize_loadvm_runtime(self) -> QemuLoadvmCommandAuthorization {
         QemuLoadvmCommandAuthorization {
             purpose: QemuLoadvmCommandPurpose::RuntimeRealization,
         }
@@ -62,7 +63,7 @@ impl QemuSavevmCompletenessPolicy {
     /// runtime branch because it only loads a baked genesis snapshot produced by
     /// `bake`.
     #[must_use]
-    pub const fn authorize_baked_genesis_runtime(self) -> QemuLoadvmCommandAuthorization {
+    pub(crate) const fn authorize_baked_genesis_runtime(self) -> QemuLoadvmCommandAuthorization {
         QemuLoadvmCommandAuthorization {
             purpose: QemuLoadvmCommandPurpose::BakedGenesisRealization,
         }
@@ -73,20 +74,20 @@ impl QemuSavevmCompletenessPolicy {
 ///
 /// # Errors
 ///
-/// Returns [`QemuSavevmPolicyError::ReplayOracleValidationRequired`] when the
-/// replay oracle was not run, or [`QemuSavevmPolicyError::ReplayOracleMismatch`]
+/// Returns [`QemuExactSnapshotPolicyError::ReplayOracleValidationRequired`] when the
+/// replay oracle was not run, or [`QemuExactSnapshotPolicyError::ReplayOracleMismatch`]
 /// when the fat and thin fingerprints differ.
 pub(crate) fn validate_loadvm_realized_runtime(
     validation: QemuReplayOracleValidation,
-) -> Result<QemuLoadvmRealizationAdmission, QemuSavevmPolicyError> {
+) -> Result<QemuLoadvmRealizationAdmission, QemuExactSnapshotPolicyError> {
     match validation {
         QemuReplayOracleValidation::NotRun => {
-            Err(QemuSavevmPolicyError::ReplayOracleValidationRequired)
+            Err(QemuExactSnapshotPolicyError::ReplayOracleValidationRequired)
         }
         QemuReplayOracleValidation::Mismatch {
             fat_hash,
             thin_hash,
-        } => Err(QemuSavevmPolicyError::ReplayOracleMismatch {
+        } => Err(QemuExactSnapshotPolicyError::ReplayOracleMismatch {
             fat_hash,
             thin_hash,
         }),
@@ -104,7 +105,7 @@ mod tests {
     fn loadvm_runtime_requires_replay_oracle_validation() {
         assert_eq!(
             validate_loadvm_realized_runtime(QemuReplayOracleValidation::NotRun),
-            Err(QemuSavevmPolicyError::ReplayOracleValidationRequired)
+            Err(QemuExactSnapshotPolicyError::ReplayOracleValidationRequired)
         );
     }
 
@@ -118,7 +119,7 @@ mod tests {
                 fat_hash,
                 thin_hash,
             }),
-            Err(QemuSavevmPolicyError::ReplayOracleMismatch {
+            Err(QemuExactSnapshotPolicyError::ReplayOracleMismatch {
                 fat_hash,
                 thin_hash,
             })
@@ -138,8 +139,8 @@ mod tests {
     }
 
     #[test]
-    fn complete_policy_authorizes_baked_genesis_and_exact_loadvm() {
-        let policy = QemuSavevmCompletenessPolicy::complete();
+    fn production_policy_authorizes_baked_genesis_and_exact_loadvm() {
+        let policy = QemuExactSnapshotPolicy::production();
 
         assert_eq!(
             policy.authorize_baked_genesis_runtime().purpose(),
@@ -161,8 +162,8 @@ mod tests {
 pub enum QemuLoadvmCommandPurpose {
     /// Realize the trusted baked ready-point snapshot for a world's genesis.
     BakedGenesisRealization,
-    /// Run the S3-style snapshot-completeness probe without admitting a runtime.
-    SnapshotCompletenessProbe,
+    /// Run the S3-style replay-oracle probe without admitting a runtime.
+    ReplayOracleProbe,
     /// Realize a production runtime from a fat snapshot.
     RuntimeRealization,
 }
@@ -233,7 +234,7 @@ impl QemuLoadvmRealizationAdmission {
     }
 
     /// Creates an admission token for tests that exercise downstream policy consumers.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) const fn for_test(runtime_hash: ContentHash) -> Self {
         Self { runtime_hash }
     }
@@ -241,7 +242,7 @@ impl QemuLoadvmRealizationAdmission {
 
 /// Policy errors for QEMU `savevm`/`loadvm` realization.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-pub enum QemuSavevmPolicyError {
+pub enum QemuExactSnapshotPolicyError {
     /// The replay oracle was not run for a `loadvm` runtime.
     #[error("QEMU loadvm realization requires replay-oracle validation")]
     ReplayOracleValidationRequired,

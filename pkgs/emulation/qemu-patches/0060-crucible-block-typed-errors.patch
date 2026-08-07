@@ -45,7 +45,7 @@ index b8d9057..1788515 100644
  
  static int coroutine_fn GRAPH_RDLOCK
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 60f860d..9d05a1f 100644
+index a837a4e..dec322b 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -243,8 +243,11 @@ typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,

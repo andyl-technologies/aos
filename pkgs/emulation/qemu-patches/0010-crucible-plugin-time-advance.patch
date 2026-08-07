@@ -48,7 +48,7 @@ index d90db9b..c3ff6d1 100644
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 5dd4d8e..c88fe62 100644
+index 128f8c3..a151136 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -728,6 +728,56 @@ const void *qemu_plugin_request_time_control(void);

@@ -59,6 +59,9 @@ pub enum QemuLaunchCommandError {
         /// Invalid overlay file name.
         file_name: String,
     },
+    /// An initrd was supplied for a firmware-only launch with no direct kernel.
+    #[error("QEMU initrd launch requires a directly loaded kernel")]
+    InitrdWithoutKernel,
     /// The QMP socket file name was not a stable relative file name.
     #[error("QMP socket file name must be stable relative text, got `{file_name}`")]
     InvalidQmpSocketFileName {

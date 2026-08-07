@@ -1,4 +1,4 @@
-//! Runtime process reconciliation and thin replay for production VM lifecycles.
+//! Runtime process reconciliation and exact checkpoint restore for production VM lifecycles.
 
 use super::*;
 
@@ -138,145 +138,187 @@ impl ProductionVmLifecycleLoop {
                 ),
             });
         }
-        let replay_config = self.config.clone().for_thin_replay();
-        let mut replay =
-            build_production_vm_lifecycle_loop(&self.scenario, &self.source, &replay_config)
-                .map_err(|error| SchedulerError::BoundaryViolation {
+        if target.configuration.id() != target.snapshot.checkpoint().configuration
+            || target
+                .snapshot
+                .checkpoint()
+                .node_icounts
+                .get(node)
+                .is_none_or(|icount| icount.retired != target.counter)
+            || target
+                .snapshot
+                .node_continuation()
+                .last_observed_time()
+                .ticks
+                != target.counter
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "exact checkpoint metadata for `{}` is internally inconsistent",
+                    node.name
+                ),
+            });
+        }
+        let artifact_hash = hash_file(&target.overlay_artifact).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "hash exact QEMU artifact {}: {error}",
+                    target.overlay_artifact.display()
+                ),
+            }
+        })?;
+        let vmstate_hash = hash_file(&target.vmstate_artifact).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "hash exact VMState artifact {}: {error}",
+                    target.vmstate_artifact.display()
+                ),
+            }
+        })?;
+        let expected_manifest = crucible::ContentHash::from_canonical_material(
+            "crucible.production-vm-exact-checkpoint.v1",
+            &format!(
+                "configuration={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
+                target.configuration.id().to_hex(),
+                node.name,
+                target.counter,
+                target.scheduler_time.ticks,
+                target.snapshot.id().to_hex(),
+                target.fault_checkpoint.id().to_hex(),
+                artifact_hash.to_hex(),
+                vmstate_hash.to_hex(),
+            ),
+        );
+        if expected_manifest != target.manifest_identity {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "exact checkpoint manifest for `{}` failed authentication",
+                    node.name
+                ),
+            });
+        }
+        let expected_fingerprint =
+            target
+                .fault_checkpoint
+                .qemu_fingerprint(node)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: format!(
-                        "construct QEMU thin-replay lifecycle for `{}`: {error}",
+                        "exact checkpoint has no QEMU fingerprint for `{}`",
                         node.name
                     ),
                 })?;
-        replay
-            .inner
-            .loop_impl_mut()
-            .set_replay_time_limit(target.scheduler_time)?;
-        let mut configuration = Configuration::genesis(self.scenario.clone());
-        let controls = self.recorded_controls[..target.control_count].to_vec();
-        let mut control_index = 0_usize;
-        let max_quanta =
-            replay_config.maximum_scheduler_quanta(self.source.world().vm_nodes().len());
-        for _ in 0..=max_quanta {
-            let observed_time = replay.inner.loop_impl().scheduler_time_for_node(node)?;
-            if configuration == target.configuration && observed_time == target.scheduler_time {
-                break;
-            }
-            if configuration.schedule.len() > target.configuration.schedule.len() {
-                let _ = replay.shutdown();
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "QEMU thin replay bypassed checkpoint configuration {}",
-                        target.configuration.id().to_hex()
-                    ),
-                });
-            }
-            let prefix = target
-                .configuration
-                .schedule
-                .prefix(configuration.schedule.len())
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("validate QEMU checkpoint replay prefix: {error}"),
-                })?;
-            if prefix != configuration.schedule {
-                let mismatch_index = prefix
-                    .decisions()
-                    .iter()
-                    .zip(configuration.schedule.decisions())
-                    .position(|(expected, observed)| expected != observed)
-                    .unwrap_or_else(|| {
-                        prefix
-                            .decisions()
-                            .len()
-                            .min(configuration.schedule.decisions().len())
-                    });
-                let _ = replay.shutdown();
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "QEMU thin replay diverged before checkpoint configuration {} at decision {mismatch_index}: expected {:?}, observed {:?}",
-                        target.configuration.id().to_hex(),
-                        prefix.decisions().get(mismatch_index),
-                        configuration.schedule.decisions().get(mismatch_index),
-                    ),
-                });
-            }
-            let control = controls
-                .get(control_index)
-                .filter(|recorded| {
-                    recorded.configuration == configuration
-                        && recorded.node_times.iter().all(|(node, expected)| {
-                            replay.inner.backend().node_now(node).is_ok_and(|_counter| {
-                                replay
-                                    .inner
-                                    .loop_impl()
-                                    .scheduler_time_for_node(node)
-                                    .is_ok_and(|at| at == *expected)
-                            })
-                        })
-                })
-                .map(|recorded| recorded.control.clone())
-                .unwrap_or_default();
-            if !control.is_empty() {
-                control_index = control_index.saturating_add(1);
-            }
-            configuration = crucible_session::drive_engine_quantum(
-                &mut replay,
-                QuantumRequest {
-                    configuration,
-                    control,
-                },
-            )?
-            .configuration;
-        }
-        let replay_time = replay.inner.loop_impl().scheduler_time_for_node(node)?;
-        if configuration != target.configuration || replay_time != target.scheduler_time {
-            let _ = replay.shutdown();
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "QEMU thin replay did not reach checkpoint configuration {} at scheduler time {} within {max_quanta} quanta: reached configuration {} at scheduler time {}",
-                    target.configuration.id().to_hex(),
-                    target.scheduler_time.ticks,
-                    configuration.id().to_hex(),
-                    replay_time.ticks,
-                ),
-            });
-        }
-        let (scheduler, backend, interceptor, pending_outputs) =
-            replay.inner.network_transaction_parts_mut();
-        let reconstructed_fault_checkpoint = interceptor
-            .checkpoint(scheduler, pending_outputs, backend)
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("checkpoint reconstructed signal fault continuation: {error}"),
+        let expected_sequence = target
+            .fault_checkpoint
+            .qemu_fault_sequence(node)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!("exact checkpoint has no fault sequence for `{}`", node.name),
             })?;
-        if reconstructed_fault_checkpoint.id() != target.fault_checkpoint.id() {
-            let _ = replay.shutdown();
+        if target
+            .snapshot
+            .node_continuation()
+            .next_fault_command_sequence()
+            != expected_sequence
+        {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
-                    "QEMU thin replay reconstructed signal fault continuation {}, expected {}",
-                    reconstructed_fault_checkpoint.id().to_hex(),
-                    target.fault_checkpoint.id().to_hex(),
+                    "exact checkpoint fault sequence for `{}` is inconsistent",
+                    node.name
                 ),
             });
         }
-        *interceptor = ProductionFaultNetworkInterceptor::restore(
-            self.source.plan().fault_signals().clone(),
-            self.config.signal_artifacts.clone(),
-            self.scenario.id(),
-            target.fault_checkpoint.clone(),
-            backend,
-            self.source.world().fault_topology().clone(),
-            self.source.world().links().to_vec(),
-            scheduler,
-            pending_outputs,
-            Arc::clone(&self.storage_fault_observations),
-        )?;
-        let (mut backend, run_directory) = replay.take_replayed_node(node)?;
+        let index = self.node_indexes.get(node).copied().ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "production QEMU restart has no launch index for `{}`",
+                    node.name
+                ),
+            }
+        })?;
+        let generation = *self
+            .restart_generations
+            .entry(node.clone())
+            .and_modify(|generation| *generation = generation.saturating_add(1))
+            .or_insert(1);
+        let node_directory = self
+            ._run_directory
+            .path()
+            .join(format!("node-{index}-checkpoint-restart-{generation}"));
+        fs::create_dir_all(&node_directory).map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!(
+                "create exact restart directory {}: {error}",
+                node_directory.display()
+            ),
+        })?;
+        let restore_overlay = node_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME);
+        fs::copy(&target.overlay_artifact, &restore_overlay).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "stage exact QEMU artifact {} as {}: {error}",
+                    target.overlay_artifact.display(),
+                    restore_overlay.display()
+                ),
+            }
+        })?;
+        let restore_vmstate = node_directory.join(PRODUCTION_VMSTATE_FILE_NAME);
+        fs::copy(&target.vmstate_artifact, &restore_vmstate).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "stage exact VMState artifact {} as {}: {error}",
+                    target.vmstate_artifact.display(),
+                    restore_vmstate.display()
+                ),
+            }
+        })?;
+        let launch = self
+            .launch_configs
+            .get(node)
+            .cloned()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "production exact restart has no launch configuration for `{}`",
+                    node.name
+                ),
+            })?
+            .with_run_directory(&node_directory);
+        let mut backend = launch_production_live_node_exact_snapshot(
+            &launch,
+            &node_directory,
+            &node.name,
+            "crucible-router",
+            &format!("lifecycle-{}-checkpoint-restart-{generation}", node.name),
+            &target.snapshot,
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("restore exact QEMU node `{}`: {error}", node.name),
+        })?;
+        let restored_fingerprint = crucible::Backend::fingerprint(&mut backend)?.hash;
+        if restored_fingerprint != expected_fingerprint {
+            let _ = SimulationBackend::shutdown(&mut backend);
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "exact-restored QEMU node `{}` fingerprint {} differs from checkpoint {}",
+                    node.name,
+                    restored_fingerprint.to_hex(),
+                    expected_fingerprint.to_hex()
+                ),
+            });
+        }
         self.install_authoritative_block_coordinator(node, &mut backend)?;
         let observed = SimulationBackend::now(&backend).ticks;
+        if observed != target.counter {
+            let _ = SimulationBackend::shutdown(&mut backend);
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "exact-restored QEMU node `{}` resumed at {observed}, expected {}",
+                    node.name, target.counter
+                ),
+            });
+        }
         if self.inner.backend().contains(node) {
             let _ = SimulationBackend::shutdown(&mut backend);
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
-                    "QEMU thin-replayed node `{}` would replace an existing runtime",
+                    "exact-restored QEMU node `{}` would replace an existing runtime",
                     node.name
                 ),
             });
@@ -288,29 +330,12 @@ impl ProductionVmLifecycleLoop {
             self.inner.backend_mut().insert(node.clone(), previous);
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
-                    "QEMU thin-replayed node `{}` replaced an existing runtime",
+                    "exact-restored QEMU node `{}` replaced an existing runtime",
                     node.name
                 ),
             });
         }
-        self.retained_replay_directories.push(run_directory);
         Ok(observed)
-    }
-
-    pub(super) fn take_replayed_node(
-        mut self,
-        node: &NodeId,
-    ) -> Result<(ProductionLiveNode, tempfile::TempDir), SchedulerError> {
-        let mut backend = self.inner.backend_mut().take(node).ok_or_else(|| {
-            SchedulerError::BoundaryViolation {
-                message: format!("QEMU replay lifecycle has no node `{}`", node.name),
-            }
-        })?;
-        if let Err(error) = self.inner.backend_mut().shutdown() {
-            let _ = SimulationBackend::shutdown(&mut backend);
-            return Err(SchedulerError::Backend(error));
-        }
-        Ok((backend, self._run_directory))
     }
 
     pub(super) fn launch_ready_point(

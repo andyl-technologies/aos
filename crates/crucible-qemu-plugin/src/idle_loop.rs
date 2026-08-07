@@ -117,12 +117,21 @@ impl IdleWakePlan {
 pub struct IdleParkRequest {
     plan: IdleWakePlan,
     futex_wait: FutexWait,
+    icount_shift: u8,
 }
 
 impl IdleParkRequest {
     /// Retains an already-published idle plan and its race-free futex precondition.
-    pub(crate) const fn from_published(plan: IdleWakePlan, futex_wait: FutexWait) -> Self {
-        Self { plan, futex_wait }
+    pub(crate) const fn from_published(
+        plan: IdleWakePlan,
+        futex_wait: FutexWait,
+        icount_shift: u8,
+    ) -> Self {
+        Self {
+            plan,
+            futex_wait,
+            icount_shift,
+        }
     }
 
     /// Returns the wake plan associated with this park request.
@@ -143,6 +152,8 @@ impl IdleParkRequest {
 pub enum IdleWaitOutcome {
     /// The scheduler raised the node ceiling to the desired wake icount.
     SchedulerReleased,
+    /// A checkpoint pause was acknowledged without advancing virtual time.
+    CheckpointPauseRequested,
     /// The global control plane requested shutdown and the node marked itself done.
     ShutdownRequested,
 }
@@ -307,7 +318,11 @@ impl PluginIdleHotLoop {
         )
         .map_err(|source| IdleHotLoopError::PublishIdle { source })?;
 
-        Ok(IdleParkRequest { plan, futex_wait })
+        Ok(IdleParkRequest {
+            plan,
+            futex_wait,
+            icount_shift: clock.icount_shift(),
+        })
     }
 
     /// Parks on the non-private futex until the scheduler authorizes the wake.
@@ -328,10 +343,26 @@ impl PluginIdleHotLoop {
     ) -> Result<IdleWaitOutcome, IdleHotLoopError> {
         let mut wait = request.futex_wait;
         loop {
-            if PluginShmemOrdering::observe_control_action(header) == RegionControlAction::Shutdown
-            {
-                PluginShmemOrdering::mark_done_after_shutdown(slot);
-                return Ok(IdleWaitOutcome::ShutdownRequested);
+            match PluginShmemOrdering::observe_control_action(header) {
+                RegionControlAction::Shutdown => {
+                    PluginShmemOrdering::mark_done_after_shutdown(slot);
+                    return Ok(IdleWaitOutcome::ShutdownRequested);
+                }
+                RegionControlAction::Pause => {
+                    PluginShmemOrdering::publish_pause_quiesced(
+                        slot,
+                        request.plan.current_icount,
+                        request.plan.current_icount,
+                        request.icount_shift,
+                    )
+                    .map_err(|source| IdleHotLoopError::PublishPause { source })?;
+                    // Return out of the plugin callback after publishing the
+                    // exact boundary. Remaining parked here would retain the
+                    // vCPU execution path and prevent QEMU's main loop from
+                    // processing the already queued QMP `stop` command.
+                    return Ok(IdleWaitOutcome::CheckpointPauseRequested);
+                }
+                RegionControlAction::Continue => {}
             }
             if PluginShmemOrdering::load_scheduler_ceiling(slot) >= request.plan.desired_wake_icount
             {
@@ -1082,6 +1113,12 @@ pub enum IdleHotLoopError {
     /// Publishing idle state failed.
     #[error("publishing idle state failed: {source}")]
     PublishIdle {
+        /// The shared-memory slot publication error.
+        source: NodeSlotError,
+    },
+    /// Publishing coordinated-pause quiescence failed.
+    #[error("publishing pause-quiesced state failed: {source}")]
+    PublishPause {
         /// The shared-memory slot publication error.
         source: NodeSlotError,
     },

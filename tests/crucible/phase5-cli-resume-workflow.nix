@@ -412,8 +412,8 @@
         needle = "QemuVmRealizationKind::AncestorReplay";
       }
       {
-        label = "resume QEMU savevm policy";
-        needle = "QemuSavevmCompletenessPolicy::default";
+        label = "resume QEMU exact snapshot policy";
+        needle = "QemuExactSnapshotPolicy::default";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization/backend_executor.rs" qemuBackendExecutor [

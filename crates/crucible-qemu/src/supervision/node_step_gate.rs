@@ -49,16 +49,18 @@
 use std::fs;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use crucible::{
-    AdvanceOutcome, BasicBlockCoverageConfig, ExecutionFingerprint, Icount, NodeId, SchedulerError,
-    SchedulerNodeId, SchedulerSendAuthorization, SchedulerSendAuthorizer,
+    AdvanceOutcome, BasicBlockCoverageConfig, Checkpoint, CheckpointKind, ContentHash,
+    ExecutionFingerprint, Icount, NodeId, SchedulerError, SchedulerNodeId,
+    SchedulerSendAuthorization, SchedulerSendAuthorizer, VirtualTime,
 };
-use crucible_device::block::{BaseImage, BlockDurabilityConfig};
+use crucible_device::block::{BaseImage, BlockDurabilityConfig, BlockLatency};
 use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
 
 use crate::supervision::{BlockIoDiagnostics, QemuLiveBlockIoServicer, QemuLiveHostIoRuntime};
@@ -70,9 +72,10 @@ use crate::{
     QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
     QemuNode, QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
     QemuNodeRestorePlan, QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuRootImageFormat,
-    QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QemuWhiteboxSetupError,
-    QmpError, build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
-    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QemuVmSnapshot,
+    QemuWhiteboxSetupError, QmpError, build_qemu_node_from_completed_setup,
+    build_qemu_node_from_restored_checkpoint, complete_qemu_host_plugin_setup,
+    spawn_qemu_child_with_fds_in_directory,
 };
 
 use super::QemuLiveHostIoRuntimeError;
@@ -84,6 +87,8 @@ pub use error::QemuLiveNodeStepGateError;
 const GATE_DOMAIN: &str = "crucible.loaded-qemu-live-node-step.v1";
 /// Stable node name for the single-VM node-step run.
 const GATE_NODE: &str = "live-node-step-vm";
+/// Default QEMU round-robin subdivision in node icount units.
+const GATE_RR_SWITCH_QUANTUM: u64 = 4_096;
 /// Stable router name reserved by the shared-memory hot path.
 const GATE_ROUTER: &str = "live-node-step-router";
 /// VM slot negotiated during the handshake.
@@ -183,6 +188,7 @@ pub struct QemuLiveNodeStepGateConfig {
     plugin: PathBuf,
     kernel: PathBuf,
     firmware: PathBuf,
+    firmware_boot: bool,
     root_image: Option<PathBuf>,
     root_image_format: QemuRootImageFormat,
     run_directory: PathBuf,
@@ -192,6 +198,7 @@ pub struct QemuLiveNodeStepGateConfig {
     memory_mib: u32,
     smp_vcpus: u16,
     icount_shift: u8,
+    rr_switch_quantum: u64,
     scenario_seed: u64,
     whitebox: QemuLaunchPluginSwitch,
     app_random: Option<QemuLaunchAppRandomConfig>,
@@ -209,6 +216,8 @@ pub struct QemuLiveNodeStepGateConfig {
 struct QemuLiveNodeStepBlockConfig {
     base: BaseImage,
     durability: BlockDurabilityConfig,
+    latency: BlockLatency,
+    require_fault_directives: bool,
 }
 
 impl QemuLiveNodeStepGateConfig {
@@ -240,6 +249,7 @@ impl QemuLiveNodeStepGateConfig {
             plugin: plugin.into(),
             kernel: kernel.into(),
             firmware: firmware.into(),
+            firmware_boot: false,
             root_image: None,
             root_image_format: QemuRootImageFormat::Qcow2,
             run_directory: run_directory.into(),
@@ -249,6 +259,7 @@ impl QemuLiveNodeStepGateConfig {
             memory_mib: GATE_MEMORY_MIB,
             smp_vcpus: 1,
             icount_shift: 0,
+            rr_switch_quantum: GATE_RR_SWITCH_QUANTUM,
             scenario_seed: 0,
             whitebox: QemuLaunchPluginSwitch::Off,
             app_random: None,
@@ -280,6 +291,7 @@ impl QemuLiveNodeStepGateConfig {
             plugin: plugin.into(),
             kernel: kernel.into(),
             firmware: PathBuf::new(),
+            firmware_boot: false,
             root_image: Some(root_image.into()),
             root_image_format: QemuRootImageFormat::Qcow2,
             run_directory: run_directory.into(),
@@ -289,6 +301,7 @@ impl QemuLiveNodeStepGateConfig {
             memory_mib: GATE_MEMORY_MIB,
             smp_vcpus: 1,
             icount_shift: 0,
+            rr_switch_quantum: GATE_RR_SWITCH_QUANTUM,
             scenario_seed: 0,
             whitebox: QemuLaunchPluginSwitch::Off,
             app_random: None,
@@ -314,6 +327,17 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub fn with_initrd(mut self, initrd: impl Into<PathBuf>) -> Self {
         self.initrd = Some(initrd.into());
+        self
+    }
+
+    /// Returns this configuration with firmware-managed boot device discovery.
+    ///
+    /// The launch omits QEMU's direct `-kernel` and `-initrd` payloads. Attached
+    /// block devices are therefore reached through the firmware's normal boot
+    /// path.
+    #[must_use]
+    pub const fn with_firmware_boot(mut self) -> Self {
+        self.firmware_boot = true;
         self
     }
 
@@ -387,7 +411,54 @@ impl QemuLiveNodeStepGateConfig {
     /// different storage identities.
     #[must_use]
     pub fn with_shmem_block(mut self, base: BaseImage, durability: BlockDurabilityConfig) -> Self {
-        self.shmem_block = Some(QemuLiveNodeStepBlockConfig { base, durability });
+        self.shmem_block = Some(QemuLiveNodeStepBlockConfig {
+            base,
+            durability,
+            latency: BlockLatency::default(),
+            require_fault_directives: true,
+        });
+        self
+    }
+
+    /// Returns this configuration with a timed shared-memory block device.
+    ///
+    /// The latency model is deterministic virtual time, not host delay. It is
+    /// retained in exact snapshots with the device continuation.
+    #[must_use]
+    pub fn with_shmem_block_and_latency(
+        mut self,
+        base: BaseImage,
+        durability: BlockDurabilityConfig,
+        latency: BlockLatency,
+    ) -> Self {
+        self.shmem_block = Some(QemuLiveNodeStepBlockConfig {
+            base,
+            durability,
+            latency,
+            require_fault_directives: true,
+        });
+        self
+    }
+
+    /// Returns this configuration with a fault-free timed block device.
+    ///
+    /// This selects the production block core's autonomous fault-free policy for
+    /// gates that certify transport or checkpoint behavior without evaluating a
+    /// fault graph. Production lifecycle launches use [`Self::with_shmem_block`]
+    /// and install their required signal coordinator before workload I/O.
+    #[must_use]
+    pub fn with_fault_free_shmem_block_and_latency(
+        mut self,
+        base: BaseImage,
+        durability: BlockDurabilityConfig,
+        latency: BlockLatency,
+    ) -> Self {
+        self.shmem_block = Some(QemuLiveNodeStepBlockConfig {
+            base,
+            durability,
+            latency,
+            require_fault_directives: false,
+        });
         self
     }
 
@@ -398,6 +469,16 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub const fn with_queue_capacity(mut self, capacity: u32) -> Self {
         self.queue_capacity = capacity;
+        self
+    }
+
+    /// Returns this configuration with a QEMU round-robin subdivision size.
+    ///
+    /// The value is expressed in node icount units and becomes part of the
+    /// validated deterministic launch profile used by capture and restore.
+    #[must_use]
+    pub const fn with_rr_switch_quantum(mut self, quantum: u64) -> Self {
+        self.rr_switch_quantum = quantum;
         self
     }
 
@@ -474,6 +555,27 @@ pub struct QemuLiveNodeStepReport {
     pub busy_window_logical_offset_zero: bool,
 }
 
+/// Evidence from a real QEMU save, process crash, load, and continuation run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLiveExactSnapshotReport {
+    /// Raw node icount at the captured completed quantum boundary.
+    pub capture_icount: u64,
+    /// Raw node icount observed immediately after restore.
+    pub restored_icount: u64,
+    /// Raw node icount reached by the restored and independently replayed suffix.
+    pub suffix_icount: u64,
+    /// Execution fingerprint at capture and immediately after restore.
+    pub capture_fingerprint: ContentHash,
+    /// Execution fingerprint after the post-restore suffix.
+    pub suffix_fingerprint: ContentHash,
+    /// Aggregate VMState, host-I/O, and wrapper identity matched independent replay.
+    pub replay_oracle_pair_match: bool,
+    /// The old QEMU process was force-killed and reaped before artifact staging.
+    pub old_process_force_crashed: bool,
+    /// The captured block continuation contained pending work.
+    pub pending_block_io_captured: bool,
+}
+
 /// Drives the first live [`QemuNode`] through a bounded busy-window step schedule.
 ///
 /// Boots the diskless-firmware guest with the Rust control plugin and QMP,
@@ -518,6 +620,272 @@ pub fn run_qemu_live_node_step_gate(
         host_load_applied,
         busy_window_logical_offset_zero,
     })
+}
+
+/// Runs an exact live snapshot through save, crash, load, and continued execution.
+///
+/// The capture process is force-killed before its VMState file is copied into a
+/// fresh run directory. The restored suffix is compared with a separately
+/// launched execution that reaches the same capture boundary without loading
+/// the snapshot. When `require_pending_block_io` is true, the function stops at
+/// the first completed quantum whose production block continuation contains
+/// a guest-completed storage mutation still pending in the Apache-side
+/// durability continuation. The transport itself is quiescent so QEMU savevm
+/// can drain without waiting on an active virtio request.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] when launch, bounded execution, paired
+/// capture, forced crash, artifact copy, restore, replay, or any identity and
+/// fingerprint comparison fails.
+pub fn run_qemu_live_exact_snapshot_gate(
+    config: &QemuLiveNodeStepGateConfig,
+    capture_ceiling: u64,
+    suffix_increment: u64,
+    require_pending_block_io: bool,
+) -> Result<QemuLiveExactSnapshotReport, QemuLiveNodeStepGateError> {
+    if capture_ceiling <= PRIME_CEILING_ICOUNT || suffix_increment == 0 {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from(
+                "capture ceiling must follow priming and suffix increment must be nonzero",
+            ),
+        });
+    }
+    if config.root_image.is_some() {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from(
+                "the live exact-snapshot gate accepts firmware plus shared-memory devices, not a separately managed root overlay",
+            ),
+        });
+    }
+
+    let capture_directory = config.run_directory.join("exact-capture");
+    let restore_directory = config.run_directory.join("exact-restore");
+    let replay_directory = config.run_directory.join("exact-replay");
+    for directory in [&capture_directory, &restore_directory, &replay_directory] {
+        fs::create_dir_all(directory).map_err(|source| {
+            QemuLiveNodeStepGateError::PrepareRunDirectory {
+                path: directory.clone(),
+                source,
+            }
+        })?;
+    }
+
+    let identity = node_id(GATE_NODE);
+    let mut capture_node = build_live_node(
+        config,
+        &capture_directory,
+        LiveNodeIdentity {
+            node: GATE_NODE,
+            router: GATE_ROUTER,
+            crash_detector: "live-exact-capture",
+        },
+        None,
+    )?;
+    let (capture_icount, pending_block_io_captured) = if require_pending_block_io {
+        drive_to_pending_block_boundary(&mut capture_node, capture_ceiling)?
+    } else {
+        let quantum = advance_to_busy_ceiling(&mut capture_node, capture_ceiling)?;
+        (quantum.completion_icount, false)
+    };
+    let checkpoint = exact_gate_checkpoint(&identity, capture_icount, require_pending_block_io);
+    let snapshot = capture_node
+        .capture_exact_snapshot(&identity, checkpoint.clone())
+        .map_err(|source| QemuLiveNodeStepGateError::node_op("capture exact snapshot", source))?;
+    let capture_fingerprint = capture_node
+        .execution_fingerprint()
+        .map_err(|source| QemuLiveNodeStepGateError::ExecutionFingerprint { source })?
+        .hash;
+    capture_node
+        .force_crash_and_reap_for_gate()
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::node_op("force crash after capture", source)
+        })?;
+    drop(capture_node);
+
+    copy_exact_gate_artifact(
+        &capture_directory.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+        &restore_directory.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+    )?;
+    let restore_config = config.clone().with_run_directory(&restore_directory);
+    let mut restored = launch_qemu_live_node_exact_snapshot(
+        &restore_config,
+        &restore_directory,
+        GATE_NODE,
+        GATE_ROUTER,
+        "live-exact-restore",
+        &snapshot,
+    )?;
+    let restored_icount = restored
+        .current_icount()
+        .map_err(|source| QemuLiveNodeStepGateError::node_op("read restored icount", source))?
+        .retired;
+    let restored_fingerprint = restored
+        .execution_fingerprint()
+        .map_err(|source| QemuLiveNodeStepGateError::ExecutionFingerprint { source })?
+        .hash;
+    if restored_icount != capture_icount || restored_fingerprint != capture_fingerprint {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!(
+                "restore boundary differs: icount {restored_icount}/{capture_icount}, fingerprint {}/{}",
+                restored_fingerprint.to_hex(),
+                capture_fingerprint.to_hex()
+            ),
+        });
+    }
+    let suffix_icount = capture_icount
+        .checked_add(suffix_increment)
+        .ok_or_else(|| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from("post-restore suffix ceiling overflowed"),
+        })?;
+    advance_to_busy_ceiling(&mut restored, suffix_icount)?;
+    let suffix_fingerprint = restored
+        .execution_fingerprint()
+        .map_err(|source| QemuLiveNodeStepGateError::ExecutionFingerprint { source })?
+        .hash;
+    restored
+        .shutdown_child()
+        .map_err(|source| QemuLiveNodeStepGateError::Shutdown { source })?;
+
+    let replay_config = config.clone().with_run_directory(&replay_directory);
+    let mut replay = build_live_node(
+        &replay_config,
+        &replay_directory,
+        LiveNodeIdentity {
+            node: GATE_NODE,
+            router: GATE_ROUTER,
+            crash_detector: "live-exact-replay",
+        },
+        None,
+    )?;
+    advance_to_busy_ceiling(&mut replay, capture_icount)?;
+    let replay_snapshot = replay
+        .capture_exact_snapshot(&identity, checkpoint)
+        .map_err(|source| QemuLiveNodeStepGateError::node_op("capture replay oracle", source))?;
+    let replay_oracle_pair_match = replay_snapshot.id() == snapshot.id();
+    if !replay_oracle_pair_match {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!(
+                "paired snapshot identity differs from replay: {} != {}",
+                snapshot.id().to_hex(),
+                replay_snapshot.id().to_hex()
+            ),
+        });
+    }
+    advance_to_busy_ceiling(&mut replay, suffix_icount)?;
+    let replay_suffix_fingerprint = replay
+        .execution_fingerprint()
+        .map_err(|source| QemuLiveNodeStepGateError::ExecutionFingerprint { source })?
+        .hash;
+    if replay_suffix_fingerprint != suffix_fingerprint {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!(
+                "restored suffix fingerprint {} differs from replay {}",
+                suffix_fingerprint.to_hex(),
+                replay_suffix_fingerprint.to_hex()
+            ),
+        });
+    }
+    replay
+        .shutdown_child()
+        .map_err(|source| QemuLiveNodeStepGateError::Shutdown { source })?;
+
+    Ok(QemuLiveExactSnapshotReport {
+        capture_icount,
+        restored_icount,
+        suffix_icount,
+        capture_fingerprint,
+        suffix_fingerprint,
+        replay_oracle_pair_match,
+        old_process_force_crashed: true,
+        pending_block_io_captured,
+    })
+}
+
+fn drive_to_pending_block_boundary(
+    node: &mut QemuNode,
+    ceiling: u64,
+) -> Result<(u64, bool), QemuLiveNodeStepGateError> {
+    // Keep each live QEMU await comfortably below the bounded host timeout.
+    // The block workload's configured ceiling is only a search limit; issuing
+    // that entire span as one quantum can spend minutes in TCG before the host
+    // gets the next deterministic opportunity to inspect real transport state.
+    const PENDING_SEARCH_QUANTUM_ICOUNT: u64 = 10_000_000;
+    const MAX_PENDING_SEARCH_QUANTA: usize = 8_192;
+    let mut quiescent_continuation_observed = false;
+    let mut last = node
+        .current_icount()
+        .map_err(|source| QemuLiveNodeStepGateError::node_op("read block search icount", source))?
+        .retired;
+    for _ in 0..MAX_PENDING_SEARCH_QUANTA {
+        let search_ceiling = last
+            .saturating_add(PENDING_SEARCH_QUANTUM_ICOUNT)
+            .min(ceiling);
+        let _ = node
+            .advance_to_ceiling(Icount {
+                retired: search_ceiling,
+            })
+            .map_err(|source| {
+                QemuLiveNodeStepGateError::node_op("advance toward pending block boundary", source)
+            })?;
+        let current = node
+            .current_icount()
+            .map_err(|source| {
+                QemuLiveNodeStepGateError::node_op("read pending block boundary", source)
+            })?
+            .retired;
+        let pending = node.has_pending_block_io_for_gate().map_err(|source| {
+            QemuLiveNodeStepGateError::node_op("inspect pending block continuation", source)
+        })?;
+        if pending && quiescent_continuation_observed {
+            return Ok((current, true));
+        }
+        if pending {
+            // Consuming the response frame makes the transport appear empty
+            // just before QEMU's block coroutine returns. Require another full
+            // scheduler/main-loop rendezvous before savevm so block graph drain
+            // cannot race that final coroutine unwind.
+            quiescent_continuation_observed = true;
+        } else {
+            quiescent_continuation_observed = false;
+        }
+        if current >= ceiling || (current <= last && !quiescent_continuation_observed) {
+            break;
+        }
+        last = current;
+    }
+    Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+        reason: format!(
+            "no quiescent production block durability continuation was observed before ceiling {ceiling}"
+        ),
+    })
+}
+
+fn exact_gate_checkpoint(node: &NodeId, icount: u64, block: bool) -> Checkpoint {
+    let identity = ContentHash::from_canonical_material(
+        "crucible.qemu.live-exact-snapshot-gate.v1",
+        &format!("node={}\nicount={icount}\nblock={block}", node.name),
+    );
+    let mut checkpoint = Checkpoint::new(identity, identity, CheckpointKind::Fat);
+    checkpoint.virtual_time = VirtualTime { ticks: icount };
+    checkpoint
+        .node_icounts
+        .insert(node.clone(), Icount { retired: icount });
+    checkpoint
+}
+
+fn copy_exact_gate_artifact(
+    source_path: &Path,
+    destination_path: &Path,
+) -> Result<(), QemuLiveNodeStepGateError> {
+    fs::copy(source_path, destination_path).map_err(|source| {
+        QemuLiveNodeStepGateError::SnapshotArtifactCopy {
+            source_path: source_path.to_path_buf(),
+            destination_path: destination_path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok(())
 }
 
 /// Launches one scheduler-facing live QEMU node.
@@ -576,6 +944,44 @@ pub fn launch_qemu_live_node_restored(
             crash_detector,
         },
         Some(restore),
+    )
+}
+
+/// Launches one scheduler-facing node from a complete live exact snapshot.
+///
+/// This is the production restore surface. It validates the opaque live-capture
+/// provenance and all three execution bindings before constructing the private
+/// low-level VMState restore plan.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] when the snapshot is not an authentic
+/// live capture or when launch, QMP restore, host restore, or node assembly fails.
+pub fn launch_qemu_live_node_exact_snapshot(
+    config: &QemuLiveNodeStepGateConfig,
+    run_directory: impl AsRef<Path>,
+    node: &str,
+    router: &str,
+    crash_detector: &str,
+    snapshot: &QemuVmSnapshot,
+) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    let binding = snapshot.checkpoint().id;
+    if !snapshot.is_live_capture()
+        || !snapshot.has_valid_identity()
+        || snapshot.host_io().execution_binding() != binding
+        || snapshot.node_continuation().execution_binding() != binding
+    {
+        return Err(QemuLiveNodeStepGateError::InvalidExactSnapshot);
+    }
+    build_live_node(
+        config,
+        run_directory.as_ref(),
+        LiveNodeIdentity {
+            node,
+            router,
+            crash_detector,
+        },
+        Some(QemuNodeRestorePlan::captured_exact(snapshot)),
     )
 }
 
@@ -657,11 +1063,13 @@ pub(super) fn build_live_node(
             source,
         }
     })?;
+    prepare_vmstate_container(config, run_directory)?;
 
     let mut candidate = LaunchProfileCandidate::default()
         .with_memory_mib(config.memory_mib)
         .with_smp_vcpus(config.smp_vcpus)
         .with_icount_shift(IcountShiftSetting::Fixed(config.icount_shift))
+        .with_rr_switch_quantum(config.rr_switch_quantum)
         .with_scenario_seed(config.scenario_seed);
     if let Some(cmdline) = &config.kernel_cmdline {
         candidate = candidate.with_kernel_cmdline(cmdline.clone());
@@ -746,7 +1154,7 @@ pub(super) fn build_live_node(
         )
         .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
         servicer
-            .configure_storage_faults(block.durability.clone(), true)
+            .configure_storage_faults(block.durability.clone(), block.require_fault_directives)
             .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
         Some(servicer)
     } else {
@@ -760,11 +1168,18 @@ pub(super) fn build_live_node(
         config.coverage,
         block_servicer.as_mut(),
     )?;
+    if let (Some(servicer), Some(block)) = (block_servicer.as_mut(), config.shmem_block.as_ref()) {
+        servicer.set_latency_model(block.latency);
+    }
     if let Some(servicer) = block_servicer {
         runtime = runtime.with_block_servicer(servicer, BlockIoDiagnostics::shared());
     }
-    let qmp = connect_qmp_priming_main_loop(&setup, &qmp_config.socket_path(run_directory))
-        .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
+    let qmp = connect_qmp_priming_main_loop(
+        &setup,
+        &qmp_config.socket_path(run_directory),
+        config.completion_timeout,
+    )
+    .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
 
     let shmem_config = QemuQuantumShmemConfig::new(node_id(identity.node), GATE_SLOT)
         .with_router(node_id(identity.router), SLOT_NET_ROUTER as u32)
@@ -802,6 +1217,44 @@ pub(super) fn build_live_node(
         QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)
     })?;
     Ok(node)
+}
+
+fn prepare_vmstate_container(
+    config: &QemuLiveNodeStepGateConfig,
+    run_directory: &Path,
+) -> Result<(), QemuLiveNodeStepGateError> {
+    let path = run_directory.join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    if path
+        .try_exists()
+        .map_err(|source| QemuLiveNodeStepGateError::PrepareRunDirectory {
+            path: path.clone(),
+            source,
+        })?
+    {
+        return Ok(());
+    }
+    let image_tool = config.qemu_executable.with_file_name("qemu-img");
+    let size_mib = u64::from(config.memory_mib).saturating_add(512);
+    let output = Command::new(&image_tool)
+        .arg("create")
+        .arg("-q")
+        .arg("-f")
+        .arg("qcow2")
+        .arg(&path)
+        .arg(format!("{size_mib}M"))
+        .output()
+        .map_err(|source| QemuLiveNodeStepGateError::PrepareVmState {
+            path: path.clone(),
+            source,
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(QemuLiveNodeStepGateError::VmStateImageTool {
+        path,
+        status: output.status.to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    })
 }
 
 #[path = "node_step_gate/support.rs"]

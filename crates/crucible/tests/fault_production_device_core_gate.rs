@@ -1,4 +1,4 @@
-//! Checks T-FAULT-16 in-process fault test-double coverage.
+//! Checks T-FAULT-16 against the production network, block, and 9p device cores.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
@@ -187,7 +187,7 @@ struct LinkRun {
 }
 
 #[test]
-fn fault_test_double_exercises_each_network_fault_kind() {
+fn production_device_core_exercises_each_network_fault_kind() {
     for case in link_fault_cases() {
         let script = seeded_link_script(&case);
         let comparison =
@@ -238,7 +238,7 @@ fn fault_test_double_exercises_each_network_fault_kind() {
 }
 
 #[test]
-fn fault_test_double_exercises_each_block_fault_kind() {
+fn production_device_core_exercises_each_block_fault_kind() {
     for case in block_fault_cases() {
         let first = run_block_case(&case.table, &case.expected);
         let second = run_block_case(&case.table, &case.expected);
@@ -273,7 +273,7 @@ fn fault_test_double_exercises_each_block_fault_kind() {
 }
 
 #[test]
-fn fault_test_double_exercises_each_9p_fault_kind() {
+fn production_device_core_exercises_each_9p_fault_kind() {
     for case in ninep_fault_cases() {
         let first = run_ninep_case(&case.table, &case.expected);
         let second = run_ninep_case(&case.table, &case.expected);
@@ -1363,7 +1363,13 @@ fn decode_block_response(payload: &[u8]) -> BlockResponse {
 fn response_status_from_block(status: BlockStatus) -> ResponseStatus {
     match status {
         BlockStatus::Ok => ResponseStatus::Ok,
-        BlockStatus::Error => ResponseStatus::Error,
+        BlockStatus::Error
+        | BlockStatus::TransportReset
+        | BlockStatus::DuplicateIgnored
+        | BlockStatus::DuplicateProtocolError
+        | BlockStatus::RetryPreserveId
+        | BlockStatus::RetryNewId
+        | BlockStatus::DropCompletion => ResponseStatus::Error,
     }
 }
 

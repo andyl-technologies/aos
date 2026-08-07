@@ -638,29 +638,30 @@ network with one vocabulary.
   `gate:layer1-injection`, `gate:replay-oracle`. *Spec:* §15.6; cross-ref 07 §3,
   17.
 
-## 15.7 Devices are testable against the in-process double
+## 15.7 Devices require production-path contract and live-QEMU tests
 
-Because each device is a node with a request inbox and a response outbox, it is
-**testable without a real QEMU**: the in-process QEMU test double of
-[`24-determinism-harness-testing.md`](24-determinism-harness-testing.md) §"in-process
-double" drives a device by enqueueing requests and advancing its clock,
-asserting the responses and their delivery icounts directly. This is the layer
-at which most device determinism is proved in milliseconds, before any real-VM
-run.
+Each device core has deterministic component tests over its real request,
+completion, persistence, and fault-mutation implementation. Those tests are
+necessary but are not acceptance substitutes: the same production servicer,
+shared-memory ABI, QEMU device, and guest driver path MUST also pass a live-QEMU
+gate, including checkpoint/restore with pending work.
 
-- **[IO-27]** Each I/O sub-node MUST be exercisable by the **in-process test
-  double** ([`24-determinism-harness-testing.md`](24-determinism-harness-testing.md)):
-  a test MUST be able to construct a sub-node, enqueue a sequence of requests,
+- **[IO-27]** Each I/O sub-node MUST expose its production device core to
+  deterministic component tests and MUST pass a live-QEMU integration gate:
+  the component test MUST construct the real sub-node, enqueue requests,
   advance its clock to a limit, and assert the emitted responses, their delivery
-  icounts, and the resulting overlay/fid state — all in-process, with no real
-  QEMU and no host VM. The device's `advance_to(limit_icount)` MUST drain exactly
+  icounts, and the resulting overlay/fid state. This is a component test of the
+  production device core, not a substitute implementation or simulated adapter.
+  The device's `advance_to(limit_icount)` MUST drain exactly
   the responses whose `delivery_icount <= limit` and advance the clock to the
-  earlier of `limit` or the next pending completion. *Gate:*
-  `gate:layer0-determinism`, `gate:layer1-injection`. *Spec:* §15.7; cross-ref
-  24.
+  earlier of `limit` or the next pending completion. The live gate MUST prove
+  the identical semantics across the production shared-memory and QEMU path;
+  no test double result can satisfy that gate. *Gate:*
+  `gate:layer0-determinism`, `gate:layer1-injection`,
+  `gate:qemu-exact-snapshot-restore`. *Spec:* §15.7; cross-ref 24.
 
-- **[IO-28]** Each sub-node MUST satisfy a **run-twice determinism test** under
-  the in-process double: two independent constructions driven through the same
+- **[IO-28]** Each sub-node MUST satisfy a **run-twice determinism test** using
+  two independent constructions of the production device core driven through the same
   request sequence and the same seed MUST produce byte-identical responses,
   delivery icounts, overlay deltas, and RNG end-positions. A divergence MUST
   localize to the first differing response via the divergence path ([INV-10],

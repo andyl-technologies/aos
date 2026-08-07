@@ -36,10 +36,18 @@ where
         _authorization: QemuLoadvmCommandAuthorization,
         admission: QemuLoadvmRealizationAdmission,
     ) -> Result<RuntimeState, QemuVmRealizationError> {
+        if snapshot.is_live_capture() {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "restore exact snapshot through model backend",
+                message: String::from(
+                    "model backends cannot restore paired production QEMU snapshots",
+                ),
+            });
+        }
         self.backend
             .restore(&snapshot.checkpoint)
-            .map_err(|source| backend_executor_error("restore exact snapshot", source))?;
-        let runtime_id = self.backend_runtime_id("sample exact snapshot fingerprint")?;
+            .map_err(|source| backend_executor_error("restore model checkpoint", source))?;
+        let runtime_id = self.backend_runtime_id("sample model checkpoint fingerprint")?;
         let runtime = exact_runtime_from_checkpoint(config, &snapshot.checkpoint, runtime_id)?;
         validate_runtime_matches_admission(&runtime, admission)?;
         Ok(runtime)
@@ -51,10 +59,18 @@ where
         snapshot: &QemuVmSnapshot,
         _authorization: QemuLoadvmCommandAuthorization,
     ) -> Result<RuntimeState, QemuVmRealizationError> {
+        if snapshot.is_live_capture() {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "probe exact snapshot through model backend",
+                message: String::from(
+                    "model backends cannot probe paired production QEMU snapshots",
+                ),
+            });
+        }
         self.backend
             .restore(&snapshot.checkpoint)
-            .map_err(|source| backend_executor_error("restore exact snapshot probe", source))?;
-        let runtime_id = self.backend_runtime_id("sample exact snapshot probe fingerprint")?;
+            .map_err(|source| backend_executor_error("restore model checkpoint probe", source))?;
+        let runtime_id = self.backend_runtime_id("sample model checkpoint probe fingerprint")?;
         exact_runtime_from_checkpoint(config, &snapshot.checkpoint, runtime_id)
     }
 
@@ -223,10 +239,11 @@ mod tests {
     };
 
     use super::*;
-    use crate::savevm_policy::validate_loadvm_realized_runtime;
+    use crate::exact_snapshot_policy::validate_loadvm_realized_runtime;
+    use crate::realization::QemuVmLoadvmAdmissionPolicy;
     use crate::{
-        QemuBakedGenesisSnapshot, QemuCachedAncestor, QemuReplayOracleValidation,
-        QemuSavevmPolicyError, QemuVmLoadvmAdmissionPolicy, QemuVmRealizationStore, resume_qemu_vm,
+        QemuBakedGenesisSnapshot, QemuCachedAncestor, QemuExactSnapshotPolicyError,
+        QemuReplayOracleValidation, QemuVmRealizationStore, resume_qemu_vm,
     };
 
     type SharedLog = Rc<RefCell<Vec<RealizationCall>>>;
@@ -361,7 +378,7 @@ mod tests {
         fn accept_loadvm_realized_runtime(
             self,
             validation: QemuReplayOracleValidation,
-        ) -> Result<QemuLoadvmRealizationAdmission, QemuSavevmPolicyError> {
+        ) -> Result<QemuLoadvmRealizationAdmission, QemuExactSnapshotPolicyError> {
             validate_loadvm_realized_runtime(validation)
         }
     }
@@ -373,12 +390,12 @@ mod tests {
         let world = world("backend-exact-loadvm");
         let def = scenario("backend-exact-loadvm");
         let config = config_with_decisions(def.clone(), 1);
-        let snapshot = QemuVmSnapshot {
-            checkpoint: checkpoint_for_config("backend-exact-loadvm", &config),
-            replay_oracle_validation: QemuReplayOracleValidation::Match {
+        let snapshot = QemuVmSnapshot::diskless(
+            checkpoint_for_config("backend-exact-loadvm", &config),
+            QemuReplayOracleValidation::Match {
                 runtime_hash: config.id(),
             },
-        };
+        );
         let mut store = scripted_store(Rc::clone(&log), &world);
         store.exact_snapshots.push((config.id(), snapshot.clone()));
         let backend = scripted_backend(Rc::clone(&log), vec![config.id()], Vec::new());
@@ -427,12 +444,12 @@ mod tests {
             checkpoint_for_config("backend-ancestor-replay-target", &target),
             42,
         );
-        let ancestor_snapshot = QemuVmSnapshot {
-            checkpoint: ancestor_checkpoint,
-            replay_oracle_validation: QemuReplayOracleValidation::Match {
+        let ancestor_snapshot = QemuVmSnapshot::diskless(
+            ancestor_checkpoint,
+            QemuReplayOracleValidation::Match {
                 runtime_hash: ancestor.id(),
             },
-        };
+        );
         let mut store = scripted_store(Rc::clone(&log), &world);
         store
             .exact_snapshots

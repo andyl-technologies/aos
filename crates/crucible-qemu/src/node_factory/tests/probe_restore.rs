@@ -8,7 +8,10 @@ fn factory_restores_probe_snapshot_without_runtime_admission() -> Result<(), Box
     let layout = RegionLayout::for_config(config)?;
     let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
     let plugin_peer = thread::spawn(move || {
-        plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::WaitForQuit)
+        plugin_peer_complete_setup(
+            plugin_socket,
+            PluginPeerAfterRun::AcknowledgeRestoreThenWaitForQuit,
+        )
     });
     let setup = crate::complete_qemu_host_plugin_setup(
         resources.into_setup_resources(),
@@ -21,7 +24,16 @@ fn factory_restores_probe_snapshot_without_runtime_admission() -> Result<(), Box
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{}}"#,
+        r#"{"return":{"running":false,"status":"paused"}}"#,
+        r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"running":true,"status":"running"}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"running":false,"status":"paused"}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"running":true,"status":"running"}}"#,
         r#"{"return":{}}"#,
     ]);
     let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
@@ -33,7 +45,7 @@ fn factory_restores_probe_snapshot_without_runtime_admission() -> Result<(), Box
         qmp,
         QemuNodeRestorePlan::snapshot_completeness_probe(
             &checkpoint,
-            QemuSavevmCompletenessPolicy::complete().authorize_loadvm_probe(),
+            QemuExactSnapshotPolicy::production().authorize_loadvm_probe(),
         ),
         node_factory_runtime(),
     )?;
@@ -51,16 +63,40 @@ fn factory_restores_probe_snapshot_without_runtime_admission() -> Result<(), Box
         execute_name(json_line(&lines, 0)),
         Some(QMP_CAPABILITIES_COMMAND)
     );
-    assert_eq!(
-        execute_name(json_line(&lines, 1)),
-        Some(QMP_SNAPSHOT_LOAD_COMMAND)
-    );
+    assert_eq!(execute_name(json_line(&lines, 1)), Some(QMP_STOP_COMMAND));
     assert_eq!(
         execute_name(json_line(&lines, 2)),
-        Some(QMP_QUERY_JOBS_COMMAND)
+        Some(QMP_QUERY_STATUS_COMMAND)
     );
     assert_eq!(
         execute_name(json_line(&lines, 3)),
+        Some(QMP_SNAPSHOT_LOAD_COMMAND)
+    );
+    assert_eq!(
+        execute_name(json_line(&lines, 4)),
+        Some(QMP_QUERY_JOBS_COMMAND)
+    );
+    assert_eq!(
+        execute_name(json_line(&lines, 5)),
+        Some(QMP_JOB_DISMISS_COMMAND)
+    );
+    assert_eq!(execute_name(json_line(&lines, 6)), Some(QMP_CONT_COMMAND));
+    assert_eq!(
+        execute_name(json_line(&lines, 7)),
+        Some(QMP_QUERY_STATUS_COMMAND)
+    );
+    assert_eq!(execute_name(json_line(&lines, 8)), Some(QMP_STOP_COMMAND));
+    assert_eq!(
+        execute_name(json_line(&lines, 9)),
+        Some(QMP_QUERY_STATUS_COMMAND)
+    );
+    assert_eq!(execute_name(json_line(&lines, 10)), Some(QMP_CONT_COMMAND));
+    assert_eq!(
+        execute_name(json_line(&lines, 11)),
+        Some(QMP_QUERY_STATUS_COMMAND)
+    );
+    assert_eq!(
+        execute_name(json_line(&lines, 12)),
         Some(QMP_QUIT_COMMAND_NAME)
     );
 

@@ -99,6 +99,18 @@ impl ProductionFaultRuntimeCheckpoint {
     pub const fn network_state(&self) -> Option<&ProductionNetworkStateCheckpoint> {
         self.network_state.as_ref()
     }
+
+    /// Returns the captured execution fingerprint for one QEMU node.
+    #[must_use]
+    pub fn qemu_fingerprint(&self, node: &NodeId) -> Option<ContentHash> {
+        self.qemu_fingerprints.get(node).copied()
+    }
+
+    /// Returns the next fault-command sequence captured for one QEMU node.
+    #[must_use]
+    pub fn qemu_fault_sequence(&self, node: &NodeId) -> Option<u64> {
+        self.qemu_fault_sequences.get(node).copied()
+    }
 }
 
 /// Failure to admit, execute, checkpoint, or restore the production runtime.

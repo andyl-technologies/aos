@@ -398,10 +398,10 @@ the same `instantiate` call whose base case is *loading* genesis, not booting it
   replaces — the target is **sub-second** restore-to-runnable for the AOS
   reference guest, versus seconds for a cold boot — so that resuming a scenario is
   interactive. The perf-bench gate MUST measure restore-to-runnable latency and
-  track it against this target. Where the savevm-completeness spike ([QEMU-21]) has
-  not yet certified `loadvm`, the **thin-checkpoint replay** fallback ([QEMU-26])
-  is used instead; its cost is the replay term (§25.6) and MUST likewise be
-  measured. *Gate:* `gate:perf-bench`, `gate:replay-oracle`. *Spec:* §25.4; routes
+  track it against this target. Explicit thin-checkpoint replay ([QEMU-26]) is a
+  separate benchmarked operation with the replay cost in §25.6; an exact
+  capture or restore failure MUST NOT switch to it. *Gate:* `gate:perf-bench`,
+  `gate:replay-oracle`. *Spec:* §25.4; routes
   [G-9], references [QEMU-21], [QEMU-25], [QEMU-26].
 
 ---
@@ -1203,15 +1203,15 @@ the complete five-mechanism register and its reject-unclassified policy.
 - [x] **T-PERF-11** Implement the boot-amortization check: cold boots over an
   M-scenario campaign sharing one World is independent of M (≈1 per VM per World).
   — satisfies [PERF-11]; spec §25.4.
-- [x] **T-PERF-12** Implement restore-to-runnable latency measurement (loadvm and
-  the replay fallback), tracked against the sub-second target. — satisfies
+- [x] **T-PERF-12** Implement restore-to-runnable latency measurement for exact
+  `loadvm`, tracked against the sub-second target. — satisfies
   [PERF-12]; spec §25.4.
   Completed by `checks.crucible.phase0.s3SavevmLoadvm` and
   `checks.fleet.crucible-perf`: the live QEMU snapshot corpus records wall-clock
   time from `snapshot-load` admission through the runnable `cont`
-  acknowledgement at boot, CPU/timer, and pending-I/O points, while the fleet
-  check separately times the production thin replay fallback from an artifact
-  produced by a live QEMU reduction. Absolute latency is reported, not used as a
+  acknowledgement at boot, CPU/timer, and pending-I/O points. Explicit replay
+  is benchmarked as its own operation and is never substituted for failed exact
+  restore. Absolute latency is reported, not used as a
   shared-builder pass threshold.
 - [x] **T-PERF-13** Establish the fuzzing-throughput baseline (scenarios/core/hour)
   and the no-regression ratchet. — satisfies [PERF-13]; spec §25.5.1.

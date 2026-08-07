@@ -976,7 +976,7 @@ touching the canonical run.
   `(def, schedule[0..k])`, = fork minus divergence) time travel that lands all of a
   node's vCPUs at one deterministic coordinate, plus the opportunistic
   fat-checkpoint cadence (`--checkpoint-stride`) as a performance-only,
-  eviction-always-safe optimization defaulting to thin/replay until S3 is green. —
+  eviction-always-safe optimization under an explicit cache policy. —
   satisfies [DBG-18], [DBG-19], [DBG-20]; spec §36.4.3, §36.4.4.
   Completed by `checks.crucible.phase6.debugScopedTimeTravel`:
   `TemporalGraph::debug_per_node_time_travel` resolves an exact node icount on the
@@ -986,10 +986,11 @@ touching the canonical run.
   schedule-prefix, virtual-time, and event-sequence world targets to prefix
   configurations and realizes them through `goto`, giving fork-minus-divergence
   semantics without appending decisions. The checkpoint cadence API walks
-  `--checkpoint-stride` prefix points through the existing savevm hedge: the default
-  `thin_replay_until_full_s3` hedge records thin replay checkpoints only and may evict
-  existing fat cache entries, while a verified hedge may cache fat checkpoints, with
-  eviction falling back to bit-identical replay.
+  `--checkpoint-stride` prefix points under an explicit `MaterializationPolicy`:
+  `DebugCheckpointCadenceRequest::thin_only` retains selected points as thin
+  reconstruction records, while a budgeted policy may cache only complete fat
+  checkpoints. Eviction preserves identity because replay remains the canonical
+  derivation, but incomplete snapshot state is never admitted.
 - [x] **T-DBG-6** Implement the **non-canonical debug branch**: fork on the first
   guest-state mutation or operator-controlled continue, leaving the canonical run
   bit-identical; exclude it from the replay oracle and from

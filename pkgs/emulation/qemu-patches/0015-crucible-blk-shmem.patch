@@ -291,7 +291,7 @@ index 34b1b2a..2977e76 100644
  subdir('export')
  subdir('monitor')
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index e3373e8..9b20473 100644
+index 138f791..477db80 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -164,6 +164,44 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,

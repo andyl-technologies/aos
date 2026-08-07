@@ -123,38 +123,6 @@
         needle = "fat_state.id != thin_state.id";
       }
       {
-        label = "savevm completeness hedge type";
-        needle = "pub struct SavevmCompletenessHedge";
-      }
-      {
-        label = "thin replay until full S3 hedge";
-        needle = "pub fn thin_replay_until_full_s3() -> Self";
-      }
-      {
-        label = "unreliable device hedge constructor";
-        needle = "pub fn with_unreliable_devices<I>(devices: I) -> Self";
-      }
-      {
-        label = "hedge rejects unreliable device overlays";
-        needle = ".all(|device| !self.unreliable_devices.contains(device))";
-      }
-      {
-        label = "cache snapshot hedge API";
-        needle = "pub fn cache_snapshot_with_savevm_hedge(";
-      }
-      {
-        label = "hedge rejection evicts stale fat cache";
-        needle = "if hedge.allows_checkpoint(&checkpoint) {\n            self.cache_snapshot(configuration, checkpoint.clone())?;\n            Ok(checkpoint)\n        } else {\n            self.evict_fat_checkpoint_to_thin(configuration)\n        }";
-      }
-      {
-        label = "materialize checkpoint hedge API";
-        needle = "pub fn materialize_checkpoint_with_savevm_hedge(";
-      }
-      {
-        label = "hot checkpoint hedge API";
-        needle = "pub fn materialize_hot_checkpoint_with_savevm_hedge(";
-      }
-      {
         label = "replay-oracle cached snapshot admission";
         needle = "pub fn replay_oracle_admit_cached_snapshot(";
       }
@@ -265,10 +233,6 @@
         needle = "MaterializationTrigger";
       }
       {
-        label = "savevm hedge export";
-        needle = "SavevmCompletenessHedge";
-      }
-      {
         label = "graph save result export";
         needle = "TemporalGraphSave";
       }
@@ -307,14 +271,6 @@
       {
         label = "hot-node materialization policy test";
         needle = "temporal_graph_materialization_policy_keeps_cold_or_over_budget_nodes_thin";
-      }
-      {
-        label = "unreliable device hedge test";
-        needle = "temporal_graph_savevm_hedge_keeps_unreliable_device_checkpoint_thin";
-      }
-      {
-        label = "full S3 fallback eviction test";
-        needle = "temporal_graph_savevm_full_s3_fallback_evicts_hot_checkpoint_to_thin";
       }
       {
         label = "cached snapshot replay-oracle rejection test";
@@ -731,8 +687,8 @@
         needle = "qemu_replay_oracle_reports_loadvm_replay_mismatch";
       }
       {
-        label = "snapshot-completeness probe purpose";
-        needle = "QemuLoadvmCommandPurpose::SnapshotCompletenessProbe";
+        label = "replay-oracle probe purpose";
+        needle = "QemuLoadvmCommandPurpose::ReplayOracleProbe";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
@@ -901,14 +857,6 @@
       {
         label = "T-TEMP-4 completion names eviction API";
         needle = "`evict_fat_checkpoint_to_thin`";
-      }
-      {
-        label = "T-TEMP-5 completion names savevm hedge";
-        needle = "`crucible::SavevmCompletenessHedge`";
-      }
-      {
-        label = "T-TEMP-5 completion names thin replay fallback";
-        needle = "`thin_replay_until_full_s3`";
       }
       {
         label = "T-TEMP-7 names cached snapshot admission";
@@ -1080,8 +1028,8 @@ in
             thin_source_of_truth=checkpoint-node-state-none
             fat_cache_policy=hot-nodes-budgeted
             fat_eviction=ancestor-replay-preserves-state
-            savevm_completeness_hedge=unreliable-device-snapshots-stay-thin
-            savevm_full_s3_fallback=thin-replay-until-full-s3
+            exact_checkpoint_policy=identity-bound-qemu-vmstate-and-host-io
+            incomplete_checkpoint_policy=rejected
             replay_oracle_cached_admission=corrupt-fat-cache-evicted-to-thin
             replay_oracle_structural_invariant=all-cached-fat-snapshots
             gc_cache_collection=thin-replay-oracle-preserved

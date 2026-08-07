@@ -77,9 +77,10 @@ in
           run_dir="$TMPDIR/live-block-realization-run"
           mkdir -p "$run_dir"
           report="$TMPDIR/live-block-realization.result"
-          # The crucible-shmem block driver is opened through the legacy
-          # `-drive driver=crucible-shmem` path with the guest frozen at reset;
-          # reaching prelaunch proves the driver registered and `bdrv_open` ran.
+          # The crucible-shmem block driver is opened through its typed
+          # `-blockdev driver=crucible-shmem` QAPI path with the guest frozen at
+          # reset; reaching prelaunch proves the schema, driver registration,
+          # and `bdrv_open` all succeeded.
           timeout -k 15 120 \
             "$TMPDIR/live-block-realization-target/debug/examples/crucible-qemu-live-block-realization" \
             ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
@@ -90,7 +91,7 @@ in
           grep -Fxq PASS "$report"
           grep -Fxq 'gate=gate:block-realization' "$report"
           grep -Fxq 'block_driver=crucible-shmem' "$report"
-          grep -Fxq 'open_interface=drive-driver-legacy' "$report"
+          grep -Fxq 'open_interface=blockdev-qapi' "$report"
           grep -Fxq 'driver_opened=true' "$report"
           grep -Fxq 'run_state=prelaunch' "$report"
           grep -Fxq 'orderly_child_exit=true' "$report"
@@ -102,7 +103,7 @@ in
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
             printf 'scope=crucible-shmem-block-driver-runtime-realization-probe\n'
-            printf 'open_interface=drive-driver-legacy-not-blockdev-qapi-enum\n'
+            printf 'open_interface=typed-blockdev-qapi-enum\n'
             printf 'guest_execution=frozen-at-reset-no-guest-io\n'
           } >> "$out/result"
         '';

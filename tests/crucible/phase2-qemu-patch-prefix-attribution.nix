@@ -288,6 +288,10 @@
       kind = "interface";
       symbols = ["qemu_plugin_register_blk_event_cb"];
     };
+    "0063-crucible-plugin-vmstop.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_request_vmstop"];
+    };
   };
 
   unclassified =

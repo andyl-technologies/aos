@@ -317,7 +317,7 @@ index 4c16ae9..1284d02 100644
                               const uint32_t *deliver_bitmask,
                               uint8_t delivery_mode, uint8_t vector_num,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index a066a9f..6473b96 100644
+index 123b602..14c5e7c 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -960,6 +960,35 @@ void qemu_plugin_force_vcpu_exit(void);

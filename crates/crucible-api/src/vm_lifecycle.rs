@@ -14,23 +14,25 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::vm_resume::{
-    PRODUCTION_ROOT_OVERLAY_FILE_NAME, ProductionAppRandomConfig, ProductionGdbstubChannelConfig,
-    ProductionLiveNode, ProductionLiveNodeStepGateConfig, ProductionNodeSet,
-    ProductionPluginSwitch, ProductionRootImageFormat, launch_production_live_node,
+    PRODUCTION_ROOT_OVERLAY_FILE_NAME, PRODUCTION_VMSTATE_FILE_NAME, ProductionAppRandomConfig,
+    ProductionGdbstubChannelConfig, ProductionLiveNode, ProductionLiveNodeStepGateConfig,
+    ProductionNodeSet, ProductionPluginSwitch, ProductionRootImageFormat,
+    launch_production_live_node, launch_production_live_node_exact_snapshot,
 };
 use crucible::model::{FaultCoordinate, SignalArtifactProvider, SignalBoundarySnapshot};
 use crucible::{
-    Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, ConditionEvaluationPass,
-    ConditionLeaf, Configuration, ControlOperation, DagStore, Decision, EventFirings, EventGraph,
-    EventGraphState, FingerprintSample, GdbAttachInfo, GdbListen, HostAssertionEvaluator,
-    HostAssertionOutcome, HostAssertionOutcomeKind, NodeId, ObservableEvent, QuantumLoop,
-    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RestartPolicy, ScenarioDef,
-    ScenarioDefForm, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
-    SchedulerLivenessScenario, SearchFrontierChoices, Seed, Shift, SimInstant, SimulationBackend,
-    SingleScheduler, VirtualTime, World,
+    Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, Checkpoint, CheckpointKind,
+    ConditionEvaluationPass, ConditionLeaf, Configuration, ControlOperation, DagStore, Decision,
+    EventFirings, EventGraph, EventGraphState, FingerprintSample, GdbAttachInfo, GdbListen,
+    HostAssertionEvaluator, HostAssertionOutcome, HostAssertionOutcomeKind, NodeId,
+    ObservableEvent, QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
+    RestartPolicy, ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogAppend,
+    SchedulerEventLogEntry, SchedulerLivenessScenario, SearchFrontierChoices, Seed, Shift,
+    SimInstant, SimulationBackend, SingleScheduler, VirtualTime, World,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
+    QemuVmSnapshot,
 };
 
 use crate::LifecycleApiError;
@@ -113,19 +115,15 @@ struct ProductionVmBranchConfig {
 }
 
 #[derive(Clone, Debug)]
-struct ProductionVmCheckpointReplayTarget {
+struct ProductionVmExactCheckpointTarget {
     configuration: Configuration,
     counter: u64,
     scheduler_time: VirtualTime,
-    control_count: usize,
+    snapshot: QemuVmSnapshot,
+    overlay_artifact: PathBuf,
+    vmstate_artifact: PathBuf,
     fault_checkpoint: ProductionFaultRuntimeCheckpoint,
-}
-
-#[derive(Clone, Debug)]
-struct ProductionVmRecordedControl {
-    configuration: Configuration,
-    node_times: BTreeMap<NodeId, VirtualTime>,
-    control: Vec<ControlOperation>,
+    manifest_identity: crucible::ContentHash,
 }
 
 impl ProductionVmLifecycleConfig {
@@ -307,11 +305,6 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
-    fn for_thin_replay(mut self) -> Self {
-        self.debug = None;
-        self
-    }
-
     /// Returns a conservative bound for driving through the configured budget.
     ///
     /// The scheduler budget is already a count of authoritative quanta. The
@@ -350,10 +343,8 @@ pub struct ProductionVmLifecycleLoop {
     scenario: ScenarioDef,
     source: ScenarioDefForm,
     config: ProductionVmLifecycleConfig,
-    checkpoint_targets: BTreeMap<NodeId, ProductionVmCheckpointReplayTarget>,
-    recorded_controls: Vec<ProductionVmRecordedControl>,
+    checkpoint_targets: BTreeMap<NodeId, ProductionVmExactCheckpointTarget>,
     prelaunched_restarts: BTreeMap<NodeId, (RestartPolicy, u64)>,
-    retained_replay_directories: Vec<tempfile::TempDir>,
     reconciled_crashes: usize,
     reconciled_restarts: usize,
     _run_directory: tempfile::TempDir,
@@ -725,9 +716,7 @@ pub fn build_production_vm_lifecycle_loop(
         source: source.clone(),
         config: config.clone(),
         checkpoint_targets: BTreeMap::new(),
-        recorded_controls: Vec::new(),
         prelaunched_restarts: BTreeMap::new(),
-        retained_replay_directories: Vec::new(),
         reconciled_crashes: 0,
         reconciled_restarts: 0,
         _run_directory: run_directory,

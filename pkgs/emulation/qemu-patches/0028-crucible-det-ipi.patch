@@ -345,7 +345,7 @@ index 963d31b..9a0b94f 100644
  void qemu_plugin_add_dyn_cb_arr(GArray *arr)
  { }
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 55c0bea..e58cfcb 100644
+index 7a5acaf..a8b26ca 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -173,6 +173,24 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,

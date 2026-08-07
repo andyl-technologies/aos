@@ -45,7 +45,7 @@ index 9a0b94f..e3112d3 100644
  #include "qemu/error-report.h"
  #include "qemu/queue.h"
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 7156b90..0fc574c 100644
+index e267931..c53bd5f 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1435,6 +1435,19 @@ int qemu_plugin_crucible_sha256_bytes(const uint8_t *material,
@@ -69,10 +69,10 @@ index 7156b90..0fc574c 100644
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_crucible_icount(void);
 diff --git a/plugins/api.c b/plugins/api.c
-index 6cbddfb..795997d 100644
+index 591363c..df34473 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -1121,6 +1121,17 @@ void qemu_plugin_crucible_fingerprint_capture_free(void *material)
+@@ -1116,6 +1116,17 @@ void qemu_plugin_crucible_fingerprint_capture_free(void *material)
      g_free(material);
  }
  

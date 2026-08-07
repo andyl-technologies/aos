@@ -463,7 +463,9 @@ record_doorbell(unsigned int vcpu_index)
   if (expected_markers != 0 && marker_count >= expected_markers && !stop_requested) {
     stop_requested = true;
     record_final_sample(true);
-    qemu_plugin_crucible_pause_vm();
+    if (qemu_plugin_request_vmstop() != 0) {
+      qemu_plugin_request_shutdown(1);
+    }
   }
 }
 

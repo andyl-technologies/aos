@@ -384,6 +384,13 @@
       enforces = "STOR-RESET,STOR-RESULT,DET-16,PATCH-26";
       capability = "transactional epoch-scoped block reset, recovery admission, retry dispositions, and declared topology re-enumeration";
     }
+    {
+      file = "0063-crucible-plugin-vmstop.patch";
+      catalogName = "crucible-plugin-vmstop";
+      class = "D";
+      enforces = "DET-1,INV-10,QEMU-43";
+      capability = "exact plugin-boundary handoff into QEMU's native paused runstate";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

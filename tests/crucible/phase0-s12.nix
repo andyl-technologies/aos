@@ -91,7 +91,10 @@ in
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0002-crucible-rr-fingerprint-helpers.patch}'
           require_fixed qemu-patches/0001-crucible-sim-accel.patch 'TYPE_SIM_ACCEL'
           require_fixed qemu-patches/0002-crucible-rr-fingerprint-helpers.patch 'qemu_plugin_crucible_rr_switch_quantum'
-          require_fixed qemu-patches/0002-crucible-rr-fingerprint-helpers.patch 'qemu_plugin_crucible_pause_vm'
+          require_fixed qemu-patches/0063-crucible-plugin-vmstop.patch 'qemu_plugin_request_vmstop'
+          if grep -F -R -q -- 'qemu_plugin_crucible_pause_vm' qemu-patches; then
+            fail "legacy unvalidated VM pause export remains in the QEMU patch series"
+          fi
 
           preemption_regex='preempt|preemption|interrupt_at|vcpu_switch|crucible_.*inject|qemu_plugin_crucible_.*(irq|interrupt)'
           require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0030-crucible-preemption-inject.patch}'

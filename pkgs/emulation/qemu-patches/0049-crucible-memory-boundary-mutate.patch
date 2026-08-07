@@ -138,7 +138,7 @@ index 926623a..bbe9daa 100644
  void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
                                             uint64_t observed_icount);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 2bcd09c..60f860d 100644
+index 999a102..a837a4e 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1409,6 +1409,22 @@ QEMU_PLUGIN_API
@@ -165,7 +165,7 @@ index 2bcd09c..60f860d 100644
   * qemu_plugin_crucible_write_memory_vaddr() - write guest virtual memory
   * @addr: virtual address at which to begin the write
 diff --git a/plugins/api.c b/plugins/api.c
-index 7f5c102..4c21088 100644
+index 8c1f5b4..964a40a 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -468,6 +468,21 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
@@ -190,11 +190,6 @@ index 7f5c102..4c21088 100644
  bool qemu_plugin_crucible_write_memory_vaddr(uint64_t addr,
                                               const uint8_t *data,
                                               size_t len)
-@@ -1565,4 +1580,3 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
-     }
-     return total;
- }
--
 diff --git a/plugins/crucible-fault-memory.c b/plugins/crucible-fault-memory.c
 new file mode 100644
 index 0000000..b1422b8
