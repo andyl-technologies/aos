@@ -22,7 +22,7 @@
     imageDiskMiB = 16384;
     memoryMiB = 4096;
     packages = ["aos-test-agent"];
-    extraClosures = [pkgs.coreutils];
+    extraClosures = [pkgs.diffutils];
     metadata."host.nix" = ''
       {
         aos.provisioning.storage.partitions.var.sizeMin = "2G";
@@ -77,7 +77,7 @@
 
       JQ = "${pkgs.jq}/bin/jq"
       APM = "${pkgs.aos}/bin/apm"
-      CMP = "${pkgs.coreutils}/bin/cmp"
+      CMP = "${pkgs.diffutils}/bin/cmp"
 
 
       def properties(unit, names):
