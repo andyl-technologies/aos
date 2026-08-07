@@ -2,6 +2,7 @@
 
 mod access_policy;
 mod cache_gc;
+mod cache_gc_jobs;
 mod cache_gc_safety;
 mod cache_integration_preview;
 mod cache_integrations;
