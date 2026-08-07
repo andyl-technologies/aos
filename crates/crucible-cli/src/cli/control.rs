@@ -1,6 +1,12 @@
 //! Save control-client workflows, interactive run control, and outcome projection.
 
 use super::*;
+
+// Live QEMU quanta may spend most of the per-node completion window inside the
+// backend. Keep save observation aligned with that 300-second production bound;
+// the streaming acknowledgement yield budget is not a wall-clock run timeout.
+const SAVE_WORKFLOW_OBSERVER_TIMEOUT: Duration = Duration::from_secs(300);
+
 pub(super) async fn run_remote_control_client_save_workflow_async<C>(
     client: &C,
     save_plan: &SaveInvocationPlan,
@@ -25,25 +31,34 @@ where
 
     let boundary = match save_plan.at {
         SaveAtArg::Quiescence => {
-            let before =
-                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
-                    .await?;
-            send_save_workflow_command(
+            let predicate = crucible::Predicate::quiescent();
+            let (boundary, breakpoint_id) = run_save_predicate_to_boundary(
+                client,
+                created.session,
+                BreakpointSpec::suspend_once(predicate.clone()),
+                &mut command_id,
+                &mut acknowledged_commands,
+                &mut state_updates,
+                "paused remote quiescence save boundary",
+                false,
+            )
+            .await?;
+            let firings = query_save_breakpoint_firings(
                 client,
                 created.session,
                 &mut command_id,
-                SessionCommand::step(StepMode::Quantum),
                 &mut acknowledged_commands,
                 &mut state_updates,
             )
             .await?;
-            wait_for_save_workflow_advanced_paused(
-                client,
-                created.session,
-                &before,
-                "paused remote quiescence save boundary",
-            )
-            .await?
+            validate_save_breakpoint_firing(
+                "quiescence",
+                &predicate,
+                breakpoint_id,
+                &boundary,
+                &firings,
+            )?;
+            boundary
         }
         SaveAtArg::VirtualTime => {
             let budget = run_plan.max_virtual_time_ticks.ok_or_else(|| {
@@ -238,37 +253,15 @@ where
             save_plan.at.label()
         )));
     };
-    let spec = save_selector_breakpoint_spec(selector)?;
-    let response = send_save_workflow_command(
+    let (boundary, breakpoint_id) = run_save_predicate_to_boundary(
         client,
         session,
+        save_selector_breakpoint_spec(selector)?,
         command_id,
-        SessionCommand::SetBreakpoint {
-            spec,
-            reply: CommandReply::discard(),
-        },
         acknowledged_commands,
         state_updates,
-    )
-    .await?;
-    let breakpoint_id = response.breakpoint_id.ok_or_else(|| {
-        save_backend_error("save selector breakpoint command returned no breakpoint id")
-    })?;
-    let before = wait_for_save_workflow_state(client, session, LiveStateKind::Paused).await?;
-    send_save_workflow_command(
-        client,
-        session,
-        command_id,
-        SessionCommand::step(StepMode::Quantum),
-        acknowledged_commands,
-        state_updates,
-    )
-    .await?;
-    let boundary = wait_for_save_workflow_advanced_paused(
-        client,
-        session,
-        &before,
         "paused save selector breakpoint boundary",
+        true,
     )
     .await?;
     let firings_response = send_save_workflow_command(
@@ -295,6 +288,168 @@ where
     };
     validate_save_selector_firing(selector, breakpoint_id, &boundary, &firings)?;
     Ok(boundary)
+}
+
+pub(super) async fn run_save_predicate_to_boundary<C>(
+    client: &C,
+    session: SessionRef,
+    spec: BreakpointSpec,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    state_updates: &mut Vec<String>,
+    description: &str,
+    guard_at_quiescence: bool,
+) -> Result<(crucible_api::SessionSummary, BreakpointId), CliError>
+where
+    C: ControlClient + Sync,
+{
+    let response = send_save_workflow_command(
+        client,
+        session,
+        command_id,
+        SessionCommand::SetBreakpoint {
+            spec,
+            reply: CommandReply::discard(),
+        },
+        acknowledged_commands,
+        state_updates,
+    )
+    .await?;
+    let mut breakpoint_id = response.breakpoint_id.ok_or_else(|| {
+        save_backend_error("save boundary breakpoint command returned no breakpoint id")
+    })?;
+    let guard_id = if guard_at_quiescence {
+        let response = send_save_workflow_command(
+            client,
+            session,
+            command_id,
+            SessionCommand::SetBreakpoint {
+                spec: BreakpointSpec::suspend_once(crucible::Predicate::quiescent()),
+                reply: CommandReply::discard(),
+            },
+            acknowledged_commands,
+            state_updates,
+        )
+        .await?;
+        Some(response.breakpoint_id.ok_or_else(|| {
+            save_backend_error("save selector quiescence breakpoint command returned no id")
+        })?)
+    } else {
+        None
+    };
+    let before = wait_for_save_workflow_state(client, session, LiveStateKind::Paused).await?;
+    send_save_workflow_command(
+        client,
+        session,
+        command_id,
+        SessionCommand::step(StepMode::Quantum),
+        acknowledged_commands,
+        state_updates,
+    )
+    .await?;
+    let primed = wait_for_save_workflow_advanced_paused(
+        client,
+        session,
+        &before,
+        "paused initial save boundary",
+    )
+    .await?;
+    let priming_firings = query_save_breakpoint_firings(
+        client,
+        session,
+        command_id,
+        acknowledged_commands,
+        state_updates,
+    )
+    .await?;
+    let target_fired_during_priming = priming_firings
+        .iter()
+        .any(|firing| firing.id == breakpoint_id);
+    let priming_advanced_quantum = primed.quanta_stepped > before.quanta_stepped;
+    if target_fired_during_priming && (guard_at_quiescence || priming_advanced_quantum) {
+        return Ok((primed, breakpoint_id));
+    }
+    if target_fired_during_priming {
+        let response = send_save_workflow_command(
+            client,
+            session,
+            command_id,
+            SessionCommand::SetBreakpoint {
+                spec: BreakpointSpec::suspend_once(crucible::Predicate::quiescent()),
+                reply: CommandReply::discard(),
+            },
+            acknowledged_commands,
+            state_updates,
+        )
+        .await?;
+        breakpoint_id = response.breakpoint_id.ok_or_else(|| {
+            save_backend_error("replacement quiescence breakpoint command returned no id")
+        })?;
+    }
+    let guard_fired_during_priming =
+        guard_id.is_some_and(|id| priming_firings.iter().any(|firing| firing.id == id));
+    if guard_fired_during_priming && priming_advanced_quantum {
+        return Ok((primed, breakpoint_id));
+    }
+    if guard_fired_during_priming {
+        let response = send_save_workflow_command(
+            client,
+            session,
+            command_id,
+            SessionCommand::SetBreakpoint {
+                spec: BreakpointSpec::suspend_once(crucible::Predicate::quiescent()),
+                reply: CommandReply::discard(),
+            },
+            acknowledged_commands,
+            state_updates,
+        )
+        .await?;
+        response.breakpoint_id.ok_or_else(|| {
+            save_backend_error("replacement selector quiescence breakpoint returned no id")
+        })?;
+    }
+    send_save_workflow_command(
+        client,
+        session,
+        command_id,
+        SessionCommand::Continue,
+        acknowledged_commands,
+        state_updates,
+    )
+    .await?;
+    let boundary =
+        wait_for_save_workflow_advanced_paused(client, session, &primed, description).await?;
+    Ok((boundary, breakpoint_id))
+}
+
+pub(super) async fn query_save_breakpoint_firings<C>(
+    client: &C,
+    session: SessionRef,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    state_updates: &mut Vec<String>,
+) -> Result<Vec<crucible_session::BreakpointFiring>, CliError>
+where
+    C: ControlClient + Sync,
+{
+    let response = send_save_workflow_command(
+        client,
+        session,
+        command_id,
+        SessionCommand::query_breakpoint_firings(),
+        acknowledged_commands,
+        state_updates,
+    )
+    .await?;
+    match response.query_result {
+        Some(QueryResult::BreakpointFirings(firings)) => Ok(firings),
+        Some(other) => Err(save_backend_error(format!(
+            "save boundary proof query returned unexpected payload: {other:?}"
+        ))),
+        None => Err(save_backend_error(
+            "save boundary proof query returned no breakpoint firing payload",
+        )),
+    }
 }
 
 pub(super) fn save_selector_breakpoint_spec(
@@ -330,35 +485,51 @@ pub(super) fn validate_save_selector_firing(
     firings: &[crucible_session::BreakpointFiring],
 ) -> Result<(), CliError> {
     let expected = save_selector_predicate(selector)?;
+    let label = match selector {
+        SaveAtSelector::PropertyViolation { assertion } => {
+            format!("property `{assertion}` violation selector")
+        }
+        SaveAtSelector::Marker { name } => format!("marker `{name}` selector"),
+    };
+    validate_save_breakpoint_firing(&label, &expected, breakpoint_id, boundary, firings)
+}
+
+pub(super) fn validate_save_breakpoint_firing(
+    label: &str,
+    expected: &crucible::Predicate,
+    breakpoint_id: BreakpointId,
+    boundary: &crucible_api::SessionSummary,
+    firings: &[crucible_session::BreakpointFiring],
+) -> Result<(), CliError> {
     let firing = firings
         .iter()
         .find(|firing| firing.id == breakpoint_id)
         .ok_or_else(|| {
             save_backend_error(format!(
-                "save selector breakpoint {breakpoint_id} did not fire before savepoint"
+                "save {label} breakpoint {breakpoint_id} did not fire at the selected boundary; no savepoint was created"
             ))
         })?;
-    if firing.predicate != expected {
+    if &firing.predicate != expected {
         return Err(CliError::Identity(format!(
-            "save selector breakpoint predicate {:?} did not match expected {:?}",
+            "save {label} breakpoint predicate {:?} did not match expected {:?}",
             firing.predicate, expected
         )));
     }
     if firing.disposition != BreakpointDisposition::Suspend {
         return Err(CliError::Identity(format!(
-            "save selector breakpoint used {:?} disposition instead of suspend",
+            "save {label} breakpoint used {:?} disposition instead of suspend",
             firing.disposition
         )));
     }
     if firing.frontier != boundary.frontier {
         return Err(CliError::Identity(format!(
-            "save selector breakpoint fired at {}, but boundary is {}",
+            "save {label} breakpoint fired at {}, but boundary is {}",
             firing.frontier.ticks, boundary.frontier.ticks
         )));
     }
     if firing.quanta != boundary.quanta_stepped {
         return Err(CliError::Identity(format!(
-            "save selector breakpoint fired at quantum {}, but boundary is {}",
+            "save {label} breakpoint fired at quantum {}, but boundary is {}",
             firing.quanta, boundary.quanta_stepped
         )));
     }
@@ -413,7 +584,7 @@ where
         session,
         |summary| summary.state == expected,
         &description,
-        RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+        SAVE_WORKFLOW_OBSERVER_TIMEOUT,
     )
     .await
 }
@@ -432,11 +603,11 @@ where
         session,
         |summary| {
             summary.state == LiveStateKind::Paused
-                && summary.frontier.ticks > before.frontier.ticks
-                && summary.quanta_stepped > before.quanta_stepped
+                && (summary.quanta_stepped > before.quanta_stepped
+                    || summary.event_log_len > before.event_log_len)
         },
         description,
-        RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+        SAVE_WORKFLOW_OBSERVER_TIMEOUT,
     )
     .await
 }
@@ -474,7 +645,7 @@ where
                     && candidate.quanta_stepped > before.quanta_stepped
             },
             "paused requested virtual-time save boundary",
-            RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+            SAVE_WORKFLOW_OBSERVER_TIMEOUT,
         )
         .await?;
         if boundary.frontier.ticks <= before.frontier.ticks {
@@ -503,37 +674,38 @@ pub(super) async fn wait_for_save_workflow_summary<C>(
     session: SessionRef,
     mut accepts: impl FnMut(&crucible_api::SessionSummary) -> bool,
     description: &str,
-    max_attempts: u64,
+    timeout: Duration,
 ) -> Result<crucible_api::SessionSummary, CliError>
 where
     C: ControlClient + Sync,
 {
-    for _ in 0..max_attempts {
-        let sessions = client
-            .list_sessions()
-            .await
-            .map_err(save_control_client_error)?;
-        let Some(summary) = sessions
-            .sessions
-            .iter()
-            .find(|summary| summary.session == session)
-        else {
-            return Err(save_backend_error("save workflow session disappeared"));
-        };
-        if accepts(summary) {
-            return Ok(summary.clone());
+    let observation = async {
+        loop {
+            let sessions = client
+                .list_sessions()
+                .await
+                .map_err(save_control_client_error)?;
+            let Some(summary) = sessions
+                .sessions
+                .iter()
+                .find(|summary| summary.session == session)
+            else {
+                return Err(save_backend_error("save workflow session disappeared"));
+            };
+            if accepts(summary) {
+                return Ok(summary.clone());
+            }
+            if summary.state == LiveStateKind::Stopped {
+                return Err(CliError::Outcome(status_from_outcome(summary.outcome)?));
+            }
+            // A local control client can answer ListSessions immediately. A
+            // short delay avoids starving the actor and bounds remote polling.
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        if summary.state == LiveStateKind::Stopped {
-            return Err(CliError::Outcome(status_from_outcome(summary.outcome)?));
-        }
-        // A local control client can answer ListSessions immediately. A small
-        // observer delay prevents that polling loop from starving the actor
-        // task that must drive the requested boundary.
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    Err(save_backend_error(format!(
-        "save workflow did not reach {description}"
-    )))
+    };
+    tokio::time::timeout(timeout, observation)
+        .await
+        .map_err(|_| save_backend_error(format!("save workflow did not reach {description}")))?
 }
 
 pub(super) fn validate_savepoint_checkpoint(
@@ -1080,7 +1252,7 @@ where
                     )
                 },
                 "paused bounded-run quantum boundary",
-                RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+                Duration::from_millis(RUN_INTERACTIVE_ACK_QUANTA_BOUND),
             )
             .await?;
             continue;
@@ -1104,7 +1276,7 @@ where
                 ) && summary.quanta_stepped > before.quanta_stepped
             },
             "completed bounded-run quantum boundary",
-            RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+            Duration::from_millis(RUN_INTERACTIVE_ACK_QUANTA_BOUND),
         )
         .await?;
     }

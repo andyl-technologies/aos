@@ -1224,25 +1224,34 @@ where
 
     let boundary = match save_plan.at {
         SaveAtArg::Quiescence => {
-            let before =
-                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
-                    .await?;
-            send_save_workflow_command(
+            let predicate = crucible::Predicate::quiescent();
+            let (boundary, breakpoint_id) = run_save_predicate_to_boundary(
+                client,
+                created.session,
+                BreakpointSpec::suspend_once(predicate.clone()),
+                &mut command_id,
+                &mut acknowledged_commands,
+                &mut state_updates,
+                "paused quiescence save boundary",
+                false,
+            )
+            .await?;
+            let firings = query_save_breakpoint_firings(
                 client,
                 created.session,
                 &mut command_id,
-                SessionCommand::step(StepMode::Quantum),
                 &mut acknowledged_commands,
                 &mut state_updates,
             )
             .await?;
-            wait_for_save_workflow_advanced_paused(
-                client,
-                created.session,
-                &before,
-                "paused quiescence save boundary",
-            )
-            .await?
+            validate_save_breakpoint_firing(
+                "quiescence",
+                &predicate,
+                breakpoint_id,
+                &boundary,
+                &firings,
+            )?;
+            boundary
         }
         SaveAtArg::VirtualTime => {
             let budget = run_plan.max_virtual_time_ticks.ok_or_else(|| {

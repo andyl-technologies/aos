@@ -683,6 +683,7 @@ pub(super) fn spawn_save_recording_lifecycle_server() -> Result<String, Box<dyn 
                     SaveRecordingLifecycleLoop::new(SaveRecordingSources::from_scenario_form(
                         scenario_form,
                     ))
+                    .with_selector_delay_quanta(2)
                 },
             );
             let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
@@ -2649,6 +2650,28 @@ pub(super) fn cli_save_workflow_plans_quiescence_and_virtual_time_savepoints()
     assert_eq!(
         plan.run_plan.terminal_condition,
         RunTerminalCondition::Quiescence
+    );
+
+    let quiescence_with_time = Cli::parse_from([
+        String::from("crucible"),
+        String::from("save"),
+        scenario.display().to_string(),
+        String::from("--at"),
+        String::from("quiescence"),
+        String::from("--max-virtual-time"),
+        String::from("2ticks"),
+    ]);
+    let Commands::Save(args) = &quiescence_with_time.command else {
+        panic!("expected save command");
+    };
+    let error = plan_save_invocation(args, temp.path(), temp.path())
+        .expect_err("quiescence save must reject a virtual-time coordinate");
+    assert!(matches!(error, CliError::Usage(_)));
+    assert_eq!(error.exit_code(), 64);
+    assert!(
+        error
+            .to_string()
+            .contains("does not accept --max-virtual-time")
     );
 
     let virtual_time = Cli::parse_from([

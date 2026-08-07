@@ -167,6 +167,15 @@ Other boundaries are:
 --at marker --marker <guest-marker-name>
 ```
 
+Quiescence, property, and marker saves continue across scheduler quanta until a
+one-shot suspending breakpoint observes the requested evidence. A property
+selector stops on the named assertion's violated phase. Marker and property
+selectors also stop at quiescence and fail without exporting a handle when the
+requested evidence never appeared. `--max-virtual-time` is accepted only with
+`--at virtual-time`; combining it with another boundary is a usage error. Live
+QEMU boundary observation can wait for the backend's production completion
+window and is not limited by the control stream's short acknowledgement poll.
+
 Use `--out <path>` to choose the handle path. Otherwise it is written below
 `--artifact-dir`. Crucible does not export a handle if replay-oracle validation
 fails.
