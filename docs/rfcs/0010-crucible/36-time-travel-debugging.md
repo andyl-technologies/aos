@@ -1487,7 +1487,11 @@ complete from model-double evidence.
   immediately revokes that access even while a sibling holder remains. Acquire
   and final release await both registry locks before mutation, then update holder
   and coordinator state without another suspension point; cancelled RPC futures
-  cannot strand a half-transitioned lease.
+  cannot strand a half-transitioned lease. Once an authorized attach, goto,
+  reverse, guest fork, or guest-channel exchange is enqueued, a detached
+  completion task retains the per-session operation gate through the actor's
+  reply. Client cancellation therefore cannot expose controller handoff while
+  an old principal's already-authorized operation is still committing.
   Read-only service cannot acquire, attach, open, or write a debugger relay.
   Completion remains open for Unix peer credentials, multiple-observer RPC
   plumbing, and live mTLS/relay conformance evidence.

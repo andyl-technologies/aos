@@ -112,3 +112,50 @@ async fn cancelled_final_release_preserves_holder_and_controller() -> Result<(),
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn cancelled_request_retains_gate_until_enqueued_operation_finishes()
+-> Result<(), Box<dyn Error>> {
+    let state = test_state(LifecycleServerMode::read_write());
+    let scenario = crucible::happy_path_scenario()?.scenario;
+    let session = state
+        .control_plane
+        .lock()
+        .await
+        .create_session(CreateSessionRequest::inline_form(
+            scenario.clone(),
+            scenario.seed(),
+        ))
+        .await?
+        .session;
+    let guard = debug_operation_guard(&state, session).await;
+    let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+    let finish = Arc::new(tokio::sync::Notify::new());
+    let operation_finish = Arc::clone(&finish);
+    let request = tokio::spawn(async move {
+        complete_debug_operation(guard, async move {
+            let _ = started_sender.send(());
+            operation_finish.notified().await;
+        })
+        .await
+    });
+    started_receiver.await?;
+    request.abort();
+    assert!(request.await.is_err());
+
+    let waiting_state = state.clone();
+    let mut handoff =
+        tokio::spawn(async move { debug_operation_guard(&waiting_state, session).await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), &mut handoff)
+            .await
+            .is_err(),
+        "controller handoff must remain blocked after the request future is cancelled"
+    );
+    finish.notify_one();
+    let acquired = tokio::time::timeout(std::time::Duration::from_secs(1), handoff)
+        .await?
+        .map_err(|error| format!("operation-gate task failed: {error}"))?;
+    drop(acquired);
+    Ok(())
+}
