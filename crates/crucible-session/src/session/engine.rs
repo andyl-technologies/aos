@@ -8,6 +8,21 @@ mod terminal;
 use terminal::*;
 
 const GUEST_RESPONSE_BROKER_CAPACITY: usize = 64;
+const GUEST_ACTIVATION_QUANTUM_LIMIT: u64 = 64;
+
+struct PendingGuestActivation {
+    node: NodeId,
+    started_quanta: u64,
+    report: DebugNonCanonicalBranchReport,
+    reply: CommandReply<DebugNonCanonicalBranchReport>,
+}
+
+impl PendingGuestActivation {
+    fn guest_activation_failure(&mut self, reason: String) {
+        self.report.guest_introspection_activation_failure = Some(reason);
+        self.reply.complete(Ok(self.report.clone()));
+    }
+}
 
 /// Host-side engine state machine owned by the session actor.
 ///
@@ -37,8 +52,11 @@ pub struct Engine<L> {
     pub(super) debug_attach: Option<DebugAttachReport>,
     pub(super) debug_coordinator: DebugCoordinator,
     pub(super) debug_branch_required: bool,
+    pub(super) debug_event_cursor: Option<u64>,
     pub(super) guest_responses: BTreeMap<(NodeId, u64), VecDeque<GuestIntrospectionRecord>>,
     pub(super) guest_channels: BTreeSet<(NodeId, u64)>,
+    pub(super) guest_features: BTreeMap<NodeId, GuestIntrospectionFeatures>,
+    pending_guest_activation: Option<PendingGuestActivation>,
     pub(super) next_control_sequence: u64,
     pub(super) boundary_control_log: Vec<SessionControlLogEntry>,
     pub(super) next_boundary_control_sequence: u64,
@@ -72,8 +90,11 @@ impl<L> Engine<L> {
             debug_attach: None,
             debug_coordinator: DebugCoordinator::new(),
             debug_branch_required: false,
+            debug_event_cursor: None,
             guest_responses: BTreeMap::new(),
             guest_channels: BTreeSet::new(),
+            guest_features: BTreeMap::new(),
+            pending_guest_activation: None,
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
@@ -134,8 +155,11 @@ impl<L> Engine<L> {
             debug_attach: None,
             debug_coordinator: DebugCoordinator::new(),
             debug_branch_required: false,
+            debug_event_cursor: None,
             guest_responses: BTreeMap::new(),
             guest_channels: BTreeSet::new(),
+            guest_features: BTreeMap::new(),
+            pending_guest_activation: None,
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
@@ -231,6 +255,12 @@ impl<L> Engine<L> {
     #[must_use]
     pub const fn debug_branch_required(&self) -> bool {
         self.debug_branch_required
+    }
+
+    /// Returns the exact event-log cursor established by a debugger reposition.
+    #[must_use]
+    pub const fn debug_event_cursor(&self) -> Option<u64> {
+        self.debug_event_cursor
     }
 
     /// Returns the number of scheduler quanta driven by this engine.
@@ -553,8 +583,168 @@ impl<L> Engine<L> {
         Ok(None)
     }
 
+    fn begin_debug_guest_activation(
+        &mut self,
+        node: NodeId,
+        mut report: DebugNonCanonicalBranchReport,
+        reply: CommandReply<DebugNonCanonicalBranchReport>,
+    ) where
+        L: QuantumLoop,
+    {
+        self.guest_features.remove(&node);
+        self.guest_responses
+            .remove(&(node.clone(), GUEST_INTROSPECTION_FEATURE_CHANNEL_ID));
+        if let Err(error) = self.quantum_loop.activate_debug_guest(node.clone()) {
+            report.guest_introspection_activation_failure = Some(error.to_string());
+            reply.complete(Ok(report));
+            if matches!(self.state, EngineState::Running) {
+                self.state = EngineState::Paused {
+                    reason: PauseReason::UserRequested,
+                };
+            }
+            return;
+        }
+
+        self.active_step = None;
+        self.state = EngineState::Running;
+        self.pending_guest_activation = Some(PendingGuestActivation {
+            node,
+            started_quanta: self.quanta,
+            report,
+            reply,
+        });
+        if let Err(error) = self.poll_pending_guest_activation() {
+            self.fail_pending_guest_activation(format!(
+                "guest feature negotiation failed after activation: {error}"
+            ));
+            self.state = EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            };
+        }
+    }
+
+    pub(super) fn poll_pending_guest_activation(&mut self) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        let Some(mut pending) = self.pending_guest_activation.take() else {
+            return Ok(());
+        };
+        let response = self.receive_guest_channel_response(
+            &pending.node,
+            GUEST_INTROSPECTION_FEATURE_CHANNEL_ID,
+        )?;
+        if let Some(record) = response {
+            match record.message() {
+                GuestIntrospectionMessage::Features(features) => {
+                    pending.report.guest_introspection_features = Some(*features);
+                    self.guest_features.insert(pending.node.clone(), *features);
+                }
+                _ => {
+                    pending.report.guest_introspection_activation_failure = Some(String::from(
+                        "reserved feature channel returned a non-feature response",
+                    ));
+                }
+            }
+            if !matches!(self.state, EngineState::Stopped { .. }) {
+                self.state = EngineState::Paused {
+                    reason: PauseReason::UserRequested,
+                };
+            }
+            pending.reply.complete(Ok(pending.report));
+            return Ok(());
+        }
+
+        let elapsed = self.quanta.saturating_sub(pending.started_quanta);
+        let stopped = matches!(self.state, EngineState::Stopped { .. });
+        if elapsed >= GUEST_ACTIVATION_QUANTUM_LIMIT || stopped {
+            pending.guest_activation_failure(
+                if stopped {
+                    String::from("runtime stopped before the guest agent advertised features")
+                } else {
+                    format!(
+                        "no feature advertisement within {GUEST_ACTIVATION_QUANTUM_LIMIT} scheduler quanta"
+                    )
+                },
+            );
+            if !stopped {
+                self.state = EngineState::Paused {
+                    reason: PauseReason::UserRequested,
+                };
+            }
+            return Ok(());
+        }
+
+        self.pending_guest_activation = Some(pending);
+        Ok(())
+    }
+
+    pub(super) fn fail_pending_guest_activation(&mut self, reason: String) {
+        if let Some(mut pending) = self.pending_guest_activation.take() {
+            pending.guest_activation_failure(reason);
+        }
+    }
+
+    fn validate_guest_capability(
+        &self,
+        node: &NodeId,
+        message: &GuestIntrospectionMessage,
+    ) -> Result<(), SessionError> {
+        let Some(features) = self.guest_features.get(node).copied() else {
+            return Err(SessionError::GuestIntrospectionActivation {
+                node: node.name.clone(),
+                reason: String::from("fork-time feature negotiation has not completed"),
+            });
+        };
+        let missing = match message {
+            GuestIntrospectionMessage::Exec { .. } if !features.argv_exec() => Some("argv-exec"),
+            GuestIntrospectionMessage::Pty { .. } if !features.pty() => Some("pty"),
+            GuestIntrospectionMessage::Resize { .. } if !features.resize() => Some("resize"),
+            GuestIntrospectionMessage::Ssh { .. } if !features.ssh_bridge() => Some("ssh-bridge"),
+            _ => None,
+        };
+        match missing {
+            Some(capability) => Err(SessionError::GuestIntrospectionCapabilityUnavailable {
+                node: node.name.clone(),
+                capability,
+            }),
+            None => Ok(()),
+        }
+    }
+
+    fn validate_guest_channel_capacity(
+        &self,
+        node: &NodeId,
+        message: &GuestIntrospectionMessage,
+    ) -> Result<(), SessionError> {
+        if !matches!(
+            message,
+            GuestIntrospectionMessage::Exec { .. }
+                | GuestIntrospectionMessage::Pty { .. }
+                | GuestIntrospectionMessage::Ssh { .. }
+        ) {
+            return Ok(());
+        }
+        let Some(features) = self.guest_features.get(node).copied() else {
+            return Ok(());
+        };
+        let active = self
+            .guest_channels
+            .iter()
+            .filter(|(active_node, _)| active_node == node)
+            .count();
+        if active >= usize::from(features.max_channels()) {
+            return Err(SessionError::GuestIntrospectionChannelLimit {
+                node: node.name.clone(),
+                max_channels: features.max_channels(),
+            });
+        }
+        Ok(())
+    }
+
     pub(super) fn close_guest_channels_for_reposition(&mut self) {
         self.guest_responses.clear();
+        self.guest_features.clear();
         for (node, channel_id) in std::mem::take(&mut self.guest_channels) {
             let record = GuestIntrospectionRecord::new(
                 channel_id,
@@ -613,7 +803,10 @@ impl<L> Engine<L> {
         )?;
         reposition.target_runtime = self
             .quantum_loop
-            .resolve_debug_runtime_evidence(&reposition.target_runtime)?;
+            .resolve_debug_coordinate_runtime_evidence(
+                &goto.target_coordinate,
+                &reposition.target_runtime,
+            )?;
         let attach_request = DebugAttachRequest {
             configuration: configuration.clone(),
             node: previous_attach.gdbstub.node.clone(),
@@ -673,6 +866,10 @@ impl<L> Engine<L> {
             };
         }
         self.debug_branch_required = true;
+        self.debug_event_cursor = match &goto.target_coordinate {
+            DebugCoordinate::EventSequence(sequence) => Some(*sequence),
+            _ => None,
+        };
         self.close_guest_channels_for_reposition();
         self.debug_attach = Some(refreshed.clone());
         self.debug_coordinator
@@ -1714,26 +1911,48 @@ impl<L: QuantumLoop> Engine<L> {
                 EngineState::Running | EngineState::Paused { .. } => {
                     self.validate_event_log_prefix(event_log)?;
                     let attach = self.current_debug_attach("debug-fork-non-canonical")?;
-                    let report = self
-                        .graph
-                        .debug_non_canonical_branch(&attach, request, event_log)?;
+                    let introspection_node =
+                        request.actions.first().and_then(|action| match action {
+                            DebugNonCanonicalBranchAction::GuestIntrospection { node } => {
+                                Some(node.clone())
+                            }
+                            _ => None,
+                        });
+                    if let Some(node) = introspection_node.as_ref()
+                        && self.white_box_policies.get(node) != Some(&WhiteBoxPolicy::Enabled)
+                    {
+                        return Err(SessionError::GuestIntrospectionNotAuthorized {
+                            node: node.name.clone(),
+                        });
+                    }
+                    let mut candidate_graph = self.graph.clone();
+                    let report =
+                        candidate_graph.debug_non_canonical_branch(&attach, request, event_log)?;
                     let entries = report
                         .event_log_with_fork_marker
                         .iter()
                         .skip(event_log.len())
                         .cloned()
                         .collect::<Vec<_>>();
+                    let entries = self
+                        .quantum_loop
+                        .append_noncanonical_debug_event_log_entries(entries)?;
                     self.append_boundary_event_log_entries(entries)?;
+                    self.graph = candidate_graph;
                     self.debug_branch_required = false;
                     self.debug_coordinator
                         .forked_non_canonical(self.configuration.id());
-                    if matches!(self.state, EngineState::Running) {
+                    if let Some(node) = introspection_node {
+                        self.begin_debug_guest_activation(node, report, reply.clone());
+                    } else if matches!(self.state, EngineState::Running) {
                         self.active_step = None;
                         self.state = EngineState::Paused {
                             reason: PauseReason::UserRequested,
                         };
+                        reply.complete(Ok(report));
+                    } else {
+                        reply.complete(Ok(report));
                     }
-                    reply.complete(Ok(report));
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
@@ -1783,6 +2002,8 @@ impl<L: QuantumLoop> Engine<L> {
                                 message: format!("invalid guest-introspection request: {error}"),
                             }
                         })?;
+                        self.validate_guest_capability(node, record.message())?;
+                        self.validate_guest_channel_capacity(node, record.message())?;
                         self.quantum_loop
                             .send_guest_introspection(node.clone(), record.clone())?;
                         match record.message() {
@@ -1885,6 +2106,7 @@ impl<L: QuantumLoop> Engine<L> {
         self.event_log_len = u64_to_usize(outcome.event_log_offset.events);
         self.scheduler_quiescence = outcome.scheduler_quiescence.clone();
         self.quanta = self.quanta.saturating_add(1);
+        self.debug_event_cursor = None;
         self.pending_event_log_entries
             .extend(outcome.event_log_entries.iter().cloned());
         if let Some((mode, true)) = step_completion {

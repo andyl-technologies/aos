@@ -1,7 +1,7 @@
 //! Quantum-loop contracts plus canonical scheduler event-log storage and projections.
 
 use super::*;
-use crate::RuntimeState;
+use crate::{DebugCoordinate, RuntimeState};
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod backend_loop;
 mod observation_append;
@@ -162,6 +162,25 @@ pub trait QuantumLoop {
         Ok(runtime.clone())
     }
 
+    /// Resolves production evidence for one requested debugger coordinate.
+    ///
+    /// Event-log coordinates may identify distinct live boundaries whose graph
+    /// configuration is identical. Backends that retain boundary-indexed
+    /// evidence override this hook; pure loops retain graph runtime state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no recorded backend boundary can satisfy
+    /// the coordinate and graph runtime together.
+    fn resolve_debug_coordinate_runtime_evidence(
+        &self,
+        coordinate: &DebugCoordinate,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        let _ = coordinate;
+        self.resolve_debug_runtime_evidence(runtime)
+    }
+
     /// Returns the next GDB run-control packet awaiting scheduler admission.
     ///
     /// # Errors
@@ -201,6 +220,22 @@ pub trait QuantumLoop {
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         let _ = control;
         Ok(Vec::new())
+    }
+
+    /// Appends non-canonical debugger metadata to the scheduler-owned log.
+    ///
+    /// The session and scheduler must advance from the same dense offset before
+    /// fork-time guest activation is allowed to drive another quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the entries are not dense at the current
+    /// scheduler offset or fail event-log validation.
+    fn append_noncanonical_debug_event_log_entries(
+        &mut self,
+        entries: Vec<SchedulerEventLogEntry>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        Ok(entries)
     }
 
     /// Opens the optional backend gdbstub channel outside scheduler order.

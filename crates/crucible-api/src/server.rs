@@ -498,7 +498,34 @@ where
     };
     let result = dispatch.fork(node).await;
     match result {
-        Ok(_) => http2_response(StatusCode::OK, "crucible.rpc/debug-guest-fork-response\n"),
+        Ok(report) => match (
+            report.guest_introspection_features,
+            report.guest_introspection_activation_failure,
+        ) {
+            (Some(features), None) => http2_response(
+                StatusCode::OK,
+                format!(
+                    "crucible.rpc/debug-guest-fork-response\nbranch={}\nstatus=ready\nfailure=\nargv-exec={}\npty={}\nresize={}\nssh-bridge={}\nmax-channels={}\n",
+                    hex_encode(&report.branch.id.bytes),
+                    features.argv_exec(),
+                    features.pty(),
+                    features.resize(),
+                    features.ssh_bridge(),
+                    features.max_channels(),
+                ),
+            ),
+            (None, Some(failure)) => http2_response(
+                StatusCode::OK,
+                format!(
+                    "crucible.rpc/debug-guest-fork-response\nbranch={}\nstatus=failed\nfailure={}\nargv-exec=false\npty=false\nresize=false\nssh-bridge=false\nmax-channels=0\n",
+                    hex_encode(&report.branch.id.bytes),
+                    hex_encode(failure.as_bytes()),
+                ),
+            ),
+            _ => lifecycle_error_response(LifecycleApiError::ActorFailed {
+                message: String::from("debug guest fork returned inconsistent activation state"),
+            }),
+        },
         Err(error) => lifecycle_error_response(error),
     }
 }

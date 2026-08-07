@@ -233,6 +233,14 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.resolve_recorded_debug_runtime_evidence(runtime)
     }
 
+    fn resolve_debug_coordinate_runtime_evidence(
+        &self,
+        coordinate: &crucible::DebugCoordinate,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        self.resolve_recorded_debug_coordinate_runtime_evidence(coordinate, runtime)
+    }
+
     fn poll_gdb_run_control(&mut self) -> Result<Option<Vec<u8>>, SchedulerError> {
         self.reconcile_indeterminate_debug_ownership()?;
         self.debug_gateway.as_mut().map_or(Ok(None), |gateway| {
@@ -262,6 +270,14 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         control: Vec<ControlOperation>,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.inner.apply_control_at_boundary(control)
+    }
+
+    fn append_noncanonical_debug_event_log_entries(
+        &mut self,
+        entries: Vec<crucible::SchedulerEventLogEntry>,
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
+        self.inner
+            .append_noncanonical_debug_event_log_entries(entries)
     }
 
     fn activate_debug_guest(&mut self, node: NodeId) -> Result<(), SchedulerError> {

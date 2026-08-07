@@ -686,16 +686,6 @@ impl QemuLaunchCommandBuilder {
             args.extend(["-qmp".to_owned(), qmp.qemu_endpoint()]);
         }
         if let Some(gdbstub) = &self.gdbstub {
-            args.extend([
-                "-device".to_owned(),
-                format!("virtio-serial-pci,id={QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID}"),
-                "-chardev".to_owned(),
-                format!("ringbuf,id={QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID},size=4096"),
-                "-device".to_owned(),
-                format!(
-                    "virtserialport,chardev={QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID},name={QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME}"
-                ),
-            ]);
             args.extend(["-gdb".to_owned(), gdbstub.qemu_endpoint().to_owned()]);
         }
         validate_pre_spawn_qemu_launch_args(&args)

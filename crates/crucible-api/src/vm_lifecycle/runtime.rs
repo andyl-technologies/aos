@@ -871,13 +871,6 @@ impl ProductionVmLifecycleLoop {
         let evidence = &self.debug_runtime_evidence[latest_index];
         evidence.validate_graph_runtime(configuration.id(), reduced.id, runtime)?;
         let bound_runtime = evidence.bind_graph_runtime(runtime);
-        for (index, recorded) in self.debug_runtime_evidence.iter_mut().enumerate() {
-            if index != latest_index {
-                recorded
-                    .graph_runtimes
-                    .retain(|candidate| candidate != runtime);
-            }
-        }
         let evidence = &mut self.debug_runtime_evidence[latest_index];
         if !evidence.graph_runtimes.contains(runtime) {
             evidence.graph_runtimes.push(runtime.clone());
@@ -909,6 +902,37 @@ impl ProductionVmLifecycleLoop {
             .ok_or_else(|| SchedulerError::BoundaryViolation {
                 message: String::from(
                     "production runtime evidence was not bound to graph materialization",
+                ),
+            })
+    }
+
+    pub(super) fn resolve_recorded_debug_coordinate_runtime_evidence(
+        &self,
+        coordinate: &crucible::DebugCoordinate,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        let crucible::DebugCoordinate::EventSequence(sequence) = coordinate else {
+            return self.resolve_recorded_debug_runtime_evidence(runtime);
+        };
+        let evidence = self
+            .debug_runtime_evidence
+            .iter()
+            .find(|evidence| {
+                evidence.event_log.events > *sequence
+                    && evidence.graph_runtimes.contains(runtime)
+                    && evidence.runtime.is_some()
+            })
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "event-log sequence {sequence} has no matching production runtime boundary evidence"
+                ),
+            })?;
+        evidence
+            .runtime
+            .clone()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production coordinate evidence was not bound to graph materialization",
                 ),
             })
     }
