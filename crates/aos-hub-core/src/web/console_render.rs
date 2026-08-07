@@ -809,17 +809,31 @@ pub fn channel_grid_pre(channel: &ChannelSummary) -> String {
 /// the handler also sets a `script-src 'nonce-…'` CSP: it adds a passkey button
 /// and the first-party inline script that drives `navigator.credentials.get`.
 /// It is `None` on no-JS error re-renders, which still show the password and
-/// email forms (a plain reload restores the passkey button).
+/// email forms (a plain reload restores the passkey button). `next` is a
+/// handler-validated same-origin path carried by every sign-in method.
 #[must_use]
-pub fn login_page(error: Option<&str>, passkey_nonce: Option<&str>, started: Instant) -> String {
+pub fn login_page(
+    error: Option<&str>,
+    passkey_nonce: Option<&str>,
+    next: Option<&str>,
+    started: Instant,
+) -> String {
     let mut body = String::from("<h1>Log in</h1>\n");
     if let Some(error) = error {
         let _ = writeln!(body, "<p class=\"bad\">{}</p>", escape(error));
     }
     // Email + password sign-in.
-    body.push_str(
+    let next_field = next.map_or_else(String::new, |path| {
+        format!(
+            "<input type=\"hidden\" name=\"next\" value=\"{}\">\n",
+            escape(path)
+        )
+    });
+    let _ = write!(
+        body,
         "<p class=\"dim\">Sign in with your email and password.</p>\n\
          <form class=\"console\" method=\"post\" action=\"/login/password\">\n\
+         {next_field}\
          <label>email <input type=\"email\" name=\"email\" required \
          placeholder=\"you@example.com\"></label>\n\
          <label>password <input type=\"password\" name=\"password\" required \
@@ -827,9 +841,11 @@ pub fn login_page(error: Option<&str>, passkey_nonce: Option<&str>, started: Ins
          <button>sign in with password</button>\n</form>\n",
     );
     // One-time email-link sign-in (no password required).
-    body.push_str(
+    let _ = write!(
+        body,
         "<p class=\"dim\">Or have us email you a one-time sign-in link instead.</p>\n\
          <form class=\"console\" method=\"post\" action=\"/login\">\n\
+         {next_field}\
          <label>email <input type=\"email\" name=\"email\" required \
          placeholder=\"you@example.com\"></label>\n\
          <button>send sign-in link</button>\n</form>\n",
@@ -840,7 +856,7 @@ pub fn login_page(error: Option<&str>, passkey_nonce: Option<&str>, started: Ins
              <p><button type=\"button\" id=\"passkey-login\">sign in with a passkey</button></p>\n\
              <p id=\"passkey-error\" class=\"bad\"></p>\n",
         );
-        let _ = write!(body, "{}", passkey_login_script(nonce));
+        let _ = write!(body, "{}", passkey_login_script(nonce, next));
     }
     page_with_session(
         "log in",
@@ -944,7 +960,13 @@ pub fn login_sent_page(email: &str, dev_link: Option<&str>, started: Instant) ->
 /// fall-back link to request a magic link. `start_url` is the
 /// `/auth/oidc/start?org=…` link the GET entry point uses.
 #[must_use]
-pub fn login_sso_page(email: &str, org_slug: &str, start_url: &str, started: Instant) -> String {
+pub fn login_sso_page(
+    email: &str,
+    org_slug: &str,
+    start_url: &str,
+    next: Option<&str>,
+    started: Instant,
+) -> String {
     let mut body = String::from("<h1>Single sign-on available</h1>\n");
     let _ = writeln!(
         body,
@@ -957,13 +979,26 @@ pub fn login_sso_page(email: &str, org_slug: &str, start_url: &str, started: Ins
         body,
         "<form class=\"console\" method=\"post\" action=\"/auth/sso\">\n\
          <input type=\"hidden\" name=\"org\" value=\"{}\">\n\
+         {}\
          <button>sign in with SSO</button>\n</form>",
         escape(org_slug),
+        next.map_or_else(String::new, |path| format!(
+            "<input type=\"hidden\" name=\"next\" value=\"{}\">",
+            escape(path)
+        )),
+    );
+    let login_fallback = next.map_or_else(
+        || "/login".to_string(),
+        |path| {
+            let encoded: String = url::form_urlencoded::byte_serialize(path.as_bytes()).collect();
+            format!("/login?next={encoded}")
+        },
     );
     let _ = writeln!(
         body,
-        "<p class=\"dim\">Or <a href=\"/login\">use a one-time email link</a> \
+        "<p class=\"dim\">Or <a href=\"{}\">use a one-time email link</a> \
          instead. (<a href=\"{}\">direct SSO link</a>)</p>",
+        escape(&login_fallback),
         escape(start_url),
     );
     page_with_session(
@@ -983,10 +1018,17 @@ pub fn login_sso_page(email: &str, org_slug: &str, start_url: &str, started: Ins
 /// to `/auth/passkey/finish`; on success the server set a session cookie and the
 /// script navigates to `/`. It is the one first-party inline script the no-JS
 /// console serves, gated by `script-src 'nonce-…'`.
-fn passkey_login_script(nonce: &str) -> String {
+fn passkey_login_script(nonce: &str, next: Option<&str>) -> String {
+    let target = serde_json::to_string(next.unwrap_or("/"))
+        .unwrap_or_else(|_| "\"/\"".into())
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
     format!(
-        "<script nonce=\"{nonce}\">\n{}\n</script>\n",
-        PASSKEY_LOGIN_FLOW
+        "<script nonce=\"{nonce}\">\nconst aosLoginNext={target};\n{}\n</script>\n",
+        PASSKEY_LOGIN_FLOW,
     )
 }
 
@@ -1016,9 +1058,9 @@ document.getElementById('passkey-login').addEventListener('click', async functio
     var cred=await navigator.credentials.get({publicKey:{challenge:b64uToBuf(opts.challenge),rpId:opts.rp_id,userVerification:'preferred',timeout:60000}});
     var body={credential_id:bufToB64u(cred.rawId),client_data_json:bufToB64u(cred.response.clientDataJSON),authenticator_data:bufToB64u(cred.response.authenticatorData),signature:bufToB64u(cred.response.signature)};
     var r=await fetch('/auth/passkey/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(r.ok){window.location='/';return;}
+    if(r.ok){window.location=aosLoginNext;return;}
     var j=null;try{j=await r.json();}catch(e){}
-    if(j&&j.redirect){window.location=j.redirect;return;}
+    if(j&&j.redirect){var sep=j.redirect.indexOf('?')<0?'?':'&';window.location=j.redirect+sep+'next='+encodeURIComponent(aosLoginNext);return;}
     err.textContent='Passkey sign-in failed.';
   }catch(e){err.textContent='Passkey sign-in was cancelled or failed.';}
 });
@@ -2811,20 +2853,17 @@ pub fn invitation_acceptance_page(
     email: &str,
     org_slug: &str,
     csrf: &str,
-    token: &str,
     started: Instant,
 ) -> String {
     let body = format!(
         "<h1>Accept invitation</h1>\n\
          <p>You are signed in as <code>{email}</code>. Accepting joins organization <code>{org}</code> with the exact role and scope recorded by the invitation.</p>\n\
          <form class=\"console\" method=\"post\" action=\"/-/org/{org}/invitations/accept\">\n{csrf}\
-         <input type=\"hidden\" name=\"token\" value=\"{token}\">\n\
          <button>accept invitation</button>\n</form>\n\
          <p class=\"dim\">The invitation works only for this account's exact email address and can be used once.</p>\n",
         email = escape(email),
         org = escape(org_slug),
         csrf = csrf_field(csrf),
-        token = escape(token),
     );
     page_with_session(
         "accept invitation",
@@ -7147,5 +7186,17 @@ mod cache_render_tests {
                 "{route}"
             );
         }
+    }
+
+    #[test]
+    fn passkey_continuation_cannot_terminate_its_script_element() {
+        let html = login_page(
+            None,
+            Some("nonce"),
+            Some("/</script><meta http-equiv=refresh content=0;url=//evil.test>"),
+            Instant::now(),
+        );
+        assert!(!html.contains("</script><meta"));
+        assert!(html.contains("\\u003c/script\\u003e\\u003cmeta"));
     }
 }

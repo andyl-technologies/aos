@@ -215,9 +215,11 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/login",
-            get(|State(s): State<SharedState>, r: RequestStart| {
-                send_bridge(handlers::login_form(from_state(s), r))
-            })
+            get(
+                |State(s): State<SharedState>, r: RequestStart, q: Query<_>| {
+                    send_bridge(handlers::login_form(from_state(s), r, q))
+                },
+            )
             .post(
                 |State(s): State<SharedState>,
                  h: HeaderMap,

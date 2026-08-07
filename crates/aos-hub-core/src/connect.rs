@@ -264,7 +264,15 @@ where
         Err(err) => return error_response(&err),
     };
     match call(svc, auth, req).await {
-        Ok(resp) => Json(resp).into_response(),
+        Ok(resp) => (
+            [
+                (header::CACHE_CONTROL, "no-store"),
+                (header::PRAGMA, "no-cache"),
+                (header::REFERRER_POLICY, "no-referrer"),
+            ],
+            Json(resp),
+        )
+            .into_response(),
         Err(err) => error_response(&err),
     }
 }

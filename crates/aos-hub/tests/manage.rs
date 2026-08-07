@@ -1672,13 +1672,9 @@ async fn trust_ops_require_sudo() {
     )
     .await;
     let resp = apply_reviewed_plan(&app, &fresh, plan).await;
-    assert_eq!(
-        resp.status,
-        StatusCode::SEE_OTHER,
-        "invite fresh: {}",
-        resp.body
-    );
-    assert!(db.user_by_email("new@acme.com").await.unwrap().is_some());
+    assert_eq!(resp.status, StatusCode::OK, "invite fresh: {}", resp.body);
+    assert!(resp.body.contains("invitation created"));
+    assert!(db.user_by_email("new@acme.com").await.unwrap().is_none());
 
     let resp = send(
         &app,

@@ -194,15 +194,28 @@ and release.
 
 An invitation is a durable pending grant proposal, never a membership alias.
 Administrator creation and cancellation use ordinary immutable plan/apply
-pairs. Creation returns a high-entropy `aosi_` acceptance secret once and stores
-only its SHA-256 digest. The invited user presents the secret through the
-`AcceptInvitation` identity ceremony after authenticating with the exact
-canonical email. That ceremony is the narrow exception to administrator review:
+pairs. Creation generates a high-entropy `aosi_` acceptance secret, stores its
+SHA-256 verifier, and retains only an AES-GCM-sealed recovery copy under the
+Hub's durable at-rest key. An exact idempotent apply retry unseals that same
+secret, closing the mutation-to-response crash window without persisting
+plaintext credential material or coupling invitations to ephemeral JWT keys.
+Acceptance and cancellation erase the recovery copy. Bounded native maintenance
+and Worker Cron passes erase expired recovery copies and release their live keys
+atomically. A durable live-invitation key enforces at most one pending invitation
+for an organization, email, and scope. The invited user presents the secret
+through the `AcceptInvitation` identity ceremony after authenticating with the
+exact canonical email. That ceremony is the narrow exception to administrator review:
 the secret and matching live identity are its preconditions, and one checked
 transaction both marks the invitation accepted and creates the exact direct
 membership. A conflict rolls both changes back. Pending, accepted, cancelled,
 and time-derived expired states remain inspectable; creation never pre-creates
-a user. Native and Worker deployments use the same service and migration.
+a user. Each transition emits a secret-redacted IAM audit event in the same
+checked transaction as its state and membership effects. Native and
+Worker deployments use the same service and migration, and Worker schema DDL
+advances its migration ledger in the same Durable Object transaction. Native
+PostgreSQL and SQLite migrate transactionally; MySQL uses a keyed singleton
+ledger plus replay-safe DDL and exact index-catalog checks because MySQL DDL
+implicitly commits.
 
 ## Settings hierarchy
 

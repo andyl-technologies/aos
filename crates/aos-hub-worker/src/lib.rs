@@ -886,6 +886,13 @@ mod entry {
         // Drain already-committed notifications before longer maintenance.
         // A second pass below catches events raised by indexing in this tick.
         run_webhook_batch(make(), env).await?;
+        let now = (worker::Date::now().as_millis() / 1000) as i64;
+        aos_hub_core::db::Database::attach(make())
+            .prune_expired_invitation_secrets(now, 1_000)
+            .await
+            .map_err(|error| {
+                worker::Error::RustError(format!("prune expired invitation credentials: {error:#}"))
+            })?;
         run_domain_probes(make(), env).await;
         let secret_versions = match crate::secretversions::from_env(env) {
             Ok(resolver) => resolver,
@@ -936,7 +943,6 @@ mod entry {
                 ));
             let controller =
                 aos_hub_core::gc_controller::CacheGcDeletionController::new(db, writers);
-            let now = (worker::Date::now().as_millis() / 1000) as i64;
             if let Err(err) = controller.run_due(now, 100).await {
                 worker::console_error!("physical cache deletion controller failed: {err:#}");
             }

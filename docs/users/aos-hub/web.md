@@ -46,10 +46,13 @@ are narrower roles.
 
 The organization's **Members** page includes member and invitation inventory.
 **Invite a member** creates a reviewed pending invitation and shows its
-one-time acceptance link after apply; it does not pre-create an account or
+acceptance link after apply; it does not pre-create an account or
 membership. Deliver that link only to the intended email. The invitee signs in
-as the exact matching address, reviews the invitation, and accepts it; the Hub
-then consumes the invitation and creates the membership atomically. Member
+as the exact matching address. The first visit exchanges the URL credential
+for a short-lived, HttpOnly browser handoff and redirects to a clean URL before
+showing navigation or login. Password, magic-link, passkey, and SSO login all
+return to that clean acceptance page. The invitee reviews and accepts it; the
+Hub then consumes the invitation and creates the membership atomically. Member
 managers can cancel a pending invitation from the same page. Accepted,
 cancelled, and expired invitations remain visible as history.
 

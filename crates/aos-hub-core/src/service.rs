@@ -3077,8 +3077,7 @@ impl RpcService {
                 (!observation.error.is_empty()).then_some(observation.error.as_str()),
                 expected,
             )
-            .await
-            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+            .await?;
         Ok(pb::NetworkBoundaryRevisionResponse {
             revision: Some(Self::network_boundary_revision_message(record)?),
             coordination_operation: None,
@@ -3202,7 +3201,8 @@ impl RpcService {
                 "create_network_boundary",
                 Some(&req.confirmation_hash),
             )
-            .await?;
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         self.require_delivery_scope(
             auth,
             &input.request.owner_scope_key,
@@ -19336,7 +19336,7 @@ impl RpcService {
         let claims = self
             .require_control_plan_permission(auth, &req.plan_id, Permission::MembersManage)
             .await?;
-        if self
+        if let Some(mut response) = self
             .replayed_control_result::<pb::InvitationResponse>(
                 auth,
                 &req.plan_id,
@@ -19345,12 +19345,33 @@ impl RpcService {
                 &req.idempotency_key,
             )
             .await?
-            .is_some()
         {
-            return Err(RpcError::FailedPrecondition(
-                "invitation secret was delivered once and cannot be replayed; cancel and recreate the invitation if delivery was interrupted"
-                    .to_string(),
-            ));
+            let invitation_id = response
+                .invitation
+                .as_ref()
+                .map(|invitation| invitation.invitation_id)
+                .ok_or_else(|| {
+                    RpcError::internal(anyhow::anyhow!(
+                        "applied invitation plan omitted its resource"
+                    ))
+                })?;
+            let sealed = self
+                .db
+                .recoverable_invitation_sealed_secret(invitation_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| {
+                    RpcError::FailedPrecondition(
+                        "the invitation is terminal and its recovery secret was erased".into(),
+                    )
+                })?;
+            let sealer = self.sealer.as_ref().ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "invitation creation requires durable secret sealing".into(),
+                )
+            })?;
+            response.secret = sealer.unseal(&sealed).map_err(RpcError::internal)?;
+            return Ok(response);
         }
         self.begin_control_plan_apply(
             auth,
@@ -19380,6 +19401,13 @@ impl RpcService {
         })?;
         self.require_membership_grant_ceiling(&claims, &scope, None, Some(role))
             .await?;
+        let (secret, token_hash) = crate::auth::token::generate_invitation_token();
+        let sealer = self.sealer.as_ref().ok_or_else(|| {
+            RpcError::FailedPrecondition(
+                "invitation creation requires durable secret sealing".into(),
+            )
+        })?;
+        let sealed_secret = sealer.seal(&secret).map_err(RpcError::internal)?;
         if self
             .db
             .pending_invitation_for(org.id, &input.email, &input.scope)
@@ -19410,35 +19438,46 @@ impl RpcService {
                 ));
             }
         }
-        let (secret, token_hash) = crate::auth::token::generate_invitation_token();
-        let invitation_id = self
-            .db
-            .create_invitation(
-                org.id,
-                &input.email,
-                &input.scope,
-                &input.role,
-                &token_hash,
-                clock::now_unix_secs().saturating_add(input.ttl_secs),
-            )
-            .await
-            .map_err(RpcError::internal)?;
-        let record = self
-            .db
-            .invitation_record(org.id, invitation_id)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("created invitation disappeared")))?;
+        let plan_uuid = uuid::Uuid::parse_str(&plan.plan_id).map_err(RpcError::internal)?;
+        let created_at = clock::now_unix_secs();
+        let record = crate::db::InvitationRecord {
+            id: crate::db::portable_relational_id(plan_uuid),
+            org_id: org.id,
+            email: input.email,
+            scope: input.scope,
+            role: input.role,
+            created_at,
+            accepted_at: None,
+            cancelled_at: None,
+            expires_at: created_at.saturating_add(input.ttl_secs),
+        };
+        let event_id = hex::encode(Sha256::digest(
+            format!("invitation:create:{}", plan.plan_id).as_bytes(),
+        ));
         let response = pb::InvitationResponse {
-            invitation: Some(invitation_message(&org.slug, record)?),
+            invitation: Some(invitation_message(&org.slug, record.clone())?),
             secret,
         };
         let persisted = pb::InvitationResponse {
             invitation: response.invitation.clone(),
             secret: String::new(),
         };
-        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &persisted)
-            .await?;
+        let result_json = serde_json::to_string(&persisted).map_err(RpcError::internal)?;
+        self.db
+            .apply_invitation_creation_plan(
+                &record,
+                &token_hash,
+                &sealed_secret,
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         Ok(response)
     }
 
@@ -19562,31 +19601,46 @@ impl RpcService {
         let scope = parse_authorization_scope(&current.scope)?;
         self.require_permission(&claims, Permission::MembersManage, &scope)
             .await?;
-        if invitation_resource_version(&current)? != input.baseline_resource_version
-            || !self
-                .db
-                .cancel_invitation(input.invitation_id, input.baseline_created_at)
-                .await
-                .map_err(RpcError::internal)?
+        if invitation_resource_version(&current)? != input.baseline_resource_version {
+            return Err(RpcError::FailedPrecondition(
+                "invitation changed after planning".into(),
+            ));
+        }
+        let cancelled_at = clock::now_unix_secs();
+        if current.accepted_at.is_some()
+            || current.cancelled_at.is_some()
+            || current.expires_at <= cancelled_at
         {
             return Err(RpcError::FailedPrecondition(
                 "invitation changed after planning".into(),
             ));
         }
-        let cancelled = self
-            .db
-            .invitation_record(org.id, input.invitation_id)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| {
-                RpcError::internal(anyhow::anyhow!("cancelled invitation disappeared"))
-            })?;
+        let mut cancelled = current;
+        cancelled.cancelled_at = Some(cancelled_at);
+        let event_id = hex::encode(Sha256::digest(
+            format!("invitation:cancel:{}", plan.plan_id).as_bytes(),
+        ));
         let response = pb::InvitationResponse {
-            invitation: Some(invitation_message(&org.slug, cancelled)?),
+            invitation: Some(invitation_message(&org.slug, cancelled.clone())?),
             secret: String::new(),
         };
-        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
-            .await?;
+        let result_json = serde_json::to_string(&response).map_err(RpcError::internal)?;
+        self.db
+            .apply_invitation_cancellation_plan(
+                cancelled.id,
+                input.baseline_created_at,
+                cancelled_at,
+                &cancelled.scope,
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         Ok(response)
     }
 
@@ -19624,9 +19678,21 @@ impl RpcService {
             return Err(RpcError::invalid("invitation secret is required"));
         }
         let token_hash = crate::auth::token::sha256_hex(&req.secret);
+        let event_id = hex::encode(Sha256::digest(
+            format!("invitation:accept:{token_hash}").as_bytes(),
+        ));
         let accepted = self
             .db
-            .accept_invitation(&token_hash, org.id, principal.id, &email)
+            .accept_invitation_audited(
+                &token_hash,
+                org.id,
+                principal.id,
+                &email,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
             .await
             .map_err(|error| {
                 RpcError::FailedPrecondition(format!("invitation could not be accepted: {error:#}"))
@@ -32129,10 +32195,13 @@ mod cache_upload_tests {
 
     impl SecretSealer for InjectedSealer {
         fn seal(&self, plaintext: &str) -> Result<String> {
-            Ok(plaintext.to_string())
+            Ok(format!("sealed:{plaintext}"))
         }
 
-        fn unseal(&self, _sealed: &str) -> Result<String> {
+        fn unseal(&self, sealed: &str) -> Result<String> {
+            if let Some(plaintext) = sealed.strip_prefix("sealed:") {
+                return Ok(plaintext.to_string());
+            }
             match self
                 .behaviors
                 .lock()
@@ -32448,18 +32517,25 @@ mod cache_upload_tests {
             .unwrap()
             .plan
             .unwrap();
+        let apply = pb::ApplyTopologyPlanRequest {
+            plan_id: plan.plan_id,
+            confirmation_hash: plan.confirmation_hash,
+            idempotency_key: "apply-create-invitation".into(),
+        };
         let created = service
-            .apply_create_invitation(
-                Some(&auth),
-                pb::ApplyTopologyPlanRequest {
-                    plan_id: plan.plan_id,
-                    confirmation_hash: plan.confirmation_hash,
-                    idempotency_key: "apply-create-invitation".into(),
-                },
-            )
+            .apply_create_invitation(Some(&auth), apply.clone())
             .await
             .unwrap();
         assert!(created.secret.starts_with("aosi_"));
+        let replayed = service
+            .apply_create_invitation(Some(&auth), apply)
+            .await
+            .unwrap();
+        assert_eq!(replayed.secret, created.secret);
+        assert_eq!(
+            replayed.invitation.as_ref().map(|item| item.invitation_id),
+            created.invitation.as_ref().map(|item| item.invitation_id)
+        );
         let invitation = created.invitation.unwrap();
         assert_eq!(invitation.email, "new.member@example.test");
         assert_eq!(invitation.state, "pending");
@@ -32530,15 +32606,13 @@ mod cache_upload_tests {
             .unwrap()
             .plan
             .unwrap();
+        let cancellable_apply = pb::ApplyTopologyPlanRequest {
+            plan_id: cancel_plan.plan_id,
+            confirmation_hash: cancel_plan.confirmation_hash,
+            idempotency_key: "apply-create-cancelled-invitation".into(),
+        };
         let cancellable = service
-            .apply_create_invitation(
-                Some(&auth),
-                pb::ApplyTopologyPlanRequest {
-                    plan_id: cancel_plan.plan_id,
-                    confirmation_hash: cancel_plan.confirmation_hash,
-                    idempotency_key: "apply-create-cancelled-invitation".into(),
-                },
-            )
+            .apply_create_invitation(Some(&auth), cancellable_apply.clone())
             .await
             .unwrap()
             .invitation
@@ -32571,6 +32645,12 @@ mod cache_upload_tests {
             .invitation
             .unwrap();
         assert_eq!(cancelled.state, "cancelled");
+        assert!(matches!(
+            service
+                .apply_create_invitation(Some(&auth), cancellable_apply)
+                .await,
+            Err(RpcError::FailedPrecondition(_))
+        ));
         let history = service
             .list_invitations(
                 Some(&auth),
@@ -32583,8 +32663,15 @@ mod cache_upload_tests {
             .await
             .unwrap();
         assert_eq!(history.invitations.len(), 2);
-        assert_eq!(history.invitations[0].state, "cancelled");
-        assert_eq!(history.invitations[1].state, "accepted");
+        let states = history
+            .invitations
+            .iter()
+            .map(|invitation| invitation.state.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            states,
+            std::collections::BTreeSet::from(["accepted", "cancelled"])
+        );
     }
 
     fn one_signed_raw_image_package() -> aos_registry_surface::manifest::PackageToml {

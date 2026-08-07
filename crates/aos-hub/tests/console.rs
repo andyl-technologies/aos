@@ -132,6 +132,8 @@ struct Resp {
     allow: Option<String>,
     set_cookie: Option<String>,
     location: Option<String>,
+    cache_control: Option<String>,
+    referrer_policy: Option<String>,
     body: String,
 }
 
@@ -175,6 +177,16 @@ async fn send(
         .get(header::LOCATION)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    let cache_control = resp
+        .headers()
+        .get(header::CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let referrer_policy = resp
+        .headers()
+        .get(header::REFERRER_POLICY)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
         .await
         .unwrap();
@@ -184,6 +196,8 @@ async fn send(
         allow,
         set_cookie,
         location,
+        cache_control,
+        referrer_policy,
         body: String::from_utf8_lossy(&bytes).into_owned(),
     }
 }
@@ -1034,7 +1048,8 @@ async fn member_invite_and_remove_audit_and_last_owner_blocked() {
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
 
-    // Invite a developer through a reviewed plan; the apply is audited.
+    // Invite a developer through a reviewed plan. Creation yields a pending
+    // invitation and a recoverable one-time credential, never a user or grant.
     let invite_plan = send(
         &app,
         "POST",
@@ -1056,13 +1071,107 @@ async fn member_invite_and_remove_audit_and_last_owner_blocked() {
         )),
     )
     .await;
-    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(resp.body.contains("invitation created"));
+    assert!(db.user_by_email("newdev@acme.com").await.unwrap().is_none());
     let audit = db
         .list_audit(&common::org_scope(&db, "acme").await)
         .await
         .unwrap();
-    assert!(audit.iter().any(|a| a.action == "membership.grant"));
-    let invited = db.user_by_email("newdev@acme.com").await.unwrap().unwrap();
+    assert!(audit.iter().any(|a| a.action == "invitation.create"));
+
+    // A first-time recipient exchanges the email credential for an HttpOnly
+    // handoff before authentication. The clean URL retains no token and sends
+    // the user through login with an exact same-origin continuation.
+    let invitation_secret = resp
+        .body
+        .split("token=")
+        .nth(1)
+        .and_then(|tail| tail.split('"').next())
+        .expect("invitation result carries its acceptance URL")
+        .to_string();
+    let malformed_handoff = send(
+        &app,
+        "GET",
+        "/-/org/acme/invitations/accept?token=aosi_bad%3B%20SameSite%3DNone",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(malformed_handoff.status, StatusCode::BAD_REQUEST);
+    assert!(malformed_handoff.set_cookie.is_none());
+    let handoff = send(
+        &app,
+        "GET",
+        &format!("/-/org/acme/invitations/accept?token={invitation_secret}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(handoff.status, StatusCode::SEE_OTHER, "{}", handoff.body);
+    assert_eq!(handoff.cache_control.as_deref(), Some("no-store"));
+    assert_eq!(handoff.referrer_policy.as_deref(), Some("no-referrer"));
+    assert_eq!(
+        handoff.location.as_deref(),
+        Some("/-/org/acme/invitations/accept")
+    );
+    let handoff_cookie = handoff
+        .set_cookie
+        .as_deref()
+        .and_then(|value| value.split(';').next())
+        .unwrap();
+    let logged_out = send(
+        &app,
+        "GET",
+        "/-/org/acme/invitations/accept",
+        Some(handoff_cookie),
+        None,
+    )
+    .await;
+    assert_eq!(logged_out.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        logged_out.location.as_deref(),
+        Some("/login?next=%2F-%2Forg%2Facme%2Finvitations%2Faccept")
+    );
+
+    let invited = db.find_or_create_user("newdev@acme.com").await.unwrap();
+    let invited_cookie = login(&app, &db, "newdev@acme.com").await;
+    let invited_csrf = mint_csrf_token(
+        invited_cookie
+            .strip_prefix(&format!("{COOKIE_NAME}="))
+            .unwrap(),
+    );
+    let combined_cookie = format!("{invited_cookie}; {handoff_cookie}");
+    let review = send(
+        &app,
+        "GET",
+        "/-/org/acme/invitations/accept",
+        Some(&combined_cookie),
+        None,
+    )
+    .await;
+    assert_eq!(review.status, StatusCode::OK, "{}", review.body);
+    assert_eq!(review.cache_control.as_deref(), Some("no-store"));
+    assert_eq!(review.referrer_policy.as_deref(), Some("no-referrer"));
+    assert!(!review.body.contains(&invitation_secret));
+    let accepted = send(
+        &app,
+        "POST",
+        "/-/org/acme/invitations/accept",
+        Some(&combined_cookie),
+        Some(&format!("csrf={invited_csrf}")),
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::SEE_OTHER, "{}", accepted.body);
+    assert_eq!(accepted.location.as_deref(), Some("/-/org/acme"));
+    let landing = send(&app, "GET", "/-/org/acme", Some(&invited_cookie), None).await;
+    assert_eq!(landing.status, StatusCode::OK, "{}", landing.body);
+    assert!(db
+        .list_audit(&common::org_scope(&db, "acme").await)
+        .await
+        .unwrap()
+        .iter()
+        .any(|a| a.action == "invitation.accept"));
 
     // Remove the developer: allowed, audited.
     let removal_plan = send(
