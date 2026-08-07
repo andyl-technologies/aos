@@ -307,7 +307,7 @@ fn SubscriptionAction(
                 SubscriptionActionKind::Delete => client
                     .call::<_, aos_proto_types::DeleteTopologyResourceResponse>(
                         aos_proto_types::CACHE_INTEGRATION_SERVICE_DELETE_RETENTION_SUBSCRIPTION_PATH,
-                        &reviewed.cache_apply(),
+                        &reviewed.cache_plan_apply(),
                     )
                     .await
                     .map(|_| ()),
@@ -402,7 +402,7 @@ fn RetentionEditor(client: ApiClient, cache_id: String) -> impl IntoView {
             match client
                 .call::<_, aos_proto_types::RetentionSubscriptionResponse>(
                     aos_proto_types::CACHE_INTEGRATION_SERVICE_SET_RETENTION_SUBSCRIPTION_PATH,
-                    &reviewed.cache_apply(),
+                    &reviewed.cache_plan_apply(),
                 )
                 .await
             {

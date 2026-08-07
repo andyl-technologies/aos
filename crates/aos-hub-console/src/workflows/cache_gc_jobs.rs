@@ -184,7 +184,7 @@ fn JobAction(
                 JobActionKind::Abandon => client
                     .call::<_, aos_proto_types::CacheGcDeletionJobResponse>(
                         aos_proto_types::BINARY_CACHE_SERVICE_ABANDON_CACHE_GC_DELETION_JOB_PATH,
-                        &reviewed.cache_apply(),
+                        &reviewed.cache_plan_apply(),
                     )
                     .await
                     .map(|_| ()),

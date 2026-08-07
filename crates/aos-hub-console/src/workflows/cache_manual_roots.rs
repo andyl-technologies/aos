@@ -256,21 +256,21 @@ fn RootAction(
                 RootActionKind::Renew => client
                     .call::<_, aos_proto_types::RetentionLeaseResponse>(
                         aos_proto_types::BINARY_CACHE_SERVICE_RENEW_RETENTION_LEASE_PATH,
-                        &reviewed.cache_apply(),
+                        &reviewed.cache_plan_apply(),
                     )
                     .await
                     .map(|_| ()),
                 RootActionKind::Revoke => client
                     .call::<_, aos_proto_types::RetentionLeaseResponse>(
                         aos_proto_types::BINARY_CACHE_SERVICE_REVOKE_RETENTION_LEASE_PATH,
-                        &reviewed.cache_apply(),
+                        &reviewed.cache_plan_apply(),
                     )
                     .await
                     .map(|_| ()),
                 RootActionKind::Delete => client
                     .call::<_, aos_proto_types::DeleteTopologyResourceResponse>(
                         aos_proto_types::BINARY_CACHE_SERVICE_DELETE_MANUAL_RETENTION_ROOT_PATH,
-                        &reviewed.cache_apply(),
+                        &reviewed.cache_plan_apply(),
                     )
                     .await
                     .map(|_| ()),
@@ -307,7 +307,6 @@ fn ManualRootCreate(client: ApiClient, cache_id: String) -> impl IntoView {
     let store_hash = RwSignal::new(String::new());
     let reason = RwSignal::new(String::new());
     let lease_until = RwSignal::new(String::new());
-    let expected_version = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -337,7 +336,7 @@ fn ManualRootCreate(client: ApiClient, cache_id: String) -> impl IntoView {
             reason: reason_value,
             lease_until: lease,
             idempotency_key: key.clone(),
-            expected_resource_version: expected_version.get_untracked().trim().to_string(),
+            expected_resource_version: String::new(),
         };
         let client = plan_client.clone();
         error.set(None);
@@ -369,7 +368,7 @@ fn ManualRootCreate(client: ApiClient, cache_id: String) -> impl IntoView {
             match client
                 .call::<_, aos_proto_types::RetentionRootResponse>(
                     aos_proto_types::BINARY_CACHE_SERVICE_CREATE_MANUAL_RETENTION_ROOT_PATH,
-                    &reviewed.cache_apply(),
+                    &reviewed.cache_plan_apply(),
                 )
                 .await
             {
@@ -395,10 +394,6 @@ fn ManualRootCreate(client: ApiClient, cache_id: String) -> impl IntoView {
                 <label>
                     <span>"Lease expiry as Unix timestamp (optional)"</span>
                     <input type="number" min="1" prop:value=move || lease_until.get() on:input=move |event| lease_until.set(event_target_value(&event))/>
-                </label>
-                <label>
-                    <span>"Expected cache version (optional)"</span>
-                    <input prop:value=move || expected_version.get() on:input=move |event| expected_version.set(event_target_value(&event))/>
                 </label>
                 <button class="secondary-button" type="submit" disabled=move || busy.get()>"Review manual root"</button>
             </form>

@@ -2189,7 +2189,12 @@ message CacheGcPolicy {
   string resource_version = 11;
 }
 message GetCacheGcPolicyRequest { string cache_id = 1; }
-message GetCacheGcPolicyResponse { CacheGcPolicy policy = 1; }
+message GetCacheGcPolicyResponse {
+  CacheGcPolicy policy = 1;
+  // Current cache-wide retention/GC concurrency fence. Clients bind sweep and
+  // first-sweep acknowledgement plans to this resource version.
+  CacheGcGeneration generation = 2;
+}
 message PlanSetCacheGcPolicyRequest {
   string cache_id = 1;
   CacheGcPolicy desired = 2;

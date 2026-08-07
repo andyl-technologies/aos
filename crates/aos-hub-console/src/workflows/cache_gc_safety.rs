@@ -14,11 +14,15 @@ use crate::transport::ApiClient;
 
 /// Renders immutable plan inspection and first-sweep acknowledgement controls.
 #[component]
-pub(super) fn GcSafetyControls(client: ApiClient, cache_id: String) -> impl IntoView {
+pub(super) fn GcSafetyControls(
+    client: ApiClient,
+    cache_id: String,
+    generation_version: String,
+) -> impl IntoView {
     view! {
         <div class="workflow-stack">
             <GcPlanInspector client=client.clone() cache_id=cache_id.clone()/>
-            <FirstSweepAcknowledgement client=client cache_id=cache_id/>
+            <FirstSweepAcknowledgement client=client cache_id=cache_id generation_version=generation_version/>
         </div>
     }
 }
@@ -81,7 +85,7 @@ fn GcPlanInspector(client: ApiClient, cache_id: String) -> impl IntoView {
 }
 
 #[component]
-fn GcPlanDetail(plan: aos_proto_types::CacheGcPlan) -> impl IntoView {
+pub(super) fn GcPlanDetail(plan: aos_proto_types::CacheGcPlan) -> impl IntoView {
     view! {
         <article class="revision-card">
             <div class="compact-list-row">
@@ -126,13 +130,17 @@ fn GcPlanDetail(plan: aos_proto_types::CacheGcPlan) -> impl IntoView {
 }
 
 #[component]
-fn FirstSweepAcknowledgement(client: ApiClient, cache_id: String) -> impl IntoView {
+fn FirstSweepAcknowledgement(
+    client: ApiClient,
+    cache_id: String,
+    generation_version: String,
+) -> impl IntoView {
     let gc_plan_id = RwSignal::new(String::new());
-    let expected_version = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let plan_client = client.clone();
+    let plan_version = generation_version.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
         let gc_plan = gc_plan_id.get_untracked().trim().to_string();
@@ -144,7 +152,7 @@ fn FirstSweepAcknowledgement(client: ApiClient, cache_id: String) -> impl IntoVi
         let request = aos_proto_types::PlanAcknowledgeCacheGcFirstSweepRequest {
             cache_id: cache_id.clone(),
             gc_plan_id: gc_plan,
-            expected_resource_version: expected_version.get_untracked().trim().to_string(),
+            expected_resource_version: plan_version.clone(),
             idempotency_key: key.clone(),
         };
         let client = plan_client.clone();
@@ -177,7 +185,7 @@ fn FirstSweepAcknowledgement(client: ApiClient, cache_id: String) -> impl IntoVi
             match client
                 .call::<_, aos_proto_types::CacheGcGenerationResponse>(
                     aos_proto_types::BINARY_CACHE_SERVICE_ACKNOWLEDGE_CACHE_GC_FIRST_SWEEP_PATH,
-                    &reviewed.cache_apply(),
+                    &reviewed.cache_plan_apply(),
                 )
                 .await
             {
@@ -199,7 +207,7 @@ fn FirstSweepAcknowledgement(client: ApiClient, cache_id: String) -> impl IntoVi
             </div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"GC plan ID"</span><input required prop:value=move || gc_plan_id.get() on:input=move |event| gc_plan_id.set(event_target_value(&event))/></label>
-                <label><span>"Expected GC resource version"</span><input required prop:value=move || expected_version.get() on:input=move |event| expected_version.set(event_target_value(&event))/></label>
+                <div class="compact-list-row"><span>"Bound GC resource version"</span><code>{generation_version}</code></div>
                 <button class="danger-button" type="submit" disabled=move || busy.get()>"Review first-sweep acknowledgement"</button>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}

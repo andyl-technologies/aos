@@ -1,7 +1,8 @@
 //! Proactive registry-to-cache population and coverage workflows.
 //!
-//! Population targets state whether release publication merely requests cache
-//! warming or fails closed until coverage passes an integrity gate.
+//! Population targets state whether cache coverage is best-effort or required.
+//! They record and validate availability intent; publication does not currently
+//! consume the required bit as a release-visibility gate.
 
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
@@ -42,7 +43,7 @@ pub(super) fn CachePopulation(client: ApiClient, cache_id: String) -> impl IntoV
                     <p class="section-kicker">"Release availability"</p>
                     <h2>"Population and coverage"</h2>
                     <p>
-                        "Required targets gate publication on verified object coverage. Best-effort targets warm caches without blocking release visibility."
+                        "Required targets record availability policy and expose coverage failures. Publication visibility is not currently gated by this setting."
                     </p>
                 </div>
             </div>
@@ -233,7 +234,7 @@ fn PopulationAction(
                 PopulationActionKind::Delete => client
                     .call::<_, aos_proto_types::DeleteTopologyResourceResponse>(
                         aos_proto_types::CACHE_INTEGRATION_SERVICE_DELETE_POPULATION_TARGET_PATH,
-                        &reviewed.cache_apply(),
+                        &reviewed.cache_plan_apply(),
                     )
                     .await
                     .map(|_| ()),
@@ -343,7 +344,7 @@ fn PopulationEditor(client: ApiClient, cache_id: String) -> impl IntoView {
             match client
                 .call::<_, aos_proto_types::PopulationTargetResponse>(
                     aos_proto_types::CACHE_INTEGRATION_SERVICE_SET_POPULATION_TARGET_PATH,
-                    &reviewed.cache_apply(),
+                    &reviewed.cache_plan_apply(),
                 )
                 .await
             {
@@ -366,7 +367,7 @@ fn PopulationEditor(client: ApiClient, cache_id: String) -> impl IntoView {
                         on:change=move |event| trigger.set(event_target_value(&event))
                     >
                         <option value="release">"Release"</option>
-                        <option value="channel">"Channel promotion"</option>
+                        <option value="continuous">"Continuous"</option>
                         <option value="manual">"Manual"</option>
                     </select>
                 </label>
@@ -376,7 +377,7 @@ fn PopulationEditor(client: ApiClient, cache_id: String) -> impl IntoView {
                         prop:checked=move || required.get()
                         on:change=move |event| required.set(event_target_checked(&event))
                     />
-                    <span>"Required before publication"</span>
+                    <span>"Required coverage target"</span>
                 </label>
                 <label><span>"Placement policy revision (optional)"</span><input prop:value=move || placement_policy.get() on:input=move |event| placement_policy.set(event_target_value(&event))/></label>
                 <label><span>"Validation gate"</span><input required prop:value=move || validation_gate.get() on:input=move |event| validation_gate.set(event_target_value(&event))/></label>
