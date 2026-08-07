@@ -18086,6 +18086,83 @@ impl RpcService {
         Ok(response)
     }
 
+    /// Describes the authenticated principal and current access-token authority.
+    ///
+    /// The principal must still exist. Memberships are loaded from live state,
+    /// while `access_scope`, `access_permissions`, and `access_expires_at`
+    /// describe the bearer presented for this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing or invalid bearer,
+    /// [`RpcError::PermissionDenied`] for a deleted principal, or
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn who_am_i(
+        &self,
+        auth: Option<&str>,
+        _req: pb::WhoAmIRequest,
+    ) -> Result<pb::WhoAmIResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let principal = claims_principal(&claims)
+            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
+        if !self
+            .db
+            .principal_is_live(principal.kind.as_str(), principal.id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::PermissionDenied(
+                "active principal required".into(),
+            ));
+        }
+
+        let (principal_ref, email) = match principal.kind {
+            PrincipalKind::User => {
+                let email = self
+                    .db
+                    .user_email(principal.id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| {
+                        RpcError::PermissionDenied("active principal required".into())
+                    })?;
+                (email.clone(), email)
+            }
+            PrincipalKind::ServiceAccount => {
+                let reference = self
+                    .db
+                    .service_account_reference(principal.id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| {
+                        RpcError::PermissionDenied("active principal required".into())
+                    })?;
+                (reference, String::new())
+            }
+        };
+        let grants = self
+            .db
+            .effective_scopes(principal)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|(scope, role)| pb::IdentityGrant {
+                scope: scope.as_str().to_string(),
+                role: role.as_str().to_string(),
+            })
+            .collect();
+
+        Ok(pb::WhoAmIResponse {
+            principal_kind: principal.kind.as_str().to_string(),
+            principal_ref,
+            email,
+            grants,
+            access_scope: claims.scope,
+            access_permissions: claims.perms,
+            access_expires_at: claims.exp,
+        })
+    }
+
     /// Persists an immutable plan for creating an automation principal.
     pub async fn plan_create_automation_principal(
         &self,
@@ -31049,6 +31126,33 @@ mod cache_upload_tests {
             })),
         );
         (service, db, lease, format!("Bearer {token}"))
+    }
+
+    #[tokio::test]
+    async fn who_am_i_separates_live_grants_from_bearer_authority() {
+        let (service, _db, _lease, auth) = injected_service(vec![], vec![]).await;
+
+        let identity = service
+            .who_am_i(Some(&auth), pb::WhoAmIRequest {})
+            .await
+            .unwrap();
+
+        assert_eq!(identity.principal_kind, "user");
+        assert_eq!(identity.principal_ref, "writer@example.test");
+        assert_eq!(identity.email, "writer@example.test");
+        assert_eq!(
+            identity.grants,
+            vec![pb::IdentityGrant {
+                scope: "instance".into(),
+                role: "owner".into(),
+            }]
+        );
+        assert_eq!(identity.access_scope, "instance");
+        assert_eq!(
+            identity.access_permissions,
+            vec!["registry.configure", "publish"]
+        );
+        assert!(identity.access_expires_at > crate::clock::now_unix_secs());
     }
 
     fn one_signed_raw_image_package() -> aos_registry_surface::manifest::PackageToml {

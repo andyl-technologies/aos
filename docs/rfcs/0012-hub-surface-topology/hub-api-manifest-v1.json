@@ -2150,6 +2150,13 @@
          "service" : "OperationService"
       },
       {
+         "method" : "WhoAmI",
+         "path" : "aos.hub.v1.IdentityService/WhoAmI",
+         "request" : "WhoAmIRequest",
+         "response" : "WhoAmIResponse",
+         "service" : "IdentityService"
+      },
+      {
          "method" : "PlanCreateAutomationPrincipal",
          "path" : "aos.hub.v1.IdentityService/PlanCreateAutomationPrincipal",
          "request" : "PlanCreateAutomationPrincipalRequest",
@@ -2241,7 +2248,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 313,
+   "rpc_count" : 314,
    "services" : [
       "RegistryService",
       "OrganizationService",

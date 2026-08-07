@@ -619,6 +619,8 @@ enum HubTopologyMethod {
     PlanDeleteWebhook,
     /// Selects the normalized `DeleteWebhook` Connect operation.
     DeleteWebhook,
+    /// Selects the normalized `WhoAmI` Connect operation.
+    WhoAmI,
     PlanCreateAutomationPrincipal,
     CreateAutomationPrincipal,
     GetMembership,
@@ -1088,6 +1090,7 @@ impl HubTopologyMethod {
             CreateWebhook => "aos.hub.v1.WebhookService/CreateWebhook",
             PlanDeleteWebhook => "aos.hub.v1.WebhookService/PlanDeleteWebhook",
             DeleteWebhook => "aos.hub.v1.WebhookService/DeleteWebhook",
+            WhoAmI => "aos.hub.v1.IdentityService/WhoAmI",
             PlanCreateAutomationPrincipal => {
                 "aos.hub.v1.IdentityService/PlanCreateAutomationPrincipal"
             }
@@ -1436,6 +1439,7 @@ pub mod hub_rpc {
         CreateWebhook: ApplyWebhookMutationRequest => CreateWebhookResponse;
         PlanDeleteWebhook: PlanDeleteWebhookRequest => TopologyPlanResponse;
         DeleteWebhook: ApplyWebhookMutationRequest => DeleteTopologyResourceResponse;
+        WhoAmI: WhoAmIRequest => WhoAmIResponse;
         SearchCache: SearchCacheRequest => SearchCacheResponse;
         GetCacheObject: GetCacheObjectRequest => GetCacheObjectResponse;
         GetRetentionRoot: GetRetentionRootRequest => RetentionRootResponse;

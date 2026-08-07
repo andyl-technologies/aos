@@ -145,6 +145,11 @@ pub enum HubCmd {
         #[arg(long, env = "AOS_HUB")]
         hub: Option<String>,
     },
+    /// Show the authenticated principal, live grants, and token authority
+    Whoami {
+        #[command(flatten)]
+        access: HubAccessArgs,
+    },
     /// Generate or verify topology cutover artifacts offline
     Topology {
         #[command(subcommand)]

@@ -2181,6 +2181,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     // IdentityService — service-account / grant / token management (the machine API
     // behind the console's identity settings; RFC-0004 ch.14).
+    r = rpc_route!(r, "/aos.hub.v1.IdentityService/WhoAmI", who_am_i);
     r = rpc_route!(
         r,
         "/aos.hub.v1.IdentityService/PlanCreateAutomationPrincipal",
