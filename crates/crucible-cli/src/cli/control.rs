@@ -929,13 +929,15 @@ where
 
     let interactive_terminal_snapshot = match run_plan.execution_mode {
         RunExecutionMode::ToCompletion => {
-            if let Some(quantum_budget) = run_plan.max_quanta {
-                drive_run_to_exact_quantum_budget(
+            // Budget boundaries are replay evidence. Drive them one quantum at
+            // a time so frontend observation latency cannot add a final quantum.
+            if run_plan.max_quanta.is_some() || run_plan.max_virtual_time_ticks.is_some() {
+                drive_run_to_exact_budget(
                     client,
                     &control,
                     created.session,
                     run_plan.max_virtual_time_ticks,
-                    quantum_budget,
+                    run_plan.max_quanta,
                     &mut command_id,
                     &mut acknowledged_commands,
                 )
@@ -1032,12 +1034,12 @@ fn should_continue_after_probe(state: LiveStateKind) -> bool {
     state != LiveStateKind::Stopped
 }
 
-async fn drive_run_to_exact_quantum_budget<C>(
+async fn drive_run_to_exact_budget<C>(
     client: &C,
     control: &crucible_api::ClientControlStream,
     session: crucible_api::SessionRef,
     virtual_time_budget: Option<u64>,
-    quantum_budget: u64,
+    quantum_budget: Option<u64>,
     command_id: &mut u64,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
 ) -> Result<(), CliError>
@@ -1046,7 +1048,7 @@ where
 {
     let mut boundary = current_remote_resume_summary(client, session).await?;
     while boundary.state != LiveStateKind::Stopped
-        && boundary.quanta_stepped < quantum_budget
+        && quantum_budget.is_none_or(|budget| boundary.quanta_stepped < budget)
         && !virtual_time_budget.is_some_and(|budget| boundary.frontier.ticks >= budget)
     {
         if boundary.state != LiveStateKind::Paused {
