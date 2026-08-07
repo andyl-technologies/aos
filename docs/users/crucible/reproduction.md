@@ -223,6 +223,11 @@ checks the fork's exact control acknowledgements as well as its terminal
 configuration, event bytes, and terminal fingerprints. A fork artifact is not
 reinterpreted as a new run from genesis.
 
+A successful live replay reports `validation=passed` separately from
+`reproduced_status` and `reproduced_outcome`. The command exits zero when the
+recorded failure or timeout was reproduced and validated; it does not recast
+that recorded outcome as a passing scenario.
+
 For `fork --until virtual-time`, the target is measured from the savepoint's
 restored global scheduler frontier. Crucible continues across internal branch
 admission and per-node events until that cross-node frontier reaches the target;

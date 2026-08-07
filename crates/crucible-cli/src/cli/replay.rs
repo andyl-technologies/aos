@@ -309,6 +309,8 @@ fn replay_live_qemu_evidence(
     }
     Ok(ReplayLiveQemuProof {
         producer: contract.producer,
+        terminal_status: contract.terminal_status,
+        terminal_outcome: contract.terminal_outcome,
         terminal_configuration: contract.terminal_configuration,
         event_stream_digest: content_address_bytes(expected_events),
         fingerprint_stream_digest: content_address_bytes(expected_fingerprints),

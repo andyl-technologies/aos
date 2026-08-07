@@ -464,8 +464,10 @@ pub(super) fn replay_machine_readable_trace_entries(
             &mut entries,
             "replay_live_qemu",
             format!(
-                "status=validated producer={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
+                "validation=passed producer={} reproduced_status={} reproduced_outcome={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
                 live.producer,
+                live.terminal_status,
+                live.terminal_outcome,
                 live.terminal_configuration,
                 live.event_stream_digest,
                 live.fingerprint_stream_digest,
