@@ -1,6 +1,7 @@
 //! Typed page adapters for canonical control-plane workflows.
 
 mod access_policy;
+mod access_tokens;
 mod cache_gc;
 mod cache_gc_jobs;
 mod cache_gc_safety;
