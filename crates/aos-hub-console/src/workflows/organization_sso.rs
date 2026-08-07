@@ -13,7 +13,7 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::{ApiClient, TransportError};
 
-use super::resources::UnavailableWorkflow;
+use super::placements::PlacementWorkflow;
 
 /// Renders organization SSO workflows and delegates unrelated pages onward.
 #[component]
@@ -23,7 +23,7 @@ pub(super) fn OrganizationSsoWorkflow(route: ConsoleRoute, client: ApiClient) ->
             <OrganizationSso client=client organization=slug.clone()/>
         }
         .into_any(),
-        _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
+        _ => view! { <PlacementWorkflow route=route client=client/> }.into_any(),
     }
 }
 
