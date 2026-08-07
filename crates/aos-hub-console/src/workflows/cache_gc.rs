@@ -12,6 +12,7 @@ use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
+use super::cache_gc_jobs::GcDeletionJobs;
 use super::cache_gc_safety::GcSafetyControls;
 
 /// Renders GC policy, planning controls, run history, and deletion jobs.
@@ -53,7 +54,8 @@ pub(super) fn CacheGcWorkflow(client: ApiClient, cache_id: String) -> impl IntoV
             </Suspense>
             <GcPlanner client=client.clone() cache_id=cache_id.clone()/>
             <GcSafetyControls client=client.clone() cache_id=cache_id.clone()/>
-            <GcRuns client=client cache_id=cache_id/>
+            <GcRuns client=client.clone() cache_id=cache_id.clone()/>
+            <GcDeletionJobs client=client cache_id=cache_id/>
         </div>
     }
 }
