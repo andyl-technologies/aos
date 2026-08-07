@@ -656,6 +656,12 @@ discovery/config; `64` = usage.
   terminal configuration, terminal outcome, canonical event stream, and
   all-node fingerprint stream exactly. It MUST fail closed when the live recipe
   or evidence is absent; model-only success is not a production replay.
+  Operator-facing summaries of streamed events retain the original event
+  sequence, scheduler coordinate, source, causal class, and a bounded
+  kind-specific diagnostic field set. Fault and assertion identities therefore
+  remain visible while byte payloads are length-only and redacted. These
+  summaries are deterministic evidence projections; they do not replace the
+  exact canonical event frames used by replay.
   `--check <original-log>` MUST assert byte-identity to the
   supplied log and exit `1` on any difference, reporting the bisected first
   divergence (24 §5). Replay MUST be machine-independent: the same artifact on a
