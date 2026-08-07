@@ -367,6 +367,11 @@ a time so the terminal coordinate cannot overshoot the requested bound.
 reads control commands (continue/pause/step/inject/heal/fork/save/query, 20 §4)
 from stdin — the CLI face of the session command set, with each command
 acknowledged within a bounded quantum count ([SESS-3], `gate:control-responsive`).
+State queries render their returned lifecycle state. An accepted `stop`
+preserves the joined actor's exact terminal snapshot across lifecycle registry
+cleanup and returns it in the command response; the CLI uses that snapshot for
+final outcome, configuration, savepoint, frontier, quanta, event-log draining,
+and watch evidence, then stops reading stdin without requiring EOF.
 
 **Exit codes.** `0` = `Passed`; `1` = `Failed` (property violation); `2` =
 `Timeout`; `3` = `Crashed` / backend error; `4` = discovery/configuration error
@@ -1086,7 +1091,11 @@ branch on the verdict without parsing output:
   terminal savepoint handles for `--save-on`, persists their replayable closure
   and checkpoint index in the selected DAG store before advertising them, maps
   non-passing outcomes to reproduction artifacts and exit codes, and provides
-  incremental stdin acknowledgements for interactive commands.
+  incremental stdin acknowledgements and state-query results for interactive
+  commands. Accepted interactive stops carry the joined actor's terminal
+  snapshot through the existing query-result envelope, allowing immediate
+  registry cleanup without losing final evidence or waiting for another input
+  line.
 - [x] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
   fingerprint byte-identity compare, `--adversarial`, on-divergence bisection). —
   satisfies [CLI-17]; spec §7.

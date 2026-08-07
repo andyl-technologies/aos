@@ -201,8 +201,12 @@ command set; none invents control semantics ([API-2]).
   (because a run-state transition is not itself an event-log entry — 20 §2 — a
   `Watch`-only client could not otherwise observe it). Events *caused* by the
   command MUST flow through the per-session broadcast and be visible to `Watch`
-  ([SESS-24], [OBS-31]). *Gate:* `gate:control-responsive`. *Spec:* §21.2; cross-ref
-  20 §9, 19 §19.6.5.
+  ([SESS-24], [OBS-31]). An accepted lifecycle-owned `Stop` MUST remove and join
+  the actor, preserve its exact terminal snapshot in the `SendResponse` query
+  payload, and leave the registry entry absent before the caller receives the
+  response. A rejected `Stop` MUST return no terminal snapshot and MUST leave the
+  session registered. *Gate:* `gate:control-responsive`,
+  `gate:abi-conformance`. *Spec:* §21.2; cross-ref 20 §9, 19 §19.6.5.
 
 - **[API-10]** `Watch` and `Send` MUST together be capability-equivalent to the
   `Control` bidi stream for any single client: a client that opens `Watch` (to
@@ -658,10 +662,13 @@ ran in-process against the double or over the wire against QEMU.
   `crucible-api::streaming` defines shared attach metadata, `ControlStream`,
   `WatchStream`, unary `SendRequest`/`SendResponse`, typed `CommandResult`, and
   optional `StateUpdate`. `ControlClient`/`RpcControlClient` expose transport
-  paths for `Control` attach/send, `Watch` attach, and unary `Send`; all command
-  paths advertise the same command capability set from the thin API mapping
-  table, dispatch accepted commands through the same session actor mailbox
-  helper, use the session lifecycle transition model for invalid-state command
+  paths for `Control` attach/send, `Watch` attach, and unary `Send`; accepted
+  lifecycle stops preserve the joined actor's exact terminal snapshot in the
+  response after registry cleanup, while rejected stops retain the session and
+  return no snapshot; all command paths advertise the same command capability
+  set from the thin API mapping table, dispatch accepted commands through the
+  same session actor mailbox helper, use the session lifecycle transition model
+  for invalid-state command
   results, and now share monotonic live `StateUpdate` streaming via T-API-7.
 - [x] **T-API-5** Implement the open-set payload model (dotted `kind` + typed
   attribute map) for commands/events/faults/breakpoints, reusing the event-log

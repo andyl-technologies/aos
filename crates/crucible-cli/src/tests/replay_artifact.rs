@@ -2087,13 +2087,12 @@ pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production
             && line.contains("final=quiescent")
             && !line.contains("events=0")
     }));
-    assert!(
-        outcome
-            .canonical_log
-            .iter()
-            .any(|entry| entry.kind == "run_stream_event"
-                && entry.summary == "crucible.event.diagnostic")
-    );
+    assert!(outcome.canonical_log.iter().any(|entry| {
+        entry.kind == "run_stream_event"
+            && entry
+                .summary
+                .starts_with("crucible.event.diagnostic sequence=")
+    }));
 
     Ok(())
 }
@@ -2169,21 +2168,133 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
     let mut command_id = 1;
     let mut acknowledged = Vec::new();
     let mut output = Vec::new();
-    drive_interactive_command_reader(
+    let terminal_snapshot = drive_interactive_command_reader(
         &control,
         &mut command_id,
         &mut acknowledged,
-        io::Cursor::new("query\n# ignored\n\n"),
+        io::Cursor::new("query\n# ignored\n\nstop\nquery\n"),
         &mut output,
     )
     .await?;
 
-    assert_eq!(acknowledged, vec![SessionCommandKind::Query]);
-    assert_eq!(command_id, 2);
+    assert_eq!(
+        acknowledged,
+        vec![SessionCommandKind::Query, SessionCommandKind::Stop]
+    );
+    assert_eq!(command_id, 3);
+    assert!(matches!(
+        terminal_snapshot.as_deref().map(|snapshot| &snapshot.state),
+        Some(EngineState::Stopped { .. })
+    ));
     assert_eq!(
         String::from_utf8(output)?,
-        "interactive-ack\tcommand=query\tstatus=accepted\n"
+        concat!(
+            "interactive-ack\tcommand=query\tstatus=accepted\n",
+            "interactive-query\tstate=paused\n",
+            "interactive-ack\tcommand=stop\tstatus=accepted\n",
+        )
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+pub(super) async fn cli_interactive_stop_uses_terminal_snapshot_after_registry_cleanup()
+-> Result<(), Box<dyn Error>> {
+    #[derive(Default)]
+    struct InteractiveLoop {
+        quanta: u64,
+    }
+
+    impl EngineLoop for InteractiveLoop {
+        fn drive_quantum(&mut self, request: QReq) -> Result<QOut, QErr> {
+            self.quanta = self.quanta.saturating_add(1);
+            let frontier = VirtualTime { ticks: self.quanta };
+            let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
+                at: frontier,
+                order: Vec::new(),
+            });
+            let configuration = crucible::try_step(&request.configuration, decision.clone())
+                .map_err(|error| crucible::SchedulerError::BoundaryViolation {
+                    message: format!("interactive test could not record decision: {error}"),
+                })?;
+            let event = crucible::SchedulerEventLogEntry::diagnostic(
+                self.quanta.saturating_sub(1),
+                frontier,
+                crucible::EventDiagnosticPayload::new(
+                    "crucible.cli.interactive-stop-test",
+                    crucible::EventLevel::Info,
+                    BTreeMap::new(),
+                ),
+            );
+            Ok(QOut {
+                configuration,
+                frontier,
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: vec![decision],
+                event_log_entries: vec![event],
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
+                scheduler_quiescence: None,
+            })
+        }
+    }
+
+    let temp = TempDir::new()?;
+    let scenario = write_valid_run_scenario(&temp)?;
+    let cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("double"),
+        String::from("--seed"),
+        String::from("17"),
+        String::from("run"),
+        scenario.display().to_string(),
+        String::from("--interactive"),
+        String::from("--until"),
+        String::from("stopped"),
+        String::from("--watch"),
+    ]);
+    let Commands::Run(args) = &cli.command else {
+        panic!("expected run command");
+    };
+    let run_plan = plan_run_invocation(args, temp.path())?;
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-cli-interactive-stop-test",
+        Vec::new(),
+        |_scenario: &crucible::ScenarioDef, _seed| InteractiveLoop::default(),
+    );
+    let client = InProcessLifecycleClient::new(control_plane);
+    let report = run_control_client_workflow_async(
+        &client,
+        &run_plan,
+        &[
+            SessionCommandKind::StepQuantum,
+            SessionCommandKind::Stop,
+            SessionCommandKind::Query,
+        ],
+    )
+    .await?;
+
+    assert_eq!(report.status, BackendCommandStatus::Passed);
+    assert_eq!(report.final_state, "stopped");
+    assert_eq!(report.outcome, Some(OutcomeKind::Stopped));
+    assert_eq!(report.final_frontier_ticks, 1);
+    assert_eq!(report.final_quanta, 1);
+    assert!(report.terminal_savepoint.is_some());
+    assert!(report.terminal_configuration.is_some());
+    assert!(!report.streamed_events.is_empty());
+    assert_eq!(
+        report.acknowledged_commands.last(),
+        Some(&SessionCommandKind::Stop)
+    );
+    assert!(report.watch_statuses.iter().any(|status| {
+        status.starts_with("state=stopped\tfrontier_ticks=1\tquanta=1\toutcome=stopped")
+    }));
+    assert!(client.list_sessions().await?.sessions.is_empty());
 
     Ok(())
 }
