@@ -2024,6 +2024,25 @@ impl QuantumLoop for DebugGdbLoop {
         GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen).map_err(SchedulerError::from)
     }
 
+    fn activate_debug_guest(&mut self, _node: NodeId) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
+    fn receive_guest_introspection(
+        &mut self,
+        _node: NodeId,
+    ) -> Result<Option<GuestIntrospectionRecord>, SchedulerError> {
+        Ok(Some(
+            GuestIntrospectionRecord::new(
+                GUEST_INTROSPECTION_FEATURE_CHANNEL_ID,
+                GuestIntrospectionMessage::Features(GuestIntrospectionFeatures::new(
+                    true, true, true, true, 8,
+                )),
+            )
+            .unwrap_or_else(|error| panic!("feature response should be valid: {error}")),
+        ))
+    }
+
     fn reposition_debug_runtime(
         &mut self,
         request: DebugRuntimeRepositionRequest,

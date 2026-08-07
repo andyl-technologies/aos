@@ -1511,6 +1511,11 @@ pub struct DebugNonCanonicalBranchReport {
     pub causal_event_log_after: EventLogCausalProjection,
     /// Event log view including the non-canonical fork marker.
     pub event_log_with_fork_marker: Vec<SchedulerEventLogEntry>,
+    /// Capabilities negotiated from the activated guest agent, when this fork opened introspection.
+    pub guest_introspection_features:
+        Option<crucible_protocol::guest_introspection::GuestIntrospectionFeatures>,
+    /// Bounded activation failure after the non-canonical fork committed, if any.
+    pub guest_introspection_activation_failure: Option<String>,
 }
 
 impl DebugNonCanonicalBranchReport {

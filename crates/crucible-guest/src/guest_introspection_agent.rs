@@ -8,7 +8,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -439,6 +440,7 @@ enum ChannelMode {
 enum ChannelInput {
     Pipe(ChildStdin),
     Pty(File),
+    Ssh(UnixStream),
 }
 
 struct OutputReader {
@@ -479,7 +481,7 @@ impl ActiveChannel {
                     message: String::from("process argv must not be empty"),
                 })?;
         match mode {
-            ChannelMode::Exec | ChannelMode::Ssh => {
+            ChannelMode::Exec => {
                 let mut command = Command::new(program);
                 command
                     .args(arguments)
@@ -515,6 +517,58 @@ impl ActiveChannel {
                     input: Some(ChannelInput::Pipe(input)),
                     readers: vec![
                         output_reader(GuestOutputStream::Stdout, stdout, false),
+                        output_reader(GuestOutputStream::Stderr, stderr, false),
+                    ],
+                    pty_control: None,
+                    exit_status: None,
+                    owns_process_group: true,
+                    reaped: false,
+                    reader_cursor: 0,
+                    exit_drain_polls: 0,
+                    descendants_killed: false,
+                })
+            }
+            ChannelMode::Ssh => {
+                let (host, guest) = UnixStream::pair()
+                    .map_err(|error| process_error("create SSH socket pair", error))?;
+                let host_input = host
+                    .try_clone()
+                    .map_err(|error| process_error("clone SSH host socket", error))?;
+                let guest_stdin = guest
+                    .try_clone()
+                    .map_err(|error| process_error("clone SSH guest socket", error))?;
+                let guest_stdin: OwnedFd = guest_stdin.into();
+                let guest_stdout: OwnedFd = guest.into();
+                let mut command = Command::new(program);
+                command
+                    .args(arguments)
+                    .stdin(Stdio::from(guest_stdin))
+                    .stdout(Stdio::from(guest_stdout))
+                    .stderr(Stdio::piped());
+                // SAFETY: `setsid` is async-signal-safe and gives the SSH
+                // server a private process group for complete teardown.
+                unsafe {
+                    command.pre_exec(|| {
+                        if libc::setsid() == -1 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        }
+                    });
+                }
+                let mut child = command
+                    .spawn()
+                    .map_err(|error| process_error("spawn guest SSH server", error))?;
+                let stderr = child
+                    .stderr
+                    .take()
+                    .ok_or_else(|| process_missing("stderr"))?;
+                Ok(Self {
+                    channel_id,
+                    child,
+                    input: Some(ChannelInput::Ssh(host_input)),
+                    readers: vec![
+                        output_reader(GuestOutputStream::Stdout, host, false),
                         output_reader(GuestOutputStream::Stderr, stderr, false),
                     ],
                     pty_control: None,
@@ -592,10 +646,12 @@ impl ActiveChannel {
         match input {
             ChannelInput::Pipe(input) => input.write_all(bytes),
             ChannelInput::Pty(input) => input.write_all(bytes),
+            ChannelInput::Ssh(input) => input.write_all(bytes),
         }
         .and_then(|()| match input {
             ChannelInput::Pipe(input) => input.flush(),
             ChannelInput::Pty(input) => input.flush(),
+            ChannelInput::Ssh(input) => input.flush(),
         })
         .map_err(|error| process_error("write guest process input", error))
     }

@@ -357,7 +357,10 @@ impl RpcControlClient {
         session: SessionRef,
         lease: &DebugControllerLease,
         node: &NodeId,
-    ) -> Result<(), ControlClientError> {
+    ) -> Result<
+        crucible_protocol::guest_introspection::GuestIntrospectionFeatures,
+        ControlClientError,
+    > {
         let body = self
             .post_rpc_body(
                 DEBUG_GUEST_FORK_RPC_PATH,
@@ -367,8 +370,58 @@ impl RpcControlClient {
         let text = response_text(&body)?;
         let mut lines = text.lines();
         expect_header(lines.next(), "crucible.rpc/debug-guest-fork-response")?;
+        let branch = parse_prefixed_line(lines.next(), "branch=")?;
+        if branch.len() != 64 || !branch.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(rpc_decode("invalid debug guest fork branch identity"));
+        }
+        let status = parse_prefixed_line(lines.next(), "status=")?;
+        let failure = parse_prefixed_line(lines.next(), "failure=")?;
+        let argv_exec = parse_bool_line(lines.next(), "argv-exec=")?;
+        let pty = parse_bool_line(lines.next(), "pty=")?;
+        let resize = parse_bool_line(lines.next(), "resize=")?;
+        let ssh_bridge = parse_bool_line(lines.next(), "ssh-bridge=")?;
+        let max_channels = parse_prefixed_line(lines.next(), "max-channels=")?
+            .parse::<u16>()
+            .map_err(|error| rpc_decode(error.to_string()))?;
+        if status == "failed" {
+            let failure = String::from_utf8(parse_hex_bytes(failure)?)
+                .map_err(|error| rpc_decode(error.to_string()))?;
+            reject_trailing(lines.next())?;
+            return Err(rpc_decode(format!(
+                "non-canonical branch {branch} committed, but guest activation failed: {failure}"
+            )));
+        }
+        if status != "ready" {
+            return Err(rpc_decode(format!(
+                "invalid debug guest fork status `{status}`"
+            )));
+        }
+        if !failure.is_empty() {
+            return Err(rpc_decode("ready debug guest fork carried a failure"));
+        }
+        if max_channels == 0 {
+            return Err(rpc_decode("max-channels must be nonzero"));
+        }
         reject_trailing(lines.next())?;
-        Ok(())
+        Ok(
+            crucible_protocol::guest_introspection::GuestIntrospectionFeatures::new(
+                argv_exec,
+                pty,
+                resize,
+                ssh_bridge,
+                max_channels,
+            ),
+        )
+    }
+}
+
+fn parse_bool_line(line: Option<&str>, prefix: &'static str) -> Result<bool, ControlClientError> {
+    match parse_prefixed_line(line, prefix)? {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        value => Err(rpc_decode(format!(
+            "invalid boolean `{value}` for {prefix}"
+        ))),
     }
 }
 

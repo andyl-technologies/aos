@@ -50,7 +50,7 @@ fn artifact(domain: &str, path: &str) -> QemuLaunchArtifact {
 }
 
 #[test]
-fn debug_gdbstub_is_fourth_out_of_band_launch_channel() {
+fn debug_gdbstub_launch_does_not_expose_guest_activation_device() {
     let gdbstub = QemuGdbstubChannelConfig::new("tcp:127.0.0.1:9001", "127.0.0.1:9000")
         .unwrap_or_else(|error| panic!("gdbstub config should be valid: {error}"));
     let command = QemuLaunchCommandBuilder::new(
@@ -72,19 +72,10 @@ fn debug_gdbstub_is_fourth_out_of_band_launch_channel() {
     assert!(command.args().windows(2).any(|window| {
         window[0] == "-plugin" && window[1].contains("simfd=3,slot=0,shmemfd=4,wakefd=5")
     }));
-    assert!(
-        command
-            .args()
-            .windows(2)
-            .any(|window| { window == ["-device", "virtio-serial-pci,id=crucible-debug-serial"] })
-    );
-    assert!(command.args().windows(2).any(|window| {
-        window == ["-chardev", "ringbuf,id=crucible-debug-activation,size=4096"]
-    }));
-    assert!(command.args().windows(2).any(|window| {
-        window[0] == "-device"
-            && window[1]
-                == "virtserialport,chardev=crucible-debug-activation,name=org.aos.crucible.debug"
+    assert!(!command.args().iter().any(|argument| {
+        argument.contains("crucible-debug-activation")
+            || argument.contains("crucible-debug-serial")
+            || argument.contains("org.aos.crucible.debug")
     }));
     assert!(!command.args().iter().any(|arg| arg == "127.0.0.1:9000"));
     assert_eq!(command.gdbstub_channel(), Some(&gdbstub));

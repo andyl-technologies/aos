@@ -11,13 +11,13 @@ use std::time::Duration;
 
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
-    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_DEBUG_GUEST_ACTIVATION_DEVICE,
-    QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QMP_GREETING_TIMEOUT, QMP_QUERY_CPUS_FAST_COMMAND,
-    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_RINGBUF_WRITE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
-    QMP_SNAPSHOT_VMSTATE_DEVICE, QemuSavevmCompletenessPolicy, QmpClient, QmpCommandKind, QmpError,
-    QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag,
-    QmpTimeoutStream,
+    QMP_CAPABILITIES_COMMAND, QMP_CHARDEV_ADD_COMMAND, QMP_COMMAND_TIMEOUT,
+    QMP_DEBUG_GUEST_ACTIVATION_DEVICE, QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QMP_DEVICE_ADD_COMMAND,
+    QMP_GREETING_TIMEOUT, QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_JOBS_COMMAND,
+    QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME, QMP_RINGBUF_WRITE_COMMAND,
+    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE,
+    QemuSavevmCompletenessPolicy, QmpClient, QmpCommandKind, QmpError, QmpGreeting,
+    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -357,6 +357,9 @@ fn debug_guest_activation_is_a_fixed_typed_qmp_command() -> Result<(), Box<dyn E
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
     ]);
     let audit = stream.audit_handle();
     let mut client = QmpClient::connect(stream)?;
@@ -369,7 +372,19 @@ fn debug_guest_activation_is_a_fixed_typed_qmp_command() -> Result<(), Box<dyn E
     drop(client);
     let audit = audit_snapshot(&audit);
     let lines = written_json_lines(&audit)?;
-    let request = json_line(&lines, 1);
+    assert_eq!(
+        execute_name(json_line(&lines, 1)),
+        Some(QMP_CHARDEV_ADD_COMMAND)
+    );
+    assert_eq!(
+        execute_name(json_line(&lines, 2)),
+        Some(QMP_DEVICE_ADD_COMMAND)
+    );
+    assert_eq!(
+        execute_name(json_line(&lines, 3)),
+        Some(QMP_DEVICE_ADD_COMMAND)
+    );
+    let request = json_line(&lines, 4);
     assert_eq!(execute_name(request), Some(QMP_RINGBUF_WRITE_COMMAND));
     assert_eq!(
         request.pointer("/arguments/device").and_then(Value::as_str),

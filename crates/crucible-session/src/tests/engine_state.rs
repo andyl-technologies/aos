@@ -745,11 +745,11 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
     let branch_request = DebugNonCanonicalBranchRequest::new(
         first.clone(),
         engine.frontier(),
-        DebugNonCanonicalBranchTrigger::OperatorContinue,
+        DebugNonCanonicalBranchTrigger::GuestIntrospection,
     )
-    .with_action(DebugNonCanonicalBranchAction::operator_control(
-        DebugOperatorControlKind::Continue,
-    ));
+    .with_action(DebugNonCanonicalBranchAction::guest_introspection(node_id(
+        "node-a",
+    )));
     let (branch_reply, branch_receiver) = CommandReply::channel();
     if let Err(error) = engine.apply_command(SessionCommand::DebugForkNonCanonical {
         request: branch_request,
@@ -759,6 +759,11 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
     }
     let branch = receive_reply(branch_receiver).await;
     assert!(branch.proves_non_canonical_debug_branch());
+    assert!(
+        branch
+            .guest_introspection_features
+            .is_some_and(GuestIntrospectionFeatures::ssh_bridge)
+    );
     assert!(!engine.debug_branch_required());
     let branch_entries = engine.drain_event_log_entries();
     assert_eq!(branch_entries.len(), 1);
@@ -1150,7 +1155,7 @@ fn actor_debug_history_indexes_each_emitted_decision_prefix() {
     assert_eq!(actor.debug_event_coordinates.get(&1), Some(&first));
     assert_eq!(actor.debug_event_coordinates.get(&2), Some(&second));
     assert_eq!(actor.debug_event_coordinates.get(&3), Some(&second));
-    assert_eq!(actor.debug_current_event_limit(&second), Some(2));
+    assert_eq!(actor.debug_current_event_limit(&second), Some(4));
 }
 
 #[tokio::test]

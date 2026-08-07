@@ -18,7 +18,8 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::{
-    QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
+    QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID, QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME,
+    QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
 };
 
 mod snapshot_tag;
@@ -45,6 +46,10 @@ pub const QMP_QUERY_CPUS_FAST_COMMAND: &str = "query-cpus-fast";
 pub const QMP_QUIT_COMMAND_NAME: &str = "quit";
 /// QMP command used to write the non-canonical guest-agent activation token.
 pub const QMP_RINGBUF_WRITE_COMMAND: &str = "ringbuf-write";
+/// QMP command used to create the activation-only character backend.
+pub const QMP_CHARDEV_ADD_COMMAND: &str = "chardev-add";
+/// QMP command used to hot-add the activation-only controller and port.
+pub const QMP_DEVICE_ADD_COMMAND: &str = "device_add";
 /// Stable QEMU ring-buffer device carrying the debugger activation token.
 pub const QMP_DEBUG_GUEST_ACTIVATION_DEVICE: &str = QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID;
 /// Versioned token consumed by the dormant fixture-side debugger bootstrap.
@@ -229,10 +234,11 @@ where
         self.send_command(QmpCommand::Quit)
     }
 
-    /// Activates the dormant guest-introspection bootstrap on a non-canonical fork.
+    /// Hot-adds and activates the dormant guest-introspection bootstrap.
     ///
     /// The command surface is deliberately fixed: callers cannot select an
-    /// arbitrary chardev or inject arbitrary guest-visible bytes.
+    /// arbitrary device, chardev, or guest-visible bytes. The guest-visible
+    /// activation device does not exist before this non-canonical operation.
     ///
     /// # Errors
     ///
@@ -240,6 +246,9 @@ where
     /// response cannot be decoded, or when QEMU rejects the configured ring
     /// buffer device.
     pub fn activate_debug_guest(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        self.send_command(QmpCommand::AddDebugGuestChardev)?;
+        self.send_command(QmpCommand::AddDebugGuestController)?;
+        self.send_command(QmpCommand::AddDebugGuestPort)?;
         self.send_command(QmpCommand::ActivateDebugGuest)
     }
 
@@ -780,6 +789,12 @@ pub enum QmpCommandKind {
     Quit,
     /// Non-canonical guest debugger bootstrap activation.
     ActivateDebugGuest,
+    /// Activation-only chardev hot-add.
+    AddDebugGuestChardev,
+    /// Activation-only virtio-serial controller hot-add.
+    AddDebugGuestController,
+    /// Activation-only virtio-serial port hot-add.
+    AddDebugGuestPort,
 }
 
 impl QmpCommandKind {
@@ -793,6 +808,8 @@ impl QmpCommandKind {
             Self::QueryCpusFast => QMP_QUERY_CPUS_FAST_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
             Self::ActivateDebugGuest => QMP_RINGBUF_WRITE_COMMAND,
+            Self::AddDebugGuestChardev => QMP_CHARDEV_ADD_COMMAND,
+            Self::AddDebugGuestController | Self::AddDebugGuestPort => QMP_DEVICE_ADD_COMMAND,
         }
     }
 }
@@ -972,6 +989,9 @@ enum QmpCommand<'a> {
     QueryStatus,
     QueryCpusFast,
     Quit,
+    AddDebugGuestChardev,
+    AddDebugGuestController,
+    AddDebugGuestPort,
     ActivateDebugGuest,
 }
 
@@ -985,6 +1005,9 @@ impl QmpCommand<'_> {
             Self::QueryStatus => QmpCommandKind::QueryStatus,
             Self::QueryCpusFast => QmpCommandKind::QueryCpusFast,
             Self::Quit => QmpCommandKind::Quit,
+            Self::AddDebugGuestChardev => QmpCommandKind::AddDebugGuestChardev,
+            Self::AddDebugGuestController => QmpCommandKind::AddDebugGuestController,
+            Self::AddDebugGuestPort => QmpCommandKind::AddDebugGuestPort,
             Self::ActivateDebugGuest => QmpCommandKind::ActivateDebugGuest,
         }
     }
@@ -1011,6 +1034,32 @@ impl QmpCommand<'_> {
             }),
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,
+            }),
+            Self::AddDebugGuestChardev => json!({
+                "execute": QMP_CHARDEV_ADD_COMMAND,
+                "arguments": {
+                    "id": QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
+                    "backend": {
+                        "type": "ringbuf",
+                        "data": { "size": 4096 },
+                    },
+                },
+            }),
+            Self::AddDebugGuestController => json!({
+                "execute": QMP_DEVICE_ADD_COMMAND,
+                "arguments": {
+                    "driver": "virtio-serial-pci",
+                    "id": QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID,
+                },
+            }),
+            Self::AddDebugGuestPort => json!({
+                "execute": QMP_DEVICE_ADD_COMMAND,
+                "arguments": {
+                    "driver": "virtserialport",
+                    "id": QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
+                    "chardev": QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
+                    "name": QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME,
+                },
             }),
             Self::ActivateDebugGuest => json!({
                 "execute": QMP_RINGBUF_WRITE_COMMAND,

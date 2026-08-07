@@ -1013,11 +1013,16 @@ fn session_error_rejection_kind(error: &SessionError) -> CommandRejectionKind {
         | SessionError::DebugAttachRequired { .. }
         | SessionError::DebugNonCanonicalBranchRequired { .. }
         | SessionError::GuestIntrospectionNotAuthorized { .. }
+        | SessionError::GuestIntrospectionActivation { .. }
+        | SessionError::GuestIntrospectionChannelLimit { .. }
         | SessionError::DebugHistoryUnavailable { .. } => CommandRejectionKind::InvalidState,
         SessionError::BreakpointNotFound { .. } => CommandRejectionKind::NotFound,
         SessionError::BreakpointConditionPrefix { .. } => CommandRejectionKind::InvalidArgument,
         SessionError::UnsupportedBreakpointAction { .. }
-        | SessionError::UnsupportedBreakpointFault { .. } => CommandRejectionKind::Unsupported,
+        | SessionError::UnsupportedBreakpointFault { .. }
+        | SessionError::GuestIntrospectionCapabilityUnavailable { .. } => {
+            CommandRejectionKind::Unsupported
+        }
         SessionError::Engine(error) => engine_error_rejection_kind(error),
         SessionError::Scheduler(error) => scheduler_error_rejection_kind(error),
         SessionError::ChannelClosed

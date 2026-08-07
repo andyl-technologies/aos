@@ -127,6 +127,30 @@ pub enum SessionError {
         /// Node whose authored policy did not enable white-box access.
         node: String,
     },
+    /// Fork-time activation did not produce a valid feature advertisement.
+    #[error("guest introspection activation failed for node `{node}`: {reason}")]
+    GuestIntrospectionActivation {
+        /// Node whose dormant agent was activated.
+        node: String,
+        /// Stable activation or negotiation failure detail.
+        reason: String,
+    },
+    /// A guest request requires a capability that the activated agent did not advertise.
+    #[error("guest introspection capability `{capability}` is unavailable for node `{node}`")]
+    GuestIntrospectionCapabilityUnavailable {
+        /// Target guest node.
+        node: String,
+        /// Stable protocol capability label.
+        capability: &'static str,
+    },
+    /// Opening another guest channel would exceed the negotiated per-node limit.
+    #[error("guest introspection channel limit {max_channels} is exhausted for node `{node}`")]
+    GuestIntrospectionChannelLimit {
+        /// Target guest node.
+        node: String,
+        /// Agent-advertised maximum concurrent channels.
+        max_channels: u16,
+    },
     /// A resumed session does not carry event history before its checkpoint boundary.
     #[error(
         "debug operation {operation} reached the resumed event-history floor at sequence {floor}"
@@ -224,6 +248,9 @@ pub(super) fn is_recoverable_command_rejection(
         | SessionError::DebugAttachRequired { .. }
         | SessionError::DebugNonCanonicalBranchRequired { .. }
         | SessionError::GuestIntrospectionNotAuthorized { .. }
+        | SessionError::GuestIntrospectionActivation { .. }
+        | SessionError::GuestIntrospectionCapabilityUnavailable { .. }
+        | SessionError::GuestIntrospectionChannelLimit { .. }
         | SessionError::DebugHistoryUnavailable { .. } => true,
         SessionError::Engine(error) => is_recoverable_engine_rejection(error),
         SessionError::Scheduler(error) => is_recoverable_scheduler_rejection(error),
@@ -682,10 +709,9 @@ impl<L> SessionActor<L> {
     }
 
     pub(super) fn debug_current_event_limit(&self, current: &Configuration) -> Option<u64> {
-        self.debug_event_coordinates
-            .iter()
-            .filter_map(|(sequence, configuration)| (configuration == current).then_some(*sequence))
-            .min()
+        let _ = current;
+        self.engine
+            .debug_event_cursor()
             .or_else(|| u64::try_from(self.engine.event_log_len()).ok())
     }
 
@@ -854,6 +880,9 @@ where
                 let _outcome = match self.engine.step_quantum() {
                     Ok(outcome) => outcome,
                     Err(SessionError::Scheduler(SchedulerError::Backend(error))) => {
+                        self.engine.fail_pending_guest_activation(format!(
+                            "backend failed while activating guest agent: {error}"
+                        ));
                         self.engine.stop_after_backend_crash(error.to_string())?;
                         self.publish_live_snapshot();
                         self.complete_pending_gdb_run_control()?;
@@ -869,6 +898,7 @@ where
                 self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&breakpoint_entries)?;
+                self.engine.poll_pending_guest_activation()?;
                 self.engine.stop_on_continuous_quiescence()?;
                 let shutdown_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&shutdown_entries)?;
@@ -917,6 +947,9 @@ where
                 let _outcome = match self.engine.step_quantum() {
                     Ok(outcome) => outcome,
                     Err(SessionError::Scheduler(SchedulerError::Backend(error))) => {
+                        self.engine.fail_pending_guest_activation(format!(
+                            "backend failed while activating guest agent: {error}"
+                        ));
                         self.engine.stop_after_backend_crash(error.to_string())?;
                         self.publish_live_snapshot();
                         self.complete_pending_gdb_run_control()?;
@@ -932,6 +965,7 @@ where
                 self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&breakpoint_entries)?;
+                self.engine.poll_pending_guest_activation()?;
                 self.engine.stop_on_continuous_quiescence()?;
                 let shutdown_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&shutdown_entries)?;

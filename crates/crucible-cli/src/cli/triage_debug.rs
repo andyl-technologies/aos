@@ -1940,7 +1940,7 @@ async fn run_remote_guest_fork(
         .acquire_debug_controller(session)
         .await
         .map_err(control_client_error)?;
-    let fork_result: Result<(), CliError> = async {
+    let fork_result = async {
         client
             .attach_debugger(session, &lease, &node)
             .await
@@ -1952,9 +1952,16 @@ async fn run_remote_guest_fork(
     }
     .await;
     let release_result = client.release_debug_controller(session, &lease).await;
-    fork_result?;
+    let features = fork_result?;
     release_result.map_err(control_client_error)?;
-    println!("crucible: forked non-canonical guest-introspection branch");
+    println!(
+        "crucible: forked non-canonical guest-introspection branch argv-exec={} pty={} resize={} ssh-bridge={} max-channels={}",
+        features.argv_exec(),
+        features.pty(),
+        features.resize(),
+        features.ssh_bridge(),
+        features.max_channels(),
+    );
     Ok(())
 }
 
