@@ -774,52 +774,36 @@ pub(super) fn load_triage_findings_ledger(
             let bytes = store.get(hash).map_err(CliError::Store)?;
             parse_failure_findings_ledger_bytes(store, &bytes)
         }
-        TriageFindingsSource::Path(path) if path.is_dir() => {
-            let mut entries = fs::read_dir(path)?
-                .collect::<Result<Vec<_>, io::Error>>()?
-                .into_iter()
-                .filter_map(|entry| {
-                    entry
-                        .file_type()
-                        .ok()
-                        .filter(|kind| kind.is_file())
-                        .map(|_| entry.path())
-                })
-                .collect::<Vec<_>>();
-            entries.sort();
-            let mut artifacts = Vec::with_capacity(entries.len());
-            for entry in entries {
-                let bytes = fs::read(&entry)?;
-                artifacts.push(store.put(&bytes).map_err(CliError::Store)?);
-            }
-            Ok(loaded_artifact_only_findings(
-                crucible::FailureFindingsLedger::from_artifacts(artifacts),
-            ))
-        }
+        TriageFindingsSource::Path(path) if path.is_dir() => Err(artifact_error(format!(
+            "triage FINDINGS `{}` is a directory; pass the signed findings ledger emitted by `search` or `fuzz`",
+            path.display()
+        ))),
         TriageFindingsSource::Path(path) => {
-            let bytes = fs::read(path)?;
-            if looks_like_failure_findings_ledger(&bytes) {
-                return parse_failure_findings_ledger_bytes(store, &bytes);
+            let bytes = fs::read(path).map_err(|error| {
+                artifact_error(format!(
+                    "cannot read triage findings ledger `{}`: {error}",
+                    path.display()
+                ))
+            })?;
+            if bytes.is_empty() {
+                return Err(artifact_error(format!(
+                    "triage findings ledger `{}` is empty",
+                    path.display()
+                )));
             }
-            store
-                .put(&bytes)
-                .map(|hash| {
-                    loaded_artifact_only_findings(crucible::FailureFindingsLedger::from_artifacts(
-                        [hash],
-                    ))
-                })
-                .map_err(CliError::Store)
+            if !looks_like_failure_findings_ledger(&bytes) {
+                let input_kind = if decode_reproduction_artifact(&bytes).is_ok() {
+                    "a reproduction artifact"
+                } else {
+                    "unsupported or malformed input"
+                };
+                return Err(artifact_error(format!(
+                    "triage FINDINGS `{}` is {input_kind}, not a signed findings ledger emitted by `search` or `fuzz`",
+                    path.display()
+                )));
+            }
+            parse_failure_findings_ledger_bytes(store, &bytes)
         }
-    }
-}
-
-pub(super) fn loaded_artifact_only_findings(
-    ledger: crucible::FailureFindingsLedger,
-) -> LoadedTriageFindings {
-    LoadedTriageFindings {
-        artifact_bytes: ledger.artifact_bytes(),
-        ledger,
-        evidence: BTreeMap::new(),
     }
 }
 
