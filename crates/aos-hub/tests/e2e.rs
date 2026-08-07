@@ -916,7 +916,7 @@ async fn connectrpc_read_path_serves_index() {
 
     // The renamed identity service is mounted. An anonymous request reaches
     // the handler and is rejected by authentication rather than routing.
-    let (status, body) = post("/aos.hub.v1.IdentityService/ListTokens", "{}").await;
+    let (status, body) = post("/aos.hub.v1.IdentityService/ListAccessTokens", "{}").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
 
     // The RFC-0012 cutover is deliberately hard: neither the former package
