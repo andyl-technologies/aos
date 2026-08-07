@@ -524,8 +524,11 @@ reported); `3` = oracle violation on materialization (07 §6) or backend error;
 
 **Purpose.** Continue a run from a savepoint or any checkpoint (07). Resume is
 `instantiate` of the recorded configuration (05 §5) — *not* a special "restored"
-mode; a resumed session is an ordinary session whose configuration happens to be
-non-genesis ([SESS-18]).
+mode; a resumed session is an ordinary session at the recorded checkpoint
+configuration ([SESS-18]). A deterministic runtime-only
+frontier may still have an empty decision schedule and therefore retain genesis
+configuration identity; its fat checkpoint material and virtual-time coordinate
+distinguish the resumed runtime boundary from the zero-time baked genesis.
 
 ```text
   crucible resume <SAVEPOINT> [FLAGS]
@@ -554,8 +557,8 @@ store, and `3` on an oracle disagreement at materialization (07 §6).
   recorded configuration (05 §5) — `loadvm` of its fat snapshot, or
   replay-from-nearest-fat-ancestor if thin (07 §4) — then `continue` (20 §4),
   with the same outcome→exit-code mapping as `run` (§6). A resumed session MUST
-  be an ordinary session distinguished only by a non-genesis configuration, with
-  no bespoke "restored" code path ([SESS-18]); the materialized state MUST reduce
+  be an ordinary session loaded from its recorded checkpoint configuration and
+  runtime boundary, with no bespoke "restored" code path ([SESS-18]); the materialized state MUST reduce
   to the savepoint's recorded state, verified by the replay oracle ([INV-2]), or
   the resume MUST fail (exit 3) rather than run a wrong state. *Gate:*
   `gate:replay-oracle`. *Spec:* §10; cross-ref 05 §5, 07 §4, [SESS-18].
@@ -1127,8 +1130,8 @@ branch on the verdict without parsing output:
   fails undeclared property selectors and marker selectors without a white-box
   source. The gate also runs a backend-executed patched-QEMU `snapshot-save`
   smoke over the same QMP savepoint primitive before marking `T-CLI-9` green.
-- [x] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration,
-  continue; ordinary-session-with-non-genesis-config, no restored path;
+- [x] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration
+  and recorded runtime frontier, continue; ordinary session, no restored path;
   oracle-verified materialization). — satisfies [CLI-20]; spec §10.
   Completed under `checks.crucible.phase5.cliResumeWorkflow`: the CLI now
   parses `resume <SAVEPOINT>` with `--until`, `--max-virtual-time`,
@@ -1144,6 +1147,10 @@ branch on the verdict without parsing output:
   materialization. The same check also routes remote-daemon resume over
   `ResumeSession` RPC for handle-backed virtual-time runs and interactive
   command driving, instantiating the checkpoint through the session resume API,
+  accepts runtime-only fat checkpoints whose decision schedule remains genesis
+  while their frontier has advanced, thin-replays those checkpoints to the exact
+  recorded frontier with bounded stagnation and overshoot rejection, rejects
+  tampered zero-time baked-genesis material,
   streaming `--watch` status at observed remote boundaries, advancing the
   resumed actor, stopping with a terminal savepoint, and replay-oracle-validating
   that terminal materialization. Terminal remote interactive command sequences

@@ -495,6 +495,10 @@ long-held locks.
   decoding with compact scenario/schedule evidence, direct `blake3:<hash>`
   checkpoint reference parsing and local DAG-store checkpoint closure loading,
   virtual-time budget validation, malformed-handle artifact errors, and
+  runtime-only fat checkpoint support when deterministic execution advances the
+  frontier without appending a schedule decision, including exact-frontier thin
+  replay, bounded stagnation and overshoot rejection, genuine thin-checkpoint
+  coverage, and strict zero-time baked-genesis validation, and
   executable handle- or store-backed local-double resume to quiescence,
   virtual-time, interactive command driving, or a declared property violation
   through the session checkpoint-resume API with breakpoint-firing proof for the

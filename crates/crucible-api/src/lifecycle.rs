@@ -1391,7 +1391,11 @@ where
             def: scenario.clone(),
             schedule: request.schedule.clone(),
         };
-        validate_resume_checkpoint_closure(&configuration, &request.checkpoint)?;
+        validate_resume_checkpoint_closure(
+            &configuration,
+            &request.checkpoint,
+            ResumeCheckpointValidation::DirectLoad,
+        )?;
 
         let mut graph = graph_with_baked_genesis(&scenario)?;
         if !configuration.is_genesis() {
@@ -2247,6 +2251,7 @@ async fn join_actor(
 fn validate_resume_checkpoint_closure(
     configuration: &Configuration,
     checkpoint: &Checkpoint,
+    validation: ResumeCheckpointValidation,
 ) -> Result<(), LifecycleApiError> {
     let configuration_id = configuration.id();
     if checkpoint.id != configuration_id {
@@ -2276,8 +2281,15 @@ fn validate_resume_checkpoint_closure(
             ),
         });
     }
+    if validation == ResumeCheckpointValidation::DirectLoad
+        && checkpoint.kind != CheckpointKind::Fat
+    {
+        return Err(LifecycleApiError::ResumeCheckpoint {
+            message: String::from("resume checkpoint must contain fat materialized state"),
+        });
+    }
     if configuration.is_genesis() {
-        let expected = Checkpoint::from_recorded_configuration(
+        let baked = Checkpoint::from_recorded_configuration(
             configuration,
             None,
             VirtualTime::default(),
@@ -2286,14 +2298,20 @@ fn validate_resume_checkpoint_closure(
             BTreeMap::new(),
         )
         .map_err(resume_checkpoint_error)?;
-        if checkpoint != &expected {
+        // A direct-load graph has one checkpoint slot per configuration id, so
+        // replacing its baked root with a later runtime-only snapshot would
+        // erase the true zero-time genesis. Thin replay never registers the
+        // supplied material: it may use a nonzero frontier to reconstruct a
+        // deterministic runtime whose causal schedule is still empty.
+        let requires_baked_genesis = validation == ResumeCheckpointValidation::DirectLoad
+            || checkpoint.virtual_time == VirtualTime::default();
+        if requires_baked_genesis && checkpoint != &baked {
             return Err(LifecycleApiError::ResumeCheckpoint {
                 message: String::from(
                     "genesis checkpoint material did not match the baked genesis checkpoint",
                 ),
             });
         }
-        return Ok(());
     }
 
     let parent = if configuration.schedule.is_empty() {
@@ -2333,6 +2351,12 @@ fn validate_resume_checkpoint_closure(
         });
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResumeCheckpointValidation {
+    DirectLoad,
+    ThinReplay,
 }
 
 fn graph_with_baked_genesis(scenario: &ScenarioDef) -> Result<TemporalGraph, LifecycleApiError> {

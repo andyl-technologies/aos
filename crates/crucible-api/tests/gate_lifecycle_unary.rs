@@ -6,8 +6,8 @@
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, Decision, DeliveryOrderDecision, GdbAttachInfo,
-    GdbListen, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef, ScenarioDefForm,
-    Schedule, SchedulerError, Seed, VirtualTime,
+    GdbListen, Icount, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef,
+    ScenarioDefForm, Schedule, SchedulerError, Seed, VirtualTime,
 };
 use crucible_api::{
     ControlClient, CreateSessionRequest, CreateSessionSource, DebugAuthorizationPolicy,
@@ -726,7 +726,7 @@ async fn resume_session_rejects_mismatched_checkpoint_closure_without_side_effec
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn resume_session_rejects_non_baked_genesis_checkpoint_material() {
+async fn direct_resume_rejects_runtime_only_genesis_checkpoint_material() {
     let mut control_plane = lifecycle_control_plane();
     let scenario = crucible::happy_path_scenario()
         .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
@@ -742,10 +742,134 @@ async fn resume_session_rejects_non_baked_genesis_checkpoint_material() {
             Seed::from_u64(42),
         ))
         .await
-        .expect_err("non-baked genesis checkpoint material should reject");
+        .expect_err("direct resume must retain the true baked genesis root");
 
     assert!(matches!(error, LifecycleApiError::ResumeCheckpoint { .. }));
     assert!(error.to_string().contains("baked genesis checkpoint"));
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resume_session_rejects_tampered_zero_time_baked_genesis() {
+    let mut control_plane = lifecycle_control_plane();
+    let scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    let configuration = Configuration::genesis(scenario.scenario_def());
+    let mut checkpoint = checkpoint_for_configuration(&configuration, VirtualTime::default());
+    checkpoint
+        .metadata
+        .labels
+        .insert(String::from("tampered"), String::from("true"));
+
+    let error = control_plane
+        .resume_session(ResumeSessionRequest::new(
+            scenario,
+            Schedule::empty(),
+            checkpoint,
+            Seed::from_u64(42),
+        ))
+        .await
+        .expect_err("tampered baked genesis checkpoint material should reject");
+
+    assert!(matches!(error, LifecycleApiError::ResumeCheckpoint { .. }));
+    assert!(error.to_string().contains("baked genesis checkpoint"));
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn thin_replay_rejects_zero_time_genesis_with_injected_runtime_material() {
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-zero-time-genesis-tamper-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| RuntimeOnlyReplayLoop::new(),
+    )
+    .with_thin_replay_resume();
+    let scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    let configuration = Configuration::genesis(scenario.scenario_def());
+    let mut checkpoint = checkpoint_for_configuration(&configuration, VirtualTime::default());
+    checkpoint.node_icounts.insert(
+        NodeId {
+            name: String::from("injected"),
+        },
+        Icount { retired: 1 },
+    );
+
+    let error = control_plane
+        .resume_session(ResumeSessionRequest::new(
+            scenario,
+            Schedule::empty(),
+            checkpoint,
+            Seed::from_u64(42),
+        ))
+        .await
+        .expect_err("zero-time injected runtime material should reject");
+
+    assert!(matches!(error, LifecycleApiError::ResumeCheckpoint { .. }));
+    assert!(error.to_string().contains("baked genesis checkpoint"));
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn thin_replay_resume_reaches_runtime_only_genesis_frontier() {
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-runtime-only-genesis-replay-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| RuntimeOnlyReplayLoop::new(),
+    )
+    .with_thin_replay_resume();
+    let scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    let configuration = Configuration::genesis(scenario.scenario_def());
+    let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 2 })
+        .with_materialized_state(None);
+
+    let resumed = control_plane
+        .resume_session(ResumeSessionRequest::new(
+            scenario,
+            Schedule::empty(),
+            checkpoint,
+            Seed::from_u64(42),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("runtime-only thin replay should resume: {error}"));
+
+    assert_eq!(resumed.state, LiveStateKind::Paused);
+    let summary = &control_plane.list_sessions().sessions[0];
+    assert_eq!(summary.frontier, VirtualTime { ticks: 2 });
+    assert_eq!(summary.quanta_stepped, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn thin_replay_resume_rejects_runtime_only_frontier_overshoot() {
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-runtime-only-genesis-overshoot-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| RuntimeOnlyReplayLoop::with_step(2),
+    )
+    .with_thin_replay_resume();
+    let scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    let configuration = Configuration::genesis(scenario.scenario_def());
+    let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 1 })
+        .with_materialized_state(None);
+
+    let error = control_plane
+        .resume_session(ResumeSessionRequest::new(
+            scenario,
+            Schedule::empty(),
+            checkpoint,
+            Seed::from_u64(42),
+        ))
+        .await
+        .expect_err("runtime-only thin replay must reject frontier overshoot");
+
+    assert!(matches!(error, LifecycleApiError::ResumeCheckpoint { .. }));
+    assert!(error.to_string().contains("thin replay diverged"));
     assert_eq!(control_plane.session_count(), 0);
 }
 
