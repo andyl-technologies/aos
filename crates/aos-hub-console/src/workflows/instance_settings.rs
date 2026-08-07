@@ -15,7 +15,7 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
-use super::resources::UnavailableWorkflow;
+use super::organization_identity::OrganizationIdentityWorkflow;
 
 /// Renders instance-setting workflows and delegates unrelated pages onward.
 #[component]
@@ -24,7 +24,7 @@ pub(super) fn InstanceSettingsWorkflow(route: ConsoleRoute, client: ApiClient) -
         (ConsoleScope::Instance, "overview" | "identity" | "resource-defaults" | "branding") => {
             view! { <InstanceSettingsPage client=client page=route.page.key/> }.into_any()
         }
-        _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
+        _ => view! { <OrganizationIdentityWorkflow route=route client=client/> }.into_any(),
     }
 }
 
