@@ -357,6 +357,7 @@ mod tests {
             flush.request_id,
             BlockErrorCode::Timeout,
         ));
+        directive.retention_timeout_nanos = Some(100);
         ok(original.install_storage_fault_directive(flush.identity(), directive));
         ok(original.submit(0, &flush));
 
@@ -369,6 +370,34 @@ mod tests {
             Err(crate::DeviceError::ResponseSequenceOverflow { .. })
         ));
         assert_eq!(restored.snapshot(), before);
+    }
+
+    #[test]
+    fn retained_completion_batch_release_is_atomic() {
+        let mut block = device(PAGE_SIZE);
+        ok(block.configure_storage_faults(cached_fault_config(PAGE_SIZE as u64), true));
+        let flush = BlockRequest::flush(2);
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&flush, PAGE_SIZE as u64);
+        directive.flush_disposition = BlockFaultFlushDisposition::Stall;
+        directive.retain_completion = true;
+        directive.retention_timeout_response = Some(BlockResponse::error(
+            flush.request_id,
+            BlockErrorCode::Timeout,
+        ));
+        directive.retention_timeout_nanos = Some(100);
+        ok(block.install_storage_fault_directive(flush.identity(), directive));
+        ok(block.submit(0, &flush));
+
+        let before = block.snapshot();
+        let absent = BlockRequestIdentity::new(0, 99);
+        assert!(matches!(
+            block.release_storage_completions(&[
+                (flush.identity(), BlockRetainedRelease::Recovery),
+                (absent, BlockRetainedRelease::Timeout),
+            ]),
+            Err(crate::DeviceError::InvalidBlockFaultDirective { .. })
+        ));
+        assert_eq!(block.snapshot(), before);
     }
 
     #[test]

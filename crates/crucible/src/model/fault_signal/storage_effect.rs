@@ -247,9 +247,9 @@ pub enum StorageEffectSpecification {
     },
     /// Stall, recovery, and timeout behavior.
     StallTimeout {
-        /// Fixed stall, mutually exclusive with `recovery_event`.
-        stall_nanos: Option<PositiveU64>,
-        /// Recovery event, mutually exclusive with fixed stall.
+        /// Positive maximum wait before the typed timeout result is released.
+        stall_nanos: PositiveU64,
+        /// Optional event that releases the ordinary completion before timeout.
         recovery_event: Option<FaultObjectId>,
         /// Typed timeout result.
         timeout_result: FaultObjectId,
@@ -307,8 +307,12 @@ pub enum StorageEffectSpecification {
     FlushDisposition {
         /// Flush disposition.
         kind: StorageFlushKind,
-        /// Typed status returned to the guest.
+        /// Typed result returned immediately, or on timeout for `stall`.
         status: FaultObjectId,
+        /// Positive maximum wait required exactly when `kind = stall`.
+        stall_nanos: Option<PositiveU64>,
+        /// Optional event that recovers a stalled flush before its timeout.
+        recovery_event: Option<FaultObjectId>,
     },
     /// Stateful media-range overlay.
     MediaRange {
@@ -440,16 +444,18 @@ impl StorageEffectSpecification {
                     effect: self.kind(),
                 })
             }
-            Self::StallTimeout {
+            Self::FlushDisposition {
+                kind,
                 stall_nanos,
                 recovery_event,
                 ..
-            } => exactly_one(
-                stall_nanos.is_some(),
-                recovery_event.is_some(),
-                "stall_nanos",
-                "recovery_event",
-            ),
+            } if (*kind == StorageFlushKind::Stall) != stall_nanos.is_some()
+                || *kind != StorageFlushKind::Stall && recovery_event.is_some() =>
+            {
+                Err(FaultContractError::InvalidEffectParameters {
+                    effect: self.kind(),
+                })
+            }
             Self::ReadTransform {
                 mutation: StorageReadMutation::BitFlip { mask, .. },
             } if mask.decoded_len() == 0 => Err(FaultContractError::InvalidEffectParameters {

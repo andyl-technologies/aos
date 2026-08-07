@@ -160,7 +160,24 @@ pub struct BindingEvaluation {
     pub search_choices: Vec<BindingSearchChoice>,
     /// Earliest exact virtual-time boundary the scheduler must enqueue.
     pub next_wakeup_nanos: Option<u64>,
+    /// Referenced exported event signals emitted at this boundary.
+    pub emitted_events: Vec<ReferencedSignalEvent>,
     retained_sample_bytes: usize,
+}
+
+/// One emitted event explicitly referenced by an admitted effect contract.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReferencedSignalEvent {
+    /// Exported event signal identity.
+    pub signal: SignalId,
+    /// Exact scheduler coordinate at which it was observed.
+    pub coordinate: FaultCoordinate,
+    /// Stable order among evaluations at the same coordinate.
+    pub same_coordinate_sequence: u64,
+    /// Complete typed event value.
+    pub value: SignalValue,
+    /// Canonical digest of the typed event value.
+    pub evidence: ContentHash,
 }
 
 /// One sample payload retained under a binding's observability policy.
@@ -642,6 +659,38 @@ impl<'a> FaultBindingRuntime<'a> {
                 return Err(BindingRuntimeError::WakeupOverflow);
             }
         }
+        for signal in self.referenced_event_signals()? {
+            let mut pending = vec![signal];
+            let mut visited = BTreeSet::new();
+            while let Some(node_id) = pending.pop() {
+                if !visited.insert(node_id.clone()) {
+                    continue;
+                }
+                let node = self
+                    .program
+                    .nodes()
+                    .iter()
+                    .find(|node| node.id == node_id)
+                    .ok_or_else(|| BindingRuntimeError::MissingSignal(node_id.clone()))?;
+                if let SignalNodeKind::Source(SignalSourceSpecification::EventSequence { events }) =
+                    &node.kind
+                {
+                    for event in events {
+                        let SignalCoordinate::Event { parent, .. } = &event.coordinate else {
+                            continue;
+                        };
+                        let SignalCoordinate::VirtualTime { nanos } = parent.as_ref() else {
+                            continue;
+                        };
+                        if *nanos > now {
+                            next = Some(next.map_or(*nanos, |current| current.min(*nanos)));
+                            break;
+                        }
+                    }
+                }
+                pending.extend(node.inputs.iter().cloned());
+            }
+        }
         Ok(next)
     }
 
@@ -1087,6 +1136,44 @@ impl<'a> FaultBindingRuntime<'a> {
                 self.record_opportunity_delivery(&binding, opportunity, same_coordinate_sequence)?;
             }
         }
+        if opportunity.is_none() {
+            for signal in self.referenced_event_signals()? {
+                let consumer = FaultObjectId::parse(signal.as_str())
+                    .map_err(FaultRuntimeError::Contract)
+                    .map_err(BindingRuntimeError::Runtime)?;
+                let result = self
+                    .evaluator
+                    .evaluate(&SignalEvaluationRequest {
+                        output: signal.clone(),
+                        coordinate: SignalCoordinate::Event {
+                            parent: Box::new(SignalCoordinate::VirtualTime {
+                                nanos: coordinate.virtual_nanos,
+                            }),
+                            sequence: same_coordinate_sequence,
+                        },
+                        same_coordinate_sequence,
+                        choice: SignalChoiceContext {
+                            scenario_seed: self.scenario_seed,
+                            consumer,
+                            opportunity: None,
+                            transition_sequence: None,
+                        },
+                    })
+                    .map_err(BindingRuntimeError::Evaluation)?;
+                if let EvaluatedSignal::Value(value @ SignalValue::Event { .. }) = result {
+                    let evidence = ContentHash::from_bytes(
+                        &encode_signal_value(&value).map_err(BindingRuntimeError::Trace)?,
+                    );
+                    evaluation.emitted_events.push(ReferencedSignalEvent {
+                        signal,
+                        coordinate,
+                        same_coordinate_sequence,
+                        value,
+                        evidence,
+                    });
+                }
+            }
+        }
         evaluation.actions.sort_by(|left, right| {
             (&left.binding, &left.target, left.phase, left.kind).cmp(&(
                 &right.binding,
@@ -1095,7 +1182,34 @@ impl<'a> FaultBindingRuntime<'a> {
                 right.kind,
             ))
         });
+        if opportunity.is_none() {
+            evaluation.next_wakeup_nanos = self.next_wakeup_after(coordinate.virtual_nanos)?;
+        }
         Ok(evaluation)
+    }
+
+    fn referenced_event_signals(&self) -> Result<BTreeSet<SignalId>, BindingRuntimeError> {
+        self.bindings
+            .iter()
+            .try_fold(BTreeSet::new(), |mut signals, binding| {
+                let reference = match binding.effect().specification() {
+                    EffectSpecification::Storage(StorageEffectSpecification::StallTimeout {
+                        recovery_event,
+                        ..
+                    })
+                    | EffectSpecification::Storage(
+                        StorageEffectSpecification::FlushDisposition { recovery_event, .. },
+                    ) => recovery_event.as_ref(),
+                    _ => None,
+                };
+                if let Some(reference) = reference {
+                    signals.insert(
+                        SignalId::parse(reference.as_str())
+                            .map_err(BindingRuntimeError::Program)?,
+                    );
+                }
+                Ok(signals)
+            })
     }
 
     fn admit_opportunity_delivery(

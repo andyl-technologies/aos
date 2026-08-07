@@ -474,6 +474,12 @@ pub struct ResolvedBlockFaultDirective {
     pub retain_completion: bool,
     /// Typed error returned if a retained operation times out.
     pub retention_timeout_response: Option<BlockResponse>,
+    /// Exact virtual-nanosecond deadline for the retained completion.
+    pub retention_timeout_nanos: Option<u64>,
+    /// Optional content identity of the signal event that releases recovery.
+    pub retention_recovery_event: Option<[u8; 32]>,
+    /// Boundary after which the subscribed recovery event may release completion.
+    pub retention_recovery_after_nanos: Option<u64>,
     /// Canonically gap-ordered duplicate transport outcomes.
     pub duplicate_completions: Vec<ResolvedBlockDuplicateCompletion>,
     /// Ordered read transformations.
@@ -575,6 +581,9 @@ impl ResolvedBlockFaultDirective {
             execution_nanos: 0,
             retain_completion: false,
             retention_timeout_response: None,
+            retention_timeout_nanos: None,
+            retention_recovery_event: None,
+            retention_recovery_after_nanos: None,
             duplicate_completions: Vec::new(),
             read_transforms: Vec::new(),
             media_rules: Vec::new(),
@@ -758,6 +767,18 @@ impl ResolvedBlockFaultDirective {
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "retained completion lacks its matching typed timeout response",
+            });
+        }
+        if self.retain_completion != self.retention_timeout_nanos.is_some()
+            || self
+                .retention_timeout_nanos
+                .is_some_and(|deadline| deadline <= self.execution_nanos)
+            || !self.retain_completion && self.retention_recovery_event.is_some()
+            || self.retention_recovery_event.is_some()
+                != self.retention_recovery_after_nanos.is_some()
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "retained completion lacks a future timeout or has a stray recovery event",
             });
         }
         if self
@@ -1116,6 +1137,12 @@ pub struct BlockRetainedCompletion {
     pub request_icount: u64,
     /// Dynamic delay selected before the completion was retained.
     pub additional_latency_nanos: u64,
+    /// Exclusive virtual-nanosecond deadline that releases the timeout response.
+    pub timeout_nanos: u64,
+    /// Optional content identity of the signal event that releases recovery.
+    pub recovery_event: Option<[u8; 32]>,
+    /// Boundary after which the subscribed recovery event may release completion.
+    pub recovery_after_nanos: Option<u64>,
     /// Exclusive captured write frontier persisted before recovered flush success.
     pub persist_through_on_recovery: Option<u64>,
 }
@@ -1437,6 +1464,9 @@ impl BlockFaultState {
             || directive.additional_latency_nanos != prior.additional_latency_nanos
             || directive.retain_completion != prior.retain_completion
             || directive.retention_timeout_response != prior.retention_timeout_response
+            || directive.retention_timeout_nanos != prior.retention_timeout_nanos
+            || directive.retention_recovery_event != prior.retention_recovery_event
+            || directive.retention_recovery_after_nanos != prior.retention_recovery_after_nanos
             || directive.duplicate_completions != prior.duplicate_completions
             || directive.read_transforms != prior.read_transforms
         {
@@ -1518,6 +1548,9 @@ impl BlockFaultState {
             || directive.error_result != prior.error_result
             || directive.retain_completion != prior.retain_completion
             || directive.retention_timeout_response != prior.retention_timeout_response
+            || directive.retention_timeout_nanos != prior.retention_timeout_nanos
+            || directive.retention_recovery_event != prior.retention_recovery_event
+            || directive.retention_recovery_after_nanos != prior.retention_recovery_after_nanos
             || directive.read_transforms != prior.read_transforms
             || directive.media_rules != prior.media_rules
             || directive.write_disposition != prior.write_disposition
@@ -1863,6 +1896,12 @@ impl BlockFaultState {
                     || persistence.retain_completion != opportunity.resolved.retain_completion
                     || persistence.retention_timeout_response
                         != opportunity.resolved.retention_timeout_response
+                    || persistence.retention_timeout_nanos
+                        != opportunity.resolved.retention_timeout_nanos
+                    || persistence.retention_recovery_event
+                        != opportunity.resolved.retention_recovery_event
+                    || persistence.retention_recovery_after_nanos
+                        != opportunity.resolved.retention_recovery_after_nanos
                 {
                     return Err(DeviceError::InvalidBlockFaultDirective {
                         reason: "restored request-persistence decision is invalid",
@@ -2440,6 +2479,45 @@ impl BlockFaultState {
         identity: BlockRequestIdentity,
     ) -> Option<&BlockRetainedCompletion> {
         self.retained_completions.get(&identity)
+    }
+
+    /// Returns retained requests whose timeout is due in canonical identity order.
+    #[must_use]
+    pub fn retained_timeouts_due(&self, now_nanos: u64) -> Vec<BlockRequestIdentity> {
+        self.retained_completions
+            .iter()
+            .filter_map(|(identity, completion)| {
+                (completion.timeout_nanos <= now_nanos).then_some(*identity)
+            })
+            .collect()
+    }
+
+    /// Returns retained requests subscribed to one recovery event identity.
+    #[must_use]
+    pub fn retained_recoveries_for(
+        &self,
+        event: [u8; 32],
+        event_nanos: u64,
+    ) -> Vec<BlockRequestIdentity> {
+        self.retained_completions
+            .iter()
+            .filter_map(|(identity, completion)| {
+                (completion.recovery_event == Some(event)
+                    && completion
+                        .recovery_after_nanos
+                        .is_some_and(|after| event_nanos > after))
+                .then_some(*identity)
+            })
+            .collect()
+    }
+
+    /// Returns the earliest retained-completion timeout coordinate.
+    #[must_use]
+    pub fn next_retained_timeout_nanos(&self) -> Option<u64> {
+        self.retained_completions
+            .values()
+            .map(|completion| completion.timeout_nanos)
+            .min()
     }
 
     /// Resolves a retained completion and applies its recovery-only durability.
@@ -3545,6 +3623,13 @@ impl BlockFaultState {
                     )?,
                     request_icount,
                     additional_latency_nanos,
+                    timeout_nanos: directive.retention_timeout_nanos.ok_or(
+                        DeviceError::InvalidBlockFaultDirective {
+                            reason: "retained completion lost its timeout coordinate",
+                        },
+                    )?,
+                    recovery_event: directive.retention_recovery_event,
+                    recovery_after_nanos: directive.retention_recovery_after_nanos,
                     persist_through_on_recovery: (request.op == BlockOp::Flush
                         && matches!(
                             directive.flush_disposition,
@@ -5850,6 +5935,9 @@ mod tests {
             flush.request_id,
             BlockErrorCode::Timeout,
         ));
+        directive.retention_timeout_nanos = Some(100);
+        directive.retention_recovery_event = Some([7; 32]);
+        directive.retention_recovery_after_nanos = Some(0);
         state
             .install(flush.identity(), directive)
             .unwrap_or_else(|error| panic!("directive installs: {error}"));
@@ -5868,6 +5956,13 @@ mod tests {
                 .retained_completion(flush.identity())
                 .map(|held| held.identity.request_id),
             Some(flush.request_id)
+        );
+        assert!(state.retained_timeouts_due(99).is_empty());
+        assert_eq!(state.retained_timeouts_due(100), vec![flush.identity()]);
+        assert!(state.retained_recoveries_for([7; 32], 0).is_empty());
+        assert_eq!(
+            state.retained_recoveries_for([7; 32], 50),
+            vec![flush.identity()]
         );
         response(
             &mut state,
@@ -5915,6 +6010,7 @@ mod tests {
             flush.request_id,
             BlockErrorCode::Timeout,
         ));
+        directive.retention_timeout_nanos = Some(100);
         state
             .install(flush.identity(), directive)
             .unwrap_or_else(|error| panic!("directive installs: {error}"));

@@ -527,6 +527,10 @@ impl BlockDevice {
             .storage_faults
             .next_delivery_deadline_nanos()
             .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
+        let retained_timeout = self
+            .storage_faults
+            .next_retained_timeout_nanos()
+            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
         self.core
             .next_exact_local_event()
             .into_iter()
@@ -535,6 +539,7 @@ impl BlockDevice {
             .chain(request_persistence)
             .chain(delivery)
             .chain(persistence)
+            .chain(retained_timeout)
             .min()
     }
 
@@ -570,19 +575,38 @@ impl BlockDevice {
         identity: super::codec::BlockRequestIdentity,
         release: BlockRetainedRelease,
     ) -> Result<(), DeviceError> {
-        let mut next_faults = self.storage_faults.clone();
-        let mut next_overlay = self.overlay.clone();
-        let now_nanos = icount_to_virtual_ns(self.core.current_icount(), self.core.shift_bits())?;
-        let response = next_faults.resolve_retained_completion(
-            &self.base,
-            &mut next_overlay,
-            identity,
-            release,
-            now_nanos,
-        )?;
-        self.core.schedule_response_now(response)?;
-        self.storage_faults = next_faults;
-        self.overlay = next_overlay;
+        self.release_storage_completions(&[(identity, release)])?;
+        Ok(())
+    }
+
+    /// Atomically releases retained storage completions at the current icount.
+    ///
+    /// Every durability mutation and response reservation is applied to a clone
+    /// of the complete device. The device changes only after all releases have
+    /// succeeded, so a full response queue or invalid identity cannot expose a
+    /// prefix of the requested batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when any identity is absent, a recovery cannot
+    /// satisfy its durability frontier, or any response cannot be scheduled.
+    pub fn release_storage_completions(
+        &mut self,
+        releases: &[(super::codec::BlockRequestIdentity, BlockRetainedRelease)],
+    ) -> Result<(), DeviceError> {
+        let mut next = self.clone();
+        let now_nanos = icount_to_virtual_ns(next.core.current_icount(), next.core.shift_bits())?;
+        for (identity, release) in releases {
+            let response = next.storage_faults.resolve_retained_completion(
+                &next.base,
+                &mut next.overlay,
+                *identity,
+                *release,
+                now_nanos,
+            )?;
+            next.core.schedule_response_now(response)?;
+        }
+        *self = next;
         Ok(())
     }
 

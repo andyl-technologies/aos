@@ -15,8 +15,9 @@ use crucible::model::{
 };
 use crucible_device::block::{
     BaseImage, BlockDurabilityConfig, BlockOp, BlockPersistenceMediaOutcome, BlockRequest,
-    BlockServiceCompletion, BlockStorageOutcome, ResolvedBlockDeliveryDirective,
-    ResolvedBlockExecutionDirective, ResolvedBlockRequestPersistenceDirective,
+    BlockRetainedRelease, BlockServiceCompletion, BlockStorageOutcome,
+    ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective,
+    ResolvedBlockRequestPersistenceDirective,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, QemuAsyncDriverRuntimeError, QemuBlockFaultCoordinator,
@@ -26,7 +27,7 @@ use crucible_qemu::{
     block_persistence_fault_opportunity, block_request_fault_opportunity,
     block_request_persistence_fault_opportunity, merge_block_fault_phase_directive,
     resolve_block_fault_directive, resolve_block_persistence_media_directive,
-    resolve_volatile_cache_loss,
+    resolve_volatile_cache_loss, storage_recovery_event_key,
 };
 
 /// Maximum phase/device settle transitions performed during one host poll.
@@ -110,7 +111,7 @@ pub(super) fn block_binding_for_vm(
 }
 
 /// Globally sequenced fault-observation journal shared by every live adapter.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct ProductionFaultObservationJournal {
     batches: std::collections::BTreeMap<u64, Vec<FaultObservation>>,
     observations: usize,
@@ -880,6 +881,137 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         guest_icount: u64,
     ) -> Result<QemuLiveBlockIoServiceStep, QemuAsyncDriverRuntimeError> {
         let now_nanos = self.virtual_nanos(guest_icount)?;
+        let recovery_events = self
+            .runtime
+            .lock()
+            .map_err(|_| {
+                storage_error(
+                    "read storage recovery events",
+                    "fault runtime lock is poisoned",
+                )
+            })?
+            .emitted_events()
+            .iter()
+            .filter(|event| event.coordinate.virtual_nanos <= now_nanos)
+            .map(|event| {
+                (
+                    event.signal.clone(),
+                    event.coordinate.virtual_nanos,
+                    event.evidence,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut releases = std::collections::BTreeMap::new();
+        for (signal, event_nanos, event_evidence) in recovery_events {
+            let signal = crucible::model::FaultObjectId::parse(signal.as_str())
+                .map_err(|error| storage_error("resolve storage recovery event", error))?;
+            let key = storage_recovery_event_key(&signal);
+            for identity in servicer
+                .storage_fault_state()
+                .retained_recoveries_for(key, event_nanos)
+            {
+                let retained = servicer
+                    .storage_fault_state()
+                    .retained_completion(identity)
+                    .ok_or_else(|| {
+                        storage_error(
+                            "select recovered block completion",
+                            "retained completion disappeared during selection",
+                        )
+                    })?;
+                if event_nanos <= retained.timeout_nanos {
+                    releases
+                        .entry(identity)
+                        .and_modify(|selected: &mut (BlockRetainedRelease, u64, ContentHash)| {
+                            if event_nanos < selected.1 {
+                                *selected =
+                                    (BlockRetainedRelease::Recovery, event_nanos, event_evidence);
+                            }
+                        })
+                        .or_insert((BlockRetainedRelease::Recovery, event_nanos, event_evidence));
+                }
+            }
+        }
+        for identity in servicer
+            .storage_fault_state()
+            .retained_timeouts_due(now_nanos)
+        {
+            let retained = servicer
+                .storage_fault_state()
+                .retained_completion(identity)
+                .ok_or_else(|| {
+                    storage_error(
+                        "select timed-out block completion",
+                        "retained completion disappeared during selection",
+                    )
+                })?;
+            releases.entry(identity).or_insert_with(|| {
+                (
+                    BlockRetainedRelease::Timeout,
+                    retained.timeout_nanos,
+                    retained_release_evidence(
+                        identity,
+                        BlockRetainedRelease::Timeout,
+                        retained.timeout_nanos,
+                        None,
+                    ),
+                )
+            });
+        }
+        if !releases.is_empty() {
+            let device_releases = releases
+                .iter()
+                .map(|(identity, (release, _, _))| (*identity, *release))
+                .collect::<Vec<_>>();
+            let mut cursor = self.cursor.lock().map_err(|_| {
+                storage_error(
+                    "sequence retained block releases",
+                    "production fault evaluation cursor lock is poisoned",
+                )
+            })?;
+            let mut journal = self.observations.lock().map_err(|_| {
+                storage_error(
+                    "record retained block releases",
+                    "storage observation queue lock is poisoned",
+                )
+            })?;
+            let mut staged_cursor = *cursor;
+            let mut staged_journal = journal.clone();
+            let mut batches = Vec::with_capacity(releases.len());
+            for (identity, (release, release_nanos, cause)) in &releases {
+                let sequence = staged_cursor
+                    .next_sequence(*release_nanos)
+                    .map_err(|error| storage_error("sequence retained block release", error))?;
+                batches.push((
+                    sequence,
+                    FaultObservation {
+                        semantic_version: FAULT_RUNTIME_STATE_VERSION,
+                        kind: FaultObservationKind::EffectApplied,
+                        coordinate: FaultCoordinate {
+                            virtual_nanos: *release_nanos,
+                            retired_instructions: Some(
+                                self.retired_instructions_at(*release_nanos, guest_icount)?,
+                            ),
+                        },
+                        binding: None,
+                        target: Some(self.target.clone()),
+                        opportunity: None,
+                        evidence: retained_release_evidence(
+                            *identity,
+                            *release,
+                            *release_nanos,
+                            Some(*cause),
+                        ),
+                    },
+                ));
+            }
+            staged_journal.append_batches(batches)?;
+            servicer
+                .release_storage_completions(&device_releases)
+                .map_err(|error| storage_error("release retained block completions", error))?;
+            *cursor = staged_cursor;
+            *journal = staged_journal;
+        }
         self.record_device_outcomes(servicer, guest_icount)?;
         self.admit_head_request(servicer)?;
         let intake = servicer
@@ -974,6 +1106,27 @@ fn block_target_intersects_range(target: &ResolvedFaultTarget, offset: u64, leng
             .is_some_and(|(end, target_end)| offset < target_end && *start_byte < end),
         _ => false,
     }
+}
+
+fn retained_release_evidence(
+    identity: crucible_device::block::BlockRequestIdentity,
+    release: BlockRetainedRelease,
+    release_nanos: u64,
+    cause: Option<ContentHash>,
+) -> ContentHash {
+    let release = match release {
+        BlockRetainedRelease::Recovery => "recovery",
+        BlockRetainedRelease::Timeout => "timeout",
+    };
+    ContentHash::from_canonical_material(
+        "crucible.storage-retained-release-evidence.v1",
+        &format!(
+            "epoch={}\nrequest_id={}\nrelease={release}\nrelease_nanos={release_nanos}\ncause={}",
+            identity.epoch,
+            identity.request_id,
+            cause.map_or_else(|| String::from("none"), |value| value.to_hex()),
+        ),
+    )
 }
 
 fn volatile_cache_loss_evidence(resolved: &ResolvedVolatileCacheLoss) -> ContentHash {

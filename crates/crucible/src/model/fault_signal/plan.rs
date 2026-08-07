@@ -500,8 +500,23 @@ fn validate_storage_effect_policy_references(
                 require_program_node(recovery_event, "recovery_event")?;
             }
         }
-        StorageEffectSpecification::FlushDisposition { kind, status } => {
-            require_typed_result(status, "status", Some(*kind != StorageFlushKind::Error))?;
+        StorageEffectSpecification::FlushDisposition {
+            kind,
+            status,
+            recovery_event,
+            ..
+        } => {
+            require_typed_result(
+                status,
+                "status",
+                Some(!matches!(
+                    kind,
+                    StorageFlushKind::Error | StorageFlushKind::Stall
+                )),
+            )?;
+            if let Some(recovery_event) = recovery_event {
+                require_program_node(recovery_event, "recovery_event")?;
+            }
         }
         StorageEffectSpecification::DuplicateCompletion {
             copies,
