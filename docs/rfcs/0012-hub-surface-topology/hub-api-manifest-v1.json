@@ -2157,17 +2157,59 @@
          "service" : "IdentityService"
       },
       {
-         "method" : "PlanCreateAutomationPrincipal",
-         "path" : "aos.hub.v1.IdentityService/PlanCreateAutomationPrincipal",
-         "request" : "PlanCreateAutomationPrincipalRequest",
+         "method" : "ListServiceAccounts",
+         "path" : "aos.hub.v1.IdentityService/ListServiceAccounts",
+         "request" : "ListServiceAccountsRequest",
+         "response" : "ListServiceAccountsResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "GetServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/GetServiceAccount",
+         "request" : "GetServiceAccountRequest",
+         "response" : "ServiceAccountResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanCreateServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/PlanCreateServiceAccount",
+         "request" : "PlanCreateServiceAccountRequest",
          "response" : "TopologyPlanResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "CreateAutomationPrincipal",
-         "path" : "aos.hub.v1.IdentityService/CreateAutomationPrincipal",
+         "method" : "CreateServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/CreateServiceAccount",
          "request" : "ApplyTopologyPlanRequest",
-         "response" : "AutomationPrincipalResponse",
+         "response" : "ServiceAccountResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanUpdateServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/PlanUpdateServiceAccount",
+         "request" : "PlanUpdateServiceAccountRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "UpdateServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/UpdateServiceAccount",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "ServiceAccountResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanDeleteServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/PlanDeleteServiceAccount",
+         "request" : "PlanDeleteServiceAccountRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "DeleteServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/DeleteServiceAccount",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "DeleteTopologyResourceResponse",
          "service" : "IdentityService"
       },
       {
@@ -2248,7 +2290,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 314,
+   "rpc_count" : 320,
    "services" : [
       "RegistryService",
       "OrganizationService",

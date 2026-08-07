@@ -2184,13 +2184,43 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     r = rpc_route!(r, "/aos.hub.v1.IdentityService/WhoAmI", who_am_i);
     r = rpc_route!(
         r,
-        "/aos.hub.v1.IdentityService/PlanCreateAutomationPrincipal",
-        plan_create_automation_principal
+        "/aos.hub.v1.IdentityService/ListServiceAccounts",
+        list_service_accounts
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.IdentityService/CreateAutomationPrincipal",
-        apply_create_automation_principal
+        "/aos.hub.v1.IdentityService/GetServiceAccount",
+        get_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanCreateServiceAccount",
+        plan_create_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/CreateServiceAccount",
+        apply_create_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanUpdateServiceAccount",
+        plan_update_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/UpdateServiceAccount",
+        apply_update_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanDeleteServiceAccount",
+        plan_delete_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/DeleteServiceAccount",
+        apply_delete_service_account
     );
     r = rpc_route!(
         r,

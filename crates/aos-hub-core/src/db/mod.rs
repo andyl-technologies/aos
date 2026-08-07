@@ -757,6 +757,19 @@ pub struct ProjectRecord {
     pub updated_at: i64,
 }
 
+/// An organization-owned non-human principal.
+#[derive(Debug, Clone)]
+pub struct ServiceAccountRecord {
+    /// Stable database identity retained across renames.
+    pub id: i64,
+    /// Owning organization identity.
+    pub org_id: i64,
+    /// Name unique within the organization.
+    pub name: String,
+    /// Creation timestamp.
+    pub created_at: i64,
+}
+
 /// A pending invitation system-of-record row.
 #[derive(Debug, Clone)]
 pub struct InvitationRecord {
@@ -12988,6 +13001,113 @@ impl Database {
             .context("loading service account by name")?
             .map(|row| row.get(0))
             .transpose()
+    }
+
+    /// Lists an organization's service accounts in stable name order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_service_accounts(&self, org_id: i64) -> Result<Vec<ServiceAccountRecord>> {
+        self.backend
+            .query(
+                "SELECT id, org_id, name, created_at FROM service_accounts
+                 WHERE org_id = ?1 ORDER BY name, id",
+                &vals![org_id],
+            )
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(ServiceAccountRecord {
+                    id: row.get(0)?,
+                    org_id: row.get(1)?,
+                    name: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Loads one service account by organization and name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn service_account_record(
+        &self,
+        org_id: i64,
+        name: &str,
+    ) -> Result<Option<ServiceAccountRecord>> {
+        self.backend
+            .query_opt(
+                "SELECT id, org_id, name, created_at FROM service_accounts
+                 WHERE org_id = ?1 AND name = ?2",
+                &vals![org_id, name],
+            )
+            .await?
+            .map(|row| {
+                Ok(ServiceAccountRecord {
+                    id: row.get(0)?,
+                    org_id: row.get(1)?,
+                    name: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Renames one service account when its current name still matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including name collisions.
+    pub async fn rename_service_account(
+        &self,
+        id: i64,
+        expected_name: &str,
+        new_name: &str,
+    ) -> Result<bool> {
+        Ok(self
+            .backend
+            .execute(
+                "UPDATE service_accounts SET name = ?3 WHERE id = ?1 AND name = ?2",
+                &vals![id, expected_name, new_name],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Deletes one service account when its current name still matches.
+    ///
+    /// Direct memberships are removed in the same transaction. Owned tokens
+    /// remain as audit metadata but immediately become unusable because token
+    /// validation requires a live principal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn delete_service_account(&self, id: i64, expected_name: &str) -> Result<()> {
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE service_accounts SET name = name WHERE id = ?1 AND name = ?2",
+                    vals![id, expected_name],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM memberships
+                     WHERE principal_kind = 'service_account' AND principal_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM service_accounts WHERE id = ?1 AND name = ?2",
+                    vals![id, expected_name],
+                )
+                .expecting(1),
+            ])
+            .await?;
+        Ok(())
     }
 
     /// Returns the canonical `org/service-account` reference for a live account.

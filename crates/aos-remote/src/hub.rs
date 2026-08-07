@@ -621,8 +621,14 @@ enum HubTopologyMethod {
     DeleteWebhook,
     /// Selects the normalized `WhoAmI` Connect operation.
     WhoAmI,
-    PlanCreateAutomationPrincipal,
-    CreateAutomationPrincipal,
+    ListServiceAccounts,
+    GetServiceAccount,
+    PlanCreateServiceAccount,
+    CreateServiceAccount,
+    PlanUpdateServiceAccount,
+    UpdateServiceAccount,
+    PlanDeleteServiceAccount,
+    DeleteServiceAccount,
     GetMembership,
     PlanSetMembership,
     SetMembership,
@@ -1091,10 +1097,14 @@ impl HubTopologyMethod {
             PlanDeleteWebhook => "aos.hub.v1.WebhookService/PlanDeleteWebhook",
             DeleteWebhook => "aos.hub.v1.WebhookService/DeleteWebhook",
             WhoAmI => "aos.hub.v1.IdentityService/WhoAmI",
-            PlanCreateAutomationPrincipal => {
-                "aos.hub.v1.IdentityService/PlanCreateAutomationPrincipal"
-            }
-            CreateAutomationPrincipal => "aos.hub.v1.IdentityService/CreateAutomationPrincipal",
+            ListServiceAccounts => "aos.hub.v1.IdentityService/ListServiceAccounts",
+            GetServiceAccount => "aos.hub.v1.IdentityService/GetServiceAccount",
+            PlanCreateServiceAccount => "aos.hub.v1.IdentityService/PlanCreateServiceAccount",
+            CreateServiceAccount => "aos.hub.v1.IdentityService/CreateServiceAccount",
+            PlanUpdateServiceAccount => "aos.hub.v1.IdentityService/PlanUpdateServiceAccount",
+            UpdateServiceAccount => "aos.hub.v1.IdentityService/UpdateServiceAccount",
+            PlanDeleteServiceAccount => "aos.hub.v1.IdentityService/PlanDeleteServiceAccount",
+            DeleteServiceAccount => "aos.hub.v1.IdentityService/DeleteServiceAccount",
             GetMembership => "aos.hub.v1.IdentityService/GetMembership",
             PlanSetMembership => "aos.hub.v1.IdentityService/PlanSetMembership",
             SetMembership => "aos.hub.v1.IdentityService/SetMembership",
@@ -1453,8 +1463,14 @@ pub mod hub_rpc {
         ReportCacheNarinfos: ReportCacheNarinfosRequest => CacheNarinfoRegistrationResponse;
         GetRetentionSubscription: GetRetentionSubscriptionRequest => RetentionSubscriptionResponse;
         GetPopulationTarget: GetPopulationTargetRequest => PopulationTargetResponse;
-        PlanCreateAutomationPrincipal: PlanCreateAutomationPrincipalRequest => TopologyPlanResponse;
-        CreateAutomationPrincipal: ApplyTopologyPlanRequest => AutomationPrincipalResponse;
+        ListServiceAccounts: ListServiceAccountsRequest => ListServiceAccountsResponse;
+        GetServiceAccount: GetServiceAccountRequest => ServiceAccountResponse;
+        PlanCreateServiceAccount: PlanCreateServiceAccountRequest => TopologyPlanResponse;
+        CreateServiceAccount: ApplyTopologyPlanRequest => ServiceAccountResponse;
+        PlanUpdateServiceAccount: PlanUpdateServiceAccountRequest => TopologyPlanResponse;
+        UpdateServiceAccount: ApplyTopologyPlanRequest => ServiceAccountResponse;
+        PlanDeleteServiceAccount: PlanDeleteServiceAccountRequest => TopologyPlanResponse;
+        DeleteServiceAccount: ApplyTopologyPlanRequest => DeleteTopologyResourceResponse;
         GetMembership: GetMembershipRequest => MembershipResponse;
         PlanSetMembership: PlanSetMembershipRequest => TopologyPlanResponse;
         SetMembership: ApplyTopologyPlanRequest => MembershipResponse;

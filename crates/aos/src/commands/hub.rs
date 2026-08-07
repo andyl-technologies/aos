@@ -30,10 +30,11 @@ use crate::cli::{
     HubPlacementEvictionCmd, HubPlacementPolicyCmd, HubPlacementPromotionCmd, HubProjectCmd,
     HubPublishCmd, HubRegistryCacheStackCmd, HubRegistryCmd, HubRegistryMirrorCmd,
     HubReviewedApplyArgs, HubRouteCmd, HubRouteSpecArgs, HubServiceAccountCmd,
-    HubServiceAccountCreateCmd, HubSigningKeyCmd, HubSigningKeyEnrollCmd, HubSigningKeyRetireCmd,
-    HubSigningKeyRotateCmd, HubSigningKeySetUsageCmd, HubStorageBindingCmd,
-    HubStorageBindingCredentialCmd, HubStorageBindingWriteRevisionCmd, HubSurfaceCmd,
-    HubTopologyCmd, HubTopologyCutoverCmd, HubWebhookCmd,
+    HubServiceAccountCreateCmd, HubServiceAccountDeleteCmd, HubServiceAccountUpdateCmd,
+    HubSigningKeyCmd, HubSigningKeyEnrollCmd, HubSigningKeyRetireCmd, HubSigningKeyRotateCmd,
+    HubSigningKeySetUsageCmd, HubStorageBindingCmd, HubStorageBindingCredentialCmd,
+    HubStorageBindingWriteRevisionCmd, HubSurfaceCmd, HubTopologyCmd, HubTopologyCutoverCmd,
+    HubWebhookCmd,
 };
 
 const PIN_RESOLUTION_DOCUMENT_SCHEMA: &str = "aos.hub.pin-resolutions.v1";
@@ -8383,56 +8384,161 @@ async fn config(printer: &Printer, command: &HubConfigCmd) -> Result<()> {
 }
 
 async fn service_account(printer: &Printer, command: &HubServiceAccountCmd) -> Result<()> {
-    let HubServiceAccountCmd::Create { command } = command;
     match command {
-        HubServiceAccountCreateCmd::Plan {
-            request,
+        HubServiceAccountCmd::List {
+            access,
             org,
-            name,
-            if_version,
+            pagination,
         } => {
-            let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
-            let mutation = retained_plan_mutation(&request.idempotency_key, if_version.as_deref());
-            topology_mutation::<
-                _,
-                hub_types::ApplyTopologyPlanRequest,
-                hub_types::AutomationPrincipalResponse,
-                _,
-            >(
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read(
                 printer,
                 &client,
-                HubTopologyMethod::PlanCreateAutomationPrincipal,
-                HubTopologyMethod::CreateAutomationPrincipal,
-                &hub_types::PlanCreateAutomationPrincipalRequest {
+                HubTopologyMethod::ListServiceAccounts,
+                &hub_types::ListServiceAccountsRequest {
+                    org_slug: org.clone(),
+                    page_size: pagination.page_size.unwrap_or_default(),
+                    page_token: pagination.page_token.clone().unwrap_or_default(),
+                },
+            )
+            .await
+        }
+        HubServiceAccountCmd::Show { access, org, name } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read(
+                printer,
+                &client,
+                HubTopologyMethod::GetServiceAccount,
+                &hub_types::GetServiceAccountRequest {
                     org_slug: org.clone(),
                     name: name.clone(),
-                    expected_resource_version: if_version.clone().unwrap_or_default(),
-                    idempotency_key: request.idempotency_key.clone(),
                 },
-                &mutation,
-                apply_topology_plan,
             )
             .await
         }
-        HubServiceAccountCreateCmd::Apply(apply) => {
-            let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
-            let mutation = retained_apply_mutation(apply);
-            topology_mutation::<
-                _,
-                hub_types::ApplyTopologyPlanRequest,
-                hub_types::AutomationPrincipalResponse,
-                _,
-            >(
-                printer,
-                &client,
-                HubTopologyMethod::PlanCreateAutomationPrincipal,
-                HubTopologyMethod::CreateAutomationPrincipal,
-                &hub_types::PlanCreateAutomationPrincipalRequest::default(),
-                &mutation,
-                apply_topology_plan,
-            )
-            .await
-        }
+        HubServiceAccountCmd::Create { command } => match command {
+            HubServiceAccountCreateCmd::Plan {
+                request,
+                org,
+                name,
+                if_version,
+            } => {
+                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let mutation =
+                    retained_plan_mutation(&request.idempotency_key, if_version.as_deref());
+                topology_mutation(
+                    printer,
+                    &client,
+                    HubTopologyMethod::PlanCreateServiceAccount,
+                    HubTopologyMethod::CreateServiceAccount,
+                    &hub_types::PlanCreateServiceAccountRequest {
+                        org_slug: org.clone(),
+                        name: name.clone(),
+                        expected_resource_version: if_version.clone().unwrap_or_default(),
+                        idempotency_key: request.idempotency_key.clone(),
+                    },
+                    &mutation,
+                    apply_topology_plan,
+                )
+                .await
+            }
+            HubServiceAccountCreateCmd::Apply(apply) => {
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let mutation = retained_apply_mutation(apply);
+                topology_mutation(
+                    printer,
+                    &client,
+                    HubTopologyMethod::PlanCreateServiceAccount,
+                    HubTopologyMethod::CreateServiceAccount,
+                    &hub_types::PlanCreateServiceAccountRequest::default(),
+                    &mutation,
+                    apply_topology_plan,
+                )
+                .await
+            }
+        },
+        HubServiceAccountCmd::Update { command } => match command {
+            HubServiceAccountUpdateCmd::Plan {
+                request,
+                org,
+                name,
+                new_name,
+                if_version,
+            } => {
+                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let mutation = retained_plan_mutation(&request.idempotency_key, Some(if_version));
+                topology_mutation(
+                    printer,
+                    &client,
+                    HubTopologyMethod::PlanUpdateServiceAccount,
+                    HubTopologyMethod::UpdateServiceAccount,
+                    &hub_types::PlanUpdateServiceAccountRequest {
+                        org_slug: org.clone(),
+                        name: name.clone(),
+                        new_name: new_name.clone(),
+                        expected_resource_version: if_version.clone(),
+                        idempotency_key: request.idempotency_key.clone(),
+                    },
+                    &mutation,
+                    apply_topology_plan,
+                )
+                .await
+            }
+            HubServiceAccountUpdateCmd::Apply(apply) => {
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let mutation = retained_apply_mutation(apply);
+                topology_mutation(
+                    printer,
+                    &client,
+                    HubTopologyMethod::PlanUpdateServiceAccount,
+                    HubTopologyMethod::UpdateServiceAccount,
+                    &hub_types::PlanUpdateServiceAccountRequest::default(),
+                    &mutation,
+                    apply_topology_plan,
+                )
+                .await
+            }
+        },
+        HubServiceAccountCmd::Delete { command } => match command {
+            HubServiceAccountDeleteCmd::Plan {
+                request,
+                org,
+                name,
+                if_version,
+            } => {
+                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let mutation = retained_plan_mutation(&request.idempotency_key, Some(if_version));
+                topology_mutation(
+                    printer,
+                    &client,
+                    HubTopologyMethod::PlanDeleteServiceAccount,
+                    HubTopologyMethod::DeleteServiceAccount,
+                    &hub_types::PlanDeleteServiceAccountRequest {
+                        org_slug: org.clone(),
+                        name: name.clone(),
+                        expected_resource_version: if_version.clone(),
+                        idempotency_key: request.idempotency_key.clone(),
+                    },
+                    &mutation,
+                    apply_topology_plan,
+                )
+                .await
+            }
+            HubServiceAccountDeleteCmd::Apply(apply) => {
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let mutation = retained_apply_mutation(apply);
+                topology_mutation(
+                    printer,
+                    &client,
+                    HubTopologyMethod::PlanDeleteServiceAccount,
+                    HubTopologyMethod::DeleteServiceAccount,
+                    &hub_types::PlanDeleteServiceAccountRequest::default(),
+                    &mutation,
+                    apply_topology_plan,
+                )
+                .await
+            }
+        },
     }
 }
 

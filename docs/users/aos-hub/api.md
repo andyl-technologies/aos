@@ -103,6 +103,13 @@ aliases. Token metadata includes its non-secret comment, creation, expiry,
 last-use, rotation, retirement, and lifecycle state; the plaintext secret is
 returned once by the issuance apply response.
 
+Service accounts use `ListServiceAccounts`, `GetServiceAccount`, and reviewed
+create, update, and delete pairs. A rename changes only the human-facing
+`<org>/<name>` reference; the numeric principal identity remains stable. Delete
+removes direct memberships atomically, while retained token metadata becomes
+unusable immediately because its owner is no longer live. The former
+`AutomationPrincipal` API names are not served.
+
 ## Scripting
 
 The remote client covers common calls and provides stable JSON output:

@@ -121,6 +121,20 @@ is printed only by a successful first apply. Tokens default to 30 days and may
 not exceed 90 days; the server rechecks the owner's current role authority when
 applying the plan.
 
+Service accounts have a complete organization-scoped lifecycle:
+
+```sh
+aos hub org service-account list acme
+aos hub org service-account show acme publisher
+aos hub org service-account create plan acme publisher \
+  --idempotency-key 'plan-create-publisher'
+```
+
+`update plan` renames an account while retaining its stable principal identity,
+memberships, and token ownership. `delete plan` removes its direct memberships
+atomically and immediately deadens its owned credentials. Both require the
+`resource_version` returned by list or show.
+
 The remote client includes registry, cache, organization, project, binding,
 webhook, instance, audit, changeset, and upload operations. Authorization is
 checked against current server-side grants for every request; approval never

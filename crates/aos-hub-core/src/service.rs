@@ -473,11 +473,30 @@ struct InstanceSettingsPlanInput {
 
 /// Immutable preconditions for creating an organization-owned automation principal.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct AutomationPrincipalPlanInput {
+struct ServiceAccountCreatePlanInput {
     org_id: i64,
     org_slug: String,
     name: String,
     baseline_principal_id: Option<i64>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ServiceAccountUpdatePlanInput {
+    org_id: i64,
+    org_slug: String,
+    service_account_id: i64,
+    current_name: String,
+    new_name: String,
+    baseline_resource_version: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ServiceAccountDeletePlanInput {
+    org_id: i64,
+    org_slug: String,
+    service_account_id: i64,
+    name: String,
+    baseline_resource_version: String,
 }
 
 /// Immutable preconditions for replacing one direct membership grant.
@@ -1621,6 +1640,44 @@ fn instance_settings_digest(s: &crate::db::InstanceSettings) -> Result<String, R
     let message = instance_settings_to_pb(s);
     let canonical = serde_json::to_vec(&message).map_err(RpcError::internal)?;
     Ok(hex::encode(Sha256::digest(canonical)))
+}
+
+fn service_account_resource_version(
+    record: &crate::db::ServiceAccountRecord,
+) -> Result<String, RpcError> {
+    let canonical =
+        serde_json::to_vec(&(record.id, record.org_id, &record.name, record.created_at))
+            .map_err(RpcError::internal)?;
+    Ok(hex::encode(Sha256::digest(canonical)))
+}
+
+fn service_account_message(
+    org_slug: &str,
+    record: crate::db::ServiceAccountRecord,
+) -> Result<pb::ServiceAccount, RpcError> {
+    let resource_version = service_account_resource_version(&record)?;
+    Ok(pb::ServiceAccount {
+        id: record.id,
+        org_slug: org_slug.to_string(),
+        name: record.name,
+        created_at: record.created_at,
+        resource_version,
+    })
+}
+
+fn normalize_service_account_name(value: &str) -> Result<String, RpcError> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(RpcError::invalid(
+            "service-account name must contain 1..=64 letters, digits, '-', '_', or '.'",
+        ));
+    }
+    Ok(value.to_string())
 }
 
 /// Build the wire [`pb::Webhook`] for a webhook subscription under `org_slug`.
@@ -18142,13 +18199,98 @@ impl RpcService {
         })
     }
 
-    /// Persists an immutable plan for creating an automation principal.
-    pub async fn plan_create_automation_principal(
+    /// Lists the service accounts owned by one organization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage organization members, [`RpcError::NotFound`] when the organization
+    /// does not exist, and [`RpcError::Internal`] on database failure.
+    pub async fn list_service_accounts(
         &self,
         auth: Option<&str>,
-        req: pb::PlanCreateAutomationPrincipalRequest,
+        req: pb::ListServiceAccountsRequest,
+    ) -> Result<pb::ListServiceAccountsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(
+            &claims,
+            Permission::MembersManage,
+            &Scope::parse(&org.stable_id),
+        )
+        .await?;
+        let accounts = self
+            .db
+            .list_service_accounts(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|record| service_account_message(&org.slug, record))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (service_accounts, next_page_token) =
+            paginate(accounts, req.page_size, &req.page_token)?;
+        Ok(pb::ListServiceAccountsResponse {
+            service_accounts,
+            next_page_token,
+        })
+    }
+
+    /// Reads one organization-owned service account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage organization members, [`RpcError::NotFound`] when either resource
+    /// does not exist, and [`RpcError::Internal`] on database failure.
+    pub async fn get_service_account(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetServiceAccountRequest,
+    ) -> Result<pb::ServiceAccountResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(
+            &claims,
+            Permission::MembersManage,
+            &Scope::parse(&org.stable_id),
+        )
+        .await?;
+        let record = self
+            .db
+            .service_account_record(org.id, &req.name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("service account"))?;
+        Ok(pb::ServiceAccountResponse {
+            service_account: Some(service_account_message(&org.slug, record)?),
+        })
+    }
+
+    /// Persists an immutable plan for creating a service account.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::InvalidArgument`] for an invalid name or organization,
+    /// an authentication or authorization error when the caller cannot manage
+    /// organization IAM, [`RpcError::AlreadyExists`] for a conflicting account,
+    /// and [`RpcError::Internal`] on persistence failure.
+    pub async fn plan_create_service_account(
+        &self,
+        auth: Option<&str>,
+        mut req: pb::PlanCreateServiceAccountRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
+        req.name = normalize_service_account_name(&req.name)?;
         let org = self
             .db
             .org_by_slug(&req.org_slug)
@@ -18164,10 +18306,10 @@ impl RpcService {
             .map_err(RpcError::internal)?;
         if baseline_principal_id.is_some() || !req.expected_resource_version.is_empty() {
             return Err(RpcError::AlreadyExists(
-                "automation principal already exists or creation version is not empty".into(),
+                "service account already exists or creation version is not empty".into(),
             ));
         }
-        let input = AutomationPrincipalPlanInput {
+        let input = ServiceAccountCreatePlanInput {
             org_id: org.id,
             org_slug: req.org_slug,
             name: req.name,
@@ -18178,12 +18320,12 @@ impl RpcService {
         ));
         self.create_control_plan(
             &claims,
-            "create_automation_principal",
+            "create_service_account",
             &org.stable_id,
             &input,
             &req.idempotency_key,
             vec![format!(
-                "create automation principal {}/{}",
+                "create service account {}/{}",
                 input.org_slug, input.name
             )],
             Vec::new(),
@@ -18192,13 +18334,19 @@ impl RpcService {
         .await
     }
 
-    /// Applies one reviewed automation-principal plan exactly once.
-    pub async fn apply_create_automation_principal(
+    /// Applies one reviewed service-account creation plan exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error for an invalid caller,
+    /// [`RpcError::FailedPrecondition`] when the reviewed baseline changed, and
+    /// an internal or plan-lifecycle error when the operation cannot be applied.
+    pub async fn apply_create_service_account(
         &self,
         auth: Option<&str>,
         req: pb::ApplyTopologyPlanRequest,
-    ) -> Result<pb::AutomationPrincipalResponse, RpcError> {
-        const PLAN_KIND: &str = "create_automation_principal";
+    ) -> Result<pb::ServiceAccountResponse, RpcError> {
+        const PLAN_KIND: &str = "create_service_account";
         let claims = self
             .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
             .await?;
@@ -18222,7 +18370,7 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, AutomationPrincipalPlanInput) = self
+        let (plan, input): (_, ServiceAccountCreatePlanInput) = self
             .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
             .await?;
         let org = self
@@ -18246,7 +18394,7 @@ impl RpcService {
             != input.baseline_principal_id
         {
             return Err(RpcError::FailedPrecondition(
-                "automation principal changed after planning".into(),
+                "service account changed after planning".into(),
             ));
         }
         let id = self
@@ -18254,13 +18402,311 @@ impl RpcService {
             .create_service_account(org.id, &input.name)
             .await
             .map_err(RpcError::internal)?;
-        let response = pb::AutomationPrincipalResponse {
-            service_account: Some(pb::ServiceAccount {
-                id,
-                org_slug: input.org_slug,
-                name: input.name,
-            }),
+        let record = self
+            .db
+            .service_account_record(org.id, &input.name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::internal(anyhow::anyhow!("created service account disappeared"))
+            })?;
+        debug_assert_eq!(record.id, id);
+        let response = pb::ServiceAccountResponse {
+            service_account: Some(service_account_message(&input.org_slug, record)?),
         };
+        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
+            .await?;
+        Ok(response)
+    }
+
+    /// Persists an immutable plan for renaming one service account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage organization IAM, [`RpcError::NotFound`] for a missing resource,
+    /// [`RpcError::FailedPrecondition`] for a stale resource version,
+    /// [`RpcError::AlreadyExists`] for a name conflict, and
+    /// [`RpcError::Internal`] on persistence failure.
+    pub async fn plan_update_service_account(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanUpdateServiceAccountRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let new_name = normalize_service_account_name(&req.new_name)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let record = self
+            .db
+            .service_account_record(org.id, &req.name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("service account"))?;
+        let current_version = service_account_resource_version(&record)?;
+        if req.expected_resource_version != current_version {
+            return Err(RpcError::FailedPrecondition(
+                "service-account resource version is stale".into(),
+            ));
+        }
+        if new_name != record.name
+            && self
+                .db
+                .service_account_by_name(org.id, &new_name)
+                .await
+                .map_err(RpcError::internal)?
+                .is_some()
+        {
+            return Err(RpcError::AlreadyExists(
+                "service account already exists".into(),
+            ));
+        }
+        let input = ServiceAccountUpdatePlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            service_account_id: record.id,
+            current_name: record.name,
+            new_name,
+            baseline_resource_version: current_version,
+        };
+        self.create_control_plan(
+            &claims,
+            "update_service_account",
+            &org.stable_id,
+            &input,
+            &req.idempotency_key,
+            vec![format!(
+                "rename service account {}/{} to {}",
+                input.org_slug, input.current_name, input.new_name
+            )],
+            Vec::new(),
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed service-account update plan exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error for an invalid caller,
+    /// [`RpcError::FailedPrecondition`] when the reviewed baseline changed, and
+    /// an internal or plan-lifecycle error when the operation cannot be applied.
+    pub async fn apply_update_service_account(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::ServiceAccountResponse, RpcError> {
+        const PLAN_KIND: &str = "update_service_account";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                PLAN_KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            PLAN_KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, ServiceAccountUpdatePlanInput) = self
+            .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let current = self
+            .db
+            .service_account_record(org.id, &input.current_name)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|record| record.id == input.service_account_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("service account changed after planning".into())
+            })?;
+        if service_account_resource_version(&current)? != input.baseline_resource_version {
+            return Err(RpcError::FailedPrecondition(
+                "service account changed after planning".into(),
+            ));
+        }
+        if !self
+            .db
+            .rename_service_account(current.id, &input.current_name, &input.new_name)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::FailedPrecondition(
+                "service account changed during apply".into(),
+            ));
+        }
+        let updated = self
+            .db
+            .service_account_record(org.id, &input.new_name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::internal(anyhow::anyhow!("updated service account disappeared"))
+            })?;
+        let response = pb::ServiceAccountResponse {
+            service_account: Some(service_account_message(&org.slug, updated)?),
+        };
+        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
+            .await?;
+        Ok(response)
+    }
+
+    /// Persists an immutable plan for deleting one service account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage organization IAM, [`RpcError::NotFound`] for a missing resource,
+    /// [`RpcError::FailedPrecondition`] for a stale resource version, and
+    /// [`RpcError::Internal`] on persistence failure.
+    pub async fn plan_delete_service_account(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanDeleteServiceAccountRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let record = self
+            .db
+            .service_account_record(org.id, &req.name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("service account"))?;
+        let current_version = service_account_resource_version(&record)?;
+        if req.expected_resource_version != current_version {
+            return Err(RpcError::FailedPrecondition(
+                "service-account resource version is stale".into(),
+            ));
+        }
+        let input = ServiceAccountDeletePlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            service_account_id: record.id,
+            name: record.name,
+            baseline_resource_version: current_version,
+        };
+        self.create_control_plan(
+            &claims,
+            "delete_service_account",
+            &org.stable_id,
+            &input,
+            &req.idempotency_key,
+            vec![format!(
+                "delete service account {}/{} and its memberships",
+                input.org_slug, input.name
+            )],
+            Vec::new(),
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed service-account deletion plan exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error for an invalid caller,
+    /// [`RpcError::FailedPrecondition`] when the reviewed baseline changed, and
+    /// an internal or plan-lifecycle error when the operation cannot be applied.
+    pub async fn apply_delete_service_account(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::DeleteTopologyResourceResponse, RpcError> {
+        const PLAN_KIND: &str = "delete_service_account";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                PLAN_KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            PLAN_KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, ServiceAccountDeletePlanInput) = self
+            .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let current = self
+            .db
+            .service_account_record(org.id, &input.name)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|record| record.id == input.service_account_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("service account changed after planning".into())
+            })?;
+        if service_account_resource_version(&current)? != input.baseline_resource_version {
+            return Err(RpcError::FailedPrecondition(
+                "service account changed after planning".into(),
+            ));
+        }
+        self.db
+            .delete_service_account(current.id, &input.name)
+            .await
+            .map_err(RpcError::internal)?;
+        let response = pb::DeleteTopologyResourceResponse { deleted: true };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
         Ok(response)
@@ -31126,6 +31572,8 @@ mod cache_upload_tests {
                         Permission::RegistryConfigure,
                         Permission::Publish,
                         Permission::TokensManage,
+                        Permission::IamAdmin,
+                        Permission::MembersManage,
                     ],
                 },
                 3600,
@@ -31176,7 +31624,13 @@ mod cache_upload_tests {
         assert_eq!(identity.access_scope, "instance");
         assert_eq!(
             identity.access_permissions,
-            vec!["registry.configure", "publish", "tokens.manage"]
+            vec![
+                "registry.configure",
+                "publish",
+                "tokens.manage",
+                "iam.admin",
+                "members.manage"
+            ]
         );
         assert!(identity.access_expires_at > crate::clock::now_unix_secs());
     }
@@ -31235,6 +31689,132 @@ mod cache_upload_tests {
         assert_eq!(token.permissions, vec!["publish", "read"]);
         assert_eq!(token.comment, "test publisher");
         assert_eq!(token.resource_version, "active");
+    }
+
+    #[tokio::test]
+    async fn service_account_crud_preserves_identity_and_removes_memberships() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("robots", "Robots").await.unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+
+        let create_plan = service
+            .plan_create_service_account(
+                Some(&auth),
+                pb::PlanCreateServiceAccountRequest {
+                    org_slug: org.slug.clone(),
+                    name: "publisher".into(),
+                    expected_resource_version: String::new(),
+                    idempotency_key: "plan-create-service-account".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let created = service
+            .apply_create_service_account(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: create_plan.plan_id,
+                    confirmation_hash: create_plan.confirmation_hash,
+                    idempotency_key: "apply-create-service-account".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .service_account
+            .unwrap();
+        db.grant_membership(
+            "service_account",
+            created.id,
+            &org.stable_id,
+            Role::Developer.as_str(),
+        )
+        .await
+        .unwrap();
+
+        let update_plan = service
+            .plan_update_service_account(
+                Some(&auth),
+                pb::PlanUpdateServiceAccountRequest {
+                    org_slug: org.slug.clone(),
+                    name: created.name.clone(),
+                    new_name: "releaser".into(),
+                    expected_resource_version: created.resource_version,
+                    idempotency_key: "plan-update-service-account".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let updated = service
+            .apply_update_service_account(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: update_plan.plan_id,
+                    confirmation_hash: update_plan.confirmation_hash,
+                    idempotency_key: "apply-update-service-account".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .service_account
+            .unwrap();
+        assert_eq!(updated.id, created.id);
+        assert_eq!(updated.name, "releaser");
+        assert_eq!(
+            db.service_account_reference(updated.id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("robots/releaser")
+        );
+
+        let listed = service
+            .list_service_accounts(
+                Some(&auth),
+                pb::ListServiceAccountsRequest {
+                    org_slug: org.slug.clone(),
+                    page_size: 50,
+                    page_token: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.service_accounts.len(), 1);
+
+        let delete_plan = service
+            .plan_delete_service_account(
+                Some(&auth),
+                pb::PlanDeleteServiceAccountRequest {
+                    org_slug: org.slug,
+                    name: updated.name,
+                    expected_resource_version: updated.resource_version,
+                    idempotency_key: "plan-delete-service-account".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let deleted = service
+            .apply_delete_service_account(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: delete_plan.plan_id,
+                    confirmation_hash: delete_plan.confirmation_hash,
+                    idempotency_key: "apply-delete-service-account".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(deleted.deleted);
+        assert!(db
+            .list_memberships_for("service_account", created.id)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     fn one_signed_raw_image_package() -> aos_registry_surface::manifest::PackageToml {
