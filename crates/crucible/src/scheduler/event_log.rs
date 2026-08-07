@@ -225,6 +225,20 @@ pub trait QuantumLoop {
         .into())
     }
 
+    /// Activates a node's dormant debug guest agent after a non-canonical fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the backend does not provide the fixed
+    /// activation transport or rejects the request.
+    fn activate_debug_guest(&mut self, node: NodeId) -> Result<(), SchedulerError> {
+        let _ = node;
+        Err(BackendError::Unsupported {
+            capability: "activate_debug_guest",
+        }
+        .into())
+    }
+
     /// Sends one request to a node's out-of-band debug guest agent.
     ///
     /// # Errors

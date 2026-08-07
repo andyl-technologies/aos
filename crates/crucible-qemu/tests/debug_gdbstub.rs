@@ -72,6 +72,20 @@ fn debug_gdbstub_is_fourth_out_of_band_launch_channel() {
     assert!(command.args().windows(2).any(|window| {
         window[0] == "-plugin" && window[1].contains("simfd=3,slot=0,shmemfd=4,wakefd=5")
     }));
+    assert!(
+        command
+            .args()
+            .windows(2)
+            .any(|window| { window == ["-device", "virtio-serial-pci,id=crucible-debug-serial"] })
+    );
+    assert!(command.args().windows(2).any(|window| {
+        window == ["-chardev", "ringbuf,id=crucible-debug-activation,size=4096"]
+    }));
+    assert!(command.args().windows(2).any(|window| {
+        window[0] == "-device"
+            && window[1]
+                == "virtserialport,chardev=crucible-debug-activation,name=org.aos.crucible.debug"
+    }));
     assert!(!command.args().iter().any(|arg| arg == "127.0.0.1:9000"));
     assert_eq!(command.gdbstub_channel(), Some(&gdbstub));
     assert_eq!(

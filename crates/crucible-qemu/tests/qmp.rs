@@ -11,9 +11,10 @@ use std::time::Duration;
 
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
-    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
-    QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
-    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
+    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_DEBUG_GUEST_ACTIVATION_DEVICE,
+    QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QMP_GREETING_TIMEOUT, QMP_QUERY_CPUS_FAST_COMMAND,
+    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
+    QMP_RINGBUF_WRITE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
     QMP_SNAPSHOT_VMSTATE_DEVICE, QemuSavevmCompletenessPolicy, QmpClient, QmpCommandKind, QmpError,
     QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag,
     QmpTimeoutStream,
@@ -346,6 +347,41 @@ fn loadvm_and_quit_are_typed_qmp_commands() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         execute_name(json_line(&lines, 3)),
         Some(QMP_QUIT_COMMAND_NAME)
+    );
+    Ok(())
+}
+
+#[test]
+fn debug_guest_activation_is_a_fixed_typed_qmp_command() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    assert_eq!(
+        client.activate_debug_guest()?.command,
+        QmpCommandKind::ActivateDebugGuest
+    );
+
+    drop(client);
+    let audit = audit_snapshot(&audit);
+    let lines = written_json_lines(&audit)?;
+    let request = json_line(&lines, 1);
+    assert_eq!(execute_name(request), Some(QMP_RINGBUF_WRITE_COMMAND));
+    assert_eq!(
+        request.pointer("/arguments/device").and_then(Value::as_str),
+        Some(QMP_DEBUG_GUEST_ACTIVATION_DEVICE)
+    );
+    assert_eq!(
+        request.pointer("/arguments/data").and_then(Value::as_str),
+        Some(QMP_DEBUG_GUEST_ACTIVATION_TOKEN)
+    );
+    assert_eq!(
+        request.pointer("/arguments/format").and_then(Value::as_str),
+        Some("utf8")
     );
     Ok(())
 }

@@ -69,6 +69,12 @@ pub use whitebox_setup::{
 pub const QEMU_CONSOLE_CHARDEV_ID: &str = "crucible-console";
 /// Stable run-directory Unix socket carrying output-only guest console bytes.
 pub const QEMU_CONSOLE_SOCKET_FILE_NAME: &str = "crucible-console.sock";
+/// Stable QEMU chardev identifier for fork-time debug guest activation.
+pub const QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID: &str = "crucible-debug-activation";
+/// Stable virtio-serial controller identifier for debugger-only guest channels.
+pub const QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID: &str = "crucible-debug-serial";
+/// Stable guest-visible virtio-port name for the dormant debugger bootstrap.
+pub const QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME: &str = "org.aos.crucible.debug";
 
 /// Guest architecture selected by a deterministic QEMU launch profile.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -680,6 +686,16 @@ impl QemuLaunchCommandBuilder {
             args.extend(["-qmp".to_owned(), qmp.qemu_endpoint()]);
         }
         if let Some(gdbstub) = &self.gdbstub {
+            args.extend([
+                "-device".to_owned(),
+                format!("virtio-serial-pci,id={QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID}"),
+                "-chardev".to_owned(),
+                format!("ringbuf,id={QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID},size=4096"),
+                "-device".to_owned(),
+                format!(
+                    "virtserialport,chardev={QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID},name={QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME}"
+                ),
+            ]);
             args.extend(["-gdb".to_owned(), gdbstub.qemu_endpoint().to_owned()]);
         }
         validate_pre_spawn_qemu_launch_args(&args)

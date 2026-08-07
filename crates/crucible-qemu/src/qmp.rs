@@ -17,7 +17,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::{QemuLoadvmCommandAuthorization, QemuNodeChannelError};
+use crate::{
+    QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
+};
 
 mod snapshot_tag;
 #[cfg(target_os = "linux")]
@@ -41,6 +43,12 @@ pub const QMP_QUERY_STATUS_COMMAND: &str = "query-status";
 pub const QMP_QUERY_CPUS_FAST_COMMAND: &str = "query-cpus-fast";
 /// QMP command name used for graceful QEMU termination.
 pub const QMP_QUIT_COMMAND_NAME: &str = "quit";
+/// QMP command used to write the non-canonical guest-agent activation token.
+pub const QMP_RINGBUF_WRITE_COMMAND: &str = "ringbuf-write";
+/// Stable QEMU ring-buffer device carrying the debugger activation token.
+pub const QMP_DEBUG_GUEST_ACTIVATION_DEVICE: &str = QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID;
+/// Versioned token consumed by the dormant fixture-side debugger bootstrap.
+pub const QMP_DEBUG_GUEST_ACTIVATION_TOKEN: &str = "CRUCIBLE_DEBUG_AGENT_V1\n";
 /// QMP snapshot device name used for diskless VMState snapshots.
 pub const QMP_SNAPSHOT_VMSTATE_DEVICE: &str = "vmstate";
 /// Default maximum number of `query-jobs` polls for a snapshot operation.
@@ -219,6 +227,20 @@ where
     /// cannot be read or decoded, or when QMP returns an error response.
     pub fn quit(&mut self) -> Result<QmpCommandComplete, QmpError> {
         self.send_command(QmpCommand::Quit)
+    }
+
+    /// Activates the dormant guest-introspection bootstrap on a non-canonical fork.
+    ///
+    /// The command surface is deliberately fixed: callers cannot select an
+    /// arbitrary chardev or inject arbitrary guest-visible bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request cannot be written, when the
+    /// response cannot be decoded, or when QEMU rejects the configured ring
+    /// buffer device.
+    pub fn activate_debug_guest(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        self.send_command(QmpCommand::ActivateDebugGuest)
     }
 
     /// Returns the current VM run state.
@@ -756,6 +778,8 @@ pub enum QmpCommandKind {
     QueryCpusFast,
     /// Graceful QEMU quit.
     Quit,
+    /// Non-canonical guest debugger bootstrap activation.
+    ActivateDebugGuest,
 }
 
 impl QmpCommandKind {
@@ -768,6 +792,7 @@ impl QmpCommandKind {
             Self::QueryStatus => QMP_QUERY_STATUS_COMMAND,
             Self::QueryCpusFast => QMP_QUERY_CPUS_FAST_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
+            Self::ActivateDebugGuest => QMP_RINGBUF_WRITE_COMMAND,
         }
     }
 }
@@ -947,6 +972,7 @@ enum QmpCommand<'a> {
     QueryStatus,
     QueryCpusFast,
     Quit,
+    ActivateDebugGuest,
 }
 
 impl QmpCommand<'_> {
@@ -959,6 +985,7 @@ impl QmpCommand<'_> {
             Self::QueryStatus => QmpCommandKind::QueryStatus,
             Self::QueryCpusFast => QmpCommandKind::QueryCpusFast,
             Self::Quit => QmpCommandKind::Quit,
+            Self::ActivateDebugGuest => QmpCommandKind::ActivateDebugGuest,
         }
     }
 
@@ -984,6 +1011,14 @@ impl QmpCommand<'_> {
             }),
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,
+            }),
+            Self::ActivateDebugGuest => json!({
+                "execute": QMP_RINGBUF_WRITE_COMMAND,
+                "arguments": {
+                    "device": QMP_DEBUG_GUEST_ACTIVATION_DEVICE,
+                    "data": QMP_DEBUG_GUEST_ACTIVATION_TOKEN,
+                    "format": "utf8",
+                },
             }),
         }
     }
