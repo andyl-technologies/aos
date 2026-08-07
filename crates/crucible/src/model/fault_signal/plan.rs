@@ -992,10 +992,12 @@ fn validate_storage_effect_policy_references(
             )?,
         },
         StorageEffectSpecification::NinePVisibility {
+            update,
             visibility_event,
             visibility_policy,
             ..
         } => {
+            require(update, &[StoragePolicyArtifactClass::NinePObject], "update")?;
             require(
                 visibility_policy,
                 &[StoragePolicyArtifactClass::NinePVisibility],

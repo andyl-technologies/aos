@@ -234,6 +234,30 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
+    /// Installs the production 9p-fault coordinator for one live node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when `node` is absent or its host-I/O runtime
+    /// does not own an uncoordinated live 9p device.
+    #[cfg(target_os = "linux")]
+    pub fn install_ninep_fault_coordinator(
+        &mut self,
+        node: &NodeId,
+        coordinator: Box<dyn crate::QemuNinepFaultCoordinator>,
+    ) -> Result<(), BackendError> {
+        self.nodes
+            .get_mut(node)
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!(
+                    "QEMU backend set has no live node `{}` for 9p coordination",
+                    node.name
+                ),
+            })?
+            .install_ninep_fault_coordinator(coordinator)
+            .map_err(BackendError::from)
+    }
+
     /// Returns the number of live nodes in the set.
     #[must_use]
     pub fn len(&self) -> usize {

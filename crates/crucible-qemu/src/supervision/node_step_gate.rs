@@ -61,16 +61,21 @@ use crucible::{
     SchedulerSendAuthorization, SchedulerSendAuthorizer, VirtualTime,
 };
 use crucible_device::block::{BaseImage, BlockDurabilityConfig, BlockLatency};
+use crucible_device::{FsTree, NinepLatency};
 use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
 
-use crate::supervision::{BlockIoDiagnostics, QemuLiveBlockIoServicer, QemuLiveHostIoRuntime};
+use crate::supervision::{
+    BlockIoDiagnostics, NinepIoDiagnostics, QemuLive9pIoServicer, QemuLiveBlockIoServicer,
+    QemuLiveHostIoRuntime,
+};
 use crate::{
-    CrucibleShmemBlockDevice, CrucibleShmemNetworkDevice, IcountShiftSetting,
-    LaunchProfileCandidate, LaunchProfileError, QemuAsyncDriverPolicy, QemuCrashDetector,
-    QemuGdbstubChannelConfig, QemuHostPluginSetupError, QemuLaunchAppRandomConfig,
-    QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
-    QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
-    QemuNode, QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
+    CrucibleShmem9pDevice, CrucibleShmemBlockDevice, CrucibleShmemNetworkDevice,
+    IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError, QemuAsyncDriverPolicy,
+    QemuCrashDetector, QemuGdbstubChannelConfig, QemuHostPluginSetupError,
+    QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommandBuilder,
+    QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
+    QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
     QemuNodeRestorePlan, QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuRootImageFormat,
     QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QemuVmSnapshot,
     QemuWhiteboxSetupError, QmpError, build_qemu_node_from_completed_setup,
@@ -205,6 +210,7 @@ pub struct QemuLiveNodeStepGateConfig {
     coverage: QemuLaunchPluginSwitch,
     shmem_network_mac: Option<String>,
     shmem_block: Option<QemuLiveNodeStepBlockConfig>,
+    shmem_ninep: Option<QemuLiveNodeStepNinepConfig>,
     queue_capacity: u32,
     schedule: QemuLiveNodeStepSchedule,
     completion_timeout: Duration,
@@ -218,6 +224,12 @@ struct QemuLiveNodeStepBlockConfig {
     durability: BlockDurabilityConfig,
     latency: BlockLatency,
     require_fault_directives: bool,
+}
+
+#[derive(Clone, Debug)]
+struct QemuLiveNodeStepNinepConfig {
+    tree: FsTree,
+    latency: NinepLatency,
 }
 
 impl QemuLiveNodeStepGateConfig {
@@ -266,6 +278,7 @@ impl QemuLiveNodeStepGateConfig {
             coverage: QemuLaunchPluginSwitch::Off,
             shmem_network_mac: None,
             shmem_block: None,
+            shmem_ninep: None,
             queue_capacity: GATE_QUEUE_CAPACITY,
             schedule: QemuLiveNodeStepSchedule::new(),
             completion_timeout: Duration::from_secs(240),
@@ -308,6 +321,7 @@ impl QemuLiveNodeStepGateConfig {
             coverage: QemuLaunchPluginSwitch::Off,
             shmem_network_mac: None,
             shmem_block: None,
+            shmem_ninep: None,
             queue_capacity: GATE_QUEUE_CAPACITY,
             schedule: QemuLiveNodeStepSchedule::new(),
             completion_timeout: Duration::from_secs(240),
@@ -459,6 +473,13 @@ impl QemuLiveNodeStepGateConfig {
             latency,
             require_fault_directives: false,
         });
+        self
+    }
+
+    /// Returns this configuration with one World-backed shared-memory 9p device.
+    #[must_use]
+    pub fn with_shmem_ninep(mut self, tree: FsTree, latency: NinepLatency) -> Self {
+        self.shmem_ninep = Some(QemuLiveNodeStepNinepConfig { tree, latency });
         self
     }
 
@@ -854,7 +875,7 @@ fn drive_to_pending_block_boundary(
                 QemuLiveNodeStepGateError::node_op("read pending block boundary", source)
             })?
             .retired;
-        let pending = node.has_pending_block_io_for_gate().map_err(|source| {
+        let pending = node.has_pending_device_io_for_gate().map_err(|source| {
             QemuLiveNodeStepGateError::node_op("inspect pending block continuation", source)
         })?;
         if pending && quiescent_continuation_observed {
@@ -1180,6 +1201,21 @@ pub(super) fn build_live_node(
     } else {
         None
     };
+    let mut ninep_servicer = config
+        .shmem_ninep
+        .as_ref()
+        .map(|ninep| {
+            QemuLive9pIoServicer::from_shmem_fd_with_tree(
+                setup.shmem_as_fd(),
+                setup.region().region_len,
+                GATE_SLOT,
+                config.icount_shift,
+                ninep.tree.clone(),
+                ninep.latency,
+            )
+        })
+        .transpose()
+        .map_err(|source| QemuLiveNodeStepGateError::NinepServicer { source })?;
     let priming_network_outputs = prime_guest_off_boot_barrier(
         &setup,
         config.completion_timeout,
@@ -1187,6 +1223,7 @@ pub(super) fn build_live_node(
         identity.router,
         config.coverage,
         block_servicer.as_mut(),
+        ninep_servicer.as_mut(),
     )?;
     if let (Some(servicer), Some(block)) = (block_servicer.as_mut(), config.shmem_block.as_ref()) {
         servicer
@@ -1197,6 +1234,9 @@ pub(super) fn build_live_node(
         runtime = runtime
             .with_block_servicer(servicer, BlockIoDiagnostics::shared())
             .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
+    }
+    if let Some(servicer) = ninep_servicer {
+        runtime = runtime.with_ninep_servicer(servicer, NinepIoDiagnostics::shared());
     }
     let qmp = connect_qmp_priming_main_loop(
         &setup,

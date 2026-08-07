@@ -251,6 +251,15 @@ pub enum BlockFaultMisdirectionDestination {
     ExternalDevice([u8; 32]),
 }
 
+/// Exact cross-device durability acknowledgement required before source delivery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockExternalDurabilityDependency {
+    /// Content identity of the authoritative destination block device.
+    pub destination_device: [u8; 32],
+    /// Destination cache sequence that must be included in its durable frontier.
+    pub required_frontier: u64,
+}
+
 /// Exact flush result and internal durability treatment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockFaultFlushDisposition {
@@ -491,8 +500,9 @@ pub struct ResolvedBlockFaultDirective {
     pub error_result: Option<BlockFaultResult>,
     /// Dynamic service, latency, stall, and reorder delay.
     pub additional_latency_nanos: u64,
-    /// Strict completion delay contributed by a remotely durable destination.
-    pub remote_durability_wait_nanos: u64,
+    /// Durable frontier on an externally redirected destination that must be
+    /// acknowledged before this request's completion may be delivered.
+    pub external_durability_dependency: Option<BlockExternalDurabilityDependency>,
     /// Canonically contributor-ordered service rules sampled at admission.
     pub service_rules: Vec<ResolvedBlockServiceRule>,
     /// Exact virtual coordinate at which this request resolves in the adapter.
@@ -606,7 +616,7 @@ impl ResolvedBlockFaultDirective {
             reported_capacity_bytes: capacity,
             error_result: None,
             additional_latency_nanos: 0,
-            remote_durability_wait_nanos: 0,
+            external_durability_dependency: None,
             service_rules: Vec::new(),
             execution_nanos: 0,
             retain_completion: false,
@@ -857,12 +867,12 @@ impl ResolvedBlockFaultDirective {
                 reason: "write dispositions require a write request",
             });
         }
-        if self.remote_durability_wait_nanos != 0
+        if self.external_durability_dependency.is_some()
             && (self.operation != BlockOp::Write
                 || self.write_disposition != BlockFaultWriteDisposition::Lost)
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
-                reason: "remote durability wait requires a committed external write",
+                reason: "external durability dependency requires a committed external write",
             });
         }
         if self.operation == BlockOp::Discard
@@ -1505,7 +1515,7 @@ impl BlockFaultState {
             || directive.reported_capacity_bytes != prior.reported_capacity_bytes
             || directive.error_result != prior.error_result
             || directive.additional_latency_nanos != prior.additional_latency_nanos
-            || prior.remote_durability_wait_nanos != 0
+            || prior.external_durability_dependency.is_some()
             || directive.retain_completion != prior.retain_completion
             || directive.retention_timeout_response != prior.retention_timeout_response
             || directive.retention_timeout_nanos != prior.retention_timeout_nanos
@@ -1606,7 +1616,7 @@ impl BlockFaultState {
             || directive.cache_policy != prior.cache_policy
             || directive.persistence_transforms != prior.persistence_transforms
             || directive.persistence_media_rules != prior.persistence_media_rules
-            || directive.remote_durability_wait_nanos != prior.remote_durability_wait_nanos
+            || directive.external_durability_dependency != prior.external_durability_dependency
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "delivery directive identity or earlier phases differ",
@@ -3673,7 +3683,6 @@ impl BlockFaultState {
         let additional_latency_nanos = directive
             .additional_latency_nanos
             .checked_add(persistence_wait_nanos)
-            .and_then(|delay| delay.checked_add(directive.remote_durability_wait_nanos))
             .ok_or(DeviceError::InvalidBlockFaultDirective {
                 reason: "storage persistence and completion latency overflow",
             })?;
@@ -3837,10 +3846,10 @@ impl BlockFaultState {
     ///
     /// The destination uses its own geometry and normal durability policy at
     /// `admitted_nanos`, the source persistence opportunity's exact coordinate.
-    /// The returned delay is the destination durability horizon that must be
-    /// added to the source completion. The multi-device owner is responsible for
-    /// executing this method on cloned source/destination devices and committing
-    /// both together.
+    /// The returned frontier identifies the exact destination durability
+    /// acknowledgement that must gate source delivery. The multi-device owner is
+    /// responsible for executing this method on cloned source/destination devices
+    /// and committing both together.
     ///
     /// # Errors
     ///
@@ -3871,16 +3880,7 @@ impl BlockFaultState {
             });
         }
         match self.apply_write(base, durable, &request, &directive)? {
-            BlockWriteOutcome::Applied(persistence_wait_nanos) => {
-                let durability_pending = self.config.completion_durability
-                    == BlockCompletionDurability::Durable
-                    && self.actual_durable_frontier < self.next_cache_sequence;
-                Ok(if durability_pending {
-                    persistence_wait_nanos.max(1)
-                } else {
-                    persistence_wait_nanos
-                })
-            }
+            BlockWriteOutcome::Applied(_persistence_wait_nanos) => Ok(self.next_cache_sequence),
             BlockWriteOutcome::Rejected(_) => Err(DeviceError::BlockCacheFull {
                 requested_bytes: u64::from(request.count),
                 available_bytes: self

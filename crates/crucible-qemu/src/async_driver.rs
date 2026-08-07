@@ -174,14 +174,14 @@ pub trait QemuHostIoRuntime: Send {
         Ok(())
     }
 
-    /// Reports whether block work crosses the current scheduler boundary.
+    /// Reports whether host-device work crosses the current scheduler boundary.
     ///
     /// # Errors
     ///
     /// Returns [`QemuAsyncDriverRuntimeError`] when live block queues or device
     /// continuation state cannot be inspected consistently.
     #[cfg(target_os = "linux")]
-    fn has_pending_block_io(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
+    fn has_pending_device_io(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
         Ok(false)
     }
 
@@ -195,7 +195,7 @@ pub trait QemuHostIoRuntime: Send {
         &mut self,
         execution_binding: crucible::model::ContentHash,
     ) -> Result<crate::QemuHostIoCheckpoint, QemuAsyncDriverRuntimeError> {
-        Ok(crate::QemuHostIoCheckpoint::without_block(
+        Ok(crate::QemuHostIoCheckpoint::without_devices(
             execution_binding,
         ))
     }
@@ -212,7 +212,10 @@ pub trait QemuHostIoRuntime: Send {
         execution_binding: crucible::model::ContentHash,
         checkpoint: &crate::QemuHostIoCheckpoint,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        if checkpoint.execution_binding() == execution_binding && checkpoint.block().is_none() {
+        if checkpoint.execution_binding() == execution_binding
+            && checkpoint.block().is_none()
+            && checkpoint.ninep().is_none()
+        {
             Ok(())
         } else {
             Err(QemuAsyncDriverRuntimeError::new(
@@ -309,6 +312,23 @@ pub trait QemuHostIoRuntime: Send {
         Err(QemuAsyncDriverRuntimeError::new(
             "install block fault coordinator",
             "host-I/O runtime does not own a live block device",
+        ))
+    }
+
+    /// Installs the signal-driven coordinator for an attached live 9p device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when this runtime has no live 9p
+    /// device or already has a continuation owner.
+    #[cfg(target_os = "linux")]
+    fn install_ninep_fault_coordinator(
+        &mut self,
+        _coordinator: Box<dyn crate::supervision::QemuNinepFaultCoordinator>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "install 9p fault coordinator",
+            "host-I/O runtime does not own a live 9p device",
         ))
     }
 

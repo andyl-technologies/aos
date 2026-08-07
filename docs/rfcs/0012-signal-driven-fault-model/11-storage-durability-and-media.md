@@ -373,6 +373,71 @@ declared by Crucible's device codec.
 9p state, responses, and versions are content-addressed independent of host
 inode numbers, mtimes, directory iteration, and filesystem behavior.
 
+### 11.14.1 Exact request identity and phases
+
+The adapter pins the request-ring head before evaluation. Its identity is the
+tuple `(request_icount, transport_sequence, tag, BLAKE3(frame))`; consequently,
+repeated byte-identical frames at the same virtual coordinate remain distinct.
+A malformed body remains an exact opportunity, is classified as `complete`, and
+continues through the ordinary server path to its deterministic `Rlerror`.
+After resolve and persist evaluation, the adapter verifies that the ring head is
+still the pinned request before consuming it. The computed completion retains
+the complete identity until visibility and deliver evaluation authorize
+publication. Backpressure may delay publication but never repeats those phase
+evaluations.
+
+The checkpoint contains the request and response rings, device queues, installed
+directives, exact pending opportunity identities, completion coordinates, and
+per-opportunity authorization bits. Admission and restore reject a directive
+whose identity or operation differs from its frame, a duplicate pending key, a
+completion before its request, a pending entry without a matching computed
+response, a counter mismatch, or a non-canonical ordering. Production execution
+requires an explicit directive for every request, including the fault-free
+decision; absence fails closed.
+
+### 11.14.2 Result mutation
+
+`ninep.result(errno)` requires a positive Linux errno and returns `Rlerror`
+without mutating server, fid, virtual-fid, or session state. `stale` and
+`misdirected` require an exact `ninep_object` and apply only to read or enumerate
+operations. Errno is terminal and dominates all object transforms. With no
+errno, the last object transform in canonical binding/action order wins.
+
+An object transform supports `walk`, `lopen`, `read`, `readdir`, `getattr`,
+`readlink`, and `xattrwalk`. Walk/open/xattrwalk bind the resulting virtual fid.
+Read slices the exact object bytes by the request offset/count. Getattr derives
+QID version, type, mode, and length from the object. A transformed directory
+enumerates only `.` and `..`; this represents the exact directory object, not an
+implicit host namespace. A deleted object returns `ENOENT`. Object transforms
+for every other request shape are rejected before mutation.
+
+### 11.14.3 Committed and visible object versions
+
+Each authenticated visibility update has a unique update ID, contiguous commit
+sequence, object version, policy, release condition, writer session, and data
+lag. Repeating the same ID with byte-identical content is idempotent; reusing it
+with any differing field fails. Release is exactly one absolute virtual-time
+deadline derived from the binding's delay or one observed signal-event identity.
+Frontiers advance only over a contiguous ready prefix, so a later ready update
+cannot pass an earlier blocked update.
+
+`global` applies the same release rule to every negotiated session;
+`per_session` advances each negotiated session only when that session is
+serviced; `writer_immediate` exposes both metadata and data immediately to the
+session that committed the update while other sessions obey its release.
+`atomic_metadata_and_data = true` requires zero data lag and advances both
+frontiers together. `false` requires a positive lag: metadata advances at the
+release coordinate and bytes advance at `release + lag`, with checked arithmetic.
+During that interval, reads combine the newest visible metadata with the newest
+visible non-deleted bytes. A versioned `Tversion` starts a new monotone session
+epoch and clears virtual fids.
+
+A visible deletion hides the object. Before release,
+`retain_deleted_objects = true` preserves the prior visible version, whereas
+`false` hides the object as soon as the deletion commits. The object-version
+table, identity index, per-session metadata/data frontiers, virtual fids, and
+session epoch are authenticated checkpoint continuation.
+
 ## 11.15 Completion duplication and protocol validity
 
 A duplicate completion is injected only at the modeled guest transport boundary.

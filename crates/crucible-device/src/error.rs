@@ -88,6 +88,29 @@ pub enum DeviceError {
         request_id: u32,
     },
 
+    /// A resolved 9p directive is malformed or disagrees with its request.
+    #[error("invalid resolved 9p fault directive: {reason}")]
+    InvalidNinepFaultDirective {
+        /// Stable validation failure.
+        reason: &'static str,
+    },
+
+    /// Signal-driven execution required a directive for this exact 9p request.
+    #[error("missing resolved 9p fault directive for tag {tag}")]
+    MissingNinepFaultDirective {
+        /// Protocol request tag.
+        tag: u16,
+    },
+
+    /// A bounded 9p continuation table reached its hard limit.
+    #[error("9p fault state `{field}` reached hard limit {hard}")]
+    NinepFaultStateLimit {
+        /// Bounded table name.
+        field: &'static str,
+        /// Compiled hard limit.
+        hard: usize,
+    },
+
     /// The scheduler attempted to pass an unresolved staged storage boundary.
     #[error(
         "cannot advance storage to {requested_nanos}ns past unresolved fault opportunity at {ready_nanos}ns"

@@ -62,9 +62,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crucible::ContentHash;
 use crucible_device::block::{
-    BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
-    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
-    BlockRetainedRelease, BlockRetainedReleaseOutcome, BlockServiceCompletion, BlockStorageOutcome,
+    BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity,
+    BlockExternalDurabilityDependency, BlockFaultState, BlockPersistenceMediaOutcome,
+    BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity, BlockRetainedRelease,
+    BlockRetainedReleaseOutcome, BlockServiceCompletion, BlockStorageOutcome,
     ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
     ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
     install_cross_device_misdirected_persistence,
@@ -178,14 +179,38 @@ impl QemuSharedBlockDevice {
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
+    /// Returns the destination's actual durable cache frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when the
+    /// authoritative device lock is poisoned.
+    pub fn actual_durable_frontier(&self) -> Result<u64, QemuLiveBlockIoServicerError> {
+        Ok(self.lock()?.storage_fault_state().actual_durable_frontier())
+    }
+
+    /// Returns whether this device has acknowledged an external dependency.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when the
+    /// authoritative device lock is poisoned.
+    pub fn satisfies_external_durability(
+        &self,
+        dependency: BlockExternalDurabilityDependency,
+    ) -> Result<bool, QemuLiveBlockIoServicerError> {
+        self.actual_durable_frontier()
+            .map(|frontier| frontier >= dependency.required_frontier)
+    }
+
     /// Atomically installs one persist-phase write redirected to another device.
     ///
     /// Locks are acquired in canonical content-hash order. The underlying
     /// transaction clones both complete devices and commits neither unless the
     /// destination mutation, deadline publication, and runtime wake all succeed.
-    /// The source completion is delayed through the destination's durability
-    /// horizon, while the destination is scheduled at the source persistence
-    /// opportunity's exact virtual-time coordinate.
+    /// The returned dependency gates source completion on the destination's
+    /// actual durable frontier, while the destination is scheduled at the source
+    /// persistence opportunity's exact virtual-time coordinate.
     ///
     /// # Errors
     ///
@@ -199,52 +224,56 @@ impl QemuSharedBlockDevice {
         destination: &Self,
         destination_id: ContentHash,
         resolved: ResolvedBlockRequestPersistenceDirective,
-    ) -> Result<(), QemuLiveBlockIoServicerError> {
+    ) -> Result<BlockExternalDurabilityDependency, QemuLiveBlockIoServicerError> {
         if source_id == destination_id || self.ptr_eq(destination) {
             return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
         }
-        if source_id < destination_id {
+        let dependency = if source_id < destination_id {
             let mut source_device = self.lock()?;
             let mut destination_device = destination.lock()?;
             let prior_source = source_device.clone();
             let prior_destination = destination_device.clone();
             let prior_deadline = prior_destination.next_exact_local_event();
-            if let Err(source) = install_cross_device_misdirected_persistence(
+            let dependency = match install_cross_device_misdirected_persistence(
                 &mut source_device,
                 &mut destination_device,
                 resolved,
                 destination_id.bytes,
             ) {
-                return Err(QemuLiveBlockIoServicerError::Device { source });
-            }
+                Ok(dependency) => dependency,
+                Err(source) => return Err(QemuLiveBlockIoServicerError::Device { source }),
+            };
             let deadline = destination_device.next_exact_local_event();
             if let Err(error) = destination.publish_remote_mutation(deadline, prior_deadline) {
                 *source_device = prior_source;
                 *destination_device = prior_destination;
                 return Err(error);
             }
+            dependency
         } else {
             let mut destination_device = destination.lock()?;
             let mut source_device = self.lock()?;
             let prior_source = source_device.clone();
             let prior_destination = destination_device.clone();
             let prior_deadline = prior_destination.next_exact_local_event();
-            if let Err(source) = install_cross_device_misdirected_persistence(
+            let dependency = match install_cross_device_misdirected_persistence(
                 &mut source_device,
                 &mut destination_device,
                 resolved,
                 destination_id.bytes,
             ) {
-                return Err(QemuLiveBlockIoServicerError::Device { source });
-            }
+                Ok(dependency) => dependency,
+                Err(source) => return Err(QemuLiveBlockIoServicerError::Device { source }),
+            };
             let deadline = destination_device.next_exact_local_event();
             if let Err(error) = destination.publish_remote_mutation(deadline, prior_deadline) {
                 *source_device = prior_source;
                 *destination_device = prior_destination;
                 return Err(error);
             }
-        }
-        Ok(())
+            dependency
+        };
+        Ok(dependency)
     }
 
     fn publish_remote_mutation(
@@ -2074,7 +2103,7 @@ mod tests {
         let now_nanos = 64;
         let directive = staged_persistence(&source, now_nanos);
 
-        source
+        let dependency = source
             .install_cross_device_misdirected_persistence(
                 ContentHash { bytes: [1; 32] },
                 &destination,
@@ -2082,6 +2111,13 @@ mod tests {
                 directive,
             )
             .unwrap_or_else(|error| panic!("commit remote write: {error}"));
+
+        assert!(
+            !destination
+                .satisfies_external_durability(dependency)
+                .unwrap_or_else(|error| panic!("inspect early durability: {error}")),
+            "source completion must remain gated before destination persistence"
+        );
 
         assert_eq!(
             destination_servicer
@@ -2102,6 +2138,31 @@ mod tests {
                 .inspect_storage_visible(512, 512)
                 .unwrap_or_else(|error| panic!("inspect destination bytes: {error}")),
             vec![0xa5; 512]
+        );
+        {
+            let mut destination_device = destination
+                .lock()
+                .unwrap_or_else(|error| panic!("lock destination persistence: {error}"));
+            let opportunity = destination_device
+                .next_storage_persistence_opportunity(now_nanos)
+                .unwrap_or_else(|| panic!("destination persistence opportunity is present"));
+            destination_device
+                .install_storage_persistence_media_directive(
+                    ResolvedBlockPersistenceMediaDirective {
+                        opportunity,
+                        flash_rules: Vec::new(),
+                    },
+                )
+                .unwrap_or_else(|error| panic!("install destination persistence: {error}"));
+            destination_device
+                .advance_to(now_nanos)
+                .unwrap_or_else(|error| panic!("advance destination persistence: {error}"));
+        }
+        assert!(
+            destination
+                .satisfies_external_durability(dependency)
+                .unwrap_or_else(|error| panic!("inspect acknowledged durability: {error}")),
+            "source completion may proceed only after the exact frontier is durable"
         );
     }
 }
