@@ -112,6 +112,12 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying host-I/O runtime error.
         source: QemuLiveHostIoRuntimeError,
     },
+    /// The World-backed block servicer could not be constructed or configured.
+    #[error("build live block-I/O servicer failed")]
+    BlockServicer {
+        /// Underlying block-servicer error.
+        source: crate::QemuLiveBlockIoServicerError,
+    },
     /// The typed QMP VMState channel could not connect.
     #[error("connect QMP VMState channel failed")]
     QmpConnect {

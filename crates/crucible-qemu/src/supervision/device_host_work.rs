@@ -25,9 +25,9 @@ use thiserror::Error;
 use crucible::model::{ContentHash, ResolvedBindingAction, ResolvedFaultTarget};
 use crucible_device::block::{
     BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
-    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRetainedRelease,
-    BlockServiceCompletion, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
-    ResolvedBlockPersistenceMediaDirective,
+    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
+    BlockRetainedRelease, BlockServiceCompletion, ResolvedBlockExecutionDirective,
+    ResolvedBlockFaultDirective, ResolvedBlockPersistenceMediaDirective,
 };
 
 use super::block_io_servicer::{
@@ -87,6 +87,8 @@ pub struct QemuLiveBlockHostWorkPool {
 pub struct QemuLiveBlockStorageEvents {
     /// Next request ready for exact resolve/persist phase evaluation.
     pub execution_opportunity: Option<BlockExecutionOpportunity>,
+    /// Next resolved request ready for exact persist-phase evaluation.
+    pub request_persistence_opportunity: Option<BlockRequestPersistenceOpportunity>,
     /// Next physical-media decision opportunity ready at the requested coordinate.
     pub persistence_opportunity: Option<BlockPersistenceOpportunity>,
     /// Completed physical-media mutations drained exactly once.
@@ -883,6 +885,8 @@ fn worker_loop(
             WorkerCommand::StorageEvents { now_nanos } => {
                 WorkerReply::StorageEvents(QemuLiveBlockStorageEvents {
                     execution_opportunity: servicer.next_storage_execution_opportunity(now_nanos),
+                    request_persistence_opportunity: servicer
+                        .next_storage_request_persistence_opportunity(now_nanos),
                     persistence_opportunity: servicer
                         .next_storage_persistence_opportunity(now_nanos),
                     persistence_outcomes: servicer.drain_storage_persistence_media_outcomes(),

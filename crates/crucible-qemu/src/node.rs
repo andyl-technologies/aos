@@ -509,6 +509,24 @@ pub struct QemuNode {
 }
 
 impl QemuNode {
+    /// Installs the production signal coordinator for this node's block device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the host-I/O runtime has no attached block
+    /// servicer or already owns a coordinator.
+    #[cfg(target_os = "linux")]
+    pub fn install_block_fault_coordinator(
+        &mut self,
+        coordinator: Box<dyn crate::QemuBlockFaultCoordinator>,
+    ) -> Result<(), QemuNodeError> {
+        self.host_io_runtime
+            .install_block_fault_coordinator(coordinator)
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })
+    }
+
     /// Builds a QEMU scheduler node from one owned child handle and its channels.
     #[must_use]
     pub fn new(

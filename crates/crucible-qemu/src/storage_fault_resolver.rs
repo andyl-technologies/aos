@@ -148,15 +148,72 @@ pub fn block_request_fault_opportunity(
         },
     )
 }
+
+/// Builds the canonical opportunity for one exact physical-media mutation.
+///
+/// # Errors
+///
+/// Returns [`FaultContractError`] when `target` is not a block target or the
+/// physical range cannot be represented by the opportunity contract.
+pub fn block_persistence_fault_opportunity(
+    target: ResolvedFaultTarget,
+    persistence: &BlockPersistenceOpportunity,
+    coordinate: FaultCoordinate,
+) -> Result<FaultOpportunity, FaultContractError> {
+    let operation = match persistence.operation {
+        BlockOp::Write => FaultOperation::StorageWrite,
+        BlockOp::Discard => FaultOperation::StorageDiscard,
+        BlockOp::Read | BlockOp::Flush | BlockOp::GetLength => {
+            return Err(FaultContractError::InvalidPayload);
+        }
+    };
+    FaultOpportunity::new(
+        target,
+        operation,
+        FaultPhase::Persist,
+        coordinate,
+        persistence.sequence,
+        None,
+        OpportunityPayload::StorageRequest {
+            request_sequence: persistence.sequence,
+            start_byte: Some(persistence.offset),
+            length_bytes: Some(u64::from(persistence.count)),
+            request_digest: ContentHash {
+                bytes: persistence.intended_digest,
+            },
+        },
+    )
+}
+
+/// Builds the canonical persist-phase opportunity for a staged request mutation.
+///
+/// # Errors
+///
+/// Returns [`FaultContractError`] under the same conditions as
+/// [`block_request_fault_opportunity`].
+pub fn block_request_persistence_fault_opportunity(
+    target: ResolvedFaultTarget,
+    persistence: &BlockRequestPersistenceOpportunity,
+    coordinate: FaultCoordinate,
+) -> Result<FaultOpportunity, FaultContractError> {
+    block_request_fault_opportunity(
+        target,
+        &persistence.request,
+        persistence.wire_digest,
+        FaultPhase::Persist,
+        coordinate,
+        persistence.request_sequence,
+    )
+}
 use crucible_device::block::{
     BlockCompletionDurability, BlockDiscardSemantics, BlockDuplicatePolicy, BlockDurabilityConfig,
     BlockFaultAvailability, BlockFaultByteSpan, BlockFaultCacheEviction, BlockFaultDirtyEviction,
     BlockFaultFlushDisposition, BlockFaultReadTransform, BlockFaultResult, BlockFaultState,
     BlockFaultWriteDisposition, BlockMediaRangeState, BlockOp, BlockPersistenceOpportunity,
-    BlockPersistenceOrdering, BlockRequest, BlockResponse, BlockServiceDiscipline,
-    ResolvedBlockCachePolicy, ResolvedBlockFaultDirective, ResolvedBlockFlashProgramErase,
-    ResolvedBlockFlashReadDisturb, ResolvedBlockFlashRetention, ResolvedBlockFlashRule,
-    ResolvedBlockMediaRule, ResolvedBlockPersistenceMediaDirective,
+    BlockPersistenceOrdering, BlockRequest, BlockRequestPersistenceOpportunity, BlockResponse,
+    BlockServiceDiscipline, ResolvedBlockCachePolicy, ResolvedBlockFaultDirective,
+    ResolvedBlockFlashProgramErase, ResolvedBlockFlashReadDisturb, ResolvedBlockFlashRetention,
+    ResolvedBlockFlashRule, ResolvedBlockMediaRule, ResolvedBlockPersistenceMediaDirective,
     ResolvedBlockPersistenceTransform, ResolvedBlockServiceClass, ResolvedBlockServiceRule,
 };
 

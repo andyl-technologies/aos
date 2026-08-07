@@ -291,6 +291,33 @@ impl ProductionFaultRuntime {
         )?)
     }
 
+    /// Evaluates one host-device opportunity without borrowing the live node set.
+    ///
+    /// Storage and 9p opportunities can arise while a node's host-I/O runtime is
+    /// itself inside `advance_to_ceiling`, so re-borrowing that node set would be
+    /// impossible and semantically unnecessary. Opportunity targeting guarantees
+    /// that only host-adapter actions can match; a node action is rejected by the
+    /// host sink and poisons the same authoritative continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when evaluation, transactional host
+    /// application, evidence validation, or checkpointing fails.
+    pub fn evaluate_host_opportunity(
+        &mut self,
+        opportunity: &FaultOpportunity,
+        same_coordinate_sequence: u64,
+    ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
+        let Some(runtime) = &mut self.runtime else {
+            return Ok(BindingEvaluation::default());
+        };
+        Ok(runtime.evaluate_opportunity_with_backend(
+            opportunity,
+            same_coordinate_sequence,
+            &mut self.host,
+        )?)
+    }
+
     /// Replaces the one-boundary-delayed telemetry snapshot.
     ///
     /// # Errors
@@ -563,7 +590,12 @@ fn production_manifests(
                 effect.descriptor().adapter == crucible::model::FaultAdapter::Network
             }),
         )?,
-        storage: host_production_manifest("storage-host", std::iter::empty())?,
+        storage: host_production_manifest(
+            "storage-host",
+            EffectKind::all().iter().copied().filter(|effect| {
+                effect.descriptor().adapter == crucible::model::FaultAdapter::Storage
+            }),
+        )?,
         node: nodes.fault_capability_manifest()?,
     })
 }

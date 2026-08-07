@@ -283,7 +283,8 @@ pub use spawn::{
 };
 pub use storage_fault_resolver::{
     ResolvedVolatileCacheLoss, StorageFaultResolutionContext, StorageFaultResolutionError,
-    VolatileCacheLossReplay, block_durability_config, block_request_fault_opportunity,
+    VolatileCacheLossReplay, block_durability_config, block_persistence_fault_opportunity,
+    block_request_fault_opportunity, block_request_persistence_fault_opportunity,
     merge_block_fault_phase_directive, resolve_block_fault_directive,
     resolve_block_persistence_media_directive, resolve_volatile_cache_loss,
 };
@@ -293,10 +294,11 @@ pub use supervision::{
     LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_ETHERTYPE, LIVE_NETWORK_PROBE_PAYLOAD,
     LIVE_NETWORK_REPLY_LATENCY_ICOUNT, LIVE_NETWORK_REPLY_PAYLOAD, LiveNetworkIoServiceStep,
     LiveNetworkIoSnapshot, LiveNetworkTxObservation, NinepIoAdvanceOutcome, NinepIoDiagnostics,
-    NinepIoDiagnosticsSnapshot, QemuDeviceHostWorkDelay, QemuLive9pIoGateConfig,
-    QemuLive9pIoGateError, QemuLive9pIoReport, QemuLive9pIoServiceStep, QemuLive9pIoServicer,
-    QemuLive9pIoServicerError, QemuLiveBlockHostWorkPool, QemuLiveBlockHostWorkPoolError,
-    QemuLiveBlockIoGateConfig, QemuLiveBlockIoGateError, QemuLiveBlockIoHostWorkPin,
+    NinepIoDiagnosticsSnapshot, QemuBlockFaultCoordinator, QemuDeviceHostWorkDelay,
+    QemuLive9pIoGateConfig, QemuLive9pIoGateError, QemuLive9pIoReport, QemuLive9pIoServiceStep,
+    QemuLive9pIoServicer, QemuLive9pIoServicerError, QemuLiveBlockHostWorkPool,
+    QemuLiveBlockHostWorkPoolError, QemuLiveBlockIoDeliveryStep, QemuLiveBlockIoGateConfig,
+    QemuLiveBlockIoGateError, QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoIntakeStep,
     QemuLiveBlockIoObservedRequest, QemuLiveBlockIoReport, QemuLiveBlockIoServiceStep,
     QemuLiveBlockIoServicer, QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError,
     QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError, QemuLiveBlockNodeReport,

@@ -70,6 +70,28 @@ pub struct QemuLiveHostIoRuntime {
 struct BlockIoServicing {
     servicer: QemuLiveBlockIoServicer,
     diagnostics: Arc<BlockIoDiagnostics>,
+    coordinator: Option<Box<dyn QemuBlockFaultCoordinator>>,
+}
+
+/// Owns exact signal evaluation around one live block servicing pass.
+///
+/// Production implementations pin the immutable request, evaluate each authored
+/// phase, install authenticated directives, advance the device, and persist the
+/// resulting evidence. The host-I/O runtime supplies only the guest coordinate;
+/// it never invents a fault-free fallback when a coordinator is installed.
+pub trait QemuBlockFaultCoordinator: Send {
+    /// Services one poll of `servicer` at the observed guest coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when opportunity construction,
+    /// signal evaluation, directive installation, device mutation, or evidence
+    /// recording fails. Errors fail the enclosing node advance closed.
+    fn service_block_io(
+        &mut self,
+        servicer: &mut QemuLiveBlockIoServicer,
+        guest_icount: u64,
+    ) -> Result<super::QemuLiveBlockIoServiceStep, QemuAsyncDriverRuntimeError>;
 }
 
 impl QemuLiveHostIoRuntime {
@@ -156,6 +178,7 @@ impl QemuLiveHostIoRuntime {
         self.block = Some(BlockIoServicing {
             servicer,
             diagnostics,
+            coordinator: None,
         });
         self
     }
@@ -300,12 +323,17 @@ impl QemuLiveHostIoRuntime {
         let Some(block) = &mut self.block else {
             return Ok(());
         };
-        let serviced = block
-            .servicer
-            .service(snapshot.current_icount)
-            .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("service block io", source.to_string())
-            })?;
+        let serviced = match &mut block.coordinator {
+            Some(coordinator) => {
+                coordinator.service_block_io(&mut block.servicer, snapshot.current_icount)?
+            }
+            None => block
+                .servicer
+                .service(snapshot.current_icount)
+                .map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new("service block io", source.to_string())
+                })?,
+        };
         block.diagnostics.record(
             snapshot.current_icount,
             snapshot.device_io_active != 0,
@@ -320,6 +348,20 @@ impl QemuLiveHostIoRuntime {
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn install_block_fault_coordinator(
+        &mut self,
+        coordinator: Box<dyn QemuBlockFaultCoordinator>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let block = self.block.as_mut().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(
+                "install block fault coordinator",
+                "live node has no shared-memory block servicer",
+            )
+        })?;
+        block.coordinator = Some(coordinator);
+        Ok(())
+    }
+
     fn yield_to_control_plane(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
         Ok(())
     }

@@ -147,6 +147,24 @@ pub enum QemuAsyncDriverOperation {
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Installs the signal-driven coordinator for an attached live block device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when this runtime has no live block
+    /// device. A new coordinator atomically replaces the previous binding so a
+    /// restored or relaunched node cannot retain a stale continuation owner.
+    #[cfg(target_os = "linux")]
+    fn install_block_fault_coordinator(
+        &mut self,
+        _coordinator: Box<dyn crate::supervision::QemuBlockFaultCoordinator>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "install block fault coordinator",
+            "host-I/O runtime does not own a live block device",
+        ))
+    }
+
     /// Yields once so control-plane work can run between quanta.
     ///
     /// # Errors
