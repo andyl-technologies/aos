@@ -533,6 +533,16 @@ without interpreting generic command acknowledgements. Selector values in that
 space-delimited summary are percent-encoded. Readers continue to accept v2
 handles, which predate selector provenance, but new writes are v3.
 
+When a property or marker selector reaches its quiescence guard without firing,
+the CLI returns the ordinary identity error and creates no handle. If `--trace`
+is requested, it still writes the partial canonical command trail, ending in a
+`save_boundary_failure` entry and an error `final_outcome`. This evidence is a
+CLI observation only; it does not manufacture a savepoint or reproduction
+artifact. Predeclared control/API operations are labeled `planned_*`; only
+`interactive_ack` entries represent commands the actor accepted. Marker mode is
+identified as `marker (quiescence-guarded)`, and the failure diagnostic remains
+a quoted readable value in the summary.
+
 **Exit codes.** `0` = savepoint materialized, oracle-validated, and exported;
 `1` = the run hit a non-savepoint terminal outcome before `--at` (the outcome is
 reported); `3` = oracle violation on materialization (07 §6) or backend error;
@@ -1184,7 +1194,8 @@ branch on the verdict without parsing output:
   irrelevant `--max-virtual-time` flags outside virtual-time saves,
   emits selector identity and exact breakpoint coordinates in v3 handles and
   canonical traces while retaining v2 read compatibility, rejects
-  wrong-marker and no-source marker selectors, routes explicitly selected local-QEMU saves
+  wrong-marker and no-source marker selectors while retaining their partial
+  canonical command traces, routes explicitly selected local-QEMU saves
   through the same create-savepoint/export/oracle workflow with resolved
   QEMU/plugin identity metadata, process-tests real-binary `save --backend qemu`
   JSONL output and handle export through marker-resolved QEMU/plugin identity,

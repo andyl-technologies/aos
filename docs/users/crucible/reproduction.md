@@ -189,6 +189,15 @@ This lets an agent audit which selector fired and where, instead of inferring it
 from generic `set-breakpoint` acknowledgements. Crucible still reads v2 handles
 created by older builds; those handles do not contain selector provenance.
 
+If a selector does not fire before quiescence, Crucible creates no handle and
+returns exit 3. With `--trace <path>`, it still writes the commands and state
+updates observed before rejection, followed by `save_boundary_failure` and an
+error `final_outcome`. This is useful for confirming that the selector and guard
+were installed and driven; it is not a savepoint or reproduction artifact.
+`planned_session_command` and `planned_api_call` rows describe the declared
+workflow, while `interactive_ack` rows identify commands actually accepted.
+Marker failures label their boundary mode `marker (quiescence-guarded)`.
+
 Use `--out <path>` to choose the handle path. Otherwise it is written below
 `--artifact-dir`. Crucible does not export a handle if replay-oracle validation
 fails.

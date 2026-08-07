@@ -150,6 +150,10 @@ conditions, frontiers, and undeclared property identities. The canonical trace
 exposes the same proof as `save_boundary_proof`, with percent-encoded selector
 values. Older v2 handles remain readable but lack selector provenance.
 
+A property or marker miss returns exit 3 without a handle. An explicit
+`--trace` is still honored and ends with `save_boundary_failure`, preserving the
+partial control trail for diagnosis.
+
 ### `resume`
 
 | Argument or option | Required/default | Meaning |
