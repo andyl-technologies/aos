@@ -21452,6 +21452,10 @@ impl RpcService {
         Ok(pb::ListWebhooksResponse {
             webhooks,
             next_page_token,
+            supported_event_types: crate::webhook::SUPPORTED_EVENT_TYPES
+                .iter()
+                .map(|event| (*event).to_string())
+                .collect(),
         })
     }
 

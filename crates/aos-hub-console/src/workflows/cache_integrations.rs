@@ -17,6 +17,7 @@ use super::cache_objects::CacheObjects;
 use super::cache_population::CachePopulation;
 use super::cache_retention::CacheRetentionWorkflow;
 use super::cache_stack::RegistryCacheStack;
+use super::organization_activity::OrganizationActivity;
 use super::registry_catalog::RegistryCatalog;
 use super::registry_configuration::RegistryConfiguration;
 use super::registry_images::RegistryImages;
@@ -61,6 +62,14 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             <SigningKeyWorkflow
                 client=client
                 target=SigningKeyTarget::Organization(slug.clone())
+            />
+        }
+        .into_any(),
+        (ConsoleScope::Organization { slug }, page @ ("webhooks" | "audit")) => view! {
+            <OrganizationActivity
+                client=client
+                organization=slug.clone()
+                page=page
             />
         }
         .into_any(),
