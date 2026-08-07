@@ -184,6 +184,8 @@ pub struct DeployConfig {
     pub bucket: String,
     /// The provisioned KV namespace id.
     pub kv_id: String,
+    /// The deferred-jobs Queue name.
+    pub queue: String,
     /// Account-unique rate-limit namespaces for this Worker installation.
     pub rate_limit_namespaces: RateLimitNamespaces,
     /// Exact HTTPS endpoint of an optional repository-owned native egress router.
@@ -401,6 +403,15 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          [ratelimits.simple]\n\
          limit = 120\n\
          period = 60\n\
+         \n\
+         [[queues.producers]]\n\
+         binding = \"JOBS\"\n\
+         queue = {queue}\n\
+         \n\
+         [[queues.consumers]]\n\
+         queue = {queue}\n\
+         max_batch_size = 10\n\
+         max_batch_timeout = 5\n\
          {observability}",
         name = toml_string(&cfg.name),
         compat = COMPAT_DATE,
@@ -412,6 +423,7 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
         bucket = toml_string(&cfg.bucket),
         kvb = KV_BINDING,
         kvid = toml_string(&cfg.kv_id),
+        queue = toml_string(&cfg.queue),
         rate_burst5 = toml_string(&cfg.rate_limit_namespaces.burst5),
         rate_burst10 = toml_string(&cfg.rate_limit_namespaces.burst10),
         rate_browse120 = toml_string(&cfg.rate_limit_namespaces.browse120),
@@ -444,6 +456,12 @@ pub fn kv_create_args(title: &str) -> Vec<String> {
         "create".into(),
         title.into(),
     ]
+}
+
+/// `wrangler queues create <name>` — provision a deferred-jobs Queue.
+#[must_use]
+pub fn queue_create_args(name: &str) -> Vec<String> {
+    vec!["queues".into(), "create".into(), name.into()]
 }
 
 /// `wrangler kv namespace list` — list KV namespaces as JSON (for id discovery).
@@ -850,8 +868,8 @@ pub enum DeployMode {
     Update,
 }
 
-/// Provisions the R2 bucket and KV namespace, then resolves their
-/// ids into a [`DeployConfig`].
+/// Provisions the R2 bucket, KV namespace, and deferred-jobs Queue, then
+/// resolves their configuration into a [`DeployConfig`].
 ///
 /// Provisioning is idempotent: a resource that already exists is logged and
 /// skipped. Ids are read back from `wrangler … list` (the stable JSON
@@ -866,6 +884,7 @@ pub async fn provision(
     name: &str,
     bucket: &str,
     kv_title: &str,
+    queue: &str,
     egress_gateway_url: Option<&str>,
     external_url: &str,
     deployment_id: Option<&str>,
@@ -910,6 +929,7 @@ pub async fn provision(
     // `new_sqlite_classes` migration, created on first deploy).
     run_wrangler_tolerant(assets, &r2_create_args(bucket), "r2 bucket create").await;
     run_wrangler_tolerant(assets, &kv_create_args(kv_title), "kv namespace create").await;
+    run_wrangler_tolerant(assets, &queue_create_args(queue), "queue create").await;
 
     let kv_list = run_wrangler(assets, &kv_list_args(), None, None).await?;
     let kv_id = parse_kv_id(&kv_list, kv_title)?;
@@ -918,6 +938,7 @@ pub async fn provision(
         name: name.to_string(),
         bucket: bucket.to_string(),
         kv_id,
+        queue: queue.to_string(),
         rate_limit_namespaces,
         egress_gateway_url: egress_gateway_url.map(str::to_string),
         external_url: external_url.to_string(),
@@ -1401,6 +1422,7 @@ mod tests {
             ["kv", "namespace", "create", "SESSIONS"]
         );
         assert_eq!(kv_list_args(), ["kv", "namespace", "list"]);
+        assert_eq!(queue_create_args("jobs"), ["queues", "create", "jobs"]);
         assert_eq!(
             secret_put_args("HUB_JWT_SECRET", Path::new("/tmp/w.toml")),
             ["secret", "put", "HUB_JWT_SECRET", "--config", "/tmp/w.toml"]
@@ -1425,6 +1447,7 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
+            queue: "aos-hub-jobs".into(),
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
@@ -1464,6 +1487,26 @@ mod tests {
         assert_eq!(parsed["placement"]["mode"].as_str(), Some("off"));
         assert_eq!(parsed["kv_namespaces"][0]["id"].as_str(), Some("kv-id"));
         assert_eq!(
+            parsed["queues"]["producers"][0]["binding"].as_str(),
+            Some("JOBS")
+        );
+        assert_eq!(
+            parsed["queues"]["producers"][0]["queue"].as_str(),
+            Some("aos-hub-jobs")
+        );
+        assert_eq!(
+            parsed["queues"]["consumers"][0]["queue"].as_str(),
+            Some("aos-hub-jobs")
+        );
+        assert_eq!(
+            parsed["queues"]["consumers"][0]["max_batch_size"].as_integer(),
+            Some(10)
+        );
+        assert_eq!(
+            parsed["queues"]["consumers"][0]["max_batch_timeout"].as_integer(),
+            Some(5)
+        );
+        assert_eq!(
             parsed["ratelimits"][0]["namespace_id"].as_str(),
             Some("1001")
         );
@@ -1497,6 +1540,7 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
+            queue: "aos-hub-jobs".into(),
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
@@ -1521,6 +1565,7 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
+            queue: "aos-hub-jobs".into(),
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
@@ -1546,6 +1591,7 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
+            queue: "aos-hub-jobs".into(),
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
@@ -1589,6 +1635,7 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
+            queue: "aos-hub-jobs".into(),
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             egress_gateway_url: Some("https://egress.example.com/v1/fetch".into()),
             external_url: "https://aos.example.com".into(),
@@ -1690,6 +1737,7 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
+            queue: "aos-hub-jobs".into(),
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
