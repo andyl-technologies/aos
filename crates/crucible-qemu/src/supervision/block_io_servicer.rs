@@ -59,7 +59,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crucible::model::ContentHash;
-use crucible_device::block::{BlockDurabilityConfig, ResolvedBlockFaultDirective};
+use crucible_device::block::{
+    BlockDurabilityConfig, BlockFaultState, BlockRetainedRelease, ResolvedBlockFaultDirective,
+};
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockSnapshot, DeviceError, IoCore, Request,
 };
@@ -384,6 +386,58 @@ impl QemuLiveBlockIoServicer {
     ) -> Result<(), QemuLiveBlockIoServicerError> {
         self.device
             .configure_storage_faults(config, require_directives)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Returns the complete deterministic storage-fault continuation.
+    #[must_use]
+    pub fn storage_fault_state(&self) -> &BlockFaultState {
+        self.device.storage_fault_state()
+    }
+
+    /// Drops exact volatile-cache entries at a scheduler-authorized boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] when the selection is
+    /// not an exact subset of the currently live volatile-cache entries.
+    pub fn lose_storage_volatile(
+        &mut self,
+        sequences: &[u64],
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.device
+            .lose_storage_volatile(sequences)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Drops exact controller-buffer entries at a scheduler-authorized boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] when the selection is
+    /// not an exact subset of the currently live controller-buffer entries.
+    pub fn lose_storage_controller(
+        &mut self,
+        sequences: &[u64],
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.device
+            .lose_storage_controller(sequences)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Releases one retained storage completion as recovery or timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] when the request is not
+    /// retained or its response cannot be scheduled at the current boundary.
+    pub fn release_storage_completion(
+        &mut self,
+        request_id: u32,
+        release: BlockRetainedRelease,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.device
+            .release_storage_completion(request_id, release)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 

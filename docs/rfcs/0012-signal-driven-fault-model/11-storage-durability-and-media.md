@@ -108,8 +108,15 @@ Cache-loss selectors are:
 - a keyed bounded subset;
 - entries not protected by a declared power-loss-protection domain.
 
-Loss removes only selected volatile versions. Reads after loss resolve the prior
-durable version. Locked replay verifies the cache-entry set digest before loss.
+Target scope and power-loss protection filter the eligible set before the
+selector runs. `keyed_subset` selects `min(count, eligible entries)` by keyed
+rank and then restores canonical sequence order. Loss resolution records the
+complete pre-loss entry-set digest and atomically removes only the selected
+volatile versions on the device-identity-bound owning worker; no request service
+can interleave between those steps. Record execution returns the observed digest.
+Locked replay supplies the recorded digest as a mandatory precondition and fails
+before selection or mutation when it differs. Reads after loss resolve the prior
+durable version.
 
 Controller-accepted entries occupy a separate bounded byte/entry buffer and do
 not consume volatile-cache capacity. Controller reset/loss selects only that

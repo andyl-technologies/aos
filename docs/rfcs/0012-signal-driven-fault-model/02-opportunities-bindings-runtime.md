@@ -282,14 +282,14 @@ separate RFC and a deterministic ABI.
 Capabilities are fine-grained, versioned identifiers such as:
 
 ```text
-network.link.profile.v1
-network.path.route-transition.v1
-block.torn-write.v1
-block.volatile-cache-loss.v1
-qemu.memory.bit-flip.physical.v1
-qemu.cpu.machine-check.x86_64.v1
-qemu.interrupt.drop.v1
-qemu.clock.drift.v1
+network.profile.v1
+network.route-transition.v1
+storage.write-disposition.v1
+storage.volatile-cache-loss.v1
+qemu.memory.mutate.v1
+qemu.cpu.exception.v1
+qemu.interrupt.control.v1
+qemu.clock.transform.v1
 ```
 
 A backend returns supported capabilities plus bounds such as maximum trace

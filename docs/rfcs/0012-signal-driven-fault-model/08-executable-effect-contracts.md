@@ -510,7 +510,8 @@ declared beam and gateway sets.
 | `storage.read_transform` | opportunity; resolve | `kind = bit_flip/stale/misdirected`, selector/version/range fields | ordered-transform | `storage.read-transform.v1`; source version/range and before/after digest |
 | `storage.write_disposition` | opportunity; persist | `kind = apply/lost/torn/misdirected`, acknowledged status, deterministic byte/sector selector | conflict per write; ordered-transform for misdirection | `storage.write-disposition.v1`; intended/applied ranges, bytes and durability |
 | `storage.persistence_order` | persistent/opportunity; persist | ordering group, delay/barrier rule | declared partial order then operation ID | `storage.persistence-order.v1`; volatile and durable sequence ledger |
-| `storage.volatile_cache` | persistent state/impulse; persist/boundary | capacity, policy, loss selector, reset/power event | one cache policy; loss impulses union selected entries | `storage.volatile-cache.v1`; cache entries and durable frontier before/after |
+| `storage.volatile_cache` | persistent; persist | capacity and registered cache policy | one cache policy per admitted write | `storage.volatile-cache.v1`; admitted/evicted cache entries and durable frontier before/after |
+| `storage.volatile_cache_loss` | impulse; boundary | selector `all/after_sequence/range_intersection/keyed_subset` and `loss = power_loss/protection_failure` | canonical exact-entry selection; keyed subsets rank the complete eligible set | `storage.volatile-cache-loss.v1`; pre-loss entry-set digest, eligible/protected/selected entries, and durable frontier before/after |
 | `storage.flush_disposition` | opportunity; persist | `kind = honest/error/lie/stall`, status | severity `honest < lie < stall < error` only where comparable; otherwise conflict | `storage.flush.v1`; requested barrier, reported status, actual durable frontier |
 | `storage.media_range` | persistent/state; resolve/persist | range, state `bad/latent/poisoned/read_only`, operation/count/time thresholds | range overlay in canonical start/length/binding order | `storage.media-range.v1`; resolved range state and thresholds |
 | `storage.flash_state` | persistent state; persist | erase-block geometry, wear counters, endurance, retention/read-disturb/program rules | state-machine per erase block | `storage.flash.v1`; counters, temperature/time inputs, changed cells/ranges |
@@ -796,7 +797,7 @@ not an alternate untyped implementation.
 | lost write | `storage.write_disposition(lost)` |
 | torn/partial write | `storage.write_disposition(torn)` |
 | reordered persistence | `storage.persistence_order` |
-| volatile-cache loss | `storage.volatile_cache` loss impulse |
+| ordinary or protection-defeating volatile-cache loss | `storage.volatile_cache_loss(power_loss/protection_failure)` |
 | lying flush | `storage.flush_disposition(lie)` |
 | bad sector/range | `storage.media_range(bad)` |
 | latent sector error | `storage.media_range(latent)` with threshold state |

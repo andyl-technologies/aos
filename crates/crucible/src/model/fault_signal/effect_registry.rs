@@ -403,6 +403,8 @@ const STORAGE_TARGETS: &[FaultTargetKind] = &[
     FaultTargetKind::StorageController,
     FaultTargetKind::StorageArray,
 ];
+const BLOCK_TARGETS: &[FaultTargetKind] =
+    &[FaultTargetKind::BlockDevice, FaultTargetKind::BlockRange];
 const NINEP_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::NinePDevice];
 const NODE_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::Node];
 const CPU_TARGETS: &[FaultTargetKind] = &[
@@ -573,8 +575,10 @@ effect_registry! {
     StorageWriteDisposition => { key: "storage.write_disposition", adapter: Storage, targets: STORAGE_TARGETS, phases: [Persist], lifetimes: [Opportunity], composition: Conflict, capability: "storage.write-disposition.v1", evidence: ["intended_range", "applied_range", "bytes", "durability"] },
     /// Declared partial order for durable storage operations.
     StoragePersistenceOrder => { key: "storage.persistence_order", adapter: Storage, targets: STORAGE_TARGETS, phases: [Persist], lifetimes: [Persistent, Opportunity], composition: Composite, capability: "storage.persistence-order.v1", evidence: ["volatile_sequence", "durable_sequence"] },
-    /// Bounded volatile cache and loss transition.
-    StorageVolatileCache => { key: "storage.volatile_cache", adapter: Storage, targets: STORAGE_TARGETS, phases: [Persist, Boundary], lifetimes: [Persistent, Impulse, StateMachine], composition: Conflict, capability: "storage.volatile-cache.v1", evidence: ["cache_entries", "durable_frontier_before", "durable_frontier_after"] },
+    /// Bounded volatile-cache admission and eviction policy.
+    StorageVolatileCache => { key: "storage.volatile_cache", adapter: Storage, targets: BLOCK_TARGETS, phases: [Persist], lifetimes: [Persistent], composition: Conflict, capability: "storage.volatile-cache.v1", evidence: ["cache_entries", "evicted_entries", "durable_frontier_before", "durable_frontier_after"] },
+    /// Explicit volatile-cache loss at a signal boundary.
+    StorageVolatileCacheLoss => { key: "storage.volatile_cache_loss", adapter: Storage, targets: BLOCK_TARGETS, phases: [Boundary], lifetimes: [Impulse], composition: OrderedTransform, capability: "storage.volatile-cache-loss.v1", evidence: ["entry_set_digest", "eligible_entries", "selected_entries", "protected_entries", "durable_frontier_before", "durable_frontier_after"] },
     /// Honest, erroring, lying, or stalled flush disposition.
     StorageFlushDisposition => { key: "storage.flush_disposition", adapter: Storage, targets: STORAGE_TARGETS, phases: [Persist], lifetimes: [Opportunity], composition: Severity, capability: "storage.flush.v1", evidence: ["requested_barrier", "reported_status", "actual_durable_frontier"] },
     /// Canonically overlaid bad, latent, poisoned, or read-only media range.
@@ -638,9 +642,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn registry_has_exactly_seventy_unique_canonical_keys() {
+    fn registry_has_exactly_seventy_one_unique_canonical_keys() {
         let kinds = EffectKind::all();
-        assert_eq!(kinds.len(), 70);
+        assert_eq!(kinds.len(), 71);
         let keys: BTreeSet<_> = kinds.iter().map(|kind| kind.as_str()).collect();
         assert_eq!(keys.len(), kinds.len());
         assert!(keys.iter().all(|key| {

@@ -456,8 +456,18 @@ most 65,536 entries or 16 MiB of inline bytes in one declaration.
 Plan admission checks every reference's artifact class, nested typed-result
 references, namespace capacity/alignment against its exact device, path and
 remote-media policy class, controller-owned namespace/path membership, exact
-array member/path tables, static misdirection device, and flash-rule class. A volatile-cache `loss_event`
-references an actual signal node in the binding's program. Missing or
+array member/path tables, static misdirection device, and flash-rule class.
+Volatile-cache admission is the persistent `storage.volatile_cache` effect;
+loss is a separate impulse-only `storage.volatile_cache_loss` binding whose
+own signal edge is the event. Its closed selector is `all`, exclusive
+`after_sequence`, absolute `range_intersection`, or `keyed_subset` with a
+positive count. A block-range target first limits the eligible set to
+intersecting entries. `loss = power_loss` excludes entries protected by the
+cache policy, while `loss = protection_failure` makes protected entries
+eligible. Resolution records the digest of the complete pre-loss entry set and
+performs selection and removal atomically on the device-identity-bound worker.
+Locked replay passes its recorded digest into that same atomic command as a
+required precondition; a mismatch fails before mutation. Missing or
 wrong-class references fail before guest start; there is no opaque policy
 fallback.
 

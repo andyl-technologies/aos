@@ -13,14 +13,45 @@ use crucible::model::{
     FaultPhase, MappedEffectParameter, OpportunityPayload, ResolvedBindingAction,
     ResolvedFaultTarget, ResolvedMappingOutput, SignalValue, StorageAvailabilityState,
     StorageEffectSpecification, StorageFlushKind, StorageMediaState, StoragePolicyArtifactKind,
-    StoragePolicyDuplicateCompletion, StoragePolicyTypedResult, StorageReadMutation,
-    StorageSelection, StorageWriteDispositionKind, World, WorldCompletionDurability,
+    StoragePolicyCacheEviction, StoragePolicyDirtyEviction, StoragePolicyDuplicateCompletion,
+    StoragePolicyTypedResult, StorageReadMutation, StorageSelection, StorageVolatileCacheLossKind,
+    StorageVolatileCacheLossSelector, StorageWriteDispositionKind, World,
+    WorldCompletionDurability,
 };
 
 /// Scenario-owned entropy used only for keyed storage adapter choices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StorageFaultResolutionContext {
     scenario_seed: ContentHash,
+}
+
+/// Exact, replay-verifiable result of one volatile-cache loss resolution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedVolatileCacheLoss {
+    /// Digest of the complete live entry set observed atomically before loss.
+    pub entry_set_digest: [u8; 32],
+    /// Canonical sequence set eligible after target and protection filtering.
+    pub eligible_sequences: Vec<u64>,
+    /// Canonical target-scoped sequence set protected from ordinary power loss.
+    pub protected_sequences: Vec<u64>,
+    /// Exact canonical sequence set removed by this impulse.
+    pub selected_sequences: Vec<u64>,
+    /// Actual durable frontier immediately before the loss.
+    pub durable_frontier_before: u64,
+    /// Actual durable frontier immediately after the selected loss.
+    pub durable_frontier_after: u64,
+}
+
+/// Replay policy for one atomic volatile-cache loss transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VolatileCacheLossReplay {
+    /// Records the observed entry-set digest for a new execution.
+    Record,
+    /// Requires the live entry set to match locked replay evidence before mutation.
+    Locked {
+        /// Digest recorded immediately before the original loss transition.
+        expected_entry_set_digest: [u8; 32],
+    },
 }
 
 impl StorageFaultResolutionContext {
@@ -108,9 +139,180 @@ pub fn block_request_fault_opportunity(
 }
 use crucible_device::block::{
     BlockCompletionDurability, BlockDuplicatePolicy, BlockDurabilityConfig, BlockFaultAvailability,
-    BlockFaultByteSpan, BlockFaultFlushDisposition, BlockFaultReadTransform,
-    BlockFaultWriteDisposition, BlockOp, BlockRequest, BlockResponse, ResolvedBlockFaultDirective,
+    BlockFaultByteSpan, BlockFaultCacheEviction, BlockFaultDirtyEviction,
+    BlockFaultFlushDisposition, BlockFaultReadTransform, BlockFaultResult, BlockFaultState,
+    BlockFaultWriteDisposition, BlockOp, BlockRequest, BlockResponse, ResolvedBlockCachePolicy,
+    ResolvedBlockFaultDirective,
 };
+
+/// Resolves one cache-loss impulse into exact live cache sequence identities.
+///
+/// Protection is part of eligibility rather than a post-selection filter:
+/// ordinary power loss excludes protected entries, while protection failure
+/// makes every live entry eligible. Canonical and keyed selection therefore
+/// operate over the same explicitly evidenced set.
+///
+/// # Errors
+///
+/// Returns [`StorageFaultResolutionError`] when the action is not an exact
+/// impulse for `target` or does not carry `storage.volatile_cache_loss`.
+pub fn resolve_volatile_cache_loss(
+    target: &ResolvedFaultTarget,
+    state: &BlockFaultState,
+    context: StorageFaultResolutionContext,
+    action: &ResolvedBindingAction,
+    replay: VolatileCacheLossReplay,
+) -> Result<ResolvedVolatileCacheLoss, StorageFaultResolutionError> {
+    if action.target != *target {
+        return Err(StorageFaultResolutionError::TargetMismatch {
+            binding: action.binding.clone(),
+        });
+    }
+    if action.kind != BindingActionKind::Apply
+        || action.effect.lifetime() != EffectLifetime::Impulse
+        || action.phase != FaultPhase::Boundary
+        || action.opportunity.is_some()
+        || !matches!(action.cause, BindingActionCause::Signal)
+        || !matches!(
+            action.mapping_output.as_ref(),
+            ResolvedMappingOutput::Impulse {
+                event: SignalValue::Event { .. }
+            }
+        )
+    {
+        return Err(StorageFaultResolutionError::ActionIdentity {
+            binding: action.binding.clone(),
+        });
+    }
+    let EffectSpecification::Storage(StorageEffectSpecification::VolatileCacheLoss {
+        selector,
+        loss,
+    }) = action.effect.specification()
+    else {
+        return Err(unsupported(action, "volatile-cache loss impulse"));
+    };
+    let entry_set_digest = state.volatile_entries_digest();
+    if let VolatileCacheLossReplay::Locked {
+        expected_entry_set_digest,
+    } = replay
+        && expected_entry_set_digest != entry_set_digest
+    {
+        return Err(StorageFaultResolutionError::ReplayEntrySetMismatch {
+            binding: action.binding.clone(),
+            expected: expected_entry_set_digest,
+            actual: entry_set_digest,
+        });
+    }
+    let target_range = match target {
+        ResolvedFaultTarget::BlockDevice { .. } => None,
+        ResolvedFaultTarget::BlockRange {
+            start_byte,
+            length_bytes,
+            ..
+        } => Some((*start_byte, *length_bytes)),
+        _ => return Err(StorageFaultResolutionError::UnsupportedTarget),
+    };
+    let target_entries = state
+        .volatile_entries()
+        .iter()
+        .filter_map(|(sequence, entry)| {
+            let target_eligible = target_range.is_none_or(|(start, length)| {
+                ranges_intersect(start, length, entry.offset, entry.bytes.len())
+            });
+            target_eligible.then_some((*sequence, entry.power_loss_protected))
+        })
+        .collect::<Vec<_>>();
+    let protected_sequences = target_entries
+        .iter()
+        .filter_map(|(sequence, protected)| protected.then_some(*sequence))
+        .collect::<Vec<_>>();
+    let eligible = target_entries
+        .iter()
+        .filter_map(|(sequence, protected)| {
+            (*loss == StorageVolatileCacheLossKind::ProtectionFailure || !protected)
+                .then_some(*sequence)
+        })
+        .collect::<Vec<_>>();
+    let selected_sequences =
+        select_volatile_cache_loss(context, action, selector, state, &eligible)?;
+    let durable_frontier_before = state.actual_durable_frontier();
+    let mut after = state.clone();
+    after.lose_volatile(&selected_sequences).map_err(|error| {
+        StorageFaultResolutionError::InvalidDirective {
+            binding: action.binding.clone(),
+            reason: error.to_string(),
+        }
+    })?;
+    Ok(ResolvedVolatileCacheLoss {
+        entry_set_digest,
+        eligible_sequences: eligible,
+        protected_sequences,
+        selected_sequences,
+        durable_frontier_before,
+        durable_frontier_after: after.actual_durable_frontier(),
+    })
+}
+
+fn select_volatile_cache_loss(
+    context: StorageFaultResolutionContext,
+    action: &ResolvedBindingAction,
+    selector: &StorageVolatileCacheLossSelector,
+    state: &BlockFaultState,
+    eligible: &[u64],
+) -> Result<Vec<u64>, StorageFaultResolutionError> {
+    match selector {
+        StorageVolatileCacheLossSelector::All => Ok(eligible.to_vec()),
+        StorageVolatileCacheLossSelector::AfterSequence { sequence } => Ok(eligible
+            .iter()
+            .copied()
+            .filter(|candidate| candidate > sequence)
+            .collect()),
+        StorageVolatileCacheLossSelector::RangeIntersection { range } => Ok(eligible
+            .iter()
+            .copied()
+            .filter(|sequence| {
+                state.volatile_entries().get(sequence).is_some_and(|entry| {
+                    ranges_intersect(
+                        range.start(),
+                        range.length(),
+                        entry.offset,
+                        entry.bytes.len(),
+                    )
+                })
+            })
+            .collect()),
+        StorageVolatileCacheLossSelector::KeyedSubset { count } => {
+            let eligible_digest = volatile_cache_eligible_digest(eligible);
+            let mut ranked = eligible
+                .iter()
+                .copied()
+                .map(|sequence| {
+                    (
+                        keyed_action_rank(
+                            context,
+                            action,
+                            eligible_digest,
+                            b"storage.volatile-cache-loss.subset.v1",
+                            sequence,
+                        ),
+                        sequence,
+                    )
+                })
+                .collect::<Vec<_>>();
+            ranked.sort_unstable();
+            let take = usize::try_from(count.get())
+                .unwrap_or(usize::MAX)
+                .min(ranked.len());
+            let mut selected = ranked
+                .into_iter()
+                .take(take)
+                .map(|(_rank, sequence)| sequence)
+                .collect::<Vec<_>>();
+            selected.sort_unstable();
+            Ok(selected)
+        }
+    }
+}
 
 /// Resolves committed host actions for one exact live block request.
 ///
@@ -409,10 +611,58 @@ fn apply_effect(
             require_block_result(world, acknowledged_status, true, &action.binding)?;
             directive.write_disposition =
                 resolve_write_disposition(world, context, action, request, disposition)?;
-            directive.allow_subatomic_mutation = false;
         }
-        StorageEffectSpecification::VolatileCache { .. } if request.op == BlockOp::Write => {
-            return Err(unsupported(action, "volatile-cache state machine"));
+        StorageEffectSpecification::VolatileCache {
+            capacity_bytes,
+            cache_policy,
+            ..
+        } if request.op == BlockOp::Write => {
+            if directive.cache_policy.is_some() {
+                return Err(StorageFaultResolutionError::InvalidDirective {
+                    binding: action.binding.clone(),
+                    reason: String::from("multiple volatile-cache policies conflict"),
+                });
+            }
+            let policy = world
+                .fault_topology()
+                .storage_policy_artifact(cache_policy)
+                .and_then(|artifact| match &artifact.artifact {
+                    StoragePolicyArtifactKind::Cache(policy) => Some(policy),
+                    _ => None,
+                })
+                .ok_or_else(|| StorageFaultResolutionError::PolicyReference {
+                    binding: action.binding.clone(),
+                    reference: cache_policy.clone(),
+                    expected: "cache",
+                })?;
+            let dirty_eviction = match &policy.dirty_eviction {
+                StoragePolicyDirtyEviction::Persist => BlockFaultDirtyEviction::Persist,
+                StoragePolicyDirtyEviction::Fail { result } => {
+                    require_block_result(world, result, false, &action.binding)?;
+                    BlockFaultDirtyEviction::Fail(resolve_block_failure(world, result).ok_or_else(
+                        || StorageFaultResolutionError::PolicyReference {
+                            binding: action.binding.clone(),
+                            reference: result.clone(),
+                            expected: "non-success block typed_result",
+                        },
+                    )?)
+                }
+            };
+            directive.cache_policy = Some(ResolvedBlockCachePolicy {
+                capacity_bytes: capacity_bytes.get(),
+                eviction: match policy.eviction {
+                    StoragePolicyCacheEviction::Fifo => BlockFaultCacheEviction::Fifo,
+                    StoragePolicyCacheEviction::Lru => BlockFaultCacheEviction::Lru,
+                    StoragePolicyCacheEviction::WritebackSequence => {
+                        BlockFaultCacheEviction::WritebackSequence
+                    }
+                },
+                dirty_eviction,
+                power_loss_protected: policy.power_loss_protected,
+            });
+        }
+        StorageEffectSpecification::VolatileCacheLoss { .. } => {
+            return Err(unsupported(action, "request-local volatile-cache loss"));
         }
         StorageEffectSpecification::MediaRange {
             range,
@@ -714,6 +964,52 @@ fn keyed_word(
     u64::from_be_bytes(word)
 }
 
+fn keyed_action_rank(
+    context: StorageFaultResolutionContext,
+    action: &ResolvedBindingAction,
+    eligible_digest: [u8; 32],
+    domain: &[u8],
+    selected_sequence: u64,
+) -> u64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.storage-fault-choice.v1\0");
+    hasher.update(domain);
+    hasher.update(&[0]);
+    hasher.update(&context.scenario_seed.bytes);
+    hasher.update(&action.id().bytes);
+    hasher.update(&eligible_digest);
+    hasher.update(&selected_sequence.to_be_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 8];
+    bytes.copy_from_slice(&digest.as_bytes()[..8]);
+    u64::from_be_bytes(bytes)
+}
+
+fn volatile_cache_eligible_digest(eligible: &[u64]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.storage-volatile-loss-eligible.v1\0");
+    hasher.update(
+        &u64::try_from(eligible.len())
+            .unwrap_or(u64::MAX)
+            .to_be_bytes(),
+    );
+    for sequence in eligible {
+        hasher.update(&sequence.to_be_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn ranges_intersect(
+    left_offset: u64,
+    left_length: u64,
+    right_offset: u64,
+    right_len: usize,
+) -> bool {
+    let left_end = left_offset.saturating_add(left_length);
+    let right_end = right_offset.saturating_add(u64::try_from(right_len).unwrap_or(u64::MAX));
+    left_offset < right_end && right_offset < left_end
+}
+
 fn mapped_u64(
     action: &ResolvedBindingAction,
     parameter: MappedEffectParameter,
@@ -782,6 +1078,34 @@ fn require_block_result(
         });
     }
     Ok(())
+}
+
+fn resolve_block_failure(world: &World, reference: &FaultObjectId) -> Option<BlockFaultResult> {
+    let result = world
+        .fault_topology()
+        .storage_policy_artifact(reference)
+        .and_then(|artifact| match &artifact.artifact {
+            StoragePolicyArtifactKind::TypedResult(StoragePolicyTypedResult::Block { result }) => {
+                Some(*result)
+            }
+            _ => None,
+        })?;
+    match result {
+        crucible::model::StoragePolicyResult::Success => None,
+        crucible::model::StoragePolicyResult::Offline => Some(BlockFaultResult::Offline),
+        crucible::model::StoragePolicyResult::ReadOnly => Some(BlockFaultResult::ReadOnly),
+        crucible::model::StoragePolicyResult::InvalidRange => Some(BlockFaultResult::InvalidRange),
+        crucible::model::StoragePolicyResult::Busy => Some(BlockFaultResult::Busy),
+        crucible::model::StoragePolicyResult::Timeout => Some(BlockFaultResult::Timeout),
+        crucible::model::StoragePolicyResult::MediumError => Some(BlockFaultResult::MediumError),
+        crucible::model::StoragePolicyResult::IntegrityError => {
+            Some(BlockFaultResult::IntegrityError)
+        }
+        crucible::model::StoragePolicyResult::IoError => Some(BlockFaultResult::IoError),
+        crucible::model::StoragePolicyResult::NoSpace => Some(BlockFaultResult::NoSpace),
+        crucible::model::StoragePolicyResult::NotFound => Some(BlockFaultResult::NotFound),
+        crucible::model::StoragePolicyResult::Stale => Some(BlockFaultResult::Stale),
+    }
 }
 
 fn require_policy_kind(
@@ -1076,6 +1400,18 @@ pub enum StorageFaultResolutionError {
         /// Stable failure detail.
         reason: String,
     },
+    /// Locked replay observed a different pre-loss cache entry set.
+    #[error(
+        "storage binding `{binding}` cache-loss replay digest mismatch: expected {expected:?}, actual {actual:?}"
+    )]
+    ReplayEntrySetMismatch {
+        /// Binding whose recorded transition is being replayed.
+        binding: FaultObjectId,
+        /// Digest recorded by the original execution.
+        expected: [u8; 32],
+        /// Digest computed from the live state before mutation.
+        actual: [u8; 32],
+    },
     /// The live adapter does not yet implement the complete selected semantics.
     #[error("storage binding `{binding}` selects unavailable live semantics: {parameter}")]
     UnsupportedEffect {
@@ -1094,8 +1430,9 @@ mod tests {
     use std::sync::Arc;
 
     use crucible::model::{
-        BindingActionCause, ContentHash, EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest,
-        FaultCoordinate, FaultOperation, FaultPhase, OperationSet,
+        BindingActionCause, BoundedCount, ContentHash, CountLimit, EFFECT_SEMANTIC_VERSION,
+        EffectLifetime, EffectRequest, FaultCoordinate, FaultOperation, FaultPhase, OperationSet,
+        SignalId,
     };
 
     use super::*;
@@ -1506,5 +1843,126 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn volatile_cache_loss_selection_is_exact_and_reproducible() {
+        let all = action(
+            "cache-loss-all",
+            EffectLifetime::Impulse,
+            FaultPhase::Boundary,
+            StorageEffectSpecification::VolatileCacheLoss {
+                selector: StorageVolatileCacheLossSelector::All,
+                loss: StorageVolatileCacheLossKind::ProtectionFailure,
+            },
+            ResolvedMappingOutput::Impulse {
+                event: SignalValue::Bytes(vec![1]),
+            },
+        );
+        let state = BlockFaultState::write_through(4096);
+        let eligible = [2, 5, 9];
+        assert_eq!(
+            select_volatile_cache_loss(
+                context(),
+                &all,
+                &StorageVolatileCacheLossSelector::All,
+                &state,
+                &eligible,
+            )
+            .unwrap_or_else(|error| panic!("all selection should resolve: {error}")),
+            vec![2, 5, 9]
+        );
+        assert_eq!(
+            select_volatile_cache_loss(
+                context(),
+                &all,
+                &StorageVolatileCacheLossSelector::AfterSequence { sequence: 2 },
+                &state,
+                &eligible,
+            )
+            .unwrap_or_else(|error| panic!("sequence selection should resolve: {error}")),
+            vec![5, 9]
+        );
+        let subset = StorageVolatileCacheLossSelector::KeyedSubset {
+            count: BoundedCount::new(CountLimit::LargeStateEntries, 2)
+                .unwrap_or_else(|error| panic!("subset count should be valid: {error}")),
+        };
+        let first = select_volatile_cache_loss(context(), &all, &subset, &state, &eligible)
+            .unwrap_or_else(|error| panic!("keyed selection should resolve: {error}"));
+        let repeated = select_volatile_cache_loss(context(), &all, &subset, &state, &eligible)
+            .unwrap_or_else(|error| panic!("keyed selection should repeat: {error}"));
+        assert_eq!(first, repeated);
+        assert_eq!(first.len(), 2);
+        assert!(first.iter().all(|sequence| eligible.contains(sequence)));
+    }
+
+    #[test]
+    fn volatile_cache_loss_requires_a_boundary_event_payload() {
+        let bytes = action(
+            "cache-loss-bytes",
+            EffectLifetime::Impulse,
+            FaultPhase::Boundary,
+            StorageEffectSpecification::VolatileCacheLoss {
+                selector: StorageVolatileCacheLossSelector::All,
+                loss: StorageVolatileCacheLossKind::PowerLoss,
+            },
+            ResolvedMappingOutput::Impulse {
+                event: SignalValue::Bytes(vec![1]),
+            },
+        );
+        assert!(matches!(
+            resolve_volatile_cache_loss(
+                &target(),
+                &BlockFaultState::write_through(4096),
+                context(),
+                &bytes,
+                VolatileCacheLossReplay::Record,
+            ),
+            Err(StorageFaultResolutionError::ActionIdentity { .. })
+        ));
+
+        let event = action(
+            "cache-loss-event",
+            EffectLifetime::Impulse,
+            FaultPhase::Boundary,
+            StorageEffectSpecification::VolatileCacheLoss {
+                selector: StorageVolatileCacheLossSelector::All,
+                loss: StorageVolatileCacheLossKind::PowerLoss,
+            },
+            ResolvedMappingOutput::Impulse {
+                event: SignalValue::Event {
+                    schema: SignalId::parse("loss-event")
+                        .unwrap_or_else(|error| panic!("test signal ID should be valid: {error}")),
+                    payload: vec![7],
+                },
+            },
+        );
+        let state = BlockFaultState::write_through(4096);
+        let resolved = resolve_volatile_cache_loss(
+            &target(),
+            &state,
+            context(),
+            &event,
+            VolatileCacheLossReplay::Record,
+        )
+        .unwrap_or_else(|error| panic!("event loss should resolve: {error}"));
+        assert_eq!(resolved.entry_set_digest, state.volatile_entries_digest());
+        assert!(resolved.eligible_sequences.is_empty());
+        assert!(resolved.protected_sequences.is_empty());
+        assert!(resolved.selected_sequences.is_empty());
+        assert_eq!(resolved.durable_frontier_before, 0);
+        assert_eq!(resolved.durable_frontier_after, 0);
+        assert!(matches!(
+            resolve_volatile_cache_loss(
+                &target(),
+                &state,
+                context(),
+                &event,
+                VolatileCacheLossReplay::Locked {
+                    expected_entry_set_digest: [9; 32],
+                },
+            ),
+            Err(StorageFaultResolutionError::ReplayEntrySetMismatch { .. })
+        ));
     }
 }

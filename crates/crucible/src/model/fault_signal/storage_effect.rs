@@ -149,6 +149,41 @@ pub enum StorageControllerTransition {
     Enumerate,
 }
 
+/// Physical cause of a volatile-cache loss impulse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageVolatileCacheLossKind {
+    /// Loses entries not protected by the configured cache policy.
+    PowerLoss,
+    /// Loses all selected entries because the protection mechanism also failed.
+    ProtectionFailure,
+}
+
+/// Exact eligible-set selector for a volatile-cache loss impulse.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
+pub enum StorageVolatileCacheLossSelector {
+    /// Selects every entry eligible for the loss kind and target scope.
+    All,
+    /// Selects entries admitted strictly after one global cache sequence.
+    AfterSequence {
+        /// Exclusive lower cache-sequence bound.
+        sequence: u64,
+    },
+    /// Selects entries whose logical byte range intersects this range.
+    RangeIntersection {
+        /// Absolute logical device range.
+        range: ByteRange,
+    },
+    /// Selects an exact keyed subset, capped by the live eligible cardinality.
+    KeyedSubset {
+        /// Requested exact cardinality when at least this many entries are eligible.
+        count: BoundedCount,
+    },
+}
+
 /// 9p result mutation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -254,16 +289,19 @@ pub enum StorageEffectSpecification {
         /// Registered delay and barrier rule.
         ordering_rule: FaultObjectId,
     },
-    /// Bounded volatile write cache and loss impulse.
+    /// Bounded volatile write-cache admission behavior.
     VolatileCache {
         /// Positive cache capacity.
         capacity_bytes: PositiveU64,
         /// Registered admission and eviction policy.
         cache_policy: FaultObjectId,
-        /// Deterministic loss selection.
-        loss_selector: StorageSelection,
-        /// Reset or power event that triggers loss.
-        loss_event: FaultObjectId,
+    },
+    /// Explicit volatile write-cache loss impulse.
+    VolatileCacheLoss {
+        /// Deterministic selection among entries eligible for this loss kind.
+        selector: StorageVolatileCacheLossSelector,
+        /// Whether cache protection remains effective for this impulse.
+        loss: StorageVolatileCacheLossKind,
     },
     /// Flush truthfulness, error, or stall outcome.
     FlushDisposition {
@@ -367,6 +405,7 @@ impl StorageEffectSpecification {
             Self::WriteDisposition { .. } => EffectKind::StorageWriteDisposition,
             Self::PersistenceOrder { .. } => EffectKind::StoragePersistenceOrder,
             Self::VolatileCache { .. } => EffectKind::StorageVolatileCache,
+            Self::VolatileCacheLoss { .. } => EffectKind::StorageVolatileCacheLoss,
             Self::FlushDisposition { .. } => EffectKind::StorageFlushDisposition,
             Self::MediaRange { .. } => EffectKind::StorageMediaRange,
             Self::FlashState { .. } => EffectKind::StorageFlashState,
