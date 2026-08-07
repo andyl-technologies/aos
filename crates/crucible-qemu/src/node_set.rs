@@ -33,16 +33,24 @@ pub struct QemuNodeSetBlockBoundaryCheckpoint {
 
 impl QemuNodeSet {
     /// Captures every node's block state before a boundary transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] if an authoritative device lock is poisoned.
     #[cfg(target_os = "linux")]
-    #[must_use]
-    pub fn checkpoint_block_boundary_state(&self) -> QemuNodeSetBlockBoundaryCheckpoint {
-        QemuNodeSetBlockBoundaryCheckpoint {
-            states: self
-                .nodes
-                .iter()
-                .map(|(id, node)| (id.clone(), node.checkpoint_block_boundary_state()))
-                .collect(),
-        }
+    pub fn checkpoint_block_boundary_state(
+        &self,
+    ) -> Result<QemuNodeSetBlockBoundaryCheckpoint, BackendError> {
+        let states = self
+            .nodes
+            .iter()
+            .map(|(id, node)| {
+                node.checkpoint_block_boundary_state()
+                    .map(|state| (id.clone(), state))
+                    .map_err(BackendError::from)
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(QemuNodeSetBlockBoundaryCheckpoint { states })
     }
 
     /// Restores every node's exact pre-boundary block state.
@@ -93,7 +101,7 @@ impl QemuNodeSet {
         evaluation_sequence: u64,
         actions: &[crucible::model::ResolvedBindingAction],
     ) -> Result<(), BackendError> {
-        let rollback = self.checkpoint_block_boundary_state();
+        let rollback = self.checkpoint_block_boundary_state()?;
         for node in self.nodes.values_mut() {
             if let Err(error) =
                 node.apply_block_boundary_actions(coordinate, evaluation_sequence, actions)
@@ -179,6 +187,27 @@ impl QemuNodeSet {
     #[must_use]
     pub fn contains(&self, node: &NodeId) -> bool {
         self.nodes.contains_key(node)
+    }
+
+    /// Returns one node's authoritative live block-device handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when `node` is absent or has no block device.
+    #[cfg(target_os = "linux")]
+    pub fn shared_block_device(
+        &self,
+        node: &NodeId,
+    ) -> Result<crate::QemuSharedBlockDevice, BackendError> {
+        self.nodes
+            .get(node)
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!("QEMU backend set has no live node `{}`", node.name),
+            })?
+            .shared_block_device()
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!("QEMU node `{}` has no live block device", node.name),
+            })
     }
 
     /// Installs the production block-fault coordinator for one live node.

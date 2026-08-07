@@ -228,8 +228,10 @@ pub enum BlockFaultWriteDisposition {
         /// Exact selected spans.
         spans: Vec<BlockFaultByteSpan>,
     },
-    /// Applies the complete bytes at another range on this device.
+    /// Applies the complete bytes at another device/range.
     Misdirected {
+        /// Authoritative destination selected during World resolution.
+        destination: BlockFaultMisdirectionDestination,
         /// Replacement range start.
         destination_offset: u64,
     },
@@ -238,6 +240,15 @@ pub enum BlockFaultWriteDisposition {
         /// Exact selected spans.
         spans: Vec<BlockFaultByteSpan>,
     },
+}
+
+/// Resolved device destination for a misdirected write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockFaultMisdirectionDestination {
+    /// Redirects within the attached source device.
+    AttachedDevice,
+    /// Redirects to another authoritative device identified by target hash.
+    ExternalDevice([u8; 32]),
 }
 
 /// Exact flush result and internal durability treatment.
@@ -4000,7 +4011,7 @@ impl BlockFaultState {
         }
     }
 
-    fn read_visible(
+    pub(super) fn read_visible(
         &mut self,
         base: &BaseImage,
         durable: &CowOverlay,
@@ -4102,8 +4113,17 @@ impl BlockFaultState {
             | BlockFaultWriteDisposition::ProgramFailure { spans } => {
                 (request.offset, spans.clone())
             }
-            BlockFaultWriteDisposition::Misdirected { destination_offset } => {
-                (*destination_offset, intended_spans.clone())
+            BlockFaultWriteDisposition::Misdirected {
+                destination: BlockFaultMisdirectionDestination::AttachedDevice,
+                destination_offset,
+            } => (*destination_offset, intended_spans.clone()),
+            BlockFaultWriteDisposition::Misdirected {
+                destination: BlockFaultMisdirectionDestination::ExternalDevice(_),
+                ..
+            } => {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "external misdirected write requires a two-device transaction",
+                });
             }
         };
         let mut resolved = Vec::with_capacity(spans.len());
@@ -5402,7 +5422,9 @@ fn validate_write_disposition(
     atomic_write_bytes: u64,
     allow_subatomic: bool,
 ) -> Result<(), DeviceError> {
-    if let BlockFaultWriteDisposition::Misdirected { destination_offset } = disposition
+    if let BlockFaultWriteDisposition::Misdirected {
+        destination_offset, ..
+    } = disposition
         && !allow_subatomic
         && destination_offset % atomic_write_bytes != request_offset % atomic_write_bytes
     {
@@ -5814,6 +5836,7 @@ mod tests {
         let misdirected = BlockRequest::write(5, 0, b"WXYZ".to_vec());
         response(&mut state, &base, &mut durable, &misdirected, |directive| {
             directive.write_disposition = BlockFaultWriteDisposition::Misdirected {
+                destination: BlockFaultMisdirectionDestination::AttachedDevice,
                 destination_offset: 8,
             };
         });

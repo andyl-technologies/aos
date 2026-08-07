@@ -34,7 +34,9 @@ pub use codec::{
     BlockTransportRequestIds, BlockTransportReset, BlockTransportResolved,
     BlockTransportUnadmitted, BlockTransportUndelivered, REQUEST_HEADER_LEN, RESPONSE_HEADER_LEN,
 };
-pub use device::{BlockDevice, BlockLatency, BlockSnapshot, submit_cross_device_misdirected_write};
+pub use device::{
+    BlockDevice, BlockLatency, BlockSnapshot, install_cross_device_misdirected_persistence,
+};
 pub use fault::*;
 pub use flash::*;
 pub use media::*;
@@ -444,6 +446,29 @@ mod tests {
 
     #[test]
     fn cross_device_misdirection_commits_both_devices_or_neither() {
+        fn stage_persistence(
+            source: &mut BlockDevice,
+            request: &BlockRequest,
+        ) -> BlockRequestPersistenceOpportunity {
+            ok(source.require_storage_execution_opportunities());
+            let admission = ResolvedBlockFaultDirective::fault_free(request, PAGE_SIZE as u64);
+            ok(source.install_storage_fault_directive(request.identity(), admission));
+            ok(source.submit(0, request));
+            let opportunity = source
+                .next_storage_execution_opportunity(0)
+                .unwrap_or_else(|| panic!("execution opportunity should be available"));
+            ok(
+                source.install_storage_execution_directive(ResolvedBlockExecutionDirective {
+                    opportunity,
+                    directive: ResolvedBlockFaultDirective::fault_free(request, PAGE_SIZE as u64),
+                }),
+            );
+            ok(source.advance_to(0));
+            source
+                .next_storage_request_persistence_opportunity(0)
+                .unwrap_or_else(|| panic!("persistence opportunity should be available"))
+        }
+
         let mut source = device(PAGE_SIZE);
         let mut destination = device(PAGE_SIZE);
         ok(source.configure_storage_faults(cached_fault_config(PAGE_SIZE as u64), true));
@@ -453,18 +478,22 @@ mod tests {
         destination_config.cache_entries = 0;
         ok(destination.configure_storage_faults(destination_config, false));
         let request = BlockRequest::write(10, 0, vec![0x5a; 512]);
-        let mut directive = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
+        let opportunity = stage_persistence(&mut source, &request);
+        let mut directive = opportunity.resolved.clone();
         directive.write_disposition = BlockFaultWriteDisposition::Misdirected {
+            destination: BlockFaultMisdirectionDestination::ExternalDevice([7; 32]),
             destination_offset: 512,
         };
-        ok(submit_cross_device_misdirected_write(
+        ok(install_cross_device_misdirected_persistence(
             &mut source,
             &mut destination,
-            0,
-            &request,
-            directive,
-            512,
+            ResolvedBlockRequestPersistenceDirective {
+                opportunity,
+                directive,
+            },
+            [7; 32],
         ));
+        ok(source.advance_to(0));
         assert_ne!(&source.materialize()[0..512], &[0x5a; 512]);
         assert_eq!(&destination.materialize()[512..1024], &[0x5a; 512]);
 
@@ -474,59 +503,59 @@ mod tests {
         let mut too_small = cached_fault_config(PAGE_SIZE as u64);
         too_small.volatile_cache_bytes = 256;
         ok(failing_destination.configure_storage_faults(too_small, false));
+        let opportunity = stage_persistence(&mut failing_source, &request);
         let before_source = failing_source.snapshot();
         let before_destination = failing_destination.snapshot();
-        let mut directive = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
+        let mut directive = opportunity.resolved.clone();
         directive.write_disposition = BlockFaultWriteDisposition::Misdirected {
+            destination: BlockFaultMisdirectionDestination::ExternalDevice([7; 32]),
             destination_offset: 512,
         };
         assert!(matches!(
-            submit_cross_device_misdirected_write(
+            install_cross_device_misdirected_persistence(
                 &mut failing_source,
                 &mut failing_destination,
-                0,
-                &request,
-                directive,
-                512,
+                ResolvedBlockRequestPersistenceDirective {
+                    opportunity,
+                    directive,
+                },
+                [7; 32],
             ),
             Err(crate::DeviceError::BlockCacheFull { .. })
         ));
         assert_eq!(failing_source.snapshot(), before_source);
         assert_eq!(failing_destination.snapshot(), before_destination);
 
-        let mut exhausted_source = device(PAGE_SIZE);
+        let mut stale_source = device(PAGE_SIZE);
         let mut untouched_destination = device(PAGE_SIZE);
-        ok(exhausted_source.configure_storage_faults(cached_fault_config(PAGE_SIZE as u64), true));
+        ok(stale_source.configure_storage_faults(cached_fault_config(PAGE_SIZE as u64), true));
         let mut destination_config = cached_fault_config(PAGE_SIZE as u64);
         destination_config.completion_durability = BlockCompletionDurability::Durable;
         destination_config.volatile_cache_bytes = 0;
         destination_config.cache_entries = 0;
         ok(untouched_destination.configure_storage_faults(destination_config, false));
-        let mut exhausted_snapshot = exhausted_source.snapshot();
-        exhausted_snapshot.core.next_seq = u32::MAX;
-        exhausted_source = ok(BlockDevice::restore(
-            &exhausted_snapshot,
-            ramp_base(PAGE_SIZE),
-            None,
-        ));
-        let before_source = exhausted_source.snapshot();
+        let mut opportunity = stage_persistence(&mut stale_source, &request);
+        let mut directive = opportunity.resolved.clone();
+        opportunity.request_sequence = opportunity.request_sequence.saturating_add(1);
+        let before_source = stale_source.snapshot();
         let before_destination = untouched_destination.snapshot();
-        let mut directive = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
         directive.write_disposition = BlockFaultWriteDisposition::Misdirected {
+            destination: BlockFaultMisdirectionDestination::ExternalDevice([7; 32]),
             destination_offset: 512,
         };
         assert!(matches!(
-            submit_cross_device_misdirected_write(
-                &mut exhausted_source,
+            install_cross_device_misdirected_persistence(
+                &mut stale_source,
                 &mut untouched_destination,
-                0,
-                &request,
-                directive,
-                512,
+                ResolvedBlockRequestPersistenceDirective {
+                    opportunity,
+                    directive,
+                },
+                [7; 32],
             ),
-            Err(crate::DeviceError::ResponseSequenceOverflow { .. })
+            Err(crate::DeviceError::InvalidBlockFaultDirective { .. })
         ));
-        assert_eq!(exhausted_source.snapshot(), before_source);
+        assert_eq!(stale_source.snapshot(), before_source);
         assert_eq!(untouched_destination.snapshot(), before_destination);
     }
 

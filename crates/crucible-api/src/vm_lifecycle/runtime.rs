@@ -323,6 +323,28 @@ impl ProductionVmLifecycleLoop {
                 ),
             });
         }
+        let replacement_block = self.block_bindings.get(node).map(|binding| {
+            backend
+                .shared_block_device()
+                .map(|handle| (binding.device_hash(), handle))
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "exact-restored QEMU node `{}` lost its declared block device",
+                        node.name
+                    ),
+                })
+        });
+        let replacement_block = replacement_block.transpose()?;
+        let mut block_devices = replacement_block
+            .as_ref()
+            .map(|_| {
+                self.block_devices
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from("authoritative block-device registry is poisoned"),
+                    })
+            })
+            .transpose()?;
         if let Some(previous) = self.inner.backend_mut().insert(node.clone(), backend) {
             if let Some(mut installed) = self.inner.backend_mut().take(node) {
                 let _ = SimulationBackend::shutdown(&mut installed);
@@ -334,6 +356,11 @@ impl ProductionVmLifecycleLoop {
                     node.name
                 ),
             });
+        }
+        if let (Some((device, handle)), Some(block_devices)) =
+            (replacement_block, block_devices.as_mut())
+        {
+            block_devices.insert(device, handle);
         }
         Ok(observed)
     }
@@ -417,6 +444,28 @@ impl ProductionVmLifecycleLoop {
         })?;
         self.install_authoritative_block_coordinator(node, &mut backend)?;
         let observed = SimulationBackend::now(&backend).ticks;
+        let replacement_block = self.block_bindings.get(node).map(|binding| {
+            backend
+                .shared_block_device()
+                .map(|handle| (binding.device_hash(), handle))
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "restarted QEMU node `{}` lost its declared block device",
+                        node.name
+                    ),
+                })
+        });
+        let replacement_block = replacement_block.transpose()?;
+        let mut block_devices = replacement_block
+            .as_ref()
+            .map(|_| {
+                self.block_devices
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from("authoritative block-device registry is poisoned"),
+                    })
+            })
+            .transpose()?;
         if let Some(previous) = self.inner.backend_mut().insert(node.clone(), backend) {
             if let Some(mut installed) = self.inner.backend_mut().take(node) {
                 let _ = SimulationBackend::shutdown(&mut installed);
@@ -428,6 +477,11 @@ impl ProductionVmLifecycleLoop {
                     node.name
                 ),
             });
+        }
+        if let (Some((device, handle)), Some(block_devices)) =
+            (replacement_block, block_devices.as_mut())
+        {
+            block_devices.insert(device, handle);
         }
         Ok(observed)
     }
@@ -445,6 +499,7 @@ impl ProductionVmLifecycleLoop {
                 Arc::clone(&self.fault_runtime),
                 Arc::clone(&self.fault_evaluation_cursor),
                 Arc::clone(&self.storage_fault_observations),
+                Arc::clone(&self.block_devices),
                 self.source.world().clone(),
                 binding.target.clone(),
                 self.source.plan().fault_signals(),

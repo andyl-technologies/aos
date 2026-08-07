@@ -594,13 +594,23 @@ pub struct QemuNode {
 }
 
 impl QemuNode {
-    /// Captures block state for rollback of an uncommitted scheduler boundary.
+    /// Returns this node's authoritative live block-device handle, when present.
     #[cfg(target_os = "linux")]
     #[must_use]
+    pub fn shared_block_device(&self) -> Option<crate::QemuSharedBlockDevice> {
+        self.host_io_runtime.shared_block_device()
+    }
+
+    /// Captures block state for rollback of an uncommitted scheduler boundary.
+    #[cfg(target_os = "linux")]
     pub fn checkpoint_block_boundary_state(
         &self,
-    ) -> Option<crucible_device::block::BlockFaultState> {
-        self.host_io_runtime.checkpoint_block_boundary_state()
+    ) -> Result<Option<crucible_device::block::BlockFaultState>, QemuNodeError> {
+        self.host_io_runtime
+            .checkpoint_block_boundary_state()
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })
     }
 
     /// Restores block state captured before an uncommitted scheduler boundary.

@@ -332,6 +332,7 @@ pub struct ProductionVmLifecycleLoop {
     branch: Option<ProductionVmBranchConfig>,
     launch_configs: BTreeMap<NodeId, ProductionLiveNodeStepGateConfig>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
+    block_devices: storage_faults::ProductionBlockDevices,
     storage_fault_observations: storage_faults::ProductionStorageObservations,
     fault_runtime: Arc<std::sync::Mutex<ProductionFaultRuntime>>,
     fault_evaluation_cursor: network_faults::SharedProductionFaultEvaluationCursor,
@@ -659,6 +660,25 @@ pub fn build_production_vm_lifecycle_loop(
     let storage_fault_observations = Arc::new(std::sync::Mutex::new(
         storage_faults::ProductionFaultObservationJournal::default(),
     ));
+    let mut block_device_map = BTreeMap::new();
+    for (node, block) in &block_bindings {
+        let handle = backends.shared_block_device(node).map_err(|error| {
+            loop_factory_error(format!(
+                "locate authoritative block device for `{}`: {error}",
+                node.name
+            ))
+        })?;
+        if block_device_map
+            .insert(block.device_hash(), handle)
+            .is_some()
+        {
+            return Err(loop_factory_error(format!(
+                "World block target for `{}` aliases another live device",
+                node.name
+            )));
+        }
+    }
+    let block_devices = Arc::new(std::sync::Mutex::new(block_device_map));
     for (node, block) in &block_bindings {
         backends
             .install_block_fault_coordinator(
@@ -667,6 +687,7 @@ pub fn build_production_vm_lifecycle_loop(
                     Arc::clone(&fault_runtime),
                     Arc::clone(&fault_evaluation_cursor),
                     Arc::clone(&storage_fault_observations),
+                    Arc::clone(&block_devices),
                     source.world().clone(),
                     block.target.clone(),
                     source.plan().fault_signals(),
@@ -704,6 +725,7 @@ pub fn build_production_vm_lifecycle_loop(
         branch: config.branch.clone(),
         launch_configs,
         block_bindings,
+        block_devices,
         storage_fault_observations,
         fault_runtime,
         fault_evaluation_cursor,

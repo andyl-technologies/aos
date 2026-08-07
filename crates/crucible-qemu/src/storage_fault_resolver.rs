@@ -261,15 +261,16 @@ use crucible_device::block::{
     BlockCompletionDurability, BlockDeliveryOpportunity, BlockDiscardSemantics,
     BlockDuplicatePolicy, BlockDurabilityConfig, BlockFaultAvailability, BlockFaultByteSpan,
     BlockFaultCacheEviction, BlockFaultDirtyEviction, BlockFaultFlushDisposition,
-    BlockFaultReadTransform, BlockFaultResult, BlockFaultState, BlockFaultWriteDisposition,
-    BlockMediaRangeState, BlockOp, BlockPersistenceOpportunity, BlockPersistenceOrdering,
-    BlockRequest, BlockRequestPersistenceOpportunity, BlockResponse, BlockServiceDiscipline,
-    BlockTransitionPending, BlockTransitionResolved, BlockTransitionState, BlockTransitionTopology,
-    BlockTransitionUnadmitted, BlockTransitionUndelivered, BlockTransportRequestIds,
-    ResolvedBlockCachePolicy, ResolvedBlockControllerTransition, ResolvedBlockFaultDirective,
-    ResolvedBlockFlashProgramErase, ResolvedBlockFlashReadDisturb, ResolvedBlockFlashRetention,
-    ResolvedBlockFlashRule, ResolvedBlockMediaRule, ResolvedBlockPersistenceMediaDirective,
-    ResolvedBlockPersistenceTransform, ResolvedBlockServiceClass, ResolvedBlockServiceRule,
+    BlockFaultMisdirectionDestination, BlockFaultReadTransform, BlockFaultResult, BlockFaultState,
+    BlockFaultWriteDisposition, BlockMediaRangeState, BlockOp, BlockPersistenceOpportunity,
+    BlockPersistenceOrdering, BlockRequest, BlockRequestPersistenceOpportunity, BlockResponse,
+    BlockServiceDiscipline, BlockTransitionPending, BlockTransitionResolved, BlockTransitionState,
+    BlockTransitionTopology, BlockTransitionUnadmitted, BlockTransitionUndelivered,
+    BlockTransportRequestIds, ResolvedBlockCachePolicy, ResolvedBlockControllerTransition,
+    ResolvedBlockFaultDirective, ResolvedBlockFlashProgramErase, ResolvedBlockFlashReadDisturb,
+    ResolvedBlockFlashRetention, ResolvedBlockFlashRule, ResolvedBlockMediaRule,
+    ResolvedBlockPersistenceMediaDirective, ResolvedBlockPersistenceTransform,
+    ResolvedBlockServiceClass, ResolvedBlockServiceRule,
 };
 
 /// Resolves persistent flash policy for one exact physical persistence opportunity.
@@ -536,6 +537,8 @@ fn select_volatile_cache_loss(
 /// transition sequence before composition so caller iteration order cannot
 /// affect the result. `request_sequence` must be the monotone adapter sequence
 /// pinned with this request, not the reusable guest request ID.
+/// `read_source` inspects controller-visible bytes from the authoritative live
+/// device selected by a misdirected-read action and is never called otherwise.
 ///
 /// # Errors
 ///
@@ -550,6 +553,7 @@ pub fn resolve_block_fault_directive<'a>(
     request_sequence: u64,
     opportunity: &FaultOpportunity,
     context: StorageFaultResolutionContext,
+    read_source: &mut dyn FnMut(ContentHash, u64, u32) -> Result<Vec<u8>, String>,
     actions: impl IntoIterator<Item = &'a ResolvedBindingAction>,
 ) -> Result<ResolvedBlockFaultDirective, StorageFaultResolutionError> {
     let capacity = target_capacity(world, target)?;
@@ -561,6 +565,7 @@ pub fn resolve_block_fault_directive<'a>(
         opportunity,
         capacity,
         context,
+        read_source,
         actions,
     )
 }
@@ -670,6 +675,7 @@ fn resolve_block_fault_directive_with_capacity<'a>(
     opportunity: &FaultOpportunity,
     capacity: u64,
     context: StorageFaultResolutionContext,
+    read_source: &mut dyn FnMut(ContentHash, u64, u32) -> Result<Vec<u8>, String>,
     actions: impl IntoIterator<Item = &'a ResolvedBindingAction>,
 ) -> Result<ResolvedBlockFaultDirective, StorageFaultResolutionError> {
     validate_request_opportunity(target, request, request_sequence, opportunity)?;
@@ -707,7 +713,15 @@ fn resolve_block_fault_directive_with_capacity<'a>(
                 binding: action.binding.clone(),
             });
         };
-        apply_effect(world, request, context, action, effect, &mut directive)?;
+        apply_effect(
+            world,
+            request,
+            context,
+            read_source,
+            action,
+            effect,
+            &mut directive,
+        )?;
     }
     directive
         .persistence_media_rules
@@ -720,6 +734,7 @@ fn apply_effect(
     world: &World,
     request: &BlockRequest,
     context: StorageFaultResolutionContext,
+    read_source: &mut dyn FnMut(ContentHash, u64, u32) -> Result<Vec<u8>, String>,
     action: &ResolvedBindingAction,
     effect: &StorageEffectSpecification,
     directive: &mut ResolvedBlockFaultDirective,
@@ -1075,8 +1090,55 @@ fn apply_effect(
                             bytes: replacement.to_vec(),
                         });
                 }
-                StorageReadMutation::Misdirected { .. } => {
-                    return Err(unsupported(action, "cross-device misdirected read"));
+                StorageReadMutation::Misdirected {
+                    source_device,
+                    source_range,
+                } => {
+                    if u64::from(request.count) > source_range.length() {
+                        return Err(StorageFaultResolutionError::InvalidDirective {
+                            binding: action.binding.clone(),
+                            reason: String::from(
+                                "misdirected read exceeds the declared source window",
+                            ),
+                        });
+                    }
+                    let (source, source_hash) = storage_device_by_id(world, source_device)
+                        .ok_or_else(|| StorageFaultResolutionError::PolicyReference {
+                            binding: action.binding.clone(),
+                            reference: source_device.clone(),
+                            expected: "declared live block device",
+                        })?;
+                    let source_end = source_range
+                        .start()
+                        .checked_add(u64::from(request.count))
+                        .ok_or_else(|| StorageFaultResolutionError::Overflow {
+                            binding: action.binding.clone(),
+                            field: "misdirected read source end",
+                        })?;
+                    if source_end > source.persistence.length_bytes {
+                        return Err(StorageFaultResolutionError::InvalidDirective {
+                            binding: action.binding.clone(),
+                            reason: String::from(
+                                "misdirected read exceeds the source device capacity",
+                            ),
+                        });
+                    }
+                    let bytes = read_source(source_hash, source_range.start(), request.count)
+                        .map_err(|reason| StorageFaultResolutionError::InvalidDirective {
+                            binding: action.binding.clone(),
+                            reason: format!("read misdirected source bytes: {reason}"),
+                        })?;
+                    if bytes.len() != request.count as usize {
+                        return Err(StorageFaultResolutionError::InvalidDirective {
+                            binding: action.binding.clone(),
+                            reason: String::from(
+                                "misdirected source returned a non-exact byte count",
+                            ),
+                        });
+                    }
+                    directive
+                        .read_transforms
+                        .push(BlockFaultReadTransform::Replace { bytes });
                 }
             }
         }
@@ -1959,9 +2021,14 @@ fn resolve_write_disposition(
             destination_range,
         } => {
             let source = target_storage_device(world, &action.target)?;
-            if destination_device.as_str() != source.device.as_str() {
-                return Err(unsupported(action, "cross-device misdirected write"));
-            }
+            let (destination_device_contract, destination_hash) =
+                storage_device_by_id(world, destination_device).ok_or_else(|| {
+                    StorageFaultResolutionError::PolicyReference {
+                        binding: action.binding.clone(),
+                        reference: destination_device.clone(),
+                        expected: "declared live block device",
+                    }
+                })?;
             if count > destination_range.length() {
                 return Err(StorageFaultResolutionError::InvalidDirective {
                     binding: action.binding.clone(),
@@ -1970,7 +2037,29 @@ fn resolve_write_disposition(
                     ),
                 });
             }
+            let destination_end =
+                destination_range
+                    .start()
+                    .checked_add(count)
+                    .ok_or_else(|| StorageFaultResolutionError::Overflow {
+                        binding: action.binding.clone(),
+                        field: "misdirected write destination end",
+                    })?;
+            if destination_end > destination_device_contract.persistence.length_bytes {
+                return Err(StorageFaultResolutionError::InvalidDirective {
+                    binding: action.binding.clone(),
+                    reason: String::from(
+                        "misdirected write exceeds the destination device capacity",
+                    ),
+                });
+            }
+            let destination = if destination_device.as_str() == source.device.as_str() {
+                BlockFaultMisdirectionDestination::AttachedDevice
+            } else {
+                BlockFaultMisdirectionDestination::ExternalDevice(destination_hash.bytes)
+            };
             Ok(BlockFaultWriteDisposition::Misdirected {
+                destination,
                 destination_offset: destination_range.start(),
             })
         }
@@ -2101,6 +2190,25 @@ fn target_storage_device<'a>(
                 && device.device.as_str() == node.id.name.as_str()
         })
         .ok_or(StorageFaultResolutionError::UnsupportedTarget)
+}
+
+fn storage_device_by_id<'a>(
+    world: &'a World,
+    device_id: &FaultObjectId,
+) -> Option<(&'a crucible::model::WorldStorageFaultDevice, ContentHash)> {
+    let device = world
+        .fault_topology()
+        .storage_devices
+        .iter()
+        .find(|device| {
+            device.kind == crucible::model::WorldStorageKind::Block
+                && device.device.as_str() == device_id.as_str()
+        })?;
+    let node = world.io_nodes().find(|node| {
+        matches!(node.kind, crucible::model::WorldIoNodeKind::Block { .. })
+            && node.id.name == device_id.as_str()
+    })?;
+    Some((device, node.fault_target_hash()))
 }
 
 /// Returns the process-independent subscription key stored by the block device.
@@ -2306,6 +2414,14 @@ mod tests {
         StorageFaultResolutionContext::new(ContentHash::from_bytes(b"storage-resolver-seed"))
     }
 
+    fn unexpected_read_source(
+        _device: ContentHash,
+        _offset: u64,
+        _count: u32,
+    ) -> Result<Vec<u8>, String> {
+        Err(String::from("test did not admit a misdirected read source"))
+    }
+
     fn opportunity(request: &BlockRequest, phase: FaultPhase) -> FaultOpportunity {
         let wire = request
             .encode()
@@ -2354,6 +2470,7 @@ mod tests {
             &opportunity,
             4096,
             context(),
+            &mut unexpected_read_source,
             [&action],
         )
         .unwrap_or_else(|error| panic!("stall should resolve: {error}"));
@@ -2405,6 +2522,7 @@ mod tests {
             &opportunity,
             4096,
             context(),
+            &mut unexpected_read_source,
             [&action],
         )
         .unwrap_or_else(|error| panic!("flush stall should resolve: {error}"));
@@ -2577,6 +2695,7 @@ mod tests {
             &opportunity,
             4096,
             context(),
+            &mut unexpected_read_source,
             [&degraded, &offline],
         )
         .unwrap_or_else(|error| panic!("composition should resolve: {error}"));
@@ -2588,6 +2707,7 @@ mod tests {
             &opportunity,
             4096,
             context(),
+            &mut unexpected_read_source,
             [&offline, &degraded],
         )
         .unwrap_or_else(|error| panic!("composition should resolve: {error}"));
@@ -2640,6 +2760,7 @@ mod tests {
             &opportunity,
             4096,
             context(),
+            &mut unexpected_read_source,
             [&fixed, &dynamic],
         )
         .unwrap_or_else(|error| panic!("latency should resolve: {error}"));
@@ -2675,6 +2796,7 @@ mod tests {
             &opportunity,
             4096,
             context(),
+            &mut unexpected_read_source,
             [&latency],
         ) {
             Ok(_) => panic!("wrong dynamic field must fail closed"),
@@ -2892,6 +3014,7 @@ mod tests {
                 &opportunity,
                 4096,
                 context(),
+                &mut unexpected_read_source,
                 [&latency],
             ),
             Err(StorageFaultResolutionError::ActionIdentity { .. })
@@ -2913,6 +3036,7 @@ mod tests {
                 &first_opportunity,
                 4096,
                 context(),
+                &mut unexpected_read_source,
                 [],
             ),
             Err(StorageFaultResolutionError::OpportunityMismatch)

@@ -1189,7 +1189,9 @@ pub(super) fn build_live_node(
         block_servicer.as_mut(),
     )?;
     if let (Some(servicer), Some(block)) = (block_servicer.as_mut(), config.shmem_block.as_ref()) {
-        servicer.set_latency_model(block.latency);
+        servicer
+            .set_latency_model(block.latency)
+            .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
     }
     if let Some(servicer) = block_servicer {
         runtime = runtime.with_block_servicer(servicer, BlockIoDiagnostics::shared());
