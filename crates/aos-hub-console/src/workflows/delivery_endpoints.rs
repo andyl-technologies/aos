@@ -15,7 +15,7 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
-use super::resources::UnavailableWorkflow;
+use super::storage_gateways::StorageGatewayWorkflow;
 
 /// Renders endpoint workflows and delegates unrelated pages onward.
 #[component]
@@ -29,7 +29,7 @@ pub(super) fn DeliveryEndpointWorkflow(route: ConsoleRoute, client: ApiClient) -
             <DeliveryEndpoints client=client owner_scope_key=format!("org:{slug}")/>
         }
         .into_any(),
-        _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
+        _ => view! { <StorageGatewayWorkflow route=route client=client/> }.into_any(),
     }
 }
 
