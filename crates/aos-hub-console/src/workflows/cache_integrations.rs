@@ -25,7 +25,6 @@ use super::registry_images::RegistryImages;
 use super::registry_mirror::RegistryMirrorWorkflow;
 use super::registry_publication::RegistryPublicationWorkflow;
 use super::resource_access::{ResourceAccessSurface, ResourceAccessWorkflow};
-use super::resources::UnavailableWorkflow;
 use super::signing_keys::{SigningKeyTarget, SigningKeyWorkflow};
 
 /// Renders registry/cache integration pages and delegates unrelated routes.
@@ -101,7 +100,7 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             />
         }
         .into_any(),
-        (ConsoleScope::Registry { path }, "publishes") => view! {
+        (ConsoleScope::Registry { path }, "publish-history") => view! {
             <RegistryPublicationWorkflow client=client registry_id=path.clone()/>
         }
         .into_any(),
@@ -216,7 +215,10 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             <CacheGcWorkflow client=client cache_id=format!("{organization}/{cache}")/>
         }
         .into_any(),
-        _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
+        _ => unreachable!(
+            "closed console route has no workflow adapter: {}",
+            route.page.workflow
+        ),
     }
 }
 

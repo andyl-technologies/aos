@@ -411,20 +411,6 @@ pub const ORGANIZATION_PAGES: &[PageSpec] = &[
 pub const REGISTRY_PAGES: &[PageSpec] = &[
     PageSpec::new("overview", "Overview", "", "", "registry-overview"),
     PageSpec::new(
-        "images",
-        "Images",
-        "Publishing",
-        "images",
-        "registry-images",
-    ),
-    PageSpec::new(
-        "packages",
-        "Packages",
-        "Publishing",
-        "packages",
-        "registry-packages",
-    ),
-    PageSpec::new(
         "placements",
         "Storage & replicas",
         "Topology",
@@ -467,6 +453,20 @@ pub const REGISTRY_PAGES: &[PageSpec] = &[
         "access-tokens",
     ),
     PageSpec::new(
+        "images",
+        "Images",
+        "Publishing",
+        "images",
+        "registry-images",
+    ),
+    PageSpec::new(
+        "packages",
+        "Packages",
+        "Publishing",
+        "packages",
+        "registry-packages",
+    ),
+    PageSpec::new(
         "mirror",
         "Upstream mirror",
         "Publishing",
@@ -495,10 +495,10 @@ pub const REGISTRY_PAGES: &[PageSpec] = &[
         "change-requests",
     ),
     PageSpec::new(
-        "publishes",
+        "publish-history",
         "Publish history",
         "Publishing",
-        "publishes",
+        "publish-history",
         "registry-publication",
     ),
     PageSpec::new(
@@ -618,6 +618,120 @@ mod tests {
     }
 
     #[test]
+    fn closed_page_registry_matches_the_implemented_adapters() {
+        for (pages, expected) in [
+            (
+                INSTANCE_PAGES,
+                &[
+                    "overview",
+                    "storage",
+                    "domains",
+                    "boundaries",
+                    "endpoints",
+                    "gateways",
+                    "defaults",
+                    "identity",
+                    "tokens",
+                    "resource-defaults",
+                    "branding",
+                    "operations",
+                ][..],
+            ),
+            (
+                ORGANIZATION_PAGES,
+                &[
+                    "overview",
+                    "projects",
+                    "registries",
+                    "caches",
+                    "storage",
+                    "domains",
+                    "boundaries",
+                    "endpoints",
+                    "gateways",
+                    "defaults",
+                    "identity",
+                    "members",
+                    "sso",
+                    "signing",
+                    "tokens",
+                    "webhooks",
+                    "operations",
+                    "audit",
+                    "danger",
+                ][..],
+            ),
+            (
+                REGISTRY_PAGES,
+                &[
+                    "overview",
+                    "placements",
+                    "delivery",
+                    "caches",
+                    "access",
+                    "signing",
+                    "tokens",
+                    "images",
+                    "packages",
+                    "mirror",
+                    "configuration",
+                    "channels",
+                    "changes",
+                    "publish-history",
+                    "operations",
+                    "danger",
+                ][..],
+            ),
+            (
+                CACHE_PAGES,
+                &[
+                    "overview",
+                    "placements",
+                    "delivery",
+                    "objects",
+                    "integrations",
+                    "access",
+                    "signing",
+                    "tokens",
+                    "retention",
+                    "gc",
+                    "operations",
+                    "danger",
+                ][..],
+            ),
+        ] {
+            assert_eq!(
+                pages.iter().map(|page| page.key).collect::<Vec<_>>(),
+                expected,
+                "a page was added or reordered without a workflow-adapter audit"
+            );
+        }
+    }
+
+    #[test]
+    fn navigation_groups_are_contiguous() {
+        for pages in [
+            INSTANCE_PAGES,
+            ORGANIZATION_PAGES,
+            REGISTRY_PAGES,
+            CACHE_PAGES,
+        ] {
+            let mut completed = std::collections::BTreeSet::new();
+            let mut previous = None;
+            for page in pages {
+                if previous != Some(page.group) {
+                    assert!(
+                        completed.insert(page.group),
+                        "navigation group is split into multiple sections: {}",
+                        page.group
+                    );
+                    previous = Some(page.group);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn nested_registry_and_cache_routes_remain_distinct() {
         let registry = ConsoleRoute::resolve("/acme/tools/main/-/settings/delivery")
             .expect("nested registry route must resolve");
@@ -652,6 +766,14 @@ mod tests {
             );
         }
         assert!(ConsoleRoute::resolve("/-/org/acme/caches/main/signing-key").is_none());
+    }
+
+    #[test]
+    fn registry_publish_history_uses_only_the_canonical_path() {
+        let route = ConsoleRoute::resolve("/acme/main/-/settings/publish-history")
+            .expect("publish history route must resolve");
+        assert_eq!(route.page.key, "publish-history");
+        assert!(ConsoleRoute::resolve("/acme/main/-/settings/publishes").is_none());
     }
 
     #[test]

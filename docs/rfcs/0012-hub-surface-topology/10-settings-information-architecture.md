@@ -479,6 +479,8 @@ Access & trust
   Access tokens
 
 Publishing
+  Images
+  Packages
   Upstream mirror
   Configuration
   Channels

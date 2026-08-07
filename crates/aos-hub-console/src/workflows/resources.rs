@@ -73,20 +73,6 @@ pub(crate) fn ResourceWorkflow(route: ConsoleRoute, client: ApiClient) -> impl I
 }
 
 #[component]
-pub(super) fn UnavailableWorkflow(workflow: &'static str) -> impl IntoView {
-    view! {
-        <section class="panel empty-state">
-            <p class="section-kicker">"Resource editor"</p>
-            <h2>"Workflow adapter pending"</h2>
-            <p>
-                "This route is blocked from the production cutover until its typed inventory and reviewed editor are attached."
-            </p>
-            <code>{workflow}</code>
-        </section>
-    }
-}
-
-#[component]
 fn OrganizationInventory(client: ApiClient) -> impl IntoView {
     let inventory = LocalResource::new(move || {
         let client = client.clone();
