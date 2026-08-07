@@ -17,7 +17,7 @@
   controllerOnly ? false,
 }: let
   version = "0.1.0";
-  cargoDepsHash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+  cargoDepsHash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   src = import ./_source.nix {inherit lib;};
   packages = import ./_packages.nix;
   nonCrucibleWorkspacePackages = [
