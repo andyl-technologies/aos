@@ -27,6 +27,12 @@ pub(crate) fn verify_commit_signature(
     command
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        // AOS's Nix builder exposes build dependencies through a broad
+        // LD_LIBRARY_PATH. The packaged git and ssh-keygen have their own
+        // runtime paths; inheriting the builder value can make ssh-keygen load
+        // an ABI-incompatible libcrypto and turn a valid signature into a
+        // false verification result.
+        .env_remove("LD_LIBRARY_PATH")
         .arg("-c")
         .arg(format!(
             "gpg.ssh.allowedSignersFile={}",
@@ -92,6 +98,7 @@ fn ssh_keygen_can_sign(candidate: &Path) -> bool {
     };
     let key = tmp.path().join("key");
     let Ok(keygen) = Command::new(candidate)
+        .env_remove("LD_LIBRARY_PATH")
         .args(["-q", "-t", "ed25519", "-N", "", "-C", "registry-test", "-f"])
         .arg(&key)
         .output()
@@ -108,6 +115,7 @@ fn ssh_keygen_can_sign(candidate: &Path) -> bool {
     }
 
     Command::new(candidate)
+        .env_remove("LD_LIBRARY_PATH")
         .arg("-Y")
         .arg("sign")
         .arg("-f")
