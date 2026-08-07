@@ -1103,7 +1103,10 @@ pub enum SessionError {
     fault/query commands through queued scheduler control operations, and actor
     command rejection into typed reply completion. Focused tests cover successful
     reply delivery across engine boundaries and side-effect-free rejection
-    replies. Full breakpoint predicate evaluation and independent forked child
+    replies. Reply-bearing debugger and guest-introspection commands use the same
+    recovery path even when they are sent directly rather than wrapped in an
+    actor acknowledgement, so a rejected reverse coordinate or branch policy
+    does not terminate the session actor. Full breakpoint predicate evaluation and independent forked child
     actors remain tracked by `T-SESS-7` and `T-SESS-8`.
 - [x] **T-SESS-5** Implement the five step modes (Quantum/Event/Assertion/Timer/
   Duration), each resolving to a deterministic stop point, interruptible by

@@ -650,6 +650,48 @@ pub(super) async fn session_actor_terminalizes_mismatched_debug_runtime_evidence
 }
 
 #[tokio::test]
+pub(super) async fn rejected_direct_debug_command_does_not_terminate_the_actor() {
+    let (root, _first, _second, graph) = debug_time_travel_fixture();
+    let engine = Engine::new(root.clone(), graph, DebugGdbLoop)
+        .with_white_box_policies([(node_id("guest-a"), WhiteBoxPolicy::Enabled)]);
+    let (sender, receiver) = mpsc::channel(5);
+    let (reverse_reply, reverse_receiver) = CommandReply::channel();
+    for command in [
+        SessionCommand::Start,
+        SessionCommand::AttachGdb {
+            node: node_id("guest-a"),
+            listen: gdb_listen("127.0.0.1:9000"),
+            debug_genesis: None,
+            reply: CommandReply::discard(),
+        },
+        SessionCommand::DebugReverseStep {
+            request: DebugReverseStepRequest::new(root, DebugReverseStepGrain::Quantum, Vec::new()),
+            reply: reverse_reply,
+        },
+        SessionCommand::Stop,
+    ] {
+        sender
+            .send(command)
+            .await
+            .unwrap_or_else(|error| panic!("debug command should enqueue: {error}"));
+    }
+
+    let report = SessionActor::new(engine, receiver)
+        .run()
+        .await
+        .unwrap_or_else(|error| panic!("rejected debug command should be recoverable: {error}"));
+    let rejection = receive_reply_error::<DebugReverseStepReport>(reverse_receiver).await;
+
+    assert!(matches!(rejection, SessionError::Engine(_)));
+    assert!(matches!(
+        report.final_snapshot.state,
+        EngineState::Stopped {
+            outcome: Outcome::Stopped,
+        }
+    ));
+}
+
+#[tokio::test]
 pub(super) async fn session_actor_yields_after_command_driven_step() {
     let scenario = generated_scenario(16);
     let config = Configuration::genesis(scenario.clone());

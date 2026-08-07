@@ -201,9 +201,19 @@ pub(super) fn is_recoverable_command_rejection(
     {
         return true;
     }
-    let SessionCommand::Acknowledge { .. } = command else {
+    let debugger_command = matches!(
+        command,
+        SessionCommand::AttachGdb { .. }
+            | SessionCommand::DebugGoto { .. }
+            | SessionCommand::DebugReverseStep { .. }
+            | SessionCommand::DebugReverseContinue { .. }
+            | SessionCommand::DebugForkNonCanonical { .. }
+            | SessionCommand::GuestIntrospection { .. }
+            | SessionCommand::Acknowledge { .. }
+    );
+    if !debugger_command {
         return false;
-    };
+    }
     match error {
         SessionError::InvalidTransition { .. }
         | SessionError::InvalidEngineState { .. }
@@ -256,8 +266,13 @@ pub(super) fn is_recoverable_engine_rejection(error: &EngineError) -> bool {
             | EngineError::PropertyPredicateUnknownAssertion { .. }
             | EngineError::DebugAttachUnknownNode { .. }
             | EngineError::DebugTargetResolverFailureNotFound { .. }
+            | EngineError::DebugGotoAttachMismatch { .. }
+            | EngineError::DebugGotoScenarioMismatch { .. }
+            | EngineError::DebugTimeTravelNoEarlierCoordinate { .. }
+            | EngineError::DebugTimeTravelMissingEventCoordinate { .. }
             | EngineError::DebugTimeTravelCoordinateNotFound { .. }
             | EngineError::DebugTimeTravelUnknownNode { .. }
+            | EngineError::DebugReverseContinueInvalidPrefix { .. }
             | EngineError::NotImplemented { .. }
             | EngineError::WorldNodeUnsupportedWorkload { .. }
             | EngineError::WorldNodeUnsupportedWorkloadConfigTree { .. }
