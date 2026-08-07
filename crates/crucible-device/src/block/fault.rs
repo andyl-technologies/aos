@@ -196,6 +196,89 @@ pub enum BlockFaultFlushDisposition {
     Stall,
 }
 
+/// Deterministic volatile-cache victim order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockFaultCacheEviction {
+    /// Selects the lowest admission sequence.
+    Fifo,
+    /// Selects the least recently accessed entry, then admission sequence.
+    Lru,
+    /// Selects the lowest pending writeback sequence.
+    WritebackSequence,
+}
+
+/// Treatment of a dirty entry selected for cache eviction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockFaultDirtyEviction {
+    /// Persists the selected entry before reclaiming it.
+    Persist,
+    /// Rejects the admitting write with its validated block error result.
+    Fail(BlockFaultResult),
+}
+
+/// Protocol-neutral modeled result retained in block error evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockFaultResult {
+    /// The device is unavailable.
+    Offline,
+    /// A write targeted read-only storage.
+    ReadOnly,
+    /// The addressed range is invalid.
+    InvalidRange,
+    /// The controller or queue is temporarily busy.
+    Busy,
+    /// The operation exceeded its modeled deadline.
+    Timeout,
+    /// The medium reported an uncorrectable error.
+    MediumError,
+    /// Data-integrity verification failed.
+    IntegrityError,
+    /// A nonspecific device I/O error occurred.
+    IoError,
+    /// Capacity or allocation was exhausted.
+    NoSpace,
+    /// A namespace or object does not exist.
+    NotFound,
+    /// A retained identity is stale.
+    Stale,
+}
+
+impl BlockFaultResult {
+    const fn evidence_code(self) -> u8 {
+        match self {
+            Self::Offline => 1,
+            Self::ReadOnly => 2,
+            Self::InvalidRange => 3,
+            Self::Busy => 4,
+            Self::Timeout => 5,
+            Self::MediumError => 6,
+            Self::IntegrityError => 7,
+            Self::IoError => 8,
+            Self::NoSpace => 9,
+            Self::NotFound => 10,
+            Self::Stale => 11,
+        }
+    }
+}
+
+enum BlockWriteOutcome {
+    Applied,
+    Rejected(BlockFaultResult),
+}
+
+/// Fully resolved volatile-cache behavior for one admitted write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedBlockCachePolicy {
+    /// Effective byte capacity, bounded by the device contract.
+    pub capacity_bytes: u64,
+    /// Deterministic victim selection.
+    pub eviction: BlockFaultCacheEviction,
+    /// Dirty victim treatment.
+    pub dirty_eviction: BlockFaultDirtyEviction,
+    /// Whether entries admitted by this policy survive ordinary power loss.
+    pub power_loss_protected: bool,
+}
+
 /// Event that resolves a retained completion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockRetainedRelease {
@@ -279,10 +362,8 @@ pub struct ResolvedBlockFaultDirective {
     pub write_disposition: BlockFaultWriteDisposition,
     /// Flush disposition.
     pub flush_disposition: BlockFaultFlushDisposition,
-    /// Whether an admitted write enters volatile cache instead of durable media.
-    pub use_volatile_cache: bool,
-    /// Whether exact spans may split the declared atomic-write fragments.
-    pub allow_subatomic_mutation: bool,
+    /// Exact volatile-cache behavior, when the write enters that layer.
+    pub cache_policy: Option<ResolvedBlockCachePolicy>,
 }
 
 impl ResolvedBlockFaultDirective {
@@ -304,8 +385,7 @@ impl ResolvedBlockFaultDirective {
             read_transforms: Vec::new(),
             write_disposition: BlockFaultWriteDisposition::Apply,
             flush_disposition: BlockFaultFlushDisposition::Honest,
-            use_volatile_cache: false,
-            allow_subatomic_mutation: false,
+            cache_policy: None,
         }
     }
 
@@ -506,9 +586,18 @@ impl ResolvedBlockFaultDirective {
                 reason: "write dispositions require a write request",
             });
         }
-        if self.operation != BlockOp::Write && self.use_volatile_cache {
+        if self.operation != BlockOp::Write && self.cache_policy.is_some() {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "volatile-cache admission requires a write request",
+            });
+        }
+        if self.cache_policy.is_some_and(|policy| {
+            policy.capacity_bytes == 0
+                || policy.capacity_bytes > config.volatile_cache_bytes
+                || config.cache_entries == 0
+        }) {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "volatile-cache policy exceeds the device contract",
             });
         }
         if self.operation != BlockOp::Flush
@@ -528,7 +617,7 @@ impl ResolvedBlockFaultDirective {
             self.offset,
             u64::from(self.count),
             u64::from(config.atomic_write_bytes),
-            self.allow_subatomic_mutation,
+            false,
         )?;
         for transform in &self.read_transforms {
             match transform {
@@ -568,6 +657,10 @@ pub struct BlockVolatileEntry {
     pub offset: u64,
     /// Exact admitted bytes.
     pub bytes: Vec<u8>,
+    /// Modeled access-order sequence used only by LRU selection.
+    pub last_access_sequence: u64,
+    /// Whether ordinary power-loss selection must preserve this entry.
+    pub power_loss_protected: bool,
 }
 
 /// One write accepted by the controller but not yet admitted to media cache.
@@ -624,7 +717,9 @@ pub struct BlockFaultState {
     volatile_bytes: u64,
     retained: BTreeMap<u64, BlockRetainedVersion>,
     next_cache_sequence: u64,
+    next_cache_access_sequence: u64,
     next_version_sequence: u64,
+    first_lost_sequence: Option<u64>,
     actual_durable_frontier: u64,
     reported_durable_frontier: u64,
     retained_completions: BTreeMap<u32, BlockRetainedCompletion>,
@@ -645,7 +740,9 @@ impl BlockFaultState {
             volatile_bytes: 0,
             retained: BTreeMap::new(),
             next_cache_sequence: 0,
+            next_cache_access_sequence: 0,
             next_version_sequence: 0,
+            first_lost_sequence: None,
             actual_durable_frontier: 0,
             reported_durable_frontier: 0,
             retained_completions: BTreeMap::new(),
@@ -670,7 +767,9 @@ impl BlockFaultState {
             volatile_bytes: 0,
             retained: BTreeMap::new(),
             next_cache_sequence: 0,
+            next_cache_access_sequence: 0,
             next_version_sequence: 0,
+            first_lost_sequence: None,
             actual_durable_frontier: 0,
             reported_durable_frontier: 0,
             retained_completions: BTreeMap::new(),
@@ -694,7 +793,9 @@ impl BlockFaultState {
             && self.retained.is_empty()
             && self.retained_completions.is_empty()
             && self.next_cache_sequence == 0
+            && self.next_cache_access_sequence == 0
             && self.next_version_sequence == 0
+            && self.first_lost_sequence.is_none()
             && self.actual_durable_frontier == 0
             && self.reported_durable_frontier == 0
     }
@@ -780,11 +881,33 @@ impl BlockFaultState {
             || self.controller.iter().any(|(sequence, entry)| {
                 *sequence != entry.sequence || *sequence >= self.next_cache_sequence
             })
+            || self
+                .volatile
+                .values()
+                .any(|entry| entry.last_access_sequence >= self.next_cache_access_sequence)
+            || self
+                .first_lost_sequence
+                .is_some_and(|sequence| sequence >= self.next_cache_sequence)
             || self.actual_durable_frontier > self.next_cache_sequence
             || self.reported_durable_frontier > self.next_cache_sequence
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "restored block fault state has invalid accounting or sequence",
+            });
+        }
+        let expected_durable_frontier = self
+            .controller
+            .keys()
+            .next()
+            .copied()
+            .into_iter()
+            .chain(self.volatile.keys().next().copied())
+            .chain(self.first_lost_sequence)
+            .min()
+            .unwrap_or(self.next_cache_sequence);
+        if self.actual_durable_frontier != expected_durable_frontier {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "restored actual durable frontier differs from exact pending state",
             });
         }
         for (request_id, completion) in &self.retained_completions {
@@ -869,6 +992,42 @@ impl BlockFaultState {
     #[must_use]
     pub const fn volatile_entries(&self) -> &BTreeMap<u64, BlockVolatileEntry> {
         &self.volatile
+    }
+
+    /// Returns canonical cache-loss candidates for the requested protection scope.
+    ///
+    /// When `include_protected` is false, entries admitted under a
+    /// power-loss-protected policy are excluded. A protection-failure impulse
+    /// passes true and receives every live sequence.
+    #[must_use]
+    pub fn volatile_loss_candidates(&self, include_protected: bool) -> Vec<u64> {
+        self.volatile
+            .iter()
+            .filter_map(|(sequence, entry)| {
+                (include_protected || !entry.power_loss_protected).then_some(*sequence)
+            })
+            .collect()
+    }
+
+    /// Returns the canonical digest of the complete live volatile-cache entry set.
+    #[must_use]
+    pub fn volatile_entries_digest(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"crucible.block-volatile-entry-set.v1\0");
+        for (sequence, entry) in &self.volatile {
+            hasher.update(&sequence.to_be_bytes());
+            hasher.update(&entry.request_id.to_be_bytes());
+            hasher.update(&entry.offset.to_be_bytes());
+            hasher.update(
+                &u64::try_from(entry.bytes.len())
+                    .unwrap_or(u64::MAX)
+                    .to_be_bytes(),
+            );
+            hasher.update(blake3::hash(&entry.bytes).as_bytes());
+            hasher.update(&entry.last_access_sequence.to_be_bytes());
+            hasher.update(&[u8::from(entry.power_loss_protected)]);
+        }
+        *hasher.finalize().as_bytes()
     }
 
     /// Returns controller-accepted writes in global sequence order.
@@ -960,6 +1119,10 @@ impl BlockFaultState {
         }
         for sequence in selected {
             if let Some(entry) = self.volatile.remove(&sequence) {
+                self.first_lost_sequence = Some(
+                    self.first_lost_sequence
+                        .map_or(sequence, |existing| existing.min(sequence)),
+                );
                 self.volatile_bytes = self
                     .volatile_bytes
                     .checked_sub(u64::try_from(entry.bytes.len()).unwrap_or(u64::MAX))
@@ -968,6 +1131,7 @@ impl BlockFaultState {
                     })?;
             }
         }
+        self.recompute_actual_durable_frontier();
         Ok(())
     }
 
@@ -990,6 +1154,10 @@ impl BlockFaultState {
         }
         for sequence in selected {
             if let Some(entry) = self.controller.remove(&sequence) {
+                self.first_lost_sequence = Some(
+                    self.first_lost_sequence
+                        .map_or(sequence, |existing| existing.min(sequence)),
+                );
                 self.controller_bytes = self
                     .controller_bytes
                     .checked_sub(u64::try_from(entry.bytes.len()).unwrap_or(u64::MAX))
@@ -998,6 +1166,7 @@ impl BlockFaultState {
                     })?;
             }
         }
+        self.recompute_actual_durable_frontier();
         Ok(())
     }
 
@@ -1134,7 +1303,16 @@ impl BlockFaultState {
                 reason: "external write exceeds destination capacity or request geometry",
             });
         }
-        self.apply_write(base, durable, &request, &directive)
+        match self.apply_write(base, durable, &request, &directive)? {
+            BlockWriteOutcome::Applied => Ok(()),
+            BlockWriteOutcome::Rejected(_) => Err(DeviceError::BlockCacheFull {
+                requested_bytes: u64::from(request.count),
+                available_bytes: self
+                    .config
+                    .volatile_cache_bytes
+                    .saturating_sub(self.volatile_bytes),
+            }),
+        }
     }
 
     fn execute_wire(
@@ -1158,14 +1336,19 @@ impl BlockFaultState {
         }
         match request.op {
             BlockOp::Read => {
-                let mut bytes = self.read_visible(base, durable, request.offset, request.count)?;
+                let mut bytes =
+                    self.read_visible(base, durable, request.offset, request.count, true)?;
                 apply_read_transforms(&mut bytes, &directive.read_transforms)?;
                 Ok(BlockResponse::ok(request.request_id, bytes))
             }
-            BlockOp::Write => {
-                self.apply_write(base, durable, request, directive)?;
-                Ok(BlockResponse::ok(request.request_id, Vec::new()))
-            }
+            BlockOp::Write => match self.apply_write(base, durable, request, directive)? {
+                BlockWriteOutcome::Applied => Ok(BlockResponse::ok(request.request_id, Vec::new())),
+                BlockWriteOutcome::Rejected(result) => Ok(BlockResponse {
+                    status: BlockStatus::Error,
+                    request_id: request.request_id,
+                    data: vec![result.evidence_code()],
+                }),
+            },
             BlockOp::Flush => match directive.flush_disposition {
                 BlockFaultFlushDisposition::Honest => {
                     self.persist_all(base, durable)?;
@@ -1189,11 +1372,12 @@ impl BlockFaultState {
     }
 
     fn read_visible(
-        &self,
+        &mut self,
         base: &BaseImage,
         durable: &CowOverlay,
         offset: u64,
         count: u32,
+        record_cache_access: bool,
     ) -> Result<Vec<u8>, DeviceError> {
         let mut bytes = durable.read(base, offset, u64::from(count))?;
         let end = offset.checked_add(u64::from(count)).ok_or(
@@ -1210,14 +1394,18 @@ impl BlockFaultState {
                     .iter()
                     .map(|(sequence, entry)| (*sequence, (entry.offset, entry.bytes.as_slice()))),
             )
+            .map(|(sequence, (entry_offset, entry_bytes))| {
+                (sequence, (entry_offset, entry_bytes.to_vec()))
+            })
             .collect::<BTreeMap<_, _>>();
-        for (_sequence, (entry_offset, entry_bytes)) in visible {
+        let mut accessed = Vec::new();
+        for (sequence, (entry_offset, entry_bytes)) in &visible {
             let entry_end = entry_offset
                 .checked_add(u64::try_from(entry_bytes.len()).unwrap_or(u64::MAX))
                 .ok_or(DeviceError::InvalidBlockFaultDirective {
                     reason: "volatile entry range overflow",
                 })?;
-            let overlap_start = offset.max(entry_offset);
+            let overlap_start = offset.max(*entry_offset);
             let overlap_end = end.min(entry_end);
             if overlap_start >= overlap_end {
                 continue;
@@ -1227,7 +1415,7 @@ impl BlockFaultState {
                     reason: "read overlap does not fit memory",
                 }
             })?;
-            let source = usize::try_from(overlap_start - entry_offset).map_err(|_error| {
+            let source = usize::try_from(overlap_start - *entry_offset).map_err(|_error| {
                 DeviceError::InvalidBlockFaultDirective {
                     reason: "cache overlap does not fit memory",
                 }
@@ -1239,6 +1427,24 @@ impl BlockFaultState {
             })?;
             bytes[destination..destination + length]
                 .copy_from_slice(&entry_bytes[source..source + length]);
+            if record_cache_access
+                && self.volatile.contains_key(sequence)
+                && entry_contributes_visible(*sequence, overlap_start, overlap_end, &visible)
+            {
+                accessed.push(*sequence);
+            }
+        }
+        for sequence in accessed {
+            let access_sequence = self.next_cache_access_sequence;
+            self.next_cache_access_sequence = self
+                .next_cache_access_sequence
+                .checked_add(1)
+                .ok_or(DeviceError::InvalidBlockFaultDirective {
+                    reason: "cache access sequence overflow",
+                })?;
+            if let Some(entry) = self.volatile.get_mut(&sequence) {
+                entry.last_access_sequence = access_sequence;
+            }
         }
         Ok(bytes)
     }
@@ -1249,33 +1455,35 @@ impl BlockFaultState {
         durable: &mut CowOverlay,
         request: &BlockRequest,
         directive: &ResolvedBlockFaultDirective,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<BlockWriteOutcome, DeviceError> {
+        let intended_spans = canonical_atomic_spans(
+            request.offset,
+            u64::from(request.count),
+            u64::from(self.config.atomic_write_bytes),
+        )?;
         let (destination, spans) = match &directive.write_disposition {
-            BlockFaultWriteDisposition::Apply => (
-                request.offset,
-                canonical_atomic_spans(
-                    request.offset,
-                    u64::from(request.count),
-                    u64::from(self.config.atomic_write_bytes),
-                )?,
-            ),
-            BlockFaultWriteDisposition::Lost => return Ok(()),
+            BlockFaultWriteDisposition::Apply => (request.offset, intended_spans.clone()),
+            BlockFaultWriteDisposition::Lost => (request.offset, Vec::new()),
             BlockFaultWriteDisposition::Torn { spans }
             | BlockFaultWriteDisposition::ProgramFailure { spans } => {
                 (request.offset, spans.clone())
             }
-            BlockFaultWriteDisposition::Misdirected { destination_offset } => (
-                *destination_offset,
-                canonical_atomic_spans(
-                    request.offset,
-                    u64::from(request.count),
-                    u64::from(self.config.atomic_write_bytes),
-                )?,
-            ),
+            BlockFaultWriteDisposition::Misdirected { destination_offset } => {
+                (*destination_offset, intended_spans.clone())
+            }
         };
         let mut resolved = Vec::with_capacity(spans.len());
         let mut admitted_bytes = 0_u64;
-        for span in spans {
+        for (fragment_index, span) in intended_spans.iter().enumerate() {
+            if !spans.iter().any(|selected| {
+                selected.start <= span.start
+                    && selected
+                        .end()
+                        .zip(span.end())
+                        .is_some_and(|(selected_end, fragment_end)| selected_end >= fragment_end)
+            }) {
+                continue;
+            }
             let start = usize::try_from(span.start).map_err(|_error| {
                 DeviceError::InvalidBlockFaultDirective {
                     reason: "write span does not fit memory",
@@ -1319,51 +1527,63 @@ impl BlockFaultState {
                     reason: "write admission byte count overflow",
                 },
             )?;
-            resolved.push((offset, bytes));
+            resolved.push((fragment_index, offset, bytes));
         }
 
-        let controller = !directive.use_volatile_cache
+        let controller = directive.cache_policy.is_none()
             && self.config.completion_durability == BlockCompletionDurability::ControllerAccepted;
-        let cache = directive.use_volatile_cache
+        let cache = directive.cache_policy.is_some()
             || self.config.completion_durability
                 == BlockCompletionDurability::VolatileCacheAccepted;
-        if controller || cache {
-            let (entry_limit, occupied_entries, byte_limit, occupied_bytes) = if controller {
-                (
-                    self.config.controller_entries,
-                    self.controller.len(),
-                    self.config.controller_buffer_bytes,
-                    self.controller_bytes,
-                )
-            } else {
-                (
-                    self.config.cache_entries,
-                    self.volatile.len(),
-                    self.config.volatile_cache_bytes,
-                    self.volatile_bytes,
-                )
-            };
-            let available_entries = usize::try_from(entry_limit)
+        if controller {
+            let available_entries = usize::try_from(self.config.controller_entries)
                 .unwrap_or(usize::MAX)
-                .saturating_sub(occupied_entries);
-            let available_bytes = byte_limit.saturating_sub(occupied_bytes);
+                .saturating_sub(self.controller.len());
+            let available_bytes = self
+                .config
+                .controller_buffer_bytes
+                .saturating_sub(self.controller_bytes);
             if resolved.len() > available_entries || admitted_bytes > available_bytes {
-                return Err(DeviceError::BlockCacheFull {
-                    requested_bytes: admitted_bytes,
-                    available_bytes,
-                });
+                return Ok(BlockWriteOutcome::Rejected(BlockFaultResult::Busy));
             }
-            let sequence_count = u64::try_from(resolved.len()).map_err(|_error| {
-                DeviceError::InvalidBlockFaultDirective {
-                    reason: "write fragment count does not fit the sequence space",
+        } else if cache {
+            let rejection = match directive.cache_policy {
+                Some(policy) => self.prepare_cache_admission(
+                    base,
+                    durable,
+                    resolved.len(),
+                    admitted_bytes,
+                    policy,
+                )?,
+                None => {
+                    let available_entries = usize::try_from(self.config.cache_entries)
+                        .unwrap_or(usize::MAX)
+                        .saturating_sub(self.volatile.len());
+                    (resolved.len() <= available_entries
+                        && admitted_bytes
+                            <= self
+                                .config
+                                .volatile_cache_bytes
+                                .saturating_sub(self.volatile_bytes))
+                    .then_some(None)
+                    .unwrap_or(Some(BlockFaultResult::Busy))
                 }
-            })?;
-            self.next_cache_sequence.checked_add(sequence_count).ok_or(
-                DeviceError::InvalidBlockFaultDirective {
-                    reason: "cache sequence overflow",
-                },
-            )?;
+            };
+            if let Some(result) = rejection {
+                return Ok(BlockWriteOutcome::Rejected(result));
+            }
         }
+        let sequence_count = u64::try_from(intended_spans.len()).map_err(|_error| {
+            DeviceError::InvalidBlockFaultDirective {
+                reason: "intended write fragment count does not fit the sequence space",
+            }
+        })?;
+        let first_sequence = self.next_cache_sequence;
+        self.next_cache_sequence = self.next_cache_sequence.checked_add(sequence_count).ok_or(
+            DeviceError::InvalidBlockFaultDirective {
+                reason: "write durability sequence overflow",
+            },
+        )?;
         let version_count = u64::try_from(resolved.len()).map_err(|_error| {
             DeviceError::InvalidBlockFaultDirective {
                 reason: "retained version count does not fit the sequence space",
@@ -1374,15 +1594,30 @@ impl BlockFaultState {
             .ok_or(DeviceError::InvalidBlockFaultDirective {
                 reason: "retained version sequence overflow",
             })?;
-        if !cache && !controller {
-            self.next_cache_sequence.checked_add(version_count).ok_or(
-                DeviceError::InvalidBlockFaultDirective {
-                    reason: "durable sequence overflow",
-                },
-            )?;
+        let applied_fragments = resolved
+            .iter()
+            .map(|(fragment_index, _, _)| *fragment_index)
+            .collect::<BTreeSet<_>>();
+        for fragment_index in 0..intended_spans.len() {
+            if !applied_fragments.contains(&fragment_index) {
+                let sequence = first_sequence
+                    .checked_add(u64::try_from(fragment_index).unwrap_or(u64::MAX))
+                    .ok_or(DeviceError::InvalidBlockFaultDirective {
+                        reason: "lost write fragment sequence overflow",
+                    })?;
+                self.first_lost_sequence = Some(
+                    self.first_lost_sequence
+                        .map_or(sequence, |existing| existing.min(sequence)),
+                );
+            }
         }
 
-        for (offset, bytes) in resolved {
+        for (fragment_index, offset, bytes) in resolved {
+            let sequence = first_sequence
+                .checked_add(u64::try_from(fragment_index).unwrap_or(u64::MAX))
+                .ok_or(DeviceError::InvalidBlockFaultDirective {
+                    reason: "applied write fragment sequence overflow",
+                })?;
             self.retain_prior(
                 base,
                 durable,
@@ -1390,21 +1625,26 @@ impl BlockFaultState {
                 u64::try_from(bytes.len()).unwrap_or(u64::MAX),
             )?;
             if controller {
-                self.controller_write(request.request_id, offset, bytes.to_vec())?;
+                self.controller_write(sequence, request.request_id, offset, bytes.to_vec())?;
             } else if cache {
-                self.cache_write(request.request_id, offset, bytes.to_vec())?;
+                self.cache_write(
+                    sequence,
+                    request.request_id,
+                    offset,
+                    bytes.to_vec(),
+                    directive
+                        .cache_policy
+                        .is_some_and(|policy| policy.power_loss_protected),
+                )?;
             } else {
                 durable.write(base, offset, bytes)?;
-                self.next_cache_sequence = self.next_cache_sequence.checked_add(1).ok_or(
-                    DeviceError::InvalidBlockFaultDirective {
-                        reason: "durable sequence overflow",
-                    },
-                )?;
-                self.actual_durable_frontier = self.next_cache_sequence;
-                self.reported_durable_frontier = self.actual_durable_frontier;
             }
         }
-        Ok(())
+        self.recompute_actual_durable_frontier();
+        if !cache && !controller {
+            self.reported_durable_frontier = self.actual_durable_frontier;
+        }
+        Ok(BlockWriteOutcome::Applied)
     }
 
     fn retain_prior(
@@ -1431,6 +1671,7 @@ impl BlockFaultState {
             u32::try_from(length).map_err(|_error| DeviceError::InvalidBlockFaultDirective {
                 reason: "retained range exceeds request width",
             })?,
+            false,
         )?;
         let sequence = self.next_version_sequence;
         self.next_version_sequence = self.next_version_sequence.checked_add(1).ok_or(
@@ -1451,9 +1692,11 @@ impl BlockFaultState {
 
     fn cache_write(
         &mut self,
+        sequence: u64,
         request_id: u32,
         offset: u64,
         bytes: Vec<u8>,
+        power_loss_protected: bool,
     ) -> Result<(), DeviceError> {
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let next_bytes = self.volatile_bytes.checked_add(length).ok_or(
@@ -1472,10 +1715,10 @@ impl BlockFaultState {
                     .saturating_sub(self.volatile_bytes),
             });
         }
-        let sequence = self.next_cache_sequence;
-        self.next_cache_sequence = self.next_cache_sequence.checked_add(1).ok_or(
+        let access_sequence = self.next_cache_access_sequence;
+        self.next_cache_access_sequence = self.next_cache_access_sequence.checked_add(1).ok_or(
             DeviceError::InvalidBlockFaultDirective {
-                reason: "cache sequence overflow",
+                reason: "cache access sequence overflow",
             },
         )?;
         self.volatile.insert(
@@ -1485,25 +1728,94 @@ impl BlockFaultState {
                 request_id,
                 offset,
                 bytes,
+                last_access_sequence: access_sequence,
+                power_loss_protected,
             },
         );
         self.volatile_bytes = next_bytes;
         Ok(())
     }
 
+    fn prepare_cache_admission(
+        &mut self,
+        base: &BaseImage,
+        durable: &mut CowOverlay,
+        incoming_entries: usize,
+        incoming_bytes: u64,
+        policy: ResolvedBlockCachePolicy,
+    ) -> Result<Option<BlockFaultResult>, DeviceError> {
+        let entry_capacity = usize::try_from(self.config.cache_entries).unwrap_or(usize::MAX);
+        if incoming_entries > entry_capacity || incoming_bytes > policy.capacity_bytes {
+            return Ok(Some(BlockFaultResult::Busy));
+        }
+        while self
+            .volatile
+            .len()
+            .checked_add(incoming_entries)
+            .is_none_or(|entries| entries > entry_capacity)
+            || self
+                .volatile_bytes
+                .checked_add(incoming_bytes)
+                .is_none_or(|bytes| bytes > policy.capacity_bytes)
+        {
+            if let BlockFaultDirtyEviction::Fail(result) = policy.dirty_eviction {
+                return Ok(Some(result));
+            }
+            let ready = self.volatile.values().filter(|candidate| {
+                !self.controller.iter().any(|(sequence, older)| {
+                    *sequence < candidate.sequence
+                        && ranges_overlap(
+                            older.offset,
+                            older.bytes.len(),
+                            candidate.offset,
+                            candidate.bytes.len(),
+                        )
+                }) && !self.volatile.iter().any(|(sequence, older)| {
+                    *sequence < candidate.sequence
+                        && ranges_overlap(
+                            older.offset,
+                            older.bytes.len(),
+                            candidate.offset,
+                            candidate.bytes.len(),
+                        )
+                })
+            });
+            let Some(victim) = (match policy.eviction {
+                BlockFaultCacheEviction::Fifo | BlockFaultCacheEviction::WritebackSequence => ready
+                    .min_by_key(|entry| entry.sequence)
+                    .map(|entry| entry.sequence),
+                BlockFaultCacheEviction::Lru => ready
+                    .min_by_key(|entry| (entry.last_access_sequence, entry.sequence))
+                    .map(|entry| entry.sequence),
+            }) else {
+                return Ok(Some(BlockFaultResult::Busy));
+            };
+            let entry = self.volatile.get(&victim).cloned().ok_or(
+                DeviceError::InvalidBlockFaultDirective {
+                    reason: "selected cache eviction victim is absent",
+                },
+            )?;
+            durable.write(base, entry.offset, &entry.bytes)?;
+            self.volatile.remove(&victim);
+            self.volatile_bytes = self
+                .volatile_bytes
+                .checked_sub(u64::try_from(entry.bytes.len()).unwrap_or(u64::MAX))
+                .ok_or(DeviceError::InvalidBlockFaultDirective {
+                    reason: "volatile byte accounting underflow during eviction",
+                })?;
+            self.recompute_actual_durable_frontier();
+        }
+        Ok(None)
+    }
+
     fn controller_write(
         &mut self,
+        sequence: u64,
         request_id: u32,
         offset: u64,
         bytes: Vec<u8>,
     ) -> Result<(), DeviceError> {
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let sequence = self.next_cache_sequence;
-        self.next_cache_sequence = self.next_cache_sequence.checked_add(1).ok_or(
-            DeviceError::InvalidBlockFaultDirective {
-                reason: "controller sequence overflow",
-            },
-        )?;
         self.controller_bytes = self.controller_bytes.checked_add(length).ok_or(
             DeviceError::InvalidBlockFaultDirective {
                 reason: "controller byte count overflow",
@@ -1587,8 +1899,21 @@ impl BlockFaultState {
                     })?;
             }
         }
-        self.actual_durable_frontier = self.actual_durable_frontier.max(frontier);
+        self.recompute_actual_durable_frontier();
         Ok(())
+    }
+
+    fn recompute_actual_durable_frontier(&mut self) {
+        self.actual_durable_frontier = self
+            .controller
+            .keys()
+            .next()
+            .copied()
+            .into_iter()
+            .chain(self.volatile.keys().next().copied())
+            .chain(self.first_lost_sequence)
+            .min()
+            .unwrap_or(self.next_cache_sequence);
     }
 }
 
@@ -1617,6 +1942,42 @@ fn validate_state_range(offset: u64, length: usize, device_length: u64) -> Resul
             reason: "restored block state range exceeds the device",
         })
     }
+}
+
+fn entry_contributes_visible(
+    sequence: u64,
+    overlap_start: u64,
+    overlap_end: u64,
+    visible: &BTreeMap<u64, (u64, Vec<u8>)>,
+) -> bool {
+    let mut uncovered = vec![(overlap_start, overlap_end)];
+    for (_newer_sequence, (offset, bytes)) in visible.range((sequence + 1)..) {
+        let newer_end = offset.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        let mut next = Vec::new();
+        for (start, end) in uncovered {
+            if newer_end <= start || *offset >= end {
+                next.push((start, end));
+                continue;
+            }
+            if start < *offset {
+                next.push((start, (*offset).min(end)));
+            }
+            if newer_end < end {
+                next.push((newer_end.max(start), end));
+            }
+        }
+        uncovered = next;
+        if uncovered.is_empty() {
+            return false;
+        }
+    }
+    true
+}
+
+fn ranges_overlap(left_offset: u64, left_len: usize, right_offset: u64, right_len: usize) -> bool {
+    let left_end = left_offset.saturating_add(u64::try_from(left_len).unwrap_or(u64::MAX));
+    let right_end = right_offset.saturating_add(u64::try_from(right_len).unwrap_or(u64::MAX));
+    left_offset < right_end && right_offset < left_end
 }
 
 fn directive_owned_bytes(directive: &ResolvedBlockFaultDirective) -> Result<u64, DeviceError> {
@@ -1937,6 +2298,66 @@ mod tests {
     }
 
     #[test]
+    fn acknowledged_lost_and_torn_fragments_permanently_bound_durability() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let mut durable = CowOverlay::new();
+        let mut main_state = state(BlockCompletionDurability::Durable);
+        response(
+            &mut main_state,
+            &base,
+            &mut durable,
+            &BlockRequest::write(1, 0, b"GOOD".to_vec()),
+            |_| {},
+        );
+        assert_eq!(main_state.actual_durable_frontier(), 4);
+        response(
+            &mut main_state,
+            &base,
+            &mut durable,
+            &BlockRequest::write(2, 4, b"NO".to_vec()),
+            |directive| directive.write_disposition = BlockFaultWriteDisposition::Lost,
+        );
+        response(
+            &mut main_state,
+            &base,
+            &mut durable,
+            &BlockRequest::flush(3),
+            |_| {},
+        );
+        assert_eq!(main_state.next_cache_sequence, 6);
+        assert_eq!(main_state.first_lost_sequence, Some(4));
+        assert_eq!(main_state.actual_durable_frontier(), 4);
+        assert_eq!(main_state.reported_durable_frontier(), 4);
+
+        let mut torn_state = state(BlockCompletionDurability::Durable);
+        let mut torn_durable = CowOverlay::new();
+        response(
+            &mut torn_state,
+            &base,
+            &mut torn_durable,
+            &BlockRequest::write(4, 0, b"WXYZ".to_vec()),
+            |directive| {
+                directive.write_disposition = BlockFaultWriteDisposition::Torn {
+                    spans: vec![
+                        BlockFaultByteSpan {
+                            start: 0,
+                            length: 1,
+                        },
+                        BlockFaultByteSpan {
+                            start: 2,
+                            length: 1,
+                        },
+                    ],
+                };
+            },
+        );
+        assert_eq!(torn_state.next_cache_sequence, 4);
+        assert_eq!(torn_state.first_lost_sequence, Some(1));
+        assert_eq!(torn_state.actual_durable_frontier(), 1);
+        assert_eq!(torn_state.reported_durable_frontier(), 1);
+    }
+
+    #[test]
     fn volatile_cache_flush_lie_loss_and_honest_flush_track_both_frontiers() {
         let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
         let mut durable = CowOverlay::new();
@@ -1968,8 +2389,10 @@ mod tests {
             |_| {},
         );
         assert!(state.volatile_entries().is_empty());
-        assert_eq!(state.actual_durable_frontier(), 10);
-        assert_eq!(state.reported_durable_frontier(), 10);
+        // A lost sequence is a permanent hole in the exact durability
+        // frontier, even after later writes are honestly flushed.
+        assert_eq!(state.actual_durable_frontier(), 0);
+        assert_eq!(state.reported_durable_frontier(), 0);
         assert_eq!(durable.read(&base, 0, 5).unwrap_or_default(), b"SOLID");
     }
 
@@ -2150,14 +2573,244 @@ mod tests {
         state
             .install(request.request_id, directive)
             .unwrap_or_else(|error| panic!("directive installs: {error}"));
-        let before_state = state.clone();
         let before_durable = durable.clone();
-        assert!(matches!(
-            state.execute(&base, &mut durable, &request, 0),
-            Err(DeviceError::BlockCacheFull { .. })
-        ));
-        assert_eq!(state, before_state);
+        let computed = state
+            .execute(&base, &mut durable, &request, 0)
+            .unwrap_or_else(|error| panic!("write returns a guest-visible error: {error}"));
+        let response = computed
+            .primary
+            .and_then(|response| BlockResponse::decode(&response.payload).ok())
+            .unwrap_or_else(|| panic!("write produces one decodable response"));
+        assert_eq!(response.status, BlockStatus::Error);
+        assert!(state.volatile_entries().is_empty());
         assert_eq!(durable, before_durable);
+    }
+
+    #[test]
+    fn cache_policy_persists_fifo_victims_before_admission() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let mut durable = CowOverlay::new();
+        let mut state = BlockFaultState::new(BlockDurabilityConfig {
+            length_bytes: 32,
+            atomic_write_bytes: 4,
+            maximum_request_bytes: 32,
+            volatile_cache_bytes: 8,
+            cache_entries: 2,
+            controller_buffer_bytes: 0,
+            controller_entries: 0,
+            retained_versions: 8,
+            completion_durability: BlockCompletionDurability::Durable,
+        })
+        .unwrap_or_else(|error| panic!("valid test state: {error}"));
+        let policy = ResolvedBlockCachePolicy {
+            capacity_bytes: 8,
+            eviction: BlockFaultCacheEviction::Fifo,
+            dirty_eviction: BlockFaultDirtyEviction::Persist,
+            power_loss_protected: false,
+        };
+        for (request_id, offset, bytes) in [(1, 0, b"aaaa"), (2, 4, b"bbbb"), (3, 8, b"cccc")] {
+            response(
+                &mut state,
+                &base,
+                &mut durable,
+                &BlockRequest::write(request_id, offset, bytes.to_vec()),
+                |directive| directive.cache_policy = Some(policy),
+            );
+        }
+        assert_eq!(state.volatile_entries().len(), 2);
+        assert_eq!(durable.read(&base, 0, 4).unwrap_or_default(), b"aaaa");
+        assert_eq!(durable.read(&base, 4, 4).unwrap_or_default(), b"efgh");
+        assert_eq!(
+            read(&mut state, &base, &mut durable, 4, 0, 12),
+            b"aaaabbbbcccc"
+        );
+    }
+
+    #[test]
+    fn cache_dirty_eviction_preserves_the_authored_typed_failure() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let mut durable = CowOverlay::new();
+        let mut state = BlockFaultState::new(BlockDurabilityConfig {
+            length_bytes: 32,
+            atomic_write_bytes: 4,
+            maximum_request_bytes: 32,
+            volatile_cache_bytes: 4,
+            cache_entries: 1,
+            controller_buffer_bytes: 0,
+            controller_entries: 0,
+            retained_versions: 8,
+            completion_durability: BlockCompletionDurability::Durable,
+        })
+        .unwrap_or_else(|error| panic!("valid test state: {error}"));
+        let persist = ResolvedBlockCachePolicy {
+            capacity_bytes: 4,
+            eviction: BlockFaultCacheEviction::Fifo,
+            dirty_eviction: BlockFaultDirtyEviction::Persist,
+            power_loss_protected: false,
+        };
+        response(
+            &mut state,
+            &base,
+            &mut durable,
+            &BlockRequest::write(1, 0, b"aaaa".to_vec()),
+            |directive| directive.cache_policy = Some(persist),
+        );
+        let failed = response(
+            &mut state,
+            &base,
+            &mut durable,
+            &BlockRequest::write(2, 4, b"bbbb".to_vec()),
+            |directive| {
+                directive.cache_policy = Some(ResolvedBlockCachePolicy {
+                    dirty_eviction: BlockFaultDirtyEviction::Fail(BlockFaultResult::NoSpace),
+                    ..persist
+                });
+            },
+        );
+        assert_eq!(failed.status, BlockStatus::Error);
+        assert_eq!(failed.data, vec![BlockFaultResult::NoSpace.evidence_code()]);
+        assert_eq!(state.volatile_entries().len(), 1);
+        assert_eq!(read(&mut state, &base, &mut durable, 3, 0, 8), b"aaaaefgh");
+    }
+
+    #[test]
+    fn cache_policy_lru_reads_change_the_exact_victim() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let mut durable = CowOverlay::new();
+        let mut state = BlockFaultState::new(BlockDurabilityConfig {
+            length_bytes: 32,
+            atomic_write_bytes: 4,
+            maximum_request_bytes: 32,
+            volatile_cache_bytes: 8,
+            cache_entries: 2,
+            controller_buffer_bytes: 0,
+            controller_entries: 0,
+            retained_versions: 8,
+            completion_durability: BlockCompletionDurability::Durable,
+        })
+        .unwrap_or_else(|error| panic!("valid test state: {error}"));
+        let policy = ResolvedBlockCachePolicy {
+            capacity_bytes: 8,
+            eviction: BlockFaultCacheEviction::Lru,
+            dirty_eviction: BlockFaultDirtyEviction::Persist,
+            power_loss_protected: false,
+        };
+        for (request_id, offset, bytes) in [(1, 0, b"aaaa"), (2, 4, b"bbbb")] {
+            response(
+                &mut state,
+                &base,
+                &mut durable,
+                &BlockRequest::write(request_id, offset, bytes.to_vec()),
+                |directive| directive.cache_policy = Some(policy),
+            );
+        }
+        assert_eq!(read(&mut state, &base, &mut durable, 3, 0, 4), b"aaaa");
+        response(
+            &mut state,
+            &base,
+            &mut durable,
+            &BlockRequest::write(4, 8, b"cccc".to_vec()),
+            |directive| directive.cache_policy = Some(policy),
+        );
+        assert_eq!(durable.read(&base, 0, 4).unwrap_or_default(), b"abcd");
+        assert_eq!(durable.read(&base, 4, 4).unwrap_or_default(), b"bbbb");
+        assert_eq!(
+            read(&mut state, &base, &mut durable, 5, 0, 12),
+            b"aaaabbbbcccc"
+        );
+    }
+
+    #[test]
+    fn cache_lru_tracks_visible_bytes_and_preserves_overlap_dependencies() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let mut durable = CowOverlay::new();
+        let mut state = BlockFaultState::new(BlockDurabilityConfig {
+            length_bytes: 32,
+            atomic_write_bytes: 4,
+            maximum_request_bytes: 32,
+            volatile_cache_bytes: 10,
+            cache_entries: 3,
+            controller_buffer_bytes: 0,
+            controller_entries: 0,
+            retained_versions: 8,
+            completion_durability: BlockCompletionDurability::Durable,
+        })
+        .unwrap_or_else(|error| panic!("valid test state: {error}"));
+        let policy = ResolvedBlockCachePolicy {
+            capacity_bytes: 6,
+            eviction: BlockFaultCacheEviction::Lru,
+            dirty_eviction: BlockFaultDirtyEviction::Persist,
+            power_loss_protected: false,
+        };
+        for (request_id, offset, bytes) in [(1, 0, b"aaaa".as_slice()), (2, 0, b"BB".as_slice())] {
+            response(
+                &mut state,
+                &base,
+                &mut durable,
+                &BlockRequest::write(request_id, offset, bytes.to_vec()),
+                |directive| directive.cache_policy = Some(policy),
+            );
+        }
+        let old_access = state.volatile_entries()[&0].last_access_sequence;
+        let new_access = state.volatile_entries()[&1].last_access_sequence;
+        assert_eq!(read(&mut state, &base, &mut durable, 3, 2, 2), b"aa");
+        assert!(state.volatile_entries()[&0].last_access_sequence > old_access);
+        assert_eq!(
+            state.volatile_entries()[&1].last_access_sequence,
+            new_access
+        );
+
+        response(
+            &mut state,
+            &base,
+            &mut durable,
+            &BlockRequest::write(4, 8, b"cccc".to_vec()),
+            |directive| directive.cache_policy = Some(policy),
+        );
+        assert!(!state.volatile_entries().contains_key(&0));
+        assert!(state.volatile_entries().contains_key(&1));
+        assert_eq!(read(&mut state, &base, &mut durable, 5, 0, 4), b"BBaa");
+    }
+
+    #[test]
+    fn cache_loss_candidates_distinguish_power_loss_from_protection_failure() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let mut durable = CowOverlay::new();
+        let mut state = BlockFaultState::new(BlockDurabilityConfig {
+            length_bytes: 32,
+            atomic_write_bytes: 4,
+            maximum_request_bytes: 32,
+            volatile_cache_bytes: 8,
+            cache_entries: 2,
+            controller_buffer_bytes: 0,
+            controller_entries: 0,
+            retained_versions: 8,
+            completion_durability: BlockCompletionDurability::Durable,
+        })
+        .unwrap_or_else(|error| panic!("valid test state: {error}"));
+        for (request_id, offset, protected) in [(1, 0, false), (2, 4, true)] {
+            response(
+                &mut state,
+                &base,
+                &mut durable,
+                &BlockRequest::write(request_id, offset, vec![b'x'; 4]),
+                |directive| {
+                    directive.cache_policy = Some(ResolvedBlockCachePolicy {
+                        capacity_bytes: 8,
+                        eviction: BlockFaultCacheEviction::Fifo,
+                        dirty_eviction: BlockFaultDirtyEviction::Persist,
+                        power_loss_protected: protected,
+                    });
+                },
+            );
+        }
+        assert_eq!(state.volatile_loss_candidates(false), vec![0]);
+        assert_eq!(state.volatile_loss_candidates(true), vec![0, 1]);
+        let ordinary_loss = state.volatile_loss_candidates(false);
+        state
+            .lose_volatile(&ordinary_loss)
+            .unwrap_or_else(|error| panic!("ordinary power-loss subset is live: {error}"));
+        assert_eq!(state.volatile_loss_candidates(true), vec![1]);
     }
 
     #[test]

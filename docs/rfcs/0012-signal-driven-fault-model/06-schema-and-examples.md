@@ -163,7 +163,7 @@ id = "brownout-storage-cache-loss"
 signal = "pdu-a-brownout"
 mapping = { kind = "impulse_on_rising_edge" }
 selector = { kind = "fault_domain", domain = "rack-a-storage" }
-effect = { kind = "storage.volatile_cache", semantic_version = 1, loss_selector = "all", reset_event = "power_loss" }
+effect = { kind = "storage.volatile_cache_loss", semantic_version = 1, selector = { kind = "all" }, loss = "power_loss" }
 
 [[plan.fault_binding]]
 id = "brownout-sensor-dropout"
@@ -391,8 +391,8 @@ required = [
   "signal.hysteresis.v1",
   "network.profile.v1",
   "network.association.cellular.v1",
-  "block.volatile-cache-loss.v1",
-  "qemu.memory.bit-flip.physical.v1",
+  "storage.volatile-cache-loss.v1",
+  "qemu.memory.mutate.v1",
 ]
 ```
 

@@ -641,8 +641,6 @@ fn validate_storage_effect_policy_references(
         StorageEffectSpecification::VolatileCache {
             capacity_bytes,
             cache_policy,
-            loss_event,
-            ..
         } => {
             require(
                 cache_policy,
@@ -656,7 +654,6 @@ fn validate_storage_effect_policy_references(
             {
                 require_typed_result(result, "cache_policy.dirty_eviction.result", Some(false))?;
             }
-            require_program_node(loss_event, "loss_event")?;
             if selected_block_contracts().is_none_or(|contracts| {
                 contracts
                     .iter()
@@ -671,6 +668,47 @@ fn validate_storage_effect_policy_references(
                     ),
                     actual: None,
                 });
+            }
+        }
+        StorageEffectSpecification::VolatileCacheLoss { selector, .. } => {
+            if let StorageVolatileCacheLossSelector::RangeIntersection { range } = selector {
+                let valid = binding
+                    .selector()
+                    .resolved()
+                    .targets()
+                    .iter()
+                    .all(|target| {
+                        let hash = match target {
+                            ResolvedFaultTarget::BlockDevice { device }
+                            | ResolvedFaultTarget::BlockRange { device, .. } => device,
+                            _ => return false,
+                        };
+                        let Some(node) = world
+                            .io_nodes()
+                            .find(|node| node.fault_target_hash() == *hash)
+                        else {
+                            return false;
+                        };
+                        topology.storage_devices.iter().any(|device| {
+                            let block = u64::from(device.persistence.logical_block_bytes);
+                            device.device.as_str() == node.id.name.as_str()
+                                && device.kind == WorldStorageKind::Block
+                                && range.end() <= device.persistence.length_bytes
+                                && range.start().is_multiple_of(block)
+                                && range.length().is_multiple_of(block)
+                        })
+                    });
+                if !valid {
+                    return Err(FaultSignalAuthoringError::InvalidStoragePolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: format!("{}+{}", range.start(), range.length()),
+                        field: "selector.range",
+                        expected: String::from(
+                            "in-bounds logical-block-aligned range on every selected block device",
+                        ),
+                        actual: None,
+                    });
+                }
             }
         }
         StorageEffectSpecification::FlashState {

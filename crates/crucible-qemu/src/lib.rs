@@ -282,8 +282,9 @@ pub use spawn::{
     spawn_qemu_child_with_fds, spawn_qemu_child_with_fds_in_directory,
 };
 pub use storage_fault_resolver::{
-    StorageFaultResolutionContext, StorageFaultResolutionError, block_durability_config,
-    block_request_fault_opportunity, resolve_block_fault_directive,
+    ResolvedVolatileCacheLoss, StorageFaultResolutionContext, StorageFaultResolutionError,
+    VolatileCacheLossReplay, block_durability_config, block_request_fault_opportunity,
+    resolve_block_fault_directive, resolve_volatile_cache_loss,
 };
 #[cfg(target_os = "linux")]
 pub use supervision::{
