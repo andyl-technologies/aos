@@ -13,7 +13,7 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
-use super::resources::UnavailableWorkflow;
+use super::network_boundaries::NetworkBoundaryWorkflow;
 
 /// Renders networking workflows for instance and organization scopes.
 #[component]
@@ -25,7 +25,7 @@ pub(super) fn NetworkingWorkflow(route: ConsoleRoute, client: ApiClient) -> impl
         (ConsoleScope::Organization { slug }, "domains") => {
             view! { <Domains client=client owner_scope_key=format!("org:{slug}")/> }.into_any()
         }
-        _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
+        _ => view! { <NetworkBoundaryWorkflow route=route client=client/> }.into_any(),
     }
 }
 

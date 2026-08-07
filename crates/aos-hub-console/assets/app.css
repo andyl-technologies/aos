@@ -156,6 +156,11 @@ a { color: inherit; }
 .compact-list-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 8px; border: 1px solid var(--line); }
 .compact-list-row > div { display: grid; gap: 3px; }
 .compact-list-row span, .compact-list-row small { color: var(--muted); font-size: 10px; }
+.revision-card { display: grid; gap: 8px; }
+.inline-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--line); }
+.inline-controls select { padding: 7px 9px; border: 1px solid var(--line); color: var(--ink); background: #0e100d; font: inherit; }
+.inline-check { display: inline-flex !important; grid-template-columns: none !important; align-items: center; gap: 6px !important; }
+.inline-check input { width: auto; }
 
 @media (max-width: 700px) {
   .section-heading, .resource-identity { display: grid; }
