@@ -88,9 +88,9 @@ impl GatewayProcess {
                 if self.model.active().map(|active| active.generation) == Some(generation) {
                     return response(DebugGatewayMessageKind::Ack, 0, generation.0.to_be_bytes());
                 }
-                if self.rsp_responses_pending != 0 {
+                if !self.replacement_boundary_is_clean() {
                     return Err(String::from(
-                        "cannot commit a backend while an operator RSP response is pending",
+                        "cannot commit a backend while an operator RSP or scheduler run-control operation is pending",
                     ));
                 }
                 let Some((prepared_generation, stream, hydrated_epoch)) = self.prepared.take()
@@ -194,6 +194,13 @@ impl GatewayProcess {
                 Err(String::from("message kind is not a host request"))
             }
         }
+    }
+
+    fn replacement_boundary_is_clean(&self) -> bool {
+        self.rsp_responses_pending == 0
+            && self.run_control_requests.is_empty()
+            && self.run_control_inflight.is_none()
+            && self.scheduler_response_pending.is_none()
     }
 }
 
@@ -508,11 +515,8 @@ fn restore_backend_after_operator_disconnect(
     relay_closed_cleanly: bool,
 ) -> Result<(), String> {
     let reconnect = with_gateway(process, |gateway| {
-        let recovery_is_unambiguous = relay_closed_cleanly
-            && gateway.rsp_responses_pending == 0
-            && gateway.run_control_requests.is_empty()
-            && gateway.run_control_inflight.is_none()
-            && gateway.scheduler_response_pending.is_none();
+        let recovery_is_unambiguous =
+            relay_closed_cleanly && gateway.replacement_boundary_is_clean();
         let active = recovery_is_unambiguous
             .then(|| gateway.model.active().cloned())
             .flatten();
@@ -1367,6 +1371,72 @@ mod tests {
             .unwrap_or_else(|error| panic!("test process should lock: {error}"));
         assert!(active.is_none());
         drop(peer);
+    }
+
+    #[test]
+    fn commit_waits_for_every_scheduler_run_control_state_to_resolve() {
+        enum PendingState {
+            Queued,
+            Inflight,
+            AwaitingOperatorAcknowledgement,
+        }
+
+        for pending in [
+            PendingState::Queued,
+            PendingState::Inflight,
+            PendingState::AwaitingOperatorAcknowledgement,
+        ] {
+            let process = test_process();
+            let endpoint = QemuRspEndpoint::new("/run/crucible/qemu-candidate.sock")
+                .unwrap_or_else(|error| panic!("candidate endpoint should build: {error}"));
+            let (stream, peer) = UnixStream::pair()
+                .unwrap_or_else(|error| panic!("backend stream pair should open: {error}"));
+            let prepared = with_gateway(&process, |gateway| {
+                let prepared = gateway
+                    .model
+                    .prepare_backend(endpoint)
+                    .map_err(|error| error.to_string())?;
+                gateway.prepared = Some((prepared.generation, stream, gateway.rsp_state_epoch));
+                match pending {
+                    PendingState::Queued => gateway.run_control_requests.push_back((
+                        1,
+                        gateway.operator_epoch,
+                        b"s".to_vec(),
+                    )),
+                    PendingState::Inflight => {
+                        gateway.run_control_inflight =
+                            Some((1, gateway.operator_epoch, b"c".to_vec()));
+                    }
+                    PendingState::AwaitingOperatorAcknowledgement => {
+                        gateway.scheduler_response_pending = Some(encode_rsp_packet(b"T05"));
+                    }
+                }
+                Ok(prepared)
+            })
+            .unwrap_or_else(|error| panic!("candidate should prepare: {error}"));
+            let commit = DebugGatewayFrame::v1(
+                DebugGatewayMessageKind::BackendCommit,
+                0,
+                prepared.generation.0.to_be_bytes(),
+            )
+            .unwrap_or_else(|error| panic!("commit should build: {error}"));
+
+            let error = match with_gateway(&process, |gateway| gateway.handle(commit.clone())) {
+                Ok(_) => panic!("pending scheduler state must reject backend commit"),
+                Err(error) => error,
+            };
+            assert!(error.contains("scheduler run-control"));
+            with_gateway(&process, |gateway| {
+                gateway.run_control_requests.clear();
+                gateway.run_control_inflight = None;
+                gateway.scheduler_response_pending = None;
+                gateway.handle(commit)
+            })
+            .unwrap_or_else(|error| {
+                panic!("commit should succeed after scheduler state resolves: {error}")
+            });
+            drop(peer);
+        }
     }
 
     #[test]
