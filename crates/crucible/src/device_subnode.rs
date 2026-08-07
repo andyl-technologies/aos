@@ -599,6 +599,7 @@ impl DeviceSchedulingSubNode {
                         cache_entries: storage.persistence.cache_entries,
                         controller_buffer_bytes: storage.persistence.controller_buffer_bytes,
                         controller_entries: storage.persistence.controller_entries,
+                        persistence_dependencies: storage.persistence.persistence_dependencies,
                         retained_versions: u32::from(
                             storage.persistence.retained_versions_per_interval,
                         ),

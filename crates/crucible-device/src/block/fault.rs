@@ -26,7 +26,9 @@ pub const HARD_BLOCK_CACHE_ENTRIES: usize = 4_194_304;
 /// Hard maximum controller-accepted write entries.
 pub const HARD_BLOCK_CONTROLLER_ENTRIES: usize = 4_194_304;
 /// Hard aggregate bytes waiting in the direct-to-media persistence queue.
-pub const HARD_BLOCK_MEDIA_QUEUE_BYTES: u64 = 268_435_456;
+pub const HARD_BLOCK_MEDIA_QUEUE_BYTES: u64 = 137_438_953_472;
+/// Hard maximum bytes in either configured volatile storage layer.
+pub const HARD_BLOCK_VOLATILE_LAYER_BYTES: u64 = 68_719_476_736;
 /// Hard maximum retained historical versions.
 pub const HARD_BLOCK_RETAINED_VERSIONS: usize = 4_194_304;
 /// Hard maximum exact spans in one resolved write directive.
@@ -77,6 +79,8 @@ pub struct BlockDurabilityConfig {
     pub controller_buffer_bytes: u64,
     /// Maximum controller-accepted write entries.
     pub controller_entries: u32,
+    /// Maximum live persistence dependency edges for this device.
+    pub persistence_dependencies: u32,
     /// Maximum retained versions.
     pub retained_versions: u32,
     /// Normal successful-completion durability.
@@ -95,6 +99,7 @@ impl BlockDurabilityConfig {
             cache_entries: 0,
             controller_buffer_bytes: 0,
             controller_entries: 0,
+            persistence_dependencies: super::persistence::HARD_BLOCK_PERSISTENCE_EDGES as u32,
             retained_versions: 1,
             completion_durability: BlockCompletionDurability::Durable,
         }
@@ -110,11 +115,17 @@ impl BlockDurabilityConfig {
         let cache_entries = usize::try_from(self.cache_entries).unwrap_or(usize::MAX);
         let controller_entries = usize::try_from(self.controller_entries).unwrap_or(usize::MAX);
         let retained_versions = usize::try_from(self.retained_versions).unwrap_or(usize::MAX);
+        let persistence_dependencies =
+            usize::try_from(self.persistence_dependencies).unwrap_or(usize::MAX);
         if self.atomic_write_bytes == 0
             || self.maximum_request_bytes == 0
             || (self.length_bytes > 0 && self.maximum_request_bytes > self.length_bytes)
             || cache_entries > HARD_BLOCK_CACHE_ENTRIES
             || controller_entries > HARD_BLOCK_CONTROLLER_ENTRIES
+            || persistence_dependencies > super::persistence::HARD_BLOCK_PERSISTENCE_EDGES
+            || persistence_dependencies == 0
+            || self.volatile_cache_bytes > HARD_BLOCK_VOLATILE_LAYER_BYTES
+            || self.controller_buffer_bytes > HARD_BLOCK_VOLATILE_LAYER_BYTES
             || retained_versions == 0
             || retained_versions > HARD_BLOCK_RETAINED_VERSIONS
             || (self.volatile_cache_bytes == 0) != (self.cache_entries == 0)
@@ -225,7 +236,7 @@ pub enum BlockFaultDirtyEviction {
 pub type BlockFaultResult = BlockErrorCode;
 
 enum BlockWriteOutcome {
-    Applied,
+    Applied(u64),
     Rejected(BlockFaultResult),
 }
 
@@ -313,6 +324,8 @@ pub struct ResolvedBlockFaultDirective {
     pub error_result: Option<BlockFaultResult>,
     /// Dynamic service, latency, stall, and reorder delay.
     pub additional_latency_nanos: u64,
+    /// Exact virtual coordinate at which this request resolves in the adapter.
+    pub execution_nanos: u64,
     /// Whether the primary completion remains retained after COMPUTE.
     pub retain_completion: bool,
     /// Typed error returned if a retained operation times out.
@@ -346,6 +359,7 @@ impl ResolvedBlockFaultDirective {
             reported_capacity_bytes: capacity,
             error_result: None,
             additional_latency_nanos: 0,
+            execution_nanos: 0,
             retain_completion: false,
             retention_timeout_response: None,
             duplicate_completions: Vec::new(),
@@ -485,6 +499,7 @@ impl ResolvedBlockFaultDirective {
             || self.reported_capacity_bytes > config.length_bytes
             || self.duplicate_completions.len() > HARD_BLOCK_DUPLICATE_COMPLETIONS
             || self.read_transforms.len() > HARD_BLOCK_WRITE_SPANS
+            || self.persistence_transforms.len() > HARD_BLOCK_WRITE_SPANS
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "directive violates static block bounds",
@@ -564,6 +579,17 @@ impl ResolvedBlockFaultDirective {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "persistence transformations require a write request",
             });
+        }
+        if !self.persistence_transforms.is_empty() {
+            if self.persistence_admitted_nanos != self.execution_nanos {
+                return Err(DeviceError::InvalidBlockFaultDirective {
+                    reason: "persistence admission coordinate differs from request execution",
+                });
+            }
+            BlockPersistenceGraph::validate_transforms(
+                &self.persistence_transforms,
+                self.persistence_admitted_nanos,
+            )?;
         }
         if self.cache_policy.is_some_and(|policy| {
             policy.capacity_bytes == 0
@@ -695,6 +721,8 @@ pub struct BlockFaultState {
     volatile_bytes: u64,
     retained: BTreeMap<u64, BlockRetainedVersion>,
     persistence: BlockPersistenceGraph,
+    pending_barrier_frontier: Option<u64>,
+    pending_honest_flush_frontier: Option<u64>,
     next_cache_sequence: u64,
     next_cache_access_sequence: u64,
     next_version_sequence: u64,
@@ -721,6 +749,8 @@ impl BlockFaultState {
             volatile_bytes: 0,
             retained: BTreeMap::new(),
             persistence: BlockPersistenceGraph::new(),
+            pending_barrier_frontier: None,
+            pending_honest_flush_frontier: None,
             next_cache_sequence: 0,
             next_cache_access_sequence: 0,
             next_version_sequence: 0,
@@ -738,6 +768,9 @@ impl BlockFaultState {
     /// Returns [`DeviceError`] when `config` violates geometry or hard bounds.
     pub fn new(config: BlockDurabilityConfig) -> Result<Self, DeviceError> {
         config.validate()?;
+        let persistence = BlockPersistenceGraph::with_edge_limit(
+            usize::try_from(config.persistence_dependencies).unwrap_or(usize::MAX),
+        )?;
         Ok(Self {
             config,
             execution_required: false,
@@ -750,7 +783,9 @@ impl BlockFaultState {
             volatile: BTreeMap::new(),
             volatile_bytes: 0,
             retained: BTreeMap::new(),
-            persistence: BlockPersistenceGraph::new(),
+            persistence,
+            pending_barrier_frontier: None,
+            pending_honest_flush_frontier: None,
             next_cache_sequence: 0,
             next_cache_access_sequence: 0,
             next_version_sequence: 0,
@@ -779,6 +814,8 @@ impl BlockFaultState {
             && self.volatile_bytes == 0
             && self.retained.is_empty()
             && self.persistence.nodes().is_empty()
+            && self.pending_barrier_frontier.is_none()
+            && self.pending_honest_flush_frontier.is_none()
             && self.retained_completions.is_empty()
             && self.next_cache_sequence == 0
             && self.next_cache_access_sequence == 0
@@ -896,12 +933,25 @@ impl BlockFaultState {
                 .is_some_and(|sequence| sequence >= self.next_cache_sequence)
             || self.actual_durable_frontier > self.next_cache_sequence
             || self.reported_durable_frontier > self.next_cache_sequence
+            || self
+                .pending_barrier_frontier
+                .is_some_and(|frontier| frontier > self.next_cache_sequence)
+            || self
+                .pending_honest_flush_frontier
+                .is_some_and(|frontier| frontier > self.next_cache_sequence)
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "restored block fault state has invalid accounting or sequence",
             });
         }
         self.persistence.validate()?;
+        if self.persistence.edge_limit()
+            != usize::try_from(self.config.persistence_dependencies).unwrap_or(usize::MAX)
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "restored persistence graph uses a different configured edge bound",
+            });
+        }
         let layer_sequences = self
             .controller
             .keys()
@@ -1075,6 +1125,13 @@ impl BlockFaultState {
         &self.persistence
     }
 
+    /// Drains persistence graph mutations after canonical event recording.
+    pub fn drain_persistence_transformation_evidence(
+        &mut self,
+    ) -> Vec<super::persistence::BlockPersistenceTransformationEvidence> {
+        self.persistence.drain_transformation_evidence()
+    }
+
     /// Returns retained versions in version sequence order.
     #[must_use]
     pub const fn retained_versions(&self) -> &BTreeMap<u64, BlockRetainedVersion> {
@@ -1108,6 +1165,7 @@ impl BlockFaultState {
         durable: &mut CowOverlay,
         request_id: u32,
         release: BlockRetainedRelease,
+        now_nanos: u64,
     ) -> Result<Response, DeviceError> {
         let completion = self.retained_completions.get(&request_id).cloned().ok_or(
             DeviceError::InvalidBlockFaultDirective {
@@ -1117,8 +1175,13 @@ impl BlockFaultState {
         let response = match release {
             BlockRetainedRelease::Recovery => {
                 if let Some(frontier) = completion.persist_through_on_recovery {
-                    self.persist_through(base, durable, frontier)?;
-                    self.reported_durable_frontier = frontier;
+                    let wait = self.persist_through(base, durable, frontier, now_nanos)?;
+                    if wait != 0 {
+                        return Err(DeviceError::InvalidBlockFaultDirective {
+                            reason: "flush recovery precedes its persistence deadline",
+                        });
+                    }
+                    self.reported_durable_frontier = self.actual_durable_frontier;
                 }
                 completion.recovery_response
             }
@@ -1257,7 +1320,14 @@ impl BlockFaultState {
                 })?;
         }
         let mut next_durable = durable.clone();
-        let response = next.execute_wire(base, &mut next_durable, request, &directive)?;
+        let (response, persistence_wait_nanos) =
+            next.execute_wire(base, &mut next_durable, request, &directive)?;
+        let additional_latency_nanos = directive
+            .additional_latency_nanos
+            .checked_add(persistence_wait_nanos)
+            .ok_or(DeviceError::InvalidBlockFaultDirective {
+                reason: "storage persistence and completion latency overflow",
+            })?;
         let encoded = response.encode().map_err(DeviceError::Codec)?;
         let status = if response.status == BlockStatus::Ok {
             ResponseStatus::Ok
@@ -1279,7 +1349,7 @@ impl BlockFaultState {
                         )?,
                     )?,
                     request_icount,
-                    additional_latency_nanos: directive.additional_latency_nanos,
+                    additional_latency_nanos,
                     persist_through_on_recovery: (request.op == BlockOp::Flush
                         && matches!(
                             directive.flush_disposition,
@@ -1316,7 +1386,7 @@ impl BlockFaultState {
         let computed = ComputedResponse {
             primary: (!directive.retain_completion).then_some(primary),
             additional,
-            additional_latency_nanos: directive.additional_latency_nanos,
+            additional_latency_nanos,
         };
         *self = next;
         *durable = next_durable;
@@ -1352,7 +1422,7 @@ impl BlockFaultState {
             });
         }
         match self.apply_write(base, durable, &request, &directive)? {
-            BlockWriteOutcome::Applied => Ok(()),
+            BlockWriteOutcome::Applied(_persistence_wait_nanos) => Ok(()),
             BlockWriteOutcome::Rejected(_) => Err(DeviceError::BlockCacheFull {
                 requested_bytes: u64::from(request.count),
                 available_bytes: self
@@ -1369,7 +1439,7 @@ impl BlockFaultState {
         durable: &mut CowOverlay,
         request: &BlockRequest,
         directive: &ResolvedBlockFaultDirective,
-    ) -> Result<BlockResponse, DeviceError> {
+    ) -> Result<(BlockResponse, u64), DeviceError> {
         let error = directive.error_result.or_else(|| {
             (directive.availability == BlockFaultAvailability::Offline)
                 .then_some(BlockErrorCode::Offline)
@@ -1388,41 +1458,71 @@ impl BlockFaultState {
                 })
         });
         if let Some(error) = error {
-            return Ok(BlockResponse::error(request.request_id, error));
+            return Ok((BlockResponse::error(request.request_id, error), 0));
         }
         match request.op {
             BlockOp::Read => {
                 let mut bytes =
                     self.read_visible(base, durable, request.offset, request.count, true)?;
                 apply_read_transforms(&mut bytes, &directive.read_transforms)?;
-                Ok(BlockResponse::ok(request.request_id, bytes))
+                Ok((BlockResponse::ok(request.request_id, bytes), 0))
             }
             BlockOp::Write => match self.apply_write(base, durable, request, directive)? {
-                BlockWriteOutcome::Applied => Ok(BlockResponse::ok(request.request_id, Vec::new())),
+                BlockWriteOutcome::Applied(wait) => {
+                    Ok((BlockResponse::ok(request.request_id, Vec::new()), wait))
+                }
                 BlockWriteOutcome::Rejected(result) => {
-                    Ok(BlockResponse::error(request.request_id, result))
+                    Ok((BlockResponse::error(request.request_id, result), 0))
                 }
             },
             BlockOp::Flush => match directive.flush_disposition {
                 BlockFaultFlushDisposition::Honest => {
-                    self.persist_all(base, durable)?;
-                    self.reported_durable_frontier = self.actual_durable_frontier;
-                    Ok(BlockResponse::ok(request.request_id, Vec::new()))
+                    let frontier = self.next_cache_sequence;
+                    let wait = self.persist_all(base, durable, directive.execution_nanos)?;
+                    if wait == 0 {
+                        self.reported_durable_frontier = self.actual_durable_frontier;
+                    } else {
+                        self.pending_barrier_frontier = Some(
+                            self.pending_barrier_frontier
+                                .map_or(frontier, |existing| existing.max(frontier)),
+                        );
+                        self.pending_honest_flush_frontier = Some(
+                            self.pending_honest_flush_frontier
+                                .map_or(frontier, |existing| existing.max(frontier)),
+                        );
+                    }
+                    if self.actual_durable_frontier >= frontier {
+                        self.pending_barrier_frontier = None;
+                    }
+                    Ok((BlockResponse::ok(request.request_id, Vec::new()), wait))
                 }
                 BlockFaultFlushDisposition::Error(error) => {
-                    Ok(BlockResponse::error(request.request_id, error))
+                    Ok((BlockResponse::error(request.request_id, error), 0))
                 }
                 BlockFaultFlushDisposition::Lie => {
-                    self.reported_durable_frontier = self.next_cache_sequence;
-                    Ok(BlockResponse::ok(request.request_id, Vec::new()))
+                    let frontier = self.next_cache_sequence;
+                    self.reported_durable_frontier = frontier;
+                    self.pending_barrier_frontier = Some(
+                        self.pending_barrier_frontier
+                            .map_or(frontier, |existing| existing.max(frontier)),
+                    );
+                    Ok((BlockResponse::ok(request.request_id, Vec::new()), 0))
                 }
                 BlockFaultFlushDisposition::Stall => {
-                    Ok(BlockResponse::ok(request.request_id, Vec::new()))
+                    let frontier = self.next_cache_sequence;
+                    self.pending_barrier_frontier = Some(
+                        self.pending_barrier_frontier
+                            .map_or(frontier, |existing| existing.max(frontier)),
+                    );
+                    Ok((BlockResponse::ok(request.request_id, Vec::new()), 0))
                 }
             },
-            BlockOp::GetLength => Ok(BlockResponse::ok(
-                request.request_id,
-                directive.reported_capacity_bytes.to_le_bytes().to_vec(),
+            BlockOp::GetLength => Ok((
+                BlockResponse::ok(
+                    request.request_id,
+                    directive.reported_capacity_bytes.to_le_bytes().to_vec(),
+                ),
+                0,
             )),
         }
     }
@@ -1447,6 +1547,11 @@ impl BlockFaultState {
             .map(|(sequence, entry)| (*sequence, (entry.offset, entry.bytes.as_slice())))
             .chain(
                 self.volatile
+                    .iter()
+                    .map(|(sequence, entry)| (*sequence, (entry.offset, entry.bytes.as_slice()))),
+            )
+            .chain(
+                self.media_queue
                     .iter()
                     .map(|(sequence, entry)| (*sequence, (entry.offset, entry.bytes.as_slice()))),
             )
@@ -1610,6 +1715,7 @@ impl BlockFaultState {
                     resolved.len(),
                     admitted_bytes,
                     policy,
+                    directive.execution_nanos,
                 )?,
                 None => {
                     let available_entries = usize::try_from(self.config.cache_entries)
@@ -1698,10 +1804,11 @@ impl BlockFaultState {
                 ))
             })
             .collect::<Result<Vec<_>, DeviceError>>()?;
-        self.persistence.admit_request(
+        self.persistence.admit_request_with_barrier(
             &persistence_fragments,
             directive.persistence_admitted_nanos,
             &directive.persistence_transforms,
+            self.pending_barrier_frontier,
         )?;
 
         for (fragment_index, offset, bytes) in resolved {
@@ -1732,14 +1839,21 @@ impl BlockFaultState {
                 self.media_queue_write(sequence, request.request_id, offset, bytes.to_vec())?;
             }
         }
-        if !cache && !controller {
-            self.persist_through(base, durable, self.next_cache_sequence)?;
-        }
+        let persistence_wait_nanos = if !cache && !controller {
+            self.persist_through(
+                base,
+                durable,
+                self.next_cache_sequence,
+                directive.execution_nanos,
+            )?
+        } else {
+            0
+        };
         self.recompute_actual_durable_frontier();
         if !cache && !controller {
             self.reported_durable_frontier = self.actual_durable_frontier;
         }
-        Ok(BlockWriteOutcome::Applied)
+        Ok(BlockWriteOutcome::Applied(persistence_wait_nanos))
     }
 
     fn retain_prior(
@@ -1838,6 +1952,33 @@ impl BlockFaultState {
         incoming_entries: usize,
         incoming_bytes: u64,
         policy: ResolvedBlockCachePolicy,
+        now_nanos: u64,
+    ) -> Result<Option<BlockFaultResult>, DeviceError> {
+        let mut next = self.clone();
+        let mut next_durable = durable.clone();
+        let rejection = next.prepare_cache_admission_staged(
+            base,
+            &mut next_durable,
+            incoming_entries,
+            incoming_bytes,
+            policy,
+            now_nanos,
+        )?;
+        if rejection.is_none() {
+            *self = next;
+            *durable = next_durable;
+        }
+        Ok(rejection)
+    }
+
+    fn prepare_cache_admission_staged(
+        &mut self,
+        base: &BaseImage,
+        durable: &mut CowOverlay,
+        incoming_entries: usize,
+        incoming_bytes: u64,
+        policy: ResolvedBlockCachePolicy,
+        now_nanos: u64,
     ) -> Result<Option<BlockFaultResult>, DeviceError> {
         let entry_capacity = usize::try_from(self.config.cache_entries).unwrap_or(usize::MAX);
         if incoming_entries > entry_capacity || incoming_bytes > policy.capacity_bytes {
@@ -1883,9 +2024,71 @@ impl BlockFaultState {
             }) else {
                 return Ok(Some(BlockFaultResult::Busy));
             };
-            self.persist_sequence(base, durable, victim)?;
+            self.schedule_volatile_persistence(victim)?;
         }
+        self.persist_due(base, durable, now_nanos)?;
         Ok(None)
+    }
+
+    fn schedule_volatile_persistence(&mut self, sequence: u64) -> Result<(), DeviceError> {
+        let entry = self.volatile.get(&sequence).cloned().ok_or(
+            DeviceError::InvalidBlockFaultDirective {
+                reason: "cache eviction selected an absent volatile fragment",
+            },
+        )?;
+        self.media_queue_write(
+            entry.sequence,
+            entry.request_id,
+            entry.offset,
+            entry.bytes.clone(),
+        )?;
+        let removed =
+            self.volatile
+                .remove(&sequence)
+                .ok_or(DeviceError::InvalidBlockFaultDirective {
+                    reason: "cache eviction fragment disappeared",
+                })?;
+        self.volatile_bytes = self
+            .volatile_bytes
+            .checked_sub(u64::try_from(removed.bytes.len()).unwrap_or(u64::MAX))
+            .ok_or(DeviceError::InvalidBlockFaultDirective {
+                reason: "volatile byte accounting underflow during persistence scheduling",
+            })?;
+        Ok(())
+    }
+
+    pub(super) fn persist_due(
+        &mut self,
+        base: &BaseImage,
+        durable: &mut CowOverlay,
+        now_nanos: u64,
+    ) -> Result<(), DeviceError> {
+        loop {
+            let sequence = self
+                .media_queue
+                .keys()
+                .filter(|sequence| self.persistence.is_ready_at(**sequence, now_nanos))
+                .filter_map(|sequence| {
+                    self.persistence
+                        .writeback_key(*sequence)
+                        .map(|key| (key, *sequence))
+                })
+                .min_by_key(|(key, _sequence)| *key)
+                .map(|(_key, sequence)| sequence);
+            let Some(sequence) = sequence else {
+                break;
+            };
+            self.persist_sequence(base, durable, sequence)?;
+        }
+        self.recompute_actual_durable_frontier();
+        if self
+            .pending_honest_flush_frontier
+            .is_some_and(|frontier| self.actual_durable_frontier >= frontier)
+        {
+            self.reported_durable_frontier = self.actual_durable_frontier;
+            self.pending_honest_flush_frontier = None;
+        }
+        Ok(())
     }
 
     fn controller_write(
@@ -1920,6 +2123,11 @@ impl BlockFaultState {
         offset: u64,
         bytes: Vec<u8>,
     ) -> Result<(), DeviceError> {
+        if self.media_queue.contains_key(&sequence) {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "media-queue sequence is already present",
+            });
+        }
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let next_bytes = self.media_queue_bytes.checked_add(length).ok_or(
             DeviceError::InvalidBlockFaultDirective {
@@ -1948,8 +2156,9 @@ impl BlockFaultState {
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
-    ) -> Result<(), DeviceError> {
-        self.persist_through(base, durable, self.next_cache_sequence)
+        now_nanos: u64,
+    ) -> Result<u64, DeviceError> {
+        self.persist_through(base, durable, self.next_cache_sequence, now_nanos)
     }
 
     fn persist_through(
@@ -1957,28 +2166,69 @@ impl BlockFaultState {
         base: &BaseImage,
         durable: &mut CowOverlay,
         frontier: u64,
-    ) -> Result<(), DeviceError> {
+        now_nanos: u64,
+    ) -> Result<u64, DeviceError> {
         if frontier > self.next_cache_sequence {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "flush persistence frontier exceeds issued storage sequence",
             });
         }
-        while self
-            .persistence
-            .nodes()
+        let controller = self
+            .controller
             .keys()
-            .next()
-            .is_some_and(|sequence| *sequence < frontier)
-        {
-            let sequence = self
-                .persistence
-                .next_ready_before(frontier, u64::MAX)
-                .ok_or(DeviceError::InvalidBlockFaultDirective {
-                    reason: "captured persistence frontier has no ready fragment",
-                })?;
-            self.persist_sequence(base, durable, sequence)?;
+            .copied()
+            .filter(|sequence| *sequence < frontier)
+            .collect::<Vec<_>>();
+        for sequence in controller {
+            self.schedule_controller_persistence(sequence)?;
         }
+        let volatile = self
+            .volatile
+            .keys()
+            .copied()
+            .filter(|sequence| *sequence < frontier)
+            .collect::<Vec<_>>();
+        for sequence in volatile {
+            self.schedule_volatile_persistence(sequence)?;
+        }
+        self.persist_due(base, durable, now_nanos)?;
+        let wait = self
+            .media_queue
+            .keys()
+            .copied()
+            .filter(|sequence| *sequence < frontier)
+            .filter_map(|sequence| self.persistence.deadline_nanos(sequence))
+            .map(|deadline| deadline.saturating_sub(now_nanos))
+            .max()
+            .unwrap_or(0);
         self.recompute_actual_durable_frontier();
+        Ok(wait)
+    }
+
+    fn schedule_controller_persistence(&mut self, sequence: u64) -> Result<(), DeviceError> {
+        let entry = self.controller.get(&sequence).cloned().ok_or(
+            DeviceError::InvalidBlockFaultDirective {
+                reason: "persistence selected an absent controller fragment",
+            },
+        )?;
+        self.media_queue_write(
+            entry.sequence,
+            entry.request_id,
+            entry.offset,
+            entry.bytes.clone(),
+        )?;
+        let removed =
+            self.controller
+                .remove(&sequence)
+                .ok_or(DeviceError::InvalidBlockFaultDirective {
+                    reason: "controller persistence fragment disappeared",
+                })?;
+        self.controller_bytes = self
+            .controller_bytes
+            .checked_sub(u64::try_from(removed.bytes.len()).unwrap_or(u64::MAX))
+            .ok_or(DeviceError::InvalidBlockFaultDirective {
+                reason: "controller byte accounting underflow during persistence scheduling",
+            })?;
         Ok(())
     }
 
@@ -2043,6 +2293,15 @@ impl BlockFaultState {
             .chain(self.first_lost_sequence)
             .min()
             .unwrap_or(self.next_cache_sequence);
+        if self.pending_barrier_frontier.is_some_and(|frontier| {
+            !self
+                .persistence
+                .nodes()
+                .keys()
+                .any(|sequence| *sequence < frontier)
+        }) {
+            self.pending_barrier_frontier = None;
+        }
     }
 }
 
@@ -2336,6 +2595,7 @@ mod tests {
             cache_entries: 64,
             controller_buffer_bytes: 64,
             controller_entries: 64,
+            persistence_dependencies: 1024,
             retained_versions: 8,
             completion_durability: durability,
         })
@@ -2619,6 +2879,7 @@ mod tests {
                 &mut durable,
                 flush.request_id,
                 BlockRetainedRelease::Recovery,
+                0,
             )
             .unwrap_or_else(|error| panic!("retained completion recovers: {error}"));
         let released = BlockResponse::decode(&released.payload)
@@ -2670,6 +2931,7 @@ mod tests {
                 &mut durable,
                 flush.request_id,
                 BlockRetainedRelease::Timeout,
+                0,
             )
             .unwrap_or_else(|error| panic!("retained completion times out: {error}"));
         let released = BlockResponse::decode(&released.payload)
@@ -2693,6 +2955,7 @@ mod tests {
             cache_entries: 1,
             controller_buffer_bytes: 0,
             controller_entries: 0,
+            persistence_dependencies: 1024,
             retained_versions: 2,
             completion_durability: BlockCompletionDurability::VolatileCacheAccepted,
         })
@@ -2716,6 +2979,60 @@ mod tests {
     }
 
     #[test]
+    fn cache_rejection_rolls_back_partially_schedulable_evictions() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let mut durable = CowOverlay::new();
+        let mut state = BlockFaultState::new(BlockDurabilityConfig {
+            length_bytes: 32,
+            atomic_write_bytes: 4,
+            maximum_request_bytes: 32,
+            volatile_cache_bytes: 8,
+            cache_entries: 2,
+            controller_buffer_bytes: 4,
+            controller_entries: 1,
+            persistence_dependencies: 1024,
+            retained_versions: 8,
+            completion_durability: BlockCompletionDurability::ControllerAccepted,
+        })
+        .unwrap_or_else(|error| panic!("valid test state: {error}"));
+        response(
+            &mut state,
+            &base,
+            &mut durable,
+            &BlockRequest::write(1, 0, b"aaaa".to_vec()),
+            |_| {},
+        );
+        let cache = ResolvedBlockCachePolicy {
+            capacity_bytes: 8,
+            eviction: BlockFaultCacheEviction::Fifo,
+            dirty_eviction: BlockFaultDirtyEviction::Persist,
+            power_loss_protected: false,
+        };
+        for (request_id, offset) in [(2, 0), (3, 8)] {
+            response(
+                &mut state,
+                &base,
+                &mut durable,
+                &BlockRequest::write(request_id, offset, vec![b'x'; 4]),
+                |directive| directive.cache_policy = Some(cache),
+            );
+        }
+        let before_state = state.clone();
+        let before_durable = durable.clone();
+        let rejected = response(
+            &mut state,
+            &base,
+            &mut durable,
+            &BlockRequest::write(4, 16, vec![b'y'; 8]),
+            |directive| directive.cache_policy = Some(cache),
+        );
+
+        assert_eq!(rejected.error_code(), Ok(BlockFaultResult::Busy));
+        assert_eq!(state, before_state);
+        assert_eq!(durable, before_durable);
+    }
+
+    #[test]
     fn cache_policy_persists_fifo_victims_before_admission() {
         let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
         let mut durable = CowOverlay::new();
@@ -2727,6 +3044,7 @@ mod tests {
             cache_entries: 2,
             controller_buffer_bytes: 0,
             controller_entries: 0,
+            persistence_dependencies: 1024,
             retained_versions: 8,
             completion_durability: BlockCompletionDurability::Durable,
         })
@@ -2767,6 +3085,7 @@ mod tests {
             cache_entries: 1,
             controller_buffer_bytes: 0,
             controller_entries: 0,
+            persistence_dependencies: 1024,
             retained_versions: 8,
             completion_durability: BlockCompletionDurability::Durable,
         })
@@ -2814,6 +3133,7 @@ mod tests {
             cache_entries: 2,
             controller_buffer_bytes: 0,
             controller_entries: 0,
+            persistence_dependencies: 1024,
             retained_versions: 8,
             completion_durability: BlockCompletionDurability::Durable,
         })
@@ -2861,6 +3181,7 @@ mod tests {
             cache_entries: 3,
             controller_buffer_bytes: 0,
             controller_entries: 0,
+            persistence_dependencies: 1024,
             retained_versions: 8,
             completion_durability: BlockCompletionDurability::Durable,
         })
@@ -2913,6 +3234,7 @@ mod tests {
             cache_entries: 2,
             controller_buffer_bytes: 0,
             controller_entries: 0,
+            persistence_dependencies: 1024,
             retained_versions: 8,
             completion_durability: BlockCompletionDurability::Durable,
         })
@@ -2940,6 +3262,75 @@ mod tests {
             .lose_volatile(&ordinary_loss)
             .unwrap_or_else(|error| panic!("ordinary power-loss subset is live: {error}"));
         assert_eq!(state.volatile_loss_candidates(true), vec![1]);
+    }
+
+    #[test]
+    fn persistence_delay_defers_durable_bytes_and_flush_truth_until_due() {
+        let base = BaseImage::new(b"abcdefghijklmnopqrstuvwxyz012345".to_vec());
+        let mut durable = CowOverlay::new();
+        let mut state = BlockFaultState::new(BlockDurabilityConfig {
+            length_bytes: 32,
+            atomic_write_bytes: 4,
+            maximum_request_bytes: 32,
+            volatile_cache_bytes: 8,
+            cache_entries: 2,
+            controller_buffer_bytes: 0,
+            controller_entries: 0,
+            persistence_dependencies: 1024,
+            retained_versions: 8,
+            completion_durability: BlockCompletionDurability::VolatileCacheAccepted,
+        })
+        .unwrap_or_else(|error| panic!("valid test state: {error}"));
+        let write = BlockRequest::write(1, 0, b"zzzz".to_vec());
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&write, base.len());
+        directive.execution_nanos = 10;
+        directive.persistence_admitted_nanos = 10;
+        directive.cache_policy = Some(ResolvedBlockCachePolicy {
+            capacity_bytes: 8,
+            eviction: BlockFaultCacheEviction::WritebackSequence,
+            dirty_eviction: BlockFaultDirtyEviction::Persist,
+            power_loss_protected: false,
+        });
+        directive
+            .persistence_transforms
+            .push(ResolvedBlockPersistenceTransform {
+                contributor: [7; 32],
+                ordering_group: [6; 32],
+                ordering: crate::block::BlockPersistenceOrdering::Preserve,
+                delay_nanos: 100,
+                preserve_barriers: true,
+            });
+        state
+            .install(write.request_id, directive)
+            .unwrap_or_else(|error| panic!("write directive: {error}"));
+        state
+            .execute(&base, &mut durable, &write, 10)
+            .unwrap_or_else(|error| panic!("cached write: {error}"));
+
+        let flush = BlockRequest::flush(2);
+        let mut flush_directive = ResolvedBlockFaultDirective::fault_free(&flush, base.len());
+        flush_directive.execution_nanos = 20;
+        state
+            .install(flush.request_id, flush_directive)
+            .unwrap_or_else(|error| panic!("flush directive: {error}"));
+        let computed = state
+            .execute(&base, &mut durable, &flush, 20)
+            .unwrap_or_else(|error| panic!("delayed flush: {error}"));
+        assert_eq!(computed.additional_latency_nanos, 90);
+        assert_eq!(durable.read(&base, 0, 4).unwrap_or_default(), b"abcd");
+        assert_eq!(state.reported_durable_frontier(), 0);
+        assert!(state.media_queue_entries().contains_key(&0));
+
+        state
+            .persist_due(&base, &mut durable, 109)
+            .unwrap_or_else(|error| panic!("pre-deadline service: {error}"));
+        assert_eq!(durable.read(&base, 0, 4).unwrap_or_default(), b"abcd");
+        state
+            .persist_due(&base, &mut durable, 110)
+            .unwrap_or_else(|error| panic!("deadline service: {error}"));
+        assert_eq!(durable.read(&base, 0, 4).unwrap_or_default(), b"zzzz");
+        assert_eq!(state.reported_durable_frontier(), 1);
+        assert!(state.media_queue_entries().is_empty());
     }
 
     #[test]

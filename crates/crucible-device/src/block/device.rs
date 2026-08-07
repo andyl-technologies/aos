@@ -24,7 +24,7 @@
 //! delivery_icount  = ceil(vt(request_icount) + BlockLatency::latency_ns)
 //! ```
 
-use crucible_shmem::{FrameEntry, NodeSlot, RingHeader};
+use crucible_shmem::{FrameEntry, NodeSlot, RingHeader, icount_to_virtual_ns};
 
 use crate::clock::ceil_ns_to_icount;
 use crate::error::DeviceError;
@@ -339,11 +339,13 @@ impl BlockDevice {
     ) -> Result<(), DeviceError> {
         let mut next_faults = self.storage_faults.clone();
         let mut next_overlay = self.overlay.clone();
+        let now_nanos = icount_to_virtual_ns(self.core.current_icount(), self.core.shift_bits())?;
         let response = next_faults.resolve_retained_completion(
             &self.base,
             &mut next_overlay,
             request_id,
             release,
+            now_nanos,
         )?;
         self.core.schedule_response_now(response)?;
         self.storage_faults = next_faults;
@@ -520,7 +522,14 @@ impl BlockDevice {
     /// Returns [`DeviceError::ClockRegression`] when `limit` is below the current
     /// icount.
     pub fn advance_to(&mut self, limit: u64) -> Result<usize, DeviceError> {
-        self.core.advance_to(limit)
+        let now_nanos = icount_to_virtual_ns(limit, self.core.shift_bits())?;
+        let mut next_faults = self.storage_faults.clone();
+        let mut next_overlay = self.overlay.clone();
+        next_faults.persist_due(&self.base, &mut next_overlay, now_nanos)?;
+        let delivered = self.core.advance_to(limit)?;
+        self.storage_faults = next_faults;
+        self.overlay = next_overlay;
+        Ok(delivered)
     }
 
     /// Advances the clock and publishes due block responses to a shmem ring.

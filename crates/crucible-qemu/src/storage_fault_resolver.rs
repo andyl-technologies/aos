@@ -81,6 +81,7 @@ pub fn block_durability_config(
         cache_entries: persistence.cache_entries,
         controller_buffer_bytes: persistence.controller_buffer_bytes,
         controller_entries: persistence.controller_entries,
+        persistence_dependencies: persistence.persistence_dependencies,
         retained_versions: u32::from(persistence.retained_versions_per_interval),
         completion_durability: match persistence.completion_durability {
             WorldCompletionDurability::ControllerAccepted => {
@@ -366,6 +367,7 @@ fn resolve_block_fault_directive_with_capacity<'a>(
 ) -> Result<ResolvedBlockFaultDirective, StorageFaultResolutionError> {
     validate_request_opportunity(target, request, request_sequence, opportunity)?;
     let mut directive = ResolvedBlockFaultDirective::fault_free(request, capacity);
+    directive.execution_nanos = opportunity.coordinate().virtual_nanos;
     let mut actions = actions.into_iter().collect::<Vec<_>>();
     actions.sort_by(|left, right| {
         left.effect
@@ -669,6 +671,7 @@ fn apply_effect(
             directive
                 .persistence_transforms
                 .push(ResolvedBlockPersistenceTransform {
+                    contributor: action.id().bytes,
                     ordering_group: *blake3::hash(ordering_group.as_str().as_bytes()).as_bytes(),
                     ordering: match policy.ordering {
                         StoragePolicyPersistenceOrdering::Preserve => {
