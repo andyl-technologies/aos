@@ -1110,7 +1110,11 @@ branch on the verdict without parsing output:
   decision/sample/byte with a bisection report, emits both-side reproduction
   artifacts on divergence, supports `verify --compare <a> <b>`, maps
   deterministic/divergent outcomes to exit 0/1, and records the resolved
-  QEMU/plugin build identity for local-QEMU verify runs. Every local-QEMU
+  QEMU/plugin build identity for local-QEMU verify runs. Bisection reports keep
+  canonical-log virtual time and fingerprint instruction coordinates in
+  separate typed fields with independently sourced node identities and render
+  an unavailable coordinate or node as `unknown`; byte offsets are never
+  presented as execution coordinates. Every local-QEMU
   reduction independently boots the packaged live backend and the command fails
   if any observed plugin-install report differs; the fleet gate supplies the
   AOS kernel/root closure and exercises this path under TCG.
