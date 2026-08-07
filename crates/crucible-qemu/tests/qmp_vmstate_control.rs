@@ -101,7 +101,7 @@ fn vmstate_control_uses_the_public_snapshot_tag_derivation() {
 }
 
 fn loadvm_probe_authorization() -> crucible_qemu::QemuLoadvmCommandAuthorization {
-    QemuSavevmCompletenessPolicy::phase0_fallback().authorize_loadvm_probe()
+    QemuSavevmCompletenessPolicy::complete().authorize_loadvm_probe()
 }
 
 fn scripted_qmp<const N: usize>(lines: [&str; N]) -> ScriptedQmpStream {

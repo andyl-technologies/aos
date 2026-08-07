@@ -56,6 +56,12 @@ successful commit atomically installs the epoch, allocator rule, recovery
 deadline, admission policy, typed failure, and duplicate-history rule before
 resuming blocked request coroutines.
 
+One wake may publish a primary response followed by a reset event. The event is
+not visible until the primary response leaves the shared ring head, so the
+block coroutine polls the event channel again immediately after consuming each
+primary response. It does not wait for a second edge that the producer has
+already coalesced into the first wake.
+
 `preserve_monotonic` requires the same epoch and leaves the allocator cursor
 unchanged. `new_epoch_from_zero` requires exactly `current + 1`, rejects epoch
 overflow, and resets the allocator to zero. A request admitted after that point
@@ -99,15 +105,28 @@ namespace or path.
 
 The block backend's QEMU VMState version 1 records request epoch, next request
 ID, absolute virtual-clock recovery deadline, admission policy, and typed
-recovery failure. Its bounded variable buffer contains the plugin's versioned
-allocator and exact duplicate-history continuation. Virtio-blk VMState version
-3 separately encodes ordinary restartable requests and deliberately dropped
-requests; only the former enter the destination restart path. Save and restore
-are rejected while a request token, preserve-ID retry authorization, or peeked
-event is live, so no native pointer, ring borrow, mutex, callback, or coroutine
-is serialized. Restore stages and validates the complete continuation, closed
-recovery values, and exact agreement with QEMU's paired allocator fields before
-atomically replacing either live state.
+recovery failure. Its custom decoder reads the length first, rejects lengths
+outside the closed header-to-32-MiB range, and only then allocates the plugin's
+versioned allocator and duplicate-history continuation. A hostile stream cannot
+turn the length field into a pre-validation allocation.
+
+The ordinary virtio-blk VMState remains byte-for-byte at upstream version 2.
+Deliberately dropped requests use the conditional
+`virtio-blk/dropped-requests` version-1 subsection, which is absent unless the
+non-restarting list is nonempty. Thus a patched simulator with no Crucible
+backend emits the same migration bytes as reference QEMU. The subsection
+encodes at most 4,096 requests and additionally rejects a count above the
+configured virtqueue capacity before reading any request. Each queue index and
+legacy virtqueue element is checked before it joins the destination's dropped
+list; ordinary requests remain solely in upstream's restartable list.
+
+Save and restore are rejected while a request token, preserve-ID retry
+authorization, or peeked event is live, so no native pointer, ring borrow,
+mutex, callback, or coroutine is serialized. Busy save returns a negative
+pre-save result and leaves the source VM running; it is not a fatal plugin
+invariant violation. Restore stages and validates the complete continuation,
+closed recovery values, and exact agreement with QEMU's paired allocator fields
+before atomically replacing either live state.
 
 The plugin stores completed identities as a contiguous prefix plus bounded
 out-of-order gaps per epoch. Both epoch rows and gaps have a hard limit of
@@ -130,15 +149,24 @@ probabilistic membership tests.
 - malformed headers, reserved bytes, enums, typed results, lengths, epochs, and
   unknown completed identities fail closed without consuming the frame;
 - save/restore preserves allocator, recovery, and duplicate history, rejects
-  every live continuation, and leaves prior state unchanged on malformed input;
+  every live continuation without terminating the source, rejects an oversized
+  continuation before allocation, and leaves prior state unchanged on malformed
+  input;
+- a single wake containing a primary completion followed by reset proves that
+  consuming the primary immediately exposes and commits the reset;
+- reference and patched QEMU produce byte-identical migration streams for an
+  ordinary virtio-blk disk with simulation disabled;
+- a real migration proves restartable stopped requests resume while dropped
+  requests remain unresolved until guest reset purges them;
 - a live patched-QEMU guest observes exact errno results and a virtio
   configuration interrupt; removing patch `0062` makes the capability and ABI
   gates fail.
 
 ## Licensing and delivery
 
-The patch modifies existing QEMU files only and preserves their per-file
-licenses, so `LICENSES.md` gains no created-file row. The patch commit carries
+The patch modifies existing QEMU files only, including the checked virtqueue
+migration reader in `hw/virtio/virtio.c`, and preserves their per-file licenses,
+so `LICENSES.md` gains no created-file row. The patch commit carries
 the required DCO sign-off. The patch, deterministic branch commit, bundle,
 manifest identity, corresponding-source output, ABI conformance gate, and live
 backend gate update atomically.

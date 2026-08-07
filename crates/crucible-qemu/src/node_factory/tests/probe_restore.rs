@@ -33,7 +33,7 @@ fn factory_restores_probe_snapshot_without_runtime_admission() -> Result<(), Box
         qmp,
         QemuNodeRestorePlan::snapshot_completeness_probe(
             &checkpoint,
-            QemuSavevmCompletenessPolicy::phase0_fallback().authorize_loadvm_probe(),
+            QemuSavevmCompletenessPolicy::complete().authorize_loadvm_probe(),
         ),
         node_factory_runtime(),
     )?;

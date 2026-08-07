@@ -413,7 +413,7 @@ in rec {
     qemuInjectionContract = import ./phase2-qemu-injection-contract.nix {inherit pkgs lib;};
     qemuQuantumShmem = import ./phase2-qemu-quantum-shmem.nix {inherit pkgs lib;};
     qemuRealization = import ./phase2-qemu-realization.nix {inherit pkgs lib;};
-    qemuSavevmFallback = import ./phase2-qemu-savevm-fallback.nix {inherit pkgs lib;};
+    qemuExactSnapshotRestore = import ./phase2-qemu-exact-snapshot-restore.nix {inherit pkgs lib;};
     qemuNvcpuFingerprint = import ./phase2-qemu-nvcpu-fingerprint.nix {inherit pkgs lib;};
     qemuLiveGenesisExecutor = import ./phase2-qemu-live-genesis-executor.nix {inherit pkgs lib;};
     qemuLivePluginInstall = import ./phase2-qemu-live-plugin-install.nix {inherit pkgs lib;};

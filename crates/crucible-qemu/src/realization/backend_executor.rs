@@ -354,10 +354,8 @@ mod tests {
             QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test()
         }
 
-        fn authorize_loadvm_runtime(
-            self,
-        ) -> Result<QemuLoadvmCommandAuthorization, QemuSavevmPolicyError> {
-            Ok(QemuLoadvmCommandAuthorization::runtime_realization_for_test())
+        fn authorize_loadvm_runtime(self) -> QemuLoadvmCommandAuthorization {
+            QemuLoadvmCommandAuthorization::runtime_realization_for_test()
         }
 
         fn accept_loadvm_realized_runtime(

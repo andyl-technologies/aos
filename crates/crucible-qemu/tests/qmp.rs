@@ -528,7 +528,7 @@ fn snapshot_tags_are_derived_from_checkpoint_content_hash() {
 }
 
 fn loadvm_probe_authorization() -> crucible_qemu::QemuLoadvmCommandAuthorization {
-    QemuSavevmCompletenessPolicy::phase0_fallback().authorize_loadvm_probe()
+    QemuSavevmCompletenessPolicy::complete().authorize_loadvm_probe()
 }
 
 fn scripted_qmp<const N: usize>(lines: [&str; N]) -> ScriptedQmpStream {
