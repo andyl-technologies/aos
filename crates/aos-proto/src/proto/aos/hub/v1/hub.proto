@@ -570,6 +570,10 @@ message Registry {
   string visibility = 15;
   string resource_version = 16;
   int64 updated_at = 17;
+  // Exact immutable scope used to authorize registry-local operations.
+  string authorization_scope_key = 18;
+  // Exact scope that owns shared infrastructure usable by this registry.
+  string owner_scope_key = 19;
 }
 
 message ConsumerCacheStackEntry {
@@ -667,6 +671,8 @@ message Organization {
   // Unix seconds the org was created.
   int64 created_at = 6;
   int64 updated_at = 7;
+  // Exact immutable scope used to authorize organization operations.
+  string authorization_scope_key = 8;
 }
 
 message PlanCreateOrganizationRequest {
@@ -1831,6 +1837,8 @@ message BinaryCache {
   uint64 object_count = 14;
   uint64 placement_count = 15;
   uint64 retention_root_count = 16;
+  // Exact immutable scope used to authorize cache-local operations.
+  string authorization_scope_key = 17;
 }
 
 message BinaryCacheSpec {

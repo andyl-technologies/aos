@@ -1464,6 +1464,7 @@ fn organization_message(org: &crate::db::OrgRecord) -> pb::Organization {
         resource_version: org.resource_version.to_string(),
         created_at: org.created_at,
         updated_at: org.updated_at,
+        authorization_scope_key: org.stable_id.clone(),
     }
 }
 
@@ -10548,6 +10549,8 @@ impl RpcService {
             visibility: record.visibility.clone(),
             resource_version: record.resource_version.to_string(),
             updated_at: record.updated_at,
+            authorization_scope_key: record.scope_key.clone(),
+            owner_scope_key: record.owner_scope_key.clone(),
         })
     }
 
@@ -26810,6 +26813,7 @@ impl RpcService {
             object_count: u64::try_from(usage.object_count).unwrap_or_default(),
             placement_count: u64::try_from(placement_count).unwrap_or_default(),
             retention_root_count: u64::try_from(retention_root_count).unwrap_or_default(),
+            authorization_scope_key: cache.scope_key.clone(),
         })
     }
 

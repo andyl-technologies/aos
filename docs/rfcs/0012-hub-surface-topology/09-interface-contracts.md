@@ -61,6 +61,12 @@ reference.
 An interface may link to another owner's editor, but it does not reimplement
 or proxy that mutation under a second resource path.
 
+Resource responses carry both their immutable `authorization_scope_key` and
+their infrastructure `owner_scope_key` wherever those values can differ.
+Clients use the former for resource-local IAM and signing-key calls and the
+latter when selecting shared bindings, endpoints, gateways, or signing keys.
+Neither value is derived from a mutable display slug.
+
 Retained settings features make the same namespace/name cutover; they are not
 left as undocumented Web-only operations:
 
