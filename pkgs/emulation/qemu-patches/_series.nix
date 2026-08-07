@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "b99c97513c0262fa58f285fb88e9f82113c7f930e8873fa6d899ca6bfd5b5b86";
+  patchBranchBundleSha256 = "dbdfc5fa516581d6de1a3d1fd7279e4b97789edb5b20bd76cbf7d7aaf8b2c237";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "791d642095d321c05e7f4fbe0930d54a4fbf7acc";
+  patchBranchHeadCommit = "d1609ddc65a8e5917b006267f8c3e090757b8bcb";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -466,6 +466,15 @@ let
       class = "F";
       enforces = "STOR-RESULT,IO-8,PATCH-26";
       capability = "closed block result ABI translated to exact guest-visible Linux errno values";
+    }
+    {
+      file = "0061-crucible-block-discard.patch";
+      branchCommit = "d1609ddc65a8e5917b006267f8c3e090757b8bcb";
+      branchTree = "947e95bcd597e1011b32bd98f2fba306aec99d89";
+      catalogName = "crucible-block-discard";
+      class = "F";
+      enforces = "STOR-DISCARD,DET-16,PATCH-26";
+      capability = "payload-free block discard transported through the deterministic shmem completion path";
     }
   ];
   catalogOnlyCapabilities = [

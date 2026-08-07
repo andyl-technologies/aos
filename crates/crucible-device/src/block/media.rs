@@ -62,6 +62,7 @@ impl ResolvedBlockMediaRule {
             BlockOp::Write => 1,
             BlockOp::Flush => 2,
             BlockOp::GetLength => 3,
+            BlockOp::Discard => 4,
         };
         if self.length == 0
             || end > device_length
@@ -85,7 +86,7 @@ impl ResolvedBlockMediaRule {
             return false;
         }
         match request.op {
-            BlockOp::Read | BlockOp::Write => {
+            BlockOp::Read | BlockOp::Write | BlockOp::Discard => {
                 let Some(request_end) = request.offset.checked_add(u64::from(request.count)) else {
                     return false;
                 };
@@ -241,6 +242,7 @@ fn outcome(state: BlockMediaRangeState, operation: BlockOp) -> Option<BlockError
         }
         (BlockMediaRangeState::Poisoned, BlockOp::Read) => Some(BlockErrorCode::IntegrityError),
         (BlockMediaRangeState::ReadOnly, BlockOp::Write) => Some(BlockErrorCode::ReadOnly),
+        (BlockMediaRangeState::ReadOnly, BlockOp::Discard) => Some(BlockErrorCode::ReadOnly),
         (BlockMediaRangeState::Poisoned | BlockMediaRangeState::ReadOnly, _) => None,
     }
 }
@@ -281,6 +283,7 @@ const fn operation_tag(operation: BlockOp) -> u8 {
         BlockOp::Write => 2,
         BlockOp::Flush => 3,
         BlockOp::GetLength => 4,
+        BlockOp::Discard => 5,
     }
 }
 

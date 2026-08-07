@@ -16,7 +16,7 @@ use crucible::model::{
     StoragePolicyCacheEviction, StoragePolicyDirtyEviction, StoragePolicyDuplicateCompletion,
     StoragePolicyPersistenceOrdering, StoragePolicyTypedResult, StorageReadMutation,
     StorageSelection, StorageVolatileCacheLossKind, StorageVolatileCacheLossSelector,
-    StorageWriteDispositionKind, World, WorldCompletionDurability,
+    StorageWriteDispositionKind, World, WorldCompletionDurability, WorldDiscardSemantics,
 };
 
 /// Scenario-owned entropy used only for keyed storage adapter choices.
@@ -77,6 +77,12 @@ pub fn block_durability_config(
         length_bytes: persistence.length_bytes,
         atomic_write_bytes: persistence.atomic_write_bytes,
         maximum_request_bytes: persistence.maximum_request_bytes,
+        discard_granularity_bytes: persistence.discard_granularity_bytes,
+        discard_semantics: match persistence.discard_semantics {
+            WorldDiscardSemantics::DeterministicZero => BlockDiscardSemantics::DeterministicZero,
+            WorldDiscardSemantics::ReadsOldData => BlockDiscardSemantics::ReadsOldData,
+            WorldDiscardSemantics::UndefinedRecorded => BlockDiscardSemantics::UndefinedKeyed,
+        },
         volatile_cache_bytes: persistence.volatile_cache_bytes,
         cache_entries: persistence.cache_entries,
         controller_buffer_bytes: persistence.controller_buffer_bytes,
@@ -118,9 +124,12 @@ pub fn block_request_fault_opportunity(
         BlockOp::Write => crucible::model::FaultOperation::StorageWrite,
         BlockOp::Flush => crucible::model::FaultOperation::StorageFlush,
         BlockOp::GetLength => crucible::model::FaultOperation::StorageGetLength,
+        BlockOp::Discard => crucible::model::FaultOperation::StorageDiscard,
     };
     let (start_byte, length_bytes) = match request.op {
-        BlockOp::Read | BlockOp::Write => (Some(request.offset), Some(u64::from(request.count))),
+        BlockOp::Read | BlockOp::Write | BlockOp::Discard => {
+            (Some(request.offset), Some(u64::from(request.count)))
+        }
         BlockOp::Flush | BlockOp::GetLength => (None, None),
     };
     FaultOpportunity::new(
@@ -139,8 +148,8 @@ pub fn block_request_fault_opportunity(
     )
 }
 use crucible_device::block::{
-    BlockCompletionDurability, BlockDuplicatePolicy, BlockDurabilityConfig, BlockFaultAvailability,
-    BlockFaultByteSpan, BlockFaultCacheEviction, BlockFaultDirtyEviction,
+    BlockCompletionDurability, BlockDiscardSemantics, BlockDuplicatePolicy, BlockDurabilityConfig,
+    BlockFaultAvailability, BlockFaultByteSpan, BlockFaultCacheEviction, BlockFaultDirtyEviction,
     BlockFaultFlushDisposition, BlockFaultReadTransform, BlockFaultResult, BlockFaultState,
     BlockFaultWriteDisposition, BlockMediaRangeState, BlockOp, BlockPersistenceOrdering,
     BlockRequest, BlockResponse, ResolvedBlockCachePolicy, ResolvedBlockFaultDirective,
@@ -768,6 +777,7 @@ fn apply_effect(
                     BlockOp::Write,
                     BlockOp::Flush,
                     BlockOp::GetLength,
+                    BlockOp::Discard,
                 ]
                 .into_iter()
                 .filter(|operation| operation_selected(operations.as_slice(), *operation))
@@ -869,6 +879,7 @@ fn block_fault_operation(operation: BlockOp) -> FaultOperation {
         BlockOp::Write => FaultOperation::StorageWrite,
         BlockOp::Flush => FaultOperation::StorageFlush,
         BlockOp::GetLength => FaultOperation::StorageGetLength,
+        BlockOp::Discard => FaultOperation::StorageDiscard,
     }
 }
 
@@ -883,7 +894,9 @@ fn validate_request_opportunity(
         .map(|wire| ContentHash::from_bytes(&wire))
         .map_err(|_error| StorageFaultResolutionError::OpportunityMismatch)?;
     let expected_range = match request.op {
-        BlockOp::Read | BlockOp::Write => (Some(request.offset), Some(u64::from(request.count))),
+        BlockOp::Read | BlockOp::Write | BlockOp::Discard => {
+            (Some(request.offset), Some(u64::from(request.count)))
+        }
         BlockOp::Flush | BlockOp::GetLength => (None, None),
     };
     let payload_matches = matches!(
@@ -1048,6 +1061,7 @@ fn keyed_word(
         BlockOp::Write => 2,
         BlockOp::Flush => 3,
         BlockOp::GetLength => 4,
+        BlockOp::Discard => 5,
     }]);
     hasher.update(blake3::hash(&request.data).as_bytes());
     hasher.update(&counter.to_be_bytes());
@@ -1379,7 +1393,7 @@ fn selected_fragment_index(
 
 fn request_intersects(request: &BlockRequest, range_start: u64, range_length: u64) -> bool {
     match request.op {
-        BlockOp::Read | BlockOp::Write => {
+        BlockOp::Read | BlockOp::Write | BlockOp::Discard => {
             let Some(request_end) = request.offset.checked_add(u64::from(request.count)) else {
                 return false;
             };

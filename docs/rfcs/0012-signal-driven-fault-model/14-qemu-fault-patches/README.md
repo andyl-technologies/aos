@@ -30,15 +30,18 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0058-crucible-accelerator-fault-device`](12-accelerator-device.md) | Production QEMU co-sim accelerator device and fault hooks | Feature plus determinism-critical service hooks |
 | [`0059-crucible-fault-vmstate`](13-vmstate-and-final-gates.md) | VMState for all fault state, terminal capability/evidence, aggregate gates | Determinism-critical |
 | [`0060-crucible-block-typed-errors`](14-block-typed-errors.md) | Closed block result transport and exact guest-visible errno translation | Feature |
+| [`0061-crucible-block-discard`](15-block-discard.md) | Payload-free deterministic block discard transport | Feature |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
 and names; all references and `_series.nix` update atomically.
 
-Patch `0060` follows the reserved node-fault band because it evolves the
-pre-existing block co-simulation ABI rather than the generic node command ABI.
-It may be implemented before `0050` through `0059`, but remains ordered after
-them in the final linear series.
+Patches `0060` and `0061` follow the reserved node-fault band because they evolve
+the pre-existing block co-simulation ABI rather than the generic node command
+ABI. They may be implemented before `0050` through `0059`, but remain ordered
+after them in the final linear series. Patch `0061` is a new terminal patch; it
+does not rewrite the historical `0015` commit or invalidate the provenance of
+the intervening patch stack.
 
 ## 14.2 Process and license boundary
 

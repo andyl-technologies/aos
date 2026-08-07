@@ -21,7 +21,7 @@ use crate::{
 };
 
 const BLOCK_IO_SLOT_U32: u32 = SLOT_BLK_IO as u32;
-const BLOCK_WIRE_VERSION: u8 = 2;
+const BLOCK_WIRE_VERSION: u8 = 3;
 const BLOCK_REQUEST_HEADER_LEN: usize = 20;
 const BLOCK_RESPONSE_HEADER_LEN: usize = 12;
 
@@ -438,6 +438,8 @@ pub enum BlockOperation {
     Flush,
     /// Query the device length.
     GetLength,
+    /// Discard a payload-free byte range.
+    Discard,
 }
 
 impl BlockOperation {
@@ -447,6 +449,7 @@ impl BlockOperation {
             Self::Write => 1,
             Self::Flush => 2,
             Self::GetLength => 3,
+            Self::Discard => 4,
         }
     }
 
@@ -456,6 +459,7 @@ impl BlockOperation {
             1 => Ok(Self::Write),
             2 => Ok(Self::Flush),
             3 => Ok(Self::GetLength),
+            4 => Ok(Self::Discard),
             other => Err(BlockWireError::UnknownOperation { operation: other }),
         }
     }
@@ -517,6 +521,17 @@ impl BlockRequest {
             operation: BlockOperation::GetLength,
             offset: 0,
             count: 0,
+            payload: Vec::new(),
+        }
+    }
+
+    /// Builds a payload-free discard request.
+    #[must_use]
+    pub const fn discard(offset: u64, count: u32) -> Self {
+        Self {
+            operation: BlockOperation::Discard,
+            offset,
+            count,
             payload: Vec::new(),
         }
     }
@@ -1374,7 +1389,7 @@ mod tests {
         assert_eq!(
             ring.entries[0].payload(),
             Ok(&[
-                1, 2, 0, 0, // type/version/reserved
+                1, 3, 0, 0, // type/version/reserved
                 0, 0, 0, 0, // request_id
                 0, 0x10, 0, 0, 0, 0, 0, 0, // offset
                 4, 0, 0, 0, // count
@@ -1715,7 +1730,7 @@ mod tests {
         assert_eq!(
             frame.payload(),
             Ok(&[
-                0, 2, 0, 0, // status/version/reserved
+                0, 3, 0, 0, // status/version/reserved
                 9, 0, 0, 0, // request_id
                 5, 0, 0, 0, // count
                 b'b', b'l', b'o', b'c', b'k',

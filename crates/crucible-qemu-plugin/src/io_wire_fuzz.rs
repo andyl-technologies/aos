@@ -14,7 +14,7 @@ use crate::{
 pub const NINEP_FUZZ_MSIZE: u32 = 15;
 
 const BLOCK_REQUEST_UNKNOWN_OP: [u8; 20] = [
-    9, 2, 0, 0, // type/version/reserved
+    9, 3, 0, 0, // type/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     0, 0, 0, 0, // count
@@ -26,37 +26,44 @@ const BLOCK_REQUEST_BAD_VERSION: [u8; 20] = [
     1, 0, 0, 0, // count
 ];
 const BLOCK_REQUEST_NONZERO_RESERVED: [u8; 20] = [
-    0, 2, 1, 0, // type/version/reserved
+    0, 3, 1, 0, // type/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     1, 0, 0, 0, // count
 ];
 const BLOCK_REQUEST_WRITE_COUNT_EXCEEDS: [u8; 22] = [
-    1, 2, 0, 0, // type/version/reserved
+    1, 3, 0, 0, // type/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     4, 0, 0, 0, // count
     b'a', b'b',
 ];
 const BLOCK_REQUEST_READ_TRAILING_PAYLOAD: [u8; 21] = [
-    0, 2, 0, 0, // type/version/reserved
+    0, 3, 0, 0, // type/version/reserved
+    1, 0, 0, 0, // request_id
+    0, 0, 0, 0, 0, 0, 0, 0, // offset
+    1, 0, 0, 0, // count
+    b'x',
+];
+const BLOCK_REQUEST_DISCARD_TRAILING_PAYLOAD: [u8; 21] = [
+    4, 3, 0, 0, // type/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     1, 0, 0, 0, // count
     b'x',
 ];
 const BLOCK_RESPONSE_UNKNOWN_STATUS: [u8; 12] = [
-    2, 2, 0, 0, // status/version/reserved
+    2, 3, 0, 0, // status/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, // count
 ];
 const BLOCK_RESPONSE_COUNT_EXCEEDS: [u8; 12] = [
-    0, 2, 0, 0, // status/version/reserved
+    0, 3, 0, 0, // status/version/reserved
     1, 0, 0, 0, // request_id
     4, 0, 0, 0, // count
 ];
 const BLOCK_RESPONSE_TRAILING_PAYLOAD: [u8; 13] = [
-    0, 2, 0, 0, // status/version/reserved
+    0, 3, 0, 0, // status/version/reserved
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, // count
     b'!',
@@ -105,7 +112,7 @@ pub struct IoWireFuzzOutcome {
 }
 
 /// Seeded regression corpus for malformed and adversarial block/9p wire frames.
-pub const IO_WIRE_FUZZ_REGRESSION_CORPUS: [IoWireFuzzCase; 14] = [
+pub const IO_WIRE_FUZZ_REGRESSION_CORPUS: [IoWireFuzzCase; 15] = [
     IoWireFuzzCase {
         name: "empty",
         channel: IoWireFuzzChannel::BlockRequest,
@@ -135,6 +142,11 @@ pub const IO_WIRE_FUZZ_REGRESSION_CORPUS: [IoWireFuzzCase; 14] = [
         name: "block-request-read-trailing-payload",
         channel: IoWireFuzzChannel::BlockRequest,
         frame: &BLOCK_REQUEST_READ_TRAILING_PAYLOAD,
+    },
+    IoWireFuzzCase {
+        name: "block-request-discard-trailing-payload",
+        channel: IoWireFuzzChannel::BlockRequest,
+        frame: &BLOCK_REQUEST_DISCARD_TRAILING_PAYLOAD,
     },
     IoWireFuzzCase {
         name: "block-response-unknown-status",
@@ -295,9 +307,9 @@ mod tests {
     fn structure_aware_malformed_wire_frames_never_panic() {
         for operation in [0, 1, 2, 3, 4, u8::MAX] {
             for payload_len in [0, 1, 2, 4, 8] {
-                let frame = structured_block_request(operation, 2, 0, 7, 4096, 3, payload_len);
+                let frame = structured_block_request(operation, 3, 0, 7, 4096, 3, payload_len);
                 let outcome = assert_clean_reject_or_deterministic_decode(&frame);
-                if operation > 3 {
+                if operation > 4 {
                     assert!(outcome.block_request.is_err());
                 }
             }
@@ -305,7 +317,7 @@ mod tests {
 
         for status in [0, 1, 2, u8::MAX] {
             for payload_len in [0, 1, 2, 4, 8] {
-                let frame = structured_block_response(status, 2, 0, 7, 3, payload_len);
+                let frame = structured_block_response(status, 3, 0, 7, 3, payload_len);
                 let outcome = assert_clean_reject_or_deterministic_decode(&frame);
                 if status > 1 {
                     assert!(outcome.block_response.is_err());
@@ -378,9 +390,10 @@ mod tests {
 
     fn assert_io_wire_fuzz_corpus() {
         let regression_corpus = IO_WIRE_FUZZ_REGRESSION_CORPUS;
-        assert!(regression_corpus.len() >= 14);
+        assert!(regression_corpus.len() >= 15);
         assert!(corpus_contains("block-request-unknown-operation"));
         assert!(corpus_contains("block-request-write-count-exceeds-payload"));
+        assert!(corpus_contains("block-request-discard-trailing-payload"));
         assert!(corpus_contains("block-response-unknown-status"));
         assert!(corpus_contains("block-response-trailing-payload"));
         assert!(corpus_contains("9p-declared-size-too-small"));
@@ -443,6 +456,7 @@ mod tests {
             (2, write),
             (3, BlockRequest::flush()),
             (4, BlockRequest::get_length()),
+            (5, BlockRequest::discard(8192, 4096)),
         ]
     }
 

@@ -475,6 +475,21 @@ fn block_request(
             }
             Ok(BlockRequest::flush())
         }
+        3 => {
+            if data.is_some() {
+                return Err(LiveDeviceCallbackError::UnexpectedPayloadPointer {
+                    family: "block discard",
+                    len,
+                });
+            }
+            let count = u32::try_from(len).map_err(|_error| {
+                LiveDeviceCallbackError::RequestLengthOverflow {
+                    family: "block discard",
+                    len,
+                }
+            })?;
+            Ok(BlockRequest::discard(offset, count))
+        }
         operation => Err(LiveDeviceCallbackError::UnknownBlockOperation { operation }),
     }
 }

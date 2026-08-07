@@ -15,7 +15,7 @@ The patch applies only to requests using the explicitly selected
 `crucible-shmem` block driver with registered Crucible block callbacks. It does
 not alter any upstream block driver or any `crucible-shmem` request before the
 plugin registers the callback. The capability key is
-`storage.block.typed-result.v1`; block wire ABI version 2 is mandatory and
+`storage.block.typed-result.v1`; block wire ABI version 3 is mandatory and
 version 1 is rejected rather than translated through a compatibility path.
 
 ## Callback encoding

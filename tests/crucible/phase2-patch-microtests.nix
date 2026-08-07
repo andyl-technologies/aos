@@ -339,6 +339,13 @@
         patchName = "0060-crucible-block-typed-errors.patch";
       };
     }
+    {
+      patch = "0061-crucible-block-discard.patch";
+      check = import ./phase1-qemu-block-shmem.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0061-crucible-block-discard.patch";
+      };
+    }
   ];
 
   microtestPatchNames =
