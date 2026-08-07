@@ -761,6 +761,40 @@ pub(super) fn cli_determinism_ergonomics_resolves_seed_by_flag_env_or_generated(
     );
     assert!(generated_plan.proves_t_cli_4());
 
+    let inherited_fork = Cli::parse_from(["crucible", "fork", "source.crucible-savepoint"]);
+    assert_eq!(
+        seed_resolution_mode(&inherited_fork.command),
+        SeedResolutionMode::ArtifactOrSavepointOwned
+    );
+    let draws_before_fork = entropy.draws;
+    assert!(
+        plan_determinism_ergonomics(
+            &inherited_fork,
+            &FakeSeedEnvironment {
+                seed: Some(String::from("123")),
+            },
+            &mut entropy,
+        )?
+        .is_none()
+    );
+    assert_eq!(entropy.draws, draws_before_fork);
+
+    let reseeded_fork = Cli::parse_from([
+        "crucible",
+        "--seed",
+        "123",
+        "fork",
+        "source.crucible-savepoint",
+    ]);
+    let reseeded_fork_plan = plan_determinism_ergonomics(
+        &reseeded_fork,
+        &FakeSeedEnvironment::default(),
+        &mut entropy,
+    )?
+    .expect("explicitly reseeded fork should resolve its seed");
+    assert_eq!(reseeded_fork_plan.seed.value, 123);
+    assert_eq!(reseeded_fork_plan.seed.source, SeedSource::Flag);
+
     let mut recorder = RecordingDeterminismErgonomicsRecorder::default();
     execute_determinism_ergonomics_plan(&generated_plan, &mut recorder)?;
     assert_eq!(recorder.seeds, vec![generated_plan.seed.clone()]);

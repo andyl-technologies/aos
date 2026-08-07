@@ -68,6 +68,23 @@ impl QuantumLoop for FailingLoop {
     }
 }
 
+pub(super) struct RejectShutdownLoop;
+
+impl QuantumLoop for RejectShutdownLoop {
+    fn drive_quantum(
+        &mut self,
+        _request: QuantumRequest,
+    ) -> Result<QuantumOutcome, SchedulerError> {
+        panic!("rejected-shutdown gate keeps its session paused")
+    }
+
+    fn shutdown(&mut self) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("synthetic unconsumed branch choice"),
+        })
+    }
+}
+
 pub(super) struct RuntimeOnlyReplayLoop {
     frontier: u64,
     step: u64,

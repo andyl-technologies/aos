@@ -85,6 +85,35 @@ async fn create_list_destroy_session_maps_to_start_stop_and_live_mirror() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn destroy_session_does_not_wedge_when_shutdown_is_rejected() {
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-rejected-shutdown-test",
+        vec![catalog_entry()],
+        |_scenario: &ScenarioDef, _seed| RejectShutdownLoop,
+    );
+    let created = control_plane
+        .create_session(CreateSessionRequest::scenario_ref(
+            "api-lifecycle-scenario",
+            Seed::from_u64(101),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("create session should start actor: {error}"));
+
+    let error = control_plane
+        .destroy_session(DestroySessionRequest::new(created.session))
+        .await
+        .expect_err("rejected shutdown must return instead of wedging destroy");
+
+    assert!(matches!(error, LifecycleApiError::ActorFailed { .. }));
+    assert!(
+        error
+            .to_string()
+            .contains("synthetic unconsumed branch choice")
+    );
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn debugger_access_is_session_owned_and_generation_guarded() {
     let mut control_plane = lifecycle_control_plane();
     let created = control_plane

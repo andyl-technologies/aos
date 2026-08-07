@@ -1197,6 +1197,7 @@ where
         run_plan,
         InteractiveCommandDriver::Preparsed(interactive_commands),
         false,
+        false,
     )
     .await
 }

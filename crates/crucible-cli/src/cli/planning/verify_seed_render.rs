@@ -450,7 +450,11 @@ pub(crate) fn plan_determinism_ergonomics(
     entropy: &mut impl SeedEntropySource,
 ) -> Result<Option<DeterminismErgonomicsPlan>, CliError> {
     validate_canonical_trace_format(cli)?;
-    if !subcommand_uses_seed_resolution(&cli.command) {
+    let explicit_fork_seed = matches!(cli.command, Commands::Fork(_)) && cli.seed.is_some();
+    if matches!(cli.command, Commands::Fork(_)) && !explicit_fork_seed {
+        return Ok(None);
+    }
+    if !explicit_fork_seed && !subcommand_uses_seed_resolution(&cli.command) {
         return Ok(None);
     }
     let seed = resolve_seed(cli, environment, entropy)?;
@@ -540,10 +544,11 @@ pub(crate) fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
         Commands::Run(_)
         | Commands::Verify(_)
         | Commands::Save(_)
-        | Commands::Fork(_)
         | Commands::Search(_)
         | Commands::Fuzz(_) => SeedResolutionMode::FreshRunIdentity,
-        Commands::Resume(_) | Commands::Replay(_) => SeedResolutionMode::ArtifactOrSavepointOwned,
+        Commands::Resume(_) | Commands::Fork(_) | Commands::Replay(_) => {
+            SeedResolutionMode::ArtifactOrSavepointOwned
+        }
         Commands::Selftest(_)
         | Commands::Triage(_)
         | Commands::Debug(_)

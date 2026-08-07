@@ -1512,11 +1512,32 @@ where
                 session_id: request.session.id,
             },
         )?;
-        if runtime.sender.send(actor_shutdown_command()).await.is_err() {
+        let (reply, receiver) = CommandReply::channel();
+        let shutdown = SessionCommand::Acknowledge {
+            command: Box::new(SessionCommand::Stop),
+            reply,
+        };
+        if runtime.sender.send(shutdown).await.is_err() {
             join_actor(runtime.actor_task).await?;
             return Err(LifecycleApiError::CommandChannelClosed {
                 session_id: request.session.id,
             });
+        }
+        match receiver.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                runtime.actor_task.abort();
+                let _ = runtime.actor_task.await;
+                return Err(LifecycleApiError::ActorFailed {
+                    message: format!("session shutdown was rejected: {error}"),
+                });
+            }
+            Err(_) => {
+                join_actor(runtime.actor_task).await?;
+                return Err(LifecycleApiError::CommandChannelClosed {
+                    session_id: request.session.id,
+                });
+            }
         }
         join_actor(runtime.actor_task).await?;
         Ok(DestroySessionResponse {

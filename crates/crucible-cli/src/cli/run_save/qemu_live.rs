@@ -1033,13 +1033,30 @@ pub(crate) fn run_live_qemu_artifact_replay(
                     &resume_plan,
                     evidence,
                     ResumeInteractiveCommandDriver::Preparsed(&[]),
+                    replay_has_exact_branch_choices(
+                        &contract.fault_choice_indices,
+                        &contract.network_choice_indices,
+                    ),
                 ),
             )?
             .run
     } else {
-        runtime.block_on(run_control_client_workflow_async(&client, &run_plan, &[]))?
+        runtime.block_on(run_control_client_workflow_with_interactive_driver(
+            &client,
+            &run_plan,
+            InteractiveCommandDriver::Preparsed(&[]),
+            false,
+            replay_has_exact_branch_choices(
+                &contract.fault_choice_indices,
+                &contract.network_choice_indices,
+            ),
+        ))?
     };
     Ok((run_plan, report))
+}
+
+fn replay_has_exact_branch_choices(fault_indices: &[u64], network_indices: &[u64]) -> bool {
+    !fault_indices.is_empty() || !network_indices.is_empty()
 }
 
 fn replay_branch_evidence(
@@ -1263,6 +1280,14 @@ pub(crate) fn append_qemu_control_plane_execution_proof(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_validates_fault_only_and_network_only_choice_streams() {
+        assert!(!replay_has_exact_branch_choices(&[], &[]));
+        assert!(replay_has_exact_branch_choices(&[3], &[]));
+        assert!(replay_has_exact_branch_choices(&[], &[5]));
+        assert!(replay_has_exact_branch_choices(&[3], &[5]));
+    }
 
     #[test]
     fn fork_replay_reconstructs_resumable_branch_evidence() -> Result<(), Box<dyn Error>> {

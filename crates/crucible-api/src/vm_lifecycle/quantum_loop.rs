@@ -431,7 +431,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         let pending = self.inner.loop_impl().pending_branch_fault_choice_count();
         let pending_error = (pending != 0).then(|| SchedulerError::BoundaryViolation {
             message: format!(
-                "production lifecycle stopped with {pending} unconsumed branch fault choices"
+                "production lifecycle stopped with {pending} unconsumed branch choices"
             ),
         });
         let gateway_shutdown = self.debug_gateway.take().map(|gateway| {

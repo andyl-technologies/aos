@@ -945,6 +945,15 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
         plan.accepted_interactive_commands
             .contains(&SessionCommandKind::Continue)
     );
+
+    let encoded = parse_fork_decision_override(
+        "live-world-network/link_endpoint_a_len%3D4%0Alink_endpoint_a%3Ddb-1%0Alink_endpoint_b_len%3D4%0Alink_endpoint_b%3Ddb-2/a-to-b/42/7=loss-fire",
+    )?;
+    assert_eq!(
+        encoded.decision,
+        "live-world-network/link_endpoint_a_len=4\nlink_endpoint_a=db-1\nlink_endpoint_b_len=4\nlink_endpoint_b=db-2/a-to-b/42/7"
+    );
+    assert_eq!(encoded.value, "loss-fire");
     let ResumeSavepointRef::Handle { handle, .. } = &plan.savepoint else {
         panic!("expected decoded handle");
     };
@@ -1914,9 +1923,9 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
         String::from("fork"),
         handle_path.display().to_string(),
         String::from("--override"),
-        String::from("node-a.boot=alternate"),
+        String::from("live-world-network/link-a/a-to-b/frame-1/0=loss-fire"),
         String::from("--override"),
-        String::from("scheduler.step=5"),
+        String::from("live-world-network/link-a/a-to-b/frame-2/1=duplicate-pass"),
         String::from("--until"),
         String::from("virtual-time"),
         String::from("--max-virtual-time"),
@@ -1938,12 +1947,12 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
         plan.decision_overrides,
         vec![
             ForkDecisionOverride {
-                decision: String::from("node-a.boot"),
-                value: String::from("alternate"),
+                decision: String::from("live-world-network/link-a/a-to-b/frame-1/0"),
+                value: String::from("loss-fire"),
             },
             ForkDecisionOverride {
-                decision: String::from("scheduler.step"),
-                value: String::from("5"),
+                decision: String::from("live-world-network/link-a/a-to-b/frame-2/1"),
+                value: String::from("duplicate-pass"),
             },
         ]
     );
@@ -2010,7 +2019,14 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
     );
     assert_eq!(cli_parse_error_exit_code(&error), 64);
 
-    for malformed in ["missing-equals", "=value", "decision=", "a=b=c", "a\nb=c"] {
+    for malformed in [
+        "missing-equals",
+        "=value",
+        "decision=",
+        "a=b=c",
+        "a\nb=c",
+        "live-world-network/link%0Gbad/a-to-b/1/0=loss-fire",
+    ] {
         let args = ForkArgs {
             savepoint: Some(reference.clone()),
             overrides: vec![String::from(malformed)],
@@ -2023,6 +2039,49 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
         assert!(matches!(error, CliError::Usage(_)));
         assert_eq!(error.exit_code(), 64);
     }
+
+    let unresolvable = ForkArgs {
+        savepoint: Some(reference.clone()),
+        overrides: vec![String::from("definitely-not-recorded=bogus")],
+        ..ForkArgs::default()
+    };
+    let error = match plan_fork_invocation_for_test(&unresolvable, None) {
+        Ok(_) => panic!("unresolvable fork override must fail closed"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, CliError::Artifact(_)));
+    assert_eq!(error.exit_code(), 5);
+    assert!(error.to_string().contains("unresolvable"));
+
+    let unsupported_choice = ForkArgs {
+        savepoint: Some(reference.clone()),
+        overrides: vec![String::from(
+            "live-world-network/link-a/a-to-b/frame-1/0=jitter-fire",
+        )],
+        ..ForkArgs::default()
+    };
+    let error = match plan_fork_invocation_for_test(&unsupported_choice, None) {
+        Ok(_) => panic!("unsupported fork choice must fail closed"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, CliError::Artifact(_)));
+    assert_eq!(error.exit_code(), 5);
+
+    let duplicate_point = ForkArgs {
+        savepoint: Some(reference.clone()),
+        overrides: vec![
+            String::from("live-world-network/link-a/a-to-b/frame-1/0=loss-fire"),
+            String::from("live-world-network/link-a/a-to-b/frame-1/0=loss-pass"),
+        ],
+        ..ForkArgs::default()
+    };
+    let error = match plan_fork_invocation_for_test(&duplicate_point, None) {
+        Ok(_) => panic!("duplicate fork override point must fail closed"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, CliError::Artifact(_)));
+    assert_eq!(error.exit_code(), 5);
+    assert!(error.to_string().contains("more than once"));
 
     let seed_conflict = Cli::parse_from([
         "crucible",
@@ -2465,178 +2524,26 @@ pub(super) fn cli_fork_workflow_executes_local_double_handle() -> Result<(), Box
         String::from("fork"),
         handle_path.display().to_string(),
         String::from("--override"),
-        String::from("decision=value"),
+        String::from("live-world-network/link-a/a-to-b/frame-1/0=loss-fire"),
     ]);
-    let expected_override_branch = crucible::try_step(
-        &configuration,
-        crucible::Decision::Override(OverrideDecision {
-            point: SchedulingPoint {
-                key: String::from("decision"),
-            },
-            choice: ChoiceTag {
-                name: String::from("value"),
-            },
-        }),
-    )?;
-    let expected_override_branch_ref = format_content_hash_ref(expected_override_branch.id());
     let Commands::Fork(args) = &override_cli.command else {
         panic!("expected fork command");
     };
     let override_plan = plan_fork_invocation(args, None, &override_cli.artifact_dir, &store_root)?;
     let backend_plan =
         plan_backend_selection(&override_cli)?.expect("fork should route to backend");
-    let override_outcome = run_local_double_fork_workflow(
+    let error = match run_local_double_fork_workflow(
         &plan_cli_invocation(&override_cli),
         &backend_plan,
         None,
         &override_plan,
-    )?;
-    assert_eq!(override_outcome.status, BackendCommandStatus::Passed);
-    assert!(override_outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-session\t")
-            && line.contains(&format!("branch={expected_override_branch_ref}"))
-            && line.contains(&format!("configuration={expected_override_branch_ref}"))
-    }));
-    assert!(override_outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-artifact\t") && line.contains("model_artifact=blake3:")
-    }));
-    assert_fork_artifact_replays(&override_cli, &override_outcome, inherited_seed)?;
-
-    let override_virtual_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--quiet"),
-        String::from("--artifact-dir"),
-        artifact_dir.display().to_string(),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("fork"),
-        handle_path.display().to_string(),
-        String::from("--override"),
-        String::from("decision=value"),
-        String::from("--until"),
-        String::from("virtual-time"),
-        String::from("--max-virtual-time"),
-        String::from("2ticks"),
-        String::from("--label"),
-        String::from("child-override-virtual"),
-    ]);
-    let Commands::Fork(args) = &override_virtual_cli.command else {
-        panic!("expected fork command");
+    ) {
+        Ok(_) => panic!("test double must not certify exact override consumption"),
+        Err(error) => error,
     };
-    let override_virtual_plan =
-        plan_fork_invocation(args, None, &override_virtual_cli.artifact_dir, &store_root)?;
-    let backend_plan =
-        plan_backend_selection(&override_virtual_cli)?.expect("fork should route to backend");
-    let override_virtual_outcome = run_local_double_fork_workflow(
-        &plan_cli_invocation(&override_virtual_cli),
-        &backend_plan,
-        None,
-        &override_virtual_plan,
-    )?;
-    assert_eq!(
-        override_virtual_outcome.status,
-        BackendCommandStatus::Passed
-    );
-    assert!(override_virtual_outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-session\t")
-            && line.contains(&format!("branch={expected_override_branch_ref}"))
-            && line.contains("final=virtual-time")
-            && line.contains("frontier_ticks=2")
-            && line.contains("quanta=1")
-    }));
-
-    let override_stopped_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--quiet"),
-        String::from("--artifact-dir"),
-        artifact_dir.display().to_string(),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("fork"),
-        handle_path.display().to_string(),
-        String::from("--override"),
-        String::from("decision=value"),
-        String::from("--until"),
-        String::from("stopped"),
-        String::from("--label"),
-        String::from("child-override-stopped"),
-    ]);
-    let Commands::Fork(args) = &override_stopped_cli.command else {
-        panic!("expected fork command");
-    };
-    let override_stopped_plan =
-        plan_fork_invocation(args, None, &override_stopped_cli.artifact_dir, &store_root)?;
-    let backend_plan =
-        plan_backend_selection(&override_stopped_cli)?.expect("fork should route to backend");
-    let override_stopped_outcome = run_local_double_fork_workflow(
-        &plan_cli_invocation(&override_stopped_cli),
-        &backend_plan,
-        None,
-        &override_stopped_plan,
-    )?;
-    assert_eq!(
-        override_stopped_outcome.status,
-        BackendCommandStatus::Passed
-    );
-    assert!(override_stopped_outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-session\t")
-            && line.contains(&format!("branch={expected_override_branch_ref}"))
-            && line.contains("final=stopped")
-            && line.contains("frontier_ticks=1")
-            && line.contains("quanta=0")
-    }));
-
-    let override_interactive_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--quiet"),
-        String::from("--artifact-dir"),
-        artifact_dir.display().to_string(),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("fork"),
-        handle_path.display().to_string(),
-        String::from("--override"),
-        String::from("decision=value"),
-        String::from("--interactive"),
-        String::from("--watch"),
-        String::from("--label"),
-        String::from("child-override-interactive"),
-    ]);
-    let Commands::Fork(args) = &override_interactive_cli.command else {
-        panic!("expected fork command");
-    };
-    let override_interactive_plan = plan_fork_invocation(
-        args,
-        None,
-        &override_interactive_cli.artifact_dir,
-        &store_root,
-    )?;
-    let backend_plan =
-        plan_backend_selection(&override_interactive_cli)?.expect("fork should route to backend");
-    let override_interactive_outcome = run_local_double_fork_workflow_with_interactive_commands(
-        &plan_cli_invocation(&override_interactive_cli),
-        &backend_plan,
-        None,
-        &override_interactive_plan,
-        &[],
-    )?;
-    assert_eq!(
-        override_interactive_outcome.status,
-        BackendCommandStatus::Passed
-    );
-    assert!(override_interactive_outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-session\t")
-            && line.contains(&format!("branch={expected_override_branch_ref}"))
-            && line.contains("final=interactive")
-            && line.contains("frontier_ticks=1")
-            && line.contains("quanta=0")
-    }));
-    assert!(
-        override_interactive_outcome
-            .stdout
-            .iter()
-            .any(|line| { line.starts_with("run-watch\t") && line.contains("frontier_ticks=1") })
-    );
+    assert!(matches!(error, CliError::Artifact(_)));
+    assert_eq!(error.exit_code(), 5);
+    assert!(error.to_string().contains("production QEMU scheduler"));
 
     Ok(())
 }
