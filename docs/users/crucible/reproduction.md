@@ -182,7 +182,9 @@ checkpoint frontier as the runtime boundary and replays to that exact coordinate
 it does not mistake the savepoint for the zero-time baked genesis.
 
 `resume` supports the same `--until`, `--max-virtual-time`, `--interactive`, and
-`--watch` controls as `run`.
+`--watch` controls as `run`. In interactive mode, `query` prints both its
+acceptance line and `interactive-query\tstate=<state>`, including when resume is
+running through the local QEMU control plane or a daemon.
 
 ## Fork
 

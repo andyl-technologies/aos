@@ -1343,6 +1343,9 @@ where
             "interactive-ack\tcommand={}\tstatus=accepted",
             session_command_name(command)
         )?;
+        if command == SessionCommandKind::Query {
+            write_interactive_query_state(writer, boundary.state)?;
+        }
         writer.flush()?;
     }
     Ok(())

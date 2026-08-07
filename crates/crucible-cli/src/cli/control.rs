@@ -1156,19 +1156,29 @@ fn write_interactive_query_result<W: Write>(
     result: Option<&QueryResult>,
 ) -> Result<(), CliError> {
     match result {
-        Some(QueryResult::State(state)) => {
-            writeln!(
-                writer,
-                "interactive-query\tstate={}",
-                format!("{state:?}").to_ascii_lowercase()
-            )?;
-            Ok(())
-        }
+        Some(QueryResult::State(state)) => write_interactive_query_state(writer, state),
         Some(other) => Err(backend_error(format!(
             "interactive state query returned unexpected payload: {other:?}"
         ))),
         None => Err(backend_error("interactive state query returned no payload")),
     }
+}
+
+/// Writes the agent-readable lifecycle state returned by an interactive query.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the output stream cannot accept the line.
+pub(super) fn write_interactive_query_state<W: Write>(
+    writer: &mut W,
+    state: impl std::fmt::Debug,
+) -> Result<(), CliError> {
+    writeln!(
+        writer,
+        "interactive-query\tstate={}",
+        format!("{state:?}").to_ascii_lowercase()
+    )?;
+    Ok(())
 }
 
 fn terminal_snapshot_from_stop_response(
