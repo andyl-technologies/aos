@@ -1353,7 +1353,10 @@ pub(super) fn cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline()
     let findings = temp.path().join("findings");
     let store = temp.path().join("store");
     let reports = temp.path().join("triage-reports");
-    fs::create_dir_all(&findings)?;
+    fs::write(
+        &findings,
+        crucible::FailureFindingsLedger::from_artifacts([]).artifact_bytes(),
+    )?;
     let baseline_cli = Cli::parse_from([
         "crucible",
         "--store",
@@ -1714,13 +1717,36 @@ pub(super) fn cli_triage_rejects_artifact_only_findings_without_engine_evidence(
 
     assert!(matches!(error, CliError::Artifact(_)));
     assert_eq!(error.exit_code(), 5);
-    assert!(
-        error
-            .to_string()
-            .contains("discovery-time signature evidence")
-    );
     assert!(error.to_string().contains("signed findings ledger"));
-    assert!(error.to_string().contains("--findings-out"));
+    assert!(error.to_string().contains("is a directory"));
+}
+
+#[test]
+pub(super) fn cli_triage_distinguishes_empty_malformed_and_missing_ledgers() {
+    let temp = TempDir::new().expect("tempdir must be created");
+    let store = crucible::LocalDagStore::new(temp.path().join("store"));
+    let empty = temp.path().join("empty.crucible-findings");
+    let malformed = temp.path().join("malformed.crucible-findings");
+    let missing = temp.path().join("missing.crucible-findings");
+    fs::write(&empty, []).expect("empty fixture must be written");
+    fs::write(&malformed, b"{\"artifact\":\"unsigned\"}")
+        .expect("malformed fixture must be written");
+
+    for (path, expected) in [
+        (&empty, "is empty"),
+        (&malformed, "unsupported or malformed input"),
+        (&missing, "cannot read triage findings ledger"),
+    ] {
+        let error =
+            load_triage_findings_ledger(&store, &TriageFindingsSource::Path(path.to_path_buf()))
+                .expect_err("non-ledger input must fail");
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected error for {}: {error}",
+            path.display()
+        );
+        assert!(error.to_string().contains(&path.display().to_string()));
+    }
 }
 
 #[test]
