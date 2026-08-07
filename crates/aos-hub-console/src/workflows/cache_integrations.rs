@@ -11,6 +11,7 @@ use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
 use super::cache_integration_preview::CacheIntegrationPreview;
+use super::cache_retention::CacheRetentionWorkflow;
 use super::cache_stack::RegistryCacheStack;
 use super::resources::UnavailableWorkflow;
 
@@ -30,6 +31,16 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             "integrations",
         ) => view! {
             <CacheIntegrations client=client cache_id=format!("{organization}/{cache}")/>
+        }
+        .into_any(),
+        (
+            ConsoleScope::Cache {
+                organization,
+                cache,
+            },
+            "retention",
+        ) => view! {
+            <CacheRetentionWorkflow client=client cache_id=format!("{organization}/{cache}")/>
         }
         .into_any(),
         _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
