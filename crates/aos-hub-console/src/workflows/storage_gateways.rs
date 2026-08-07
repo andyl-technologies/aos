@@ -27,6 +27,10 @@ pub(super) fn StorageGatewayWorkflow(route: ConsoleRoute, client: ApiClient) -> 
             <StorageGateways client=client scope=GatewayScope::Instance creation_only=false/>
         }
         .into_any(),
+        (ConsoleScope::Instance, "gateways-new") => view! {
+            <StorageGateways client=client scope=GatewayScope::Instance creation_only=true/>
+        }
+        .into_any(),
         (ConsoleScope::Organization { slug }, "gateways") => view! {
             <OrganizationStorageGateways client=client organization=slug.clone() creation_only=false/>
         }
@@ -133,11 +137,12 @@ fn StorageGateways(client: ApiClient, scope: GatewayScope, creation_only: bool) 
     });
     let view_client = client.clone();
     let create_scope = scope;
-    let create_href = match &create_scope {
-        GatewayScope::Organization { slug, .. } => {
+    let create_href = match (&create_scope, client.allows("storage_gateway.manage")) {
+        (GatewayScope::Organization { slug, .. }, true) => {
             Some(format!("/-/org/{slug}/storage-gateways/new"))
         }
-        GatewayScope::Instance => None,
+        (GatewayScope::Instance, true) => Some("/-/instance/storage-gateways/new".to_string()),
+        _ => None,
     };
 
     view! {

@@ -51,6 +51,11 @@ Organization resource inventories keep creation separate from browsing:
 `delivery-endpoints/new`, and `storage-gateways/new` open focused reviewed-
 creation workflows below the same organization root. The inventory pages link
 to those routes and do not mix full create forms into the resource list.
+Deployment-wide domain, network-boundary, delivery-endpoint, and
+storage-gateway inventories use the same pattern below `/-/instance`, with a
+`new` route below each collection. A create action is shown only when the live
+scope grants the API permission required by that resource; organization
+creation remains governed by the instance signup policy.
 
 The management console uses the same `aos.hub.v1` Connect API, reviewed
 plan/apply mutations, and IAM checks as the CLI. It exchanges the HttpOnly

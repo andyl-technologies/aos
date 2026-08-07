@@ -45,7 +45,7 @@ impl PageSpec {
         self.key != "new" && !self.key.ends_with("-new")
     }
 
-    /// Returns the permission required to discover this page in navigation.
+    /// Returns the permission required to open this page or discover it in navigation.
     ///
     /// Pages default to the baseline `read` permission. Sensitive audit,
     /// identity-provider, and destructive areas require their narrower live
@@ -56,6 +56,17 @@ impl PageSpec {
             "audit" => "audit.read",
             "danger" | "sso" => "iam.admin",
             "tokens" => "tokens.self",
+            // Organization creation is governed by the instance signup policy,
+            // not by an IAM administration grant. The API evaluates that
+            // policy when the authenticated user submits a plan.
+            "new" => "read",
+            "projects-new" | "registries-new" => "registry.configure",
+            "caches-new" => "registry.configure",
+            "storage-new" => "storage_binding.manage",
+            "domains-new" => "domain.manage",
+            "boundaries-new" => "network_boundary.manage",
+            "endpoints-new" => "delivery_endpoint.manage",
+            "gateways-new" => "storage_gateway.manage",
             _ => "read",
         }
     }
@@ -251,11 +262,19 @@ pub const INSTANCE_PAGES: &[PageSpec] = &[
         "storage-bindings",
     ),
     PageSpec::new("domains", "Domains", "Infrastructure", "domains", "domains"),
+    PageSpec::new("domains-new", "Add domain", "", "domains/new", "domains"),
     PageSpec::new(
         "boundaries",
         "Network boundaries",
         "Infrastructure",
         "network-boundaries",
+        "network-boundaries",
+    ),
+    PageSpec::new(
+        "boundaries-new",
+        "Create network boundary",
+        "",
+        "network-boundaries/new",
         "network-boundaries",
     ),
     PageSpec::new(
@@ -266,10 +285,24 @@ pub const INSTANCE_PAGES: &[PageSpec] = &[
         "delivery-endpoints",
     ),
     PageSpec::new(
+        "endpoints-new",
+        "Create delivery endpoint",
+        "",
+        "delivery-endpoints/new",
+        "delivery-endpoints",
+    ),
+    PageSpec::new(
         "gateways",
         "Storage gateways",
         "Infrastructure",
         "storage-gateways",
+        "storage-gateways",
+    ),
+    PageSpec::new(
+        "gateways-new",
+        "Create storage gateway",
+        "",
+        "storage-gateways/new",
         "storage-gateways",
     ),
     PageSpec::new(
@@ -710,9 +743,13 @@ mod tests {
                     "overview",
                     "storage",
                     "domains",
+                    "domains-new",
                     "boundaries",
+                    "boundaries-new",
                     "endpoints",
+                    "endpoints-new",
                     "gateways",
+                    "gateways-new",
                     "defaults",
                     "identity",
                     "tokens",
@@ -858,6 +895,31 @@ mod tests {
             );
         }
         assert!(ConsoleRoute::resolve("/-/org/acme/caches/main/signing-key").is_none());
+    }
+
+    #[test]
+    fn creation_routes_require_their_api_write_permission() {
+        for (path, permission) in [
+            ("/-/orgs/new", "read"),
+            ("/-/org/acme/projects/new", "registry.configure"),
+            ("/-/org/acme/registries/new", "registry.configure"),
+            ("/-/org/acme/caches/new", "registry.configure"),
+            ("/-/org/acme/storage-bindings/new", "storage_binding.manage"),
+            ("/-/instance/domains/new", "domain.manage"),
+            (
+                "/-/instance/network-boundaries/new",
+                "network_boundary.manage",
+            ),
+            (
+                "/-/instance/delivery-endpoints/new",
+                "delivery_endpoint.manage",
+            ),
+            ("/-/instance/storage-gateways/new", "storage_gateway.manage"),
+        ] {
+            let route = ConsoleRoute::resolve(path).expect("creation route must resolve");
+            assert_eq!(route.page.navigation_permission(), permission, "{path}");
+            assert!(!route.page.is_navigation_item(), "{path}");
+        }
     }
 
     #[test]

@@ -125,6 +125,10 @@ pub const CONSOLE_ROUTES: &[RouteSpec] = &[
     route("/activate", RouteMethods::GetAndPost),
     route("/-/instance", RouteMethods::Get),
     route("/-/instance/{page}", RouteMethods::Get),
+    route("/-/instance/domains/new", RouteMethods::Get),
+    route("/-/instance/network-boundaries/new", RouteMethods::Get),
+    route("/-/instance/delivery-endpoints/new", RouteMethods::Get),
+    route("/-/instance/storage-gateways/new", RouteMethods::Get),
     route("/-/orgs", RouteMethods::Get),
     route("/-/orgs/new", RouteMethods::Get),
     route("/-/org/{org}", RouteMethods::Get),
@@ -179,6 +183,10 @@ fn is_management_shell_template(path: &str) -> bool {
         path,
         "/-/instance"
             | "/-/instance/{page}"
+            | "/-/instance/domains/new"
+            | "/-/instance/network-boundaries/new"
+            | "/-/instance/delivery-endpoints/new"
+            | "/-/instance/storage-gateways/new"
             | "/-/orgs"
             | "/-/orgs/new"
             | "/-/org/{org}"

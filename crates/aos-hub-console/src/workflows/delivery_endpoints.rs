@@ -26,6 +26,10 @@ pub(super) fn DeliveryEndpointWorkflow(route: ConsoleRoute, client: ApiClient) -
             <DeliveryEndpoints client=client owner_scope_key="instance".to_string()/>
         }
         .into_any(),
+        (ConsoleScope::Instance, "endpoints-new") => view! {
+            <DeliveryEndpoints client=client owner_scope_key="instance".to_string() creation_only=true/>
+        }
+        .into_any(),
         (ConsoleScope::Organization { slug }, "endpoints") => view! {
             <OrganizationDeliveryEndpoints client=client organization=slug.clone() creation_only=false/>
         }
@@ -45,6 +49,7 @@ fn OrganizationDeliveryEndpoints(
     creation_only: bool,
 ) -> impl IntoView {
     let resolve_client = client.clone();
+    let view_organization = organization.clone();
     let scope = LocalResource::new(move || {
         let client = resolve_client.clone();
         let slug = organization.clone();
@@ -55,10 +60,11 @@ fn OrganizationDeliveryEndpoints(
         <Suspense fallback=move || view! { <p class="loading-row">"Resolving organization scope…"</p> }>
             {move || {
                 let client = client.clone();
+                let organization = view_organization.clone();
                 Suspend::new(async move {
                     match scope.await.as_ref() {
                         Ok(owner_scope_key) => view! {
-                            <DeliveryEndpoints client=client owner_scope_key=owner_scope_key.clone() organization=Some(organization.clone()) creation_only=creation_only/>
+        <DeliveryEndpoints client=client owner_scope_key=owner_scope_key.clone() organization=organization.clone() creation_only=creation_only/>
                         }
                         .into_any(),
                         Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
@@ -76,6 +82,13 @@ fn DeliveryEndpoints(
     #[prop(optional)] organization: Option<String>,
     #[prop(optional)] creation_only: bool,
 ) -> impl IntoView {
+    let can_create = client.allows("delivery_endpoint.manage");
+    let create_href = can_create.then(|| {
+        organization.as_ref().map_or_else(
+            || "/-/instance/delivery-endpoints/new".to_string(),
+            |slug| format!("/-/org/{slug}/delivery-endpoints/new"),
+        )
+    });
     let list_client = client.clone();
     let list_scope = owner_scope_key.clone();
     let inventory = LocalResource::new(move || {
@@ -96,7 +109,7 @@ fn DeliveryEndpoints(
         }
     });
     let view_client = client.clone();
-    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><h2>"Delivery endpoints"</h2><p>"Endpoints bind one stable host identity to exact network-boundary and listener/TLS generations."</p></div>{organization.as_ref().map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/delivery-endpoints/new")>"Create delivery endpoint"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading delivery endpoints…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No delivery endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <DeliveryEndpointCard client=client.clone() endpoint=endpoint/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <DeliveryEndpointCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
+    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><h2>"Delivery endpoints"</h2><p>"Endpoints bind one stable host identity to exact network-boundary and listener/TLS generations."</p></div>{create_href.map(|href| view! { <a class="button" href=href>"Create delivery endpoint"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading delivery endpoints…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No delivery endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <DeliveryEndpointCard client=client.clone() endpoint=endpoint/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <DeliveryEndpointCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
 }
 
 #[derive(Clone, Debug)]
