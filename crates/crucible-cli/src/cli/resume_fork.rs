@@ -1408,11 +1408,14 @@ pub(super) fn finish_fork_workflow_outcome(
 ) -> Result<BackendCommandOutcome, CliError> {
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
     let oracle = report.terminal_oracle.clone();
-    let artifact = write_fork_reproduction_artifact(
+    let artifact = should_capture_fork_reproduction_artifact(
         fork_plan,
         backend_plan.resolved_backend.as_ref(),
-        &report,
-    )?;
+    )
+    .then(|| {
+        write_fork_reproduction_artifact(fork_plan, backend_plan.resolved_backend.as_ref(), &report)
+    })
+    .transpose()?;
     outcome.status = report.run.status;
     outcome.exit_code = report.run.status.exit_code();
     outcome.terminal_savepoint = report.run.terminal_savepoint;
@@ -1430,17 +1433,23 @@ pub(super) fn finish_fork_workflow_outcome(
         report.run.final_quanta,
         report.run.acknowledged_commands.len()
     ));
-    outcome.stdout.push(format!(
-        "fork-artifact\tpath={}\tdigest={}\tseed={}\tfork_seed={}\tmodel_artifact={}\treplay_state={}\tschedule={}\tfingerprint={}",
-        artifact.path.display(),
-        artifact.digest,
-        format_seed(artifact.seed),
-        format_optional_seed(artifact.fork_seed),
-        format_content_hash_ref(artifact.model_artifact),
-        format_content_hash_ref(artifact.replay_state),
-        format_content_hash_ref(artifact.schedule),
-        format_content_hash_ref(artifact.finding_fingerprint)
-    ));
+    if let Some(artifact) = &artifact {
+        outcome.stdout.push(format!(
+            "fork-artifact\tpath={}\tstatus=captured\tdigest={}\tseed={}\tfork_seed={}\tmodel_artifact={}\treplay_state={}\tschedule={}\tfingerprint={}",
+            artifact.path.display(),
+            artifact.digest,
+            format_seed(artifact.seed),
+            format_optional_seed(artifact.fork_seed),
+            format_content_hash_ref(artifact.model_artifact),
+            format_content_hash_ref(artifact.replay_state),
+            format_content_hash_ref(artifact.schedule),
+            format_content_hash_ref(artifact.finding_fingerprint)
+        ));
+    } else {
+        outcome.stdout.push(String::from(
+            "fork-artifact\tstatus=not-captured\treason=interactive-live-controls\treplayable=false",
+        ));
+    }
     for status in &report.run.watch_statuses {
         outcome.stdout.push(format!("run-watch\t{status}"));
     }
@@ -1478,25 +1487,46 @@ pub(super) fn finish_fork_workflow_outcome(
             format_content_hash_ref(oracle.thin_checkpoint)
         ),
     });
-    outcome.canonical_log.push(CanonicalLogEntry {
-        sequence: outcome.canonical_log.len() as u64,
-        virtual_time_ticks: outcome.canonical_log.len() as u64,
-        node: String::from("artifact"),
-        kind: String::from("fork_reproduction_artifact"),
-        summary: format!(
-            "path={} digest={} seed={} fork_seed={} model_artifact={} replay_state={} schedule={}",
-            artifact.path.display(),
-            artifact.digest,
-            format_seed(artifact.seed),
-            format_optional_seed(artifact.fork_seed),
-            format_content_hash_ref(artifact.model_artifact),
-            format_content_hash_ref(artifact.replay_state),
-            format_content_hash_ref(artifact.schedule)
-        ),
+    outcome.canonical_log.push(match artifact {
+        Some(artifact) => CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("artifact"),
+            kind: String::from("fork_reproduction_artifact"),
+            summary: format!(
+                "status=captured path={} digest={} seed={} fork_seed={} model_artifact={} replay_state={} schedule={}",
+                artifact.path.display(),
+                artifact.digest,
+                format_seed(artifact.seed),
+                format_optional_seed(artifact.fork_seed),
+                format_content_hash_ref(artifact.model_artifact),
+                format_content_hash_ref(artifact.replay_state),
+                format_content_hash_ref(artifact.schedule)
+            ),
+        },
+        None => CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("artifact"),
+            kind: String::from("fork_reproduction_artifact"),
+            summary: String::from(
+                "status=not-captured reason=interactive-live-controls replayable=false",
+            ),
+        },
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     outcome.savepoint_oracle = Some(oracle);
     Ok(outcome)
+}
+
+/// Returns whether the completed fork has a replay-complete artifact recipe.
+#[must_use]
+pub(super) fn should_capture_fork_reproduction_artifact(
+    plan: &ForkInvocationPlan,
+    backend: Option<&ResolvedLocalBackend>,
+) -> bool {
+    !matches!(plan.execution_mode, RunExecutionMode::Interactive)
+        || !matches!(backend, Some(ResolvedLocalBackend::Qemu { .. }))
 }
 
 pub(super) fn write_fork_reproduction_artifact(

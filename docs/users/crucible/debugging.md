@@ -54,6 +54,11 @@ duration, fault, query selector, savepoint label, or fork override. Use the
 top-level `save`, `resume`, and `fork` commands for parameterized workflows. The
 argumentless mutation keywords primarily exercise the session control surface.
 
+An interactive live-QEMU `fork` is intentionally transient: its final report
+retains checkpoint and oracle evidence but marks its reproduction artifact
+`status=not-captured`. Run a non-interactive fork to produce a replayable child
+artifact.
+
 For a bounded inspection session, pipe commands explicitly:
 
 ```sh
