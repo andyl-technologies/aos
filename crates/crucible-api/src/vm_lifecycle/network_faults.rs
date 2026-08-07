@@ -1943,7 +1943,11 @@ impl ProductionFaultNetworkInterceptor {
                         message: error.to_string(),
                     })?;
             }
-            let block_rollback = backend.checkpoint_block_boundary_state();
+            let block_rollback = backend.checkpoint_block_boundary_state().map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("capture storage boundary rollback state: {error}"),
+                }
+            })?;
             if let Err(error) = backend.apply_block_boundary_actions(
                 coordinate,
                 sequence.journal,

@@ -545,10 +545,26 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         }
     }
 
-    fn checkpoint_block_boundary_state(&self) -> Option<crucible_device::block::BlockFaultState> {
+    fn checkpoint_block_boundary_state(
+        &self,
+    ) -> Result<Option<crucible_device::block::BlockFaultState>, QemuAsyncDriverRuntimeError> {
         self.block
             .as_ref()
-            .map(|block| block.servicer.storage_fault_state().clone())
+            .map(|block| {
+                block.servicer.storage_fault_state().map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "capture block boundary state",
+                        source.to_string(),
+                    )
+                })
+            })
+            .transpose()
+    }
+
+    fn shared_block_device(&self) -> Option<crate::QemuSharedBlockDevice> {
+        self.block
+            .as_ref()
+            .map(|block| block.servicer.shared_device())
     }
 
     fn restore_block_boundary_state(
@@ -557,7 +573,15 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         match (self.block.as_mut(), state) {
             (Some(block), Some(state)) => {
-                block.servicer.restore_storage_fault_state(state);
+                block
+                    .servicer
+                    .restore_storage_fault_state(state)
+                    .map_err(|source| {
+                        QemuAsyncDriverRuntimeError::new(
+                            "restore block boundary state",
+                            source.to_string(),
+                        )
+                    })?;
                 Ok(())
             }
             (None, None) => Ok(()),

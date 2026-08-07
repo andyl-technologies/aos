@@ -238,7 +238,15 @@ pub trait QemuHostIoRuntime: Send {
 
     /// Captures the block state needed to roll back one scheduler boundary.
     #[cfg(target_os = "linux")]
-    fn checkpoint_block_boundary_state(&self) -> Option<crucible_device::block::BlockFaultState> {
+    fn checkpoint_block_boundary_state(
+        &self,
+    ) -> Result<Option<crucible_device::block::BlockFaultState>, QemuAsyncDriverRuntimeError> {
+        Ok(None)
+    }
+
+    /// Returns the authoritative live block-device handle, when configured.
+    #[cfg(target_os = "linux")]
+    fn shared_block_device(&self) -> Option<crate::QemuSharedBlockDevice> {
         None
     }
 

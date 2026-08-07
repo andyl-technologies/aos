@@ -4,6 +4,7 @@
 //! servicer. It evaluates one authenticated opportunity per authored phase and
 //! never substitutes an implicit fault-free result after scheduler admission.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use super::*;
@@ -14,7 +15,8 @@ use crucible::model::{
     ResolvedFaultTarget, StorageEffectSpecification, World, WorldIoNodeKind,
 };
 use crucible_device::block::{
-    BaseImage, BlockDurabilityConfig, BlockOp, BlockPersistenceMediaOutcome, BlockRequest,
+    BaseImage, BlockDurabilityConfig, BlockFaultMisdirectionDestination,
+    BlockFaultWriteDisposition, BlockOp, BlockPersistenceMediaOutcome, BlockRequest,
     BlockRetainedRelease, BlockServiceCompletion, BlockStorageOutcome,
     ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective,
     ResolvedBlockRequestPersistenceDirective,
@@ -22,12 +24,13 @@ use crucible_device::block::{
 use crucible_qemu::{
     ProductionFaultRuntime, QemuAsyncDriverRuntimeError, QemuBlockFaultCoordinator,
     QemuLiveBlockIoDeliveryStep, QemuLiveBlockIoIntakeStep, QemuLiveBlockIoServiceStep,
-    QemuLiveBlockIoServicer, ResolvedVolatileCacheLoss, StorageFaultResolutionContext,
-    VolatileCacheLossReplay, block_delivery_fault_opportunity, block_durability_config,
-    block_persistence_fault_opportunity, block_request_fault_opportunity,
-    block_request_persistence_fault_opportunity, merge_block_fault_phase_directive,
-    resolve_block_fault_directive, resolve_block_persistence_media_directive,
-    resolve_volatile_cache_loss, storage_recovery_event_key,
+    QemuLiveBlockIoServicer, QemuSharedBlockDevice, ResolvedVolatileCacheLoss,
+    StorageFaultResolutionContext, StorageFaultResolutionError, VolatileCacheLossReplay,
+    block_delivery_fault_opportunity, block_durability_config, block_persistence_fault_opportunity,
+    block_request_fault_opportunity, block_request_persistence_fault_opportunity,
+    merge_block_fault_phase_directive, resolve_block_fault_directive,
+    resolve_block_persistence_media_directive, resolve_volatile_cache_loss,
+    storage_recovery_event_key,
 };
 
 /// Maximum phase/device settle transitions performed during one host poll.
@@ -44,6 +47,14 @@ pub(super) struct ProductionBlockBinding {
     pub(super) durability: BlockDurabilityConfig,
     /// Resolved signal target for every request opportunity.
     pub(super) target: ResolvedFaultTarget,
+    /// Immutable World hash indexing the authoritative live device.
+    device_hash: ContentHash,
+}
+
+impl ProductionBlockBinding {
+    pub(super) fn device_hash(&self) -> ContentHash {
+        self.device_hash
+    }
 }
 
 /// Resolves the optional block device owned by one World VM.
@@ -107,6 +118,7 @@ pub(super) fn block_binding_for_vm(
         base,
         durability,
         target,
+        device_hash: node.fault_target_hash(),
     }))
 }
 
@@ -215,6 +227,9 @@ impl ProductionFaultObservationJournal {
 /// Shared owner of the globally sequenced observation journal.
 pub(super) type ProductionStorageObservations = Arc<Mutex<ProductionFaultObservationJournal>>;
 
+/// Authoritative live devices indexed by their immutable World target hashes.
+pub(super) type ProductionBlockDevices = Arc<Mutex<BTreeMap<ContentHash, QemuSharedBlockDevice>>>;
+
 struct EvaluatedStoragePhase {
     actions: Vec<ResolvedBindingAction>,
     same_coordinate_sequence: u64,
@@ -225,6 +240,7 @@ pub(super) struct ProductionBlockFaultCoordinator {
     runtime: Arc<Mutex<ProductionFaultRuntime>>,
     cursor: SharedProductionFaultEvaluationCursor,
     observations: ProductionStorageObservations,
+    devices: ProductionBlockDevices,
     world: World,
     target: ResolvedFaultTarget,
     opportunity_targets: Vec<ResolvedFaultTarget>,
@@ -238,6 +254,7 @@ impl ProductionBlockFaultCoordinator {
         runtime: Arc<Mutex<ProductionFaultRuntime>>,
         cursor: SharedProductionFaultEvaluationCursor,
         observations: ProductionStorageObservations,
+        devices: ProductionBlockDevices,
         world: World,
         target: ResolvedFaultTarget,
         fault_plan: &FaultSignalPlan,
@@ -256,6 +273,7 @@ impl ProductionBlockFaultCoordinator {
             runtime,
             cursor,
             observations,
+            devices,
             world,
             target,
             opportunity_targets: opportunity_targets.into_iter().collect(),
@@ -425,6 +443,55 @@ impl ProductionBlockFaultCoordinator {
         )
     }
 
+    fn attached_device_hash(&self) -> Result<ContentHash, QemuAsyncDriverRuntimeError> {
+        match self.target {
+            ResolvedFaultTarget::BlockDevice { device }
+            | ResolvedFaultTarget::BlockRange { device, .. } => Ok(device),
+            _ => Err(storage_error(
+                "resolve attached block device",
+                "production block coordinator target changed to a non-block target",
+            )),
+        }
+    }
+
+    fn resolve_request_directive(
+        &self,
+        target: &ResolvedFaultTarget,
+        request: &BlockRequest,
+        request_sequence: u64,
+        opportunity: &crucible::model::FaultOpportunity,
+        actions: &[ResolvedBindingAction],
+    ) -> Result<crucible_device::block::ResolvedBlockFaultDirective, StorageFaultResolutionError>
+    {
+        let devices = Arc::clone(&self.devices);
+        let mut read_source = move |device: ContentHash, offset: u64, count: u32| {
+            let handle = devices
+                .lock()
+                .map_err(|_| String::from("authoritative block-device registry is poisoned"))?
+                .get(&device)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "World block device {} has no authoritative live runtime",
+                        device.to_hex()
+                    )
+                })?;
+            handle
+                .inspect_storage_visible(offset, count)
+                .map_err(|error| error.to_string())
+        };
+        resolve_block_fault_directive(
+            &self.world,
+            target,
+            request,
+            request_sequence,
+            opportunity,
+            self.context,
+            &mut read_source,
+            actions,
+        )
+    }
+
     fn record_device_outcomes(
         &self,
         servicer: &mut QemuLiveBlockIoServicer,
@@ -542,7 +609,11 @@ impl ProductionBlockFaultCoordinator {
         };
         let mut directive = crucible_device::block::ResolvedBlockFaultDirective::fault_free(
             &request,
-            servicer.storage_fault_state().config().length_bytes,
+            servicer
+                .storage_fault_state()
+                .map_err(|error| storage_error("inspect block fault state", error))?
+                .config()
+                .length_bytes,
         );
         directive.request_sequence = observed.request_sequence;
         directive.execution_nanos = request_nanos;
@@ -560,14 +631,12 @@ impl ProductionBlockFaultCoordinator {
                 let evaluation = self.evaluate_phase(&opportunity)?;
                 let mut partial = self.after_evaluation(
                     "resolve block request phase",
-                    resolve_block_fault_directive(
-                        &self.world,
+                    self.resolve_request_directive(
                         &target,
                         &request,
                         observed.request_sequence,
                         &opportunity,
-                        self.context,
-                        evaluation.actions.iter(),
+                        &evaluation.actions,
                     ),
                 )?;
                 bind_recovery_subscription_sequence(
@@ -596,7 +665,10 @@ impl ProductionBlockFaultCoordinator {
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         for _ in 0..HARD_STORAGE_SETTLE_STEPS {
             let mut installed = false;
-            while let Some(opportunity) = servicer.next_storage_execution_opportunity(now_nanos) {
+            while let Some(opportunity) = servicer
+                .next_storage_execution_opportunity(now_nanos)
+                .map_err(|error| storage_error("inspect block execution opportunity", error))?
+            {
                 let coordinate = FaultCoordinate {
                     virtual_nanos: opportunity.ready_nanos,
                     retired_instructions: Some(
@@ -617,14 +689,12 @@ impl ProductionBlockFaultCoordinator {
                     let evaluation = self.evaluate_phase(&fault_opportunity)?;
                     let mut partial = self.after_evaluation(
                         "resolve block resolve phase",
-                        resolve_block_fault_directive(
-                            &self.world,
+                        self.resolve_request_directive(
                             &target,
                             &opportunity.request,
                             opportunity.request_sequence,
                             &fault_opportunity,
-                            self.context,
-                            evaluation.actions.iter(),
+                            &evaluation.actions,
                         ),
                     )?;
                     bind_recovery_subscription_sequence(
@@ -650,8 +720,9 @@ impl ProductionBlockFaultCoordinator {
                 )?;
                 installed = true;
             }
-            while let Some(opportunity) =
-                servicer.next_storage_request_persistence_opportunity(now_nanos)
+            while let Some(opportunity) = servicer
+                .next_storage_request_persistence_opportunity(now_nanos)
+                .map_err(|error| storage_error("inspect block persistence opportunity", error))?
             {
                 let coordinate = FaultCoordinate {
                     virtual_nanos: opportunity.ready_nanos,
@@ -670,14 +741,12 @@ impl ProductionBlockFaultCoordinator {
                     let evaluation = self.evaluate_phase(&fault_opportunity)?;
                     let mut partial = self.after_evaluation(
                         "resolve block persist phase",
-                        resolve_block_fault_directive(
-                            &self.world,
+                        self.resolve_request_directive(
                             &target,
                             &opportunity.request,
                             opportunity.request_sequence,
                             &fault_opportunity,
-                            self.context,
-                            evaluation.actions.iter(),
+                            &evaluation.actions,
                         ),
                     )?;
                     bind_recovery_subscription_sequence(
@@ -697,18 +766,60 @@ impl ProductionBlockFaultCoordinator {
                 if !directive.persistence_transforms.is_empty() {
                     directive.persistence_admitted_nanos = opportunity.ready_nanos;
                 }
-                self.after_evaluation(
-                    "install block persist directive",
-                    servicer.install_storage_request_persistence_directive(
-                        ResolvedBlockRequestPersistenceDirective {
-                            opportunity,
-                            directive,
-                        },
-                    ),
-                )?;
+                let resolved = ResolvedBlockRequestPersistenceDirective {
+                    opportunity,
+                    directive,
+                };
+                if let BlockFaultWriteDisposition::Misdirected {
+                    destination: BlockFaultMisdirectionDestination::ExternalDevice(bytes),
+                    ..
+                } = &resolved.directive.write_disposition
+                {
+                    let destination_id = ContentHash { bytes: *bytes };
+                    let destination = self
+                        .devices
+                        .lock()
+                        .map_err(|_| {
+                            storage_error(
+                                "install cross-device block persistence",
+                                "authoritative block-device registry is poisoned",
+                            )
+                        })?
+                        .get(&destination_id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            storage_error(
+                                "install cross-device block persistence",
+                                format!(
+                                    "World block device {} has no authoritative live runtime",
+                                    destination_id.to_hex()
+                                ),
+                            )
+                        })?;
+                    let source = servicer.shared_device();
+                    let source_id = self.attached_device_hash()?;
+                    self.after_evaluation(
+                        "install cross-device block persistence",
+                        source.install_cross_device_misdirected_persistence(
+                            source_id,
+                            &destination,
+                            destination_id,
+                            resolved,
+                        ),
+                    )?;
+                } else {
+                    self.after_evaluation(
+                        "install block persist directive",
+                        servicer.install_storage_request_persistence_directive(resolved),
+                    )?;
+                }
                 installed = true;
             }
-            while let Some(opportunity) = servicer.next_storage_persistence_opportunity(now_nanos) {
+            while let Some(opportunity) = servicer
+                .next_storage_persistence_opportunity(now_nanos)
+                .map_err(|error| {
+                storage_error("inspect physical persistence opportunity", error)
+            })? {
                 let coordinate = FaultCoordinate {
                     virtual_nanos: opportunity.ready_nanos,
                     retired_instructions: Some(
@@ -755,7 +866,10 @@ impl ProductionBlockFaultCoordinator {
             absorb_delivery(aggregate, delivery)?;
             self.record_device_outcomes(servicer, guest_icount)?;
             let mut delivery_installed = false;
-            while let Some(opportunity) = servicer.next_storage_delivery_opportunity(now_nanos) {
+            while let Some(opportunity) = servicer
+                .next_storage_delivery_opportunity(now_nanos)
+                .map_err(|error| storage_error("inspect block delivery opportunity", error))?
+            {
                 let coordinate = FaultCoordinate {
                     virtual_nanos: opportunity.ready_nanos,
                     retired_instructions: Some(
@@ -772,14 +886,12 @@ impl ProductionBlockFaultCoordinator {
                     let evaluation = self.evaluate_phase(&fault_opportunity)?;
                     let mut partial = self.after_evaluation(
                         "resolve block delivery phase",
-                        resolve_block_fault_directive(
-                            &self.world,
+                        self.resolve_request_directive(
                             &target,
                             &opportunity.request,
                             opportunity.request_sequence,
                             &fault_opportunity,
-                            self.context,
-                            evaluation.actions.iter(),
+                            &evaluation.actions,
                         ),
                     )?;
                     bind_recovery_subscription_sequence(
@@ -835,7 +947,9 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
             .iter()
             .filter(|action| self.targets_attached_device(&action.target))
             .collect::<Vec<_>>();
-        let mut staged = servicer.storage_fault_state().clone();
+        let mut staged = servicer
+            .storage_fault_state()
+            .map_err(|error| storage_error("inspect block boundary state", error))?;
         let mut selected = Vec::new();
         let mut observations = Vec::new();
         for action in matching {
@@ -906,6 +1020,9 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         guest_icount: u64,
     ) -> Result<QemuLiveBlockIoServiceStep, QemuAsyncDriverRuntimeError> {
         let now_nanos = self.virtual_nanos(guest_icount)?;
+        let storage_state = servicer
+            .storage_fault_state()
+            .map_err(|error| storage_error("inspect retained block completions", error))?;
         let recovery_events = self
             .runtime
             .lock()
@@ -932,20 +1049,14 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
             let signal = crucible::model::FaultObjectId::parse(signal.as_str())
                 .map_err(|error| storage_error("resolve storage recovery event", error))?;
             let key = storage_recovery_event_key(&signal);
-            for identity in servicer.storage_fault_state().retained_recoveries_for(
-                key,
-                event_nanos,
-                event_sequence,
-            ) {
-                let retained = servicer
-                    .storage_fault_state()
-                    .retained_completion(identity)
-                    .ok_or_else(|| {
-                        storage_error(
-                            "select recovered block completion",
-                            "retained completion disappeared during selection",
-                        )
-                    })?;
+            for identity in storage_state.retained_recoveries_for(key, event_nanos, event_sequence)
+            {
+                let retained = storage_state.retained_completion(identity).ok_or_else(|| {
+                    storage_error(
+                        "select recovered block completion",
+                        "retained completion disappeared during selection",
+                    )
+                })?;
                 if event_nanos <= retained.timeout_nanos {
                     releases
                         .entry(identity)
@@ -976,19 +1087,13 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                 }
             }
         }
-        for identity in servicer
-            .storage_fault_state()
-            .retained_timeouts_due(now_nanos)
-        {
-            let retained = servicer
-                .storage_fault_state()
-                .retained_completion(identity)
-                .ok_or_else(|| {
-                    storage_error(
-                        "select timed-out block completion",
-                        "retained completion disappeared during selection",
-                    )
-                })?;
+        for identity in storage_state.retained_timeouts_due(now_nanos) {
+            let retained = storage_state.retained_completion(identity).ok_or_else(|| {
+                storage_error(
+                    "select timed-out block completion",
+                    "retained completion disappeared during selection",
+                )
+            })?;
             releases.entry(identity).or_insert_with(|| {
                 (
                     BlockRetainedRelease::Timeout,

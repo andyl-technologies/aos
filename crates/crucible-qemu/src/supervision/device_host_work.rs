@@ -505,7 +505,9 @@ impl QemuLiveBlockHostWorkPool {
             .recv()
             .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?
         {
-            WorkerReply::StorageState(state) => Ok(state),
+            WorkerReply::StorageState(result) => {
+                result.map_err(|source| QemuLiveBlockHostWorkPoolError::Servicer { source })
+            }
             WorkerReply::Pinned(_)
             | WorkerReply::Serviced(_)
             | WorkerReply::Checkpoint(_)
@@ -547,7 +549,9 @@ impl QemuLiveBlockHostWorkPool {
             .recv()
             .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?
         {
-            WorkerReply::StorageEvents(events) => Ok(events),
+            WorkerReply::StorageEvents(result) => {
+                result.map_err(|source| QemuLiveBlockHostWorkPoolError::Servicer { source })
+            }
             _ => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "storage-events reply",
             }),
@@ -827,8 +831,8 @@ enum WorkerReply {
     Serviced(Result<QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicerError>),
     Checkpoint(Box<Result<QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError>>),
     Mutated(Result<(), QemuLiveBlockIoServicerError>),
-    StorageState(BlockFaultState),
-    StorageEvents(QemuLiveBlockStorageEvents),
+    StorageState(Result<BlockFaultState, QemuLiveBlockIoServicerError>),
+    StorageEvents(Result<QemuLiveBlockStorageEvents, QemuLiveBlockIoServicerError>),
     VolatileLoss(Result<ResolvedVolatileCacheLoss, VolatileLossWorkerError>),
 }
 
@@ -879,39 +883,40 @@ fn worker_loop(
                     .map(|_| ()),
             }),
             WorkerCommand::InspectStorageState => {
-                WorkerReply::StorageState(servicer.storage_fault_state().clone())
+                WorkerReply::StorageState(servicer.storage_fault_state())
             }
-            WorkerCommand::StorageEvents { now_nanos } => {
-                WorkerReply::StorageEvents(QemuLiveBlockStorageEvents {
-                    execution_opportunity: servicer.next_storage_execution_opportunity(now_nanos),
+            WorkerCommand::StorageEvents { now_nanos } => WorkerReply::StorageEvents((|| {
+                Ok(QemuLiveBlockStorageEvents {
+                    execution_opportunity: servicer
+                        .next_storage_execution_opportunity(now_nanos)?,
                     request_persistence_opportunity: servicer
-                        .next_storage_request_persistence_opportunity(now_nanos),
+                        .next_storage_request_persistence_opportunity(now_nanos)?,
                     persistence_opportunity: servicer
-                        .next_storage_persistence_opportunity(now_nanos),
-                    persistence_outcomes: servicer.drain_storage_persistence_media_outcomes(),
-                    service_outcomes: servicer.drain_storage_service_outcomes(),
+                        .next_storage_persistence_opportunity(now_nanos)?,
+                    persistence_outcomes: servicer.drain_storage_persistence_media_outcomes()?,
+                    service_outcomes: servicer.drain_storage_service_outcomes()?,
                 })
-            }
+            })(
+            )),
             WorkerCommand::ResolveVolatileLoss {
                 target,
                 context,
                 action,
                 replay,
             } => WorkerReply::VolatileLoss(
-                resolve_volatile_cache_loss(
-                    &target,
-                    servicer.storage_fault_state(),
-                    context,
-                    &action,
-                    replay,
-                )
-                .map_err(VolatileLossWorkerError::Resolution)
-                .and_then(|resolved| {
-                    servicer
-                        .lose_storage_volatile(&resolved.selected_sequences)
-                        .map_err(VolatileLossWorkerError::Servicer)?;
-                    Ok(resolved)
-                }),
+                servicer
+                    .storage_fault_state()
+                    .map_err(VolatileLossWorkerError::Servicer)
+                    .and_then(|state| {
+                        resolve_volatile_cache_loss(&target, &state, context, &action, replay)
+                            .map_err(VolatileLossWorkerError::Resolution)
+                    })
+                    .and_then(|resolved| {
+                        servicer
+                            .lose_storage_volatile(&resolved.selected_sequences)
+                            .map_err(VolatileLossWorkerError::Servicer)?;
+                        Ok(resolved)
+                    }),
             ),
             WorkerCommand::Shutdown => break,
         };

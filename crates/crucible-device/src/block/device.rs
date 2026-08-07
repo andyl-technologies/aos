@@ -173,32 +173,38 @@ struct PreparedBlockTransportReset {
     immediate: Vec<Response>,
 }
 
-/// Atomically submits a write whose bytes are redirected to another block device.
+/// Atomically installs a persist-phase write redirected to another device.
 ///
-/// The source produces the sole guest completion and remains unchanged; the
-/// destination applies the bytes through its own controller/cache/durable
-/// layers. Both complete device states are staged first and commit together.
+/// The destination receives the exact request bytes through its own admitted
+/// geometry and durability state. The source retains the sole guest completion
+/// and executes the request as a locally lost write after both cloned device
+/// states commit together.
 ///
 /// # Errors
 ///
-/// Returns [`DeviceError`] for a non-write request, a directive whose local
-/// destination differs from `destination_offset`, any destination mutation
-/// failure, or any source directive/COMPUTE/scheduling failure. On error neither
-/// device changes.
-pub fn submit_cross_device_misdirected_write(
+/// Returns [`DeviceError`] if the directive is not an external misdirected
+/// write for `destination_device`, either staged mutation fails, or the source
+/// persistence opportunity is stale. Neither device changes on error.
+pub fn install_cross_device_misdirected_persistence(
     source: &mut BlockDevice,
     destination: &mut BlockDevice,
-    request_icount: u64,
-    request: &BlockRequest,
-    mut directive: ResolvedBlockFaultDirective,
-    destination_offset: u64,
+    mut resolved: ResolvedBlockRequestPersistenceDirective,
+    destination_device: [u8; 32],
 ) -> Result<(), DeviceError> {
-    if request.op != BlockOp::Write
-        || directive.write_disposition
-            != (super::fault::BlockFaultWriteDisposition::Misdirected { destination_offset })
-    {
+    let destination_offset = match resolved.directive.write_disposition {
+        super::fault::BlockFaultWriteDisposition::Misdirected {
+            destination: super::fault::BlockFaultMisdirectionDestination::ExternalDevice(device),
+            destination_offset,
+        } if device == destination_device => destination_offset,
+        _ => {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "cross-device persistence requires its exact external destination",
+            });
+        }
+    };
+    if resolved.opportunity.request.op != BlockOp::Write {
         return Err(DeviceError::InvalidBlockFaultDirective {
-            reason: "cross-device misdirection requires its exact write destination",
+            reason: "cross-device persistence requires a write request",
         });
     }
     let mut next_source = source.clone();
@@ -206,19 +212,37 @@ pub fn submit_cross_device_misdirected_write(
     next_destination.storage_faults.apply_external_write(
         &next_destination.base,
         &mut next_destination.overlay,
-        request.request_id,
+        resolved.opportunity.request.request_id,
         destination_offset,
-        request.data.clone(),
+        resolved.opportunity.request.data.clone(),
     )?;
-    directive.write_disposition = super::fault::BlockFaultWriteDisposition::Lost;
-    next_source.install_storage_fault_directive(request.identity(), directive)?;
-    next_source.submit(request_icount, request)?;
+    resolved.directive.write_disposition = super::fault::BlockFaultWriteDisposition::Lost;
+    next_source.install_storage_request_persistence_directive(resolved)?;
     *source = next_source;
     *destination = next_destination;
     Ok(())
 }
 
 impl BlockDevice {
+    /// Inspects exact currently visible bytes for an externally misdirected read.
+    ///
+    /// This controller-side inspection does not alter cache replacement state.
+    /// The guest request remains owned by its attached device; this method only
+    /// supplies the explicitly selected replacement bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the range exceeds the device or cannot be
+    /// represented by its admitted storage geometry.
+    pub fn inspect_storage_visible(
+        &mut self,
+        offset: u64,
+        count: u32,
+    ) -> Result<Vec<u8>, DeviceError> {
+        self.storage_faults
+            .read_visible(&self.base, &self.overlay, offset, count, false)
+    }
+
     /// Builds a block device over `base` with the given core and latency model.
     ///
     /// The base image is held read-only and never mutated ([IO-5]); the overlay

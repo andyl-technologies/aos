@@ -90,7 +90,7 @@ pub use block::{
     BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse, BlockSnapshot, BlockStatus,
     BlockTransportPending, BlockTransportRequestIds, BlockTransportReset, BlockTransportResolved,
     BlockTransportUnadmitted, BlockTransportUndelivered, CowOverlay, OverlayDelta, PAGE_SIZE,
-    submit_cross_device_misdirected_write,
+    install_cross_device_misdirected_persistence,
 };
 pub use clock::{VirtualClock, ceil_ns_to_icount};
 pub use error::DeviceError;
