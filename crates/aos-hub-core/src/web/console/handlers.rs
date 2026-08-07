@@ -203,28 +203,6 @@ impl Session {
 /// Lifetime of a bearer minted from an authenticated browser session.
 pub(crate) const BROWSER_ACCESS_TOKEN_TTL_SECS: i64 = 300;
 
-#[derive(serde::Serialize)]
-struct SessionTokenPrincipal {
-    kind: &'static str,
-    id: i64,
-    email: String,
-}
-
-#[derive(serde::Serialize)]
-struct SessionTokenGrant {
-    scope: String,
-    role: String,
-}
-
-#[derive(serde::Serialize)]
-struct SessionTokenResponse {
-    access_token: String,
-    token_type: &'static str,
-    expires_in: i64,
-    principal: SessionTokenPrincipal,
-    grants: Vec<SessionTokenGrant>,
-}
-
 /// Exchanges an authenticated browser session for a short-lived API bearer.
 ///
 /// The ambient session cookie is accepted only with an exact same-origin
@@ -267,18 +245,18 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
         Ok(token) => token,
         Err(error) => return internal(error),
     };
-    let body = SessionTokenResponse {
+    let body = aos_proto_types::BrowserSessionTokenResponse {
         access_token,
-        token_type: "Bearer",
+        token_type: "Bearer".to_string(),
         expires_in: BROWSER_ACCESS_TOKEN_TTL_SECS,
-        principal: SessionTokenPrincipal {
-            kind: "user",
+        principal: Some(aos_proto_types::BrowserSessionPrincipal {
+            kind: "user".to_string(),
             id: session.auth.user_id,
             email: session.email,
-        },
+        }),
         grants: grants
             .into_iter()
-            .map(|(scope, role)| SessionTokenGrant {
+            .map(|(scope, role)| aos_proto_types::BrowserSessionGrant {
                 scope: scope.as_str().to_string(),
                 role: role.as_str().to_string(),
             })

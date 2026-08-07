@@ -2688,6 +2688,29 @@ service IdentityService {
 
 message WhoAmIRequest {}
 
+// Principal summary returned by the browser session-to-bearer bridge.
+message BrowserSessionPrincipal {
+  // Always "user"; browser sessions cannot belong to service accounts.
+  string kind = 1;
+  int64 id = 2;
+  string email = 3;
+}
+
+// One live grant returned during browser application bootstrap.
+message BrowserSessionGrant {
+  string scope = 1;
+  string role = 2;
+}
+
+// Non-cacheable response from POST /-/auth/session-token.
+message BrowserSessionTokenResponse {
+  string access_token = 1;
+  string token_type = 2;
+  int64 expires_in = 3;
+  BrowserSessionPrincipal principal = 4;
+  repeated BrowserSessionGrant grants = 5;
+}
+
 // One live role grant held directly by the authenticated principal.
 message IdentityGrant {
   // Canonical stable authorization scope.
@@ -2885,6 +2908,7 @@ message IdentityProvider {
   bool allow_jit = 11;
   bool enforce_sso = 12;
   string default_role = 13;
+  // Opaque exact revision token; callers must echo it without parsing.
   string resource_version = 14;
 }
 
@@ -2918,6 +2942,7 @@ message PlanSetIdentityProviderRequest {
 
 message PlanRemoveIdentityProviderRequest {
   string org_slug = 1;
+  // Exact opaque resource_version returned by IdentityProvider.
   string expected_resource_version = 2;
   string idempotency_key = 3;
 }
@@ -2946,6 +2971,7 @@ message OrganizationDomain {
   // Exact TXT value to publish while state is pending.
   string txt_challenge = 4;
   int64 verified_at = 5;
+  // Opaque exact revision token; callers must echo it without parsing.
   string resource_version = 6;
 }
 
@@ -2956,7 +2982,7 @@ message OrganizationDomainResponse {
 message PlanClaimOrganizationDomainRequest {
   string org_slug = 1;
   string domain = 2;
-  // "absent" for a new claim; the exact version rotates an owned challenge.
+  // "absent" for a new claim; the exact opaque version rotates a challenge.
   string expected_resource_version = 3;
   string idempotency_key = 4;
 }
@@ -2964,6 +2990,7 @@ message PlanClaimOrganizationDomainRequest {
 message PlanVerifyOrganizationDomainRequest {
   string org_slug = 1;
   string domain = 2;
+  // Exact opaque resource_version returned by OrganizationDomain.
   string expected_resource_version = 3;
   string idempotency_key = 4;
 }
@@ -2971,6 +2998,7 @@ message PlanVerifyOrganizationDomainRequest {
 message PlanReleaseOrganizationDomainRequest {
   string org_slug = 1;
   string domain = 2;
+  // Exact opaque resource_version returned by OrganizationDomain.
   string expected_resource_version = 3;
   string idempotency_key = 4;
 }

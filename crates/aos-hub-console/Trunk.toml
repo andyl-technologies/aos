@@ -1,0 +1,7 @@
+[build]
+target = "index.html"
+dist = "dist"
+public_url = "/_console/"
+
+[watch]
+ignore = ["dist"]

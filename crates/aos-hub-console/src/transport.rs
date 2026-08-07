@@ -1,0 +1,209 @@
+//! Same-origin browser authentication and typed Connect-JSON transport.
+//!
+//! The browser session cookie never becomes application state. The console
+//! exchanges it, together with the session-bound CSRF proof injected into the
+//! application shell, for a five-minute bearer held only in WASM memory. Every
+//! management request then uses a generated canonical Connect path and a
+//! ProtoJSON request/response type.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use gloo_net::http::Request;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+
+const SESSION_TOKEN_PATH: &str = "/-/auth/session-token";
+const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
+
+/// One authenticated, memory-only browser API client.
+#[derive(Clone, Debug)]
+pub struct ApiClient {
+    csrf: String,
+    session: Rc<RefCell<aos_proto_types::BrowserSessionTokenResponse>>,
+}
+
+impl ApiClient {
+    /// Exchanges the ambient browser session for one short-lived API bearer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the CSRF proof is absent, the exchange request
+    /// fails, the Hub rejects the session, or the response is malformed.
+    pub async fn from_browser_session(csrf: &str) -> Result<Self, TransportError> {
+        if csrf.is_empty() {
+            return Err(TransportError::MissingCsrf);
+        }
+        let session = exchange_browser_session(csrf).await?;
+        Ok(Self {
+            csrf: csrf.to_string(),
+            session: Rc::new(RefCell::new(session)),
+        })
+    }
+
+    /// Returns the authenticated browser-session summary.
+    #[must_use]
+    pub fn session(&self) -> aos_proto_types::BrowserSessionTokenResponse {
+        self.session.borrow().clone()
+    }
+
+    /// Invokes one generated Connect-JSON unary method.
+    ///
+    /// `path` must be one of the generated `*_PATH` constants in
+    /// [`aos_proto_types`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when request serialization or transport fails, the Hub
+    /// returns a non-success status, or the response violates its message type.
+    pub async fn call<RequestMessage, ResponseMessage>(
+        &self,
+        path: &str,
+        request: &RequestMessage,
+    ) -> Result<ResponseMessage, TransportError>
+    where
+        RequestMessage: Serialize,
+        ResponseMessage: DeserializeOwned,
+    {
+        if !is_generated_connect_path(path) {
+            return Err(TransportError::InvalidPath);
+        }
+        let body = serde_json::to_string(request)
+            .map_err(|error| TransportError::Json(error.to_string()))?;
+        let bearer = self.session.borrow().access_token.clone();
+        let (mut status, mut body) = send_connect(path, &bearer, &body).await?;
+        if status == 401 {
+            let refreshed = exchange_browser_session(&self.csrf).await?;
+            let bearer = refreshed.access_token.clone();
+            self.session.replace(refreshed);
+            (status, body) = send_connect(path, &bearer, &body).await?;
+        }
+        if !(200..300).contains(&status) {
+            return Err(TransportError::Http {
+                status,
+                detail: bounded_detail(&body),
+            });
+        }
+        serde_json::from_str(&body).map_err(|error| TransportError::Json(error.to_string()))
+    }
+}
+
+async fn exchange_browser_session(
+    csrf: &str,
+) -> Result<aos_proto_types::BrowserSessionTokenResponse, TransportError> {
+    let response = Request::post(SESSION_TOKEN_PATH)
+        .header("x-aos-csrf", csrf)
+        .header("accept", "application/json")
+        .body(String::new())
+        .map_err(|error| TransportError::Request(error.to_string()))?
+        .send()
+        .await
+        .map_err(|error| TransportError::Request(error.to_string()))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| TransportError::Response(error.to_string()))?;
+    if !(200..300).contains(&status) {
+        return Err(TransportError::Http {
+            status,
+            detail: bounded_detail(&body),
+        });
+    }
+    let session: aos_proto_types::BrowserSessionTokenResponse =
+        serde_json::from_str(&body).map_err(|error| TransportError::Json(error.to_string()))?;
+    if session.access_token.is_empty()
+        || session.token_type != "Bearer"
+        || session.expires_in <= 0
+        || session.principal.is_none()
+    {
+        return Err(TransportError::InvalidSession);
+    }
+    Ok(session)
+}
+
+async fn send_connect(
+    path: &str,
+    bearer: &str,
+    body: &str,
+) -> Result<(u16, String), TransportError> {
+    let response = Request::post(path)
+        .header("authorization", &format!("Bearer {bearer}"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .body(body.to_string())
+        .map_err(|error| TransportError::Request(error.to_string()))?
+        .send()
+        .await
+        .map_err(|error| TransportError::Request(error.to_string()))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| TransportError::Response(error.to_string()))?;
+    Ok((status, body))
+}
+
+/// Failure returned by the browser transport boundary.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum TransportError {
+    /// The application shell omitted its session-bound CSRF proof.
+    #[error("the application shell did not provide a CSRF proof")]
+    MissingCsrf,
+    /// A fetch request could not be constructed or dispatched.
+    #[error("request failed: {0}")]
+    Request(String),
+    /// A fetch response body could not be read.
+    #[error("response failed: {0}")]
+    Response(String),
+    /// The Hub returned a non-success response.
+    #[error("Hub returned HTTP {status}: {detail}")]
+    Http {
+        /// HTTP status code.
+        status: u16,
+        /// Bounded, display-safe response detail.
+        detail: String,
+    },
+    /// A request or response failed ProtoJSON serialization.
+    #[error("invalid API JSON: {0}")]
+    Json(String),
+    /// The session-token response omitted required security fields.
+    #[error("the Hub returned an invalid browser session token")]
+    InvalidSession,
+    /// The caller supplied a non-canonical Connect route.
+    #[error("the API method path is not canonical")]
+    InvalidPath,
+}
+
+fn is_generated_connect_path(path: &str) -> bool {
+    aos_proto_types::EXPECTED_CONNECT_PATHS.contains(&path)
+}
+
+fn bounded_detail(body: &str) -> String {
+    let mut detail = body
+        .chars()
+        .filter(|character| !character.is_control() || *character == ' ')
+        .take(MAX_ERROR_BODY_BYTES)
+        .collect::<String>();
+    if detail.is_empty() {
+        detail = "request rejected".to_string();
+    }
+    detail
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_paths_are_closed_and_error_details_are_bounded() {
+        assert!(is_generated_connect_path(
+            "/aos.hub.v1.IdentityService/WhoAmI"
+        ));
+        assert!(!is_generated_connect_path("https://example.test/steal"));
+        assert!(!is_generated_connect_path("/aos.hub.v1.X/Method?token=x"));
+        assert_eq!(bounded_detail("bad\nrequest"), "badrequest");
+        assert_eq!(bounded_detail("\n\r"), "request rejected");
+        assert_eq!(bounded_detail(&"x".repeat(20_000)).len(), 16_384);
+    }
+}
