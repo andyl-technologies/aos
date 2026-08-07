@@ -576,9 +576,42 @@ test_vmstop_requires_exact_single_threaded_sim_boundary(void)
   active_accel_name = "sim";
   mttcg_enabled = false;
 
+  if (qemu_plugin_request_vmstop() != -EPERM || vm_stop_calls != 0) {
+    fprintf(stderr, "VM stop accepted outside an RR-owned exact callback\n");
+    return 1;
+  }
+
+  qemu_plugin_crucible_exact_boundary_enter();
   if (qemu_plugin_request_vmstop() != 0 || vm_stop_calls != 1 ||
-      vm_stop_state != RUN_STATE_PAUSED) {
+      vm_stop_state != RUN_STATE_PAUSED ||
+      !qemu_plugin_crucible_vmstop_pending()) {
     fprintf(stderr, "exact sim boundary did not request native VM stop\n");
+    return 1;
+  }
+  if (qemu_plugin_request_vmstop() != -EALREADY || vm_stop_calls != 1) {
+    fprintf(stderr, "duplicate VM stop admission was not rejected\n");
+    return 1;
+  }
+  if (!qemu_plugin_crucible_vmstop_admission_pending()) {
+    fprintf(stderr, "VM stop admission state was not retained\n");
+    return 1;
+  }
+  qemu_plugin_crucible_vmstop_request_complete();
+  if (!qemu_plugin_crucible_vmstop_pending()) {
+    fprintf(stderr, "premature resume cleared an unconsumed VM stop\n");
+    return 1;
+  }
+  qemu_plugin_crucible_vmstop_request_stopped(-EIO);
+  if (qemu_plugin_crucible_vmstop_admission_pending() ||
+      !qemu_plugin_crucible_vmstop_pending() ||
+      qemu_plugin_crucible_vmstop_flush_status() != -EIO) {
+    fprintf(stderr, "consumed VM stop did not enter the stopped state\n");
+    return 1;
+  }
+  qemu_plugin_crucible_vmstop_request_complete();
+  if (qemu_plugin_crucible_vmstop_pending() ||
+      qemu_plugin_crucible_vmstop_flush_status() != 0) {
+    fprintf(stderr, "completed stop/resume cycle retained the VM stop fence\n");
     return 1;
   }
 
@@ -607,13 +640,11 @@ test_vmstop_requires_exact_single_threaded_sim_boundary(void)
   }
 
   active_accel_name = "sim";
-  vm_stop_status = -17;
-  if (qemu_plugin_request_vmstop() != -17 || vm_stop_calls != 2 ||
-      vm_stop_state != RUN_STATE_PAUSED) {
-    fprintf(stderr, "native VM stop failure was not propagated\n");
+  qemu_plugin_crucible_exact_boundary_leave();
+  if (qemu_plugin_request_vmstop() != -EPERM || vm_stop_calls != 1) {
+    fprintf(stderr, "instruction-style callback context was not rejected\n");
     return 1;
   }
-  vm_stop_status = 0;
   return 0;
 }
 
@@ -679,9 +710,11 @@ main(void)
   puts("single_threaded_rr_symbol=qemu_plugin_crucible_single_threaded_rr");
   puts("single_threaded_rr_mode_discriminator_fixture_exercised=true");
   puts("request_vmstop_symbol=qemu_plugin_request_vmstop");
-  puts("request_vmstop_native_paused_transition=true");
+  puts("request_vmstop_native_pause_admission=true");
   puts("request_vmstop_rejects_nonexact_modes=true");
-  puts("request_vmstop_propagates_native_failure=true");
+  puts("request_vmstop_rejects_unsafe_callback_context=true");
+  puts("request_vmstop_rejects_duplicate_admission=true");
+  puts("request_vmstop_preserves_async_flush_failure=true");
   puts("wake_fd_registration_symbol=qemu_plugin_register_wake_fd");
   puts("wake_fd_registered=true");
   puts("wake_fd_single_owner=true");

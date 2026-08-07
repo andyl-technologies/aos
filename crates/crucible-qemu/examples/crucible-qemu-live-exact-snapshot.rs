@@ -63,6 +63,7 @@ fn run() -> Result<(), String> {
 
     let require_pending_block = env_flag("CRUCIBLE_EXACT_PENDING_BLOCK", false)?;
     let mut config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_directory)
+        .with_vm_shape(256, 2, 0)
         .with_completion_timeout(Duration::from_secs(env_u64(
             "CRUCIBLE_EXACT_TIMEOUT_SECS",
             240,
@@ -121,6 +122,11 @@ fn run() -> Result<(), String> {
     println!("capture_icount={}", report.capture_icount);
     println!("restored_icount={}", report.restored_icount);
     println!("suffix_icount={}", report.suffix_icount);
+    println!("smp_vcpus={}", report.smp_vcpus);
+    println!(
+        "capture_logical_time_offset={}",
+        report.capture_logical_time_offset
+    );
     println!(
         "capture_fingerprint={}",
         report.capture_fingerprint.to_hex()
@@ -133,6 +139,11 @@ fn run() -> Result<(), String> {
     println!(
         "pending_block_io_captured={}",
         report.pending_block_io_captured
+    );
+    println!("multi_vcpu_exact_restore=true");
+    println!(
+        "idle_jump_calibration_replayed={}",
+        report.capture_logical_time_offset > 0
     );
     Ok(())
 }

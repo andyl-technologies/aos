@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "ad5e0309294a1f079d1508e4ec6f7eef5c115eb6537b85904d2cc1869553fbc7";
+  patchBranchBundleSha256 = "fe3642a05d0477ee5491471008c98bf6ce14db7a7c2d018907108c6e7241e1cf";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "4f09cba6824bc49afcaf0bf2d8ebae3d3c08e148";
+  patchBranchHeadCommit = "c586225f84c813bc1c8d4d70c056335365c2ef2f";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -489,12 +489,12 @@ let
     {
       file = "0063-crucible-plugin-vmstop.patch";
       branchSubject = "crucible: hand exact checkpoint boundaries to VM stop";
-      branchCommit = "4f09cba6824bc49afcaf0bf2d8ebae3d3c08e148";
-      branchTree = "111a777834ad4e02f579107998ab5297ae37c038";
+      branchCommit = "c586225f84c813bc1c8d4d70c056335365c2ef2f";
+      branchTree = "fbe9ddefd40a6ea991a1573d1ea00d9f1ce1b6b2";
       catalogName = "crucible-plugin-vmstop";
       class = "D";
       enforces = "DET-1,INV-10,QEMU-43";
-      capability = "native QEMU paused-runstate handoff after an exact plugin checkpoint acknowledgement";
+      capability = "RR-global exact plugin checkpoint handoff with native pause and QMP flush-error propagation";
     }
   ];
   catalogOnlyCapabilities = [

@@ -160,6 +160,8 @@ in
               grep -Fxq 'host_io_backend=production-shared-memory-servicer' "$report"
               grep -Fxq 'old_process_force_crashed=true' "$report"
               grep -Fxq 'replay_oracle_pair_match=true' "$report"
+              grep -Fxq 'smp_vcpus=2' "$report"
+              grep -Fxq 'multi_vcpu_exact_restore=true' "$report"
               grep -Eq '^capture_icount=[1-9][0-9]*$' "$report"
               grep -Eq '^restored_icount=[1-9][0-9]*$' "$report"
               grep -Eq '^suffix_icount=[1-9][0-9]*$' "$report"
@@ -167,6 +169,8 @@ in
               grep -Eq '^suffix_fingerprint=[0-9a-f]{64}$' "$report"
             done
             grep -Fxq 'pending_block_io_captured=false' "$diskless_report"
+            grep -Fxq 'idle_jump_calibration_replayed=true' "$diskless_report"
+            grep -Eq '^capture_logical_time_offset=[1-9][0-9]*$' "$diskless_report"
             grep -Fxq 'pending_block_io_captured=true' "$block_report"
 
             mkdir -p "$out"

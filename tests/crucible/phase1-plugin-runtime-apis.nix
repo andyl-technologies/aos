@@ -188,6 +188,22 @@
         label = "native paused runstate transition";
         needle = "vm_stop(RUN_STATE_PAUSED)";
       }
+      {
+        label = "asynchronous stop flush failure retention";
+        needle = "qemu_plugin_crucible_vmstop_flush_status";
+      }
+      {
+        label = "QMP stop flush error propagation";
+        needle = "Could not flush devices while stopping the VM";
+      }
+      {
+        label = "premature QMP continue rejection";
+        needle = "VM stop admission has not reached paused state";
+      }
+      {
+        label = "failed-flush QMP continue rejection";
+        needle = "VM stop failed to flush devices";
+      }
     ];
 
   failures =
@@ -246,15 +262,23 @@
       }
       {
         label = "native VM stop transition exercised";
-        needle = "request_vmstop_native_paused_transition=true";
+        needle = "request_vmstop_native_pause_admission=true";
       }
       {
         label = "native VM stop rejection modes exercised";
         needle = "request_vmstop_rejects_nonexact_modes=true";
       }
       {
-        label = "native VM stop failure propagation exercised";
-        needle = "request_vmstop_propagates_native_failure=true";
+        label = "unsafe VM stop callback rejection exercised";
+        needle = "request_vmstop_rejects_unsafe_callback_context=true";
+      }
+      {
+        label = "duplicate VM stop admission rejection exercised";
+        needle = "request_vmstop_rejects_duplicate_admission=true";
+      }
+      {
+        label = "asynchronous VM stop flush failure exercised";
+        needle = "request_vmstop_preserves_async_flush_failure=true";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
@@ -428,7 +452,15 @@ in
             #include <stdint.h>
             #include <sys/types.h>
 
+#include <errno.h>
+#include <limits.h>
+
             #define qatomic_set_mb(ptr, value) (*(ptr) = (value))
+            #define qatomic_cmpxchg(ptr, old, value) \
+                ((*(ptr) == (old)) ? (*(ptr) = (value), (old)) : *(ptr))
+            #define qatomic_read(ptr) (*(ptr))
+            #define qatomic_set(ptr, value) (*(ptr) = (value))
+            #define g_assert(condition) do { if (!(condition)) __builtin_trap(); } while (0)
 
             #endif
             OSDEP_FIXTURE
@@ -829,7 +861,33 @@ in
             done
 
             for patch in ${builtins.concatStringsSep " " allPatchNames}; do
-              patch --batch --fuzz=0 -p1 < "${patchDir}/$patch"
+              if [ "$patch" = 0063-crucible-plugin-vmstop.patch ]; then
+                # This focused fixture owns only the public declaration, stop
+                # admission implementation, and post-TCG exact callback. The
+                # full-source patch gate applies and compiles every RR, sim
+                # dispatch, internal-header, and runstate hunk.
+                gawk '
+                  /^diff --git / {
+                    public_header = ($3 == "a/include/qemu/qemu-plugin.h")
+                    api_system = ($3 == "a/plugins/api-system.c")
+                    selected_file = public_header || api_system
+                    in_hunk = 0
+                    if (selected_file) print
+                    next
+                  }
+                  !selected_file { next }
+                  public_header { print; next }
+                  /^@@/ {
+                    in_hunk = 1
+                    selected_hunk = ($0 ~ /qemu_plugin_force_vcpu_exit/ ||
+                                     $0 ~ /qemu_plugin_fire_tcg_exec_cb/)
+                  }
+                  !in_hunk || selected_hunk { print }
+                ' "${patchDir}/$patch" > focused-vmstop.patch
+                patch --batch --fuzz=0 -p1 < focused-vmstop.patch
+              else
+                patch --batch --fuzz=0 -p1 < "${patchDir}/$patch"
+              fi
             done
 
             grep -q 'qemu_plugin_icount_raw' include/qemu/qemu-plugin.h
@@ -841,6 +899,16 @@ in
             grep -q 'qemu_plugin_request_vmstop' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_register_tcg_exec_cb' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_maybe_fire_tcg_exec_cb(cpu);' accel/tcg/tcg-accel-ops-rr.c
+            grep -q 'qemu_plugin_crucible_vmstop_pending()' "${patchDir}/0063-crucible-plugin-vmstop.patch"
+            grep -q 'qemu_plugin_crucible_vmstop_admission_pending()' "${patchDir}/0063-crucible-plugin-vmstop.patch"
+            grep -q 'qemu_plugin_crucible_vmstop_request_stopped' "${patchDir}/0063-crucible-plugin-vmstop.patch"
+            grep -q 'qemu_plugin_crucible_vmstop_flush_status()' "${patchDir}/0063-crucible-plugin-vmstop.patch"
+            grep -q 'rr_crucible_sim_park_vmstop()' "${patchDir}/0063-crucible-plugin-vmstop.patch"
+            grep -q 'rr_crucible_sim_drain_vcpu_work();' "${patchDir}/0063-crucible-plugin-vmstop.patch"
+            grep -q 'Could not flush devices while stopping the VM' "${patchDir}/0063-crucible-plugin-vmstop.patch"
+            grep -q 'VM stop admission has not reached paused state' "${patchDir}/0063-crucible-plugin-vmstop.patch"
+            grep -q 'VM stop failed to flush devices' "${patchDir}/0063-crucible-plugin-vmstop.patch"
+            grep -q 'qemu_plugin_crucible_exact_boundary_depth == 0' plugins/api-system.c
             awk '
               /icount_process_data\(cpu\);/ { saw_icount = NR }
               /qemu_plugin_maybe_fire_tcg_exec_cb\(cpu\);/ { saw_callback = NR }
@@ -863,9 +931,11 @@ in
             grep -q '^tb_entry_icount_chained_early_exit_multi_vcpu=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^first_exit_phase_normalized=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^single_threaded_rr_mode_discriminator_fixture_exercised=true$' "$out/plugin-runtime-apis-microtest"
-            grep -q '^request_vmstop_native_paused_transition=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^request_vmstop_native_pause_admission=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^request_vmstop_rejects_nonexact_modes=true$' "$out/plugin-runtime-apis-microtest"
-            grep -q '^request_vmstop_propagates_native_failure=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^request_vmstop_rejects_unsafe_callback_context=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^request_vmstop_rejects_duplicate_admission=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^request_vmstop_preserves_async_flush_failure=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_registered=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_single_owner=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_same_descriptor_idempotent=true$' "$out/plugin-runtime-apis-microtest"
@@ -913,9 +983,11 @@ in
             single_threaded_rr_symbol=qemu_plugin_crucible_single_threaded_rr
             single_threaded_rr_mode_discriminator_fixture_exercised=true
             request_vmstop_symbol=qemu_plugin_request_vmstop
-            request_vmstop_native_paused_transition=true
+            request_vmstop_native_pause_admission=true
             request_vmstop_rejects_nonexact_modes=true
-            request_vmstop_propagates_native_failure=true
+            request_vmstop_rejects_unsafe_callback_context=true
+            request_vmstop_rejects_duplicate_admission=true
+            request_vmstop_preserves_async_flush_failure=true
             wake_fd_registration_symbol=qemu_plugin_register_wake_fd
             wake_fd_registered=true
             wake_fd_single_owner=true

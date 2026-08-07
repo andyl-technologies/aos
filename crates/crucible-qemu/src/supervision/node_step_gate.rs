@@ -558,12 +558,16 @@ pub struct QemuLiveNodeStepReport {
 /// Evidence from a real QEMU save, process crash, load, and continuation run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLiveExactSnapshotReport {
+    /// Number of serialized round-robin vCPUs exercised by the restore.
+    pub smp_vcpus: u16,
     /// Raw node icount at the captured completed quantum boundary.
     pub capture_icount: u64,
     /// Raw node icount observed immediately after restore.
     pub restored_icount: u64,
     /// Raw node icount reached by the restored and independently replayed suffix.
     pub suffix_icount: u64,
+    /// Captured logical icount minus QEMU's raw icount after an idle jump.
+    pub capture_logical_time_offset: u64,
     /// Execution fingerprint at capture and immediately after restore.
     pub capture_fingerprint: ContentHash,
     /// Execution fingerprint after the post-restore suffix.
@@ -692,6 +696,20 @@ pub fn run_qemu_live_exact_snapshot_gate(
     let snapshot = capture_node
         .capture_exact_snapshot(&identity, checkpoint.clone())
         .map_err(|source| QemuLiveNodeStepGateError::node_op("capture exact snapshot", source))?;
+    let capture_logical_time_offset = snapshot
+        .node_continuation()
+        .logical_time_calibration()
+        .offset()
+        .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!("captured logical-time calibration is invalid: {source}"),
+        })?;
+    if !require_pending_block_io && capture_logical_time_offset == 0 {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from(
+                "diskless exact restore did not capture a nonzero idle-jump logical-time offset",
+            ),
+        });
+    }
     let capture_fingerprint = capture_node
         .execution_fingerprint()
         .map_err(|source| QemuLiveNodeStepGateError::ExecutionFingerprint { source })?
@@ -791,9 +809,11 @@ pub fn run_qemu_live_exact_snapshot_gate(
         .map_err(|source| QemuLiveNodeStepGateError::Shutdown { source })?;
 
     Ok(QemuLiveExactSnapshotReport {
+        smp_vcpus: config.smp_vcpus,
         capture_icount,
         restored_icount,
         suffix_icount,
+        capture_logical_time_offset,
         capture_fingerprint,
         suffix_fingerprint,
         replay_oracle_pair_match,

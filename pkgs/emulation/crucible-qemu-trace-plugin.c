@@ -1873,9 +1873,6 @@ on_insn(unsigned int vcpu_index, void *userdata)
       record_sample(vcpu_index, false);
     }
     qemu_plugin_outs("crucible-qemu-trace-plugin: stop_at reached\n");
-    if (!extended_fingerprint) {
-      (void)request_exact_vmstop();
-    }
   }
 }
 
@@ -2207,10 +2204,8 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
   if (!definition_only) {
     qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate);
     qemu_plugin_crucible_register_ipi_delivery_cb(on_det_ipi_delivery, NULL);
-    if (extended_fingerprint) {
-      qemu_plugin_register_sim_shmem_observer_cb(
-          on_sim_observe_icount, on_sim_observer_max_advance_icount, NULL);
-    }
+    qemu_plugin_register_sim_shmem_observer_cb(
+        on_sim_observe_icount, on_sim_observer_max_advance_icount, NULL);
     if (det_ipi_probe) {
       qemu_plugin_register_sim_shmem_dispatch_cb(
           on_sim_publish_icount, on_sim_max_advance_icount, NULL);
