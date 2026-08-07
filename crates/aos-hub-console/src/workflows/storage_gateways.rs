@@ -16,7 +16,7 @@ use crate::transport::ApiClient;
 use super::access_policy::{
     access_policy_name, canonical_path, required, AccessPolicyFields, AccessPolicySignals,
 };
-use super::resources::UnavailableWorkflow;
+use super::instance_settings::InstanceSettingsWorkflow;
 
 /// Renders storage-gateway workflows and delegates unrelated pages onward.
 #[component]
@@ -30,7 +30,7 @@ pub(super) fn StorageGatewayWorkflow(route: ConsoleRoute, client: ApiClient) -> 
             <StorageGateways client=client scope=GatewayScope::Organization(slug.clone())/>
         }
         .into_any(),
-        _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
+        _ => view! { <InstanceSettingsWorkflow route=route client=client/> }.into_any(),
     }
 }
 
