@@ -796,8 +796,8 @@ pub enum HubStorageBindingCmd {
         /// Binding name
         #[arg(long)]
         name: String,
-        /// Backend kind: local-fs, s3, or r2
-        #[arg(long, value_parser = ["local-fs", "s3", "r2"])]
+        /// Backend kind: local-fs, s3, r2, or deployment-r2
+        #[arg(long, value_parser = ["local-fs", "s3", "r2", "deployment-r2"])]
         kind: Option<String>,
         /// Absolute local-filesystem root
         #[arg(long)]
@@ -817,6 +817,9 @@ pub enum HubStorageBindingCmd {
         /// Access mode for s3/r2: private (default) or public
         #[arg(long, value_parser = ["public", "private"])]
         access: Option<String>,
+        /// Cloudflare Worker R2 binding name for deployment-r2
+        #[arg(long)]
+        bucket_binding: Option<String>,
         #[command(flatten)]
         mutation: HubMutationArgs,
     },
@@ -3010,6 +3013,38 @@ mod tests {
             "andyl",
         ])
         .is_err());
+    }
+
+    #[test]
+    fn storage_binding_accepts_worker_native_r2_bindings() {
+        let cli = parse_cli([
+            "aos",
+            "hub",
+            "storage-binding",
+            "create",
+            "--hub",
+            "https://aos.example",
+            "--org",
+            "andyl",
+            "--name",
+            "worker-objects",
+            "--kind",
+            "deployment-r2",
+            "--bucket-binding",
+            "STORAGE",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Hub {
+                command: HubCmd::StorageBinding {
+                    command: HubStorageBindingCmd::Create {
+                        bucket_binding: Some(ref binding),
+                        ..
+                    }
+                }
+            } if binding == "STORAGE"
+        ));
     }
 
     #[test]

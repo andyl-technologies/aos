@@ -4234,6 +4234,7 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
             access,
             bucket,
             prefix,
+            bucket_binding,
             mutation,
         } => {
             let client = hub_client(hub, token.as_deref())?;
@@ -4268,13 +4269,14 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
                         || endpoint.is_some()
                         || region.is_some()
                         || access.is_some()
+                        || bucket_binding.is_some()
                     {
                         anyhow::bail!("local-fs bindings reject object-storage options");
                     }
                 }
                 "s3" | "r2" => {
-                    if root.is_some() {
-                        anyhow::bail!("object-storage bindings reject --root");
+                    if root.is_some() || bucket_binding.is_some() {
+                        anyhow::bail!("s3/r2 bindings reject --root and --bucket-binding");
                     }
                     if bucket.is_none()
                         || endpoint.is_none()
@@ -4283,6 +4285,22 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
                     {
                         anyhow::bail!(
                             "s3/r2 bindings require --bucket, --endpoint, --region, and --access"
+                        );
+                    }
+                }
+                "deployment-r2" => {
+                    if bucket_binding.is_none() {
+                        anyhow::bail!("deployment-r2 bindings require --bucket-binding");
+                    }
+                    if root.is_some()
+                        || bucket.is_some()
+                        || prefix.is_some()
+                        || endpoint.is_some()
+                        || region.is_some()
+                        || access.is_some()
+                    {
+                        anyhow::bail!(
+                            "deployment-r2 bindings reject filesystem and HTTP provider options"
                         );
                     }
                 }
@@ -4316,6 +4334,11 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
                         access_mode: access.clone().unwrap_or_default(),
                     })
                 }
+                "deployment-r2" => hub_types::storage_binding_spec::Provider::DeploymentR2(
+                    hub_types::DeploymentR2StorageProvider {
+                        bucket_binding: bucket_binding.clone().unwrap_or_default(),
+                    },
+                ),
                 other => anyhow::bail!("unsupported storage binding kind '{other}'"),
             };
             let spec = hub_types::StorageBindingSpec {

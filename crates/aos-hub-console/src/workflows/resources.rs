@@ -12,6 +12,7 @@ use crate::components::{EmptyState, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
+use crate::workflows::infrastructure::InfrastructureWorkflow;
 
 /// Renders the typed resource adapter owned by the current canonical page.
 #[component]
@@ -64,12 +65,12 @@ pub(crate) fn ResourceWorkflow(route: ConsoleRoute, client: ApiClient) -> impl I
             <CacheDanger client=client stable_id=format!("{organization}/{cache}")/>
         }
         .into_any(),
-        _ => view! { <UnavailableWorkflow workflow=route.page.workflow/> }.into_any(),
+        _ => view! { <InfrastructureWorkflow route=route client=client/> }.into_any(),
     }
 }
 
 #[component]
-fn UnavailableWorkflow(workflow: &'static str) -> impl IntoView {
+pub(super) fn UnavailableWorkflow(workflow: &'static str) -> impl IntoView {
     view! {
         <section class="panel empty-state">
             <p class="section-kicker">"Resource editor"</p>

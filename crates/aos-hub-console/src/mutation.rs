@@ -33,6 +33,15 @@ impl PendingPlan {
         })
     }
 
+    /// Builds the common topology apply envelope for this exact plan.
+    pub(crate) fn topology_apply(&self) -> aos_proto_types::ApplyTopologyPlanRequest {
+        aos_proto_types::ApplyTopologyPlanRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
     /// Builds an organization apply envelope for this exact plan.
     pub(crate) fn organization_apply(&self) -> aos_proto_types::ApplyOrganizationMutationRequest {
         aos_proto_types::ApplyOrganizationMutationRequest {
@@ -72,6 +81,48 @@ impl PendingPlan {
     /// Builds a topology-resource deletion envelope for this exact plan.
     pub(crate) fn delete_apply(&self) -> aos_proto_types::ApplyDeleteTopologyResourceRequest {
         aos_proto_types::ApplyDeleteTopologyResourceRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds a storage-binding apply envelope for this exact plan.
+    pub(crate) fn storage_binding_apply(
+        &self,
+    ) -> aos_proto_types::ApplyStorageBindingMutationRequest {
+        aos_proto_types::ApplyStorageBindingMutationRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds a storage-credential apply envelope for this exact plan.
+    pub(crate) fn storage_credential_apply(
+        &self,
+    ) -> aos_proto_types::ApplyStorageBindingCredentialRequest {
+        aos_proto_types::ApplyStorageBindingCredentialRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds a consumer-scope grant apply envelope for this exact plan.
+    pub(crate) fn consumer_grant_apply(&self) -> aos_proto_types::ApplyConsumerScopeGrantRequest {
+        aos_proto_types::ApplyConsumerScopeGrantRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds a topology-defaults apply envelope for this exact plan.
+    pub(crate) fn topology_defaults_apply(
+        &self,
+    ) -> aos_proto_types::ApplySetTopologyDefaultsRequest {
+        aos_proto_types::ApplySetTopologyDefaultsRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),
