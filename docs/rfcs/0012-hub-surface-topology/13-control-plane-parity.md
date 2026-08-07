@@ -49,6 +49,13 @@ The CLI does not inspect Hub storage or invoke hidden operator endpoints. Both
 clients serialize the generated ProtoJSON request types and consume the same
 response and error contracts.
 
+A Web route's organization slug is only a locator. Before an organization page
+lists or creates scoped infrastructure, the client calls `GetOrganization` and
+uses the returned immutable `authorization_scope_key`. It carries the slug
+separately only for API references whose declared identity is a human-facing
+organization name. Constructing `org:{slug}` or parsing a stable scope back
+into a slug is forbidden.
+
 Every durable desired-state mutation follows one interaction:
 
 1. Read the resource and exact resource version.
