@@ -8,6 +8,7 @@
   fakeroot,
   util-linux,
   crucible-guest,
+  openssh,
 }: let
   version = "0.1.0";
   fixtureName = "aos-minimal";
@@ -26,6 +27,7 @@
     coreutils
     util-linux
     crucible-guest
+    openssh
   ];
   thirdPartyClosureDeps = [
     bash
@@ -181,12 +183,57 @@ in
 
           mkdir -p rootfs/bin rootfs/dev rootfs/etc rootfs/mnt/host-store
           mkdir -p rootfs/nix/store rootfs/proc rootfs/run rootfs/sys rootfs/tmp
-          mkdir -p rootfs/var/tmp rootfs/usr/bin rootfs/usr/sbin
+          mkdir -p rootfs/sbin rootfs/var/empty rootfs/var/tmp rootfs/usr/bin rootfs/usr/sbin
 
           copy_closure fixture-closure rootfs
 
           ln -sfn ${bash}/bin/bash rootfs/bin/sh
           ln -sfn ${bash}/bin/bash rootfs/bin/bash
+
+          cat > rootfs/etc/passwd <<'PASSWD'
+          root:x:0:0:root:/root:/bin/sh
+          sshd:x:74:74:Privilege-separated SSH:/var/empty:/bin/false
+          PASSWD
+          cat > rootfs/etc/group <<'GROUP'
+          root:x:0:
+          sshd:x:74:
+          GROUP
+          cat > rootfs/etc/shadow <<'SHADOW'
+          root::1:0:99999:7:::
+          sshd:!:1:0:99999:7:::
+          SHADOW
+          chmod 0600 rootfs/etc/shadow
+
+          cat > rootfs/etc/crucible-debug-sshd_config <<'SSHD_CONFIG'
+          HostKey /run/crucible-debug-ssh-host-key
+          PidFile none
+          UsePAM no
+          PermitRootLogin yes
+          PermitEmptyPasswords yes
+          PasswordAuthentication yes
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication no
+          StrictModes no
+          PrintMotd no
+          PrintLastLog no
+          X11Forwarding no
+          AllowTcpForwarding no
+          AllowAgentForwarding no
+          PermitTunnel no
+          Subsystem sftp internal-sftp
+          SSHD_CONFIG
+
+          cat > rootfs/usr/sbin/crucible-debug-sshd <<'DEBUG_SSHD'
+          #!${bash}/bin/bash
+          set -euo pipefail
+
+          host_key=/run/crucible-debug-ssh-host-key
+          if [[ ! -f "$host_key" ]]; then
+            ${openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$host_key"
+          fi
+          exec ${openssh}/sbin/sshd -i -e -f /etc/crucible-debug-sshd_config
+          DEBUG_SSHD
+          chmod +x rootfs/usr/sbin/crucible-debug-sshd
 
           cat > rootfs/etc/crucible-fixture.env <<'ENV'
           CRUCIBLE_FIXTURE_NAME=${fixtureName}
@@ -203,7 +250,7 @@ in
           export PATH="${fixtureBootPath}"
           export HOME=/tmp
 
-          mkdir -p /proc /sys /dev /run /tmp /nix/store /mnt/host-store
+          mkdir -p /proc /sys /dev /run /root /tmp /nix/store /mnt/host-store
           mount -t proc proc /proc || true
           mount -t sysfs sysfs /sys || true
           mount -t devtmpfs devtmpfs /dev || true
@@ -221,11 +268,42 @@ in
           fi
           echo 'CRUCIBLE_FIXTURE_DONE'
 
+          if [ -w /proc/sys/kernel/hotplug ]; then
+            echo /sbin/crucible-debug-hotplug > /proc/sys/kernel/hotplug
+          else
+            echo 'CRUCIBLE_DEBUG_AGENT_HOTPLUG_UNAVAILABLE'
+          fi
+
           while :; do
             :
           done
           INIT
           chmod +x rootfs/init
+
+          cat > rootfs/sbin/crucible-debug-hotplug <<'HOTPLUG'
+          #!/bin/sh
+          set -eu
+
+          if [ "''${ACTION:-}" != add ] || [ "''${SUBSYSTEM:-}" != virtio-ports ]; then
+            exit 0
+          fi
+          name_file="/sys''${DEVPATH:?missing hotplug device path}/name"
+          if [ ! -f "$name_file" ] || [ "$(cat "$name_file")" != 'org.aos.crucible.debug' ]; then
+            exit 0
+          fi
+          activation_port="/dev/$(basename "''${DEVPATH}")"
+          (
+            IFS= read -r activation_token < "$activation_port"
+            if [ "$activation_token" != 'CRUCIBLE_DEBUG_AGENT_V1' ]; then
+              echo 'CRUCIBLE_DEBUG_AGENT_ACTIVATION_REJECTED'
+              exit 1
+            fi
+            echo 'CRUCIBLE_DEBUG_AGENT_ACTIVATED'
+            exec ${crucible-guest}/bin/crucible-guest agent \
+              --ssh-program /usr/sbin/crucible-debug-sshd
+          ) &
+          HOTPLUG
+          chmod +x rootfs/sbin/crucible-debug-hotplug
 
           mkdir -p third-party-rootfs/bin third-party-rootfs/dev third-party-rootfs/etc
           mkdir -p third-party-rootfs/nix/store third-party-rootfs/proc third-party-rootfs/run

@@ -24,6 +24,7 @@
     fakeroot = "/stub/aos-fakeroot";
     util-linux = "/stub/aos-util-linux";
     crucible-guest = "/stub/crucible-guest";
+    openssh = "/stub/aos-openssh";
   };
 
   fixtureNodes =
