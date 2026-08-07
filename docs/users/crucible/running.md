@@ -200,6 +200,11 @@ To select gates explicitly, pass a comma-separated list:
 Other gates are exercised by repository checks; they are not all runnable from
 the packaged production CLI.
 
+Self-test results use the global output contract. `--format jsonl` emits
+`selftest_gate` and `selftest_scenario` records followed by `final_outcome`;
+`--trace <path>` writes the same rendering, and `--quiet` suppresses standard
+output without suppressing that trace file.
+
 ## Shell completions
 
 Generate completions for Bash, Elvish, Fish, PowerShell, or Zsh:

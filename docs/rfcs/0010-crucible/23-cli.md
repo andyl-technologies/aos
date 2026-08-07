@@ -463,7 +463,10 @@ may add the real-QEMU gates with `--with-qemu`. In that feature build,
 (`happy-path.scn`, `partition-recovery.scn`, `crash-restart.scn`). Every
 real-QEMU row boots the hermetic patched-QEMU/plugin pair and reports the
 resolved identity, terminal icount, and execution fingerprint. It reports a
-per-gate pass/fail table and exits non-zero on any failure.
+per-gate pass/fail table and exits non-zero on any failure. The report uses the
+global rendering contract: JSONL carries typed gate/scenario records and a
+terminal outcome, `--trace` receives the identical rendering, and `--quiet`
+suppresses only standard output.
 
 **Exit codes.** `0` = all selected gates green; `1` = one or more gates failed
 (the table names which); `4` = discovery/config error (e.g. `--with-qemu` with no
@@ -1183,7 +1186,8 @@ branch on the verdict without parsing output:
   evidence divergence prevents a PASS. Supplemental `test-double`-feature tests
   cover the fast built-in corpus runners, `--gates <list>` validation, and
   file-backed corpus manifests; none of those runners are compiled into the
-  packaged binary.
+  packaged binary. Process tests also prove JSONL-only stdout, byte-identical
+  explicit traces, and quiet trace retention.
 - [x] **T-CLI-9** Implement `save` (run to `--at`, create_savepoint, oracle-validate
   fat==thin, export a content-addressed handle; fail on oracle violation). —
   satisfies [CLI-19]; spec §9.

@@ -45,6 +45,50 @@ fn cli_exit_machine_readable_process_stdout_is_pure_json() -> Result<(), Box<dyn
 }
 
 #[test]
+fn cli_selftest_honors_machine_output_trace_and_quiet() -> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let trace = temp.path().join("selftest.jsonl");
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--backend", "double", "--format", "jsonl", "--trace"])
+        .arg(&trace)
+        .arg("selftest")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "selftest should pass; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert_machine_readable_jsonl(
+        &stdout,
+        &["selftest_gate", "selftest_scenario", "final_outcome"],
+    )?;
+    assert_eq!(stdout.as_bytes(), fs::read(&trace)?);
+
+    let quiet_trace = temp.path().join("selftest-quiet.jsonl");
+    let quiet = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--backend",
+            "double",
+            "--format",
+            "jsonl",
+            "--quiet",
+            "--trace",
+        ])
+        .arg(&quiet_trace)
+        .arg("selftest")
+        .output()?;
+    assert!(quiet.status.success());
+    assert!(quiet.stdout.is_empty());
+    let quiet_trace = fs::read_to_string(quiet_trace)?;
+    assert_machine_readable_jsonl(
+        &quiet_trace,
+        &["selftest_gate", "selftest_scenario", "final_outcome"],
+    )?;
+    Ok(())
+}
+
+#[test]
 fn cli_save_machine_readable_jsonl_reports_handle_path() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;

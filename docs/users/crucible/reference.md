@@ -131,6 +131,9 @@ Exactly one of `SCENARIO` and `--compare` is required.
 Test-double builds also compile a test-only `--corpus <path>` fixture-manifest
 option; it is not part of the shipped production interface.
 
+Self-test honors the global `--format`, `--trace`, and `--quiet` options. JSONL
+uses `selftest_gate`, `selftest_scenario`, and terminal `final_outcome` records.
+
 ### `save`
 
 | Argument or option | Required/default | Meaning |

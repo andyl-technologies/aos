@@ -464,7 +464,9 @@ long-held locks.
   Supplemental feature-gated tests cover the fast test corpus, canonical
   `--gates <list>` validation, malformed/unsupported selection rejection, and
   file-backed `--corpus <path>` manifests; those test-double runners are absent
-  from the packaged binary.
+  from the packaged binary. Self-test output now follows the shared format,
+  trace, quiet, and terminal-outcome contract, including byte-identical JSONL
+  stdout and explicit trace output.
   `T-CLI-9` is completed through `checks.crucible.phase5.cliSaveWorkflow`, which
   covers executable `save <SCENARIO> --at quiescence` and `--at virtual-time
   --max-virtual-time <dur>` saves, parser/planner coverage for
