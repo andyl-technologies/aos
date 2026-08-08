@@ -4410,7 +4410,7 @@ fn validate_single_filename(filename: &str, label: &str) -> Result<()> {
         || !filename.is_ascii()
         || !filename
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+'))
         || !filename
             .as_bytes()
             .first()
@@ -14399,6 +14399,12 @@ mod tests {
     };
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn portable_filename_accepts_sd_boot_counting_suffix() {
+        validate_single_filename("aos-server-2026.08+3.efi", "UKI filename")
+            .expect("sd-boot counting filename");
+    }
 
     fn write_direct_image_output(
         container: &Path,

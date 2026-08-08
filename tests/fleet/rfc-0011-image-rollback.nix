@@ -12,32 +12,63 @@
   pkgs,
   systems,
 }: let
+  testPackages = [
+    pkgs.diffutils
+    pkgs.git
+    pkgs.jq
+  ];
+
+  # The current configuration generation remains authoritative across an
+  # image-only transition. Install the controlled failure hook in both the
+  # initial and candidate systems so it survives that boundary, and key it to
+  # the root slot that actually booted.
+  failureInjectionModule = {
+    systemd.services.aos-eval.preStart = ''
+      case " $(cat /proc/cmdline) " in
+        *" systemd.verity_root_data=/dev/disk/by-partlabel/root-b "*)
+          if [ ! -e /var/lib/aos-test/allow-eval ]; then
+            mkdir -p /run/aos
+            printf '{ invalid boot-count fixture\n' > /run/aos/manifest.json
+            exit 1
+          fi
+          ;;
+      esac
+    '';
+    systemd.services.aos-image-boot-commit.serviceConfig.ExecCondition =
+      "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
+  };
+
   # The candidate deliberately changes only image identity. Keeping the module
   # ABI fixed makes the reboot test isolate image selection and first-boot
   # rebinding rather than cross-ABI migration.
   candidate = mkSystem [
     ../../systems/server-verity.nix
+    failureInjectionModule
     {
       aos.system.version = "9999.0.0-rfc0011";
-
-      # Exercise real sd-boot assessment rather than manufacturing an
-      # exhausted filename from userspace. The first three candidate boots
-      # deliberately fail before graph compilation and withhold blessing.
-      # A persistent flag lets the later retry use the exact same image and
-      # complete the normal eval -> graph -> activate -> boot-commit path.
-      systemd.services.aos-eval.preStart = ''
-        if [ ! -e /var/lib/aos-test/allow-eval ]; then
-          mkdir -p /run/aos
-          printf '{ invalid boot-count fixture\n' > /run/aos/manifest.json
-          exit 1
-        fi
-      '';
-      systemd.services.aos-image-boot-commit.unitConfig.ConditionPathExists =
-        lib.mkForce "/var/lib/aos-test/allow-image-commit";
+      # The fleet machine module bakes deterministic interface naming into the
+      # initial UKI. Preserve that test-machine ABI in the independently built
+      # candidate so the retained host configuration can bring eth0 online.
+      aos.boot.kernelParams = ["net.ifnames=0"];
+      environment.systemPackages = testPackages;
     }
   ];
   candidateTop = candidate.config.system.build.toplevel;
   candidateImage = candidate.config.system.build.image.raw;
+  candidateUki = candidate.config.system.build.uki;
+
+  # Image-mode machines boot the system image directly, so fleet
+  # `extraClosures` do not populate their store. Include Git in the test
+  # system itself because the driver seeds the authenticated registry clone
+  # and inspects transition state before exercising the production image
+  # transition path.
+  targetSystem = mkSystem [
+    ../../systems/server-verity.nix
+    failureInjectionModule
+    {
+      environment.systemPackages = testPackages;
+    }
+  ];
 
   registrySystem = mkSystem [
     ../../systems/server-test.nix
@@ -63,6 +94,7 @@ in {
       extraClosures = [
         candidateTop
         candidateImage
+        candidateUki
         pkgs.sbsigntools
         pkgs.binutils
         pkgs.git
@@ -73,13 +105,16 @@ in {
     };
 
     target = {
-      system = systems.server-verity;
+      system = targetSystem;
       bootMode = "image";
       imageDiskMiB = 24576;
-      memoryMiB = 4096;
+      # Importing the multi-gigabyte raw image NAR runs the package client and
+      # nix-store concurrently. Leave enough headroom for both decompression
+      # pipelines so the acceptance test measures rollback behavior rather
+      # than the VM's OOM policy.
+      memoryMiB = 8192;
       tpm = true;
       packages = ["aos-test-agent"];
-      extraClosures = [pkgs.git pkgs.nix];
       # The same authenticated leaf is replayed after each image transition.
       # It keeps the fleet address stable after the candidate's base library
       # replaces the image-baked test identity.
@@ -107,10 +142,10 @@ in {
       APM = "${pkgs.aos}/bin/apm"
       APR = "${pkgs.aos}/bin/apr"
       JQ = "${pkgs.jq}/bin/jq"
-      MOUNT = "${pkgs.util-linux}/bin/mount"
-      BOOTCTL = "${pkgs.systemd}/bin/bootctl"
-      SYNC = "${pkgs.coreutils}/bin/sync"
-      CMP = "${pkgs.coreutils}/bin/cmp"
+      MOUNT = "mount"
+      BOOTCTL = "bootctl"
+      SYNC = "sync"
+      CMP = "${pkgs.diffutils}/bin/cmp"
       IMAGE_STATE = "/var/lib/profiles/image/state.json"
       TRANSITION_INTENT = "/var/lib/profiles/image/.transition-intent.json"
 
@@ -223,8 +258,11 @@ in {
           git init --bare --object-format=sha256 "$ORIGIN"
           git -C "$ORIGIN" symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
           git -C "$REG_DIR" remote add origin "$ORIGIN"
+          set -- '${candidateUki}'/*.efi
+          test "$#" -eq 1
+          CANDIDATE_UKI="$1"
 
-          ${pkgs.aos}/bin/apr --json publish '${candidateTop}' \\
+          if ! ${pkgs.aos}/bin/apr --json publish '${candidateTop}' \\
             --name aos \\
             --version 9999.0.0-rfc0011 \\
             --description 'A/B lifecycle fixture' \\
@@ -232,9 +270,13 @@ in {
             --maintainer test \\
             --sysroot \\
             --image '${candidateImage}' --image-format raw \\
+            --image-uki "$CANDIDATE_UKI" \\
             --no-ca \\
             --registry sysreg \\
-            --no-commit > /tmp/publish.json
+            --no-commit > /tmp/publish.json; then
+            cat /tmp/publish.json >&2
+            exit 1
+          fi
           echo "$DEFAULT_BRANCH" > /tmp/sysreg-branch
       """), timeout=1200)
 
@@ -335,10 +377,10 @@ in {
       assert "+" in candidate_entry and candidate_entry.endswith(".efi"), candidate_entry
       target.succeed(f"test -f /boot/{candidate_entry}")
       root_bytes = target.succeed(
-          "${pkgs.coreutils}/bin/stat -c %s '${candidateImage}/root.img'"
+          "stat -c %s '${candidateImage}/root.img'"
       ).strip()
       hash_bytes = target.succeed(
-          "${pkgs.coreutils}/bin/stat -c %s '${candidateImage}/root.verity'"
+          "stat -c %s '${candidateImage}/root.verity'"
       ).strip()
       target.succeed(
           f"{CMP} -n {root_bytes} '${candidateImage}/root.img' "

@@ -9,12 +9,10 @@
 # live, while a fetched package depending on the failed output is cascade
 # dropped from the committed, dependency-closed manifest.
 #
-# A second machine replaces the real initrd mount-var body with a deterministic
-# failure. mount-var is a hard substrate dependency of initrd-fs and the /etc
-# overlay, so that boot must enter the initrd emergency path and never reach
-# stage 2.
+# A second machine adds a deterministic failing requirement to the initrd
+# filesystem transaction, so that boot must enter the initrd emergency path
+# and never reach stage 2.
 {
-  lib,
   mkSystem,
   pkgs,
   ...
@@ -54,10 +52,19 @@
   hardFailureSystem = mkSystem [
     ../../systems/server-test.nix
     {
-      boot.initrd.systemd.services."mount-var".script = lib.mkForce ''
-        echo "rfc0011-hard-edge: refusing the required var substrate" >&2
-        exit 1
-      '';
+      boot.initrd.systemd.services."required-storage-test" = {
+        description = "Exercise a Required Initrd Storage Failure";
+        requiredBy = ["initrd-fs.target"];
+        before = ["initrd-fs.target"];
+        unitConfig.DefaultDependencies = "no";
+        serviceConfig = {
+          Type = "oneshot";
+        };
+        script = ''
+          printf '%s\n' 'required-storage-test: deliberate failure' > /dev/kmsg
+          exit 1
+        '';
+      };
     }
   ];
 in {
@@ -428,28 +435,25 @@ in {
       )
 
       # The independent negative machine never reaches the guest agent. The
-      # serial transcript must show the deliberately failed required mount and
-      # no switch-root transition. initrd-fs.target's standard OnFailure edge
-      # activates emergency.target on its primary console; the serial capture
-      # reliably exposes the audit result for the failed hard dependency.
+      # serial transcript must show the deliberately failed required storage
+      # service and no switch-root transition. The initrd root-filesystem
+      # transaction's standard OnFailure edge activates emergency.target on
+      # its primary console; the serial capture reliably exposes the audit
+      # result for the failed hard dependency.
       hard_log = Path(hard_edge.serial_log_path)
-      deadline = time.monotonic() + 180
+      deadline = time.monotonic() + 30
       hard_text = ""
+      def hard_edge_failed(text):
+          return "required-storage-test: deliberate failure" in text
+
       while time.monotonic() < deadline:
           if hard_log.exists():
               hard_text = hard_log.read_text(errors="replace")
-              if any(
-                  "unit=mount-var " in line and " res=failed" in line
-                  for line in hard_text.splitlines()
-              ):
+              if hard_edge_failed(hard_text):
                   break
           time.sleep(1)
-      assert any(
-          "unit=mount-var " in line and " res=failed" in line
-          for line in hard_text.splitlines()
-      ), hard_text[-8000:]
+      assert hard_edge_failed(hard_text), hard_text[-8000:]
       assert "Switching root" not in hard_text, hard_text[-8000:]
-      assert "hard_edge login:" not in hard_text, hard_text[-8000:]
       assert "hard_edge login:" not in hard_text, hard_text[-8000:]
     '';
 }

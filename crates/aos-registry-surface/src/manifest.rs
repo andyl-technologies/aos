@@ -755,9 +755,9 @@ fn validate_image_filename(filename: &str) -> anyhow::Result<()> {
     );
     anyhow::ensure!(
         filename.is_ascii()
-            && filename
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+            && filename.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+')
+            })
             && filename
                 .as_bytes()
                 .first()
@@ -1079,6 +1079,16 @@ nar_size = 1
             contract.object_key = immutable_image_object_key(&contract.sha256, filename);
             assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_err());
         }
+    }
+
+    #[test]
+    fn delivery_accepts_sd_boot_counting_suffix() {
+        let mut contract = delivery("raw");
+        contract.uki.filename = "aos-server+3.efi".to_string();
+        contract.uki.esp_path = "EFI/Linux/aos-server+3.efi".to_string();
+        contract
+            .validate("raw", "2026.08", "x86_64-linux")
+            .expect("sd-boot counting filename");
     }
 }
 

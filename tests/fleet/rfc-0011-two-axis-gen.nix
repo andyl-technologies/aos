@@ -59,10 +59,14 @@
     };
   };
 
-  incompatibleBase = mkSystem [
+  # Image-mode machines do not consume fleet `extraClosures`. The test driver
+  # clones the authenticated registry in each guest, so make the AOS-built Git
+  # package part of the test images themselves.
+  targetBase = mkSystem [
     ../../systems/server-verity.nix
+    {environment.systemPackages = [pkgs.git];}
   ];
-  abi1BaseLib = incompatibleBase.config.aos.config.evalAtBoot.baseLib;
+  abi1BaseLib = targetBase.config.aos.config.evalAtBoot.baseLib;
 
   registrySystem = mkSystem [
     ../../systems/server-test.nix
@@ -98,13 +102,12 @@ in {
     };
 
     target = {
-      system = systems.server-verity;
+      system = targetBase;
       bootMode = "image";
       imageDiskMiB = 24576;
       memoryMiB = 4096;
       tpm = true;
       packages = ["aos-test-agent"];
-      extraClosures = [pkgs.git pkgs.nix];
       metadata."host.nix" = ''
         {
           aos.provisioning.storage.partitions.var.sizeMin = "8G";
@@ -116,13 +119,12 @@ in {
     };
 
     incompatible = {
-      system = incompatibleBase;
+      system = targetBase;
       bootMode = "image";
       imageDiskMiB = 24576;
       memoryMiB = 4096;
       tpm = true;
       packages = ["aos-test-agent"];
-      extraClosures = [pkgs.git pkgs.nix];
       metadata."host.nix" = ''
         {
           aos.provisioning.storage.partitions.var.sizeMin = "8G";

@@ -526,20 +526,20 @@ pub async fn install_system(
         printer.info("All paths already in store.");
     }
 
-    // Secure Boot validation (RFC-0006 phase 4): the closure is now
-    // downloaded, NAR/hash-verified, and imported. Before we create a new
-    // generation or touch the boot path, validate the image's recorded
-    // Secure Boot facts against the registry's signed catalog so an upgrade
-    // the firmware would reject is refused *here* — a clean, recoverable
-    // download-time refusal rather than a boot-time brick.
-    validate_sysroot_secure_boot(config, toplevel_meta, &closure.registry_name, printer)?;
-
     // Image generations are never activated into the running root. When the
     // two-axis image state exists, import the authenticated OTA
     // payload, write only the inactive root/hash slot, publish its counted UKI
     // last, and make it the durable next boot. First-boot evaluation under the
     // new image creates the config generation after reboot.
     let image_profile = Path::new(IMAGE_PROFILE_DIR);
+    // Non-A/B upgrades do not enter the image-staging branch below. Validate
+    // their recorded Secure Boot facts before creating a generation or
+    // touching the boot path. A/B upgrades perform the same validation after
+    // importing their separately authenticated image artifact, because slot
+    // UKIs live in that artifact rather than the toplevel closure.
+    if !image_profile.join(IMAGE_STATE_FILE).is_file() {
+        validate_sysroot_secure_boot(config, toplevel_meta, &closure.registry_name, printer)?;
+    }
     if image_profile.join(IMAGE_STATE_FILE).is_file() {
         if kernel_mode == KernelUpgradeMode::Kexec {
             bail!(

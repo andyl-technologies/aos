@@ -1546,9 +1546,12 @@ fn parse_tpm2_pcrread_pcr15(output: &str) -> Result<String> {
 fn parse_tpm2_pcrread_value(output: &str, index: u8) -> Result<String> {
     for line in output.lines() {
         let line = line.trim();
-        let Some(value) = line.strip_prefix(&format!("{index}:")) else {
+        let Some((key, value)) = line.split_once(':') else {
             continue;
         };
+        if key.trim() != index.to_string() {
+            continue;
+        }
         let value = value.trim().strip_prefix("0x").unwrap_or(value.trim());
         return Ok(format!(
             "sha256:{}",
@@ -3951,14 +3954,16 @@ mod tests {
     #[test]
     fn tpm2_pcrread_parser_extracts_pcr15() {
         let output = format!(
-            "sha256:\n  7: 0x{}\n  15: 0x{}\n",
+            "sha256:\n  7 : 0x{}\n  15 : 0x{}\n",
             "07".repeat(32),
             "ab".repeat(32)
         );
 
         let pcr15 = parse_tpm2_pcrread_pcr15(&output).expect("pcr15");
+        let pcr7 = parse_tpm2_pcrread_value(&output, 7).expect("pcr7");
 
         assert_eq!(pcr15, format!("sha256:{}", "ab".repeat(32)));
+        assert_eq!(pcr7, format!("sha256:{}", "07".repeat(32)));
     }
 
     #[test]
