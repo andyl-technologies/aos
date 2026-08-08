@@ -10,7 +10,10 @@ mod terminal;
 use terminal::*;
 
 const GUEST_RESPONSE_BROKER_CAPACITY: usize = 64;
-const GUEST_ACTIVATION_QUANTUM_LIMIT: u64 = 64;
+// A forked production guest may still be cold-booting when activation begins.
+// Keep negotiation bounded while allowing the portable TCG fixtures enough
+// scheduler turns to reach their blocking activation reader.
+const GUEST_ACTIVATION_QUANTUM_LIMIT: u64 = 512;
 
 struct PendingGuestActivation {
     node: NodeId,

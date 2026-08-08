@@ -37,7 +37,7 @@ architecture=$default_architecture
 output=
 base_port=${CRUCIBLE_MATRIX_BASE_PORT:-39870}
 stage_timeout_seconds=${CRUCIBLE_MATRIX_STAGE_TIMEOUT_SECONDS:-180}
-rendezvous_icount=${CRUCIBLE_MATRIX_RENDEZVOUS_ICOUNT:-50000000}
+rendezvous_icount=${CRUCIBLE_MATRIX_RENDEZVOUS_ICOUNT:-20000000}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --architecture)
@@ -445,7 +445,7 @@ run_architecture() {
     --trusted-unauthenticated-daemon \
     --backend qemu \
     --format table \
-    run "$fixture" --interactive --max-quanta 256 \
+    run "$fixture" --interactive --max-quanta 768 \
     <"$fifo" >"$directory/run.out" 2>"$directory/run.err" &
   run_pid=$!
   exec 3>"$fifo"
@@ -544,7 +544,7 @@ run_architecture() {
     || fail "fork-time guest feature negotiation was incomplete"
   kill -0 "$gdb_pid" 2>/dev/null || fail "GDB connection did not survive fork replacement"
   gdb_snapshot "$directory/post-fork.gdb" "$registers" CRUCIBLE_POST_FORK
-  grep -Eq '^1[[:space:]]+breakpoint[[:space:]]+keep[[:space:]]+y' "$directory/post-fork.gdb" \
+  grep -Eq '^1[[:space:]]+hw breakpoint[[:space:]]+keep[[:space:]]+y' "$directory/post-fork.gdb" \
     || fail "hardware breakpoint state was not retained across replacement"
   run_scheduler_control "$gdb_output"
   printf 'delete 1\ninfo breakpoints\necho CRUCIBLE_BREAKPOINT_REMOVED\\n\n' >&5
