@@ -222,6 +222,10 @@ field_value() {
   sed -n "s/^${field}=//p" "$file" | tail -n 1
 }
 
+files_equal() {
+  [[ "$(sha256sum <"$1")" == "$(sha256sum <"$2")" ]]
+}
+
 landed_tuple() {
   local file=$1
   grep '^landed-' "$file"
@@ -492,7 +496,7 @@ run_architecture() {
 
   gdb_snapshot "$directory/read-only-before.gdb" "$registers" CRUCIBLE_READ_ONLY_BEFORE
   gdb_snapshot "$directory/read-only-after.gdb" "$registers" CRUCIBLE_READ_ONLY_AFTER
-  cmp "$directory/read-only-before.gdb" "$directory/read-only-after.gdb" \
+  files_equal "$directory/read-only-before.gdb" "$directory/read-only-after.gdb" \
     || fail "read-only GDB inspection changed thread, register, or breakpoint state"
 
   progress "$guest_architecture:reverse-with-live-gdb"
@@ -519,14 +523,14 @@ run_architecture() {
   require_landed_evidence "$directory/goto-earlier.out" "repeated earlier goto"
   landed_tuple "$directory/reverse-earlier.out" >"$directory/reverse-earlier.tuple"
   landed_tuple "$directory/goto-earlier.out" >"$directory/goto-earlier.tuple"
-  cmp "$directory/reverse-earlier.tuple" "$directory/goto-earlier.tuple" \
+  files_equal "$directory/reverse-earlier.tuple" "$directory/goto-earlier.tuple" \
     || fail "repeated coordinate did not reproduce the complete landed tuple"
   local repeated_generation
   repeated_generation=$(field_value "$directory/goto-earlier.out" gateway-generation)
   ((repeated_generation > earlier_generation)) \
     || fail "repeated goto gateway generation did not advance"
   gdb_snapshot "$directory/goto-earlier.gdb" "$registers" CRUCIBLE_GOTO_EARLIER
-  cmp "$directory/reverse-earlier.gdb" "$directory/goto-earlier.gdb" \
+  files_equal "$directory/reverse-earlier.gdb" "$directory/goto-earlier.gdb" \
     || fail "repeated coordinate changed GDB thread/register/breakpoint state"
 
   start_gdb_replacement_probe GOTO_BASELINE
@@ -536,7 +540,7 @@ run_architecture() {
   require_landed_evidence "$directory/goto-baseline.out" "baseline goto"
   landed_tuple "$directory/reverse-baseline.out" >"$directory/reverse-baseline.tuple"
   landed_tuple "$directory/goto-baseline.out" >"$directory/goto-baseline.tuple"
-  cmp "$directory/reverse-baseline.tuple" "$directory/goto-baseline.tuple" \
+  files_equal "$directory/reverse-baseline.tuple" "$directory/goto-baseline.tuple" \
     || fail "forward replay did not reproduce the baseline landed tuple"
   gdb_snapshot "$directory/goto-baseline.gdb" "$registers" CRUCIBLE_GOTO_BASELINE
 
