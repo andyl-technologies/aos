@@ -381,6 +381,29 @@ impl NinepDevice {
             .process_one_shmem_request(&mut node, inbox, inbox_entries, producer_slot)
     }
 
+    /// Computes and schedules one already-decoded request without touching a
+    /// shared-memory ring.
+    ///
+    /// Transactional host adapters use this method on a cloned device to finish
+    /// every directive, protocol, latency, response-shape, and sequence check
+    /// before they dequeue the corresponding live request-ring entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] for any COMPUTE or completion-scheduling failure.
+    pub fn compute_detached_request(&mut self, request: Request) -> Result<(), DeviceError> {
+        let mut node = NinepServerNode {
+            server: &mut self.server,
+            latency: &self.latency,
+            require_fault_directives: self.require_fault_directives,
+            directives: &mut self.directives,
+            visibility: &self.visibility,
+            virtual_fids: &mut self.virtual_fids,
+            session_epoch: &mut self.session_epoch,
+        };
+        self.core.compute_request(&mut node, request)
+    }
+
     /// Advances the clock to `limit` and DELIVERs every due response ([IO-2]).
     ///
     /// # Errors
@@ -411,6 +434,23 @@ impl NinepDevice {
     ) -> Result<ShmemDeliveryResult, DeviceError> {
         self.core
             .advance_to_shmem(limit, outbox, outbox_entries, consumer_slot)
+    }
+
+    /// Advances and publishes replies while preserving the exact commit status
+    /// of a failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure containing the number of frames already published.
+    pub fn advance_to_shmem_with_commit_status(
+        &mut self,
+        limit: u64,
+        outbox: &RingHeader,
+        outbox_entries: &mut [FrameEntry],
+        consumer_slot: &NodeSlot,
+    ) -> Result<ShmemDeliveryResult, crate::subnode::ShmemDeliveryFailure> {
+        self.core
+            .advance_to_shmem_with_commit_status(limit, outbox, outbox_entries, consumer_slot)
     }
 
     /// Pops the next delivered response, returning its raw 9p reply frame.

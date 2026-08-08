@@ -58,7 +58,7 @@ impl IoCore {
     }
 
     /// COMPUTEs one request and inserts its response in delivery order.
-    pub(super) fn compute_request<D>(
+    pub fn compute_request<D>(
         &mut self,
         device: &mut D,
         request: Request,
