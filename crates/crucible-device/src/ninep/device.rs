@@ -39,7 +39,7 @@ use super::fault::{
     ResolvedNinepRequestDirective,
 };
 use super::server::{NinepServer, NinepServerSnapshot};
-use super::tree::FsTree;
+use super::tree::{FsTree, Node};
 
 /// The deterministic completion-latency model for the 9p device.
 ///
@@ -276,6 +276,12 @@ impl NinepDevice {
     #[must_use]
     pub const fn visibility_state(&self) -> &NinepVisibilityState {
         &self.visibility
+    }
+
+    /// Returns the current negotiated visibility session identity.
+    #[must_use]
+    pub const fn session_epoch(&self) -> u64 {
+        self.session_epoch
     }
 
     /// Enqueues an encoded 9p request frame and COMPUTEs it immediately.
@@ -728,6 +734,30 @@ fn visibility_reply(
                     message.tag,
                     super::errno::EINVAL,
                 )?));
+            }
+            let parent_path = canonical_path(&components);
+            let parent_is_directory = match visibility.lookup_object(session, &parent_path) {
+                NinepVisibilityLookup::Object(object) => {
+                    overlay_touched = true;
+                    object.mode & 0o170_000 == 0o040_000
+                }
+                NinepVisibilityLookup::Deleted => {
+                    overlay_touched = true;
+                    false
+                }
+                NinepVisibilityLookup::Base => matches!(
+                    server.tree().resolve(&components),
+                    Some(Node::Directory { .. })
+                ),
+            };
+            if !parent_is_directory {
+                if qids.is_empty() {
+                    return Ok(Some(codec::encode_rlerror(
+                        message.tag,
+                        super::errno::ENOTDIR,
+                    )?));
+                }
+                break;
             }
             components.push(name.clone());
             let path = canonical_path(&components);

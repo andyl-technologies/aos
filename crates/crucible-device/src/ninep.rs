@@ -1275,6 +1275,33 @@ mod tests {
     }
 
     #[test]
+    fn visible_walk_never_traverses_through_a_regular_object() {
+        let mut dev = device();
+        round_trip(
+            &mut dev,
+            0,
+            &tversion(1, MAX_MSIZE, codec::PROTOCOL_VERSION),
+        );
+        round_trip(&mut dev, 1, &tattach(2, 1));
+        for (identity, object) in [
+            ([3; 32], file_object("/a", 1, b"regular")),
+            ([4; 32], file_object("/a/b", 1, b"unreachable")),
+        ] {
+            ok(dev.commit_visibility_update(
+                identity,
+                object,
+                atomic_visibility(false),
+                NinepVisibilityRelease::AtNanos(0),
+                0,
+            ));
+        }
+        ok(dev.advance_visibility(0, &BTreeMap::new()));
+        let (_, walked) = round_trip(&mut dev, 2, &twalk(3, 1, 2, &["a", "b"]));
+        assert_eq!(reply_type(&walked), codec::RWALK);
+        assert_eq!(u16::from_le_bytes([walked[7], walked[8]]), 1);
+    }
+
+    #[test]
     fn unsupported_object_result_shapes_are_rejected_before_installation() {
         let mut dev = device();
         for request in [tstatfs(8, 1), twalk(9, 1, 2, &["bin", "tool"])] {
