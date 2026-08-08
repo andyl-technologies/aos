@@ -18,6 +18,9 @@ the failure.
    output. Never overwrite an existing transcript or failure artifact.
 4. Record the exact command, seed, backend selection, and exit status for each run.
 
+Use `--format jsonl --trace ORIGINAL` when replay-byte validation is required;
+pass that trace directly to `replay ARTIFACT --check ORIGINAL`.
+
 For the complete packaged production matrix, run
 `crucible-debugger-live-matrix --architecture all`. It retains a new evidence
 directory and refuses to overwrite an existing one. The command clears external

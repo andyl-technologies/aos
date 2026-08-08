@@ -114,8 +114,11 @@ entries as one document. `table` emits human-oriented summaries.
 An explicit `--format` always wins. Use one in scripts whose output contract
 must not depend on their execution environment.
 
-`--trace` does not select a separate diagnostic trace. It writes the same
-canonical event-log rendering selected by `--format`:
+`--trace` does not select a separate diagnostic trace. For backend runs, it
+writes the canonical event-log rendering selected by `--format` without the
+invocation-local `final_outcome` porcelain record that is appended to
+machine-readable standard output. This makes a JSONL trace directly consumable
+by `replay --check`:
 
 ```sh
 ./result/bin/crucible \

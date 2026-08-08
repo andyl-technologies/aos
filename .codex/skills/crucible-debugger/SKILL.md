@@ -25,8 +25,11 @@ nix develop -c cargo build --manifest-path crates/Cargo.toml --bin crucible
 crates/target/debug/crucible --help
 ```
 
-Do not use `cargo run`. Run hands-on acceptance separately from Nix checks so a
-failure remains available for inspection.
+Do not use `cargo run`. The incremental binary does not by itself discover the
+packaged QEMU, plugin, kernel, or root image; use `result/bin/crucible` for live
+QEMU work unless the exact packaged backend environment is also supplied. Run
+hands-on acceptance separately from Nix checks so a failure remains available
+for inspection.
 
 ## Reproduce before debugging
 
@@ -79,7 +82,8 @@ Artifact-targeted commands decode the artifact fields needed to identify the
 failure coordinate, but they do not provide a local time-travel session. They
 therefore exit `4` with `no debug operation was executed`; a zero exit or a
 planned-only success is a bug.
-Use `replay --check`, `verify --bisect`, explicit savepoints, or a live daemon
+Use the JSONL file written by `--trace` directly with `replay --check`. Use
+`verify --bisect`, explicit savepoints, or a live daemon
 session when the retained artifact is insufficient.
 
 Compare these sources before diagnosing:
