@@ -190,7 +190,7 @@ in
           }
 
           mkdir -p rootfs/bin rootfs/dev rootfs/etc rootfs/mnt/host-store
-          mkdir -p rootfs/nix/store rootfs/proc rootfs/run rootfs/sys rootfs/tmp
+          mkdir -p rootfs/nix/store rootfs/proc rootfs/root rootfs/run rootfs/sys rootfs/tmp
           mkdir -p rootfs/sbin rootfs/var/empty rootfs/var/tmp rootfs/usr/bin rootfs/usr/sbin
 
           copy_closure fixture-closure rootfs
@@ -286,6 +286,17 @@ in
             echo 'CRUCIBLE_DEBUG_AGENT_HOTPLUG_UNAVAILABLE'
           fi
 
+          # The activation-only port is fixed in the canonical topology. Start
+          # one blocking reader after setup so canonical execution performs no
+          # polling and only a committed debug fork can deliver the token.
+          for name_file in /sys/class/virtio-ports/*/name; do
+            if [ -f "$name_file" ] && [ "$(cat "$name_file")" = 'org.aos.crucible.debug' ]; then
+              port=$(basename "$(dirname "$name_file")")
+              ACTION=add DEVPATH="/class/virtio-ports/$port" /sbin/crucible-debug-hotplug
+              echo 'CRUCIBLE_DEBUG_ACTIVATION_READER_READY'
+            fi
+          done
+
           while :; do
             :
           done
@@ -296,15 +307,19 @@ in
           #!/bin/sh
           set -eu
 
-          if [ "''${ACTION:-}" != add ] || [ "''${SUBSYSTEM:-}" != virtio-ports ]; then
+          if [ "''${ACTION:-}" != add ]; then
             exit 0
           fi
           name_file="/sys''${DEVPATH:?missing hotplug device path}/name"
+          if [ ! -f "$name_file" ]; then
+            name_file="/sys/class/virtio-ports/$(basename "''${DEVPATH}")/name"
+          fi
           if [ ! -f "$name_file" ] || [ "$(cat "$name_file")" != 'org.aos.crucible.debug' ]; then
             exit 0
           fi
           activation_port="/dev/$(basename "''${DEVPATH}")"
           (
+            echo "CRUCIBLE_DEBUG_ACTIVATION_READER_OPEN port=$activation_port"
             IFS= read -r activation_token < "$activation_port"
             if [ "$activation_token" != 'CRUCIBLE_DEBUG_AGENT_V1' ]; then
               echo 'CRUCIBLE_DEBUG_AGENT_ACTIVATION_REJECTED'

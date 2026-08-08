@@ -51,6 +51,7 @@ struct GatewayProcess {
     run_control_inflight: Option<(u32, u32, Vec<u8>)>,
     run_control_completed: Option<(u32, Vec<u8>, Vec<u8>)>,
     scheduler_response_pending: Option<Vec<u8>>,
+    scheduler_lease_active: bool,
 }
 
 const QEMU_RSP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -74,6 +75,7 @@ impl GatewayProcess {
             run_control_inflight: None,
             run_control_completed: None,
             scheduler_response_pending: None,
+            scheduler_lease_active: false,
         }
     }
 
@@ -152,6 +154,9 @@ impl GatewayProcess {
                         .unwrap_or_default(),
                 )
             }
+            DebugGatewayMessageKind::SchedulerLease => Err(String::from(
+                "scheduler lease must use the ownership dispatcher",
+            )),
             DebugGatewayMessageKind::RspData => {
                 Err(String::from("RSP data must use the scheduler dispatcher"))
             }
@@ -199,6 +204,7 @@ impl GatewayProcess {
             && self.run_control_requests.is_empty()
             && self.run_control_inflight.is_none()
             && self.scheduler_response_pending.is_none()
+            && !self.scheduler_lease_active
     }
 }
 
@@ -416,9 +422,236 @@ fn dispatch_request(
         prepare_backend(process, frame.payload)
     } else if frame.kind == DebugGatewayMessageKind::BackendCommit {
         commit_backend_at_packet_boundary(process, frame)
+    } else if frame.kind == DebugGatewayMessageKind::SchedulerLease {
+        scheduler_lease(process, &frame.payload)
     } else {
         with_gateway(process, |process| process.handle(frame))
     }
+}
+
+fn scheduler_lease(
+    process: &SharedGatewayProcess,
+    payload: &[u8],
+) -> Result<DebugGatewayFrame, String> {
+    let acquire = match payload {
+        [1] => true,
+        [2] => false,
+        _ => {
+            return Err(String::from(
+                "scheduler lease payload must be acquire=1 or release=2",
+            ));
+        }
+    };
+    if acquire {
+        let deadline = Instant::now() + QEMU_RSP_TIMEOUT;
+        loop {
+            let acquired = with_gateway(process, |gateway| {
+                if gateway.scheduler_lease_active {
+                    return Ok(true);
+                }
+                if !gateway.run_control_requests.is_empty()
+                    || gateway.run_control_inflight.is_some()
+                    || gateway.scheduler_response_pending.is_some()
+                    || gateway.prepared.is_some()
+                {
+                    return Err(String::from(
+                        "cannot acquire scheduler ownership with pending run-control or replacement work",
+                    ));
+                }
+                let breakpoints = gateway
+                    .model
+                    .rsp_state()
+                    .hardware_breakpoints
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if breakpoints
+                    .iter()
+                    .any(|breakpoint| breakpoint.first() != Some(&b'Z'))
+                {
+                    return Err(String::from("stored hardware breakpoint is malformed"));
+                }
+                if gateway.active.is_none() {
+                    return Err(String::from(
+                        "scheduler ownership requires an active backend",
+                    ));
+                }
+                gateway.operator_admission_paused = true;
+                if gateway.rsp_responses_pending != 0 {
+                    return Ok(false);
+                }
+                let active = gateway.active.as_mut().ok_or_else(|| {
+                    String::from("scheduler ownership requires an active backend")
+                })?;
+                let mut removed = Vec::new();
+                for breakpoint in breakpoints {
+                    let mut remove = breakpoint.clone();
+                    remove[0] = b'z';
+                    match exchange_rsp_packet(&mut active.1, &remove) {
+                        Ok(reply) if reply == b"OK" => removed.push(breakpoint),
+                        Ok(reply) => {
+                            let rollback = restore_scheduler_breakpoints(&mut active.1, &removed);
+                            gateway.operator_admission_paused = false;
+                            rollback?;
+                            return Err(format!(
+                                "QEMU rejected scheduler breakpoint suspension with {}",
+                                String::from_utf8_lossy(&reply)
+                            ));
+                        }
+                        Err(error) => {
+                            let rollback = restore_scheduler_breakpoints(&mut active.1, &removed);
+                            gateway.operator_admission_paused = false;
+                            rollback?;
+                            return Err(error);
+                        }
+                    }
+                }
+                if let Err(error) = resume_scheduler_backend(&mut active.1) {
+                    let rollback = restore_scheduler_breakpoints(&mut active.1, &removed);
+                    gateway.operator_admission_paused = false;
+                    rollback?;
+                    return Err(error);
+                }
+                gateway.scheduler_lease_active = true;
+                Ok(true)
+            })?;
+            if acquired {
+                break;
+            }
+            if Instant::now() >= deadline {
+                with_gateway(process, |gateway| {
+                    gateway.operator_admission_paused = false;
+                    Ok(())
+                })?;
+                return Err(String::from(
+                    "timed out waiting for the scheduler ownership packet boundary",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    } else {
+        with_gateway(process, |gateway| {
+            if !gateway.scheduler_lease_active {
+                return Ok(());
+            }
+            let breakpoints = gateway
+                .model
+                .rsp_state()
+                .hardware_breakpoints
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            let active = gateway
+                .active
+                .as_mut()
+                .ok_or_else(|| String::from("scheduler ownership lost its active backend"))?;
+            interrupt_scheduler_backend(&mut active.1)?;
+            restore_scheduler_breakpoints(&mut active.1, &breakpoints)?;
+            gateway.scheduler_lease_active = false;
+            gateway.operator_admission_paused = false;
+            Ok(())
+        })?;
+    }
+    response(DebugGatewayMessageKind::Ack, 0, Vec::new())
+}
+
+fn resume_scheduler_backend(stream: &mut UnixStream) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(QEMU_RSP_TIMEOUT))
+        .map_err(|error| format!("set QEMU scheduler-resume timeout: {error}"))?;
+    stream
+        .write_all(&encode_rsp_packet(b"c"))
+        .map_err(|error| format!("resume QEMU for scheduler ownership: {error}"))?;
+    let mut decoder = RspStreamDecoder::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|error| format!("read QEMU scheduler-resume acknowledgement: {error}"))?;
+        if read == 0 {
+            return Err(String::from(
+                "QEMU RSP backend closed before scheduler resume was acknowledged",
+            ));
+        }
+        let mut acknowledged = false;
+        for unit in decoder
+            .push(&buffer[..read])
+            .map_err(|error| format!("decode QEMU scheduler-resume acknowledgement: {error}"))?
+        {
+            match unit {
+                RspUnit::Ack => acknowledged = true,
+                RspUnit::Nack => {
+                    return Err(String::from("QEMU rejected scheduler resume"));
+                }
+                RspUnit::Packet(_) | RspUnit::Interrupt => {
+                    return Err(String::from(
+                        "QEMU stopped unexpectedly while scheduler ownership was acquired",
+                    ));
+                }
+            }
+        }
+        if acknowledged {
+            return Ok(());
+        }
+    }
+}
+
+fn interrupt_scheduler_backend(stream: &mut UnixStream) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(QEMU_RSP_TIMEOUT))
+        .map_err(|error| format!("set QEMU scheduler-stop timeout: {error}"))?;
+    stream
+        .write_all(&[0x03])
+        .map_err(|error| format!("interrupt QEMU after scheduler ownership: {error}"))?;
+    let mut decoder = RspStreamDecoder::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|error| format!("read QEMU scheduler-stop response: {error}"))?;
+        if read == 0 {
+            return Err(String::from(
+                "QEMU RSP backend closed before scheduler stop was reported",
+            ));
+        }
+        for unit in decoder
+            .push(&buffer[..read])
+            .map_err(|error| format!("decode QEMU scheduler-stop response: {error}"))?
+        {
+            match unit {
+                RspUnit::Packet(packet)
+                    if matches!(rsp_payload(&packet).first(), Some(b'S' | b'T')) =>
+                {
+                    stream
+                        .write_all(b"+")
+                        .map_err(|error| format!("acknowledge QEMU scheduler stop: {error}"))?;
+                    return Ok(());
+                }
+                RspUnit::Ack => {}
+                RspUnit::Nack | RspUnit::Interrupt | RspUnit::Packet(_) => {
+                    return Err(String::from(
+                        "QEMU returned an invalid scheduler-stop response",
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn restore_scheduler_breakpoints(
+    stream: &mut UnixStream,
+    breakpoints: &[Vec<u8>],
+) -> Result<(), String> {
+    for breakpoint in breakpoints {
+        let reply = exchange_rsp_packet(stream, breakpoint)?;
+        if reply != b"OK" {
+            return Err(format!(
+                "QEMU rejected scheduler breakpoint restoration with {}",
+                String::from_utf8_lossy(&reply)
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn commit_backend_at_packet_boundary(
@@ -986,7 +1219,9 @@ fn request_error_code(kind: DebugGatewayMessageKind) -> DebugGatewayErrorCode {
         | DebugGatewayMessageKind::BackendCommit
         | DebugGatewayMessageKind::BackendAbort
         | DebugGatewayMessageKind::BackendStatus => DebugGatewayErrorCode::BackendUnavailable,
-        DebugGatewayMessageKind::OperatorStatus => DebugGatewayErrorCode::InvalidRequest,
+        DebugGatewayMessageKind::OperatorStatus | DebugGatewayMessageKind::SchedulerLease => {
+            DebugGatewayErrorCode::InvalidRequest
+        }
         DebugGatewayMessageKind::ExecOpen
         | DebugGatewayMessageKind::PtyOpen
         | DebugGatewayMessageKind::SshOpen

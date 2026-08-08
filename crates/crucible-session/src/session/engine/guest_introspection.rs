@@ -72,8 +72,26 @@ impl<L> Engine<L> {
         self.guest_features.remove(&node);
         self.guest_responses
             .remove(&(node.clone(), GUEST_INTROSPECTION_FEATURE_CHANNEL_ID));
+        if let Err(error) = self.quantum_loop.acquire_internal_debug_run() {
+            report.guest_introspection_activation_failure = Some(format!(
+                "scheduler ownership acquisition failed before guest activation: {error}"
+            ));
+            reply.complete(Ok(report));
+            if matches!(self.state, EngineState::Running) {
+                self.state = EngineState::Paused {
+                    reason: PauseReason::UserRequested,
+                };
+            }
+            return;
+        }
         if let Err(error) = self.quantum_loop.activate_debug_guest(node.clone()) {
-            report.guest_introspection_activation_failure = Some(error.to_string());
+            let mut reason = error.to_string();
+            if let Err(release_error) = self.quantum_loop.release_internal_debug_run() {
+                reason.push_str(&format!(
+                    "; scheduler ownership release also failed: {release_error}"
+                ));
+            }
+            report.guest_introspection_activation_failure = Some(reason);
             reply.complete(Ok(report));
             if matches!(self.state, EngineState::Running) {
                 self.state = EngineState::Paused {
@@ -119,7 +137,7 @@ impl<L> Engine<L> {
                     self.guest_features.insert(pending.node.clone(), *features);
                 }
                 _ => {
-                    pending.report.guest_introspection_activation_failure = Some(String::from(
+                    pending.record_guest_activation_failure(String::from(
                         "reserved feature channel returned a non-feature response",
                     ));
                 }
@@ -129,14 +147,14 @@ impl<L> Engine<L> {
                     reason: PauseReason::UserRequested,
                 };
             }
-            pending.reply.complete(Ok(pending.report));
+            self.finish_guest_activation(pending);
             return Ok(());
         }
 
         let elapsed = self.quanta.saturating_sub(pending.started_quanta);
         let stopped = matches!(self.state, EngineState::Stopped { .. });
         if elapsed >= GUEST_ACTIVATION_QUANTUM_LIMIT || stopped {
-            pending.guest_activation_failure(
+            pending.record_guest_activation_failure(
                 if stopped {
                     String::from("runtime stopped before the guest agent advertised features")
                 } else {
@@ -145,6 +163,7 @@ impl<L> Engine<L> {
                     )
                 },
             );
+            self.finish_guest_activation(pending);
             if !stopped {
                 self.state = EngineState::Paused {
                     reason: PauseReason::UserRequested,
@@ -157,10 +176,33 @@ impl<L> Engine<L> {
         Ok(())
     }
 
-    pub(crate) fn fail_pending_guest_activation(&mut self, reason: String) {
+    pub(crate) fn fail_pending_guest_activation(&mut self, reason: String)
+    where
+        L: QuantumLoop,
+    {
         if let Some(mut pending) = self.pending_guest_activation.take() {
-            pending.guest_activation_failure(reason);
+            pending.record_guest_activation_failure(reason);
+            self.finish_guest_activation(pending);
         }
+    }
+
+    fn finish_guest_activation(&mut self, mut pending: PendingGuestActivation)
+    where
+        L: QuantumLoop,
+    {
+        if let Err(error) = self.quantum_loop.release_internal_debug_run() {
+            let release_failure = format!("scheduler ownership release failed: {error}");
+            let reason = pending
+                .report
+                .guest_introspection_activation_failure
+                .take()
+                .map_or(release_failure.clone(), |reason| {
+                    format!("{reason}; {release_failure}")
+                });
+            pending.record_guest_activation_failure(reason);
+            self.guest_features.remove(&pending.node);
+        }
+        pending.reply.complete(Ok(pending.report));
     }
 
     pub(super) fn validate_guest_capability(

@@ -223,6 +223,25 @@ pub trait QuantumLoop {
         .into())
     }
 
+    /// Acquires debugger-gateway ownership for an internal scheduler run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when operator RSP state cannot be suspended
+    /// at a clean packet boundary.
+    fn acquire_internal_debug_run(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
+    /// Releases debugger-gateway ownership after an internal scheduler run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when operator RSP state cannot be restored.
+    fn release_internal_debug_run(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     /// Applies scheduler-owned control at the current boundary.
     ///
     /// This hook is for control operations that must take effect without

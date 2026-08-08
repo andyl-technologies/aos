@@ -14,6 +14,7 @@
   crucible-fixtures,
   bash,
   coreutils,
+  diffutils,
   grep,
   sed,
   util-linux,
@@ -358,7 +359,7 @@
             export CRUCIBLE_MATRIX_KERNEL_AARCH64="${linux-crucible}/boot/vmlinuz-${linux-crucible.version}"
             export CRUCIBLE_MATRIX_ROOT_IMAGE_AARCH64="${crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4"
           ''}
-          export PATH="${coreutils}/bin:${grep}/bin:${sed}/bin:${util-linux}/bin:${bash}/bin"
+          export PATH="${coreutils}/bin:${diffutils}/bin:${grep}/bin:${sed}/bin:${util-linux}/bin:${bash}/bin"
           exec ${bash}/bin/bash "$out/share/aos/crucible/debugger-live-matrix.sh" "\$@"
           EOF
           chmod +x "$out/bin/crucible-debugger-live-matrix"

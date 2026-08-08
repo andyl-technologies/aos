@@ -98,6 +98,48 @@ fn debug_gdbstub_launch_does_not_expose_guest_activation_device() {
 }
 
 #[test]
+fn debug_guest_activation_endpoint_is_fixed_and_inert() {
+    let command = QemuLaunchCommandBuilder::new(
+        default_profile(),
+        default_vm_config(),
+        default_qemu_binary(),
+        default_plugin_config(),
+    )
+    .with_debug_guest_activation_endpoint()
+    .build()
+    .unwrap_or_else(|error| panic!("debug launch command should build: {error}"));
+
+    assert!(command.args().windows(2).any(|window| {
+        window
+            == [
+                "-device",
+                "virtio-serial-pci,id=crucible-debug-serial,bus=pcie.0",
+            ]
+    }));
+    assert!(command.args().windows(2).any(|window| {
+        window[0] == "-chardev"
+            && window[1].contains("socket,id=crucible-debug-activation")
+            && !window[1].contains("server=")
+    }));
+    assert!(command.args().windows(2).any(|window| {
+        window[0] == "-device"
+            && window[1].contains("virtserialport,bus=crucible-debug-serial.0")
+            && window[1].contains("name=org.aos.crucible.debug")
+    }));
+    assert!(
+        !command
+            .args()
+            .iter()
+            .any(|argument| argument.contains("CRUCIBLE_DEBUG_AGENT_V1"))
+    );
+    assert!(
+        command
+            .vm_launch_hash_material()
+            .contains("debug_guest_activation_endpoint=fixed-inert-v1")
+    );
+}
+
+#[test]
 fn debug_gdbstub_proxy_mediates_operator_listen_to_qemu_endpoint() {
     let fake_qemu = TcpListener::bind("127.0.0.1:0")
         .unwrap_or_else(|error| panic!("fake QEMU gdbstub should bind: {error}"));

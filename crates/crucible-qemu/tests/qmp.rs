@@ -11,13 +11,12 @@ use std::time::Duration;
 
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
-    QMP_CAPABILITIES_COMMAND, QMP_CHARDEV_ADD_COMMAND, QMP_COMMAND_TIMEOUT,
-    QMP_DEBUG_GUEST_ACTIVATION_DEVICE, QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QMP_DEVICE_ADD_COMMAND,
+    QMP_CAPABILITIES_COMMAND, QMP_CHARDEV_ADD_COMMAND, QMP_COMMAND_TIMEOUT, QMP_DEVICE_ADD_COMMAND,
     QMP_GREETING_TIMEOUT, QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_JOBS_COMMAND,
-    QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME, QMP_RINGBUF_WRITE_COMMAND,
-    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE,
-    QemuSavevmCompletenessPolicy, QmpClient, QmpCommandKind, QmpError, QmpGreeting,
-    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND,
+    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuSavevmCompletenessPolicy,
+    QmpClient, QmpCommandKind, QmpError, QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy,
+    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -356,51 +355,26 @@ fn debug_guest_activation_is_a_fixed_typed_qmp_command() -> Result<(), Box<dyn E
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
     ]);
     let audit = stream.audit_handle();
-    let mut client = QmpClient::connect(stream)?;
+    let mut client = QmpClient::connect(stream)?.with_predeclared_debug_guest_endpoint();
 
     assert_eq!(
-        client.activate_debug_guest()?.command,
-        QmpCommandKind::ActivateDebugGuest
+        client.prepare_debug_guest()?.command,
+        QmpCommandKind::AddDebugGuestPort
     );
     assert_eq!(
-        client.activate_debug_guest()?.command,
-        QmpCommandKind::ActivateDebugGuest
+        client.prepare_debug_guest()?.command,
+        QmpCommandKind::AddDebugGuestPort
     );
 
     drop(client);
     let audit = audit_snapshot(&audit);
     let lines = written_json_lines(&audit)?;
     assert_eq!(
-        execute_name(json_line(&lines, 1)),
-        Some(QMP_CHARDEV_ADD_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 2)),
-        Some(QMP_DEVICE_ADD_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 3)),
-        Some(QMP_DEVICE_ADD_COMMAND)
-    );
-    let request = json_line(&lines, 4);
-    assert_eq!(execute_name(request), Some(QMP_RINGBUF_WRITE_COMMAND));
-    assert_eq!(
-        request.pointer("/arguments/device").and_then(Value::as_str),
-        Some(QMP_DEBUG_GUEST_ACTIVATION_DEVICE)
-    );
-    assert_eq!(
-        request.pointer("/arguments/data").and_then(Value::as_str),
-        Some(QMP_DEBUG_GUEST_ACTIVATION_TOKEN)
-    );
-    assert_eq!(
-        request.pointer("/arguments/format").and_then(Value::as_str),
-        Some("utf8")
+        lines.len(),
+        1,
+        "activation emitted an unexpected QMP command"
     );
     Ok(())
 }
@@ -419,10 +393,10 @@ fn debug_guest_activation_retries_from_the_last_completed_stage() -> Result<(), 
     let audit = stream.audit_handle();
     let mut client = QmpClient::connect(stream)?;
 
-    assert!(client.activate_debug_guest().is_err());
+    assert!(client.prepare_debug_guest().is_err());
     assert_eq!(
-        client.activate_debug_guest()?.command,
-        QmpCommandKind::ActivateDebugGuest
+        client.prepare_debug_guest()?.command,
+        QmpCommandKind::AddDebugGuestPort
     );
 
     drop(client);
@@ -443,10 +417,6 @@ fn debug_guest_activation_retries_from_the_last_completed_stage() -> Result<(), 
     assert_eq!(
         execute_name(json_line(&lines, 4)),
         Some(QMP_DEVICE_ADD_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 5)),
-        Some(QMP_RINGBUF_WRITE_COMMAND)
     );
     Ok(())
 }

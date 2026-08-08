@@ -274,6 +274,32 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             })
     }
 
+    fn acquire_internal_debug_run(&mut self) -> Result<(), SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
+        self.debug_gateway
+            .as_mut()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("production debugger gateway process is unavailable"),
+            })?
+            .acquire_scheduler_lease()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("acquire internal debugger scheduler ownership: {error}"),
+            })
+    }
+
+    fn release_internal_debug_run(&mut self) -> Result<(), SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
+        self.debug_gateway
+            .as_mut()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("production debugger gateway process is unavailable"),
+            })?
+            .release_scheduler_lease()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("release internal debugger scheduler ownership: {error}"),
+            })
+    }
+
     fn apply_control_at_boundary(
         &mut self,
         control: Vec<ControlOperation>,
