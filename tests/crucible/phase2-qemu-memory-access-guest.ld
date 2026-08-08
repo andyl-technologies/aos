@@ -11,10 +11,14 @@ SECTIONS
   .fault_data : { *(.fault_data) }
   . = 0x00104000;
   .bss : { *(.bss) }
+  . = 0x00108000;
+  .scenario_data : { *(.scenario_data) }
   . = 0x00109000;
   .fault_text : { *(.fault_text) }
   . = 0x0010a000;
   .page_tables : { *(.page_tables) }
   . = 0x0010d000;
   .gdt : { *(.gdt) }
+  . = 0x0010e000;
+  .idt : { *(.idt) }
 }

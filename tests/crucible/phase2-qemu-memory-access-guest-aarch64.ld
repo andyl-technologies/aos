@@ -10,6 +10,8 @@ SECTIONS
   .fault_text : { *(.fault_text) }
   . = 0x40300000;
   .fault_data : { *(.fault_data) }
+  . = 0x40310000;
+  .scenario_data : { *(.scenario_data) }
   . = 0x40400000;
   .page_tables : { *(.page_tables) }
 }
