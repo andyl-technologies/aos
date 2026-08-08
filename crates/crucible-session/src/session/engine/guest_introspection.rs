@@ -3,7 +3,7 @@
 use super::*;
 
 impl<L> Engine<L> {
-    pub(super) fn receive_guest_channel_response(
+    pub(crate) fn receive_guest_channel_response(
         &mut self,
         node: &NodeId,
         channel_id: u64,
@@ -17,6 +17,15 @@ impl<L> Engine<L> {
             .get_mut(&key)
             .and_then(VecDeque::pop_front)
         {
+            if guest_response_is_terminal(&record)
+                && let Err(error) = self.finish_guest_channel_run_if_idle()
+            {
+                self.guest_responses
+                    .entry(key)
+                    .or_default()
+                    .push_front(record);
+                return Err(error);
+            }
             return Ok(Some(record));
         }
         for _ in 0..GUEST_RESPONSE_BROKER_CAPACITY {
@@ -32,12 +41,16 @@ impl<L> Engine<L> {
                 }
             })?;
             let record_key = (node.clone(), record.channel_id());
-            let terminal = matches!(
-                record.message(),
-                GuestIntrospectionMessage::Exit { .. } | GuestIntrospectionMessage::Error { .. }
-            );
+            let terminal = guest_response_is_terminal(&record);
             if terminal {
                 self.guest_channels.remove(&record_key);
+                if let Err(error) = self.finish_guest_channel_run_if_idle() {
+                    self.guest_responses
+                        .entry(record_key)
+                        .or_default()
+                        .push_back(record);
+                    return Err(error);
+                }
             }
             if record_key == key {
                 return Ok(Some(record));
@@ -262,15 +275,101 @@ impl<L> Engine<L> {
         Ok(())
     }
 
-    pub(crate) fn close_guest_channels_for_reposition(&mut self) {
+    pub(crate) fn begin_guest_channel_run(&mut self) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        if self.guest_channel_run_active {
+            return Ok(());
+        }
+        self.quantum_loop.acquire_internal_debug_run()?;
+        self.guest_channel_run_active = true;
+        self.active_step = None;
+        self.state = EngineState::Running;
+        Ok(())
+    }
+
+    pub(super) fn abort_empty_guest_channel_run(&mut self) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        if !self.guest_channels.is_empty() || !self.guest_channel_run_active {
+            return Ok(());
+        }
+        self.quantum_loop.release_internal_debug_run()?;
+        self.guest_channel_run_active = false;
+        if !matches!(self.state, EngineState::Stopped { .. }) {
+            self.state = EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            };
+        }
+        Ok(())
+    }
+
+    fn finish_guest_channel_run_if_idle(&mut self) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        if !self.guest_channels.is_empty() || !self.guest_channel_run_active {
+            return Ok(());
+        }
+        self.quantum_loop.release_internal_debug_run()?;
+        self.guest_channel_run_active = false;
+        if !matches!(self.state, EngineState::Stopped { .. }) {
+            self.state = EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            };
+        }
+        Ok(())
+    }
+
+    pub(crate) fn close_guest_channels_for_reposition(&mut self) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        self.fail_pending_guest_activation(String::from(
+            "debug runtime reposition closed pending guest activation",
+        ));
         self.guest_responses.clear();
         self.guest_features.clear();
+        self.record_guest_channel_closures(String::from(
+            "debug runtime reposition closed the guest channel",
+        ));
+        if self.guest_channel_run_active {
+            self.quantum_loop.release_internal_debug_run()?;
+            self.guest_channel_run_active = false;
+        }
+        if !matches!(self.state, EngineState::Stopped { .. }) {
+            self.state = EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            };
+        }
+        Ok(())
+    }
+
+    pub(super) fn resolve_guest_introspection_for_terminal(&mut self)
+    where
+        L: QuantumLoop,
+    {
+        self.fail_pending_guest_activation(String::from(
+            "session terminated before guest activation completed",
+        ));
+        self.guest_features.clear();
+        self.record_guest_channel_closures(String::from(
+            "session terminated before the guest channel completed",
+        ));
+        if self.guest_channel_run_active && self.quantum_loop.release_internal_debug_run().is_ok() {
+            self.guest_channel_run_active = false;
+        }
+    }
+
+    fn record_guest_channel_closures(&mut self, message: String) {
         for (node, channel_id) in std::mem::take(&mut self.guest_channels) {
             let record = GuestIntrospectionRecord::new(
                 channel_id,
                 GuestIntrospectionMessage::Error {
                     code: GuestIntrospectionFailureCode::ClosedChannel,
-                    message: String::from("debug runtime reposition closed the guest channel"),
+                    message: message.clone(),
                 },
             );
             if let Ok(record) = record {
@@ -281,4 +380,11 @@ impl<L> Engine<L> {
             }
         }
     }
+}
+
+fn guest_response_is_terminal(record: &GuestIntrospectionRecord) -> bool {
+    matches!(
+        record.message(),
+        GuestIntrospectionMessage::Exit { .. } | GuestIntrospectionMessage::Error { .. }
+    )
 }

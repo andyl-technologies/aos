@@ -13,7 +13,7 @@ const GUEST_RESPONSE_BROKER_CAPACITY: usize = 64;
 // A forked production guest may still be cold-booting when activation begins.
 // Keep negotiation bounded while allowing the portable TCG fixtures enough
 // scheduler turns to reach their blocking activation reader.
-const GUEST_ACTIVATION_QUANTUM_LIMIT: u64 = 512;
+const GUEST_ACTIVATION_QUANTUM_LIMIT: u64 = 1024;
 
 struct PendingGuestActivation {
     node: NodeId,
@@ -61,6 +61,7 @@ pub struct Engine<L> {
     pub(super) guest_channels: BTreeSet<(NodeId, u64)>,
     pub(super) guest_features: BTreeMap<NodeId, GuestIntrospectionFeatures>,
     pending_guest_activation: Option<PendingGuestActivation>,
+    guest_channel_run_active: bool,
     pub(super) next_control_sequence: u64,
     pub(super) boundary_control_log: Vec<SessionControlLogEntry>,
     pub(super) next_boundary_control_sequence: u64,
@@ -99,6 +100,7 @@ impl<L> Engine<L> {
             guest_channels: BTreeSet::new(),
             guest_features: BTreeMap::new(),
             pending_guest_activation: None,
+            guest_channel_run_active: false,
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
@@ -164,6 +166,7 @@ impl<L> Engine<L> {
             guest_channels: BTreeSet::new(),
             guest_features: BTreeMap::new(),
             pending_guest_activation: None,
+            guest_channel_run_active: false,
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
@@ -622,6 +625,13 @@ impl<L> Engine<L> {
             )));
         }
 
+        if let Err(error) = self.close_guest_channels_for_reposition() {
+            self.debug_coordinator.failed(format!(
+                "runtime replacement committed but guest-channel closure failed: {error}"
+            ));
+            return Err(error);
+        }
+
         refreshed.gdbstub.qemu_endpoint = evidence.qemu_gdbstub.clone();
         goto.runtime.runtime = reposition.target_runtime.clone();
         goto.live_reposition = Some(evidence);
@@ -643,7 +653,6 @@ impl<L> Engine<L> {
             DebugCoordinate::EventSequence(sequence) => Some(*sequence),
             _ => None,
         };
-        self.close_guest_channels_for_reposition();
         self.debug_attach = Some(refreshed.clone());
         self.debug_coordinator
             .repositioned_canonical(configuration.id());
@@ -722,6 +731,7 @@ impl<L> Engine<L> {
     where
         L: QuantumLoop,
     {
+        self.resolve_guest_introspection_for_terminal();
         let entries = self.quantum_loop.shutdown()?;
         self.append_boundary_event_log_entries(entries)
     }
@@ -1777,8 +1787,24 @@ impl<L: QuantumLoop> Engine<L> {
                         })?;
                         self.validate_guest_capability(node, record.message())?;
                         self.validate_guest_channel_capacity(node, record.message())?;
-                        self.quantum_loop
-                            .send_guest_introspection(node.clone(), record.clone())?;
+                        let opens_channel = matches!(
+                            record.message(),
+                            GuestIntrospectionMessage::Exec { .. }
+                                | GuestIntrospectionMessage::Pty { .. }
+                                | GuestIntrospectionMessage::Ssh { .. }
+                        );
+                        if opens_channel {
+                            self.begin_guest_channel_run()?;
+                        }
+                        if let Err(error) = self
+                            .quantum_loop
+                            .send_guest_introspection(node.clone(), record.clone())
+                        {
+                            if opens_channel {
+                                self.abort_empty_guest_channel_run()?;
+                            }
+                            return Err(error.into());
+                        }
                         match record.message() {
                             GuestIntrospectionMessage::Exec { .. }
                             | GuestIntrospectionMessage::Pty { .. }
