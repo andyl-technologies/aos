@@ -1593,34 +1593,6 @@ impl SingleScheduler {
             .collect()
     }
 
-    /// Applies combined node timing faults to a VM scheduler node.
-    ///
-    /// Slowdown is installed as an anchored counter-to-virtual-time projection
-    /// at the node's current counter, preserving continuity on the scheduler
-    /// axis. Clock skew is stored only in the node's guest-visible timing
-    /// projection. Crash and restart effects are intentionally outside this
-    /// timing-only entry point.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
-    /// VM scheduler node in this scheduler, or [`SchedulerError::TimeConversion`]
-    /// when the current timing projection cannot be computed.
-    pub fn apply_combined_node_timing_faults(
-        &mut self,
-        node: &NodeId,
-        faults: &CombinedNodeFaults,
-    ) -> Result<NodeTimingFaults, SchedulerError> {
-        let index = self.vm_node_index(node)?;
-        let anchor_counter = self.nodes[index].counter;
-        let anchor_time = self.node_current_time(&self.nodes[index])?;
-        let timing_faults =
-            node_timing_faults_from_combined_node(faults, anchor_counter, anchor_time);
-        self.nodes[index].timing_faults = timing_faults;
-        self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
-        Ok(timing_faults)
-    }
-
     /// Projects one VM node's current counter under active timing faults.
     ///
     /// # Errors
