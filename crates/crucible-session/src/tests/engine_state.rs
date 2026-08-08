@@ -1261,7 +1261,7 @@ async fn rejected_debug_runtime_reposition_preserves_session_transaction() {
     assert_eq!(engine.graph, before_graph);
     assert!(!engine.debug_branch_required());
     assert!(engine.guest_channels.contains(&active_guest_channel));
-    assert!(engine.guest_responses.get(&active_guest_channel).is_none());
+    assert!(!engine.guest_responses.contains_key(&active_guest_channel));
 }
 
 #[tokio::test]
