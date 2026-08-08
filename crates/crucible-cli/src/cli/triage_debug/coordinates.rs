@@ -56,6 +56,10 @@ pub(in super::super) fn parse_debug_at_coordinate(
     if let Some(node_icount) = value.strip_prefix("icount:") {
         return parse_node_icount(node_icount);
     }
+    if let Some(sequence) = value.strip_prefix("event:") {
+        return parse_u64_value("--at event", sequence)
+            .map(crucible::DebugCoordinate::event_sequence);
+    }
     if value.contains(':') {
         return parse_node_icount(value);
     }

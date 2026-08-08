@@ -321,6 +321,12 @@ fn parse_debug_coordinate(value: &str) -> Result<crucible::DebugCoordinate, Stri
             crucible::Icount { retired },
         ));
     }
+    if let Some(sequence) = value.strip_prefix("event:") {
+        return sequence
+            .parse::<u64>()
+            .map(crucible::DebugCoordinate::event_sequence)
+            .map_err(|error| format!("invalid event-log coordinate: {error}"));
+    }
     Err(format!("unsupported debug coordinate `{value}`"))
 }
 
@@ -478,6 +484,13 @@ mod tests {
                 crucible::Icount { retired: 81 },
             )
         );
+
+        let event = format!(
+            "crucible.rpc/debug-goto-request\nsession-id=7\nepoch=3\nseed={TEST_SEED}\ngeneration=9\nholder={TEST_HOLDER}\ncoordinate=event:19\n"
+        );
+        let (_, _, _, coordinate) =
+            parse_debug_goto_request(event.as_bytes()).expect("event coordinate must parse");
+        assert_eq!(coordinate, crucible::DebugCoordinate::event_sequence(19));
     }
 
     #[test]

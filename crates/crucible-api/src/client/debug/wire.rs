@@ -62,11 +62,10 @@ pub(super) fn encode_debug_goto_request(
             hex_encode(node.name.as_bytes()),
             icount.retired
         ),
-        crucible::DebugCoordinate::Configuration(_)
-        | crucible::DebugCoordinate::Checkpoint(_)
-        | crucible::DebugCoordinate::EventSequence(_) => {
+        crucible::DebugCoordinate::EventSequence(sequence) => format!("event:{sequence}"),
+        crucible::DebugCoordinate::Configuration(_) | crucible::DebugCoordinate::Checkpoint(_) => {
             return Err(rpc_decode(
-                "unary remote goto accepts virtual-time or node-icount coordinates",
+                "unary remote goto accepts virtual-time, event-log, or node-icount coordinates",
             ));
         }
     };

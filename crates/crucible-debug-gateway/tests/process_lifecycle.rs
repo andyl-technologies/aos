@@ -81,9 +81,6 @@ fn stable_gdb_connection_survives_backend_replacement() {
         .promote_backend(&second_path)
         .unwrap_or_else(|error| panic!("second backend should promote: {error}"));
 
-    assert_eq!(read_rsp_payload(&mut gdb), b"T05");
-    gdb.write_all(b"+")
-        .unwrap_or_else(|error| panic!("replacement stop should acknowledge: {error}"));
     gdb.write_all(&encode_rsp_packet(b"m1000,1"))
         .unwrap_or_else(|error| panic!("memory query should write: {error}"));
     assert_eq!(read_rsp_payload(&mut gdb), b"O6869");

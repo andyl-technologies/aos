@@ -823,6 +823,7 @@ impl ProductionVmLifecycleLoop {
             .map(|vm| vm.id.clone())
             .collect::<Vec<_>>();
         let mut node_icounts = BTreeMap::new();
+        let mut node_times = BTreeMap::new();
         let mut fingerprints = BTreeMap::new();
         for node in nodes {
             node_icounts.insert(
@@ -831,6 +832,10 @@ impl ProductionVmLifecycleLoop {
                     retired: self.inner.backend().node_now(&node)?.ticks,
                 },
             );
+            node_times.insert(
+                node.clone(),
+                self.inner.loop_impl().scheduler_time_for_node(&node)?,
+            );
             fingerprints.insert(node.clone(), self.inner.backend_mut().fingerprint(node)?);
         }
         let evidence = ProductionVmDebugRuntimeEvidence {
@@ -838,6 +843,7 @@ impl ProductionVmLifecycleLoop {
             event_log: self.inner.loop_impl().event_log_offset(),
             scheduler: self.inner.loop_impl().materialized_scheduler_state(),
             node_icounts,
+            node_times,
             fingerprints,
             graph_runtimes: Vec::new(),
             runtime: None,
@@ -899,7 +905,7 @@ impl ProductionVmLifecycleLoop {
             .debug_runtime_evidence
             .iter()
             .rev()
-            .find(|evidence| evidence.graph_runtimes.contains(runtime))
+            .find(|evidence| evidence.matches_graph_runtime(runtime))
             .ok_or_else(|| SchedulerError::BoundaryViolation {
                 message: String::from(
                     "graph debug target has no matching production runtime evidence",
@@ -928,7 +934,7 @@ impl ProductionVmLifecycleLoop {
             .iter()
             .find(|evidence| {
                 evidence.event_log.events > *sequence
-                    && evidence.graph_runtimes.contains(runtime)
+                    && evidence.matches_graph_runtime(runtime)
                     && evidence.runtime.is_some()
             })
             .ok_or_else(|| SchedulerError::BoundaryViolation {
@@ -944,6 +950,30 @@ impl ProductionVmLifecycleLoop {
                     "production coordinate evidence was not bound to graph materialization",
                 ),
             })
+    }
+
+    /// Resolves the production scheduler frontier recorded for a debug target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the resolved runtime
+    /// has no corresponding production evidence sample.
+    pub(super) fn resolve_recorded_debug_coordinate_frontier(
+        &self,
+        coordinate: &crucible::DebugCoordinate,
+        runtime: &RuntimeState,
+        graph_fallback: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let evidence = self
+            .debug_runtime_evidence
+            .iter()
+            .find(|evidence| evidence.runtime.as_ref() == Some(runtime))
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "debug coordinate {coordinate:?} has no matching production frontier evidence"
+                ),
+            })?;
+        Ok(evidence.scheduler_frontier(graph_fallback))
     }
 
     fn app_random_continuation_config(
@@ -1071,11 +1101,32 @@ fn initial_node_state_events(source: &ScenarioDefForm, at: VirtualTime) -> Vec<O
 }
 
 impl ProductionVmDebugRuntimeEvidence {
+    /// Returns the earliest recorded node time, or the graph-only fallback.
+    fn scheduler_frontier(&self, graph_fallback: VirtualTime) -> VirtualTime {
+        self.node_times
+            .values()
+            .copied()
+            .min()
+            .unwrap_or(graph_fallback)
+    }
+
+    /// Matches graph identity while ignoring boundary-owned runtime evidence.
+    ///
+    /// A repositioned runtime carries the event-log offset and node counters
+    /// from its landed boundary. Those fields must not prevent a subsequent
+    /// reverse operation from resolving an earlier sample of the same reduced
+    /// graph state.
+    fn matches_graph_runtime(&self, runtime: &RuntimeState) -> bool {
+        self.validate_graph_runtime(runtime.configuration, runtime.id, runtime)
+            .is_ok()
+    }
+
     fn same_sample(&self, other: &Self) -> bool {
         self.configuration == other.configuration
             && self.event_log == other.event_log
             && self.scheduler == other.scheduler
             && self.node_icounts == other.node_icounts
+            && self.node_times == other.node_times
             && self.fingerprints == other.fingerprints
     }
 

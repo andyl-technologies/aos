@@ -23,7 +23,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crucible_debug_gateway::{
     BackendGeneration, DebugGateway, QemuRspEndpoint, RspDisposition, RspSessionState,
@@ -41,6 +41,7 @@ struct GatewayProcess {
     prepared: Option<(BackendGeneration, UnixStream, u64)>,
     operator_listen: Option<SocketAddr>,
     operator_writer: Option<TcpStream>,
+    operator_admission_paused: bool,
     rsp_responses_pending: usize,
     rsp_state_epoch: u64,
     replacement_epoch: u64,
@@ -63,6 +64,7 @@ impl GatewayProcess {
             prepared: None,
             operator_listen,
             operator_writer: None,
+            operator_admission_paused: false,
             rsp_responses_pending: 0,
             rsp_state_epoch: 0,
             replacement_epoch: 0,
@@ -86,6 +88,7 @@ impl GatewayProcess {
             DebugGatewayMessageKind::BackendCommit => {
                 let generation = generation_payload(&frame.payload)?;
                 if self.model.active().map(|active| active.generation) == Some(generation) {
+                    self.operator_admission_paused = false;
                     return response(DebugGatewayMessageKind::Ack, 0, generation.0.to_be_bytes());
                 }
                 if !self.replacement_boundary_is_clean() {
@@ -111,13 +114,7 @@ impl GatewayProcess {
                     .commit_backend(generation)
                     .map_err(|error| error.to_string())?;
                 self.active = Some((generation, stream));
-                if let Some(operator) = self.operator_writer.as_mut() {
-                    operator
-                        .write_all(&encode_rsp_packet(b"T05"))
-                        .map_err(|error| {
-                            format!("write replacement stop to operator gdb: {error}")
-                        })?;
-                }
+                self.operator_admission_paused = false;
                 self.replacement_epoch = self.replacement_epoch.saturating_add(1);
                 response(DebugGatewayMessageKind::Ack, 0, generation.0.to_be_bytes())
             }
@@ -127,6 +124,7 @@ impl GatewayProcess {
                     .abort_backend(generation)
                     .map_err(|error| error.to_string())?;
                 self.prepared = None;
+                self.operator_admission_paused = false;
                 response(DebugGatewayMessageKind::Ack, 0, Vec::new())
             }
             DebugGatewayMessageKind::BackendStatus => {
@@ -416,8 +414,34 @@ fn dispatch_request(
         response(DebugGatewayMessageKind::Ack, 0, Vec::new())
     } else if frame.kind == DebugGatewayMessageKind::BackendPrepare {
         prepare_backend(process, frame.payload)
+    } else if frame.kind == DebugGatewayMessageKind::BackendCommit {
+        commit_backend_at_packet_boundary(process, frame)
     } else {
         with_gateway(process, |process| process.handle(frame))
+    }
+}
+
+fn commit_backend_at_packet_boundary(
+    process: &SharedGatewayProcess,
+    frame: DebugGatewayFrame,
+) -> Result<DebugGatewayFrame, String> {
+    let deadline = Instant::now() + QEMU_RSP_TIMEOUT;
+    loop {
+        let committed = with_gateway(process, |gateway| {
+            if !gateway.replacement_boundary_is_clean() {
+                return Ok(None);
+            }
+            gateway.handle(frame.clone()).map(Some)
+        })?;
+        if let Some(response) = committed {
+            return Ok(response);
+        }
+        if Instant::now() >= deadline {
+            return Err(String::from(
+                "timed out waiting for the debugger replacement packet boundary",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -443,6 +467,7 @@ fn prepare_backend(
                 .prepare_backend(endpoint.clone())
                 .map_err(|error| error.to_string())?;
             gateway.prepared = Some((prepared.generation, stream, gateway.rsp_state_epoch));
+            gateway.operator_admission_paused = true;
             Ok(Some(prepared))
         })?;
         if let Some(prepared) = committed {
@@ -625,8 +650,10 @@ fn serve_operator_connection(
         if replacement_epoch != observed_replacement_epoch {
             observed_replacement_epoch = replacement_epoch;
             backend_decoder = RspStreamDecoder::new();
-            pending_state.clear();
-            synthetic_stop_ack_pending = true;
+            // The prepare barrier drains the old backend before commit. A
+            // packet waiting at that barrier is admitted only after commit and
+            // must retain its request/response correlation on the new backend.
+            synthetic_stop_ack_pending = false;
         }
 
         match operator.read(&mut buffer) {
@@ -822,16 +849,25 @@ fn queue_scheduler_run_control(
 }
 
 fn admit_operator_request(process: &SharedGatewayProcess, packet: &[u8]) -> Result<bool, String> {
-    with_gateway(process, |gateway| {
-        let Some((_, backend)) = gateway.active.as_mut() else {
-            return Ok(false);
-        };
-        backend
-            .write_all(packet)
-            .map_err(|error| format!("forward operator RSP packet to QEMU: {error}"))?;
-        gateway.rsp_responses_pending = gateway.rsp_responses_pending.saturating_add(1);
-        Ok(true)
-    })
+    loop {
+        let admitted = with_gateway(process, |gateway| {
+            if gateway.operator_admission_paused {
+                return Ok(None);
+            }
+            let Some((_, backend)) = gateway.active.as_mut() else {
+                return Ok(Some(false));
+            };
+            backend
+                .write_all(packet)
+                .map_err(|error| format!("forward operator RSP packet to QEMU: {error}"))?;
+            gateway.rsp_responses_pending = gateway.rsp_responses_pending.saturating_add(1);
+            Ok(Some(true))
+        })?;
+        if let Some(admitted) = admitted {
+            return Ok(admitted);
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 fn write_active_backend(process: &SharedGatewayProcess, bytes: &[u8]) -> Result<bool, String> {

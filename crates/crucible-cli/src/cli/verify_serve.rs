@@ -975,8 +975,11 @@ where
     };
     if args.production_qemu {
         let backend = require_selftest_qemu_backend(cli)?;
-        let config = production_qemu_lifecycle_config(&backend)?
-            .with_debug_gdbstubs_for_all_nodes("127.0.0.1:0");
+        let mut config = production_qemu_lifecycle_config(&backend)?;
+        if let Some(interval) = args.qemu_rendezvous_icount {
+            config = config.with_rendezvous_interval_icount(interval);
+        }
+        let config = config.with_debug_gdbstubs_for_all_nodes("127.0.0.1:0");
         let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
             "crucible-cli-qemu-daemon",
             Vec::new(),
@@ -1111,6 +1114,16 @@ pub(super) async fn serve_shutdown_signal() -> Result<(), CliError> {
 pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError> {
     if args.max_sessions == Some(0) {
         return Err(usage_error("--max-sessions must be greater than zero"));
+    }
+    if args.qemu_rendezvous_icount == Some(0) {
+        return Err(usage_error(
+            "--qemu-rendezvous-icount must be greater than zero",
+        ));
+    }
+    if args.qemu_rendezvous_icount.is_some() && !args.production_qemu {
+        return Err(usage_error(
+            "--qemu-rendezvous-icount requires --production-qemu",
+        ));
     }
     let tls_file_count = [
         args.tls_cert.is_some(),

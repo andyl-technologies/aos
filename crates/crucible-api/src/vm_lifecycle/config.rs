@@ -48,6 +48,7 @@ impl ProductionVmLifecycleConfig {
             root_image_format: ProductionRootImageFormat::Qcow2,
             run_ceiling_icount: DEFAULT_RUN_CEILING_ICOUNT,
             quantum_budget: DEFAULT_QUANTUM_BUDGET,
+            rendezvous_interval_icount: None,
             completion_timeout: Duration::from_secs(240),
             coverage: ProductionPluginSwitch::Off,
             debug_gateway_executable: None,
@@ -121,6 +122,16 @@ impl ProductionVmLifecycleConfig {
     #[must_use]
     pub const fn with_quantum_budget(mut self, budget: u64) -> Self {
         self.quantum_budget = budget;
+        self
+    }
+
+    /// Returns this configuration with a fixed scheduler rendezvous interval.
+    ///
+    /// The interval is expressed in guest instructions and deterministically
+    /// caps each scheduler RUN without changing the terminal run ceiling.
+    #[must_use]
+    pub const fn with_rendezvous_interval_icount(mut self, interval: u64) -> Self {
+        self.rendezvous_interval_icount = Some(interval);
         self
     }
 

@@ -572,6 +572,12 @@ impl<L> Engine<L> {
                 &goto.target_coordinate,
                 &reposition.target_runtime,
             )?;
+        let landed_frontier = self.quantum_loop.resolve_debug_coordinate_frontier(
+            &goto.target_coordinate,
+            &reposition.target_runtime,
+            frontier,
+        )?;
+        goto.landed_virtual_time = landed_frontier;
         let attach_request = DebugAttachRequest {
             configuration: configuration.clone(),
             node: previous_attach.gdbstub.node.clone(),
@@ -622,7 +628,7 @@ impl<L> Engine<L> {
         self.configuration = configuration.clone();
         self.runtime = Some(reposition.target_runtime.clone());
         self.runtime_instantiated = true;
-        self.frontier = frontier;
+        self.frontier = landed_frontier;
         self.event_log_len = u64_to_usize(reposition.target_runtime.event_log.events);
         self.active_step = None;
         if matches!(self.state, EngineState::Running) {

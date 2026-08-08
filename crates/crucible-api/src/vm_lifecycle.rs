@@ -27,8 +27,8 @@ use crucible::{
     HostAssertionOutcomeKind, Icount, NodeId, NodeLifecycle, ObservableEvent, QuantumLoop,
     QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RestartPolicy, RuntimeState,
     ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
-    SchedulerLivenessScenario, SchedulerState, SearchFrontierChoices, Seed, Shift, SimInstant,
-    SimulationBackend, SingleScheduler, VirtualTime, VmArchitecture, World,
+    SchedulerLivenessScenario, SchedulerState, SearchFrontierChoices, Seed, Shift, SimDuration,
+    SimInstant, SimulationBackend, SingleScheduler, VirtualTime, VmArchitecture, World,
 };
 
 use crate::LifecycleApiError;
@@ -58,6 +58,7 @@ pub struct ProductionVmLifecycleConfig {
     root_image_format: ProductionRootImageFormat,
     run_ceiling_icount: u64,
     quantum_budget: u64,
+    rendezvous_interval_icount: Option<u64>,
     completion_timeout: Duration,
     coverage: ProductionPluginSwitch,
     debug_gateway_executable: Option<PathBuf>,
@@ -92,6 +93,7 @@ struct ProductionVmDebugRuntimeEvidence {
     event_log: EventLogOffset,
     scheduler: SchedulerState,
     node_icounts: BTreeMap<NodeId, Icount>,
+    node_times: BTreeMap<NodeId, VirtualTime>,
     fingerprints: BTreeMap<NodeId, FingerprintSample>,
     graph_runtimes: Vec<RuntimeState>,
     runtime: Option<RuntimeState>,
@@ -191,7 +193,10 @@ pub fn build_production_vm_lifecycle_loop(
             "production QEMU lifecycle currently requires one shared icount shift",
         ));
     }
-    if config.run_ceiling_icount == 0 || config.quantum_budget == 0 {
+    if config.run_ceiling_icount == 0
+        || config.quantum_budget == 0
+        || config.rendezvous_interval_icount == Some(0)
+    {
         return Err(loop_factory_error(
             "production QEMU lifecycle bounds must be nonzero",
         ));
@@ -357,7 +362,7 @@ pub fn build_production_vm_lifecycle_loop(
         .run_ceiling_icount
         .checked_shl(u32::from(first.icount_shift))
         .ok_or_else(|| loop_factory_error("QEMU lifecycle time limit overflow"))?;
-    let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
+    let mut runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
         shift,
         config.quantum_budget,
@@ -368,6 +373,16 @@ pub fn build_production_vm_lifecycle_loop(
         source.world(),
     )
     .with_scenario_def(scenario.clone());
+    if let Some(interval_icount) = config.rendezvous_interval_icount {
+        let interval_nanos = interval_icount
+            .checked_shl(u32::from(first.icount_shift))
+            .ok_or_else(|| loop_factory_error("QEMU rendezvous interval overflow"))?;
+        runtime_scenario = runtime_scenario
+            .with_rendezvous_interval(SimDuration {
+                nanos: interval_nanos,
+            })
+            .map_err(|error| loop_factory_error(format!("configure QEMU rendezvous: {error}")))?;
+    }
     let mut scheduler = SingleScheduler::new(runtime_scenario)
         .map_err(|error| loop_factory_error(format!("construct QEMU scheduler: {error}")))?;
     if let Some(branch) = &config.branch {

@@ -770,7 +770,7 @@ enum DebugVerbArgs {
     ForkDebug,
     /// Move to another debug coordinate.
     Goto {
-        /// Coordinate accepted by --at.
+        /// Virtual-time, event-log, or node-icount coordinate.
         coord: String,
     },
     /// Step backward by one deterministic grain.
@@ -843,6 +843,9 @@ struct ServeArgs {
     /// Host sessions with the packaged production QEMU lifecycle.
     #[arg(long, action = ArgAction::SetTrue)]
     production_qemu: bool,
+    /// Cap production-QEMU RUNs at this deterministic icount interval.
+    #[arg(long, value_name = "icount")]
+    qemu_rendezvous_icount: Option<u64>,
     /// Accept only read-only API calls (query/watch); no mutate.
     #[arg(long, action = ArgAction::SetTrue)]
     read_only: bool,
