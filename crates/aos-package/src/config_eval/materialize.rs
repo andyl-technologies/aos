@@ -1520,15 +1520,7 @@ fn validate_emitted_store_paths(
         let store_owner = store_owners.get(&root).ok_or_else(|| {
             anyhow::anyhow!("manifest {field} emits store path {root:?} without an owner")
         })?;
-        let authorized = match artifact_owner {
-            "@host" => true,
-            "@base" => store_owner == "@base",
-            package => {
-                store_owner == package
-                    || store_owner == "@base"
-                    || graph_dependency_closure_contains(graph, package, store_owner)
-            }
-        };
+        let authorized = owner_can_reference_store(artifact_owner, store_owner, &graph.edges);
         if !authorized {
             bail!(
                 "manifest {field} owner {artifact_owner:?} emits store path {root:?} owned by {store_owner:?}"
@@ -1538,10 +1530,28 @@ fn validate_emitted_store_paths(
     Ok(())
 }
 
-/// Returns whether `dependency` is reachable from `package` in the
-/// authenticated manifest dependency graph.
+/// Returns whether an artifact owner may reference a store owner under the
+/// authenticated package dependency graph.
+pub(crate) fn owner_can_reference_store(
+    artifact_owner: &str,
+    store_owner: &str,
+    edges: &BTreeMap<String, Vec<String>>,
+) -> bool {
+    match artifact_owner {
+        "@host" => true,
+        "@base" => store_owner == "@base",
+        package => {
+            store_owner == package
+                || store_owner == "@base"
+                || graph_dependency_closure_contains(edges, package, store_owner)
+        }
+    }
+}
+
+/// Returns whether `dependency` is reachable from `package` in authenticated
+/// package dependency edges.
 fn graph_dependency_closure_contains(
-    graph: &ManifestGraph,
+    edges: &BTreeMap<String, Vec<String>>,
     package: &str,
     dependency: &str,
 ) -> bool {
@@ -1551,7 +1561,7 @@ fn graph_dependency_closure_contains(
         if !visited.insert(current) {
             continue;
         }
-        let Some(dependencies) = graph.edges.get(current) else {
+        let Some(dependencies) = edges.get(current) else {
             continue;
         };
         if dependencies.iter().any(|candidate| candidate == dependency) {

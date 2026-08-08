@@ -468,6 +468,72 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
 }
 
 #[test]
+fn runtime_enrichment_preserves_authorized_image_store_ownership() {
+    use super::runtime::{RuntimePackagePin, RuntimeResolution};
+
+    let output = "/nix/store/0000000000000000000000000000000a-web-1.0.0";
+    let image = "/nix/store/0000000000000000000000000000000b-image-data";
+    let runtime = RuntimeResolution {
+        packages: BTreeMap::from([(
+            "web".to_string(),
+            RuntimePackagePin {
+                version: "1.0.0".to_string(),
+                platform: "x86_64-linux".to_string(),
+                registry: "aos-core".to_string(),
+                origin: super::runtime::RuntimePackageOrigin::Registry,
+                store_path: output.to_string(),
+                closure: Vec::new(),
+                expose: None,
+                expose_artifact: None,
+                config_projection: None,
+                legacy_config: None,
+            },
+        )]),
+        edges: BTreeMap::from([("web".to_string(), Vec::new())]),
+    };
+    let mut manifest = serde_json::json!({
+        "etc": {
+            "host-data": {"kind": "store-symlink", "target": format!("{image}/host")},
+            "package-data": {"kind": "store-symlink", "target": format!("{image}/package")}
+        },
+        "presets": [],
+        "storePaths": [image],
+        "ownership": {
+            "etc": {"host-data": "@host", "package-data": "web"},
+            "presets": {},
+            "storePaths": {(image): "@base"}
+        }
+    });
+
+    enrich_runtime_projection(manifest.as_object_mut().unwrap(), &runtime)
+        .expect("host and package artifacts may reference immutable image content");
+
+    assert_eq!(manifest["ownership"]["storePaths"][image], "@base");
+
+    let unrelated = "/nix/store/0000000000000000000000000000000c-other-data";
+    let mut unauthorized = serde_json::json!({
+        "etc": {
+            "package-data": {"kind": "store-symlink", "target": format!("{unrelated}/data")}
+        },
+        "presets": [],
+        "storePaths": [unrelated],
+        "ownership": {
+            "etc": {"package-data": "web"},
+            "presets": {},
+            "storePaths": {(unrelated): "other"}
+        }
+    });
+    let error = enrich_runtime_projection(unauthorized.as_object_mut().unwrap(), &runtime)
+        .expect_err("a package must not reference an unrelated package store root");
+    assert!(
+        error
+            .to_string()
+            .contains("is not authorized for referencing /etc owner"),
+        "{error:#}"
+    );
+}
+
+#[test]
 fn runtime_enrichment_projects_authenticated_units_and_enablement() {
     use super::runtime::{
         RuntimeClosurePin, RuntimePackagePin, RuntimeRealisationPin, RuntimeResolution,

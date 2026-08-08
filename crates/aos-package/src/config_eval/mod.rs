@@ -1854,7 +1854,7 @@ fn enrich_runtime_projection(
             .and_then(|ownership| ownership.get("etc"))
             .and_then(serde_json::Value::as_object)
             .context("manifest ownership.etc must be an object")?;
-        let mut derived = BTreeMap::<String, String>::new();
+        let mut derived = BTreeMap::<String, BTreeSet<String>>::new();
         for (path, entry) in etc {
             if entry.get("kind").and_then(serde_json::Value::as_str) == Some("store-symlink")
                 && let Some(target) = entry.get("target").and_then(serde_json::Value::as_str)
@@ -1868,13 +1868,10 @@ fn enrich_runtime_projection(
                             "store-symlink etc entry {path:?} has no string ownership.etc entry"
                         )
                     })?;
-                if let Some(existing) = derived.insert(root.to_string(), owner.to_string())
-                    && existing != owner
-                {
-                    anyhow::bail!(
-                        "store root {root} is referenced by /etc artifacts owned by both {existing} and {owner}"
-                    );
-                }
+                derived
+                    .entry(root.to_string())
+                    .or_default()
+                    .insert(owner.to_string());
                 store_paths.insert(root.to_string());
             }
         }
@@ -1929,15 +1926,34 @@ fn enrich_runtime_projection(
         }
     }
 
-    for (path, expected_owner) in etc_store_owners {
-        if let Some(existing) = owned.get(&path).and_then(serde_json::Value::as_str)
-            && existing != expected_owner
-        {
+    for (path, referencing_owners) in etc_store_owners {
+        if let Some(existing) = owned.get(&path) {
+            let existing = existing.as_str().with_context(|| {
+                format!("manifest ownership.storePaths.{path} must be a string")
+            })?;
+            for artifact_owner in &referencing_owners {
+                if !materialize::owner_can_reference_store(artifact_owner, existing, &runtime.edges)
+                {
+                    anyhow::bail!(
+                        "store root {path} ownership {existing} is not authorized for referencing /etc owner {artifact_owner}"
+                    );
+                }
+            }
+        } else if referencing_owners.len() == 1 {
+            let owner = referencing_owners
+                .into_iter()
+                .next()
+                .context("single referencing owner disappeared")?;
+            owned.insert(path, serde_json::Value::String(owner));
+        } else {
             anyhow::bail!(
-                "store root {path} ownership {existing} conflicts with referencing /etc owner {expected_owner}"
+                "store root {path} has no independent owner and is referenced by multiple /etc owners: {}",
+                referencing_owners
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
-        owned.insert(path, serde_json::Value::String(expected_owner));
     }
     for path in &store_paths {
         if !owned.contains_key(path) {
