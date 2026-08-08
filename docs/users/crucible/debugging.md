@@ -170,10 +170,10 @@ Crucible does not provide a symbol server. Supply the guest executable and
 DWARF files to GDB locally. The packaged GDB includes Python scripting, TUI,
 and both x86_64 and aarch64 target descriptions.
 
-The x86_64 suite also retains matching x86_64 and AArch64 guest kernels and root
-images. A scenario's `world.node.arch` selects the complete machine/CPU/console
-and guest-artifact profile; do not override only `CRUCIBLE_QEMU` when changing
-architectures. For custom assets, set the matching
+A suite reports the guest architectures whose matching kernels and root images
+it actually retains. A scenario's `world.node.arch` selects the complete
+machine/CPU/console and guest-artifact profile; do not override only
+`CRUCIBLE_QEMU` when changing architectures. For custom assets, set the matching
 `CRUCIBLE_KERNEL_<ARCH>`, `CRUCIBLE_ROOT_IMAGE_<ARCH>`, and
 `CRUCIBLE_KERNEL_CMDLINE_<ARCH>` triplet together (`ARCH` is `X86_64` or
 `AARCH64`). A partial triplet fails before QEMU starts.
@@ -220,13 +220,24 @@ The shipped debug fixture keeps the guest agent inactive on canonical execution.
 Its content-addressed launch includes a fixed activation-only port and a single
 blocking guest reader, but no token is sent and no agent runs. `fork-debug` first
 commits the explicit non-canonical branch, writes the fixed token over the
-already-established private stream, and waits up to 512 scheduler quanta for the
+already-established private stream, and waits up to 1,024 scheduler quanta for the
 agent's typed feature advertisement. The response lists argv exec, PTY, resize,
 SSH bridge, and channel-capacity support. If activation or negotiation fails, the command
 still reports the committed branch identity together with the failure reason so
 the branch remains discoverable and diagnosable. All commands and stream bytes
 after activation use the versioned shared-memory/doorbell protocol; the activation
 port carries only the fixed activation token.
+
+An open exec, PTY, or SSH channel temporarily owns the same scheduler-mediated
+debug run used for activation. Crucible advances only bounded quanta between
+channel exchanges, returns the VM to a paused boundary after the final exit or
+error record, and releases that ownership before a `goto` or reverse operation.
+It refreshes the attached runtime coordinate after every completed quantum.
+Repositioning first releases scheduler ownership, then closes active streams
+with a typed error when atomic runtime replacement commits; it never leaves a
+forked guest running independently. Each
+CLI acquisition also uses a fresh channel identity, making it infeasible for
+delayed SSH-proxy cleanup to close a channel opened by a later command.
 
 Custom images must include a blocking bootstrap for the fixed activation
 port and must not start or poll the agent during canonical execution. A missing
@@ -331,7 +342,10 @@ For example:
   configuration, runtime state, virtual time, schedule/event prefixes, and
   per-node instruction counts. Two requested coordinates may still share a
   configuration identity when no schedule decision separates them, so compare
-  the complete landed tuple. Reverse-step requires an earlier recorded schedule
+  the complete landed tuple. A virtual-time or node-icount request selects the
+  latest recorded production boundary not after that coordinate; it does not
+  substitute the newest boundary merely because the configuration identity is
+  unchanged. Reverse-step requires an earlier recorded schedule
   or event coordinate and returns exit `4` when none is available, including a
   branch opened at genesis with an empty schedule.
 - Guest transcripts are operator-owned files. Runtime reposition closes the
