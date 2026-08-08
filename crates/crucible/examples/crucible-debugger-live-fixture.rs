@@ -77,7 +77,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         id: NodeId {
             name: String::from("debuggee"),
         },
-        arch: architecture.clone(),
+        arch: architecture,
         memory_mib: 256,
         cmdline: fixture_kernel_cmdline(architecture),
         ready_point: ReadyPoint::ConsoleMarker {
