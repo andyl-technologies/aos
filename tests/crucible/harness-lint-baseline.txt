@@ -173,7 +173,7 @@ confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaching State	
 confinement	crates/crucible-qemu/src/node/async_step.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/node/async_step.rs	host nondeterminism reaching State	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/qmp.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	3
-confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	const		25
+confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	const		24
 confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	enum		2
 confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	fn		11
 confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	struct		7
