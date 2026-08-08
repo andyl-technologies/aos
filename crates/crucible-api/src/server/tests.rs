@@ -285,10 +285,10 @@ async fn controller_release_cannot_bypass_a_live_relay_holder() -> Result<(), Bo
         ))
         .await?
         .session;
-    let owner = DebugClientId::new("trusted-unauthenticated")?;
+    let controller_client = DebugClientId::new("trusted-unauthenticated")?;
     let lease = state.control_plane.lock().await.acquire_debug_controller(
         session,
-        owner,
+        controller_client,
         &controller_role,
     )?;
     let holder = uuid::Uuid::from_u128(91);
@@ -356,10 +356,10 @@ async fn rejected_holder_retry_does_not_release_existing_controller() -> Result<
         ))
         .await?
         .session;
-    let owner = DebugClientId::new("trusted-unauthenticated")?;
+    let controller_client = DebugClientId::new("trusted-unauthenticated")?;
     let lease = state.control_plane.lock().await.acquire_debug_controller(
         session,
-        owner,
+        controller_client,
         &controller_role,
     )?;
     let active_holder = uuid::Uuid::from_u128(101);

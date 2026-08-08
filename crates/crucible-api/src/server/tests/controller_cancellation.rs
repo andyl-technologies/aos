@@ -39,12 +39,12 @@ async fn cancelled_acquire_cannot_leave_an_untracked_controller() -> Result<(), 
     drop(blocked_holders);
 
     assert!(!state.debug_holders.lock().await.has_active_session(session));
-    let owner = DebugClientId::new("trusted-unauthenticated")?;
+    let controller_client = DebugClientId::new("trusted-unauthenticated")?;
     state
         .control_plane
         .lock()
         .await
-        .acquire_debug_controller(session, owner, &role)?;
+        .acquire_debug_controller(session, controller_client, &role)?;
     Ok(())
 }
 
@@ -66,12 +66,12 @@ async fn cancelled_final_release_preserves_holder_and_controller() -> Result<(),
         ))
         .await?
         .session;
-    let owner = DebugClientId::new("trusted-unauthenticated")?;
-    let lease = state
-        .control_plane
-        .lock()
-        .await
-        .acquire_debug_controller(session, owner, &role)?;
+    let controller_client = DebugClientId::new("trusted-unauthenticated")?;
+    let lease = state.control_plane.lock().await.acquire_debug_controller(
+        session,
+        controller_client,
+        &role,
+    )?;
     let holder = uuid::Uuid::from_u128(112);
     state
         .debug_holders

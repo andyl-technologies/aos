@@ -2181,6 +2181,7 @@ async fn exchange_guest_record(
     channel_id: u64,
     request: Option<&crucible_api::GuestIntrospectionRecord>,
     transcript: &mut Option<GuestTranscriptWriter>,
+    // crucible-lint: allow host-nondeterminism-state -- the returned record remains typed observation transport and is never admitted as scheduler state.
 ) -> Result<Option<crucible_api::GuestIntrospectionRecord>, CliError> {
     let response = client
         .exchange_guest_introspection(session, lease, node, channel_id, request)
@@ -2206,11 +2207,13 @@ async fn run_remote_guest_channel(
     backend_plan: &BackendSelectionPlan,
     session: SessionRef,
     node: crucible::NodeId,
+    // crucible-lint: allow host-nondeterminism-state -- the open record is a guest transport request, not a host-derived scheduler decision.
     open: crucible_api::GuestIntrospectionMessage,
     interactive: bool,
     transcript_path: Option<&Path>,
     guest_idle_timeout: Duration,
 ) -> Result<(), CliError> {
+    // crucible-lint: allow host-nondeterminism-state -- these types encode guest transport records and do not construct authoritative scenario state.
     use crucible_api::{GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -2223,6 +2226,7 @@ async fn run_remote_guest_channel(
         None => None,
     };
     let client = remote_rpc_client(daemon, backend_plan)?;
+    // crucible-lint: allow host-nondeterminism-state -- controller acquisition changes only lease ownership for this transport operation.
     let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
         .acquire_debug_controller(session, &acquisition)
@@ -2463,15 +2467,22 @@ async fn run_remote_guest_channel(
 }
 
 /// Converts local input into the guest channel's stream semantics.
-fn guest_input_message(pty_channel: bool, input: &[u8]) -> crucible_api::GuestIntrospectionMessage {
+pub(crate) fn guest_input_message(
+    pty_channel: bool,
+    input: &[u8],
+    // crucible-lint: allow host-nondeterminism-state -- this pure conversion produces only guest-channel transport input.
+) -> crucible_api::GuestIntrospectionMessage {
     if !input.is_empty() {
+        // crucible-lint: allow host-nondeterminism-state -- caller-provided bytes remain guest-channel transport input.
         return crucible_api::GuestIntrospectionMessage::Input(input.to_vec());
     }
     if pty_channel {
         // Closing a PTY input descriptor is a hangup. EOT supplies ordinary
         // terminal EOF without killing a command that is still draining output.
+        // crucible-lint: allow host-nondeterminism-state -- EOT is terminal transport policy and does not affect deterministic scheduler state.
         crucible_api::GuestIntrospectionMessage::Input(vec![0x04])
     } else {
+        // crucible-lint: allow host-nondeterminism-state -- close is guest-channel transport policy and not an engine decision.
         crucible_api::GuestIntrospectionMessage::Close
     }
 }
@@ -2563,6 +2574,7 @@ fn parse_debug_session_ref(value: &str) -> Result<SessionRef, CliError> {
             .map_err(|_| usage_error("--session seed must be lowercase hexadecimal"))?;
     }
     Ok(SessionRef::new(
+        // crucible-lint: allow host-nondeterminism-state -- the complete session identity is parsed from explicit CLI input without host-derived values.
         crucible_api::SessionId::new(id),
         epoch,
         crucible::Seed::from_bytes(seed),

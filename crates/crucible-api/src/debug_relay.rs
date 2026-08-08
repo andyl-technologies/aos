@@ -11,7 +11,8 @@ use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+// crucible-lint: allow host-monotonic-time -- relay expiry releases only daemon-local transport resources and never enters scenario, replay, or fingerprint state.
+use std::time::{Duration, Instant as RelayInstant};
 
 use crucible_session::{DebugClientId, DebugControllerLease};
 use thiserror::Error;
@@ -30,9 +31,10 @@ const DEBUG_RELAY_STALE_AFTER: Duration = Duration::from_secs(30);
 const DEBUG_RELAY_TOMBSTONE_LIMIT: usize = 128;
 
 /// Reads the operational relay clock outside deterministic scenario state.
+// crucible-lint: allow clippy-disallowed-method -- relay expiry governs only daemon-local transport resource reclamation.
 #[allow(clippy::disallowed_methods)]
-fn relay_clock_now() -> Instant {
-    Instant::now()
+fn relay_clock_now() -> RelayInstant {
+    RelayInstant::now()
 }
 
 /// Opaque daemon-local identifier for one GDB relay connection.
@@ -63,7 +65,7 @@ struct DebugRelay {
     lease: DebugControllerLease,
     holder: DebugControllerHolderId,
     stream: Arc<Mutex<TcpStream>>,
-    last_activity: Instant,
+    last_activity: RelayInstant,
 }
 
 struct DebugRelayTombstone {
