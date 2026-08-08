@@ -1381,13 +1381,13 @@ pub fn dequeue_fault_result(
 }
 
 #[derive(Clone, Copy)]
-struct ArenaReservation {
-    start: u64,
-    payload_start: u64,
-    end: u64,
+pub(crate) struct ArenaReservation {
+    pub(crate) start: u64,
+    pub(crate) payload_start: u64,
+    pub(crate) end: u64,
 }
 
-fn producer_ring_slot(
+pub(crate) fn producer_ring_slot(
     ring: &RingHeader,
     capacity: usize,
 ) -> Result<(u64, usize), FaultTransportError> {
@@ -1408,7 +1408,7 @@ fn producer_ring_slot(
     Ok((tail, (tail & (capacity - 1)) as usize))
 }
 
-fn consumer_ring_slot(
+pub(crate) fn consumer_ring_slot(
     ring: &RingHeader,
     capacity: usize,
 ) -> Result<Option<(u64, usize)>, FaultTransportError> {
@@ -1443,7 +1443,7 @@ fn arena_len_u64(len: usize) -> Result<u64, FaultTransportError> {
     u64::try_from(len).map_err(|_| FaultTransportError::ArithmeticOverflow)
 }
 
-fn reserve_arena(
+pub(crate) fn reserve_arena(
     header: &FaultPayloadArenaHeader,
     arena_len: usize,
     payload_len: usize,
@@ -1507,7 +1507,7 @@ fn reserve_arena(
     })
 }
 
-fn copy_payload(
+pub(crate) fn copy_payload(
     arena: &mut [u8],
     logical_start: u64,
     payload: &[u8],
@@ -1528,7 +1528,7 @@ fn copy_payload(
     Ok(())
 }
 
-fn copy_reserved_payload(
+pub(crate) fn copy_reserved_payload(
     header: &FaultPayloadArenaHeader,
     arena: &[u8],
     start: u64,
@@ -1559,7 +1559,7 @@ fn copy_reserved_payload(
         .ok_or(FaultTransportError::CorruptReservation)
 }
 
-fn validate_envelope_reservation(
+pub(crate) fn validate_envelope_reservation(
     payload_offset: u64,
     payload_length: u32,
     arena_region_offset: u64,
@@ -1582,6 +1582,31 @@ fn validate_envelope_reservation(
         return Err(FaultAbiError::PayloadBounds);
     }
     Ok(())
+}
+
+pub(crate) fn publish_transport_write(
+    ring: &RingHeader,
+    arena_header: &FaultPayloadArenaHeader,
+    tail: u64,
+    reservation_end: u64,
+) {
+    arena_header
+        .write_cursor
+        .store(reservation_end, Ordering::Release);
+    ring.write_idx
+        .store(tail.wrapping_add(1), Ordering::Release);
+}
+
+pub(crate) fn publish_transport_read(
+    ring: &RingHeader,
+    arena_header: &FaultPayloadArenaHeader,
+    head: u64,
+    reservation_end: u64,
+) {
+    arena_header
+        .read_cursor
+        .store(reservation_end, Ordering::Release);
+    ring.read_idx.store(head.wrapping_add(1), Ordering::Release);
 }
 
 fn read_raw_u16(bytes: &[u8], offset: usize) -> u16 {

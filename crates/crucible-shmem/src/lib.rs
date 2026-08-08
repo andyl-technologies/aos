@@ -121,6 +121,17 @@
 //! 240/212 16/44      reserved (zero)
 //! ```
 //!
+//! Fault event transport slot wire layout:
+//!
+//! ```text
+//! offset  size  field
+//! 0       8     reservation_start logical cursor
+//! 8       8     payload_start logical cursor
+//! 16      8     reservation_end logical cursor
+//! 24      320   encoded event header
+//! 344     40    reserved (zero)
+//! ```
+//!
 //! Fault payload arena header wire layout:
 //!
 //! ```text
@@ -145,9 +156,9 @@ pub use abi_header::generated_c_header;
 #[cfg(unix)]
 pub use mapped_setup_region::{
     MappedCoverageRingMut, MappedDirectedRingMut, MappedFaultCommandTransportMut,
-    MappedFaultResultTransportMut, MappedNodeRingPairMut, MappedSetupRegion,
-    MappedSetupRegionAccessError, MappedWhiteboxMarkerRingMut, SetupRegionMapError,
-    mmap_setup_region,
+    MappedFaultEventTransportMut, MappedFaultResultTransportMut, MappedNodeRingPairMut,
+    MappedSetupRegion, MappedSetupRegionAccessError, MappedWhiteboxMarkerRingMut,
+    SetupRegionMapError, mmap_setup_region,
 };
 
 use thiserror::Error;
@@ -167,7 +178,9 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 ///
 /// Version 8 adds the per-node logical-time calibration restore transaction so
 /// a fresh plugin can reconstruct idle-jump time after QEMU loads VMState.
-pub const ABI_VERSION: u32 = 8;
+/// Version 9 adds typed node-fault commands and an independent lossless stream
+/// for actual QEMU fault-rule occurrences.
+pub const ABI_VERSION: u32 = 9;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///
@@ -210,12 +223,16 @@ const _: () = assert!(MAX_FRAME_DATA <= u16::MAX as usize);
 mod delivery_errors;
 #[path = "shmem/fault_command.rs"]
 mod fault_command;
+#[path = "shmem/fault_event.rs"]
+mod fault_event;
 #[path = "shmem/fault_memory.rs"]
 mod fault_memory;
 #[path = "shmem/fault_memory_batch.rs"]
 mod fault_memory_batch;
 #[path = "shmem/fault_memory_evidence.rs"]
 mod fault_memory_evidence;
+#[path = "shmem/fault_node.rs"]
+mod fault_node;
 #[path = "shmem/fingerprint_sample.rs"]
 mod fingerprint_sample;
 #[path = "shmem/frame_node.rs"]
@@ -229,9 +246,11 @@ mod ring_whitebox_marker;
 
 pub use delivery_errors::*;
 pub use fault_command::*;
+pub use fault_event::*;
 pub use fault_memory::*;
 pub use fault_memory_batch::*;
 pub use fault_memory_evidence::*;
+pub use fault_node::*;
 pub use fingerprint_sample::*;
 pub use frame_node::*;
 pub use region::*;

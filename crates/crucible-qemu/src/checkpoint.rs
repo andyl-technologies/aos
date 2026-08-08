@@ -93,6 +93,7 @@ pub struct QemuNodeContinuationCheckpoint {
     pub(crate) pending_preemption: Option<PreemptionDecision>,
     pub(crate) pending_network_outputs: Vec<crate::QemuNodeEmittedFrame>,
     pub(crate) next_fault_command_sequence: u64,
+    pub(crate) next_fault_event_sequence: u64,
 }
 
 impl QemuNodeContinuationCheckpoint {
@@ -118,6 +119,12 @@ impl QemuNodeContinuationCheckpoint {
     #[must_use]
     pub const fn next_fault_command_sequence(&self) -> u64 {
         self.next_fault_command_sequence
+    }
+
+    /// Returns the next per-node fault event sequence required after restore.
+    #[must_use]
+    pub const fn next_fault_event_sequence(&self) -> u64 {
+        self.next_fault_event_sequence
     }
 }
 

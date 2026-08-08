@@ -21,8 +21,9 @@ use crucible::{
     SchedulerEventLogAppend, SimulationBackend, StepObservation, VirtualTime,
 };
 use crucible_shmem::{
-    DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1, FaultResultStatus,
-    SchedulerPreemptionCommand, SchedulerPreemptionKind as ShmemSchedulerPreemptionKind,
+    DequeuedFaultEvent, DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1,
+    FaultResultStatus, SchedulerPreemptionCommand,
+    SchedulerPreemptionKind as ShmemSchedulerPreemptionKind,
 };
 // crucible-lint: allow host-nondeterminism-state -- node transport exposes untrusted causal records for scheduler validation.
 use crucible::Decision;
@@ -354,6 +355,21 @@ pub trait QemuShmemHotPathChannel: Send {
     fn dequeue_fault_result(&mut self)
     -> Result<Option<DequeuedFaultResult>, QemuNodeChannelError>;
 
+    /// Removes one authenticated installed-rule occurrence event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the event transport is absent,
+    /// corrupt, or fails evidence authentication.
+    fn dequeue_fault_event(&mut self) -> Result<Option<DequeuedFaultEvent>, QemuNodeChannelError>;
+
+    /// Reports whether an installed-rule event awaits boundary admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the event transport is invalid.
+    fn fault_event_pending(&mut self) -> Result<bool, QemuNodeChannelError>;
+
     /// Advances the node to `horizon` or until it pauses earlier.
     ///
     /// This helper is retained for direct channel tests and already-completed
@@ -591,6 +607,7 @@ pub struct QemuNode {
     console_observation: Option<QemuConsoleObservation>,
     fault_capabilities: Vec<FaultCapabilityRowV1>,
     next_fault_command_sequence: u64,
+    next_fault_event_sequence: u64,
 }
 
 impl QemuNode {
@@ -715,6 +732,7 @@ impl QemuNode {
             // Sequence 1 is consumed by the mandatory setup-time capability
             // query before a live node can be constructed.
             next_fault_command_sequence: 2,
+            next_fault_event_sequence: 1,
         }
     }
 
@@ -754,6 +772,12 @@ impl QemuNode {
         self.next_fault_command_sequence
     }
 
+    /// Returns the next required per-node fault-event sequence.
+    #[must_use]
+    pub const fn next_fault_event_sequence(&self) -> u64 {
+        self.next_fault_event_sequence
+    }
+
     /// Restores the next fault-command sequence paired with a VM checkpoint.
     ///
     /// # Errors
@@ -767,6 +791,21 @@ impl QemuNode {
             ));
         }
         self.next_fault_command_sequence = sequence;
+        Ok(())
+    }
+
+    /// Restores the next event sequence paired with an exact QEMU checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when `sequence` is zero.
+    pub fn restore_fault_event_sequence(&mut self, sequence: u64) -> Result<(), QemuNodeError> {
+        if sequence == 0 {
+            return Err(QemuNodeError::fault_command(
+                "restored fault event sequence is zero",
+            ));
+        }
+        self.next_fault_event_sequence = sequence;
         Ok(())
     }
 
@@ -795,6 +834,51 @@ impl QemuNode {
         &mut self,
     ) -> Result<Option<DequeuedFaultResult>, QemuNodeChannelError> {
         self.channels.shmem_hot_path.dequeue_fault_result()
+    }
+
+    /// Drains and sequence-validates every fault-rule event published so far.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when transport authentication fails or the
+    /// per-node event sequence has a gap, duplicate, or overflow.
+    pub fn drain_fault_events(&mut self) -> Result<Vec<DequeuedFaultEvent>, QemuNodeError> {
+        let mut events = Vec::new();
+        while let Some(event) =
+            self.channels
+                .shmem_hot_path
+                .dequeue_fault_event()
+                .map_err(|source| {
+                    QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+                })?
+        {
+            if event.header.event_sequence != self.next_fault_event_sequence {
+                return Err(QemuNodeError::fault_command(format!(
+                    "fault event sequence mismatch: expected {}, observed {}",
+                    self.next_fault_event_sequence, event.header.event_sequence
+                )));
+            }
+            self.next_fault_event_sequence = self
+                .next_fault_event_sequence
+                .checked_add(1)
+                .ok_or_else(|| QemuNodeError::fault_command("fault event sequence is exhausted"))?;
+            events.push(event);
+        }
+        Ok(events)
+    }
+
+    /// Reports whether a QEMU event still awaits runtime admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the event transport is invalid.
+    pub fn fault_event_pending(&mut self) -> Result<bool, QemuNodeError> {
+        self.channels
+            .shmem_hot_path
+            .fault_event_pending()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
     }
 
     /// Applies one admitted QEMU fault command at the exact current boundary.
@@ -1264,6 +1348,7 @@ impl QemuNode {
                 pending_preemption: self.pending_preemption.clone(),
                 pending_network_outputs: self.pending_network_outputs.clone(),
                 next_fault_command_sequence: self.next_fault_command_sequence,
+                next_fault_event_sequence: self.next_fault_event_sequence,
             };
             crate::QemuVmSnapshot::from_live_capture(
                 checkpoint.clone(),
@@ -1333,11 +1418,17 @@ impl QemuNode {
                 "restored fault-command sequence precedes setup capability admission",
             ));
         }
+        if checkpoint.next_fault_event_sequence == 0 {
+            return Err(QemuNodeError::checkpoint(
+                "restored fault-event sequence is zero",
+            ));
+        }
         self.last_observed_time = checkpoint.last_observed_time;
         self.console_observation_boundary = checkpoint.console_observation_boundary;
         self.pending_preemption = checkpoint.pending_preemption.clone();
         self.pending_network_outputs = checkpoint.pending_network_outputs.clone();
         self.next_fault_command_sequence = checkpoint.next_fault_command_sequence;
+        self.next_fault_event_sequence = checkpoint.next_fault_event_sequence;
         Ok(())
     }
 
@@ -2146,6 +2237,16 @@ mod tests {
             &mut self,
         ) -> Result<Option<DequeuedFaultResult>, QemuNodeChannelError> {
             Ok(self.stale_fault_results.lock().unwrap().pop_front())
+        }
+
+        fn dequeue_fault_event(
+            &mut self,
+        ) -> Result<Option<DequeuedFaultEvent>, QemuNodeChannelError> {
+            Ok(None)
+        }
+
+        fn fault_event_pending(&mut self) -> Result<bool, QemuNodeChannelError> {
+            Ok(false)
         }
 
         fn drain_observable_events(

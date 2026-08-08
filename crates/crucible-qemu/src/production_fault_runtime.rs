@@ -9,11 +9,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crucible::model::{
-    BindingEvaluation, ContentHash, EffectKind, FaultAdapterManifests, FaultCapabilityId,
-    FaultCapabilityManifest, FaultCoordinate, FaultExecutionError, FaultObjectId, FaultOpportunity,
+    BindingActionKind, BindingEvaluation, ContentHash, EffectKind, EffectSpecification,
+    FaultAdapterManifests, FaultCapabilityId, FaultCapabilityManifest, FaultCoordinate,
+    FaultExecutionError, FaultObjectId, FaultObservation, FaultObservationKind, FaultOpportunity,
     FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink, HostFaultActionState,
-    OwnedFaultExecutionRuntime, ReferencedSignalEvent, SignalArtifactProvider,
-    SignalBoundarySnapshot,
+    OwnedFaultExecutionRuntime, ReferencedSignalEvent, ResolvedBindingAction,
+    SignalArtifactProvider, SignalBoundarySnapshot,
 };
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 
@@ -35,6 +36,10 @@ pub struct ProductionFaultRuntimeCheckpoint {
     qemu_fingerprints: BTreeMap<NodeId, ContentHash>,
     /// Per-node fault-command continuation paired with the QEMU snapshots.
     qemu_fault_sequences: BTreeMap<NodeId, u64>,
+    /// Per-node fault-event continuation paired with the QEMU snapshots.
+    qemu_fault_event_sequences: BTreeMap<NodeId, u64>,
+    /// Persistent QEMU rules needed to interpret later occurrence events.
+    qemu_active_rules: BTreeMap<ContentHash, ResolvedBindingAction>,
     /// Scheduler-owned network queues, pending outputs, and transition ledger.
     network_state: Option<ProductionNetworkStateCheckpoint>,
     /// Referenced event occurrences retained for device recovery subscriptions.
@@ -118,6 +123,12 @@ impl ProductionFaultRuntimeCheckpoint {
     pub fn qemu_fault_sequence(&self, node: &NodeId) -> Option<u64> {
         self.qemu_fault_sequences.get(node).copied()
     }
+
+    /// Returns the next required QEMU fault-event sequence for one node.
+    #[must_use]
+    pub fn qemu_fault_event_sequence(&self, node: &NodeId) -> Option<u64> {
+        self.qemu_fault_event_sequences.get(node).copied()
+    }
 }
 
 /// Failure to admit, execute, checkpoint, or restore the production runtime.
@@ -135,6 +146,9 @@ pub enum ProductionFaultRuntimeError {
     /// Restored live QEMU state differs from the paired fault checkpoint.
     #[error("live QEMU execution fingerprints do not match the fault checkpoint")]
     QemuFingerprintMismatch,
+    /// A QEMU occurrence event has not yet entered the authoritative log.
+    #[error("cannot checkpoint while QEMU fault events await boundary admission")]
+    PendingQemuFaultEvents,
     /// Referenced recovery-event history reached its declared hard bound.
     #[error(
         "production referenced-event history exceeds {HARD_PRODUCTION_REFERENCED_EVENTS} entries"
@@ -154,6 +168,7 @@ pub struct ProductionFaultRuntime {
     host: HostFaultActionSink,
     restored_network_state: Option<ProductionNetworkStateCheckpoint>,
     emitted_events: Vec<ReferencedSignalEvent>,
+    qemu_active_rules: BTreeMap<ContentHash, ResolvedBindingAction>,
 }
 
 impl ProductionFaultRuntime {
@@ -189,6 +204,7 @@ impl ProductionFaultRuntime {
             host: HostFaultActionSink::new(),
             restored_network_state: None,
             emitted_events: Vec::new(),
+            qemu_active_rules: BTreeMap::new(),
         })
     }
 
@@ -210,6 +226,7 @@ impl ProductionFaultRuntime {
             return Err(ProductionFaultRuntimeError::ReferencedEventLimit);
         }
         referenced_event_bytes(&checkpoint.emitted_events)?;
+        validate_qemu_active_rules(&checkpoint.qemu_active_rules)?;
         if checkpoint.identity
             != production_checkpoint_identity(
                 plan.id(),
@@ -217,6 +234,8 @@ impl ProductionFaultRuntime {
                 &checkpoint.host,
                 &checkpoint.qemu_fingerprints,
                 &checkpoint.qemu_fault_sequences,
+                &checkpoint.qemu_fault_event_sequences,
+                &checkpoint.qemu_active_rules,
                 checkpoint.network_state.as_ref(),
                 &checkpoint.emitted_events,
             )
@@ -241,6 +260,8 @@ impl ProductionFaultRuntime {
             )
             .map_err(FaultExecutionError::from)?;
         let qemu_fault_sequences = checkpoint.qemu_fault_sequences;
+        let qemu_fault_event_sequences = checkpoint.qemu_fault_event_sequences;
+        let qemu_active_rules = checkpoint.qemu_active_rules;
         let host = checkpoint.host;
         let restored_network_state = checkpoint.network_state;
         let emitted_events = checkpoint.emitted_events;
@@ -260,11 +281,13 @@ impl ProductionFaultRuntime {
             _ => return Err(FaultExecutionError::CheckpointPresence.into()),
         };
         nodes.restore_fault_command_sequences(&qemu_fault_sequences)?;
+        nodes.restore_fault_event_sequences(&qemu_fault_event_sequences)?;
         Ok(Self {
             runtime,
             host: HostFaultActionSink::from_state(host),
             restored_network_state,
             emitted_events,
+            qemu_active_rules,
         })
     }
 
@@ -286,8 +309,15 @@ impl ProductionFaultRuntime {
         same_coordinate_sequence: u64,
         nodes: &mut QemuNodeSet,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
+        let mut qemu_observations = self.drain_qemu_observations(nodes, coordinate)?;
         let Some(runtime) = &mut self.runtime else {
-            return Ok(BindingEvaluation::default());
+            if qemu_observations.is_empty() {
+                return Ok(BindingEvaluation::default());
+            }
+            return Err(BackendError::Rejected {
+                message: String::from("QEMU produced fault events for an inert fault plan"),
+            }
+            .into());
         };
         if self
             .emitted_events
@@ -298,11 +328,13 @@ impl ProductionFaultRuntime {
             return Err(ProductionFaultRuntimeError::ReferencedEventLimit);
         }
         let mut sink = ProductionFaultActionSink::new(&mut self.host, nodes);
-        let evaluation = runtime.evaluate_boundary_with_backend(
+        let mut evaluation = runtime.evaluate_boundary_with_backend(
             coordinate,
             same_coordinate_sequence,
             &mut sink,
         )?;
+        qemu_observations.append(&mut evaluation.observations);
+        evaluation.observations = qemu_observations;
         let existing_bytes = referenced_event_bytes(&self.emitted_events)?;
         let new_bytes = referenced_event_bytes(&evaluation.emitted_events)?;
         if existing_bytes
@@ -312,9 +344,130 @@ impl ProductionFaultRuntime {
             runtime.poison();
             return Err(ProductionFaultRuntimeError::ReferencedEventBytesLimit);
         }
+        if let Err(error) = self.update_qemu_rule_registry(&evaluation.actions) {
+            if let Some(runtime) = &mut self.runtime {
+                runtime.poison();
+            }
+            return Err(error);
+        }
         self.emitted_events
             .extend(evaluation.emitted_events.iter().cloned());
         Ok(evaluation)
+    }
+
+    fn drain_qemu_observations(
+        &self,
+        nodes: &mut QemuNodeSet,
+        boundary: FaultCoordinate,
+    ) -> Result<Vec<FaultObservation>, ProductionFaultRuntimeError> {
+        let mut observations = Vec::new();
+        for (_node, events) in nodes.drain_fault_events()? {
+            for event in events {
+                let action_identity = ContentHash {
+                    bytes: event.header.action_hash,
+                };
+                let action = self
+                    .qemu_active_rules
+                    .get(&action_identity)
+                    .ok_or_else(|| BackendError::Rejected {
+                        message: format!(
+                            "QEMU fault event {} names unknown active action {}",
+                            event.header.event_sequence,
+                            action_identity.to_hex()
+                        ),
+                    })?;
+                let binding_hash = ContentHash::from_canonical_material(
+                    "crucible.fault-binding.v1",
+                    action.binding.as_str(),
+                );
+                let target_hash = ContentHash::from_canonical_material(
+                    "crucible.resolved-fault-target.v1",
+                    &action.target.canonical_material(),
+                );
+                if event.header.binding_hash != binding_hash.bytes
+                    || event.header.target_hash != target_hash.bytes
+                    || event.header.generation != action.transition_sequence
+                    || boundary
+                        .retired_instructions
+                        .is_none_or(|retired| event.header.observed_icount > retired)
+                {
+                    return Err(BackendError::Rejected {
+                        message: format!(
+                            "QEMU fault event {} does not match its active rule",
+                            event.header.event_sequence
+                        ),
+                    }
+                    .into());
+                }
+                let opportunity =
+                    (event.header.opportunity_hash != [0; 32]).then_some(ContentHash {
+                        bytes: event.header.opportunity_hash,
+                    });
+                let mut evidence = Vec::new();
+                evidence.extend_from_slice(&(event.header.command_kind as u16).to_be_bytes());
+                evidence.extend_from_slice(&(event.header.outcome as u16).to_be_bytes());
+                evidence.extend_from_slice(&event.header.event_sequence.to_be_bytes());
+                evidence.extend_from_slice(&event.header.rule_command_sequence.to_be_bytes());
+                evidence.extend_from_slice(&event.header.observed_icount.to_be_bytes());
+                evidence.extend_from_slice(&event.header.generation.to_be_bytes());
+                evidence.extend_from_slice(&event.header.before_hash);
+                evidence.extend_from_slice(&event.header.after_hash);
+                evidence.extend_from_slice(&event.header.evidence_hash);
+                evidence.extend_from_slice(&event.payload);
+                observations.push(FaultObservation {
+                    semantic_version: crucible::model::FAULT_RUNTIME_STATE_VERSION,
+                    kind: if event.header.outcome == crucible_shmem::FaultEventOutcomeV1::Passed {
+                        FaultObservationKind::FaultOpportunity
+                    } else {
+                        FaultObservationKind::EffectApplied
+                    },
+                    coordinate: FaultCoordinate {
+                        virtual_nanos: boundary.virtual_nanos,
+                        retired_instructions: Some(event.header.observed_icount),
+                    },
+                    binding: Some(action.binding.clone()),
+                    target: Some(action.target.clone()),
+                    opportunity,
+                    evidence: ContentHash::from_bytes(&evidence),
+                });
+            }
+        }
+        Ok(observations)
+    }
+
+    fn update_qemu_rule_registry(
+        &mut self,
+        actions: &[ResolvedBindingAction],
+    ) -> Result<(), ProductionFaultRuntimeError> {
+        for action in actions
+            .iter()
+            .filter(|action| matches!(action.effect.specification(), EffectSpecification::Node(_)))
+        {
+            match action.kind {
+                BindingActionKind::UpsertPersistent => {
+                    self.qemu_active_rules.insert(action.id(), action.clone());
+                }
+                BindingActionKind::RemovePersistent => {
+                    let prior_len = self.qemu_active_rules.len();
+                    self.qemu_active_rules.retain(|_, active| {
+                        active.binding != action.binding
+                            || active.target != action.target
+                            || active.phase != action.phase
+                    });
+                    if self.qemu_active_rules.len() == prior_len {
+                        return Err(BackendError::Rejected {
+                            message: format!(
+                                "QEMU removed unknown persistent rule for binding `{}`",
+                                action.binding.as_str()
+                            ),
+                        }
+                        .into());
+                    }
+                }
+                BindingActionKind::Apply => {}
+            }
+        }
+        Ok(())
     }
 
     /// Evaluates one exact device or architectural opportunity.
@@ -393,6 +546,9 @@ impl ProductionFaultRuntime {
         &self,
         nodes: &mut QemuNodeSet,
     ) -> Result<ProductionFaultRuntimeCheckpoint, ProductionFaultRuntimeError> {
+        if nodes.has_pending_fault_events()? {
+            return Err(ProductionFaultRuntimeError::PendingQemuFaultEvents);
+        }
         let runtime = self
             .runtime
             .as_ref()
@@ -400,6 +556,7 @@ impl ProductionFaultRuntime {
         let host = self.host.state().clone();
         let qemu_fingerprints = nodes.execution_fingerprints()?;
         let qemu_fault_sequences = nodes.fault_command_sequences();
+        let qemu_fault_event_sequences = nodes.fault_event_sequences();
         let plan = self.runtime.as_ref().map_or_else(
             || FaultSignalPlan::empty().id(),
             |runtime| runtime.plan().id(),
@@ -410,6 +567,8 @@ impl ProductionFaultRuntime {
             &host,
             &qemu_fingerprints,
             &qemu_fault_sequences,
+            &qemu_fault_event_sequences,
+            &self.qemu_active_rules,
             self.restored_network_state.as_ref(),
             &self.emitted_events,
         );
@@ -418,6 +577,8 @@ impl ProductionFaultRuntime {
             host,
             qemu_fingerprints,
             qemu_fault_sequences,
+            qemu_fault_event_sequences,
+            qemu_active_rules: self.qemu_active_rules.clone(),
             network_state: self.restored_network_state.clone(),
             emitted_events: self.emitted_events.clone(),
             identity,
@@ -447,6 +608,8 @@ impl ProductionFaultRuntime {
             &checkpoint.host,
             &checkpoint.qemu_fingerprints,
             &checkpoint.qemu_fault_sequences,
+            &checkpoint.qemu_fault_event_sequences,
+            &checkpoint.qemu_active_rules,
             checkpoint.network_state.as_ref(),
             &checkpoint.emitted_events,
         );
@@ -538,6 +701,8 @@ fn production_checkpoint_identity(
     host: &HostFaultActionState,
     qemu_fingerprints: &BTreeMap<NodeId, ContentHash>,
     qemu_fault_sequences: &BTreeMap<NodeId, u64>,
+    qemu_fault_event_sequences: &BTreeMap<NodeId, u64>,
+    qemu_active_rules: &BTreeMap<ContentHash, ResolvedBindingAction>,
     network_state: Option<&ProductionNetworkStateCheckpoint>,
     emitted_events: &[ReferencedSignalEvent],
 ) -> ContentHash {
@@ -592,11 +757,31 @@ fn production_checkpoint_identity(
         if let Some(sequence) = qemu_fault_sequences.get(node) {
             material.extend_from_slice(&sequence.to_be_bytes());
         }
+        if let Some(sequence) = qemu_fault_event_sequences.get(node) {
+            material.extend_from_slice(&sequence.to_be_bytes());
+        }
+    }
+    for (identity, action) in qemu_active_rules {
+        material.extend_from_slice(&identity.bytes);
+        material.extend_from_slice(&action.id().bytes);
     }
     ContentHash::from_canonical_material(
-        "crucible.production-fault-runtime-checkpoint.v2",
+        "crucible.production-fault-runtime-checkpoint.v3",
         &hex_bytes(&material),
     )
+}
+
+fn validate_qemu_active_rules(
+    rules: &BTreeMap<ContentHash, ResolvedBindingAction>,
+) -> Result<(), ProductionFaultRuntimeError> {
+    if rules.iter().any(|(identity, action)| {
+        *identity != action.id()
+            || action.kind != BindingActionKind::UpsertPersistent
+            || !matches!(action.effect.specification(), EffectSpecification::Node(_))
+    }) {
+        return Err(FaultExecutionError::CheckpointPresence.into());
+    }
+    Ok(())
 }
 
 fn production_manifests(

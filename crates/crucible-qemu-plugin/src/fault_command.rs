@@ -14,11 +14,13 @@ use std::ptr::NonNull;
 use crucible_shmem::{
     DequeuedFaultCommand, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
     FaultCapabilityScope, FaultCommandHeaderV1, FaultCommandKind, FaultCommandSlotV1,
-    FaultPayloadArenaHeader, FaultResultHeaderV1, FaultResultSlotV1, FaultResultStatus,
-    FaultTransportError, HARD_FAULT_PAYLOAD_BYTES, MappedFaultCommandTransportMut,
+    FaultEventHeaderV1, FaultEventOutcomeV1, FaultEventSlotV1, FaultPayloadArenaHeader,
+    FaultResultHeaderV1, FaultResultSlotV1, FaultResultStatus, FaultTransportError,
+    HARD_FAULT_PAYLOAD_BYTES, MappedFaultCommandTransportMut, MappedFaultEventTransportMut,
     MappedFaultResultTransportMut, MappedSetupRegion, MappedSetupRegionAccessError, RingHeader,
-    can_enqueue_fault_result, dequeue_fault_command, encode_fault_capability_manifest,
-    enqueue_fault_result, fault_capability_manifest_digest,
+    can_enqueue_fault_event, can_enqueue_fault_result, dequeue_fault_command,
+    encode_fault_capability_manifest, enqueue_fault_event, enqueue_fault_result,
+    fault_capability_manifest_digest,
 };
 use thiserror::Error;
 
@@ -33,12 +35,20 @@ pub const QEMU_PLUGIN_CRUCIBLE_FAULT_CANCEL_SYMBOL: &str = "qemu_plugin_crucible
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_PEEK_SYMBOL: &str = "qemu_plugin_crucible_fault_peek";
 /// QEMU symbol that copies one completed fault result.
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_POLL_SYMBOL: &str = "qemu_plugin_crucible_fault_poll";
+/// QEMU symbol that non-destructively describes the oldest rule event.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_EVENT_PEEK_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_event_peek";
+/// QEMU symbol that copies and consumes one rule event.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_EVENT_POLL_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_event_poll";
 
 const CAPABILITIES_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_capabilities\0";
 const SUBMIT_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_submit\0";
 const CANCEL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_cancel\0";
 const PEEK_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_peek\0";
 const POLL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_poll\0";
+const EVENT_PEEK_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_event_peek\0";
+const EVENT_POLL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_event_poll\0";
 const CAPABILITY_HASH_DOMAIN: &[u8] = b"crucible.qemu-fault-capability.v1\0";
 
 #[repr(C)]
@@ -78,6 +88,26 @@ struct QemuFaultResult {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct QemuFaultEvent {
+    command_kind: u16,
+    outcome: u16,
+    model_phase: u16,
+    target_kind: u16,
+    reserved: u32,
+    event_sequence: u64,
+    rule_command_sequence: u64,
+    observed_icount: u64,
+    generation: u64,
+    binding_hash: [u8; 32],
+    opportunity_hash: [u8; 32],
+    action_hash: [u8; 32],
+    target_hash: [u8; 32],
+    before_hash: [u8; 32],
+    after_hash: [u8; 32],
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 struct QemuFaultCapability {
     command_kind: u16,
@@ -96,6 +126,8 @@ type QemuFaultSubmitFn = extern "C" fn(*const QemuFaultCommand, *const u8, usize
 type QemuFaultCancelFn = extern "C" fn(u64) -> c_int;
 type QemuFaultPeekFn = extern "C" fn(*mut QemuFaultResult, *mut usize) -> c_int;
 type QemuFaultPollFn = extern "C" fn(*mut QemuFaultResult, *mut u8, usize, *mut usize) -> c_int;
+type QemuFaultEventPeekFn = extern "C" fn(*mut QemuFaultEvent, *mut usize) -> c_int;
+type QemuFaultEventPollFn = extern "C" fn(*mut QemuFaultEvent, *mut u8, usize, *mut usize) -> c_int;
 
 /// Resolved, closed QEMU fault registry operations.
 #[derive(Clone, Copy)]
@@ -106,6 +138,8 @@ pub(crate) struct QemuFaultCommandApis {
     cancel: QemuFaultCancelFn,
     peek: QemuFaultPeekFn,
     poll: QemuFaultPollFn,
+    event_peek: QemuFaultEventPeekFn,
+    event_poll: QemuFaultEventPollFn,
 }
 
 impl QemuFaultCommandApis {
@@ -121,6 +155,14 @@ impl QemuFaultCommandApis {
             cancel: resolve_symbol(CANCEL_SYMBOL_C, QEMU_PLUGIN_CRUCIBLE_FAULT_CANCEL_SYMBOL)?,
             peek: resolve_symbol(PEEK_SYMBOL_C, QEMU_PLUGIN_CRUCIBLE_FAULT_PEEK_SYMBOL)?,
             poll: resolve_symbol(POLL_SYMBOL_C, QEMU_PLUGIN_CRUCIBLE_FAULT_POLL_SYMBOL)?,
+            event_peek: resolve_symbol(
+                EVENT_PEEK_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_EVENT_PEEK_SYMBOL,
+            )?,
+            event_poll: resolve_symbol(
+                EVENT_POLL_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_EVENT_POLL_SYMBOL,
+            )?,
         })
     }
 
@@ -172,6 +214,8 @@ impl QemuFaultCommandApis {
             cancel: test_cancel,
             peek: test_peek,
             poll: test_poll,
+            event_peek: test_event_peek,
+            event_poll: test_event_poll,
         }
     }
 }
@@ -264,6 +308,27 @@ extern "C" fn test_poll(
         }
         1
     })
+}
+
+#[cfg(test)]
+extern "C" fn test_event_peek(event: *mut QemuFaultEvent, payload_length: *mut usize) -> c_int {
+    if event.is_null() || payload_length.is_null() {
+        return -libc::EINVAL;
+    }
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_event_poll(
+    event: *mut QemuFaultEvent,
+    _payload: *mut u8,
+    _payload_capacity: usize,
+    payload_length: *mut usize,
+) -> c_int {
+    if event.is_null() || payload_length.is_null() {
+        return -libc::EINVAL;
+    }
+    0
 }
 
 #[cfg(test)]
@@ -366,6 +431,16 @@ struct StableFaultCommandTransport {
 struct StableFaultResultTransport {
     ring: NonNull<RingHeader>,
     slots: NonNull<FaultResultSlotV1>,
+    slot_count: usize,
+    arena_header: NonNull<FaultPayloadArenaHeader>,
+    arena: NonNull<u8>,
+    arena_len: usize,
+    arena_region_offset: u64,
+}
+
+struct StableFaultEventTransport {
+    ring: NonNull<RingHeader>,
+    slots: NonNull<FaultEventSlotV1>,
     slot_count: usize,
     arena_header: NonNull<FaultPayloadArenaHeader>,
     arena: NonNull<u8>,
@@ -476,12 +551,72 @@ impl StableFaultResultTransport {
     }
 }
 
-/// Live bridge for one VM's bounded command and result transports.
+impl StableFaultEventTransport {
+    fn new(view: MappedFaultEventTransportMut<'_>) -> Result<Self, FaultCommandBridgeError> {
+        Ok(Self {
+            ring: NonNull::from(view.ring),
+            slots: NonNull::new(view.slots.as_mut_ptr())
+                .ok_or(FaultCommandBridgeError::EmptyTransport { direction: "event" })?,
+            slot_count: view.slots.len(),
+            arena_header: NonNull::from(view.arena_header),
+            arena: NonNull::new(view.arena.as_mut_ptr())
+                .ok_or(FaultCommandBridgeError::EmptyTransport { direction: "event" })?,
+            arena_len: view.arena.len(),
+            arena_region_offset: view.arena_region_offset,
+        })
+    }
+
+    fn can_enqueue(&self, payload_len: usize) -> Result<bool, FaultCommandBridgeError> {
+        // SAFETY: the validated setup mapping owns these addresses and the
+        // callback mutex serializes this producer's preflight and enqueue.
+        let (ring, slots, arena_header, arena) = unsafe {
+            (
+                self.ring.as_ref(),
+                core::slice::from_raw_parts(self.slots.as_ptr(), self.slot_count),
+                self.arena_header.as_ref(),
+                core::slice::from_raw_parts(self.arena.as_ptr(), self.arena_len),
+            )
+        };
+        can_enqueue_fault_event(ring, slots, arena_header, arena, payload_len)
+            .map_err(|source| FaultCommandBridgeError::Transport { source })
+    }
+
+    fn enqueue(
+        &mut self,
+        header: FaultEventHeaderV1,
+        payload: &[u8],
+    ) -> Result<(), FaultCommandBridgeError> {
+        // SAFETY: the setup mapping retains these validated addresses. The
+        // callback mutex makes this bridge the sole event producer, while the
+        // host touches only the published SPSC read side.
+        let (ring, slots, arena_header, arena) = unsafe {
+            (
+                self.ring.as_ref(),
+                core::slice::from_raw_parts_mut(self.slots.as_ptr(), self.slot_count),
+                self.arena_header.as_ref(),
+                core::slice::from_raw_parts_mut(self.arena.as_ptr(), self.arena_len),
+            )
+        };
+        enqueue_fault_event(
+            ring,
+            slots,
+            arena_header,
+            arena,
+            self.arena_region_offset,
+            header,
+            payload,
+        )
+        .map_err(|source| FaultCommandBridgeError::Transport { source })
+    }
+}
+
+/// Live bridge for one VM's bounded command, result, and event transports.
 pub(crate) struct FaultCommandBridge {
     apis: QemuFaultCommandApis,
     target_node_hash: [u8; 32],
     commands: StableFaultCommandTransport,
     results: StableFaultResultTransport,
+    events: StableFaultEventTransport,
     last_sequence: u64,
     capability_payload: Vec<u8>,
     capability_queries: BTreeSet<u64>,
@@ -511,11 +646,17 @@ impl FaultCommandBridge {
                 .fault_result_transport_mut(vm_slot)
                 .map_err(|source| FaultCommandBridgeError::MappedTransport { source })?,
         )?;
+        let events = StableFaultEventTransport::new(
+            region
+                .fault_event_transport_mut(vm_slot)
+                .map_err(|source| FaultCommandBridgeError::MappedTransport { source })?,
+        )?;
         Ok(Self {
             apis,
             target_node_hash,
             commands,
             results,
+            events,
             last_sequence: 0,
             capability_payload,
             capability_queries: BTreeSet::new(),
@@ -543,6 +684,9 @@ impl FaultCommandBridge {
             .checked_add(logical_icount_offset)
             .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
         if !self.poll_results(logical_icount_offset)? {
+            return Ok(());
+        }
+        if !self.poll_events(logical_icount_offset)? {
             return Ok(());
         }
         loop {
@@ -578,8 +722,14 @@ impl FaultCommandBridge {
             if !self.poll_results(logical_icount_offset)? {
                 return Ok(());
             }
+            if !self.poll_events(logical_icount_offset)? {
+                return Ok(());
+            }
         }
-        self.poll_results(logical_icount_offset).map(|_drained| ())
+        if self.poll_results(logical_icount_offset)? {
+            let _drained = self.poll_events(logical_icount_offset)?;
+        }
+        Ok(())
     }
 
     fn submit(
@@ -762,6 +912,86 @@ impl FaultCommandBridge {
         }
     }
 
+    fn poll_events(&mut self, logical_icount_offset: u64) -> Result<bool, FaultCommandBridgeError> {
+        let payload_capacity = usize::try_from(HARD_FAULT_PAYLOAD_BYTES)
+            .map_err(|_source| FaultCommandBridgeError::PayloadCapacity)?;
+        loop {
+            let mut peeked = QemuFaultEvent::default();
+            let mut peeked_payload_len = 0_usize;
+            let status = (self.apis.event_peek)(&mut peeked, &mut peeked_payload_len);
+            if status == 0 {
+                return Ok(true);
+            }
+            if status != 1 {
+                return Err(FaultCommandBridgeError::QemuEventPeek { status });
+            }
+            if peeked_payload_len == 0 || peeked_payload_len > payload_capacity {
+                return Err(FaultCommandBridgeError::QemuEventPayloadLength {
+                    length: peeked_payload_len,
+                    capacity: payload_capacity,
+                });
+            }
+            if !self.events.can_enqueue(peeked_payload_len)? {
+                return Ok(false);
+            }
+            let mut payload = vec![0_u8; peeked_payload_len];
+            let mut event = QemuFaultEvent::default();
+            let mut payload_len = 0_usize;
+            let status = (self.apis.event_poll)(
+                &mut event,
+                payload.as_mut_ptr(),
+                payload.len(),
+                &mut payload_len,
+            );
+            if status != 1 {
+                return Err(FaultCommandBridgeError::QemuEventPoll { status });
+            }
+            if event != peeked {
+                return Err(FaultCommandBridgeError::QemuEventPeekChanged {
+                    expected_sequence: peeked.event_sequence,
+                    observed_sequence: event.event_sequence,
+                });
+            }
+            if payload_len != peeked_payload_len {
+                return Err(FaultCommandBridgeError::QemuEventPayloadLengthChanged {
+                    expected: peeked_payload_len,
+                    observed: payload_len,
+                });
+            }
+            if event.reserved != 0 {
+                return Err(FaultCommandBridgeError::QemuEventReserved);
+            }
+            if event.event_sequence == 0 {
+                return Err(FaultCommandBridgeError::QemuEventSequenceZero);
+            }
+            let observed_icount = event
+                .observed_icount
+                .checked_add(logical_icount_offset)
+                .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+            let header = FaultEventHeaderV1 {
+                command_kind: command_kind(event.command_kind)?,
+                outcome: event_outcome(event.outcome)?,
+                event_sequence: event.event_sequence,
+                rule_command_sequence: event.rule_command_sequence,
+                observed_icount,
+                model_phase: event.model_phase,
+                target_kind: event.target_kind,
+                generation: event.generation,
+                binding_hash: event.binding_hash,
+                opportunity_hash: event.opportunity_hash,
+                action_hash: event.action_hash,
+                target_hash: event.target_hash,
+                before_hash: event.before_hash,
+                after_hash: event.after_hash,
+                evidence_hash: [0; 32],
+                payload_hash: [0; 32],
+                payload_offset: 0,
+                payload_length: 0,
+            };
+            self.events.enqueue(header, &payload)?;
+        }
+    }
+
     fn publish_local_rejection(
         &mut self,
         command_kind: u16,
@@ -822,6 +1052,18 @@ fn result_status(value: u16) -> Result<FaultResultStatus, FaultCommandBridgeErro
         13 => Ok(FaultResultStatus::AuthenticationFailed),
         14 => Ok(FaultResultStatus::Prepared),
         _ => Err(FaultCommandBridgeError::QemuStatus { value }),
+    }
+}
+
+fn event_outcome(value: u16) -> Result<FaultEventOutcomeV1, FaultCommandBridgeError> {
+    match value {
+        1 => Ok(FaultEventOutcomeV1::Applied),
+        2 => Ok(FaultEventOutcomeV1::Suppressed),
+        3 => Ok(FaultEventOutcomeV1::Corrected),
+        4 => Ok(FaultEventOutcomeV1::Error),
+        5 => Ok(FaultEventOutcomeV1::Passed),
+        6 => Ok(FaultEventOutcomeV1::Recovered),
+        _ => Err(FaultCommandBridgeError::QemuEventOutcome { value }),
     }
 }
 
@@ -946,6 +1188,52 @@ pub enum FaultCommandBridgeError {
         /// Available bytes.
         capacity: usize,
     },
+    /// QEMU event polling failed.
+    #[error("QEMU fault event poll failed with status {status}")]
+    QemuEventPoll {
+        /// Negative errno-style status.
+        status: c_int,
+    },
+    /// QEMU event peeking failed without consuming the event.
+    #[error("QEMU fault event peek failed with status {status}")]
+    QemuEventPeek {
+        /// Negative errno-style status.
+        status: c_int,
+    },
+    /// The single-consumer event head changed between peek and poll.
+    #[error(
+        "QEMU fault event changed after peek: expected sequence {expected_sequence}, observed {observed_sequence}"
+    )]
+    QemuEventPeekChanged {
+        /// Sequence observed non-destructively.
+        expected_sequence: u64,
+        /// Sequence returned by consuming poll.
+        observed_sequence: u64,
+    },
+    /// QEMU changed the event payload length between peek and poll.
+    #[error(
+        "QEMU fault event payload length changed after peek: expected {expected}, observed {observed}"
+    )]
+    QemuEventPayloadLengthChanged {
+        /// Length observed non-destructively.
+        expected: usize,
+        /// Length returned by consuming poll.
+        observed: usize,
+    },
+    /// QEMU claimed an empty or oversized event evidence payload.
+    #[error("QEMU fault event payload length {length} is outside 1..={capacity}")]
+    QemuEventPayloadLength {
+        /// Returned length.
+        length: usize,
+        /// Maximum available bytes.
+        capacity: usize,
+    },
+    /// QEMU populated reserved event bytes.
+    #[error("QEMU fault event returned nonzero reserved state")]
+    QemuEventReserved,
+    /// QEMU returned the reserved zero event sequence.
+    #[error("QEMU fault event returned sequence zero")]
+    QemuEventSequenceZero,
     /// A QEMU raw coordinate could not be returned to logical space.
     #[error("QEMU fault result coordinate overflowed logical icount")]
     CoordinateOverflow,
@@ -959,6 +1247,12 @@ pub enum FaultCommandBridgeError {
     #[error("QEMU fault result returned unknown status {value}")]
     QemuStatus {
         /// Unknown status.
+        value: u16,
+    },
+    /// QEMU returned an unknown event outcome tag.
+    #[error("QEMU fault event returned unknown outcome {value}")]
+    QemuEventOutcome {
+        /// Unknown outcome.
         value: u16,
     },
 }
@@ -989,6 +1283,7 @@ mod tests {
     fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
         const COMMAND_ARENA_OFFSET: u64 = 4_096;
         const RESULT_ARENA_OFFSET: u64 = 8_192;
+        const EVENT_ARENA_OFFSET: u64 = 12_288;
         TEST_CAPABILITY_RESULT_PENDING.with(|pending| pending.set(None));
         let target_node_hash = *blake3::hash(b"node").as_bytes();
         let command_ring = RingHeader::new();
@@ -999,6 +1294,10 @@ mod tests {
         let result_arena_header = FaultPayloadArenaHeader::new();
         let mut result_slots = vec![FaultResultSlotV1::new(); 4];
         let mut result_arena = vec![0_u8; 512];
+        let event_ring = RingHeader::new();
+        let event_arena_header = FaultPayloadArenaHeader::new();
+        let mut event_slots = vec![FaultEventSlotV1::new(); 4];
+        let mut event_arena = vec![0_u8; 512];
         let apis = QemuFaultCommandApis::test_stub();
         let capability_payload = encode_fault_capability_manifest(
             &apis
@@ -1030,6 +1329,17 @@ mod tests {
                     .unwrap_or_else(|| panic!("test result arena must be non-empty")),
                 arena_len: result_arena.len(),
                 arena_region_offset: RESULT_ARENA_OFFSET,
+            },
+            events: StableFaultEventTransport {
+                ring: NonNull::from(&event_ring),
+                slots: NonNull::new(event_slots.as_mut_ptr())
+                    .unwrap_or_else(|| panic!("test event slots must be non-empty")),
+                slot_count: event_slots.len(),
+                arena_header: NonNull::from(&event_arena_header),
+                arena: NonNull::new(event_arena.as_mut_ptr())
+                    .unwrap_or_else(|| panic!("test event arena must be non-empty")),
+                arena_len: event_arena.len(),
+                arena_region_offset: EVENT_ARENA_OFFSET,
             },
             last_sequence: 0,
             capability_payload: capability_payload.clone(),

@@ -203,6 +203,7 @@ fn factory_restores_vmstate_before_exposing_exact_snapshot_control() -> Result<(
         pending_preemption: None,
         pending_network_outputs: Vec::new(),
         next_fault_command_sequence: 11,
+        next_fault_event_sequence: 7,
     };
 
     let mut node = build_qemu_node_from_restored_checkpoint(
