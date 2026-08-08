@@ -63,8 +63,11 @@ in
           --with-sysroot=/ \
           --program-transform-name=
 
-        make -j"$NIX_BUILD_CORES"
-        make install
+        # Recursive BFD makes otherwise rediscover a missing host `makeinfo`
+        # after the frozen source copy is newer than the shipped Info files.
+        # Documentation is not part of this target-architecture bootstrap tool.
+        make -j"$NIX_BUILD_CORES" MAKEINFO=true
+        make install MAKEINFO=true
 
         echo "Native binutils 2.25 (${hostPlatform.config}) installed to $out"
       ''
