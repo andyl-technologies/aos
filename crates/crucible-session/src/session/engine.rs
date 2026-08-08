@@ -618,7 +618,12 @@ impl<L> Engine<L> {
             self.debug_coordinator.failed(String::from(
                 "runtime replacement returned mismatched committed-backend evidence",
             ));
-            self.close_guest_channels_for_reposition()?;
+            if guest_run_suspended
+                || !self.guest_channels.is_empty()
+                || self.pending_guest_activation.is_some()
+            {
+                self.close_guest_channels_for_reposition()?;
+            }
             return Err(SessionError::DebugRuntimeRepositionMismatch(Box::new(
                 DebugRuntimeRepositionEvidenceMismatch {
                     expected_node: reposition.node,
@@ -1828,19 +1833,26 @@ impl<L: QuantumLoop> Engine<L> {
         } else {
             None
         };
-        let runtime = self.graph.resume(&outcome.configuration)?.runtime;
-        let runtime = self
+        let mut attached_runtime = self.graph.resume(&outcome.configuration)?;
+        attached_runtime.runtime = self
             .quantum_loop
-            .bind_debug_runtime_evidence(&outcome.configuration, &runtime)?;
+            .bind_debug_runtime_evidence(&outcome.configuration, &attached_runtime.runtime)?;
+        let runtime = attached_runtime.runtime.clone();
 
         self.configuration = outcome.configuration.clone();
-        self.runtime = Some(runtime);
+        self.runtime = Some(runtime.clone());
         self.runtime_instantiated = true;
         self.frontier = outcome.frontier;
         self.event_log_len = u64_to_usize(outcome.event_log_offset.events);
         self.scheduler_quiescence = outcome.scheduler_quiescence.clone();
         self.quanta = self.quanta.saturating_add(1);
         self.debug_event_cursor = None;
+        if let Some(attach) = self.debug_attach.as_mut() {
+            attach.configuration = self.configuration.id();
+            attach.checkpoint = attached_runtime.checkpoint;
+            attach.runtime = attached_runtime;
+            attach.reduced_state = runtime.id;
+        }
         self.pending_event_log_entries
             .extend(outcome.event_log_entries.iter().cloned());
         if let Some((mode, true)) = step_completion {
