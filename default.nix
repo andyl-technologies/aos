@@ -46,37 +46,8 @@
     targetPlatform = hostPlatform;
   };
 
-  # Build the AArch64 guest closure as an explicitly AArch64 package set. Nix
-  # schedules these derivations only on builders advertising that platform;
-  # the native x86_64 Crucible suite retains the resulting kernel and rootfs
-  # while its controller and QEMU remain x86_64 host programs.
-  aarch64GuestPackages =
-    if crossSystem == null && system == "x86_64-linux"
-    then let
-      guestSystem = "aarch64-linux";
-      guestPlatform = lib.mkPlatform guestSystem;
-      guestStdenv = import ./stdenv {
-        inherit buildPlatform;
-        hostPlatform = guestPlatform;
-        targetPlatform = guestPlatform;
-      };
-      guestLib = import ./lib {
-        system = guestSystem;
-        bash = guestStdenv.bash;
-      };
-    in
-      import ./pkgs {
-        lib = guestLib;
-        stdenv = guestStdenv;
-      }
-    else null;
-  guestPackageSets =
-    if aarch64GuestPackages != null
-    then {"aarch64-linux" = aarch64GuestPackages;}
-    else {};
-
   # All packages are built hermetically from source using only stdenv.
-  pkgs = import ./pkgs {inherit lib stdenv guestPackageSets;};
+  pkgs = import ./pkgs {inherit lib stdenv;};
 
   # Auto-discovered module list.
   modules = import ./modules;

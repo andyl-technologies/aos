@@ -10,7 +10,20 @@ set -euo pipefail
 : "${CRUCIBLE_MATRIX_BUILD_INFO:?packaged build information is required}"
 : "${CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES:?supported architectures are required}"
 
-case ",$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES," in
+available_architectures=$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES
+external_aarch64_kernel=${CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64:-}
+external_aarch64_root=${CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64:-}
+if [[ -n "$external_aarch64_kernel" || -n "$external_aarch64_root" ]]; then
+  [[ -n "$external_aarch64_kernel" && -n "$external_aarch64_root" ]] \
+    || { printf 'external AArch64 kernel and root image must be supplied together\n' >&2; exit 64; }
+  CRUCIBLE_MATRIX_KERNEL_AARCH64=$external_aarch64_kernel
+  CRUCIBLE_MATRIX_ROOT_IMAGE_AARCH64=$external_aarch64_root
+  if [[ ",$available_architectures," != *,aarch64,* ]]; then
+    available_architectures="$available_architectures,aarch64"
+  fi
+fi
+
+case ",$available_architectures," in
   *,x86_64,aarch64,*) default_architecture=all ;;
   *,x86_64,*) default_architecture=x86_64 ;;
   *,aarch64,*) default_architecture=aarch64 ;;
@@ -37,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --help)
       printf '%s\n' \
         'usage: crucible-debugger-live-matrix [--architecture x86_64|aarch64|all] [--output NEW-DIR]'
+      printf 'available architectures: %s\n' "$available_architectures"
       printf 'packaged architectures: %s\n' "$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES"
       exit 0
       ;;
@@ -48,18 +62,18 @@ while [[ $# -gt 0 ]]; do
 done
 case "$architecture" in
   x86_64)
-    [[ ",$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES," == *,x86_64,* ]] \
-      || { printf 'x86_64 is not packaged by this suite\n' >&2; exit 64; }
+    [[ ",$available_architectures," == *,x86_64,* ]] \
+      || { printf 'x86_64 guest assets are unavailable\n' >&2; exit 64; }
     selected_architectures=x86_64
     ;;
   aarch64)
-    [[ ",$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES," == *,aarch64,* ]] \
-      || { printf 'aarch64 is not packaged by this suite\n' >&2; exit 64; }
+    [[ ",$available_architectures," == *,aarch64,* ]] \
+      || { printf 'aarch64 guest assets are unavailable\n' >&2; exit 64; }
     selected_architectures=aarch64
     ;;
   all)
-    [[ "$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES" == x86_64,aarch64 ]] \
-      || { printf 'the complete matrix is not packaged by this suite\n' >&2; exit 64; }
+    [[ "$available_architectures" == x86_64,aarch64 ]] \
+      || { printf 'the complete matrix requires x86_64 and aarch64 guest assets\n' >&2; exit 64; }
     selected_architectures='x86_64 aarch64'
     ;;
   *)
@@ -591,7 +605,8 @@ done
 {
   printf '%s\n' PASS
   printf 'architectures=%s\n' "${selected_architectures// /,}"
-  printf 'supported_architectures=%s\n' "$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES"
+  printf 'available_architectures=%s\n' "$available_architectures"
+  printf 'packaged_architectures=%s\n' "$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES"
   printf 'build_info=crucible-build-info\n'
   for selected in $selected_architectures; do
     printf 'evidence.%s=%s/result\n' "$selected" "$selected"

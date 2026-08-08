@@ -10,7 +10,7 @@
     "qemu-crucible-source"
   ];
 
-  requiredAttrFailures =
+  attrFailures =
     lib.concatMap (
       attr:
         lib.optionals (!(builtins.hasAttr attr pkgs)) [
@@ -18,19 +18,6 @@
         ]
     )
     requiredAttrs;
-
-  guestMatrixFailures =
-    lib.optionals (
-      pkgs.stdenv.hostPlatform.system == "x86_64-linux"
-      && !(builtins.hasAttr "aarch64-linux" pkgs.guestPackageSets)
-    ) ["pkgs.guestPackageSets must retain the AArch64 guest closure"]
-    ++ lib.optionals (
-      pkgs.stdenv.hostPlatform.system == "x86_64-linux"
-      && builtins.hasAttr "aarch64-linux" pkgs.guestPackageSets
-      && pkgs.guestPackageSets."aarch64-linux".stdenv.hostPlatform.system != "aarch64-linux"
-    ) ["the retained AArch64 guest closure must target aarch64-linux"];
-
-  attrFailures = requiredAttrFailures ++ guestMatrixFailures;
 
   packages =
     if attrFailures == []

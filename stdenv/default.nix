@@ -42,17 +42,8 @@
       ;
   };
 
-  # Post-transition native tools execute through the builder's registered
-  # binfmt handler. Keep Nix scheduling on the physical build system while
-  # validating dependencies against both that system and the native tool ISA.
-  tierBuildPlatform =
-    if buildPlatform.system != hostPlatform.system
-    then hostPlatform // {system = buildPlatform.system;}
-    else buildPlatform;
-
   mkTierStdenv = import ./tier-stdenv.nix {
-    inherit lib hostPlatform targetPlatform storeDir;
-    buildPlatform = tierBuildPlatform;
+    inherit lib buildPlatform hostPlatform targetPlatform storeDir;
   };
 
   # ── Wrap a raw toolchain tier into a full stdenv ────────────────────
