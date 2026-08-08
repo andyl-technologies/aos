@@ -138,6 +138,15 @@ in
       export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
       export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
       export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
+      # The real-Git interoperability test intentionally exercises stock
+      # OpenSSH signing. Nix builders have numeric uids without /etc/passwd
+      # entries, while ssh-keygen requires getpwuid(3) even with an explicit
+      # key path. Compile the repository-owned identity shim and scope it to
+      # that test's child processes; it never enters the runtime closure.
+      export AOS_TEST_IDENTITY_PRELOAD="$NIX_BUILD_TOP/aos-test-identity.so"
+      cc -shared -fPIC -O2 -Wall -Wextra -Werror \
+        -o "$AOS_TEST_IDENTITY_PRELOAD" \
+        aos-hub/tests/nix_builder_identity.c
     '';
 
     doCheck = true;

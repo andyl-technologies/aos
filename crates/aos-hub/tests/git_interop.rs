@@ -22,9 +22,20 @@ use aos_hub::db::Database;
 use aos_hub::fetch::LocalFsFetch;
 use aos_hub::indexer::index_and_record;
 
+/// Build a command with the build-only identity shim when the Nix check
+/// sandbox has no passwd entry for its numeric uid. The shim is never present
+/// in production packages or ordinary developer environments.
+fn command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    if let Ok(shim) = std::env::var("AOS_TEST_IDENTITY_PRELOAD") {
+        command.env("LD_PRELOAD", shim);
+    }
+    command
+}
+
 /// Run a command, panicking with full output on failure.
 fn run(dir: &Path, program: &str, args: &[&str]) -> String {
-    let output = Command::new(program)
+    let output = command(program)
         .args(args)
         .current_dir(dir)
         .output()
@@ -40,16 +51,17 @@ fn run(dir: &Path, program: &str, args: &[&str]) -> String {
 
 /// Whether the host toolchain can build a SHA-256, SSH-signed repo.
 fn host_supports_fixture(probe_dir: &Path) -> bool {
-    let git_ok = Command::new("git")
+    let git_ok = command("git")
         .args(["init", "--object-format=sha256", "-q", "probe"])
         .current_dir(probe_dir)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
-    let ssh_keygen_ok = Command::new("ssh-keygen")
-        .arg("-h")
+    let ssh_keygen_ok = command("ssh-keygen")
+        .args(["-t", "ed25519", "-N", "", "-q", "-C", "probe", "-f"])
+        .arg(probe_dir.join("probe-key"))
         .output()
-        .map(|_| true)
+        .map(|output| output.status.success())
         .unwrap_or(false);
     git_ok && ssh_keygen_ok
 }
@@ -140,7 +152,7 @@ async fn real_git_surface_verifies_and_indexes() {
         &["tag", "-s", "-f", "stable", "-m", "partition", "1.0.0"],
     );
     let partition_payload = {
-        let output = Command::new("git")
+        let output = command("git")
             .args(["cat-file", "tag", "refs/tags/stable"])
             .current_dir(&repo)
             .output()
