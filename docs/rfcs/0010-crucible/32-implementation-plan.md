@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
 DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:9fc3e3ccd119f1f2`
+Checklist sync digest: `rfc0010-checklist-v1:d717ac695df5f7b1`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -785,8 +785,9 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   guest-channel acceptance. Manual production testing additionally showed that
   distinct runtime-coordinate requests may report the same schedule-empty
   configuration identity and expose no earlier reverse coordinate;
-  T-DBG-10/T-DBG-14 must bind landed runtime evidence and exercise non-empty
-  live reverse history before completion. Typed requested/landed evidence and
+  T-DBG-10 and the live architecture acceptance task must bind landed runtime
+  evidence and exercise non-empty live reverse history before completion. Typed
+  requested/landed evidence and
   the inclusive exact event cursor are implemented. A packaged, out-of-check
   manual runner now defines the complete evidence capture, including
   content-bound guest assets, non-empty history, atomic operator barriers,
