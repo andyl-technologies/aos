@@ -1,5 +1,5 @@
 [scenario]
-id = "blake3:e44087a8feb401511d12e983bad9178b711091c1eb0183dc1be223c10498364c"
+id = "blake3:2f84aab559713e13996ce58a8d675ffb9a3a2ddedf248e4ec154ec768b37bd0d"
 seed = "0x060d000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = "18446744073709551615"
 
@@ -22,7 +22,60 @@ kind = "fixed_icount"
 retired = 0
 
 [plan]
-id = "blake3:dbd29820db993f95a7dab66887f893307f1d1aebe7bf1808bd10f7903f77ee1d"
+id = "blake3:83baf8d0b5067c8cc1fe6e635baac05c1ae8ea80a388347cb9e807f29d2acc5f"
+kind = "event_graph"
+
+[[plan.event]]
+id = "debug-history-1"
+policy = "once"
+
+[plan.event.trigger]
+kind = "at"
+at_ticks = 4096
+
+[plan.event.action]
+kind = "log"
+level = "info"
+message = "debug history boundary 1"
+
+[[plan.event]]
+id = "debug-history-2"
+policy = "once"
+
+[plan.event.trigger]
+kind = "at"
+at_ticks = 8192
+
+[plan.event.action]
+kind = "log"
+level = "info"
+message = "debug history boundary 2"
+
+[[plan.event]]
+id = "debug-history-3"
+policy = "once"
+
+[plan.event.trigger]
+kind = "at"
+at_ticks = 12288
+
+[plan.event.action]
+kind = "log"
+level = "info"
+message = "debug history boundary 3"
+
+[[plan.event]]
+id = "debug-history-4"
+policy = "once"
+
+[plan.event.trigger]
+kind = "at"
+at_ticks = 16384
+
+[plan.event.action]
+kind = "log"
+level = "info"
+message = "debug history boundary 4"
 
 [properties]
 id = "blake3:d102dd1556b312ec5f79938e44126ab4af45eb35876073c3662e7236da4d705f"
