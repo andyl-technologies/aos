@@ -26,9 +26,7 @@
 
 use crucible_shmem::{FrameEntry, NodeSlot, RingHeader, icount_to_virtual_ns};
 
-use crate::clock::ceil_ns_to_icount;
 use crate::error::DeviceError;
-use crate::fault::{DeviceRng, IoFaultOutcome, IoFaults};
 use crate::request::{ComputedResponse, LatencyModel, Request, Response, ResponseStatus};
 use crate::subnode::{IoCore, IoSubNode, ShmemDeliveryResult, ShmemInboxProcess};
 
@@ -146,7 +144,7 @@ impl LatencyModel for BlockLatency {
 /// A block device sub-node over a read-only base image and a CoW overlay.
 ///
 /// Composes an [`IoCore`] (clock, rings, in-flight queue) with the device state
-/// (base image, overlay, latency model, fault table, RNG cursor). Drive it with
+/// (base image, overlay, latency model, and exact storage continuation). Drive it with
 /// [`IoCore`]'s lifecycle methods reached through [`BlockDevice::core_mut`], or
 /// the convenience wrappers [`BlockDevice::submit`] / [`BlockDevice::advance_to`]
 /// / [`BlockDevice::next_response`].
@@ -157,14 +155,6 @@ pub struct BlockDevice {
     overlay: CowOverlay,
     storage_faults: BlockFaultState,
     latency: BlockLatency,
-    /// The active I/O fault table applied to completions ([IO-25], [IO-26]).
-    faults: IoFaults,
-    /// The per-device RNG stream cursor (draws consumed so far, [IO-23]).
-    ///
-    /// Advanced by [`BlockDevice::resolve_response`] as the seeded per-device RNG
-    /// draws each completion's faults; captured in the snapshot and re-derived on
-    /// restore via [`BlockDevice::rng`] so a fork resumes the same draw sequence.
-    rng_position: u64,
 }
 
 struct PreparedBlockTransportReset {
@@ -268,8 +258,6 @@ impl BlockDevice {
             overlay: CowOverlay::new(),
             storage_faults,
             latency,
-            faults: IoFaults::none(),
-            rng_position: 0,
         }
     }
 
@@ -674,70 +662,6 @@ impl BlockDevice {
     #[must_use]
     pub fn base(&self) -> &BaseImage {
         &self.base
-    }
-
-    /// Returns the device RNG stream cursor (draws consumed so far, [IO-23]).
-    #[must_use]
-    pub fn rng_position(&self) -> u64 {
-        self.rng_position
-    }
-
-    /// Returns a read-only view of the active I/O fault table ([IO-26]).
-    #[must_use]
-    pub fn faults(&self) -> &IoFaults {
-        &self.faults
-    }
-
-    /// Activates an I/O fault table for subsequent completions ([IO-25], [IO-26]).
-    ///
-    /// The block device applies exactly the same fault taxonomy as the network
-    /// link: latency/jitter/reorder/bandwidth shift the response delivery icount,
-    /// loss turns the response into an error status, duplicate emits a second
-    /// response, and corrupt flips seeded bits in the read payload. The active set
-    /// is part of the device's `MaterializedState` contribution, so a fork resumes
-    /// with identical fault behavior ([IO-26]).
-    pub fn set_faults(&mut self, faults: IoFaults) {
-        self.faults = faults;
-    }
-
-    /// Builds a seeded RNG positioned at this device's captured cursor ([IO-23]).
-    ///
-    /// Forks the device stream by name-hash from the engine's decision-RNG
-    /// `root_seed` in `domain` for `name` ([DET-25]) and resumes it at the
-    /// captured cursor, so the returned RNG's next draw is byte-identical to the
-    /// uninterrupted run's. The caller supplies the engine root seed and the
-    /// device's stable stream domain and name (the engine owns the name-hash).
-    #[must_use]
-    pub fn rng(&self, root_seed: u64, domain: &str, name: &str) -> DeviceRng {
-        DeviceRng::restore(root_seed, domain, name, self.rng_position)
-    }
-
-    /// Resolves a modeled completion through the active fault table ([IO-25]).
-    ///
-    /// Applies the uniform I/O fault taxonomy to a modeled
-    /// `(delivery_icount, status, payload)` triple — the response
-    /// [`BlockDevice::submit`]'s COMPUTE step would deliver — drawing every
-    /// probabilistic choice from `rng` in the fixed model order and advancing the
-    /// device RNG cursor to match ([IO-21], [IO-23]). The returned
-    /// [`IoFaultOutcome`] carries the perturbed primary response, an optional
-    /// duplicate, and which faults fired. Nanosecond shifts are converted to
-    /// icounts with the device's fixed clock shift, so the result is a pure
-    /// function of the inputs, the table, and the RNG position ([IO-22], [IO-24]).
-    pub fn resolve_response(
-        &mut self,
-        primary_icount: u64,
-        status: ResponseStatus,
-        payload: Vec<u8>,
-        rng: &mut DeviceRng,
-    ) -> IoFaultOutcome {
-        let shift_bits = self.core.shift_bits();
-        let outcome = self
-            .faults
-            .resolve(primary_icount, status, payload, rng, |ns| {
-                ceil_ns_to_icount(ns, shift_bits).unwrap_or(u64::MAX)
-            });
-        self.rng_position = rng.position();
-        outcome
     }
 
     /// Enqueues an encoded request and COMPUTEs it immediately.
@@ -1330,8 +1254,6 @@ impl BlockDevice {
             dirty: self.overlay.dirty_pages().clone(),
             storage_faults: self.storage_faults.clone(),
             latency: self.latency,
-            faults: self.faults.clone(),
-            rng_position: self.rng_position,
         }
     }
 
@@ -1410,10 +1332,6 @@ impl BlockDevice {
             // icounts match an uninterrupted run ([IO-10], [IO-22]); never
             // substitute the default, which would silently diverge.
             latency: snapshot.latency,
-            // Restore the active fault table so post-restore completions are
-            // perturbed identically ([IO-26]); omitting it would silently diverge.
-            faults: snapshot.faults.clone(),
-            rng_position: snapshot.rng_position,
         })
     }
 

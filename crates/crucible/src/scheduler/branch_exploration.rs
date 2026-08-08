@@ -43,11 +43,6 @@ impl SingleScheduler {
         for position in self.world_network_rng_positions.values_mut() {
             *position = 0;
         }
-        for sub_nodes in self.device_sub_nodes.values_mut() {
-            for sub_node in sub_nodes {
-                sub_node.reseed_future_decisions(seed);
-            }
-        }
         Ok(())
     }
 

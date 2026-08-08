@@ -9,8 +9,8 @@
 //! injection is icount-deterministic** (Contract B, [IO-2], [IO-4],
 //! [SCHED-29]). A [`DeviceSchedulingSubNode`] holds a concrete device's
 //! [`IoCore`] — the in-flight queue of
-//! computed-not-delivered responses — together with its scheduling identity and
-//! the per-device fault table. Network-link sub-nodes have their own delivery
+//! computed-not-delivered responses — together with its scheduling identity.
+//! Network-link sub-nodes have their own delivery
 //! queue in `crucible-device`; their live latency changes enter the scheduler
 //! through [`SingleScheduler::schedule_link_latency_recompute`](crate::SingleScheduler::schedule_link_latency_recompute).
 //!
@@ -27,50 +27,32 @@
 //!    `delivery_icount`, [`DeviceSchedulingSubNode::deliver_due`] makes the
 //!    response visible at exactly that icount in the canonical
 //!    `(delivery_icount, src_node, seq)` total order ([IO-10], [SCHED-29]),
-//!    transport-timing-independent, and appends the per-device fault
-//!    [`Decision`]s the completion drew ([SCHED-30]).
-//!
-//! # When effect choices are drawn vs recorded
-//!
-//! A probabilistic device fault (jitter/reorder/loss/duplicate/corrupt/bandwidth)
-//! is **drawn from the per-device RNG at COMPUTE**, when
-//! [`DeviceSchedulingSubNode::submit`] resolves the modeled completion through
-//! [`crucible_device::IoFaults::resolve`]. Drawing at COMPUTE is what lets the
-//! perturbed (final) `delivery_icount` enter the in-flight queue, so the horizon
-//! term the scheduler reads is the **exact** completion the requester will
-//! observe — never a pre-fault estimate the run would then have to deliver late.
-//! The raw draws and effect outcomes are buffered with the pending completion and
-//! **recorded as [`Decision`]s on the RESOLVE path**, in delivery
-//! order, so the recorded schedule is appended in the §8.6 total order exactly as
-//! [`resolve_frame`](crate::scheduler) records a link-loss outcome ([SCHED-30]).
+//!    transport-timing-independent. Signal-driven storage and 9p mutations are
+//!    applied by the production adapters before completions enter this scheduler
+//!    bridge; there is no second completion-fault table here.
 //!
 //! ```text
-//! submit(req):  COMPUTE response -> IoFaults::resolve(rng)  -> final delivery_icount
-//!               buffer { delivery_icount, payload, decisions } in the inflight queue
-//! horizon:      next_exact_local_event() = inflight head final delivery_icount
+//! submit(req):  COMPUTE response -> buffer exact completion in the inflight queue
+//! horizon:      next_exact_local_event() = inflight head delivery_icount
 //! deliver_due(consumer_icount):
 //!               for each completion with delivery_icount <= consumer_icount, in
 //!               (delivery_icount, src_node, seq) order:
 //!                 emit IoCompletion @ delivery_icount ; append its buffered decisions
 //! ```
 
-mod reseed;
-
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::model::WorldCompletionDurability;
-use crucible_device::block::{BlockCompletionDurability, BlockDurabilityConfig, BlockErrorCode};
-use crucible_device::ninep::codec as ninep_codec;
+use crucible_device::block::{BlockCompletionDurability, BlockDurabilityConfig};
 use crucible_device::{
-    BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockResponse, DeviceError, FsTree,
-    FsTreeDecodeError, IoCore, IoFaults, NinepDevice, NinepLatency, PendingResponse,
-    ResponseStatus,
+    BaseImage, BlockDevice, BlockLatency, BlockRequest, DeviceError, FsTree, FsTreeDecodeError,
+    IoCore, NinepDevice, NinepLatency, PendingResponse,
 };
 
 use crate::scheduler::{IoCompletion, SchedulerDiscardedIoCompletion};
 use crate::{
-    ContentHash, DagStore, DagStoreError, Decision, DeviceId, EffectOutcomeDecision, FaultId,
-    NodeId, RngDecision, SchedulerNodeId, Seed, World, WorldDeviceKind, WorldIoNodeKind,
+    ContentHash, DagStore, DagStoreError, Decision, DeviceId, NodeId, SchedulerNodeId, Seed, World,
+    WorldDeviceKind, WorldIoNodeKind,
 };
 
 /// Default physical request-ring capacity selected at instantiation time.
@@ -193,31 +175,18 @@ fn validate_layout_capacity(ring: &'static str, capacity: u64) -> Result<(), Wor
     Ok(())
 }
 
-/// High-bit tie-break namespace for duplicate-fault completions.
-///
-/// A duplicate response shares its primary's `src_node` and is delivered a fixed
-/// gap later, but it must never collide with a *sibling* request's primary `seq`
-/// in the `(delivery_icount, src_node, seq)` order. Primary `seq` values are small
-/// sequential request counts from the device core, so OR-ing this top bit places
-/// every duplicate in a disjoint namespace.
-const DUPLICATE_SEQ_NAMESPACE: u32 = 1 << 31;
-
 type ModeledKey = (u64, u32, u32);
 
-/// One modeled (pre-fault) completion the device COMPUTEd, ordered by its
-/// modeled delivery key. Fault resolution is a pure function of the *sorted* set
-/// of these, so COMPUTE/submit order never affects the result ([IO-4]).
+/// One exact completion the device computed, ordered by its delivery key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ModeledCompletion {
-    /// The modeled (pre-fault) completion icount.
+    /// The exact completion icount.
     modeled_icount: u64,
     /// The source-node id stamped into the delivery order key.
     src_node: u32,
     /// The per-completion sequence stamped by the device core.
     seq: u32,
-    /// The modeled response status.
-    status: ResponseStatus,
-    /// The modeled response payload.
+    /// The exact response payload.
     payload: Vec<u8>,
 }
 
@@ -227,22 +196,20 @@ impl ModeledCompletion {
     }
 }
 
-/// One pending device completion: its final delivery icount, payload, and the
-/// fault decisions it drew (recorded at RESOLVE, [SCHED-30]).
+/// One pending exact device completion.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingCompletion {
-    /// The modeled completion this resolved item came from.
+    /// The modeled completion this pending item came from.
     modeled_key: ModeledKey,
-    /// The post-fault icount at which the response becomes visible ([IO-2]).
+    /// The icount at which the response becomes visible ([IO-2]).
     delivery_icount: u64,
     /// The source-node id stamped into the delivery order key.
     src_node: u32,
     /// The per-completion sequence number, breaking same-icount ties.
     seq: u32,
-    /// The deterministic response payload, or `None` for a drop-mode failure.
+    /// The deterministic response payload.
     payload: Option<Vec<u8>>,
-    /// The fault [`Decision`]s this completion drew, recorded at RESOLVE in
-    /// delivery order ([SCHED-30]).
+    /// Scheduler decisions attached by the producing adapter.
     decisions: Vec<Decision>,
     /// Whether this item has already been drained through RESOLVE.
     delivered: bool,
@@ -256,8 +223,8 @@ impl PendingCompletion {
 
 /// One due item drained from a device scheduling sub-node.
 ///
-/// Most items carry a visible [`IoCompletion`]. Drop-mode block failures carry
-/// only the buffered fault decisions so the schedule records the deterministic
+/// Items carry a visible [`IoCompletion`] and any deterministic decisions the
+/// producing adapter attached, so the schedule records the
 /// effect choice without fabricating a VM-visible response.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceDelivery {
@@ -445,8 +412,8 @@ pub fn instantiate_world_io_sub_nodes(
 ///
 /// Holds a concrete block or 9p sub-node, its scheduling identity
 /// ([`SchedulerNodeId`]), the target VM [`NodeId`] that observes its completions,
-/// and the seeded per-device RNG forked by name-hash from the scenario seed
-/// ([IO-21], [DET-25]). The scheduler reads
+/// and the exact completions already produced by its authoritative adapter. The
+/// scheduler reads
 /// [`DeviceSchedulingSubNode::next_exact_local_event`] to bound the requester's
 /// horizon and calls [`DeviceSchedulingSubNode::deliver_due`] at RESOLVE to make
 /// completions visible at their exact icount.
@@ -456,23 +423,10 @@ pub struct DeviceSchedulingSubNode {
     target: NodeId,
     device_id: DeviceId,
     device: ScheduledDevice,
-    seed: Seed,
-    /// The modeled (pre-fault) completions, kept in delivery-key order. Fault
-    /// resolution recomputes [`resolved`] from this set, so the result is a pure
-    /// function of the sorted set and never depends on submit/COMPUTE order
-    /// ([IO-4]).
+    /// The exact modeled completions, kept in delivery-key order.
     modeled: Vec<ModeledCompletion>,
-    /// Every modeled completion resolved through the fault table in delivery
-    /// order, recomputed whenever [`modeled`] grows. Ordered by
-    /// `(delivery_icount, src_node, seq)`.
+    /// Every pending completion in `(delivery_icount, src_node, seq)` order.
     resolved: Vec<PendingCompletion>,
-    /// Modeled completions whose resolved outcomes must not be recomputed after
-    /// at least one delivery has become visible.
-    frozen_modeled: BTreeSet<ModeledKey>,
-    /// Device RNG position after every frozen modeled completion.
-    frozen_rng_position: Option<u64>,
-    /// The device RNG cursor after resolving every modeled completion ([IO-23]).
-    rng_position: u64,
 }
 
 impl DeviceSchedulingSubNode {
@@ -726,59 +680,48 @@ impl DeviceSchedulingSubNode {
 
     /// Builds a scheduling sub-node over a block device for a target VM node.
     ///
-    /// The sub-node owns the device and a seeded per-device RNG forked by
-    /// name-hash from `seed` for `device_id` ([IO-21]). `sub_node` is the
-    /// device's scheduling identity (the event producer); `target` is the VM node
-    /// whose horizon the device's completions bound and which observes them.
+    /// `sub_node` is the device's scheduling identity (the event producer);
+    /// `target` is the VM node whose horizon the device's completions bound and
+    /// which observes them. The seed argument is retained as part of the general
+    /// world-instantiation signature; fault randomness is owned by signal bindings.
     #[must_use]
     pub fn new(
         sub_node: SchedulerNodeId,
         target: NodeId,
         device_id: DeviceId,
         device: BlockDevice,
-        seed: Seed,
+        _seed: Seed,
     ) -> Self {
         Self {
             sub_node,
             target,
             device_id,
             device: ScheduledDevice::Block(Box::new(device)),
-            seed,
             modeled: Vec::new(),
             resolved: Vec::new(),
-            frozen_modeled: BTreeSet::new(),
-            frozen_rng_position: None,
-            rng_position: 0,
         }
     }
 
     /// Builds a scheduling sub-node over a 9p device for a target VM node.
     ///
     /// This is the filesystem twin of [`DeviceSchedulingSubNode::new`]: the same
-    /// scheduler-facing machinery owns the device, resolves its completion faults
-    /// through the per-device RNG, records the resulting decisions, and exposes
-    /// the final post-fault in-flight head as the requester's exact local event.
-    /// Keeping 9p on the same path as block is the load-bearing uniformity claim
-    /// of [IO-25] and [IO-26].
+    /// scheduler-facing machinery owns the device and exposes its exact in-flight
+    /// head as the requester's local event.
     #[must_use]
     pub fn new_ninep(
         sub_node: SchedulerNodeId,
         target: NodeId,
         device_id: DeviceId,
         device: NinepDevice,
-        seed: Seed,
+        _seed: Seed,
     ) -> Self {
         Self {
             sub_node,
             target,
             device_id,
             device: ScheduledDevice::Ninep(Box::new(device)),
-            seed,
             modeled: Vec::new(),
             resolved: Vec::new(),
-            frozen_modeled: BTreeSet::new(),
-            frozen_rng_position: None,
-            rng_position: 0,
         }
     }
 
@@ -798,33 +741,6 @@ impl DeviceSchedulingSubNode {
     #[must_use]
     pub fn device_id(&self) -> &DeviceId {
         &self.device_id
-    }
-
-    /// Returns the seeded per-device RNG cursor (draws consumed so far, [IO-23]).
-    #[must_use]
-    pub fn rng_position(&self) -> u64 {
-        self.rng_position
-    }
-
-    /// Returns the active I/O fault table installed on this sub-node.
-    #[must_use]
-    pub fn io_faults(&self) -> Option<&IoFaults> {
-        self.device.block_faults()
-    }
-
-    /// Installs an active I/O fault table on this sub-node.
-    ///
-    /// Existing modeled completions are recomputed immediately so the in-flight
-    /// horizon and RESOLVE delivery reflect the live fault set.
-    pub fn set_io_faults(&mut self, faults: IoFaults) -> Result<(), DeviceError> {
-        self.device.set_block_faults(faults)?;
-        if self.resolved.iter().any(|completion| completion.delivered) {
-            self.frozen_modeled
-                .extend(self.modeled.iter().map(ModeledCompletion::key));
-            self.frozen_rng_position = Some(self.rng_position);
-        }
-        self.resolve_all();
-        Ok(())
     }
 
     /// Returns a shared view of the held block device, when this is a disk sub-node.
@@ -860,13 +776,8 @@ impl DeviceSchedulingSubNode {
 
     /// Submits a block request at `request_icount` and COMPUTEs its completion.
     ///
-    /// COMPUTEs the modeled `(delivery_icount, status, payload)` through the
-    /// device and records it in delivery-key order. Fault resolution — which
-    /// fixes the **final** (post-fault) `delivery_icount` the horizon reads and
-    /// draws every probabilistic choice from the per-device RNG — is deferred to
-    /// `DeviceSchedulingSubNode::resolve_all`, run over the *sorted* modeled set,
-    /// so the result is a pure function of the request set and the seed and is
-    /// **independent of the COMPUTE/submit order** ([IO-4]). The device's own clock
+    /// Computes the exact `(delivery_icount, payload)` through the device and
+    /// records it in delivery-key order. The device's own clock
     /// is never advanced here; delivery is driven solely by the scheduler through
     /// [`DeviceSchedulingSubNode::deliver_due`].
     ///
@@ -890,11 +801,8 @@ impl DeviceSchedulingSubNode {
     /// Submits a raw 9p request frame at `request_icount` and COMPUTEs its reply.
     ///
     /// This mirrors [`DeviceSchedulingSubNode::submit`] for the 9p sub-node:
-    /// COMPUTE pins the modeled reply, the bridge resolves active I/O faults
-    /// through the per-device RNG in sorted delivery-key order, and
-    /// [`DeviceSchedulingSubNode::deliver_due`] later records the buffered
-    /// `RngDraw` / `EffectOutcome` decisions when the reply becomes visible
-    /// ([IO-21], [IO-25], [SCHED-30]).
+    /// COMPUTE pins the exact modeled reply and
+    /// [`DeviceSchedulingSubNode::deliver_due`] later makes it visible.
     ///
     /// # Errors
     ///
@@ -922,7 +830,6 @@ impl DeviceSchedulingSubNode {
                 modeled_icount: modeled.key.delivery_icount,
                 src_node: modeled.key.src_node,
                 seq: modeled.key.seq,
-                status: modeled.response.status,
                 payload: modeled.response.payload,
             };
             if self.modeled.iter().any(|existing| {
@@ -940,133 +847,32 @@ impl DeviceSchedulingSubNode {
         }
     }
 
-    /// Recomputes every modeled completion through the fault table, in delivery
-    /// order, from a fresh per-device RNG (RFC-0010 [IO-25], [IO-21], [IO-4]).
-    ///
-    /// Because resolution iterates the *sorted* modeled set from RNG position
-    /// zero, the post-fault delivery icounts, the recorded draws, and the fault
-    /// outcomes are a pure function of `(request set, seed)` — never of the order
-    /// the requests were submitted. Already-delivered completions are preserved at
-    /// their cursor so a recompute after a partial delivery never re-emits them.
+    /// Rebuilds exact pending completions in canonical delivery order.
     fn resolve_all(&mut self) {
-        if self.resolved.iter().any(|completion| completion.delivered) {
-            let has_unfrozen_resolved = self
-                .resolved
-                .iter()
-                .any(|completion| !self.frozen_modeled.contains(&completion.modeled_key));
-            if has_unfrozen_resolved || self.frozen_rng_position.is_none() {
-                self.frozen_modeled.extend(
-                    self.resolved
-                        .iter()
-                        .map(|completion| completion.modeled_key),
-                );
-                self.frozen_rng_position = Some(self.rng_position);
-            }
-        }
-
-        let mut rng = crate::device::device_rng(
-            self.seed,
-            &self.device_id,
-            self.frozen_rng_position.unwrap_or(0),
-        );
-        let stream = crate::device::device_stream_id(&self.device_id);
         let mut resolved = self
             .resolved
             .iter()
-            .filter(|completion| self.frozen_modeled.contains(&completion.modeled_key))
+            .filter(|completion| completion.delivered)
             .cloned()
             .collect::<Vec<_>>();
-        for modeled in self.modeled.clone() {
-            if self.frozen_modeled.contains(&modeled.key()) {
+        for modeled in &self.modeled {
+            if resolved
+                .iter()
+                .any(|completion| completion.modeled_key == modeled.key())
+            {
                 continue;
             }
-            let before = rng.position();
-            let outcome = self.device.resolve_response(
-                modeled.modeled_icount,
-                modeled.status,
-                modeled.payload.clone(),
-                &mut rng,
-            );
-            let after = rng.position();
-
-            // Record one RngDraw per raw value this completion consumed (in order),
-            // then a EffectOutcome for each probabilistic effect outcome ([SCHED-30]).
-            let mut decisions = Vec::new();
-            let mut replay = crate::device::device_rng(self.seed, &self.device_id, before);
-            let at = crate::VirtualTime {
-                ticks: modeled.modeled_icount,
-            };
-            for _ in before..after {
-                decisions.push(Decision::RngDraw(RngDecision {
-                    stream: stream.clone(),
-                    value: replay.next_u64(),
-                }));
-            }
-            push_effect_outcome(
-                &mut decisions,
-                at,
-                &self.device_id,
-                "loss",
-                outcome.loss_fired,
-            );
-            push_effect_outcome(
-                &mut decisions,
-                at,
-                &self.device_id,
-                "duplicate",
-                outcome.duplicate_fired,
-            );
-            push_effect_outcome(
-                &mut decisions,
-                at,
-                &self.device_id,
-                "corrupt",
-                outcome.corrupt_fired,
-            );
-
-            let primary_payload = if outcome.dropped {
-                None
-            } else {
-                Some(self.device.resolved_payload(
-                    &modeled.payload,
-                    &outcome.primary,
-                    outcome.failure_errno,
-                ))
-            };
             resolved.push(PendingCompletion {
                 modeled_key: modeled.key(),
-                delivery_icount: outcome.primary.delivery_icount,
+                delivery_icount: modeled.modeled_icount,
                 src_node: modeled.src_node,
                 seq: modeled.seq,
-                payload: primary_payload,
-                decisions,
+                payload: Some(modeled.payload.clone()),
+                decisions: Vec::new(),
                 delivered: false,
             });
-            if let Some(duplicate) = outcome.duplicate {
-                let payload = self.device.resolved_payload(
-                    &modeled.payload,
-                    &duplicate,
-                    outcome.failure_errno,
-                );
-                resolved.push(PendingCompletion {
-                    modeled_key: modeled.key(),
-                    delivery_icount: duplicate.delivery_icount,
-                    src_node: modeled.src_node,
-                    // Duplicates live in a SEPARATE high-bit tie-break namespace
-                    // (`seq | DUPLICATE_SEQ_NAMESPACE`) so a duplicate can never
-                    // collide with any sibling request's primary `seq` (which are
-                    // small sequential request counts). Tie-break only orders
-                    // same-icount completions, so the namespace bit is harmless to
-                    // ordering while guaranteeing uniqueness.
-                    seq: modeled.seq | DUPLICATE_SEQ_NAMESPACE,
-                    payload: Some(payload),
-                    decisions: Vec::new(),
-                    delivered: false,
-                });
-            }
         }
         resolved.sort_by_key(PendingCompletion::delivery_key);
-        self.rng_position = rng.position();
         self.resolved = resolved;
     }
 
@@ -1159,8 +965,6 @@ impl DeviceSchedulingSubNode {
             .collect::<Vec<_>>();
         self.modeled.clear();
         self.resolved.clear();
-        self.frozen_modeled.clear();
-        self.frozen_rng_position = None;
         self.device.discard_inflight();
         discarded
     }
@@ -1234,108 +1038,6 @@ impl ScheduledDevice {
             ScheduledDevice::Ninep(device) => device.core_mut().discard_inflight(),
         }
     }
-
-    /// Returns the held device's active I/O fault table.
-    fn block_faults(&self) -> Option<&IoFaults> {
-        match self {
-            ScheduledDevice::Block(device) => Some(device.faults()),
-            ScheduledDevice::Ninep(_) => None,
-        }
-    }
-
-    /// Installs an active completion-fault table on a block device.
-    fn set_block_faults(&mut self, faults: IoFaults) -> Result<(), DeviceError> {
-        match self {
-            ScheduledDevice::Block(device) => {
-                device.set_faults(faults);
-                Ok(())
-            }
-            ScheduledDevice::Ninep(_) => Err(DeviceError::WrongDeviceKind {
-                expected: "block",
-                actual: "9p",
-            }),
-        }
-    }
-
-    /// Resolves a modeled response through the held device's active fault table.
-    fn resolve_response(
-        &mut self,
-        primary_icount: u64,
-        status: ResponseStatus,
-        payload: Vec<u8>,
-        rng: &mut crucible_device::DeviceRng,
-    ) -> crucible_device::IoFaultOutcome {
-        match self {
-            ScheduledDevice::Block(device) => {
-                device.resolve_response(primary_icount, status, payload, rng)
-            }
-            ScheduledDevice::Ninep(_) => crucible_device::IoFaultOutcome {
-                primary: crucible_device::ResolvedResponse {
-                    delivery_icount: primary_icount,
-                    status,
-                    payload,
-                },
-                duplicate: None,
-                loss_fired: false,
-                dropped: false,
-                failure_errno: None,
-                duplicate_fired: false,
-                corrupt_fired: false,
-            },
-        }
-    }
-
-    /// Re-encodes a protocol-native error payload when a failure fault fires.
-    fn resolved_payload(
-        &self,
-        modeled_payload: &[u8],
-        outcome: &crucible_device::ResolvedResponse,
-        failure_errno: Option<u32>,
-    ) -> Vec<u8> {
-        if outcome.status != ResponseStatus::Error || failure_errno.is_none() {
-            return outcome.payload.clone();
-        }
-
-        match self {
-            ScheduledDevice::Block(_) => {
-                block_error_payload(modeled_payload).unwrap_or_else(|| outcome.payload.clone())
-            }
-            ScheduledDevice::Ninep(_) => outcome.payload.clone(),
-        }
-    }
-}
-
-fn block_error_payload(modeled_payload: &[u8]) -> Option<Vec<u8>> {
-    let response = BlockResponse::decode(modeled_payload).ok()?;
-    BlockResponse::error(response.request_id, BlockErrorCode::IoError)
-        .encode()
-        .ok()
-}
-
-fn ninep_error_payload(modeled_payload: &[u8], failure_errno: Option<u32>) -> Option<Vec<u8>> {
-    let errno = failure_errno?;
-    let tag_bytes = modeled_payload.get(5..7)?;
-    let tag = u16::from_le_bytes([tag_bytes[0], tag_bytes[1]]);
-    ninep_codec::encode_rlerror(tag, errno).ok()
-}
-
-/// Pushes a [`Decision::EffectOutcome`] for one I/O fault kind that could fire.
-///
-/// The fault id is the device-scoped tag [`crate::device::io_fault_id`] keys an
-/// active I/O fault by ([IO-26]), so block/9p/link faults live in one namespace.
-fn push_effect_outcome(
-    decisions: &mut Vec<Decision>,
-    at: crate::VirtualTime,
-    device: &DeviceId,
-    kind: &str,
-    fired: bool,
-) {
-    let fault: FaultId = crate::device::io_fault_id(device, kind);
-    decisions.push(Decision::EffectOutcome(EffectOutcomeDecision {
-        at,
-        fault,
-        fired,
-    }));
 }
 
 #[cfg(test)]
@@ -1347,13 +1049,10 @@ mod tests {
 
     use crucible_device::ninep::codec;
     use crucible_device::{
-        BaseImage, BlockLatency, FsTree, IoCore, IoFaults, NinepDevice, NinepLatency, Node,
-        Probability,
+        BaseImage, BlockLatency, FsTree, IoCore, NinepDevice, NinepLatency, Node,
     };
 
     use crate::SchedulingNodeKind;
-
-    mod branch_reseed;
 
     fn device_id(name: &str) -> DeviceId {
         DeviceId {
@@ -1382,14 +1081,13 @@ mod tests {
     }
 
     /// Builds a fault-free disk sub-node over a small base image.
-    fn fresh_disk(seed: Seed, faults: IoFaults) -> DeviceSchedulingSubNode {
+    fn fresh_disk(seed: Seed) -> DeviceSchedulingSubNode {
         let core = match IoCore::new(0, 7, 16, 16) {
             Ok(core) => core,
             Err(error) => panic!("io core should construct: {error}"),
         };
         let base = BaseImage::new(vec![0xab; 4096]);
-        let mut device = BlockDevice::new(core, base, BlockLatency::default());
-        device.set_faults(faults);
+        let device = BlockDevice::new(core, base, BlockLatency::default());
         DeviceSchedulingSubNode::new(
             sub_node_id("disk-sub"),
             node_id("vm-a"),
@@ -1400,7 +1098,7 @@ mod tests {
     }
 
     /// Builds a 9p sub-node over a read-only tree.
-    fn fresh_ninep(seed: Seed, faults: IoFaults) -> DeviceSchedulingSubNode {
+    fn fresh_ninep(seed: Seed) -> DeviceSchedulingSubNode {
         let core = match IoCore::new(0, 9, 16, 16) {
             Ok(core) => core,
             Err(error) => panic!("io core should construct: {error}"),
@@ -1414,8 +1112,7 @@ mod tests {
         );
         let tree = FsTree::try_new(Node::Directory { children: root })
             .expect("test 9p tree components are valid");
-        let mut device = NinepDevice::new(core, tree, NinepLatency::default());
-        device.set_faults(faults);
+        let device = NinepDevice::new(core, tree, NinepLatency::default());
         DeviceSchedulingSubNode::new_ninep(
             ninep_sub_node_id("ninep-sub"),
             node_id("vm-a"),
@@ -1454,7 +1151,7 @@ mod tests {
 
     #[test]
     fn next_exact_local_event_is_the_inflight_head_final_icount() {
-        let mut disk = fresh_disk(Seed::from_u64(0xd15c), IoFaults::none());
+        let mut disk = fresh_disk(Seed::from_u64(0xd15c));
         // Two reads at different request icounts -> two completions in flight.
         disk.submit(0, &read_request(1, 0, 8))
             .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
@@ -1475,7 +1172,7 @@ mod tests {
 
     #[test]
     fn deliver_due_makes_completions_visible_at_exact_icount_in_order() {
-        let mut disk = fresh_disk(Seed::from_u64(0xd15c), IoFaults::none());
+        let mut disk = fresh_disk(Seed::from_u64(0xd15c));
         disk.submit(0, &read_request(1, 0, 8))
             .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
         let delivery = disk
@@ -1497,115 +1194,8 @@ mod tests {
     }
 
     #[test]
-    fn effect_choices_are_drawn_from_the_device_rng_and_recorded_as_decisions() {
-        // A loss fault that always fires: the completion records an RngDraw (the
-        // loss draw) and a EffectOutcome(loss, fired=true) on the RESOLVE path.
-        let faults = IoFaults {
-            loss: Probability::ALWAYS,
-            ..IoFaults::none()
-        };
-        let mut disk = fresh_disk(Seed::from_u64(0xfa17), faults);
-        disk.submit(0, &read_request(1, 0, 8))
-            .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
-        let delivery = disk
-            .next_exact_local_event()
-            .unwrap_or_else(|| panic!("a completion must be in flight"));
-        let delivered = disk.deliver_due(delivery);
-        assert_eq!(delivered.len(), 1);
-        let decisions = &delivered[0].decisions;
-
-        assert!(
-            decisions
-                .iter()
-                .any(|decision| matches!(decision, Decision::RngDraw(_))),
-            "the device RNG draws must be recorded as decisions"
-        );
-        assert!(
-            decisions.iter().any(|decision| matches!(
-                decision,
-                Decision::EffectOutcome(EffectOutcomeDecision { fired: true, fault, .. })
-                    if fault == &crate::device::io_fault_id(&device_id("disk"), "loss")
-            )),
-            "the loss effect outcome must be recorded as fired"
-        );
-        // The RNG cursor advanced (the faults consumed draws).
-        assert!(disk.rng_position() > 0);
-        let block_rng_position = disk
-            .block_device()
-            .unwrap_or_else(|| panic!("disk sub-node should hold a block device"))
-            .rng_position();
-        assert_eq!(
-            block_rng_position,
-            disk.rng_position(),
-            "the concrete block device cursor must match the scheduler bridge cursor"
-        );
-    }
-
-    #[test]
-    fn ninep_effect_choices_use_the_same_scheduler_bridge() {
-        let faults = IoFaults {
-            duplicate: Probability::ALWAYS,
-            duplicate_gap_ns: 1,
-            corrupt: Probability::ALWAYS,
-            corrupt_bit_flips: 1,
-            ..IoFaults::none()
-        };
-        let mut fs = fresh_ninep(Seed::from_u64(0x9f5), faults);
-        fs.submit_ninep_frame(0, &tversion(7, 4096, codec::PROTOCOL_VERSION))
-            .unwrap_or_else(|error| panic!("9p submit should succeed: {error}"));
-
-        let first_delivery = fs
-            .next_exact_local_event()
-            .unwrap_or_else(|| panic!("a 9p completion must be in flight"));
-        let delivered = fs.deliver_due(u64::MAX);
-        assert!(
-            delivered.len() >= 2,
-            "duplicate fault should emit a second 9p reply"
-        );
-        let event = delivered[0]
-            .completion
-            .as_ref()
-            .unwrap_or_else(|| panic!("9p delivery should emit a completion"));
-        let decisions = &delivered[0].decisions;
-        assert_eq!(event.delivery_icount.retired, first_delivery);
-        assert_eq!(event.target, node_id("vm-a"));
-        assert!(
-            decisions
-                .iter()
-                .any(|decision| matches!(decision, Decision::RngDraw(_))),
-            "9p device RNG draws must be recorded as decisions"
-        );
-        assert!(
-            decisions.iter().any(|decision| matches!(
-                decision,
-                Decision::EffectOutcome(EffectOutcomeDecision { fired: true, fault, .. })
-                    if fault == &crate::device::io_fault_id(&device_id("fs"), "duplicate")
-            )),
-            "the 9p duplicate effect outcome must be recorded as fired"
-        );
-        assert!(
-            decisions.iter().any(|decision| matches!(
-                decision,
-                Decision::EffectOutcome(EffectOutcomeDecision { fired: true, fault, .. })
-                    if fault == &crate::device::io_fault_id(&device_id("fs"), "corrupt")
-            )),
-            "the 9p corrupt effect outcome must be recorded as fired"
-        );
-        assert!(fs.rng_position() > 0);
-        let ninep_rng_position = fs
-            .ninep_device()
-            .unwrap_or_else(|| panic!("9p sub-node should hold a 9p device"))
-            .rng_position();
-        assert_eq!(
-            ninep_rng_position,
-            fs.rng_position(),
-            "the concrete 9p device cursor must match the scheduler bridge cursor"
-        );
-    }
-
-    #[test]
     fn wrong_request_kind_fails_loudly_without_computing() {
-        let mut fs = fresh_ninep(Seed::from_u64(0x9f5), IoFaults::none());
+        let mut fs = fresh_ninep(Seed::from_u64(0x9f5));
         let result = fs.submit(0, &read_request(1, 0, 8));
         assert!(matches!(
             result,
@@ -1616,7 +1206,7 @@ mod tests {
         ));
         assert!(fs.next_exact_local_event().is_none());
 
-        let mut disk = fresh_disk(Seed::from_u64(0xd15c), IoFaults::none());
+        let mut disk = fresh_disk(Seed::from_u64(0xd15c));
         let result = disk.submit_ninep_frame(0, &tversion(7, 4096, codec::PROTOCOL_VERSION));
         assert!(matches!(
             result,
