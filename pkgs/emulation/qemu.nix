@@ -208,6 +208,7 @@
   # patch -p1 < ${./qemu-patches/0047-crucible-fault-command-abi.patch}
   # patch -p1 < ${./qemu-patches/0048-crucible-fault-safe-boundary.patch}
   # patch -p1 < ${./qemu-patches/0049-crucible-memory-boundary-mutate.patch}
+  # patch -p1 < ${./qemu-patches/0050-crucible-memory-access-faults.patch}
   # patch -p1 < ${./qemu-patches/0060-crucible-block-typed-errors.patch}
   # patch -p1 < ${./qemu-patches/0061-crucible-block-discard.patch}
   # patch -p1 < ${./qemu-patches/0062-crucible-block-transport-reset.patch}
