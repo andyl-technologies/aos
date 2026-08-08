@@ -1,11 +1,11 @@
 //! Idempotent holders for one session's exclusive debugger controller lease.
 //!
 //! The session coordinator deliberately treats reacquisition by one principal
-//! as an idempotent retry. This API-layer registry distinguishes independent
-//! command and relay lifetimes for that principal without weakening the
-//! coordinator's single-controller security boundary. Server transitions lock
-//! the coordinator before this registry and perform both mutations without an
-//! intervening await, so request cancellation cannot split their state.
+//! as an idempotent repeated acquisition. This API-layer registry distinguishes
+//! independent command and relay lifetimes for that principal without weakening
+//! the coordinator's single-controller security boundary. Server transitions
+//! lock the coordinator before this registry and perform both mutations without
+//! an intervening await, so request cancellation cannot split their state.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -202,7 +202,9 @@ mod tests {
             .unwrap_or_else(|error| panic!("first holder should register: {error}"));
         registry
             .register(session(), lease(), first)
-            .unwrap_or_else(|error| panic!("holder retry should be idempotent: {error}"));
+            .unwrap_or_else(|error| {
+                panic!("repeated holder registration should be idempotent: {error}")
+            });
         registry
             .register(session(), lease(), second)
             .unwrap_or_else(|error| panic!("second holder should register: {error}"));
@@ -222,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn final_release_retains_a_bounded_retry_tombstone() {
+    fn final_release_retains_a_bounded_repeated_release_tombstone() {
         let mut registry = DebugControllerHolderRegistry::default();
         let holder = Uuid::from_u128(7);
         registry
