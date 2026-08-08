@@ -6,12 +6,11 @@
 
 use crucible::{
     AppRandomDecision, BackendInput, ConditionEvaluationError, ConditionEvaluationPass,
-    ConditionLeaf, ConditionLeafOracle, ContentHash, Decision, DeliveryOrderDecision,
-    EffectOutcomeDecision, EventKey, FaultId, Icount, IrqVector, NodeId, ObservableEvent,
-    ObservedFaultFact, ObservedOrderingFact, OverrideDecision, PreemptionDecision, PreemptionKind,
-    RngDecision, RngStreamId, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind,
-    VcpuId, VirtualTime,
+    ConditionLeaf, ConditionLeafOracle, ContentHash, Decision, DeliveryOrderDecision, EventKey,
+    Icount, IrqVector, NodeId, ObservableEvent, ObservedOrderingFact, OverrideDecision,
+    PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, ScheduledEvent,
+    ScheduledEventKey, ScheduledEventPayload, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, VcpuId, VirtualTime,
 };
 
 #[test]
@@ -26,8 +25,6 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
             payload: b"frame".to_vec(),
         }),
     };
-    let fault = fault_id("drop-request");
-
     let prefix = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
         observation_entry(0, &console),
         payload_entry(
@@ -86,16 +83,7 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
                 value: 0x1234_5678,
             })),
         ),
-        payload_entry(
-            7,
-            time(6),
-            SchedulerEventLogPayload::Decision(Decision::EffectOutcome(EffectOutcomeDecision {
-                at: time(6),
-                fault: fault.clone(),
-                fired: true,
-            })),
-        ),
-        boundary_entry(8, time(6)),
+        boundary_entry(7, time(6)),
     ])
     .expect("checked prefix should materialize observed state");
     let state = prefix.observed_state();
@@ -118,15 +106,7 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
             },
         ]
     );
-    assert_eq!(
-        state.fault_facts(),
-        &[ObservedFaultFact::ProbabilisticOutcome {
-            sequence: 7,
-            at: time(6),
-            fault,
-            fired: true,
-        }]
-    );
+    assert!(state.fault_facts().is_empty());
     assert_eq!(prefix.ordering_facts(), state.ordering_facts());
     assert_eq!(prefix.fault_facts(), state.fault_facts());
     let expected_observable_events = state.observable_events().to_vec();
@@ -281,12 +261,6 @@ fn scheduler_node(name: &str) -> SchedulerNodeId {
 
 fn node(name: &str) -> NodeId {
     NodeId {
-        name: name.to_owned(),
-    }
-}
-
-fn fault_id(name: &str) -> FaultId {
-    FaultId {
         name: name.to_owned(),
     }
 }

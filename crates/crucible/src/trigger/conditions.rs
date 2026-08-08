@@ -1221,35 +1221,6 @@ pub enum ObservedOrderingFact {
 /// Fault information exposed to property predicates.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ObservedFaultFact {
-    /// A scheduled fault activation entered the event log.
-    ScheduledActivation {
-        /// Dense event-log sequence where the fact was recorded.
-        sequence: u64,
-        /// Virtual time of the event-log entry.
-        at: VirtualTime,
-        /// Fault whose activation was resolved.
-        fault: FaultId,
-    },
-    /// A scheduled probabilistic effect choice entered the event log.
-    ScheduledProbabilisticChoice {
-        /// Dense event-log sequence where the fact was recorded.
-        sequence: u64,
-        /// Virtual time of the event-log entry.
-        at: VirtualTime,
-        /// Fault whose probabilistic choice was resolved.
-        fault: FaultId,
-    },
-    /// A probabilistic effect outcome was decided.
-    ProbabilisticOutcome {
-        /// Dense event-log sequence where the fact was recorded.
-        sequence: u64,
-        /// Virtual time of the event-log entry.
-        at: VirtualTime,
-        /// Fault whose outcome was decided.
-        fault: FaultId,
-        /// Whether the probabilistic effect fired.
-        fired: bool,
-    },
     /// A trigger-owned membership fault was injected.
     TriggerInjected {
         /// Dense event-log sequence where the fact was recorded.
@@ -1528,9 +1499,6 @@ pub(super) fn active_search_fault_tags(facts: &[ObservedFaultFact]) -> Vec<Fault
             ObservedFaultFact::TriggerHealed { tag, .. } => {
                 active.remove(tag);
             }
-            ObservedFaultFact::ScheduledActivation { .. }
-            | ObservedFaultFact::ScheduledProbabilisticChoice { .. }
-            | ObservedFaultFact::ProbabilisticOutcome { .. } => {}
         }
     }
     active.into_iter().collect()

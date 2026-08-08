@@ -113,24 +113,8 @@ impl SingleScheduler {
         node: &NodeId,
         decisions: Vec<Decision>,
     ) -> Result<Vec<Decision>, SchedulerError> {
-        decisions
-            .into_iter()
-            .map(|decision| match decision {
-                Decision::EffectOutcome(mut fault) => {
-                    let virtual_time = self.vm_delivery_time_for_icount(
-                        node,
-                        Icount {
-                            retired: fault.at.ticks,
-                        },
-                    )?;
-                    fault.at = VirtualTime {
-                        ticks: virtual_time.nanos,
-                    };
-                    Ok(Decision::EffectOutcome(fault))
-                }
-                decision => Ok(decision),
-            })
-            .collect()
+        let _ = node;
+        Ok(decisions)
     }
 
     pub(super) fn effective_node_activity(

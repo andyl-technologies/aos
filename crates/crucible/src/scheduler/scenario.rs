@@ -558,8 +558,8 @@ pub(super) fn topology_change_trigger_label(
     trigger: SchedulerTopologyChangeTrigger,
 ) -> &'static str {
     match trigger {
-        SchedulerTopologyChangeTrigger::FaultActivation => "fault-activation",
-        SchedulerTopologyChangeTrigger::Heal => "heal",
+        SchedulerTopologyChangeTrigger::EdgeRemoval => "edge-removal",
+        SchedulerTopologyChangeTrigger::EdgeRestore => "edge-restore",
         SchedulerTopologyChangeTrigger::LatencyChange => "latency-change",
     }
 }
@@ -631,15 +631,6 @@ pub(super) fn exact_local_event_material(event: &ExactLocalEvent) -> String {
             virtual_time.nanos,
             scheduler_node_material(sub_node),
         ),
-        ExactLocalEvent::FaultActivation {
-            virtual_time,
-            fault,
-        } => format!(
-            "exact_local_event=fault\nexact_local_event_ns={}\nfault_name_len={}\nfault_name={}",
-            virtual_time.nanos,
-            fault.name.len(),
-            fault.name,
-        ),
         ExactLocalEvent::SignalFaultEvaluation { virtual_time } => format!(
             "exact_local_event=signal_fault_evaluation\nexact_local_event_ns={}",
             virtual_time.nanos,
@@ -680,21 +671,6 @@ pub(super) fn scheduled_event_payload_material(payload: &ScheduledEventPayload) 
             completion.target.name,
             completion.delivery_icount.retired,
             hex_bytes(&completion.payload),
-        ),
-        ScheduledEventPayload::FaultActivation(fault) => format!(
-            "payload=fault-activation\npayload_fault_len={}\npayload_fault={}",
-            fault.name.len(),
-            fault.name,
-        ),
-        ScheduledEventPayload::ProbabilisticEffect(choice) => format!(
-            "payload=probabilistic-fault\npayload_fault_len={}\npayload_fault={}\npayload_stream_domain_len={}\npayload_stream_domain={}\npayload_stream_name_len={}\npayload_stream_name={}\npayload_rate_basis_points={}",
-            choice.fault.name.len(),
-            choice.fault.name,
-            choice.stream.domain.len(),
-            choice.stream.domain,
-            choice.stream.name.len(),
-            choice.stream.name,
-            choice.rate.basis_points(),
         ),
         ScheduledEventPayload::Control(operation) => {
             format!("payload=control\n{}", control_operation_material(operation))

@@ -257,12 +257,7 @@ pub(in crate::model) fn debug_payload_is_assertion_grain(
 pub(in crate::model) fn debug_payload_is_timer_grain(payload: &SchedulerEventLogPayload) -> bool {
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(event) => {
-            matches!(
-                event.payload,
-                ScheduledEventPayload::IoCompletion(_)
-                    | ScheduledEventPayload::FaultActivation(_)
-                    | ScheduledEventPayload::ProbabilisticEffect(_)
-            )
+            matches!(event.payload, ScheduledEventPayload::IoCompletion(_))
         }
         SchedulerEventLogPayload::TriggerActionApplied(application) => {
             matches!(

@@ -263,9 +263,7 @@ fn observed_at_exact_icount(event: &ScheduledEvent) -> Option<ObservedInjection>
     let kind = match &event.payload {
         ScheduledEventPayload::IoCompletion(_) => InjectionKind::IoCompletion,
         ScheduledEventPayload::BackendInput(_) => InjectionKind::Frame,
-        ScheduledEventPayload::FaultActivation(_)
-        | ScheduledEventPayload::ProbabilisticEffect(_)
-        | ScheduledEventPayload::Control(_) => {
+        ScheduledEventPayload::Control(_) => {
             return None;
         }
     };

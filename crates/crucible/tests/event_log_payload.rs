@@ -7,9 +7,9 @@
 use std::collections::BTreeMap;
 
 use crucible::{
-    Decision, EffectOutcomeDecision, EventAttributeValue, EventClass, EventDiagnosticPayload,
-    EventLevel, EventLog, FaultId, Icount, MarkerId, NodeId, ObservableEvent, RngDecision,
-    RngStreamId, SchedulerEventLogPayload, VirtualTime,
+    Decision, EventAttributeValue, EventClass, EventDiagnosticPayload, EventLevel, EventLog,
+    Icount, MarkerId, NodeId, ObservableEvent, RngDecision, RngStreamId, SchedulerEventLogPayload,
+    VirtualTime,
 };
 
 #[test]
@@ -35,24 +35,23 @@ fn payload_attributes_are_read_by_name_and_type() {
     assert_eq!(payload.u64("retired_icount"), None);
     assert!(payload.attribute("missing").is_none());
 
-    let fault = FaultId {
-        name: String::from("network.partition"),
-    };
-    let fault_entry = crucible::test_support::condition_payload_entry_for_test(
+    let draw_entry = crucible::test_support::condition_payload_entry_for_test(
         1,
         VirtualTime { ticks: 21 },
-        SchedulerEventLogPayload::Decision(Decision::EffectOutcome(EffectOutcomeDecision {
-            at: VirtualTime { ticks: 21 },
-            fault: fault.clone(),
-            fired: true,
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+            stream: RngStreamId::for_link("network.partition"),
+            value: 17,
         })),
     );
-    let fault_payload = fault_entry.event_payload();
+    let draw_payload = draw_entry.event_payload();
 
-    assert_eq!(fault_payload.kind(), "effect_outcome");
-    assert_eq!(fault_payload.fault("fault"), Some(&fault));
-    assert_eq!(fault_payload.bool("fired"), Some(true));
-    assert_eq!(fault_payload.string("fault"), None);
+    assert_eq!(draw_payload.kind(), "rng_draw");
+    assert_eq!(
+        draw_payload.string("stream_domain"),
+        Some("crucible.decision-rng.link-stream.v1")
+    );
+    assert_eq!(draw_payload.u64("value"), Some(17));
+    assert_eq!(draw_payload.bool("value"), None);
 }
 
 #[test]

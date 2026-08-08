@@ -1035,25 +1035,6 @@ pub(super) fn external_scheduled_event_payload_material(payload: &ScheduledEvent
                 external_hex_bytes(&completion.payload)
             ));
         }
-        ScheduledEventPayload::FaultActivation(fault) => {
-            lines.push(String::from("event.payload=fault-activation"));
-            lines.push(external_fault_id_material("event.payload.fault", fault));
-        }
-        ScheduledEventPayload::ProbabilisticEffect(choice) => {
-            lines.push(String::from("event.payload=probabilistic-fault"));
-            lines.push(external_fault_id_material(
-                "event.payload.fault",
-                &choice.fault,
-            ));
-            lines.push(external_rng_stream_material(
-                "event.payload.stream",
-                &choice.stream,
-            ));
-            lines.push(format!(
-                "event.payload.rate_basis_points={}",
-                choice.rate.basis_points()
-            ));
-        }
         ScheduledEventPayload::Control(operation) => {
             lines.push(String::from("event.payload=control"));
             lines.push(format!(
@@ -1084,12 +1065,6 @@ pub(super) fn external_decision_material(decision: &Decision) -> String {
                     event,
                 ));
             }
-        }
-        D::EffectOutcome(fault) => {
-            lines.push(String::from("decision=effect-outcome"));
-            lines.push(format!("decision.at_ticks={}", fault.at.ticks));
-            lines.push(external_fault_id_material("decision.fault", &fault.fault));
-            lines.push(format!("decision.fired={}", fault.fired));
         }
         D::RngDraw(draw) => {
             lines.push(String::from("decision=rng-draw"));
@@ -1594,8 +1569,6 @@ pub(super) fn external_scheduled_event_resolve_class_label(
     match class {
         ScheduledEventResolveClass::FrameDelivery => "frame-delivery",
         ScheduledEventResolveClass::IoCompletion => "io-completion",
-        ScheduledEventResolveClass::FaultActivation => "fault-activation",
-        ScheduledEventResolveClass::ProbabilisticEffect => "probabilistic-fault",
         ScheduledEventResolveClass::Control => "control",
     }
 }

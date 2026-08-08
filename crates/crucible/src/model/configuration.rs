@@ -236,8 +236,6 @@ impl Configuration {
 pub enum Decision {
     /// A deterministic or recorded ordering of events at one virtual time.
     DeliveryOrder(DeliveryOrderDecision),
-    /// The recorded outcome of a probabilistic effect.
-    EffectOutcome(EffectOutcomeDecision),
     /// A raw draw from a named deterministic decision stream.
     RngDraw(RngDecision),
     /// A search or fuzzing override at a scheduling point.
@@ -337,7 +335,6 @@ impl Schedule {
         self.decisions.iter().fold(None, |recorded, decision| {
             let at = match decision {
                 Decision::DeliveryOrder(decision) => Some(decision.at),
-                Decision::EffectOutcome(decision) => Some(decision.at),
                 Decision::RngDraw(_)
                 | Decision::Override(_)
                 | Decision::Preemption(_)

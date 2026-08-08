@@ -10,17 +10,17 @@ use std::io::{Error as IoError, ErrorKind};
 use crucible::{
     AppRandomDecision, AssertionDef, AssertionId, AssertionQuantifierKind,
     AssertionViolationArtifactReplay, AssertionViolationReplayError, Checkpoint, CheckpointKind,
-    Configuration, ContentHash, Decision, DeliveryOrderDecision, EffectOutcomeDecision,
-    EngineError, EventDiagnosticPayload, EventKey, EventLevel, FaultId, FramePredicate,
-    FrontierReductionPolicy, GenesisCheckpoint, Icount, MaterializationPolicy,
-    MaterializationTrigger, MaterializedState, MemoryDagStore, NodeBlobRef, NodeId, NodeTemplate,
-    ObservableEvent, OfflineAssertionChecker, Plan, Predicate, Properties, Property, ReadyPoint,
-    RecordedAssertionLog, ReproductionArtifact, RngDecision, RngStreamId, ScenarioDef,
-    ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
-    SearchFrontierChoices, SearchReplayOracleSamplingConfig, Seed, State, TemporalGraph,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, check_assertion_violation_reproduction,
-    compare_event_log_determinism, instantiate, reduce, step,
+    Configuration, ContentHash, Decision, DeliveryOrderDecision, EngineError,
+    EventDiagnosticPayload, EventKey, EventLevel, FramePredicate, FrontierReductionPolicy,
+    GenesisCheckpoint, Icount, MaterializationPolicy, MaterializationTrigger, MaterializedState,
+    MemoryDagStore, NodeBlobRef, NodeId, NodeTemplate, ObservableEvent, OfflineAssertionChecker,
+    Plan, Predicate, Properties, Property, ReadyPoint, RecordedAssertionLog, ReproductionArtifact,
+    RngDecision, RngStreamId, ScenarioDef, ScenarioDefForm, Schedule,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SearchFrontierChoices,
+    SearchReplayOracleSamplingConfig, Seed, State, TemporalGraph, VirtualTime, WhiteBoxPolicy,
+    World, WorldNode, bake, check_assertion_violation_reproduction, compare_event_log_determinism,
+    instantiate, reduce, step,
 };
 use crucible_harness::replay_oracle::{
     ReplayOracleArtifactRun, ReplayOracleBuildIdentity, ReplayOracleCheckpointKind,
@@ -957,12 +957,9 @@ fn assert_replay_oracle_fixed_checkpoint_corpus()
     );
     let second = step(
         &first,
-        Decision::EffectOutcome(EffectOutcomeDecision {
-            at: VirtualTime { ticks: 8 },
-            fault: FaultId {
-                name: String::from("link-a-b/drop"),
-            },
-            fired: true,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::for_link("link-a-b/drop"),
+            value: 1,
         }),
     );
     let third = step(
@@ -1177,12 +1174,9 @@ fn representative_replay_oracle_reproduction_artifact()
             at: VirtualTime { ticks: 3 },
             order: vec![event_key(3, 10), event_key(3, 11)],
         }))
-        .appended(Decision::EffectOutcome(EffectOutcomeDecision {
-            at: VirtualTime { ticks: 8 },
-            fault: FaultId {
-                name: String::from("artifact/link-drop"),
-            },
-            fired: true,
+        .appended(Decision::RngDraw(RngDecision {
+            stream: RngStreamId::for_link("artifact/link-drop"),
+            value: 1,
         }))
         .appended(Decision::AppRandom(AppRandomDecision {
             node: NodeId {

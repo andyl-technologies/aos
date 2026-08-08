@@ -399,14 +399,6 @@ pub(super) fn push_observed_state_facts(
                 order: order.order.clone(),
             });
         }
-        SchedulerEventLogPayload::Decision(Decision::EffectOutcome(fault)) => {
-            fault_facts.push(ObservedFaultFact::ProbabilisticOutcome {
-                sequence: entry.sequence(),
-                at: entry.at(),
-                fault: fault.fault.clone(),
-                fired: fault.fired,
-            });
-        }
         SchedulerEventLogPayload::TriggerActionApplied(_) => {}
         SchedulerEventLogPayload::Decision(
             Decision::RngDraw(_)
@@ -562,7 +554,7 @@ pub(super) fn push_resolved_happening_observed_facts(
     at: VirtualTime,
     event: &ScheduledEvent,
     ordering_facts: &mut Vec<ObservedOrderingFact>,
-    fault_facts: &mut Vec<ObservedFaultFact>,
+    _fault_facts: &mut Vec<ObservedFaultFact>,
 ) {
     ordering_facts.push(ObservedOrderingFact::ResolvedHappening {
         sequence,
@@ -571,20 +563,6 @@ pub(super) fn push_resolved_happening_observed_facts(
         class: scheduled_event_resolve_class(event),
     });
     match &event.payload {
-        ScheduledEventPayload::FaultActivation(fault) => {
-            fault_facts.push(ObservedFaultFact::ScheduledActivation {
-                sequence,
-                at,
-                fault: fault.clone(),
-            });
-        }
-        ScheduledEventPayload::ProbabilisticEffect(choice) => {
-            fault_facts.push(ObservedFaultFact::ScheduledProbabilisticChoice {
-                sequence,
-                at,
-                fault: choice.fault.clone(),
-            });
-        }
         ScheduledEventPayload::BackendInput(_)
         | ScheduledEventPayload::IoCompletion(_)
         | ScheduledEventPayload::Control(_) => {}

@@ -123,9 +123,29 @@ fn main() -> Result<(), Box<dyn Error>> {
         configuration = outcome.configuration;
         network_decisions = network_decisions.saturating_add(
             outcome
-                .decisions
+                .event_log_entries
                 .iter()
-                .filter(|decision| matches!(decision, crucible::Decision::EffectOutcome(_)))
+                .filter(|entry| {
+                    let crucible::SchedulerEventLogPayload::FaultObservation(observation) =
+                        entry.payload()
+                    else {
+                        return false;
+                    };
+                    observation.kind == crucible::FaultObservationKind::EffectChoice
+                        && observation.target.as_ref().is_some_and(|target| {
+                            matches!(
+                                target.kind(),
+                                crucible::FaultTargetKind::NetworkInterface
+                                    | crucible::FaultTargetKind::NetworkSegment
+                                    | crucible::FaultTargetKind::NetworkMedium
+                                    | crucible::FaultTargetKind::NetworkQueue
+                                    | crucible::FaultTargetKind::NetworkForwarder
+                                    | crucible::FaultTargetKind::NetworkPath
+                                    | crucible::FaultTargetKind::NetworkAttachment
+                                    | crucible::FaultTargetKind::NetworkContact
+                            )
+                        })
+                })
                 .count(),
         );
         // Backend-input events are frames that have completed the simulated

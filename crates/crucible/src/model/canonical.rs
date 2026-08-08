@@ -88,30 +88,24 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
                 hasher.write_u64(key.sequence);
             }
         }
-        Decision::EffectOutcome(fault) => {
-            hasher.write_u64(1);
-            write_virtual_time(hasher, fault.at);
-            hasher.write_bytes(fault.fault.name.as_bytes());
-            hasher.write_bool(fault.fired);
-        }
         Decision::RngDraw(draw) => {
-            hasher.write_u64(2);
+            hasher.write_u64(1);
             write_rng_stream_id(hasher, &draw.stream);
             hasher.write_u64(draw.value);
         }
         Decision::Override(override_decision) => {
-            hasher.write_u64(3);
+            hasher.write_u64(2);
             hasher.write_bytes(override_decision.point.key.as_bytes());
             hasher.write_bytes(override_decision.choice.name.as_bytes());
         }
         Decision::Preemption(preemption) => {
-            hasher.write_u64(4);
+            hasher.write_u64(3);
             hasher.write_bytes(preemption.node.name.as_bytes());
             write_icount(hasher, preemption.at);
             write_preemption_kind(hasher, &preemption.kind);
         }
         Decision::AppRandom(random) => {
-            hasher.write_u64(5);
+            hasher.write_u64(4);
             hasher.write_bytes(random.node.name.as_bytes());
             write_rng_stream_id(hasher, &random.stream);
             hasher.write_u64(random.request_id);
@@ -241,8 +235,8 @@ fn write_scheduler_topology_change(
 
     hasher.write_u64(change.sequence);
     hasher.write_u64(match change.trigger {
-        SchedulerTopologyChangeTrigger::FaultActivation => 0,
-        SchedulerTopologyChangeTrigger::Heal => 1,
+        SchedulerTopologyChangeTrigger::EdgeRemoval => 0,
+        SchedulerTopologyChangeTrigger::EdgeRestore => 1,
         SchedulerTopologyChangeTrigger::LatencyChange => 2,
     });
     match change.activation_time {

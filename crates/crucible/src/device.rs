@@ -3,6 +3,8 @@
 //! Block, 9p, and network operations cross this module through the typed
 //! signal-driven adapters. Device overlay construction remains here because
 //! materialized checkpoints share the same content-addressed overlay shape.
+//! Every operation handled here was already emitted by a modeled guest/device endpoint.
+//! This module is not a host-side workload generator and MUST NOT be used to originate application traffic.
 
 use std::collections::BTreeMap;
 

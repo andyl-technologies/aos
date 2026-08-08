@@ -75,17 +75,6 @@ pub struct DeliveryOrderDecision {
     pub order: Vec<EventKey>,
 }
 
-/// A probabilistic effect decision payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct EffectOutcomeDecision {
-    /// The virtual time at which the fault was resolved.
-    pub at: VirtualTime,
-    /// The fault whose outcome was resolved.
-    pub fault: FaultId,
-    /// Whether the fault fired.
-    pub fired: bool,
-}
-
 /// A decision-stream draw payload.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RngDecision {
@@ -309,9 +298,8 @@ impl SearchFrontierChoices {
     /// Builds a frontier-choice set from scheduler-derived candidate decisions.
     ///
     /// The retained decisions are limited to the closed search taxonomy:
-    /// probabilistic effect outcomes, decision-RNG draws, and search overrides.
-    /// Delivery order is excluded here because RESOLVE already imposes a total
-    /// order over scheduled events.
+    /// decision-RNG draws and search overrides. Delivery order is excluded here
+    /// because RESOLVE already imposes a total order over scheduled events.
     #[must_use]
     pub fn from_decisions<I>(decisions: I) -> Self
     where
@@ -393,7 +381,6 @@ impl SearchFrontierChoice {
         let decisions = decisions.into_iter().collect::<Vec<_>>();
         let decision = match decisions.as_slice() {
             [decision] if is_genuine_search_frontier_decision(decision) => decision.clone(),
-            [Decision::RngDraw(_), decision @ Decision::EffectOutcome(_)] => decision.clone(),
             [
                 decision @ Decision::Override(override_decision),
                 causal @ ..,
@@ -401,12 +388,10 @@ impl SearchFrontierChoice {
                 .point
                 .key
                 .starts_with("live-world-network/")
-                && causal.iter().all(|decision| {
-                    matches!(decision, Decision::RngDraw(_) | Decision::EffectOutcome(_))
-                })
                 && causal
                     .iter()
-                    .any(|decision| matches!(decision, Decision::EffectOutcome(_))) =>
+                    .all(|decision| matches!(decision, Decision::RngDraw(_)))
+                && !causal.is_empty() =>
             {
                 decision.clone()
             }

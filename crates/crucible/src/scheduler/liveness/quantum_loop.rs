@@ -306,42 +306,13 @@ impl QuantumLoop for SingleScheduler {
                     &frame,
                     crucible_device::PastDeliveryPolicy::FailLoud,
                 )?;
-                let projected = record
-                    .decisions
-                    .into_iter()
-                    .map(|decision| match decision {
-                        Decision::EffectOutcome(mut fault) => {
-                            // The frame retains its exact guest TX icount for
-                            // link delivery arithmetic. The probabilistic link
-                            // choice becomes causal when the shared frontier
-                            // admits the buffered TX batch.
-                            fault.at = admission_boundary;
-                            Decision::EffectOutcome(fault)
-                        }
-                        other => other,
-                    })
-                    .collect::<Vec<_>>();
+                let projected = record.decisions;
                 if !branch_choices.is_empty() {
                     let branch_configuration = self.step_quantum(&recorded);
-                    let projected_choices = branch_choices
-                        .into_iter()
-                        .map(|choice| {
-                            choice
-                                .into_iter()
-                                .map(|decision| match decision {
-                                    Decision::EffectOutcome(mut fault) => {
-                                        fault.at = admission_boundary;
-                                        Decision::EffectOutcome(fault)
-                                    }
-                                    other => other,
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .collect::<Vec<_>>();
                     self.search_frontiers.push(SearchRuntimeFrontier {
                         configuration: branch_configuration,
                         at: admission_boundary,
-                        choices: SearchFrontierChoices::from_decision_sequences(projected_choices),
+                        choices: SearchFrontierChoices::from_decision_sequences(branch_choices),
                     });
                 }
                 recorded.extend(projected);

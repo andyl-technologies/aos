@@ -95,7 +95,6 @@ pub(super) fn search_schedule_decision_event_time(
 ) -> VirtualTime {
     match decision {
         Decision::DeliveryOrder(order) => order.at,
-        Decision::EffectOutcome(fault) => fault.at,
         Decision::Preemption(preemption) => VirtualTime {
             ticks: preemption.at.retired,
         },
@@ -338,32 +337,6 @@ pub(super) fn resolved_happening_event_payload(event: &ScheduledEvent) -> EventP
             );
             EventPayload::new("io_completion", attributes)
         }
-        ScheduledEventPayload::FaultActivation(fault) => {
-            attributes.insert(
-                String::from("fault"),
-                EventAttributeValue::Fault(fault.clone()),
-            );
-            EventPayload::new("fault_activation", attributes)
-        }
-        ScheduledEventPayload::ProbabilisticEffect(choice) => {
-            attributes.insert(
-                String::from("fault"),
-                EventAttributeValue::Fault(choice.fault.clone()),
-            );
-            attributes.insert(
-                String::from("stream_domain"),
-                EventAttributeValue::String(choice.stream.domain.clone()),
-            );
-            attributes.insert(
-                String::from("stream_name"),
-                EventAttributeValue::String(choice.stream.name.clone()),
-            );
-            attributes.insert(
-                String::from("rate_basis_points"),
-                EventAttributeValue::U64(u64::from(choice.rate.basis_points())),
-            );
-            EventPayload::new("probabilistic_effect", attributes)
-        }
         ScheduledEventPayload::Control(operation) => {
             attributes.insert(
                 String::from("command_id"),
@@ -393,21 +366,6 @@ pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
                 EventAttributeValue::U64(order.order.len() as u64),
             );
             EventPayload::new("delivery_order", attributes)
-        }
-        Decision::EffectOutcome(fault) => {
-            attributes.insert(
-                String::from("at"),
-                EventAttributeValue::VirtualTime(fault.at),
-            );
-            attributes.insert(
-                String::from("fault"),
-                EventAttributeValue::Fault(fault.fault.clone()),
-            );
-            attributes.insert(
-                String::from("fired"),
-                EventAttributeValue::Bool(fault.fired),
-            );
-            EventPayload::new("effect_outcome", attributes)
         }
         Decision::RngDraw(draw) => {
             attributes.insert(
@@ -846,9 +804,7 @@ pub(super) fn scheduled_event_payload_icount(
             node: Some(completion.target.clone()),
             icount: completion.delivery_icount,
         },
-        ScheduledEventPayload::FaultActivation(_)
-        | ScheduledEventPayload::ProbabilisticEffect(_)
-        | ScheduledEventPayload::Control(_) => boundary_icount(at),
+        ScheduledEventPayload::Control(_) => boundary_icount(at),
     }
 }
 
@@ -859,10 +815,9 @@ pub(super) fn decision_icount(at: VirtualTime, decision: &Decision) -> EventLogI
             icount: preemption.at,
         },
         Decision::AppRandom(random) => node_boundary_icount(at, &random.node),
-        Decision::DeliveryOrder(_)
-        | Decision::EffectOutcome(_)
-        | Decision::RngDraw(_)
-        | Decision::Override(_) => boundary_icount(at),
+        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => {
+            boundary_icount(at)
+        }
     }
 }
 
@@ -965,12 +920,6 @@ pub(super) fn scheduled_event_payload_source(payload: &ScheduledEventPayload) ->
         ScheduledEventPayload::IoCompletion(completion) => EventSource::Node {
             node: completion.target.clone(),
         },
-        ScheduledEventPayload::FaultActivation(fault) => EventSource::Scenario {
-            event: EventId::from_name(fault.name.clone()),
-        },
-        ScheduledEventPayload::ProbabilisticEffect(choice) => EventSource::Scenario {
-            event: EventId::from_name(choice.fault.name.clone()),
-        },
         ScheduledEventPayload::Control(operation) => EventSource::Command {
             command_id: operation.sequence,
         },
@@ -985,10 +934,9 @@ pub(super) fn decision_source(decision: &Decision) -> EventSource {
         Decision::AppRandom(random) => EventSource::Guest {
             node: random.node.clone(),
         },
-        Decision::DeliveryOrder(_)
-        | Decision::EffectOutcome(_)
-        | Decision::RngDraw(_)
-        | Decision::Override(_) => EventSource::Engine,
+        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => {
+            EventSource::Engine
+        }
     }
 }
 
@@ -2102,7 +2050,6 @@ pub(super) fn scheduler_decision_event_log_time(
 ) -> Result<VirtualTime, SchedulerError> {
     match decision {
         Decision::DeliveryOrder(order) => Ok(order.at),
-        Decision::EffectOutcome(fault) => Ok(fault.at),
         Decision::Preemption(preemption) => {
             if let Some((_, virtual_time)) = preemption_times
                 .iter()
@@ -2142,13 +2089,6 @@ pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
                 ));
                 lines.push(format!("event_sequence={}", event.sequence));
             }
-        }
-        Decision::EffectOutcome(fault) => {
-            lines.push(String::from("decision=effect-outcome"));
-            lines.push(format!("decision_at={}", fault.at.ticks));
-            lines.push(format!("fault_name_len={}", fault.fault.name.len()));
-            lines.push(format!("fault_name={}", fault.fault.name));
-            lines.push(format!("fired={}", fault.fired));
         }
         Decision::RngDraw(draw) => {
             lines.push(String::from("decision=rng-draw"));

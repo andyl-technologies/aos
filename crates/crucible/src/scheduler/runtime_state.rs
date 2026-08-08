@@ -469,12 +469,9 @@ pub struct SingleScheduler {
     /// at the exact branch boundary without rewriting the recorded prefix.
     pub(super) decision_seed: Seed,
     pub(super) decision_rng_cursor: DecisionRngState,
-    /// Explorer-selected probabilistic effect choices awaiting their exact
-    /// scheduler RESOLVE points.
-    pub(super) branch_effect_choices: Vec<(RngDecision, EffectOutcomeDecision)>,
     /// Explorer-selected live World-network outcomes awaiting exact emissions.
     pub(super) branch_network_choices: Vec<OverrideDecision>,
-    /// Probabilistic RESOLVE frontiers captured in execution order.
+    /// Live World-network frontiers captured in execution order.
     pub(super) search_frontiers: Vec<SearchRuntimeFrontier>,
     pub(super) event_log: EventLog,
     pub(super) trigger_actions: TriggerActionState,

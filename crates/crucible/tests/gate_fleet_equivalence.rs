@@ -7,13 +7,13 @@
 use std::error::Error;
 
 use crucible::{
-    ChoiceTag, Configuration, ContentHash, Decision, EffectOutcomeDecision, EngineError, FaultId,
-    FleetEquivalenceReport, FleetWorkStealingConfig, GenesisCheckpoint, Icount,
-    MaterializationPolicy, MaterializationTrigger, NodeId, NodeTemplate, OverrideDecision, Plan,
-    Properties, ReadyPoint, RngDecision, RngStreamId, ScenarioDefForm, SchedulingPoint,
-    SearchBudget, SearchFailureOracle, SearchFrontierChoices, SearchStrategy, Seed, SimDouble,
-    SimDoubleConfig, SimDoubleHostScheduleEvent, SimulationBackend, TemporalGraph, VirtualTime,
-    WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    ChoiceTag, Configuration, ContentHash, Decision, EngineError, FleetEquivalenceReport,
+    FleetWorkStealingConfig, GenesisCheckpoint, Icount, MaterializationPolicy,
+    MaterializationTrigger, NodeId, NodeTemplate, OverrideDecision, Plan, Properties, ReadyPoint,
+    RngDecision, RngStreamId, ScenarioDefForm, SchedulingPoint, SearchBudget, SearchFailureOracle,
+    SearchFrontierChoices, SearchStrategy, Seed, SimDouble, SimDoubleConfig,
+    SimDoubleHostScheduleEvent, SimulationBackend, TemporalGraph, VirtualTime, WhiteBoxPolicy,
+    World, WorldNode, bake, try_step,
 };
 use crucible_harness::adversarial::{canonical_host_adversary_matrix, run_profiled_tasks};
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
@@ -289,18 +289,10 @@ fn single_node_world(label: &str) -> Result<World, EngineError> {
 
 fn fleet_root_decisions() -> Vec<Decision> {
     vec![
-        fault_decision("fleet-equivalence/packet-loss", true),
+        rng_decision("fleet-equivalence/packet-loss", 1),
         rng_decision("fleet-equivalence/decision-rng", 0xdce8_0001),
         override_decision("fleet-equivalence/scheduler-point", "fleet-choice"),
     ]
-}
-
-fn fault_decision(fault: impl Into<String>, fired: bool) -> Decision {
-    Decision::EffectOutcome(EffectOutcomeDecision {
-        at: time(12),
-        fault: FaultId { name: fault.into() },
-        fired,
-    })
 }
 
 fn rng_decision(stream: impl Into<String>, value: u64) -> Decision {
