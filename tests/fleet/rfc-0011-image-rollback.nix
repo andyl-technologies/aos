@@ -18,24 +18,28 @@
     pkgs.jq
   ];
 
+  failurePreStart = ''
+    case " $(cat /proc/cmdline) " in
+      *" systemd.verity_root_data=/dev/disk/by-partlabel/root-b "*)
+        if [ ! -e /var/lib/aos-test/allow-eval ]; then
+          mkdir -p /run/aos
+          printf '{ invalid boot-count fixture\n' > /run/aos/manifest.json
+          exit 1
+        fi
+        ;;
+    esac
+  '';
+  bootCommitCondition =
+    "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
+
   # The current configuration generation remains authoritative across an
-  # image-only transition. Install the controlled failure hook in both the
-  # initial and candidate systems so it survives that boundary, and key it to
-  # the root slot that actually booted.
+  # image-only transition. Install the controlled failure hook in the baked
+  # systems as well as the host input below, and key it to the root slot that
+  # actually booted.
   failureInjectionModule = {
-    systemd.services.aos-eval.preStart = ''
-      case " $(cat /proc/cmdline) " in
-        *" systemd.verity_root_data=/dev/disk/by-partlabel/root-b "*)
-          if [ ! -e /var/lib/aos-test/allow-eval ]; then
-            mkdir -p /run/aos
-            printf '{ invalid boot-count fixture\n' > /run/aos/manifest.json
-            exit 1
-          fi
-          ;;
-      esac
-    '';
+    systemd.services.aos-eval.preStart = failurePreStart;
     systemd.services.aos-image-boot-commit.serviceConfig.ExecCondition =
-      "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
+      bootCommitCondition;
   };
 
   # The candidate deliberately changes only image identity. Keeping the module
@@ -133,6 +137,9 @@ in {
           aos.networking.useDHCP = false;
           aos.networking.interfaces.eth0.address = "192.168.50.11/24";
           aos.apm.desiredPackages = [ "aos-test-agent" ];
+
+          systemd.services.aos-eval.preStart = ${builtins.toJSON failurePreStart};
+          systemd.services.aos-image-boot-commit.serviceConfig.ExecCondition = ${builtins.toJSON bootCommitCondition};
 
           environment.etc."hosts".text = "127.0.0.1 localhost\n192.168.50.10 registry\n192.168.50.11 target\n";
         }
