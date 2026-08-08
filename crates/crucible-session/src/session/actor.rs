@@ -664,24 +664,32 @@ fn gdb_run_control_command(packet: &[u8]) -> Option<SessionCommand> {
         });
     }
     let actions = packet.strip_prefix(b"vCont;")?.split(|byte| *byte == b';');
-    let mut mode = None;
+    let mut saw_continue = false;
+    let mut saw_step = false;
     for action in actions {
-        let next = match action {
-            b"c" => b'c',
-            b"s" => b's',
-            _ => return None,
+        let operation = match action.iter().position(|byte| *byte == b':') {
+            Some(separator) if separator + 1 < action.len() => &action[..separator],
+            Some(_) => return None,
+            None => action,
         };
-        if mode.is_some_and(|mode| mode != next) {
-            return None;
+        match operation {
+            b"c" => saw_continue = true,
+            b"s" => saw_step = true,
+            _ => return None,
         }
-        mode = Some(next);
     }
-    match mode {
-        Some(b'c') => Some(SessionCommand::Continue),
-        Some(b's') => Some(SessionCommand::Step {
+
+    if saw_step {
+        // In all-stop mode GDB asks the selected thread to step and all other
+        // threads to continue. The deterministic scheduler implements that
+        // request as one quantum followed by a correlated all-stop reply.
+        Some(SessionCommand::Step {
             mode: StepMode::Quantum,
-        }),
-        _ => None,
+        })
+    } else if saw_continue {
+        Some(SessionCommand::Continue)
+    } else {
+        None
     }
 }
 
@@ -1248,7 +1256,7 @@ mod gdb_run_control_tests {
     use super::*;
 
     #[test]
-    fn parser_accepts_only_exact_scheduler_semantics() {
+    fn parser_accepts_gdb_all_stop_scheduler_semantics() {
         assert!(matches!(
             gdb_run_control_command(b"c"),
             Some(SessionCommand::Continue)
@@ -1266,11 +1274,22 @@ mod gdb_run_control_tests {
             })
         ));
         assert!(matches!(
+            gdb_run_control_command(b"vCont;s:p1.1;c:p1.-1"),
+            Some(SessionCommand::Step {
+                mode: StepMode::Quantum
+            })
+        ));
+        assert!(matches!(
             gdb_run_control_command(&[0x03]),
             Some(SessionCommand::Pause)
         ));
-        assert!(gdb_run_control_command(b"vCont;s:1").is_none());
-        assert!(gdb_run_control_command(b"vCont;s;c").is_none());
+        assert!(matches!(
+            gdb_run_control_command(b"vCont;s:1"),
+            Some(SessionCommand::Step {
+                mode: StepMode::Quantum
+            })
+        ));
+        assert!(gdb_run_control_command(b"vCont;s:").is_none());
         assert!(gdb_run_control_command(b"vCont;c;bogus").is_none());
     }
 }
