@@ -191,7 +191,8 @@ impl StockNixEvaluator {
             \x20     jobScripts = mergeOwners imageManifest.jobScripts baseline.jobScripts candidate.jobScripts imageManifest.ownership.jobScripts candidate.ownership.jobScripts;\n\
             \x20     users = mergeOwners imageUsers baselineUsers candidateUsers imageManifest.ownership.users candidate.ownership.users;\n\
             \x20     presets = mergeOwners imagePresets baselinePresets candidatePresets imageManifest.ownership.presets candidate.ownership.presets;\n\
-            \x20     storePaths = imageManifest.ownership.storePaths // candidate.ownership.storePaths;\n\
+            \x20     # An immutable image path remains image-owned when host configuration also references it.\n\
+            \x20     storePaths = candidate.ownership.storePaths // imageManifest.ownership.storePaths;\n\
             \x20   }};\n\
             \x20   config = baseLib.lib.recursiveUpdate\n\
             \x20     candidate.config\n\
@@ -968,6 +969,12 @@ mod tests {
         assert!(text.contains("baselineSystem = baseLib.evalHostConfig"));
         assert!(text.contains("etc = mergedEtc"));
         assert!(text.contains("mergeImageDefaults imageManifest.etc baseline.etc candidate.etc"));
+        assert!(text.contains(
+            "storePaths = candidate.ownership.storePaths // imageManifest.ownership.storePaths"
+        ));
+        assert!(!text.contains(
+            "storePaths = imageManifest.ownership.storePaths // candidate.ownership.storePaths"
+        ));
         assert!(text.contains("installAtBoot.config"), "{text}");
         assert!(text.contains("installAtBoot.systemCredentials"), "{text}");
         assert!(

@@ -456,20 +456,20 @@ in {
       assertionCheck =
         if failedAssertions == []
         then null
-        else
-          if aosStructuredErrors
-          then throw (builtins.toJSON {
+        else if aosStructuredErrors
+        then
+          throw (builtins.toJSON {
             __aosEvalError = {
               kind = "assertion";
               msg = (builtins.head failedAssertions).message;
               file = null;
             };
           })
-          else
-            throw ''
-              Failed assertions:
-              ${lib.concatStringsSep "\n" (builtins.map (a: "  - ${a.message}") failedAssertions)}
-            '';
+        else
+          throw ''
+            Failed assertions:
+            ${lib.concatStringsSep "\n" (builtins.map (a: "  - ${a.message}") failedAssertions)}
+          '';
       # Emit every warning via `builtins.trace` in a single fold. The
       # trace writes to stderr during evaluation and returns its second
       # argument unchanged, so the chain produces a sentinel value we
@@ -633,10 +633,35 @@ in {
           kind = "store-symlink";
           target = builtins.toString e.source;
         };
+      pathString = value: builtins.unsafeDiscardStringContext (builtins.toString value);
+      systemPackageOwners = lib.unique (builtins.map
+        (package: provenance.ownerOfListString ["environment" "systemPackages"] (pathString package))
+        config.environment.systemPackages);
+      sessionVariableOwners = lib.unique (lib.concatMap
+        (name: provenance.dependencyOwnersOfAttr ["environment" "sessionVariables"] name)
+        (builtins.attrNames config.environment.sessionVariables));
+      # The login environment is rendered by image modules, but its bytes are
+      # a projection of shared operator configuration. A package must not make
+      # one of these global artifacts survive after that package is removed,
+      # so package-owned contributions fail closed instead of being promoted
+      # to host ownership.
+      sharedArtifactOwner = description: owners: let
+        uniqueOwners = lib.unique owners;
+        packageOwners = builtins.filter (owner: !builtins.elem owner ["@base" "@host"]) uniqueOwners;
+      in
+        if packageOwners != []
+        then throw "config manifest shared artifact ${description} depends on package owner(s): ${lib.concatStringsSep ", " packageOwners}"
+        else if builtins.elem "@host" uniqueOwners
+        then "@host"
+        else "@base";
       artifactOwner = path: name: let
         owners = provenance.dependencyOwnersOfAttr path name;
       in
-        if builtins.length owners == 1
+        if path == ["environment" "etc"] && name == "profile"
+        then sharedArtifactOwner "environment.etc.profile" (owners ++ systemPackageOwners)
+        else if path == ["environment" "etc"] && name == "pam/environment"
+        then sharedArtifactOwner "environment.etc.pam/environment" (owners ++ systemPackageOwners ++ sessionVariableOwners)
+        else if builtins.length owners == 1
         then builtins.head owners
         else if owners == []
         then "@base"
@@ -653,7 +678,8 @@ in {
       config.environment.etc);
       envEtcTargets = builtins.map (record: record.path) envEtcRecords;
       pathsOverlap = left: right:
-        left == right
+        left
+        == right
         || lib.hasPrefix "${left}/" right
         || lib.hasPrefix "${right}/" left;
       duplicateEnvEtcTargets =
@@ -744,7 +770,6 @@ in {
         lib.nameValuePair "${record.value.unit}:${record.value.source}" record.owner)
       presetRecords);
 
-      pathString = value: builtins.unsafeDiscardStringContext (builtins.toString value);
       # Find every canonical store root embedded in an emitted manifest string.
       # Runtime role modules deliberately reference their tools by absolute
       # path instead of adding them to environment.systemPackages, so their
@@ -778,15 +803,18 @@ in {
         config.environment.systemPackages;
       etcStoreRecords = lib.concatMap (record:
         if record.value.kind == "store-symlink"
-        then [{
-          path = storeRoot record.value.target;
-          inherit (record) owner;
-        }]
+        then [
+          {
+            path = storeRoot record.value.target;
+            inherit (record) owner;
+          }
+        ]
         else if record.value.kind == "certificate-bundle"
-        then builtins.map (part: {
-          path = storeRoot part.path;
-          inherit (record) owner;
-        }) (builtins.filter (part: part.kind == "store-file") record.value.parts)
+        then
+          builtins.map (part: {
+            path = storeRoot part.path;
+            inherit (record) owner;
+          }) (builtins.filter (part: part.kind == "store-file") record.value.parts)
         else [])
       envEtcRecords;
       emittedEtcStoreRecords = lib.concatMap (path: let
@@ -798,7 +826,8 @@ in {
           else if entry.kind == "store-symlink"
           then [entry.target]
           else if entry.kind == "certificate-bundle"
-          then builtins.map
+          then
+            builtins.map
             (part:
               if part.kind == "store-file"
               then part.path
@@ -888,7 +917,8 @@ in {
         storePaths = storeOwnership;
       };
       exposeProjectionBindings = builtins.listToAttrs (lib.concatMap (package:
-        if builtins.hasAttr package config
+        if
+          builtins.hasAttr package config
           && config.${package} ? _aosExposeConfigProjection
         then [
           (lib.nameValuePair package config.${package}._aosExposeConfigProjection)
@@ -896,55 +926,55 @@ in {
         else [])
       provenance.packageNames);
     in ({
-      schema = "aos.config-manifest/v1";
-      inherit etc users presets storePaths;
-      jobScripts = jobScripts;
-      units = config.system.build.systemdUnitActions;
-      module_abi = config.aos.system.moduleAbi or 1;
-      inputs = {
-        base_lib = {
-          store_path = baseLibPath;
-          abi_hash = config.aos.config.evalAtBoot.baseLibAbiHash;
-          module_abi = config.aos.system.moduleAbi or 1;
+        schema = "aos.config-manifest/v1";
+        inherit etc users presets storePaths;
+        jobScripts = jobScripts;
+        units = config.system.build.systemdUnitActions;
+        module_abi = config.aos.system.moduleAbi or 1;
+        inputs = {
+          base_lib = {
+            store_path = baseLibPath;
+            abi_hash = config.aos.config.evalAtBoot.baseLibAbiHash;
+            module_abi = config.aos.system.moduleAbi or 1;
+          };
+          evaluator = {
+            store_path = evaluatorPath;
+            store_hash = evaluatorStoreHash;
+          };
+          config_modules = {
+            closure_hash = hashIdentity "[]";
+            count = 0;
+            store_paths = [];
+            nar_hashes = [];
+            package_names = [];
+            origins = [];
+            module_abi_compat = [];
+          };
+          host_nix = {
+            content_hash = hashIdentity "{}";
+            trust_mode = "image";
+            platform = "image";
+            signer_key = null;
+            store_path = emptyHostPath;
+          };
+          instance_facts = {
+            facts_hash = hashIdentity defaultFacts;
+            platform = "image";
+            store_path = pathString defaultFactsFile;
+          };
         };
-        evaluator = {
-          store_path = evaluatorPath;
-          store_hash = evaluatorStoreHash;
-        };
-        config_modules = {
-          closure_hash = hashIdentity "[]";
-          count = 0;
-          store_paths = [];
-          nar_hashes = [];
-          package_names = [];
-          origins = [];
-          module_abi_compat = [];
-        };
-        host_nix = {
-          content_hash = hashIdentity "{}";
-          trust_mode = "image";
-          platform = "image";
-          signer_key = null;
-          store_path = emptyHostPath;
-        };
-        instance_facts = {
-          facts_hash = hashIdentity defaultFacts;
-          platform = "image";
-          store_path = pathString defaultFactsFile;
-        };
-      };
-      packages = [];
-      packageOutputs = {};
-      graph.edges = {};
-      config = builtins.mapAttrs (_: binding: binding.desired) exposeProjectionBindings;
-      credentials = builtins.mapAttrs (_: binding: binding.credentials) exposeProjectionBindings;
-      inherit ownership;
-    }
-    // lib.optionalAttrs (exposeProjectionBindings != {}) {
-      configProjectionBindings = builtins.mapAttrs (_: binding:
-        builtins.removeAttrs binding ["desired" "credentials"])
-      exposeProjectionBindings;
-    });
+        packages = [];
+        packageOutputs = {};
+        graph.edges = {};
+        config = builtins.mapAttrs (_: binding: binding.desired) exposeProjectionBindings;
+        credentials = builtins.mapAttrs (_: binding: binding.credentials) exposeProjectionBindings;
+        inherit ownership;
+      }
+      // lib.optionalAttrs (exposeProjectionBindings != {}) {
+        configProjectionBindings = builtins.mapAttrs (_: binding:
+          builtins.removeAttrs binding ["desired" "credentials"])
+        exposeProjectionBindings;
+      });
 
     # Route builder-side systemd assembly through the emitted manifest. The
     # systemd module's equivalent default exists only so its standalone test
