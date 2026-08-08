@@ -3441,8 +3441,12 @@ fn verify_local_boot_commit(
     }
     let live_pcr7 = package_attestation::current_pcr7()?;
     let live_pcr11 = package_attestation::current_pcr11()?;
-    if !verified.quoted_pcr7.eq_ignore_ascii_case(&live_pcr7)
-        || !verified.quoted_pcr11.eq_ignore_ascii_case(&live_pcr11)
+    if !verified
+        .quoted_pcr7
+        .eq_ignore_ascii_case(live_pcr7.trim_start_matches("sha256:"))
+        || !verified
+            .quoted_pcr11
+            .eq_ignore_ascii_case(live_pcr11.trim_start_matches("sha256:"))
     {
         bail!("generation quote does not bind the live PCR 7/11 state");
     }
