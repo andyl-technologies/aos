@@ -87,6 +87,7 @@ in
           test -s "$out/hub-console.js"
           test -s "$out/hub-console_bg.wasm"
           test -s "$out/hub-console.css"
+          grep -q 'export function mount' "$out/hub-console.js"
           printf '\0asm' > "$TMPDIR/wasm-magic"
           head -c 4 "$out/hub-console_bg.wasm" > "$TMPDIR/wasm-prefix"
           cmp "$TMPDIR/wasm-magic" "$TMPDIR/wasm-prefix"

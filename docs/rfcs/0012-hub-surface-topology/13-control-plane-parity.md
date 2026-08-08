@@ -132,7 +132,10 @@ The bundle is compiled with the repository Rust toolchain for
 `wasm32-unknown-unknown`, processed by the version-matched `wasm-bindgen`, and
 installed as content-addressed JavaScript, WebAssembly, and CSS. Native and
 Worker packages consume that same derivation. The application shell is not
-cached; content-addressed assets are immutable.
+cached; content-addressed assets are immutable. The generated module exports
+the application mount entry point, and both runtime bootstrap modules call it
+explicitly after WebAssembly initialization. Packaging and Worker E2E gates
+reject a bootstrap that initializes the library without mounting the console.
 
 The client owns:
 
