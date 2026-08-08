@@ -8,9 +8,9 @@ use std::io::{Error as IoError, ErrorKind, Write};
 use std::path::Path;
 
 use crucible::{
-    Action, Condition, ContentAddressedBlobRef, ContentHash, EventGraph, Icount, LogLevel, NodeId,
-    Plan, Properties, ReadyPoint, ScenarioDefForm, Seed, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode,
+    Action, Condition, ContentAddressedBlobRef, ContentHash, EventGraph, LogLevel, NodeId, Plan,
+    Properties, ReadyPoint, ScenarioDefForm, Seed, VirtualTime, VmArchitecture, WhiteBoxPolicy,
+    World, WorldNode,
 };
 
 fn usage_error(message: impl Into<String>) -> IoError {
@@ -25,6 +25,14 @@ fn parse_architecture(value: &str) -> Result<VmArchitecture, IoError> {
             "unsupported architecture `{value}`; expected x86_64 or aarch64"
         ))),
     }
+}
+
+fn fixture_kernel_cmdline(architecture: VmArchitecture) -> String {
+    let console = match architecture {
+        VmArchitecture::X86_64 => "ttyS0",
+        VmArchitecture::Aarch64 => "ttyAMA0",
+    };
+    format!("console={console} reboot=k panic=1 root=/dev/vda ro init=/init")
 }
 
 fn file_reference(path: &Path) -> Result<ContentAddressedBlobRef, IoError> {
@@ -64,15 +72,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let architecture = architecture
         .to_str()
         .ok_or_else(|| usage_error("architecture is not valid UTF-8"))?;
+    let architecture = parse_architecture(architecture)?;
     let node = WorldNode {
         id: NodeId {
             name: String::from("debuggee"),
         },
-        arch: parse_architecture(architecture)?,
+        arch: architecture.clone(),
         memory_mib: 256,
-        cmdline: String::from("quiet"),
-        ready_point: ReadyPoint::FixedIcount {
-            icount: Icount { retired: 0 },
+        cmdline: fixture_kernel_cmdline(architecture),
+        ready_point: ReadyPoint::ConsoleMarker {
+            marker: String::from("CRUCIBLE_DEBUG_ACTIVATION_READER_READY"),
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 1,

@@ -37,6 +37,7 @@ architecture=$default_architecture
 output=
 base_port=${CRUCIBLE_MATRIX_BASE_PORT:-39870}
 stage_timeout_seconds=${CRUCIBLE_MATRIX_STAGE_TIMEOUT_SECONDS:-180}
+rendezvous_icount=${CRUCIBLE_MATRIX_RENDEZVOUS_ICOUNT:-50000000}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --architecture)
@@ -84,6 +85,8 @@ esac
 [[ "$base_port" =~ ^[0-9]+$ ]] || { printf 'base port must be numeric\n' >&2; exit 64; }
 [[ "$stage_timeout_seconds" =~ ^[1-9][0-9]*$ ]] \
   || { printf 'stage timeout must be a positive integer\n' >&2; exit 64; }
+[[ "$rendezvous_icount" =~ ^[1-9][0-9]*$ ]] \
+  || { printf 'rendezvous icount must be a positive integer\n' >&2; exit 64; }
 
 if [[ -n "$output" && ! "$output" =~ ^[A-Za-z0-9_./-]+$ ]]; then
   printf 'output path contains characters unsafe for GDB command files: %s\n' "$output" >&2
@@ -253,6 +256,19 @@ gdb_window_is_clean() {
   fi
 }
 
+gdb_replacement_window_is_stable() {
+  local file=$1
+  local label=$2
+  if grep -Eiq \
+    'Remote replied unexpectedly|Remote connection closed|Timed out|protocol error|Remote communication error|received: "E[0-9a-f]+"|received: ""|not supported' \
+    "$file"; then
+    fail "$label observed a fatal GDB/RSP transport error"
+  fi
+  local retries
+  retries=$(grep -Fc 'Ignoring packet error, continuing...' "$file" || true)
+  ((retries <= 1)) || fail "$label required more than one RSP retransmission"
+}
+
 start_gdb_replacement_probe() {
   local label=$1
   local begin="CRUCIBLE_REPLACE_${label}_BEGIN"
@@ -260,9 +276,26 @@ start_gdb_replacement_probe() {
   printf 'echo %s\\n\n' "$begin" >&5
   wait_for_pattern "$gdb_output" "$begin" "$gdb_pid"
   {
-    local request
-    for ((request = 0; request < 512; request++)); do
-      printf 'maintenance packet g\n'
+    local request expected attempts prior_errors prior_responses
+    local baseline
+    baseline=$(grep -Ec 'received: "[0-9a-fA-F]{128,}"' "$gdb_output" || true)
+    for ((request = 1; request <= 128; request++)); do
+      expected=$((baseline + request))
+      attempts=0
+      while [[ $(grep -Ec 'received: "[0-9a-fA-F]{128,}"' "$gdb_output" || true) -lt $expected ]]; do
+        prior_errors=$(grep -Fc 'Ignoring packet error, continuing...' "$gdb_output" || true)
+        prior_responses=$(grep -Fc 'received: "' "$gdb_output" || true)
+        printf 'maintenance packet g\n'
+        while [[ $(grep -Ec 'received: "[0-9a-fA-F]{128,}"' "$gdb_output" || true) -lt $expected ]] \
+          && [[ $(grep -Fc 'Ignoring packet error, continuing...' "$gdb_output" || true) -le $prior_errors ]] \
+          && [[ $(grep -Fc 'received: "' "$gdb_output" || true) -le $prior_responses ]]; do
+          kill -0 "$gdb_pid" 2>/dev/null || exit 1
+          attempts=$((attempts + 1))
+          [[ $attempts -le $((stage_timeout_seconds * 10)) ]] || exit 1
+          sleep 0.1
+        done
+        kill -0 "$gdb_pid" 2>/dev/null || exit 1
+      done
     done
     printf 'echo %s\\n\n' "$end"
   } >&5 &
@@ -277,7 +310,7 @@ finish_gdb_replacement_probe() {
   gdb_probe_writer_pid=
   wait_for_pattern "$gdb_output" "$end" "$gdb_pid"
   sed -n "/$begin/,/$end/p" "$gdb_output" >"$gdb_output.$label"
-  gdb_window_is_clean "$gdb_output.$label" "$label replacement"
+  gdb_replacement_window_is_stable "$gdb_output.$label" "$label replacement"
   [[ $(grep -Ec 'received: "[0-9a-fA-F]{128,}"' "$gdb_output.$label") -ge 128 ]] \
     || fail "$label replacement barrier did not return sustained valid register payloads"
 }
@@ -307,7 +340,8 @@ start_gdb() {
   gdb_pid=$!
   exec 5>"$fifo"
   gdb_fd_open=true
-  printf 'set pagination off\nset confirm off\ntarget remote 127.0.0.1:%s\n' "$port" >&5
+  printf 'set pagination off\nset confirm off\nset remotetimeout %s\ntarget remote 127.0.0.1:%s\n' \
+    "$stage_timeout_seconds" "$port" >&5
   printf 'maintenance packet qSupported\necho CRUCIBLE_GDB_CONNECTED\\n\n' >&5
   wait_for_pattern "$prefix.gdb.out" CRUCIBLE_GDB_CONNECTED "$gdb_pid"
   grep -Fq 'received: "PacketSize=' "$prefix.gdb.out" \
@@ -399,6 +433,7 @@ run_architecture() {
     --listen "127.0.0.1:$daemon_port" \
     --trusted-unauthenticated-bind \
     --production-qemu \
+    --qemu-rendezvous-icount "$rendezvous_icount" \
     >"$directory/daemon.out" 2>"$directory/daemon.err" &
   daemon_pid=$!
   wait_for_pattern "$directory/daemon.out" "serving API daemon at $endpoint" "$daemon_pid"
@@ -421,16 +456,21 @@ run_architecture() {
   [[ -n "$session" ]] || fail "live session reference was not reported"
 
   progress "$guest_architecture:build-live-history"
-  printf 'query\nstep\nstep\nstep\nquery\n' >&3
-  wait_for_count "$directory/run.out" interactive-ack 5 "$run_pid"
+  printf 'query\n' >&3
+  for ((step_index = 0; step_index < 64; step_index++)); do
+    printf 'step\n' >&3
+  done
+  printf 'query\n' >&3
+  wait_for_count "$directory/run.out" interactive-ack 66 "$run_pid"
 
-  debug_command "$endpoint" "$session" --read-only reverse-step event \
+  debug_command "$endpoint" "$session" --read-only reverse-step quantum \
     >"$directory/reverse-baseline.out" 2>"$directory/reverse-baseline.err"
   require_landed_evidence "$directory/reverse-baseline.out" "baseline reverse"
-  local baseline_events baseline_time baseline_generation
+  local baseline_events baseline_time baseline_generation baseline_sequence
   baseline_events=$(field_value "$directory/reverse-baseline.out" landed-event-log-events)
   baseline_time=$(field_value "$directory/reverse-baseline.out" landed-virtual-time)
   baseline_generation=$(field_value "$directory/reverse-baseline.out" gateway-generation)
+  baseline_sequence=$(field_value "$directory/reverse-baseline.out" target-event-sequence)
   [[ "$baseline_events" =~ ^[1-9][0-9]*$ ]] \
     || fail "baseline reverse history was empty"
 
@@ -452,14 +492,15 @@ run_architecture() {
 
   progress "$guest_architecture:reverse-with-live-gdb"
   start_gdb_replacement_probe REVERSE
-  debug_command "$endpoint" "$session" --read-only reverse-step event \
+  debug_command "$endpoint" "$session" --read-only reverse-step quantum \
     >"$directory/reverse-earlier.out" 2>"$directory/reverse-earlier.err"
   finish_gdb_replacement_probe REVERSE
   require_landed_evidence "$directory/reverse-earlier.out" "earlier reverse"
-  local earlier_events earlier_time earlier_generation
+  local earlier_events earlier_time earlier_generation earlier_sequence
   earlier_events=$(field_value "$directory/reverse-earlier.out" landed-event-log-events)
   earlier_time=$(field_value "$directory/reverse-earlier.out" landed-virtual-time)
   earlier_generation=$(field_value "$directory/reverse-earlier.out" gateway-generation)
+  earlier_sequence=$(field_value "$directory/reverse-earlier.out" target-event-sequence)
   [[ "$earlier_events" =~ ^[0-9]+$ ]] || fail "earlier reverse event prefix was invalid"
   ((earlier_events < baseline_events)) || fail "reverse event prefix did not decrease"
   ((earlier_generation > baseline_generation)) || fail "reverse gateway generation did not advance"
@@ -467,7 +508,7 @@ run_architecture() {
   gdb_snapshot "$directory/reverse-earlier.gdb" "$registers" CRUCIBLE_REVERSE_EARLIER
 
   start_gdb_replacement_probe GOTO_EARLIER
-  debug_command "$endpoint" "$session" --read-only goto "vtime:$earlier_time" \
+  debug_command "$endpoint" "$session" --read-only goto "event:$earlier_sequence" \
     >"$directory/goto-earlier.out" 2>"$directory/goto-earlier.err"
   finish_gdb_replacement_probe GOTO_EARLIER
   require_landed_evidence "$directory/goto-earlier.out" "repeated earlier goto"
@@ -484,7 +525,7 @@ run_architecture() {
     || fail "repeated coordinate changed GDB thread/register/breakpoint state"
 
   start_gdb_replacement_probe GOTO_BASELINE
-  debug_command "$endpoint" "$session" --read-only goto "vtime:$baseline_time" \
+  debug_command "$endpoint" "$session" --read-only goto "event:$baseline_sequence" \
     >"$directory/goto-baseline.out" 2>"$directory/goto-baseline.err"
   finish_gdb_replacement_probe GOTO_BASELINE
   require_landed_evidence "$directory/goto-baseline.out" "baseline goto"
@@ -585,6 +626,7 @@ gateway_generation_repeat=$repeated_generation
 read_only_neutrality=true
 complete_landed_tuple_repeat=true
 stable_gdb_across_replacement=true
+replacement_rsp_retries=$(grep -Fc 'Ignoring packet error, continuing...' "$gdb_output" || true)
 hardware_breakpoint_retained=true
 scheduler_run_control=true
 guest_exec=true

@@ -20,9 +20,8 @@ struct PendingGuestActivation {
 }
 
 impl PendingGuestActivation {
-    fn guest_activation_failure(&mut self, reason: String) {
+    fn record_guest_activation_failure(&mut self, reason: String) {
         self.report.guest_introspection_activation_failure = Some(reason);
-        self.reply.complete(Ok(self.report.clone()));
     }
 }
 
