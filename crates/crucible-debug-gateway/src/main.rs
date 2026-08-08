@@ -527,7 +527,7 @@ fn scheduler_lease(
                     "timed out waiting for the scheduler ownership packet boundary",
                 ));
             }
-            std::thread::sleep(Duration::from_millis(1));
+            std::thread::yield_now();
         }
     } else {
         with_gateway(process, |gateway| {
@@ -674,7 +674,7 @@ fn commit_backend_at_packet_boundary(
                 "timed out waiting for the debugger replacement packet boundary",
             ));
         }
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::yield_now();
     }
 }
 
@@ -1099,7 +1099,7 @@ fn admit_operator_request(process: &SharedGatewayProcess, packet: &[u8]) -> Resu
         if let Some(admitted) = admitted {
             return Ok(admitted);
         }
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::yield_now();
     }
 }
 
