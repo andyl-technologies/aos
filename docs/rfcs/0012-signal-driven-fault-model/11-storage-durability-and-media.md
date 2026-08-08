@@ -402,12 +402,20 @@ and visibility continuation before touching a shared ring. Any preparation,
 COMPUTE preview, authorization, or evidence error restores those host-private
 components to their byte-equivalent pre-call state. The live SPSC rings are
 never snapshotted or rewound outside the QEMU-quiesced lifecycle checkpoint
-protocol. After successful preparation, the call performs exactly one final
-shared-ring transition: either publishing already-authorized due replies or
-consuming one pinned request, never both. No fallible signal or evidence work
-follows that transition. Ring corruption or wake failure after the commit point
-is a terminal infrastructure error over an already-committed transition, not a
-request to rewind guest-visible state.
+protocol. Preparation computes and schedules the complete response on a cloned
+device, including directive consumption, protocol mutation, latency,
+delivery-in-past, response-shape, and response-sequence validation. After
+successful preparation, the call performs exactly one final shared-ring
+transition: either publishing already-authorized due replies or consuming one
+pinned request and swapping in the prepared device, never both. No fallible
+signal or evidence work follows that transition. Every failure reports its
+exact number of release-published frames (or whether the request head was
+dequeued), so rollback occurs only when that count is zero. Ring corruption or
+wake failure after the commit point is a terminal infrastructure error over an
+already-committed transition, not a request to rewind guest-visible state. An
+authorized reply that encounters a full response ring remains independently
+discoverable and is retried on every later service call without re-evaluating
+visibility or delivery phases.
 
 The checkpoint contains the request and response rings, device queues, installed
 directives, exact pending opportunity identities, completion coordinates, and

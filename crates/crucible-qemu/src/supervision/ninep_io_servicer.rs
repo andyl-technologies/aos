@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crucible::model::ContentHash;
 use crucible_device::{
-    DeviceError, FsTree, IoCore, IoSubNode, NinepDevice, NinepLatency, NinepObjectVersion,
+    DeviceError, FsTree, IoCore, NinepDevice, NinepLatency, NinepObjectVersion,
     NinepRequestIdentity, NinepRequestOpportunity, NinepSnapshot, NinepVisibilityPolicy,
     NinepVisibilityRelease, NinepVisibilityState, Node, Request, ResolvedNinepRequestDirective,
     ResponseStatus,
@@ -291,53 +291,74 @@ impl QemuLive9pIoServicer {
         Ok(())
     }
 
-    /// Previews authenticated response evidence without consuming the live ring.
+    /// Prepares the complete device transition without consuming the live ring.
     ///
     /// # Errors
     ///
     /// Returns an error when the pinned request cannot be computed from a clone
     /// of the exact directive-authorized device state.
-    pub fn preview_computed_response_evidence(
+    pub fn prepare_request(
         &self,
         pin: &QemuLive9pIoRequestPin,
-    ) -> Result<QemuLive9pResponseEvidence, QemuLive9pIoServicerError> {
+    ) -> Result<QemuLive9pIoPreparedRequest, QemuLive9pIoServicerError> {
         let mut staged = self.device.clone();
-        let computed = staged
-            .compute(&Request::new(
+        staged
+            .compute_detached_request(Request::new(
                 pin.opportunity.request_icount,
                 pin.opportunity.identity.transport_sequence,
                 pin.opportunity.frame.clone(),
             ))
             .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
-        let Some(response) = computed.primary else {
+        let matching = staged
+            .core()
+            .snapshot()
+            .inflight
+            .into_iter()
+            .filter(|pending| {
+                pending.key.delivery_icount == pin.completion_icount
+                    && pending.response.request_id == pin.opportunity.identity.transport_sequence
+            })
+            .collect::<Vec<_>>();
+        let [pending] = matching.as_slice() else {
             return Err(QemuLive9pIoServicerError::ComputedResponseMismatch);
         };
-        Ok(QemuLive9pResponseEvidence {
-            completion_icount: pin.completion_icount,
-            transport_sequence: response.request_id,
-            status: response.status,
-            payload_len: response.payload.len(),
-            payload_digest: *blake3::hash(&response.payload).as_bytes(),
+        Ok(QemuLive9pIoPreparedRequest {
+            pin: pin.clone(),
+            evidence: QemuLive9pResponseEvidence {
+                completion_icount: pending.key.delivery_icount,
+                transport_sequence: pending.response.request_id,
+                status: pending.response.status,
+                payload_len: pending.response.payload.len(),
+                payload_digest: *blake3::hash(&pending.response.payload).as_bytes(),
+            },
+            staged_device: staged,
         })
     }
 
-    /// Consumes and computes at most one directive-authorized request.
+    /// Commits one fully prepared request by dequeuing exactly its pinned frame.
     ///
     /// # Errors
     ///
     /// Returns [`QemuLive9pIoServicerError`] for ring, directive, compute, or
     /// wake failures.
-    pub fn process_one_request(
+    pub fn commit_prepared_request(
         &mut self,
-        expected: &QemuLive9pIoRequestPin,
-    ) -> Result<QemuLive9pIoServiceStep, QemuLive9pIoServicerError> {
-        let pinned = self.pin_next_request()?;
+        prepared: QemuLive9pIoPreparedRequest,
+    ) -> Result<QemuLive9pIoServiceStep, QemuLive9pIoCommitFailure> {
+        let expected = &prepared.pin;
+        let pinned = self
+            .pin_next_request()
+            .map_err(QemuLive9pIoCommitFailure::before)?;
         if pinned.as_ref() != Some(expected) {
-            return Err(QemuLive9pIoServicerError::PinnedRequestChanged);
+            return Err(QemuLive9pIoCommitFailure::before(
+                QemuLive9pIoServicerError::PinnedRequestChanged,
+            ));
         }
         let pending_key = (expected.completion_icount, expected.opportunity.identity);
         if self.pending_fault_opportunities.contains_key(&pending_key) {
-            return Err(QemuLive9pIoServicerError::DuplicatePendingOpportunity);
+            return Err(QemuLive9pIoCommitFailure::before(
+                QemuLive9pIoServicerError::DuplicatePendingOpportunity,
+            ));
         }
         let Self {
             region,
@@ -355,33 +376,50 @@ impl QemuLive9pIoServicer {
                 SLOT_9P_IO as u32,
                 *vm_slot,
             )
-            .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })?;
-        let intake = device
-            .process_one_shmem_request(pair.first.header, pair.first.entries, pair.node_slot)
-            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
-        *frames_processed += intake.processed;
-        let next_completion_icount = device.core().next_exact_local_event();
-        if intake.processed == 1 {
-            let pinned = pinned.ok_or(QemuLive9pIoServicerError::MissingPinnedRequest)?;
-            if pending_fault_opportunities
-                .insert(
-                    (pinned.completion_icount, pinned.opportunity.identity),
-                    (pinned.opportunity, false),
-                )
-                .is_some()
-            {
-                return Err(QemuLive9pIoServicerError::DuplicatePendingOpportunity);
-            }
+            .map_err(|source| {
+                QemuLive9pIoCommitFailure::before(QemuLive9pIoServicerError::RegionAccess {
+                    source,
+                })
+            })?;
+        let committed = pair
+            .first
+            .header
+            .dequeue(pair.first.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| {
+                QemuLive9pIoCommitFailure::before(QemuLive9pIoServicerError::Device { source })
+            })?
+            .ok_or_else(|| {
+                QemuLive9pIoCommitFailure::before(QemuLive9pIoServicerError::PinnedRequestChanged)
+            })?;
+        if committed.delivery_icount != expected.opportunity.request_icount
+            || committed.seq != expected.opportunity.identity.transport_sequence
+            || committed.payload().ok() != Some(expected.opportunity.frame.as_slice())
+        {
+            return Err(QemuLive9pIoCommitFailure::after(
+                QemuLive9pIoServicerError::PinnedRequestChanged,
+            ));
         }
+        *device = prepared.staged_device;
+        *frames_processed += 1;
+        let next_completion_icount = device.core().next_exact_local_event();
+        pending_fault_opportunities.insert(
+            (expected.completion_icount, expected.opportunity.identity),
+            (expected.opportunity.clone(), false),
+        );
+        pair.node_slot
+            .wake_for_device_io_release()
+            .map_err(DeviceError::from)
+            .map_err(|source| {
+                QemuLive9pIoCommitFailure::after(QemuLive9pIoServicerError::Device { source })
+            })?;
         pair.node_slot
             .store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
         Ok(QemuLive9pIoServiceStep {
-            processed: intake.processed,
+            processed: 1,
             delivered: 0,
-            first_request_icount: intake.first_request_icount,
-            computed_completion_icount: (intake.processed > 0)
-                .then_some(next_completion_icount)
-                .flatten(),
+            first_request_icount: Some(expected.opportunity.request_icount),
+            computed_completion_icount: Some(expected.completion_icount),
             next_completion_icount,
         })
     }
@@ -554,6 +592,24 @@ impl QemuLive9pIoServicer {
             .collect()
     }
 
+    /// Reports whether a previously authorized reply is due for publication.
+    #[must_use]
+    pub fn has_authorized_due(&self, guest_icount: u64) -> bool {
+        self.pending_fault_opportunities
+            .range(
+                ..=(
+                    guest_icount,
+                    NinepRequestIdentity {
+                        request_icount: u64::MAX,
+                        transport_sequence: u32::MAX,
+                        tag: u16::MAX,
+                        digest: [u8::MAX; 32],
+                    },
+                ),
+            )
+            .any(|(_, (_, authorized))| *authorized)
+    }
+
     /// Marks due opportunities as phase-authorized before response publication.
     ///
     /// # Errors
@@ -590,7 +646,7 @@ impl QemuLive9pIoServicer {
     pub fn deliver_due(
         &mut self,
         guest_icount: u64,
-    ) -> Result<QemuLive9pIoServiceStep, QemuLive9pIoServicerError> {
+    ) -> Result<QemuLive9pIoServiceStep, QemuLive9pIoCommitFailure> {
         let due = self
             .pending_fault_opportunities
             .range(
@@ -623,7 +679,9 @@ impl QemuLive9pIoServicer {
             )
             .any(|(_, (_, authorized))| !*authorized)
         {
-            return Err(QemuLive9pIoServicerError::PendingOpportunityMismatch);
+            return Err(QemuLive9pIoCommitFailure::before(
+                QemuLive9pIoServicerError::PendingOpportunityMismatch,
+            ));
         }
         let Self {
             region,
@@ -641,17 +699,29 @@ impl QemuLive9pIoServicer {
                 SLOT_9P_IO as u32,
                 *vm_slot,
             )
-            .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })?;
+            .map_err(|source| {
+                QemuLive9pIoCommitFailure::before(QemuLive9pIoServicerError::RegionAccess {
+                    source,
+                })
+            })?;
         let delivery = device
-            .advance_to_shmem(
+            .advance_to_shmem_with_commit_status(
                 guest_icount,
                 pair.second.header,
                 pair.second.entries,
                 pair.node_slot,
             )
-            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+            .map_err(|failure| QemuLive9pIoCommitFailure {
+                shared_transition_started: failure.published > 0,
+                source: QemuLive9pIoServicerError::Device {
+                    source: failure.source,
+                },
+            })?;
         if delivery.delivered > due.len() {
-            return Err(QemuLive9pIoServicerError::PendingOpportunityMismatch);
+            return Err(QemuLive9pIoCommitFailure {
+                shared_transition_started: delivery.delivered > 0,
+                source: QemuLive9pIoServicerError::PendingOpportunityMismatch,
+            });
         }
         for (completion, opportunity) in due.into_iter().take(delivery.delivered) {
             pending_fault_opportunities.remove(&(completion, opportunity.identity));
@@ -882,6 +952,46 @@ pub struct QemuLive9pResponseEvidence {
     pub payload_len: usize,
     /// BLAKE3 digest of the complete encoded 9p response.
     pub payload_digest: [u8; 32],
+}
+
+/// A fully validated host-private 9p transition ready for one ring dequeue.
+pub struct QemuLive9pIoPreparedRequest {
+    pin: QemuLive9pIoRequestPin,
+    evidence: QemuLive9pResponseEvidence,
+    staged_device: NinepDevice,
+}
+
+impl QemuLive9pIoPreparedRequest {
+    /// Returns authenticated evidence for the exact staged response.
+    #[must_use]
+    pub const fn evidence(&self) -> QemuLive9pResponseEvidence {
+        self.evidence
+    }
+}
+
+/// A failed commit annotated with whether guest-visible shared state changed.
+#[derive(Debug)]
+pub struct QemuLive9pIoCommitFailure {
+    /// Whether at least one shared-ring index was release-published.
+    pub shared_transition_started: bool,
+    /// Underlying servicer failure.
+    pub source: QemuLive9pIoServicerError,
+}
+
+impl QemuLive9pIoCommitFailure {
+    fn before(source: QemuLive9pIoServicerError) -> Self {
+        Self {
+            shared_transition_started: false,
+            source,
+        }
+    }
+
+    fn after(source: QemuLive9pIoServicerError) -> Self {
+        Self {
+            shared_transition_started: true,
+            source,
+        }
+    }
 }
 
 /// A shared diagnostic sink for one live 9p-I/O servicing run.
@@ -1195,6 +1305,29 @@ mod tests {
             .begin_transaction()
             .unwrap_or_else(|error| panic!("capture restored transaction: {error}"));
         assert_eq!(restored, before);
+    }
+
+    #[test]
+    fn authorized_due_reply_remains_retryable_after_backpressure() {
+        let (_file, mut servicer) = transaction_fixture();
+        let mut frame = Vec::new();
+        let version = b"9P2000.L";
+        let size = 7 + 4 + 2 + version.len();
+        frame.extend_from_slice(&(size as u32).to_le_bytes());
+        frame.push(crucible_device::ninep::codec::TVERSION);
+        frame.extend_from_slice(&9_u16.to_le_bytes());
+        frame.extend_from_slice(&4096_u32.to_le_bytes());
+        frame.extend_from_slice(&(version.len() as u16).to_le_bytes());
+        frame.extend_from_slice(version);
+        let opportunity = NinepRequestOpportunity::from_frame(5, 7, frame)
+            .unwrap_or_else(|error| panic!("construct opportunity: {error}"));
+        servicer
+            .pending_fault_opportunities
+            .insert((10, opportunity.identity), (opportunity.clone(), true));
+
+        assert!(servicer.due_fault_opportunities(10).is_empty());
+        assert!(servicer.has_authorized_due(10));
+        assert!(!servicer.has_authorized_due(9));
     }
 
     /// The fixed 9p tree is a pure constant: two independent constructions are

@@ -93,6 +93,18 @@ pub trait IoSubNode {
     fn compute(&mut self, request: &Request) -> Result<ComputedResponse, DeviceError>;
 }
 
+/// Failure from shared-memory delivery with an exact publication count.
+///
+/// A nonzero `published` count is a guest-visible commit boundary: callers must
+/// not roll back device or evaluator state after observing it.
+#[derive(Debug)]
+pub struct ShmemDeliveryFailure {
+    /// Number of response frames release-published before the failure.
+    pub published: usize,
+    /// Underlying deterministic device or shared-memory failure.
+    pub source: DeviceError,
+}
+
 /// The deterministic lifecycle engine shared by every I/O sub-node.
 ///
 /// `IoCore` owns the virtual clock, the inbound request ring, the outbound
@@ -623,14 +635,19 @@ impl IoCore {
     /// icount, [`DeviceError`] for oversized response frames or corrupt ring
     /// state, and [`DeviceError::ShmemWake`] when the consumer wake fails after a
     /// successful publication.
-    pub fn advance_to_shmem(
+    pub fn advance_to_shmem_with_commit_status(
         &mut self,
         limit: u64,
         outbox: &RingHeader,
         outbox_entries: &mut [FrameEntry],
         consumer_slot: &NodeSlot,
-    ) -> Result<ShmemDeliveryResult, DeviceError> {
-        self.clock.advance_to(limit)?;
+    ) -> Result<ShmemDeliveryResult, ShmemDeliveryFailure> {
+        self.clock
+            .advance_to(limit)
+            .map_err(|source| ShmemDeliveryFailure {
+                published: 0,
+                source,
+            })?;
         let due = self.inflight.drain_due(limit);
         let mut delivered = 0;
         let mut remaining = due.into_iter();
@@ -639,7 +656,10 @@ impl IoCore {
                 Ok(frame) => frame,
                 Err(error) => {
                     self.requeue_pending(pending, remaining);
-                    return Err(error);
+                    return Err(ShmemDeliveryFailure {
+                        published: delivered,
+                        source: error,
+                    });
                 }
             };
             match outbox.enqueue(outbox_entries, &frame) {
@@ -650,7 +670,10 @@ impl IoCore {
                 }
                 Err(error) => {
                     self.requeue_pending(pending, remaining);
-                    return Err(DeviceError::from(error));
+                    return Err(ShmemDeliveryFailure {
+                        published: delivered,
+                        source: DeviceError::from(error),
+                    });
                 }
             }
         }
@@ -658,12 +681,35 @@ impl IoCore {
         let consumer_wake = if delivered == 0 {
             None
         } else {
-            Some(consumer_slot.wake_for_frame_delivery()?)
+            Some(consumer_slot.wake_for_frame_delivery().map_err(|source| {
+                ShmemDeliveryFailure {
+                    published: delivered,
+                    source: DeviceError::from(source),
+                }
+            })?)
         };
         Ok(ShmemDeliveryResult {
             delivered,
             consumer_wake,
         })
+    }
+
+    /// Advances the clock and publishes due responses to a real shmem ring.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying delivery error. Callers that own a transactional
+    /// boundary should use [`Self::advance_to_shmem_with_commit_status`] so they
+    /// can distinguish failures before and after publication.
+    pub fn advance_to_shmem(
+        &mut self,
+        limit: u64,
+        outbox: &RingHeader,
+        outbox_entries: &mut [FrameEntry],
+        consumer_slot: &NodeSlot,
+    ) -> Result<ShmemDeliveryResult, DeviceError> {
+        self.advance_to_shmem_with_commit_status(limit, outbox, outbox_entries, consumer_slot)
+            .map_err(|failure| failure.source)
     }
 
     /// Pops the next delivered response from the outbound ring, if any.

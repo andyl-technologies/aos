@@ -1812,11 +1812,18 @@ impl ProductionNinepFaultCoordinator {
                 )
                 .map_err(|error| storage_error("authorize 9p delivery", error))?;
         }
-        if !due.is_empty() {
-            *shared_commit_started = true;
-            let delivered = servicer
-                .deliver_due(guest_icount)
-                .map_err(|error| storage_error("deliver coordinated 9p replies", error))?;
+        if servicer.has_authorized_due(guest_icount) {
+            let delivered = match servicer.deliver_due(guest_icount) {
+                Ok(delivered) => delivered,
+                Err(failure) => {
+                    *shared_commit_started = failure.shared_transition_started;
+                    return Err(storage_error(
+                        "deliver coordinated 9p replies",
+                        failure.source,
+                    ));
+                }
+            };
+            *shared_commit_started = delivered.delivered > 0;
             result.delivered = delivered.delivered;
             result.next_completion_icount = delivered.next_completion_icount;
             return Ok(result);
@@ -1854,9 +1861,10 @@ impl ProductionNinepFaultCoordinator {
                 .lock()
                 .map_err(|_| storage_error("record 9p persistence", "journal is poisoned"))?
                 .append(persist.journal_sequence, applied)?;
-            let response = servicer
-                .preview_computed_response_evidence(&pin)
-                .map_err(|error| storage_error("preview computed 9p response", error))?;
+            let prepared = servicer
+                .prepare_request(&pin)
+                .map_err(|error| storage_error("prepare computed 9p response", error))?;
+            let response = prepared.evidence();
             let applied = resolve
                 .actions
                 .iter()
@@ -1883,10 +1891,17 @@ impl ProductionNinepFaultCoordinator {
                 .lock()
                 .map_err(|_| storage_error("record 9p result", "journal is poisoned"))?
                 .append(resolve.journal_sequence, applied)?;
-            *shared_commit_started = true;
-            let processed = servicer
-                .process_one_request(&pin)
-                .map_err(|error| storage_error("process coordinated 9p request", error))?;
+            let processed = match servicer.commit_prepared_request(prepared) {
+                Ok(processed) => processed,
+                Err(failure) => {
+                    *shared_commit_started = failure.shared_transition_started;
+                    return Err(storage_error(
+                        "commit coordinated 9p request",
+                        failure.source,
+                    ));
+                }
+            };
+            *shared_commit_started = processed.processed > 0;
             result.processed = processed.processed;
             result.first_request_icount = processed.first_request_icount;
             result.computed_completion_icount = processed.computed_completion_icount;
