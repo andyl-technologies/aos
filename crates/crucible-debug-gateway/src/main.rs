@@ -388,17 +388,35 @@ fn dispatch_request(
                 .as_ref()
                 .map(|(_, _, request)| request.clone())
                 .ok_or_else(|| String::from("scheduler run-control request disappeared"))?;
+            let operator_epoch = gateway
+                .run_control_inflight
+                .as_ref()
+                .map(|(_, operator_epoch, _)| *operator_epoch)
+                .ok_or_else(|| String::from("scheduler run-control request disappeared"))?;
+            let response_payload =
+                if gateway
+                    .run_control_requests
+                    .front()
+                    .is_some_and(|(_, queued_epoch, queued)| {
+                        *queued_epoch == operator_epoch && queued == &[0x03]
+                    })
+                {
+                    let _interrupt = gateway.run_control_requests.pop_front();
+                    b"T02".to_vec()
+                } else {
+                    frame.payload.clone()
+                };
             finish_gdb_scheduler_run(gateway, frame.stream_id)?;
             let operator = gateway
                 .operator_writer
                 .as_mut()
                 .ok_or_else(|| String::from("operator gdb connection is not active"))?;
-            let encoded_response = encode_rsp_packet(&frame.payload);
+            let encoded_response = encode_rsp_packet(&response_payload);
             operator.write_all(&encoded_response).map_err(|error| {
                 format!("write scheduler RSP response to operator gdb: {error}")
             })?;
             gateway.run_control_inflight = None;
-            gateway.run_control_completed = Some((frame.stream_id, request, frame.payload.clone()));
+            gateway.run_control_completed = Some((frame.stream_id, request, response_payload));
             gateway.scheduler_response_pending = Some(encoded_response);
             Ok(())
         })?;
@@ -427,10 +445,17 @@ fn poll_scheduler_run_control(
         if let Some((stream_id, operator_epoch, packet)) =
             gateway.run_control_requests.front().cloned()
         {
+            if gateway.scheduler_lease_active {
+                return response(
+                    DebugGatewayMessageKind::RunControl,
+                    frame.stream_id,
+                    Vec::new(),
+                );
+            }
             if packet != [0x03] && gateway.gdb_scheduler_run_active.is_none() {
-                if gateway.scheduler_lease_active || gateway.prepared.is_some() {
+                if gateway.prepared.is_some() {
                     return Err(String::from(
-                        "cannot begin GDB run control during scheduler lease or replacement work",
+                        "cannot begin GDB run control during replacement work",
                     ));
                 }
                 gateway.operator_admission_paused = true;
@@ -823,6 +848,39 @@ fn restore_backend_after_operator_disconnect(
     process: &SharedGatewayProcess,
     relay_closed_cleanly: bool,
 ) -> Result<(), String> {
+    let ownership_recovered = with_gateway(process, |gateway| {
+        if gateway.gdb_scheduler_run_active.is_some() {
+            let active = gateway
+                .active
+                .as_mut()
+                .ok_or_else(|| String::from("GDB run control lost its active backend"))?;
+            interrupt_scheduler_backend(&mut active.1)?;
+            gateway.operator_writer = None;
+            gateway.rsp_responses_pending = 0;
+            gateway.run_control_requests.clear();
+            gateway.run_control_inflight = None;
+            gateway.run_control_completed = None;
+            gateway.scheduler_response_pending = None;
+            gateway.gdb_scheduler_run_active = None;
+            gateway.operator_admission_paused = false;
+            return Ok(true);
+        }
+        if gateway.scheduler_lease_active {
+            gateway.operator_writer = None;
+            gateway.rsp_responses_pending = 0;
+            gateway.run_control_requests.clear();
+            gateway.run_control_inflight = None;
+            gateway.run_control_completed = None;
+            gateway.scheduler_response_pending = None;
+            gateway.operator_admission_paused = true;
+            return Ok(true);
+        }
+        Ok(false)
+    })?;
+    if ownership_recovered {
+        return Ok(());
+    }
+
     let reconnect = with_gateway(process, |gateway| {
         let recovery_is_unambiguous =
             relay_closed_cleanly && gateway.replacement_boundary_is_clean();
@@ -1099,6 +1157,12 @@ fn queue_scheduler_run_control(
                 .run_control_completed
                 .as_ref()
                 .is_some_and(|(_, completed, _)| completed == &packet);
+        // A stop response already awaiting the operator's acknowledgement
+        // satisfies a racing interrupt. Queueing another interrupt would make
+        // the scheduler stop an already-paused backend after that response.
+        if is_interrupt && gateway.scheduler_response_pending.is_some() {
+            return Ok(());
+        }
         let request_pending = !gateway.run_control_requests.is_empty()
             || gateway.run_control_inflight.is_some()
             || gateway.scheduler_response_pending.is_some();

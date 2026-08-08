@@ -2325,6 +2325,11 @@ async fn run_remote_guest_channel(
                                 GuestOutputStream::Stderr => stderr.write_all(bytes).await,
                             }
                             .map_err(|error| backend_error(format!("terminal output failed: {error}")))?;
+                            match stream {
+                                GuestOutputStream::Stdout => stdout.flush().await,
+                                GuestOutputStream::Stderr => stderr.flush().await,
+                            }
+                            .map_err(|error| backend_error(format!("terminal output flush failed: {error}")))?;
                         }
                         GuestIntrospectionMessage::Exit { status, signal } => {
                             terminal_observed = true;
@@ -2435,6 +2440,13 @@ async fn run_remote_guest_channel(
                         }
                         .map_err(|error| {
                             backend_error(format!("terminal cleanup output failed: {error}"))
+                        })?;
+                        match stream {
+                            GuestOutputStream::Stdout => stdout.flush().await,
+                            GuestOutputStream::Stderr => stderr.flush().await,
+                        }
+                        .map_err(|error| {
+                            backend_error(format!("terminal cleanup output flush failed: {error}"))
                         })?;
                     }
                     Some(
