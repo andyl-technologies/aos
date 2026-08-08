@@ -3,6 +3,9 @@
 use super::*;
 use std::time::Duration;
 
+#[path = "actor/terminal.rs"]
+mod terminal;
+
 /// Error returned by the session actor or engine state machine.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SessionError {
@@ -633,15 +636,6 @@ impl<L> SessionActor<L> {
     fn sync_reproduction_log(&self) {
         self.reproduction_log
             .sync_from_boundary_log(self.engine.boundary_control_log());
-    }
-
-    fn terminalize_actor_error(&mut self, error: &SessionError)
-    where
-        L: QuantumLoop,
-    {
-        self.engine.stop_after_actor_crash(error.to_string());
-        self.sync_reproduction_log();
-        self.publish_live_snapshot();
     }
 }
 
