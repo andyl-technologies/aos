@@ -216,6 +216,75 @@ fn evidence(configuration: ContentHash) -> ProductionVmDebugRuntimeEvidence {
     }
 }
 
+fn bound_evidence(
+    configuration: ContentHash,
+    reduced_state: ContentHash,
+    frontier: u64,
+    retired: u64,
+    events: u64,
+) -> ProductionVmDebugRuntimeEvidence {
+    let graph = graph_runtime(configuration, reduced_state);
+    let mut sample = evidence(configuration);
+    sample.event_log = EventLogOffset::new(hash(&format!("event-log-{events}")), events, events);
+    sample.node_icounts = BTreeMap::from([(node(), Icount { retired })]);
+    sample.node_times = BTreeMap::from([(node(), VirtualTime { ticks: frontier })]);
+    sample.graph_runtimes.push(graph.clone());
+    sample.runtime = Some(sample.bind_graph_runtime(&graph));
+    sample
+}
+
+#[test]
+fn virtual_time_coordinate_selects_the_latest_boundary_not_after_the_target() {
+    let source = initially_violated_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    let configuration = hash("configuration");
+    let reduced_state = hash("reduced-state");
+    let graph = graph_runtime(configuration, reduced_state);
+    lifecycle.debug_runtime_evidence = vec![
+        bound_evidence(configuration, reduced_state, 10, 11, 1),
+        bound_evidence(configuration, reduced_state, 20, 21, 2),
+        bound_evidence(configuration, reduced_state, 100, 101, 3),
+    ];
+
+    let resolved = lifecycle
+        .resolve_recorded_debug_coordinate_runtime_evidence(
+            &crucible::DebugCoordinate::virtual_time(VirtualTime { ticks: 20 }),
+            &graph,
+        )
+        .unwrap_or_else(|error| panic!("virtual-time evidence should resolve: {error}"));
+
+    assert_eq!(
+        resolved.node_icounts.get(&node()),
+        Some(&Icount { retired: 21 })
+    );
+}
+
+#[test]
+fn node_icount_coordinate_does_not_alias_a_later_same_configuration_boundary() {
+    let source = initially_violated_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    let configuration = hash("configuration");
+    let reduced_state = hash("reduced-state");
+    let graph = graph_runtime(configuration, reduced_state);
+    lifecycle.debug_runtime_evidence = vec![
+        bound_evidence(configuration, reduced_state, 10, 11, 1),
+        bound_evidence(configuration, reduced_state, 20, 21, 2),
+        bound_evidence(configuration, reduced_state, 100, 101, 3),
+    ];
+
+    let resolved = lifecycle
+        .resolve_recorded_debug_coordinate_runtime_evidence(
+            &crucible::DebugCoordinate::node_icount(node(), Icount { retired: 21 }),
+            &graph,
+        )
+        .unwrap_or_else(|error| panic!("node-icount evidence should resolve: {error}"));
+
+    assert_eq!(
+        resolved.node_icounts.get(&node()),
+        Some(&Icount { retired: 21 })
+    );
+}
+
 #[test]
 fn production_lifecycle_emits_initial_started_state_for_every_vm() {
     let scenario = crucible::happy_path_scenario()
