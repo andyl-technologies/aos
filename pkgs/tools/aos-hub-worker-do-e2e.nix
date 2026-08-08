@@ -372,7 +372,9 @@
         || !bootstrapAsset.headers.get("cache-control")?.includes("immutable")
         || stylesheetAsset.status !== 200
         || !wasmName
-        || !moduleName) {
+        || !moduleName
+        || !bootstrapSource.includes("import init, { mount }")
+        || !bootstrapSource.includes("mount();")) {
       throw new Error("management console bootstrap/CSS assets failed");
     }
     const [wasmAsset, moduleAsset] = await Promise.all([
