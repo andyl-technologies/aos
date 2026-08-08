@@ -1623,6 +1623,14 @@ complete from model-double evidence.
   thread-qualified `vCont;s:<selected>;c:<others>` form, fork-time argv exec,
   PTY, SSH, typed
   stream closure on reposition, transcripts, and per-architecture aggregate
-  evidence. It uses bounded process groups and hard TERM/KILL deadlines. This
+  evidence. It pins the CLI seed separately from the scenario seed, reaps the
+  OpenSSH proxy's complete process group after a bounded command, and describes
+  an intentional reposition closure as a closed channel rather than an
+  introspection failure. A separate agent-driven failing-scenario exercise found
+  that backend-run `--trace` had included the invocation-local `final_outcome`
+  record even though `replay --check` expects only canonical causal entries; the
+  trace writer now keeps that porcelain record on machine-readable stdout and
+  writes directly replayable canonical bytes to the trace file. The runner uses
+  bounded process groups and hard TERM/KILL deadlines. This
   paragraph records the acceptance design only; T-DBG-14 remains open until the
   runner's live x86_64 and AArch64 evidence is captured and reviewed.
