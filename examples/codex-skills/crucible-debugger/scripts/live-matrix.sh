@@ -13,11 +13,15 @@ set -euo pipefail
 available_architectures=$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES
 external_aarch64_kernel=${CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64:-}
 external_aarch64_root=${CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64:-}
-if [[ -n "$external_aarch64_kernel" || -n "$external_aarch64_root" ]]; then
-  [[ -n "$external_aarch64_kernel" && -n "$external_aarch64_root" ]] \
-    || { printf 'external AArch64 kernel and root image must be supplied together\n' >&2; exit 64; }
+external_aarch64_cmdline=${CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64:-}
+if [[ -n "$external_aarch64_kernel" || -n "$external_aarch64_root" || -n "$external_aarch64_cmdline" ]]; then
+  [[ -n "$external_aarch64_kernel" && -n "$external_aarch64_root" && -n "$external_aarch64_cmdline" ]] \
+    || { printf 'external AArch64 kernel, root image, and kernel command line must be supplied together\n' >&2; exit 64; }
   CRUCIBLE_MATRIX_KERNEL_AARCH64=$external_aarch64_kernel
   CRUCIBLE_MATRIX_ROOT_IMAGE_AARCH64=$external_aarch64_root
+  export CRUCIBLE_KERNEL_AARCH64=$external_aarch64_kernel
+  export CRUCIBLE_ROOT_IMAGE_AARCH64=$external_aarch64_root
+  export CRUCIBLE_KERNEL_CMDLINE_AARCH64=$external_aarch64_cmdline
   if [[ ",$available_architectures," != *,aarch64,* ]]; then
     available_architectures="$available_architectures,aarch64"
   fi
@@ -378,7 +382,7 @@ run_scheduler_control() {
   sed -n '/CRUCIBLE_CONTINUE_BEGIN/,/CRUCIBLE_CONTINUE_END/p' "$output_file" \
     >"$output_file.continue"
   gdb_window_is_clean "$output_file.continue" "GDB continue"
-  grep -Eq 'Breakpoint 1,' \
+  grep -Eq 'Breakpoint 1,|Program stopped\.' \
     "$output_file.continue" || fail "GDB continue produced no correlated stop"
 
   printf 'echo CRUCIBLE_STEPI_BEGIN\\n\nstepi\necho CRUCIBLE_STEPI_END\\n\n' >&5

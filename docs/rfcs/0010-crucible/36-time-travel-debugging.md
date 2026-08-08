@@ -1569,10 +1569,12 @@ complete from model-double evidence.
   trace-status and detach packets. Completion remains open for the full
   controller/gateway atomic replacement, scheduler run-control, fork-time guest
   agent execution, and guest-introspection matrix on both architectures. The
-  native suite now retains both architecture-specific guest closures, selects
-  q35/qemu64/ttyS0 or virt/cortex-a57/ttyAMA0 consistently, and configures
-  debugger backends for every daemon-submitted World node; these are required
-  implementation prerequisites, not substitutes for the remaining live gate.
+  native suite selects q35/qemu64/ttyS0 or virt/cortex-a57/ttyAMA0 consistently
+  and configures debugger backends for every daemon-submitted World node. The
+  out-of-check runner also accepts an explicit AArch64 kernel, root image, and
+  kernel command-line triplet and passes it through to the production lifecycle;
+  these are required implementation prerequisites, not substitutes for the
+  remaining live gate.
   The suite now ships an out-of-check manual runner that exercises both retained
   architectures through the public CLI: repeated read-only GDB snapshots,
   non-empty reverse history, full landed-coordinate replay equality, queued
