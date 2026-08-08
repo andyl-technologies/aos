@@ -31,21 +31,28 @@ after publishing terminal evidence; `hung` leaves the process alive and
 responsive to the fault control/save diagnostic channel but retires no guest
 instructions or device work covered by the selected hang scope.
 
-## Transition payload
+## Closed transition and hang payloads
 
-Fields: transition, scope (`cpu`, `node`, selected device domains), downtime or
-recovery event, restart source (`genesis`, named checkpoint, current reset
-vector), RAM policy, CPU/register policy, device policy, volatile storage/network
-queue policy, clock policy, pending interrupt/timer policy, boot-failure stage,
-and expected lifecycle/state digest. Every policy field is required.
+A lifecycle command carries exactly the transition
+`boot/crash/reset/power_off/power_cycle/permanent_failure`, virtual downtime,
+boot policy, volatile-state policy, and device-state policy. `preserve/clear`
+applies to RAM plus CPU/register, interrupt, timer, and guest-clock volatile
+state; device state additionally permits `device_reset`, which invokes each
+realized device's production reset method. The command precondition binds the
+expected lifecycle/state digest. Network, storage, and other external-process
+state is controlled by separate same-coordinate bindings to those production
+adapters; QEMU neither encodes nor silently chooses their policies.
+
+A hang command carries exactly `node`, sorted numeric `vcpus`, or one realized
+device scope; a recovery-event identity; and either a disabled watchdog or
+`transition_after { timeout_nanos, transition }`. There are no restart-source,
+queue, clock, boot-stage, or other opaque policy IDs.
 
 ## Reset and power semantics
 
-- `warm_reset` invokes deterministic architecture/machine reset while retaining
-  RAM only when policy says so and resets/preserves each modeled device class by
-  explicit table.
-- `cold_reset` zeroes/reinitializes RAM and machine/device state from the pinned
-  deterministic reset image, then begins boot.
+- `reset` invokes deterministic architecture/machine reset after applying the
+  explicit volatile and device policies. `preserve` and `clear` therefore make
+  warm-versus-cold behavior explicit without a second transition name.
 - `power_off` stops execution/devices after applying declared volatile-loss and
   queue treatment; no virtual timers progress for the powered-off node unless a
   separate external power-on event exists.
@@ -60,18 +67,20 @@ fatal and recovered only by restoring the pre-boundary checkpoint.
 
 ## Boot failure
 
-Supported exact failure stages are `machine_realized_before_release`,
-`reset_vector_before_first_instruction`, `firmware_handoff_boundary`, and a
-scenario-declared guest ready-point boundary. The first two are patch-native.
-Firmware/ready-point failures use existing observed boundaries and stop/restart
-the node without modifying guest code. Outcomes are `remain_failed`,
-`retry_after`, `power_off`, or `crash`; retry count is bounded.
+`immediate` releases the realized machine without a ready marker.
+`require_ready` names one realized marker, a positive bounded maximum-attempt
+count, exact virtual retry delay, and terminal `crash`, `power_off`, or
+`permanent_failure` transition. The capability manifest may expose native
+pre-release, reset-vector, firmware-handoff, and guest ready-point markers; an
+unmanifested marker is rejected. Repeated/intermittent reset behavior is a
+temporal signal producing repeated lifecycle commands, not hidden retry logic.
 
 ## Hang scopes
 
-`cpu` hang stops vCPU execution but may allow modeled external device progress;
-`node` hang stops vCPUs and device callback/service progress after safe
-quiescence; selected-device hang freezes only declared registered devices.
+Selected-vCPU hang stops exactly the sorted numeric vCPU set while allowing
+other vCPUs and modeled external device progress; `node` hang stops vCPUs and
+device callback/service progress after safe quiescence; device hang freezes one
+declared realized device.
 Control, diagnostic, and recovery command processing remains available. A hang
 cannot be implemented by blocking a host thread or deadlocking QEMU.
 
@@ -79,21 +88,23 @@ cannot be implemented by blocking a host thread or deadlocking QEMU.
 
 Evidence includes old/new lifecycle state, QMP/run state, process generation,
 reset/power reason, every state-treatment policy and affected-state digest,
-terminal/pre-restart fingerprints, process exit status, restart artifact/genesis
-identity, and ready-point result. Patch 0059 serializes nonterminal lifecycle,
-hang/recovery, boot stage, retry count, and reset policy. A crashed process is
-reconstructed by the host from the recorded restart source and verified state.
+terminal/pre-restart fingerprints, process exit status, deterministic
+realization identity, and ready-marker result. Patch 0059 serializes nonterminal lifecycle,
+hang/recovery, ready-marker wait, retry count, and reset policy. A crashed
+process is reconstructed by the host from the same authenticated deterministic
+realization and verified state.
 
 ## Live microtests
 
-1. Exercise warm/cold reset, power off/on/cycle, controlled crash/restart, CPU/
+1. Exercise preserved/cleared reset, power off/on/cycle, controlled crash/restart, vCPU/
    node/device hang, boot failures at every stage, and intermittent sequences.
-2. Verify each RAM/register/device/interrupt/timer/queue policy with sentinel
-   state through live QEMU and host network/storage adapters.
+2. Verify each volatile/device state policy with sentinel RAM, register,
+   interrupt, timer, clock, and device state; verify separate same-coordinate
+   host network/storage bindings for external state.
 3. Trigger x86 triple fault and corresponding AArch64 fatal reset policy and
    verify the common lifecycle path.
-4. Save/restore every nonterminal state; reproduce crashed restart from genesis
-   and checkpoint.
+4. Save/restore every nonterminal state; reproduce crashed restart from the
+   same deterministic realization.
 5. Verify control remains responsive during hang and no host blocking models it.
 6. Revert patch and fail live gate; prove non-sim reset/power behavior unchanged.
 

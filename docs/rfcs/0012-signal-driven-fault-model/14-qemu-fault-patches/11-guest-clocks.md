@@ -43,18 +43,19 @@ All fields use checked integer/rational arithmetic and source width/wrap policy.
 Transform changes create a new anchor `(base,value)` at the exact boundary so
 rate changes are continuous unless an explicit jump occurs.
 
-Jitter is a keyed signed bounded transform per stable clock-read opportunity.
-Wander is checkpointed state driven by an exact signal/state operator. Freeze
-holds the declared value; unfreeze policy is `resume_continuous`,
-`catch_up_jump`, or `resume_from_frozen`, with no default.
+Jitter uses a bounded nonempty signed lookup table selected by the stable keyed
+clock-read opportunity. Wander uses a positive update interval, bounded offset
+and rate, and a bounded nonempty signed rate-increment table; all evolving state
+is checkpointed. Freeze holds the declared value and requires exactly
+`resume_from_frozen` or `catch_up_jump` release behavior, with no default.
 
 ## Timers
 
 Timer compare/deadline programming stores guest source-domain values plus the
 active transform generation. On transform/source changes, QEMU deterministically
-recomputes the scheduler deadline or marks it unreachable while frozen. Already
-expired timers follow explicit `fire_immediately_at_boundary`, `drop`, or
-`reschedule_periodic` policy. No timer fires in a consumer's past.
+recomputes the scheduler deadline or marks it unreachable while frozen. Each
+transform carries exactly `fire_at_boundary`, `drop`, or `reschedule_periodic`
+for timers made overdue. No timer fires in a consumer's past.
 
 Jitter on a clock read does not implicitly jitter timer firing; timer jitter is
 a separate transform on the timer source/deadline opportunity.
@@ -63,7 +64,8 @@ a separate transform on the timer source/deadline opportunity.
 
 Each guest clock has a state machine `healthy`, `degraded`, `failed`,
 `fallback`, and `synchronizing`. Failure behavior is stop, invalid/error where
-architecture supports it, or transition to a declared fallback source. Switching
+architecture supports it, or transition to a declared fallback source; a
+`failed` command embeds exactly `stop` or `read_error`. Switching
 records old/new source and continuity policy. Synchronization applies explicit
 step or bounded slew with rational rate and completion threshold; no host NTP or
 wall time is consulted.

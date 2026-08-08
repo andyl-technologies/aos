@@ -18,10 +18,12 @@ changes TCG translation/execution boundaries.
 
 At translation, QEMU emits immutable metadata for potentially matching
 instructions: architecture, virtual PC, physical code page/version, exact bytes
-digest, decoded length, opcode/class ID, control-flow class, explicit register
+and digest, decoded length, opcode/class ID, control-flow class, explicit register
 read/write set where known, memory/atomic/MMIO class, exception boundary, and TB
-identity. The host selector resolves to PC/range, bytes digest or opcode class,
-vCPU, occurrence ordinal, and optional input-state precondition.
+identity. The closed selector contains a virtual-PC start and positive length,
+optional exact instruction bytes, optional opcode class, and `every/periodic`
+occurrence policy. The target supplies the vCPU; the command envelope supplies
+the optional input-state precondition digest.
 
 When any rule can match a page/range, translation emits an exact pre/post hook and
 forces a boundary around the instruction sufficient to isolate its effects.
@@ -30,8 +32,8 @@ match check covered by performance gates.
 
 ## Result corruption
 
-Result corruption targets one or more decoded destination registers/flags via
-the register manifest and applies a registered bit/field transform after the
+Result corruption targets one exact decoded destination register/flag via the
+register manifest and applies the embedded `bit_flip/stuck/replace` transform after the
 instruction commits but before interrupt/next-instruction observation. Memory
 load return corruption uses the load destination register here or the memory
 access hook; memory stores are handled by patch 0050. If a destination cannot be
@@ -59,17 +61,20 @@ only the instruction PC to the original PC; it does not roll back registers,
 memory, devices, exceptions, or interrupts. A control-flow instruction replay is
 allowed only when its manifest declares a deterministic sequential re-entry
 contract; otherwise it is rejected. Exceptions terminate remaining replays
-unless the effect explicitly selects an exception policy registered for that
-architecture.
+at the first exception. No hidden replay-exception policy exists.
 
 This definition intentionally models duplicated side effects. A “recompute but
 commit once” behavior would be a different effect and is not accepted.
 
 ## Exception injection
 
-The payload names architecture exception ID/vector/class, syndrome/error fields,
-fault address where applicable, privilege/EL target, timing `before` or `after`,
-and maskability. QEMU uses the architecture exception entry machinery. Invalid
+The payload names `x86_64/aarch64`, numeric vector/class and syndrome, optional
+fault address, timing `before_instruction` or after, and maskability. Exception
+entry uses the guest's architectural privilege/EL state at that opportunity;
+the payload cannot forge a different level. The record is
+`architecture_default` for ordinary exceptions or carries the complete matching
+x86 machine-check/AArch64 RAS fields defined by the common JSON contract. QEMU
+uses the architecture exception entry machinery. Invalid
 combinations reject before state change. Machine-check/hardware-error classes use
 patch 0054 rather than this generic exception hook.
 

@@ -539,26 +539,58 @@ dropping history or inventing a completion.
 
 | Effect key | Lifetime and phase | Required parameters | Composition | Capability and replay evidence |
 | --- | --- | --- | --- | --- |
-| `node.lifecycle` | impulse/state; boundary | transition, downtime, restart/boot policy, volatile/device state policy | severity/state-machine | `qemu.node.lifecycle.v1`; QMP/plugin acknowledgement, old/new run state, state loss |
-| `node.hang` | persistent; boundary/run | scope, recovery event, watchdog policy | outage-or | `qemu.node.hang.v1`; progress counters and recovery |
-| `cpu.service` | persistent state; run | vCPU selector, rational capacity, quantum/service rule | minimum capacity | `qemu.cpu.service.v1`; retired budget, service ledger, vCPU schedule |
+| `node.lifecycle` | impulse/state; boundary | `transition`, `downtime_nanos`, closed `boot_policy`, `volatile_state_policy`, `device_state_policy` | severity/state-machine | `qemu.node.lifecycle.v1`; QMP/plugin acknowledgement, old/new run state, state loss |
+| `node.hang` | persistent; boundary/run | closed node/vCPU/device `scope`, `recovery_event`, closed `watchdog_policy` | outage-or | `qemu.node.hang.v1`; progress counters and recovery |
+| `cpu.service` | persistent state; run | sorted numeric `vcpus`, positive rational `capacity`, `quantum_instructions`, closed `service_rule` | minimum capacity | `qemu.cpu.service.v1`; retired budget, service ledger, vCPU schedule |
 | `cpu.vcpu_state` | state-machine; boundary | state `online/offline/stalled`, transition/recovery | severity/state-machine | `qemu.cpu.vcpu-state.v1`; RR cursor and topology/run-state evidence |
-| `cpu.register_transform` | impulse/persistent/opportunity; listed register phases | register ID/range, kind `bit_flip/stuck/replace`, mask/value, occurrence | ordered-transform | architecture capability; resolved register, before/after value and icount |
-| `cpu.instruction_transform` | opportunity; before/after-instruction | kind `result_corrupt/skip/replay`, PC/TB/instruction selector, destination/result transform, replay count | conflict per instruction except ordered result transforms | architecture capability; decoded instruction identity, operands/results, PC and state digest |
-| `cpu.exception` | impulse; before/after-instruction/boundary | architecture, exception kind/vector/syndrome/error fields | severity/conflict | architecture capability; injected exception and architectural acknowledgement |
+| `cpu.register_transform` | impulse/persistent/opportunity; listed register phases | register ID/bit range, closed `bit_flip/stuck/replace` bytes, closed occurrence policy | ordered-transform | architecture capability; resolved register, before/after value and icount |
+| `cpu.instruction_transform` | opportunity; before/after-instruction | closed PC interval/bytes/opcode/occurrence selector and `result_corrupt/skip/replay` mutation | conflict per instruction except ordered result transforms | architecture capability; decoded instruction identity, operands/results, PC and state digest |
+| `cpu.exception` | impulse; before/after-instruction/boundary | complete architecture, numeric vector, syndrome, optional fault address, before/after and maskability fields | severity/conflict | architecture capability; injected exception and architectural acknowledgement |
 | `interrupt.disposition` | opportunity/state; raise/route/deliver | kind `drop/delay/duplicate/replace`, delay/copies/vector fields | ordered by source event then binding | `qemu.interrupt.control.v1`; source/target/vector, original/final deliveries |
 | `interrupt.storm` | state/event sequence; raise | vector/source, period/burst/count, routing | event merge by coordinate/sequence | `qemu.interrupt.storm.v1`; generated event sequence and acknowledgements |
-| `memory.mutation` | impulse; boundary | address space, address/range, kind `bit_flip/replace`, mask/bytes, atomicity | ordered-transform with overlap evidence | `qemu.memory.mutate.v1`; translation, before/after bytes, dirty tracking and icount |
-| `memory.access_transform` | persistent/opportunity; fetch/load/store/DMA | range, kind `stuck/read_corrupt/lost_write/torn_write/poison`, masks/selectors/outcome | range overlay then ordered-transform | `qemu.memory.access-transform.v1`; access, transformed bytes/outcome and range state |
+| `memory.mutation` | impulse; boundary | `guest_physical/guest_virtual`, range, `bit_flip/replace` bytes, `all_or_nothing` atomicity | ordered-transform with overlap evidence | `qemu.memory.mutate.v1`; translation, before/after bytes, dirty tracking and icount |
+| `memory.access_transform` | persistent/opportunity; fetch/load/store/DMA | range, explicit access-class booleans, atomicity-violation flag, closed `stuck/read_corrupt/lost_write/torn_write/poison` mutation, occurrence | range overlay then ordered-transform | `qemu.memory.access-transform.v1`; access, transformed bytes/outcome and range state |
 | `memory.ecc_event` | impulse/opportunity; access/boundary | corrected/uncorrectable, address, syndrome, bank/channel/rank, guest visibility | severity | architecture capability; injected platform record/exception and acknowledgement |
-| `memory.region_state` | persistent state; access/refresh | range, kind `failed/retention/rowhammer`, threshold/decay/access-pattern model | range overlay and state-machine | `qemu.memory.region-state.v1`; counters, aggressor/victim rows, changed bits/outcomes |
-| `memory.service` | persistent state; access/queue | latency/service/bandwidth parameters and sharing scope | checked-sum latency; minimum service | `qemu.memory.service.v1`; access service ledger |
-| `clock.transform` | persistent/impulse/opportunity; read/arm/fire | source, offset, drift ratio, jump, freeze value, jitter/wander process, monotonicity | offset checked-sum; drift rational-product; freeze severity; jitter ordered | `qemu.clock.transform.v1`; raw/transformed values, timer consequences and state |
-| `clock.source_state` | state-machine; source-switch/synchronize | sources, failure/fallback, sync correction/rate policy | one source machine per guest clock | `qemu.clock.source-state.v1`; old/new source, offset/rate and timer rearm evidence |
+| `memory.region_state` | persistent state; access/refresh | range plus matching closed `failed`, `retention`, or `rowhammer` process | range overlay and state-machine | `qemu.memory.region-state.v1`; counters, aggressor/victim rows, changed bits/outcomes |
+| `memory.service` | persistent state; access/queue | latency, optional positive byte/operation rates, closed node/range/controller sharing scope | checked-sum latency; minimum service | `qemu.memory.service.v1`; access service ledger |
+| `clock.transform` | persistent/impulse/opportunity; read/arm/fire | source; closed offset/drift/jump/freeze/jitter-table/wander mutation; closed backward-time policy | offset checked-sum; drift rational-product; freeze severity; jitter ordered | `qemu.clock.transform.v1`; raw/transformed values, timer consequences and state |
+| `clock.source_state` | state-machine; source-switch/synchronize | sources, closed healthy/degraded/failed/fallback transition, closed step/slew correction | one source machine per guest clock | `qemu.clock.source-state.v1`; old/new source, offset/rate and timer rearm evidence |
 | `accelerator.lifecycle` | state-machine; boundary/submit | device, transition `disappear/reset/reconnect`, queue/memory policy | severity/state-machine | device capability; enumeration/run state and queue treatment |
-| `accelerator.result_transform` | opportunity; execute/complete | API/device job selector, field/buffer transform | ordered-transform | device capability; job identity and before/after result digest |
+| `accelerator.result_transform` | opportunity; execute/complete | job kind, optional numeric queue, occurrence, result offset and equal-width mask/value | ordered-transform | device capability; job identity and before/after result digest |
 | `accelerator.memory_event` | opportunity/impulse; memory access/boundary | address/range, corrected/uncorrectable, syndrome or transform | severity/ordered-transform | device capability; device-memory evidence and guest driver outcome |
-| `accelerator.service` | persistent state; execute/queue | rational capacity, memory/service cap, thermal/power metadata | minimum constraints | device capability; queue/job service ledger |
+| `accelerator.service` | persistent state; execute/queue | positive rational capacity, optional positive memory/job rates, positive millikelvin/milliwatt metadata | minimum constraints | device capability; queue/job service ledger |
+
+All executable policy values above are embedded closed data, not names resolved
+by a runtime registry. The only remaining object IDs identify realized things
+whose identity is checked against the capability manifest: registers, devices,
+clocks, interrupt sources, memory topology, guest markers, and exported recovery
+events. Unknown fields and values fail before QEMU state changes.
+
+### 8.5.1 Closed shared node-policy values
+
+| Type | Exhaustive values and required fields |
+| --- | --- |
+| boot policy | `immediate`; or `require_ready { ready_marker, maximum_attempts, retry_delay_nanos, exhausted }`, where `exhausted` is only `crash`, `power_off`, or `permanent_failure` |
+| watchdog | `disabled`; or `transition_after { timeout_nanos, transition }` |
+| occurrence | `every`; or `periodic { first, period, count }` using one-based ordinals |
+| service discipline | `work_conserving` or `strict_cap` |
+| memory access classes | independent booleans `fetch`, `cpu_load`, `cpu_store`, `dma_read`, and `dma_write`; at least one is true |
+| poison visibility | `access_error`; `corrected { xor_mask, vector }`; or `exception { exception }` |
+| architecture exception | `architecture = x86_64/aarch64`, numeric `vector` and `syndrome`, optional `fault_address`, `before_instruction`, `maskable`, and matching `architecture_default/x86_machine_check/aarch64_ras` record |
+| instruction selector | `pc_start`, positive `pc_length`, optional exact `instruction_bytes`, optional numeric `opcode_class`, and occurrence |
+| interrupt routing | sorted nonempty numeric `target_vcpus`, numeric `priority`, and `retain_pending` |
+| ECC visibility | `telemetry_only`; `corrected_interrupt { vector }`; or a complete `exception` |
+| region process | `failed { policy }`; `retention { interval_nanos, decay_mask }`; or `rowhammer { row_bytes, threshold, victim_distance, flip_mask }` |
+| memory service scope | `node`, `range`, or `controller { controller ID }` |
+| clock monotonicity | `allow_backward`, `clamp_monotonic`, or `fault_on_backward` |
+| freeze release | `resume_from_frozen` or `catch_up_jump` |
+| overdue timer | `fire_at_boundary`, `drop`, or `reschedule_periodic` |
+| clock wander | positive `step_nanos`, `maximum_offset_nanos`, `maximum_rate_ppb`, and a bounded nonempty ordered `increments_ppb` table |
+| clock source transition | `healthy`, `degraded`, `failed { stop/read_error }`, or `fallback { source }` |
+| clock synchronization | `step`; or `slew { positive rate, threshold_nanos }` |
+| accelerator job selector | job-kind ID, optional numeric queue, and occurrence |
+| accelerator result mutation | byte `offset` and nonempty equal-width `mask`/`value` |
+| accelerator thermal/power | positive `temperature_millikelvin` and `power_milliwatts` |
 
 ## 8.6 Closed precedence lattices
 

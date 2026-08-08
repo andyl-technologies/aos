@@ -33,13 +33,17 @@ QEMU changes that alter the manifest require a semantic version/golden update.
 
 ## Command payload
 
-Fields: vCPU ID, register manifest hash, register ID, bit offset/width, phase,
-kind (`bit_flip`, `replace`, `stuck_zero`, `stuck_one`), mask/value, occurrence or
-persistent rule generation, expected before value/digest, and reserved-bit
-policy. Ranges must fit the register and writable mask.
+The common typed payload carries the target vCPU, architecture/register
+manifest identities, target and effect bit ranges, phase, rule generation,
+`bit_flip/stuck/replace` mutation, exact mask/value bytes, and closed occurrence
+policy. The command envelope carries the expected precondition digest. Ranges
+must fit the register and writable mask; reserved bits are always preserved and
+there is no policy that permits writing them.
 
-`replace` changes only mask-selected bits. Bit flips xor the mask. Persistent
-stuck rules transform reads/writes at the declared register access/commit hook;
+`replace` replaces the complete selected bit range. Bit flips XOR the mask.
+`stuck` uses equal-width mask and value bytes to force only selected bits.
+Persistent stuck rules transform reads/writes at the declared register
+access/commit hook;
 if QEMU has no semantically complete hook for a manifest row, that row cannot
 advertise persistent capability even though impulse mutation may exist.
 

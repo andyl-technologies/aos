@@ -9,8 +9,14 @@ Generic exceptions remain in 0052; memory access poison remains in 0050.
 
 ## Capability and dependencies
 
-- Provides `qemu.hardware-error.x86_64.v1` and
-  `qemu.hardware-error.aarch64.v1`.
+- Uses the `qemu.cpu.exception.v1` command capability for CPU records and
+  `qemu.memory.ecc-event.v1` for memory records. Each capability manifest has
+  a closed `hardware_error_classes` member. CPU entries are exactly
+  `x86_machine_check.v1` and/or `aarch64_ras.v1`; memory entries enumerate the
+  realized platform record mechanisms and corrected/uncorrectable classes.
+  Admission requires the requested record kind and all of its exact field masks
+  to be present. An empty member advertises only ordinary exception entry and
+  cannot admit a hardware-error record.
 - Depends on 0047–0053 and machine firmware/platform error-reporting realization.
 
 ## Error manifest
@@ -23,7 +29,9 @@ The realized machine reports a closed architecture/platform manifest:
 | AArch64 | synchronous external abort where architecturally valid, asynchronous SError, corrected platform record, fatal hardware error |
 | Both | corrected/uncorrectable memory ECC record tied to GPA and optional channel/rank/bank/syndrome |
 
-Rows specify exact status/syndrome field masks, bank/record IDs, delivery phase,
+This manifest member is part of the capability digest exchanged by 0047; it is
+not a separately negotiated command or an unversioned extension string. Rows
+specify exact status/syndrome field masks, bank/record IDs, delivery phase,
 maskability, guest firmware/table/device prerequisite, supported privilege level,
 and resulting QEMU/guest state. Unsupported firmware/machine configurations fail
 admission rather than logging a host-only fake error.
@@ -43,11 +51,20 @@ VMState. Non-sim machine enumeration is unchanged.
 
 ## Command payload
 
-Fields include architecture error class, target vCPU or platform scope, delivery
-phase, recoverability/fatal policy, GPA/GVA and translation evidence when memory
-related, bank/channel/rank/row fields, status/syndrome/address/misc values under
-manifest masks, corrected/uncorrectable state, expected CPU/platform record
-digest, and optional linked memory poison/mutation command sequence.
+CPU hardware errors use the common `NodeException` payload: architecture,
+vector/class, syndrome, optional fault address, before/after timing, maskability,
+and exactly one `architecture_default`, `x86_machine_check`, or `aarch64_ras`
+record. The x86 record carries bank, MCi status/address/misc, MCG status, and
+corrected state. The AArch64 record carries ESR/FAR/DISR, synchronous versus
+asynchronous delivery, and corrected state. The target supplies the vCPU and
+the command envelope supplies phase and expected record digest.
+
+Memory hardware errors use the common ECC payload: corrected/uncorrectable,
+address, syndrome, bank/channel/rank identities, and closed telemetry,
+corrected-interrupt, or complete exception visibility. A separate same-boundary
+memory poison/mutation and lifecycle command expresses linked data corruption
+or fatal reset; canonical binding order and evidence bind the commands rather
+than an optional opaque command-sequence field.
 
 ## Semantics
 

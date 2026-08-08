@@ -15,12 +15,15 @@ and modeled memory latency/bandwidth.
 
 ## Rule payload and index
 
-An install/remove command at `node_boundary` carries rule ID, binding ID,
-address space and resolved GPA intervals, access types (`fetch`, `cpu_load`,
-`cpu_store`, `dma_read`, `dma_write`), widths/alignment policy, phase, transform,
-activation generation, opportunity filter, and bounded transform state. GVA rules
-are resolved to GPA intervals at install and either pin translation generation or
-declare deterministic re-resolution events.
+An install/remove command at `node_boundary` carries the authenticated action,
+target, schema, and generation identities; resolved start and positive length;
+the five explicit access-class booleans (`fetch`, `cpu_load`, `cpu_store`,
+`dma_read`, `dma_write`); `violate_atomicity`; one closed transform; and one
+closed `every/periodic` occurrence policy. The target fields carry the node,
+guest address, optional vCPU context, and length. The plugin resolves any GVA
+target to GPA intervals at install and records the translation identity in rule
+state and evidence; a changed translation invalidates rather than silently
+retargets the rule.
 
 QEMU stores immutable rule generations in a canonical GPA interval index plus
 separate PC/fetch and device DMA scope indexes. Read-mostly lookups do not allocate
@@ -50,13 +53,13 @@ Instruction result faults occur later under patch 0052. Boundary impulses from
 | Kind | Exact behavior |
 | --- | --- |
 | `stuck` | On reads force selected bits after source read; on writes force stored selected bits to configured zero/one while unselected bits follow the write. |
-| `read_corrupt` | Return ordered bit/byte transform without changing RAM unless `persist = true`, which performs a separately evidenced 0049-style mutation. |
-| `lost_write` | Suppress selected complete write fragments while reporting the configured architectural/device success or error outcome. |
+| `read_corrupt` | Return the repeated XOR transform without changing RAM. Persistent corruption is a separately evidenced boundary mutation. |
+| `lost_write` | Suppress selected complete write fragments while preserving the production path's ordinary successful completion semantics. Error outcomes use poison or a typed device fault. |
 | `torn_write` | Commit exact selected bytes/bits in increasing GPA order; unselected bytes retain before state. CPU architectural atomicity is deliberately violated only when capability fields permit it. |
 | `poison` | Produce architecture/device-specific poison outcome before returning data; no bytes are exposed unless policy says corrected data. |
-| `failed_region` | Persistent error, corruption, or hang outcome selected by region state. |
-| `retention` | At exact refresh/read/boundary opportunities evaluate time, temperature, and rule-table state and commit keyed physical bit mutations. |
-| `rowhammer` | Increment exact aggressor row access counters; at declared thresholds mutate keyed bits in mapped victim rows and advance threshold state. |
+| `failed_region` | Every selected access applies the embedded `access_error`, `corrected`, or architecture-exception poison policy. |
+| `retention` | At each positive virtual exposure interval apply the declared repeated decay mask at the exact refresh/read/boundary opportunity. |
+| `rowhammer` | Increment exact aggressor-row access counters; at the positive threshold XOR the declared repeated mask into victims at the declared row distance. |
 
 Atomic/locked instructions, page-table walks, instruction fetch, DMA, and MMIO
 declare separate capability fields. MMIO transforms are rejected in v1 of this
@@ -77,12 +80,12 @@ callback delays never model memory latency.
 
 ## Retention and rowhammer geometry
 
-The world declares memory channel/rank/bank/row/column mapping or an explicit
-GPA-to-row lookup artifact. Retention state stores last refresh/program
-coordinate and exposure accumulator per sparse affected region. Rowhammer stores
-bounded counters keyed by bank/row plus next threshold; adjacency is explicit.
-Counter saturation is an error. Refresh events are exact modeled events and are
-checkpointed.
+The realized machine manifest declares memory channel/rank/bank/row/column
+mapping or an explicit GPA-to-row artifact. Retention state stores the last
+refresh/program coordinate and exposure accumulator per sparse affected region.
+Rowhammer stores bounded counters keyed by bank/row plus next threshold;
+`row_bytes` and `victim_distance` make adjacency explicit. Counter saturation is
+an error. Refresh events are exact modeled events and are checkpointed.
 
 ## Evidence and VMState
 

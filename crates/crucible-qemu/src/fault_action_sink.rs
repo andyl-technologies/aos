@@ -8,8 +8,9 @@
 use crucible::model::{
     BindingActionKind, ContentHash, EffectSpecification, FAULT_RUNTIME_STATE_VERSION,
     FaultActionCommitError, FaultActionSink, FaultObservation, FaultObservationKind, FaultPhase,
-    FaultRuntimeError, MemoryMutationKind, NodeEffectSpecification, NodeId, PreparedActionBatch,
-    PreparedActionResult, RejectedActionBatch, ResolvedBindingAction, ResolvedFaultTarget,
+    FaultRuntimeError, MemoryAddressSpace, MemoryMutationAtomicity as ModelMemoryMutationAtomicity,
+    MemoryMutationKind, NodeEffectSpecification, NodeId, PreparedActionBatch, PreparedActionResult,
+    RejectedActionBatch, ResolvedBindingAction, ResolvedFaultTarget,
 };
 use crucible_shmem::{
     DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR, FAULT_COMMAND_FLAG_NONE,
@@ -128,8 +129,13 @@ impl<'a> QemuFaultActionSink<'a> {
         else {
             return Err(FaultRuntimeError::AdapterActionMismatch);
         };
-        if address_space != requested_address_space
-            || atomicity.as_str() != "all-or-nothing"
+        let target_address_space = match (address_space.as_str(), vcpu) {
+            ("gpa", None) => MemoryAddressSpace::GuestPhysical,
+            ("gva", Some(_)) => MemoryAddressSpace::GuestVirtual,
+            _ => return Err(FaultRuntimeError::AdapterActionMismatch),
+        };
+        if target_address_space != *requested_address_space
+            || *atomicity != ModelMemoryMutationAtomicity::AllOrNothing
             || range.start() != *guest_address
             || range.length() != *length_bytes
         {
@@ -149,13 +155,15 @@ impl<'a> QemuFaultActionSink<'a> {
                 bytes.decode(),
             ),
         };
-        let (address_space, vcpu_index) = match (address_space.as_str(), vcpu) {
-            ("gpa", None) => (
+        let (address_space, vcpu_index) = match target_address_space {
+            MemoryAddressSpace::GuestPhysical => (
                 MemoryMutationAddressSpace::GuestPhysical,
                 MEMORY_MUTATION_NO_VCPU,
             ),
-            ("gva", Some(vcpu)) => (MemoryMutationAddressSpace::GuestVirtual, *vcpu),
-            _ => return Err(FaultRuntimeError::AdapterActionMismatch),
+            MemoryAddressSpace::GuestVirtual => (
+                MemoryMutationAddressSpace::GuestVirtual,
+                (*vcpu).ok_or(FaultRuntimeError::AdapterActionMismatch)?,
+            ),
         };
         let payload = MemoryMutationPayloadV1 {
             address_space,
