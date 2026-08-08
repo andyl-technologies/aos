@@ -76,7 +76,7 @@ fn stable_gdb_connection_survives_backend_replacement() {
     assert_eq!(read_rsp_payload(&mut gdb), b"0102");
 
     let second_path = directory.path().join("second.sock");
-    let second_backend = spawn_fake_qemu_backend(second_path.clone(), b"m1000,1", b"ff");
+    let second_backend = spawn_run_control_qemu_backend(second_path.clone(), b"m1000,1", b"ff");
     process
         .promote_backend(&second_path)
         .unwrap_or_else(|error| panic!("second backend should promote: {error}"));
@@ -235,6 +235,55 @@ fn spawn_fake_qemu_backend(
         stream
             .write_all(&encode_rsp_packet(reply))
             .unwrap_or_else(|error| panic!("request reply should write: {error}"));
+        let mut drain = [0_u8; 64];
+        while stream.read(&mut drain).is_ok_and(|read| read != 0) {}
+    })
+}
+
+fn spawn_run_control_qemu_backend(
+    path: PathBuf,
+    expected_request: &'static [u8],
+    reply: &'static [u8],
+) -> JoinHandle<()> {
+    let listener = UnixListener::bind(&path)
+        .unwrap_or_else(|error| panic!("fake QEMU backend should bind: {error}"));
+    thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .unwrap_or_else(|error| panic!("gateway backend should connect: {error}"));
+        assert_eq!(read_rsp_payload(&mut stream), b"?");
+        stream
+            .write_all(b"+")
+            .unwrap_or_else(|error| panic!("validation acknowledgement should write: {error}"));
+        stream
+            .write_all(&encode_rsp_packet(b"T05"))
+            .unwrap_or_else(|error| panic!("validation stop should write: {error}"));
+        assert_eq!(read_rsp_payload(&mut stream), expected_request);
+        stream
+            .write_all(b"+")
+            .unwrap_or_else(|error| panic!("request acknowledgement should write: {error}"));
+        stream
+            .write_all(&encode_rsp_packet(b"O6869"))
+            .unwrap_or_else(|error| panic!("async console packet should write: {error}"));
+        stream
+            .write_all(&encode_rsp_packet(reply))
+            .unwrap_or_else(|error| panic!("request reply should write: {error}"));
+
+        for stop in [b"T05".as_slice(), b"T02".as_slice()] {
+            assert_eq!(read_rsp_payload(&mut stream), b"c");
+            stream
+                .write_all(b"+")
+                .unwrap_or_else(|error| panic!("scheduler resume should acknowledge: {error}"));
+            let mut interrupt = [0_u8; 1];
+            stream
+                .read_exact(&mut interrupt)
+                .unwrap_or_else(|error| panic!("scheduler interrupt should read: {error}"));
+            assert_eq!(interrupt, [0x03]);
+            stream
+                .write_all(&encode_rsp_packet(stop))
+                .unwrap_or_else(|error| panic!("scheduler stop should write: {error}"));
+        }
+
         let mut drain = [0_u8; 64];
         while stream.read(&mut drain).is_ok_and(|read| read != 0) {}
     })

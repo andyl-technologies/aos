@@ -52,6 +52,7 @@ struct GatewayProcess {
     run_control_completed: Option<(u32, Vec<u8>, Vec<u8>)>,
     scheduler_response_pending: Option<Vec<u8>>,
     scheduler_lease_active: bool,
+    gdb_scheduler_run_active: Option<u32>,
 }
 
 const QEMU_RSP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -76,6 +77,7 @@ impl GatewayProcess {
             run_control_completed: None,
             scheduler_response_pending: None,
             scheduler_lease_active: false,
+            gdb_scheduler_run_active: None,
         }
     }
 
@@ -160,28 +162,9 @@ impl GatewayProcess {
             DebugGatewayMessageKind::RspData => {
                 Err(String::from("RSP data must use the scheduler dispatcher"))
             }
-            DebugGatewayMessageKind::RunControl => {
-                if !frame.payload.is_empty() {
-                    return Err(String::from("run-control poll payload must be empty"));
-                }
-                let stream_id = frame.stream_id;
-                match self.run_control_requests.pop_front() {
-                    Some((stream_id, operator_epoch, packet)) => {
-                        self.run_control_inflight =
-                            Some((stream_id, operator_epoch, packet.clone()));
-                        response(DebugGatewayMessageKind::RunControl, stream_id, packet)
-                    }
-                    None if self.run_control_inflight.is_some() => {
-                        let (stream_id, _operator_epoch, packet) = self
-                            .run_control_inflight
-                            .as_ref()
-                            .cloned()
-                            .ok_or_else(|| String::from("run-control request disappeared"))?;
-                        response(DebugGatewayMessageKind::RunControl, stream_id, packet)
-                    }
-                    None => response(DebugGatewayMessageKind::RunControl, stream_id, Vec::new()),
-                }
-            }
+            DebugGatewayMessageKind::RunControl => Err(String::from(
+                "run control must use the ownership dispatcher",
+            )),
             DebugGatewayMessageKind::ExecOpen
             | DebugGatewayMessageKind::PtyOpen
             | DebugGatewayMessageKind::SshOpen
@@ -205,6 +188,7 @@ impl GatewayProcess {
             && self.run_control_inflight.is_none()
             && self.scheduler_response_pending.is_none()
             && !self.scheduler_lease_active
+            && self.gdb_scheduler_run_active.is_none()
     }
 }
 
@@ -404,6 +388,7 @@ fn dispatch_request(
                 .as_ref()
                 .map(|(_, _, request)| request.clone())
                 .ok_or_else(|| String::from("scheduler run-control request disappeared"))?;
+            finish_gdb_scheduler_run(gateway, frame.stream_id)?;
             let operator = gateway
                 .operator_writer
                 .as_mut()
@@ -424,9 +409,75 @@ fn dispatch_request(
         commit_backend_at_packet_boundary(process, frame)
     } else if frame.kind == DebugGatewayMessageKind::SchedulerLease {
         scheduler_lease(process, &frame.payload)
+    } else if frame.kind == DebugGatewayMessageKind::RunControl {
+        poll_scheduler_run_control(process, frame)
     } else {
         with_gateway(process, |process| process.handle(frame))
     }
+}
+
+fn poll_scheduler_run_control(
+    process: &SharedGatewayProcess,
+    frame: DebugGatewayFrame,
+) -> Result<DebugGatewayFrame, String> {
+    if !frame.payload.is_empty() {
+        return Err(String::from("run-control poll payload must be empty"));
+    }
+    with_gateway(process, |gateway| {
+        if let Some((stream_id, operator_epoch, packet)) =
+            gateway.run_control_requests.front().cloned()
+        {
+            if packet != [0x03] && gateway.gdb_scheduler_run_active.is_none() {
+                if gateway.scheduler_lease_active || gateway.prepared.is_some() {
+                    return Err(String::from(
+                        "cannot begin GDB run control during scheduler lease or replacement work",
+                    ));
+                }
+                gateway.operator_admission_paused = true;
+                let active = gateway
+                    .active
+                    .as_mut()
+                    .ok_or_else(|| String::from("GDB run control requires an active backend"))?;
+                if let Err(error) = resume_scheduler_backend(&mut active.1) {
+                    gateway.operator_admission_paused = false;
+                    return Err(error);
+                }
+            }
+            let _queued = gateway.run_control_requests.pop_front();
+            gateway.run_control_inflight = Some((stream_id, operator_epoch, packet.clone()));
+            gateway.gdb_scheduler_run_active = Some(stream_id);
+            return response(DebugGatewayMessageKind::RunControl, stream_id, packet);
+        }
+        if let Some((stream_id, _operator_epoch, packet)) =
+            gateway.run_control_inflight.as_ref().cloned()
+        {
+            return response(DebugGatewayMessageKind::RunControl, stream_id, packet);
+        }
+        response(
+            DebugGatewayMessageKind::RunControl,
+            frame.stream_id,
+            Vec::new(),
+        )
+    })
+}
+
+fn finish_gdb_scheduler_run(gateway: &mut GatewayProcess, stream_id: u32) -> Result<(), String> {
+    let Some(active_stream) = gateway.gdb_scheduler_run_active else {
+        return Ok(());
+    };
+    if active_stream != stream_id {
+        return Err(String::from(
+            "scheduler response does not match active GDB run-control stream",
+        ));
+    }
+    let active = gateway
+        .active
+        .as_mut()
+        .ok_or_else(|| String::from("GDB run control lost its active backend"))?;
+    interrupt_scheduler_backend(&mut active.1)?;
+    gateway.gdb_scheduler_run_active = None;
+    gateway.operator_admission_paused = false;
+    Ok(())
 }
 
 fn scheduler_lease(
@@ -787,6 +838,7 @@ fn restore_backend_after_operator_disconnect(
         gateway.run_control_requests.clear();
         gateway.run_control_inflight = None;
         gateway.scheduler_response_pending = None;
+        gateway.gdb_scheduler_run_active = None;
         Ok(active.map(|active| {
             (
                 active.generation,
@@ -937,6 +989,9 @@ fn read_and_forward_active_backend(
     buffer: &mut [u8],
 ) -> Result<Option<usize>, String> {
     with_gateway(process, |gateway| {
+        if gateway.gdb_scheduler_run_active.is_some() {
+            return Ok(None);
+        }
         let Some((_, stream)) = gateway.active.as_mut() else {
             return Ok(None);
         };
