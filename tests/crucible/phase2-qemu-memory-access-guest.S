@@ -151,6 +151,10 @@ long_mode:
 .elseif TEST_MODE == 17
     movb aligned_target, %al
     movb %al, scenario_result
+.elseif TEST_MODE == 18
+retrying_load:
+    movb aligned_target, %al
+    movb %al, scenario_result
 .else
     .error "unknown TEST_MODE"
 .endif
@@ -159,10 +163,18 @@ long_mode:
     jmp 2b
 
 exception_handler:
+.if TEST_MODE == 18
+    movb scenario_scratch, %dl
+    incb %dl
+    movb %dl, scenario_scratch
+    addq $8, %rsp
+    iretq
+.else
     movb $0xe1, scenario_result
 4:
     pause
     jmp 4b
+.endif
 
 .section .fault_text, "ax"
 .global fault_fetch
@@ -216,6 +228,9 @@ fetch_result:
 .global scenario_result
 scenario_result:
     .fill 16, 1, 0
+.global scenario_scratch
+scenario_scratch:
+    .byte 0
 
 .section .bss
 .align 16

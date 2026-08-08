@@ -187,6 +187,14 @@ _start:
     adrp x2, scenario_result
     add x2, x2, :lo12:scenario_result
     strb w0, [x2]
+.elseif TEST_MODE == 18
+retrying_load:
+    adrp x1, aligned_target
+    add x1, x1, :lo12:aligned_target
+    ldrb w0, [x1]
+    adrp x2, scenario_result
+    add x2, x2, :lo12:scenario_result
+    strb w0, [x2]
 .else
     .error "unknown TEST_MODE"
 .endif
@@ -202,6 +210,14 @@ exception_vectors:
 .endr
 
 exception_handler:
+.if TEST_MODE == 18
+    adrp x10, scenario_scratch
+    add x10, x10, :lo12:scenario_scratch
+    ldrb w11, [x10]
+    add w11, w11, #1
+    strb w11, [x10]
+    eret
+.else
     adrp x1, scenario_result
     add x1, x1, :lo12:scenario_result
     mov w0, #0xe1
@@ -209,6 +225,7 @@ exception_handler:
 4:
     wfe
     b 4b
+.endif
 
 .section .fault_text, "ax"
 .global fault_fetch
@@ -263,6 +280,9 @@ fetch_result:
 .global scenario_result
 scenario_result:
     .fill 16, 1, 0
+.global scenario_scratch
+scenario_scratch:
+    .byte 0
 
 .section .page_tables, "aw"
 .align 12
