@@ -6,7 +6,7 @@
     # Crucible test fixture kernel. This is deliberately a STOCK kernel: it
     # carries only functional additions needed to run the shipped test guests
     # (serial console, virtio transports, 9p, ext4) and a couple of deployment
-    # simplifications (built-in-only, no ACPI). It contains NO determinism
+    # simplifications (built-in-only). It contains NO determinism
     # shaping of any kind. Crucible's determinism is entirely host-side (QEMU
     # icount plus a seeded entropy source); no guest kernel config or cmdline
     # may be load-bearing for reproducibility. User guests keep supplying their
@@ -19,6 +19,10 @@
     CONFIG_VIRTIO_BLK=y
     CONFIG_VIRTIO_NET=y
     CONFIG_VIRTIO_CONSOLE=y
+    CONFIG_IOMMU_SUPPORT=y
+    CONFIG_VIRTIO_IOMMU=y
+    CONFIG_ACPI=y
+    CONFIG_ACPI_VIOT=y
     CONFIG_NET_9P=y
     CONFIG_NET_9P_VIRTIO=y
     CONFIG_9P_FS=y
@@ -27,7 +31,6 @@
 
     # CONFIG_MODULES is not set
     # CONFIG_KMOD is not set
-    # CONFIG_ACPI is not set
   '';
 
   fixtureKernelParams = [

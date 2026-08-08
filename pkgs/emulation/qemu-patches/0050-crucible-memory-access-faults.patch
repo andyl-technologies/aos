@@ -1,6 +1,6 @@
-From 397abe70b5b5ee929350506fe632d1870f4d46a7 Mon Sep 17 00:00:00 2001
+From 2b22a7eb9ae8c73c71e20718002c0c14765c8c59 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Sat, 8 Aug 2026 10:35:26 -0700
+Date: Sat, 8 Aug 2026 11:44:15 -0700
 Subject: [PATCH] crucible: add memory access fault rules
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
@@ -15,21 +15,21 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  hw/core/cpu-system.c                       |   44 +-
  hw/intc/apic.c                             |    4 +-
  hw/virtio/virtio.c                         |   78 +-
- include/exec/memory.h                      |   56 +-
+ include/exec/memory.h                      |   62 +-
  include/exec/memory_ldst_cached.h.inc      |   69 +
  include/exec/translator.h                  |    5 +
  include/hw/core/cpu.h                      |   33 +-
  include/hw/core/sysemu-cpu-ops.h           |    9 +
  include/hw/virtio/virtio.h                 |    1 +
- include/qemu/crucible-fault.h              |  118 +
+ include/qemu/crucible-fault.h              |  128 +
  include/qemu/qemu-plugin.h                 |   51 +
- include/system/dma.h                       |   51 +-
+ include/system/dma.h                       |   61 +-
  plugins/api-system.c                       |   12 +
  plugins/crucible-fault-memory.c            |    3 +-
- plugins/crucible-fault-node.c              | 7325 ++++++++++++++++++++
+ plugins/crucible-fault-node.c              | 7639 ++++++++++++++++++++
  plugins/crucible-fault.c                   |   82 +-
  plugins/meson.build                        |    2 +-
- system/physmem.c                           |  324 +-
+ system/physmem.c                           |  448 +-
  target/arm/cpu.c                           |    5 +-
  target/arm/cpu.h                           |    8 +
  target/arm/internals.h                     |    4 +
@@ -38,16 +38,16 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  target/i386/cpu.c                          |    3 +
  target/i386/cpu.h                          |    8 +
  target/i386/tcg/system/excp_helper.c       |   55 +-
- tests/tcg/plugins/crucible-memory-access.c |  798 +++
- tests/tcg/plugins/crucible-memory-dma.c    |  346 +
+ tests/tcg/plugins/crucible-memory-access.c |  798 ++
+ tests/tcg/plugins/crucible-memory-dma.c    |  433 ++
  tests/tcg/plugins/meson.build              |    4 +-
- 36 files changed, 10327 insertions(+), 138 deletions(-)
+ 36 files changed, 10878 insertions(+), 138 deletions(-)
  create mode 100644 plugins/crucible-fault-node.c
  create mode 100644 tests/tcg/plugins/crucible-memory-access.c
  create mode 100644 tests/tcg/plugins/crucible-memory-dma.c
 
 diff --git a/accel/tcg/atomic_template.h b/accel/tcg/atomic_template.h
-index 89593b2502f74cba170151cf707a2449bc1f88ed..40c4ae0848bd8a93901d276fbbbcef7209f0d952 100644
+index 89593b2..40c4ae0 100644
 --- a/accel/tcg/atomic_template.h
 +++ b/accel/tcg/atomic_template.h
 @@ -20,35 +20,52 @@
@@ -319,7 +319,7 @@ index 89593b2502f74cba170151cf707a2449bc1f88ed..40c4ae0848bd8a93901d276fbbbcef72
 +#undef CRUCIBLE_ATOMIC_FALLBACK
 +#endif
 diff --git a/accel/tcg/cpu-exec-common.c b/accel/tcg/cpu-exec-common.c
-index c5c513f1e4a0666889873f33dde89e7924c66a61..d752ee41c267d4b060c4b92442f1f9909ee13419 100644
+index c5c513f..d752ee4 100644
 --- a/accel/tcg/cpu-exec-common.c
 +++ b/accel/tcg/cpu-exec-common.c
 @@ -21,6 +21,7 @@
@@ -341,7 +341,7 @@ index c5c513f1e4a0666889873f33dde89e7924c66a61..d752ee41c267d4b060c4b92442f1f990
      return cflags;
  }
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index 5eeef83e605fd7c095c6bdfc32a9653142970140..b7fdc50f18787f414fe4421e62c944f5cbd04811 100644
+index 5eeef83..b7fdc50 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
 @@ -33,6 +33,7 @@
@@ -386,7 +386,7 @@ index 5eeef83e605fd7c095c6bdfc32a9653142970140..b7fdc50f18787f414fe4421e62c944f5
              if (tb == NULL) {
                  CPUJumpCache *jc;
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
-index fb22048876e3eae308937315a706d58f61dc9c29..40c17f020718aa7e30502149c45046e6ba036c3d 100644
+index fb22048..40c17f0 100644
 --- a/accel/tcg/cputlb.c
 +++ b/accel/tcg/cputlb.c
 @@ -35,6 +35,7 @@
@@ -1394,7 +1394,7 @@ index fb22048876e3eae308937315a706d58f61dc9c29..40c17f020718aa7e30502149c45046e6
  
  uint32_t cpu_ldub_code(CPUArchState *env, abi_ptr addr)
 diff --git a/accel/tcg/internal-common.h b/accel/tcg/internal-common.h
-index c243eda436b761dfd74fcffdd9843fe0af5eb921..98cd2d9cfe50baa01d3a7ce53d82b2450b1e0226 100644
+index c243eda..98cd2d9 100644
 --- a/accel/tcg/internal-common.h
 +++ b/accel/tcg/internal-common.h
 @@ -58,6 +58,9 @@ void tb_reset_jump(TranslationBlock *tb, int n);
@@ -1408,7 +1408,7 @@ index c243eda436b761dfd74fcffdd9843fe0af5eb921..98cd2d9cfe50baa01d3a7ce53d82b245
  /**
   * tlb_init - initialize a CPU's TLB
 diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
-index 82bc16bd53535067ca781bd97ca84284a9a3f45c..4d94ff366020de60677739dffbd6899437a11284 100644
+index 82bc16b..4d94ff3 100644
 --- a/accel/tcg/translate-all.c
 +++ b/accel/tcg/translate-all.c
 @@ -196,6 +196,30 @@ static int cpu_unwind_data_from_tb(TranslationBlock *tb, uintptr_t host_pc,
@@ -1443,7 +1443,7 @@ index 82bc16bd53535067ca781bd97ca84284a9a3f45c..4d94ff366020de60677739dffbd68994
   * The cpu state corresponding to 'host_pc' is restored in
   * preparation for exiting the TB.
 diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
-index ef1538b4fcda122097dce2f9654047dc9c39e236..ee03d453cefed4a3a6912dd61153e9a7276b0961 100644
+index ef1538b..ee03d45 100644
 --- a/accel/tcg/translator.c
 +++ b/accel/tcg/translator.c
 @@ -10,6 +10,7 @@
@@ -1618,7 +1618,7 @@ index ef1538b4fcda122097dce2f9654047dc9c39e236..ee03d453cefed4a3a6912dd61153e9a7
  
  static void record_save(DisasContextBase *db, vaddr pc,
 diff --git a/hw/core/cpu-system.c b/hw/core/cpu-system.c
-index 6d1775e9b92f681ca3a539f4f99b8167f610be7f..c1aa5a3f51d8cbc6fce7b36d16e9874ac06f9111 100644
+index 6d1775e..c1aa5a3 100644
 --- a/hw/core/cpu-system.c
 +++ b/hw/core/cpu-system.c
 @@ -20,6 +20,7 @@
@@ -1685,7 +1685,7 @@ index 6d1775e9b92f681ca3a539f4f99b8167f610be7f..c1aa5a3f51d8cbc6fce7b36d16e9874a
 +    g_assert_not_reached();
  }
 diff --git a/hw/intc/apic.c b/hw/intc/apic.c
-index 1284d02de42d84d432ee1ba0ce00def51cd93ca2..b6b1b605df1b8fe5d4b481426f56b09a4954f87b 100644
+index 1284d02..b6b1b60 100644
 --- a/hw/intc/apic.c
 +++ b/hw/intc/apic.c
 @@ -336,7 +336,7 @@ static void crucible_sim_det_ipi_deliver_event(
@@ -1707,7 +1707,7 @@ index 1284d02de42d84d432ee1ba0ce00def51cd93ca2..b6b1b605df1b8fe5d4b481426f56b09a
          ++crucible_sim_det_ipi_next_event_id, delivery_icount, src_vcpu,
          dst_cpu->cpu_index, APIC_DM_FIXED, vector);
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index 5c115422192dbc1d557c082d64b9d5a9c7b77fe1..ea6d5f934dd279eb78d65c02e1c3fcbe284c8017 100644
+index 5c11542..ea6d5f9 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
 @@ -248,6 +248,8 @@ void virtio_init_region_cache(VirtIODevice *vdev, int n)
@@ -1866,7 +1866,7 @@ index 5c115422192dbc1d557c082d64b9d5a9c7b77fe1..ea6d5f934dd279eb78d65c02e1c3fcbe
              if (len < desc.len) {
                  error_setg(errp, "Cannot map indirect buffer");
 diff --git a/include/exec/memory.h b/include/exec/memory.h
-index 1a444df77dd48127d3d893ffbd37060ae7116935..341d6f6d23ac68bbce0f781d2549149262c27f0b 100644
+index 1a444df..5fc3a7e 100644
 --- a/include/exec/memory.h
 +++ b/include/exec/memory.h
 @@ -2775,6 +2775,20 @@ MemTxResult address_space_write_rom(AddressSpace *as, hwaddr addr,
@@ -1890,10 +1890,11 @@ index 1a444df77dd48127d3d893ffbd37060ae7116935..341d6f6d23ac68bbce0f781d25491492
  struct MemoryRegionCache {
      uint8_t *ptr;
      hwaddr xlat;
-@@ -2782,8 +2796,13 @@ struct MemoryRegionCache {
+@@ -2782,8 +2796,14 @@ struct MemoryRegionCache {
      FlatView *fv;
      MemoryRegionSection mrs;
      bool is_write;
++    AddressSpace *crucible_as;
 +    hwaddr crucible_addr;
 +    uint8_t crucible_dma_identity[32];
  };
@@ -1904,7 +1905,7 @@ index 1a444df77dd48127d3d893ffbd37060ae7116935..341d6f6d23ac68bbce0f781d25491492
  /* address_space_ld*_cached: load from a cached #MemoryRegion
   * address_space_st*_cached: store into a cached #MemoryRegion
   *
-@@ -2817,7 +2836,18 @@ struct MemoryRegionCache {
+@@ -2817,7 +2837,18 @@ struct MemoryRegionCache {
  static inline uint8_t address_space_ldub_cached(MemoryRegionCache *cache,
      hwaddr addr, MemTxAttrs attrs, MemTxResult *result)
  {
@@ -1923,7 +1924,7 @@ index 1a444df77dd48127d3d893ffbd37060ae7116935..341d6f6d23ac68bbce0f781d25491492
      if (likely(cache->ptr)) {
          return ldub_p(cache->ptr + addr);
      } else {
-@@ -2829,6 +2859,15 @@ static inline void address_space_stb_cached(MemoryRegionCache *cache,
+@@ -2829,6 +2860,15 @@ static inline void address_space_stb_cached(MemoryRegionCache *cache,
      hwaddr addr, uint8_t val, MemTxAttrs attrs, MemTxResult *result)
  {
      assert(addr < cache->len);
@@ -1939,7 +1940,7 @@ index 1a444df77dd48127d3d893ffbd37060ae7116935..341d6f6d23ac68bbce0f781d25491492
      if (likely(cache->ptr)) {
          stb_p(cache->ptr + addr, val);
      } else {
-@@ -3016,6 +3055,10 @@ void address_space_unregister_map_client(AddressSpace *as, QEMUBH *bh);
+@@ -3016,6 +3056,15 @@ void address_space_unregister_map_client(AddressSpace *as, QEMUBH *bh);
  /* Internal functions, part of the implementation of address_space_read.  */
  MemTxResult address_space_read_full(AddressSpace *as, hwaddr addr,
                                      MemTxAttrs attrs, void *buf, hwaddr len);
@@ -1947,10 +1948,15 @@ index 1a444df77dd48127d3d893ffbd37060ae7116935..341d6f6d23ac68bbce0f781d25491492
 +#define QEMU_CRUCIBLE_FAULT_DMA_CONTEXT_ACTIVE_DECLARED
 +bool qemu_crucible_fault_dma_context_active(void);
 +#endif
++bool address_space_translate_crucible_dma(
++    AddressSpace *as, hwaddr iova, hwaddr *gpa, MemoryRegion **mr,
++    hwaddr *mr_addr, hwaddr *plen, bool is_write, MemTxAttrs attrs);
++MemTxResult address_space_rw_crucible_dma_frozen(
++    void *buf, hwaddr len, bool is_write);
  MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
                                     MemTxAttrs attrs, void *buf,
                                     hwaddr len, hwaddr addr1, hwaddr l,
-@@ -3093,7 +3136,8 @@ MemTxResult address_space_read(AddressSpace *as, hwaddr addr,
+@@ -3093,7 +3142,8 @@ MemTxResult address_space_read(AddressSpace *as, hwaddr addr,
              fv = address_space_to_flatview(as);
              l = len;
              mr = flatview_translate(fv, addr, &addr1, &l, false, attrs);
@@ -1960,7 +1966,7 @@ index 1a444df77dd48127d3d893ffbd37060ae7116935..341d6f6d23ac68bbce0f781d25491492
                  ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
                  memcpy(buf, ptr, len);
              } else {
-@@ -3120,6 +3164,11 @@ address_space_read_cached(MemoryRegionCache *cache, hwaddr addr,
+@@ -3120,6 +3170,11 @@ address_space_read_cached(MemoryRegionCache *cache, hwaddr addr,
                            void *buf, hwaddr len)
  {
      assert(addr < cache->len && len <= cache->len - addr);
@@ -1972,7 +1978,7 @@ index 1a444df77dd48127d3d893ffbd37060ae7116935..341d6f6d23ac68bbce0f781d25491492
      fuzz_dma_read_cb(cache->xlat + addr, len, cache->mrs.mr);
      if (likely(cache->ptr)) {
          memcpy(buf, cache->ptr + addr, len);
-@@ -3142,6 +3191,11 @@ address_space_write_cached(MemoryRegionCache *cache, hwaddr addr,
+@@ -3142,6 +3197,11 @@ address_space_write_cached(MemoryRegionCache *cache, hwaddr addr,
                             const void *buf, hwaddr len)
  {
      assert(addr < cache->len && len <= cache->len - addr);
@@ -1985,7 +1991,7 @@ index 1a444df77dd48127d3d893ffbd37060ae7116935..341d6f6d23ac68bbce0f781d25491492
          memcpy(cache->ptr + addr, buf, len);
          return MEMTX_OK;
 diff --git a/include/exec/memory_ldst_cached.h.inc b/include/exec/memory_ldst_cached.h.inc
-index d7834f852c47c6f4b2d55427ffd10b82aadd69ab..2811b72a95f034d2b5bf2700f2640deea659d6e6 100644
+index d7834f8..2811b72 100644
 --- a/include/exec/memory_ldst_cached.h.inc
 +++ b/include/exec/memory_ldst_cached.h.inc
 @@ -27,7 +27,18 @@
@@ -2106,7 +2112,7 @@ index d7834f852c47c6f4b2d55427ffd10b82aadd69ab..2811b72a95f034d2b5bf2700f2640dee
          ST_P(q)(cache->ptr + addr, val);
      } else {
 diff --git a/include/exec/translator.h b/include/exec/translator.h
-index d70942a10ff7006b9e8743cc095e7f63da94def5..545fcff191f994a9dc2957c0f2d94895ebe7e678 100644
+index d70942a..545fcff 100644
 --- a/include/exec/translator.h
 +++ b/include/exec/translator.h
 @@ -87,6 +87,11 @@ struct DisasContextBase {
@@ -2122,7 +2128,7 @@ index d70942a10ff7006b9e8743cc095e7f63da94def5..545fcff191f994a9dc2957c0f2d94895
  
  /**
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index 0258271935c832cf21997520a5aea63662ced7aa..c66163eb5d216ef7e6eff6faa8b7cc7efe184b8d 100644
+index 0258271..c66163e 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -724,10 +724,33 @@ typedef struct CPUFaultTranslation {
@@ -2180,7 +2186,7 @@ index 0258271935c832cf21997520a5aea63662ced7aa..c66163eb5d216ef7e6eff6faa8b7cc7e
  /**
   * cpu_get_phys_page_attrs_debug:
 diff --git a/include/hw/core/sysemu-cpu-ops.h b/include/hw/core/sysemu-cpu-ops.h
-index 06b7cb016ead3d5806d4a85997c16821c3fb4ccc..b8dcbd290bad7536f984b4035aee1915459c574d 100644
+index 06b7cb0..b8dcbd2 100644
 --- a/include/hw/core/sysemu-cpu-ops.h
 +++ b/include/hw/core/sysemu-cpu-ops.h
 @@ -47,7 +47,16 @@ typedef struct SysemuCPUOps {
@@ -2201,7 +2207,7 @@ index 06b7cb016ead3d5806d4a85997c16821c3fb4ccc..b8dcbd290bad7536f984b4035aee1915
       * @asidx_from_attrs: Callback to return the CPU AddressSpace to use for
       *       a memory access with the specified memory transaction attributes.
 diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
-index 638691028050d2599592d8c7e95c75ac3913fbdd..006d49b125b1b6811a0038c4938b498df2b499dc 100644
+index 6386910..006d49b 100644
 --- a/include/hw/virtio/virtio.h
 +++ b/include/hw/virtio/virtio.h
 @@ -160,6 +160,7 @@ struct VirtIODevice
@@ -2213,22 +2219,23 @@ index 638691028050d2599592d8c7e95c75ac3913fbdd..006d49b125b1b6811a0038c4938b498d
      QTAILQ_ENTRY(VirtIODevice) next;
      /**
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index bbe9daa2b31860b246f04564b87c9496f9e73bb9..14d2dc426110f62db14c61f2887d35d785db6e9e 100644
+index bbe9daa..8dd0de3 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
-@@ -10,9 +10,11 @@
+@@ -10,9 +10,12 @@
  #define QEMU_CRUCIBLE_FAULT_H
  
  #include "aos/crucible/crucible_shmem_abi.h"
 +#include "exec/memattrs.h"
  #include "qemu/qemu-plugin.h"
++#include "qemu/typedefs.h"
  
  typedef struct QemuCrucibleFaultHandler QemuCrucibleFaultHandler;
 +typedef struct QemuCrucibleFaultRule QemuCrucibleFaultRule;
  
  typedef int (*QemuCrucibleFaultValidateFn)(
      const struct qemu_plugin_crucible_fault_command *command,
-@@ -50,6 +52,7 @@ struct QemuCrucibleFaultHandler {
+@@ -50,6 +53,7 @@ struct QemuCrucibleFaultHandler {
  void qemu_crucible_fault_register(const QemuCrucibleFaultHandler *handler);
  void qemu_crucible_fault_memory_register(uint16_t scope, const char *name);
  void qemu_crucible_fault_registry_seal(void);
@@ -2236,7 +2243,7 @@ index bbe9daa2b31860b246f04564b87c9496f9e73bb9..14d2dc426110f62db14c61f2887d35d7
  void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
                                             uint64_t observed_icount);
  bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount);
-@@ -58,4 +61,119 @@ int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
+@@ -58,4 +62,128 @@ int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
                                           uint64_t current_icount,
                                           int64_t budget);
  
@@ -2320,6 +2327,10 @@ index bbe9daa2b31860b246f04564b87c9496f9e73bb9..14d2dc426110f62db14c61f2887d35d7
 +    uint64_t address, size_t length, uint64_t observed_icount,
 +    bool has_instruction, uint64_t instruction_pc,
 +    uint32_t instruction_ordinal);
++void qemu_crucible_fault_memory_dma_transaction_begin(
++    enum QemuCrucibleMemoryAccessClass access_class, uint32_t actor,
++    AddressSpace *as, uint64_t iova, size_t length, MemTxAttrs attrs,
++    uint64_t observed_icount);
 +void qemu_crucible_fault_memory_fetch_transaction_begin(
 +    uint32_t actor, uint64_t address, uint64_t observed_icount,
 +    uint64_t instruction_pc, uint32_t instruction_ordinal);
@@ -2327,6 +2338,11 @@ index bbe9daa2b31860b246f04564b87c9496f9e73bb9..14d2dc426110f62db14c61f2887d35d7
 +    uint64_t vaddr, uint64_t gpa, size_t length);
 +void qemu_crucible_fault_memory_transaction_end(void);
 +bool qemu_crucible_fault_memory_transaction_failed(void);
++bool qemu_crucible_fault_memory_transaction_active(
++    enum QemuCrucibleMemoryAccessClass access_class);
++bool qemu_crucible_fault_memory_dma_fragment(
++    uint64_t offset, MemoryRegion **mr, uint64_t *mr_addr,
++    uint64_t *gpa, size_t *length);
 +bool qemu_crucible_fault_memory_transaction_exception(
 +    CPUFaultException *exception);
 +QemuCrucibleMemoryTransactionToken *
@@ -2357,7 +2373,7 @@ index bbe9daa2b31860b246f04564b87c9496f9e73bb9..14d2dc426110f62db14c61f2887d35d7
 +
  #endif
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index a837a4e85d4643930f706dcf0aee8bd3df33a498..4f866e5aac986b2f940e2f5cde4c7eeb0bb35c96 100644
+index a837a4e..4f866e5 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1847,6 +1847,30 @@ struct qemu_plugin_crucible_fault_result {
@@ -2426,7 +2442,7 @@ index a837a4e85d4643930f706dcf0aee8bd3df33a498..4f866e5aac986b2f940e2f5cde4c7eeb
   * qemu_plugin_register_crucible_fault_completion_cb() - register completion
   * @cb: callback invoked after each boundary-dispatched result, or NULL to clear
 diff --git a/include/system/dma.h b/include/system/dma.h
-index e142f7efa68b7ec94920ca434d7a1ea5867500a0..f99b39f2f16f194dcc30064b1ad8151949604e34 100644
+index e142f7e..64ca041 100644
 --- a/include/system/dma.h
 +++ b/include/system/dma.h
 @@ -12,6 +12,7 @@
@@ -2456,7 +2472,7 @@ index e142f7efa68b7ec94920ca434d7a1ea5867500a0..f99b39f2f16f194dcc30064b1ad81519
  typedef struct ScatterGatherEntry ScatterGatherEntry;
  
  struct QEMUSGList {
-@@ -84,8 +97,20 @@ static inline MemTxResult dma_memory_rw_relaxed(AddressSpace *as,
+@@ -84,8 +97,30 @@ static inline MemTxResult dma_memory_rw_relaxed(AddressSpace *as,
                                                  DMADirection dir,
                                                  MemTxAttrs attrs)
  {
@@ -2466,20 +2482,30 @@ index e142f7efa68b7ec94920ca434d7a1ea5867500a0..f99b39f2f16f194dcc30064b1ad81519
 +
 +    qemu_crucible_fault_dma_enter(dir == DMA_DIRECTION_FROM_DEVICE, attrs,
 +                                  NULL);
-+    qemu_crucible_fault_memory_transaction_begin(
++    qemu_crucible_fault_memory_dma_transaction_begin(
 +        dir == DMA_DIRECTION_FROM_DEVICE ? QEMU_CRUCIBLE_MEMORY_DMA_WRITE :
 +                                           QEMU_CRUCIBLE_MEMORY_DMA_READ,
-+        dma_crucible_actor(attrs, NULL), addr, len,
-+        qemu_crucible_fault_observed_icount(), false, 0, 0);
-+    result = address_space_rw(as, addr, attrs, buf, len,
-+                              dir == DMA_DIRECTION_FROM_DEVICE);
++        dma_crucible_actor(attrs, NULL), as, addr, len, attrs,
++        qemu_crucible_fault_observed_icount());
++    if (qemu_crucible_fault_memory_transaction_failed()) {
++        result = MEMTX_ERROR;
++    } else if (qemu_crucible_fault_memory_transaction_active(
++                   dir == DMA_DIRECTION_FROM_DEVICE ?
++                       QEMU_CRUCIBLE_MEMORY_DMA_WRITE :
++                       QEMU_CRUCIBLE_MEMORY_DMA_READ)) {
++        result = address_space_rw_crucible_dma_frozen(
++            buf, len, dir == DMA_DIRECTION_FROM_DEVICE);
++    } else {
++        result = address_space_rw(as, addr, attrs, buf, len,
++                                  dir == DMA_DIRECTION_FROM_DEVICE);
++    }
 +    qemu_crucible_fault_memory_transaction_end();
 +    qemu_crucible_fault_dma_leave();
 +    return result;
  }
  
  static inline MemTxResult dma_memory_read_relaxed(AddressSpace *as,
-@@ -209,8 +234,27 @@ static inline void *dma_memory_map(AddressSpace *as,
+@@ -209,8 +244,27 @@ static inline void *dma_memory_map(AddressSpace *as,
      hwaddr xlen = *len;
      void *p;
  
@@ -2507,7 +2533,7 @@ index e142f7efa68b7ec94920ca434d7a1ea5867500a0..f99b39f2f16f194dcc30064b1ad81519
      *len = xlen;
      return p;
  }
-@@ -232,8 +276,11 @@ static inline void dma_memory_unmap(AddressSpace *as,
+@@ -232,8 +286,11 @@ static inline void dma_memory_unmap(AddressSpace *as,
                                      void *buffer, dma_addr_t len,
                                      DMADirection dir, dma_addr_t access_len)
  {
@@ -2520,7 +2546,7 @@ index e142f7efa68b7ec94920ca434d7a1ea5867500a0..f99b39f2f16f194dcc30064b1ad81519
  
  #define DEFINE_LDST_DMA(_lname, _sname, _bits, _end) \
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index df9ebabf8b844bf57f08448951a698029f8ec193..d37e8de166316e9157eb41fbefdf1bc1ad187d3f 100644
+index df9ebab..d37e8de 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -24,6 +24,7 @@
@@ -2550,7 +2576,7 @@ index df9ebabf8b844bf57f08448951a698029f8ec193..d37e8de166316e9157eb41fbefdf1bc1
                                     uint64_t *entry_icount)
  {
 diff --git a/plugins/crucible-fault-memory.c b/plugins/crucible-fault-memory.c
-index b1422b8e93316e0147599a8efe8ac1a51b3069a6..6e6c2b3fbaeeca48b81abafd6ea0bbde35a4ea5e 100644
+index b1422b8..6e6c2b3 100644
 --- a/plugins/crucible-fault-memory.c
 +++ b/plugins/crucible-fault-memory.c
 @@ -648,7 +648,8 @@ static int crucible_memory_translate(CrucibleMemoryMutation *mutation)
@@ -2565,10 +2591,10 @@ index b1422b8e93316e0147599a8efe8ac1a51b3069a6..6e6c2b3fbaeeca48b81abafd6ea0bbde
              return -EFAULT;
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb97904cbd86d6
+index 0000000..2b3943c
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,7325 @@
+@@ -0,0 +1,7639 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -2583,6 +2609,7 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +#include "qemu/host-utils.h"
 +#include "qemu/module.h"
 +#include "qemu/queue.h"
++#include "qemu/rcu.h"
 +#include "qemu/bswap.h"
 +#include "qemu/interval-tree.h"
 +#include "qobject/qbool.h"
@@ -2779,6 +2806,22 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +static bool crucible_memory_poison_occurs[
 +    CRUCIBLE_NODE_MEMORY_MATCH_LIMIT];
 +
++typedef struct CrucibleMemoryDmaFragment {
++    uint64_t gpa;
++    uint64_t length;
++    uint64_t mr_addr;
++    MemoryRegion *mr;
++} CrucibleMemoryDmaFragment;
++
++typedef struct CrucibleMemoryMutationFragment {
++    QemuCrucibleFaultRule *rule;
++    uint64_t rule_offset;
++    uint64_t gpa;
++    uint64_t length;
++    uint64_t mr_addr;
++    MemoryRegion *mr;
++} CrucibleMemoryMutationFragment;
++
 +typedef struct CrucibleMemoryTransaction {
 +    bool active;
 +    enum QemuCrucibleMemoryAccessClass access_class;
@@ -2801,6 +2844,8 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +    size_t event_budget;
 +    size_t event_count_start;
 +    GPtrArray *rule_snapshot;
++    GArray *dma_fragments;
++    GArray *dma_mutation_fragments;
 +} CrucibleMemoryTransaction;
 +
 +typedef struct CrucibleMemoryRetryKey {
@@ -7595,6 +7640,38 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +                        sizeof(exact));
 +}
 +
++static bool node_memory_dma_transaction_active(void)
++{
++    return crucible_memory_transaction.active &&
++        (crucible_memory_transaction.access_class ==
++             QEMU_CRUCIBLE_MEMORY_DMA_READ ||
++         crucible_memory_transaction.access_class ==
++             QEMU_CRUCIBLE_MEMORY_DMA_WRITE);
++}
++
++static CrucibleMemoryMutationFragment *
++node_memory_mutation_fragment(QemuCrucibleFaultRule *rule,
++                              uint64_t rule_offset)
++{
++    GArray *fragments =
++        crucible_memory_transaction.dma_mutation_fragments;
++
++    if (!fragments) {
++        return NULL;
++    }
++    for (guint i = 0; i < fragments->len; i++) {
++        CrucibleMemoryMutationFragment *fragment = &g_array_index(
++            fragments, CrucibleMemoryMutationFragment, i);
++
++        if (fragment->rule == rule &&
++            rule_offset >= fragment->rule_offset &&
++            rule_offset - fragment->rule_offset < fragment->length) {
++            return fragment;
++        }
++    }
++    return NULL;
++}
++
 +static void node_memory_mutate_range(QemuCrucibleFaultRule *rule,
 +                                     uint64_t rule_offset, uint64_t length,
 +                                     const char *mask, bool clear)
@@ -7609,15 +7686,31 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +        uint64_t part;
 +        MemoryRegion *region;
 +
-+        if (!node_rule_physical_span(rule, rule_offset, &physical,
-+                                     &translation_available)) {
-+            error_report("Crucible memory translation became incomplete");
-+            abort();
++        if (node_memory_dma_transaction_active()) {
++            CrucibleMemoryMutationFragment *fragment =
++                node_memory_mutation_fragment(rule, rule_offset);
++            uint64_t within;
++
++            if (!fragment) {
++                error_report("Crucible frozen mutation plan is incomplete");
++                abort();
++            }
++            within = rule_offset - fragment->rule_offset;
++            region = fragment->mr;
++            mr_offset = fragment->mr_addr + within;
++            physical = fragment->gpa + within;
++            region_available = MIN(length, fragment->length - within);
++        } else {
++            if (!node_rule_physical_span(rule, rule_offset, &physical,
++                                         &translation_available)) {
++                error_report("Crucible memory translation became incomplete");
++                abort();
++            }
++            region_available = MIN(length, translation_available);
++            region = address_space_translate(
++                &address_space_memory, physical, &mr_offset,
++                &region_available, true, MEMTXATTRS_UNSPECIFIED);
 +        }
-+        region_available = MIN(length, translation_available);
-+        region = address_space_translate(
-+            &address_space_memory, physical, &mr_offset, &region_available,
-+            true, MEMTXATTRS_UNSPECIFIED);
 +        if (!region || region_available == 0 ||
 +            !memory_region_is_ram(region) || memory_region_is_rom(region) ||
 +            memory_region_is_ram_device(region)) {
@@ -8676,9 +8769,6 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +    enum QemuCrucibleMemoryAccessClass access_class, uint32_t actor,
 +    uint64_t address, size_t length, uint64_t identity)
 +{
-+    bool dma = access_class == QEMU_CRUCIBLE_MEMORY_DMA_READ ||
-+               access_class == QEMU_CRUCIBLE_MEMORY_DMA_WRITE;
-+
 +    if (!crucible_memory_transaction_poison) {
 +        crucible_memory_transaction_poison = g_hash_table_new(
 +            g_direct_hash, g_direct_equal);
@@ -8686,16 +8776,6 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +        g_hash_table_remove_all(crucible_memory_transaction_poison);
 +    }
 +    node_memory_service_plan_reset();
-+    if (dma) {
-+        if (!node_memory_transaction_count_segment(
-+                access_class, actor, address, address, length, false,
-+                identity)) {
-+            return;
-+        }
-+        node_memory_transaction_preflight_segment(
-+            access_class, actor, address, address, length, false, identity);
-+        return;
-+    }
 +
 +    CPUState *cpu = qemu_get_cpu(actor);
 +    uint64_t current = address;
@@ -8755,6 +8835,173 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +            part, true, identity);
 +        current += part;
 +        remaining -= part;
++    }
++}
++
++static void node_memory_dma_fragment_clear(gpointer opaque)
++{
++    CrucibleMemoryDmaFragment *fragment = opaque;
++
++    if (fragment->mr) {
++        memory_region_unref(fragment->mr);
++        fragment->mr = NULL;
++    }
++}
++
++static void node_memory_mutation_fragment_clear(gpointer opaque)
++{
++    CrucibleMemoryMutationFragment *fragment = opaque;
++
++    if (fragment->mr) {
++        memory_region_unref(fragment->mr);
++        fragment->mr = NULL;
++    }
++}
++
++static bool node_memory_mutation_plan_capture_rule(
++    QemuCrucibleFaultRule *rule)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++    uint64_t start, length;
++    uint64_t rule_offset = 0;
++
++    if (!node_rule_memory_range(rule, &start, &length)) {
++        return false;
++    }
++    while (rule_offset != length) {
++        CrucibleMemoryMutationFragment fragment = {
++            .rule = rule,
++            .rule_offset = rule_offset,
++        };
++        uint64_t translation_available;
++        hwaddr region_available;
++
++        if (!node_rule_physical_span(
++                rule, rule_offset, &fragment.gpa,
++                &translation_available)) {
++            return false;
++        }
++        region_available = MIN(length - rule_offset,
++                               translation_available);
++        if (!address_space_translate_crucible_dma(
++                &address_space_memory, fragment.gpa, &fragment.gpa,
++                &fragment.mr, &fragment.mr_addr, &region_available,
++                true, MEMTXATTRS_UNSPECIFIED) || region_available == 0) {
++            return false;
++        }
++        fragment.length = region_available;
++        if (transaction->dma_mutation_fragments->len ==
++            CRUCIBLE_NODE_MEMORY_MATCH_LIMIT) {
++            return false;
++        }
++        memory_region_ref(fragment.mr);
++        g_array_append_val(transaction->dma_mutation_fragments, fragment);
++        rule_offset += fragment.length;
++    }
++    return true;
++}
++
++static bool node_memory_mutation_plan_capture(void)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++
++    transaction->dma_mutation_fragments = g_array_new(
++        false, false, sizeof(CrucibleMemoryMutationFragment));
++    g_array_set_clear_func(transaction->dma_mutation_fragments,
++                           node_memory_mutation_fragment_clear);
++    for (guint i = 0;
++         transaction->rule_snapshot && i < transaction->rule_snapshot->len;
++         i++) {
++        QemuCrucibleFaultRule *rule =
++            g_ptr_array_index(transaction->rule_snapshot, i);
++        uint32_t kind;
++
++        if (rule->command_kind !=
++                CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE ||
++            !node_field_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P3, &kind) ||
++            (kind != 2 && kind != 3)) {
++            continue;
++        }
++        if (!node_memory_mutation_plan_capture_rule(rule)) {
++            g_clear_pointer(&transaction->dma_mutation_fragments,
++                            g_array_unref);
++            return false;
++        }
++    }
++    return true;
++}
++
++static void node_memory_transaction_preflight_dma(
++    enum QemuCrucibleMemoryAccessClass access_class, uint32_t actor,
++    AddressSpace *as, uint64_t iova, size_t length, MemTxAttrs attrs,
++    uint64_t identity)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++    uint64_t current = iova;
++    size_t remaining = length;
++    bool is_write = access_class == QEMU_CRUCIBLE_MEMORY_DMA_WRITE;
++
++    if (!crucible_memory_transaction_poison) {
++        crucible_memory_transaction_poison = g_hash_table_new(
++            g_direct_hash, g_direct_equal);
++    } else {
++        g_hash_table_remove_all(crucible_memory_transaction_poison);
++    }
++    node_memory_service_plan_reset();
++    g_clear_pointer(&transaction->dma_fragments, g_array_unref);
++    g_clear_pointer(&transaction->dma_mutation_fragments, g_array_unref);
++    transaction->dma_fragments = g_array_new(
++        false, false, sizeof(CrucibleMemoryDmaFragment));
++    g_array_set_clear_func(transaction->dma_fragments,
++                           node_memory_dma_fragment_clear);
++    {
++        RCU_READ_LOCK_GUARD();
++
++        while (remaining != 0) {
++            CrucibleMemoryDmaFragment fragment = { 0 };
++            hwaddr part = remaining;
++
++            if (!address_space_translate_crucible_dma(
++                    as, current, &fragment.gpa, &fragment.mr,
++                    &fragment.mr_addr, &part, is_write, attrs)) {
++                transaction->poisoned = true;
++                break;
++            }
++            if (part == 0 || part > remaining) {
++                error_report("Invalid Crucible DMA translation span");
++                abort();
++            }
++            fragment.length = part;
++            memory_region_ref(fragment.mr);
++            g_array_append_val(transaction->dma_fragments, fragment);
++            current += part;
++            remaining -= part;
++        }
++        if (transaction->poisoned) {
++            return;
++        }
++        for (guint i = 0; i < transaction->dma_fragments->len; i++) {
++            CrucibleMemoryDmaFragment *fragment = &g_array_index(
++                transaction->dma_fragments, CrucibleMemoryDmaFragment, i);
++
++            if (!node_memory_transaction_count_segment(
++                    access_class, actor, fragment->gpa, fragment->gpa,
++                    fragment->length, false, identity)) {
++                return;
++            }
++        }
++        if (!node_memory_mutation_plan_capture()) {
++            transaction->poisoned = true;
++            return;
++        }
++        for (guint i = 0; i < transaction->dma_fragments->len; i++) {
++            CrucibleMemoryDmaFragment *fragment = &g_array_index(
++                transaction->dma_fragments, CrucibleMemoryDmaFragment, i);
++
++            node_memory_transaction_preflight_segment(
++                access_class, actor, fragment->gpa, fragment->gpa,
++                fragment->length, false, identity);
++        }
 +    }
 +}
 +
@@ -8868,7 +9115,7 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +    uint64_t address, size_t length, uint64_t observed_icount,
 +    bool has_instruction, uint64_t instruction_pc,
 +    uint32_t instruction_ordinal,
-+    bool streaming)
++    bool streaming, bool automatic_preflight)
 +{
 +    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
 +    CrucibleMemoryRetryKey retry_key;
@@ -8938,7 +9185,7 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +        transaction->retry_ordinal = retry_state->retry_ordinal + 1;
 +        retry_state->last_access_sequence = transaction->identity;
 +    }
-+    if (!streaming) {
++    if (!streaming && automatic_preflight) {
 +        node_memory_transaction_preflight(access_class, actor, address,
 +                                          length, transaction->identity);
 +    }
@@ -8952,7 +9199,27 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +{
 +    node_memory_transaction_begin(
 +        access_class, actor, address, length, observed_icount,
-+        has_instruction, instruction_pc, instruction_ordinal, false);
++        has_instruction, instruction_pc, instruction_ordinal, false, true);
++}
++
++void qemu_crucible_fault_memory_dma_transaction_begin(
++    enum QemuCrucibleMemoryAccessClass access_class, uint32_t actor,
++    AddressSpace *as, uint64_t iova, size_t length, MemTxAttrs attrs,
++    uint64_t observed_icount)
++{
++    if ((access_class != QEMU_CRUCIBLE_MEMORY_DMA_READ &&
++         access_class != QEMU_CRUCIBLE_MEMORY_DMA_WRITE) || !as) {
++        error_report("Invalid Crucible DMA memory transaction");
++        abort();
++    }
++    node_memory_transaction_begin(
++        access_class, actor, iova, length, observed_icount,
++        false, 0, 0, false, false);
++    if (crucible_memory_transaction.active) {
++        node_memory_transaction_preflight_dma(
++            access_class, actor, as, iova, length, attrs,
++            crucible_memory_transaction.identity);
++    }
 +}
 +
 +void qemu_crucible_fault_memory_fetch_transaction_begin(
@@ -8961,7 +9228,7 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +{
 +    node_memory_transaction_begin(
 +        QEMU_CRUCIBLE_MEMORY_FETCH, actor, address, 0, observed_icount,
-+        true, instruction_pc, instruction_ordinal, true);
++        true, instruction_pc, instruction_ordinal, true, true);
 +}
 +
 +bool qemu_crucible_fault_memory_fetch_transaction_extend(
@@ -8995,6 +9262,15 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +{
 +    return crucible_memory_transaction.active &&
 +           crucible_memory_transaction.poisoned;
++}
++
++bool qemu_crucible_fault_memory_transaction_active(
++    enum QemuCrucibleMemoryAccessClass access_class)
++{
++    return crucible_memory_transaction.active &&
++           crucible_memory_transaction.access_class == access_class &&
++           crucible_memory_transaction.rule_snapshot &&
++           crucible_memory_transaction.rule_snapshot->len != 0;
 +}
 +
 +bool qemu_crucible_fault_memory_transaction_exception(
@@ -9127,6 +9403,9 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +    g_clear_pointer(&token->state_opportunities, g_hash_table_unref);
 +    g_clear_pointer(&token->state_applied, g_hash_table_unref);
 +    g_clear_pointer(&token->transaction.rule_snapshot, g_ptr_array_unref);
++    g_clear_pointer(&token->transaction.dma_fragments, g_array_unref);
++    g_clear_pointer(&token->transaction.dma_mutation_fragments,
++                    g_array_unref);
 +    g_clear_pointer(&token->service_plan, g_array_unref);
 +    g_clear_pointer(&token->service_plan_index, g_hash_table_unref);
 +    g_free(token);
@@ -9151,6 +9430,8 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +void qemu_crucible_fault_memory_transaction_end(void)
 +{
 +    GPtrArray *snapshot;
++    GArray *dma_fragments;
++    GArray *dma_mutation_fragments;
 +
 +    if (!crucible_memory_transaction.active) {
 +        return;
@@ -9160,9 +9441,16 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +    }
 +    snapshot = crucible_memory_transaction.rule_snapshot;
 +    crucible_memory_transaction.rule_snapshot = NULL;
++    dma_fragments = crucible_memory_transaction.dma_fragments;
++    crucible_memory_transaction.dma_fragments = NULL;
++    dma_mutation_fragments =
++        crucible_memory_transaction.dma_mutation_fragments;
++    crucible_memory_transaction.dma_mutation_fragments = NULL;
 +    node_memory_retry_finish(&crucible_memory_transaction);
 +    node_memory_service_plan_reset();
 +    g_clear_pointer(&snapshot, g_ptr_array_unref);
++    g_clear_pointer(&dma_fragments, g_array_unref);
++    g_clear_pointer(&dma_mutation_fragments, g_array_unref);
 +    memset(&crucible_memory_transaction, 0,
 +           sizeof(crucible_memory_transaction));
 +}
@@ -9249,6 +9537,51 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +    return true;
 +}
 +
++bool qemu_crucible_fault_memory_dma_fragment(
++    uint64_t offset, MemoryRegion **mr, uint64_t *mr_addr,
++    uint64_t *gpa, size_t *length)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++    uint64_t plan_offset = 0;
++
++    if (!mr || !mr_addr || !gpa || !length || *length == 0 ||
++        !transaction->active || transaction->poisoned ||
++        (transaction->access_class != QEMU_CRUCIBLE_MEMORY_DMA_READ &&
++         transaction->access_class != QEMU_CRUCIBLE_MEMORY_DMA_WRITE) ||
++        !transaction->dma_fragments || offset >= transaction->length) {
++        return false;
++    }
++    for (guint i = 0; i < transaction->dma_fragments->len; i++) {
++        CrucibleMemoryDmaFragment *fragment = &g_array_index(
++            transaction->dma_fragments, CrucibleMemoryDmaFragment, i);
++        uint64_t fragment_end;
++        uint64_t within;
++
++        if (plan_offset > UINT64_MAX - fragment->length) {
++            error_report("Crucible DMA fragment plan overflow");
++            abort();
++        }
++        fragment_end = plan_offset + fragment->length;
++        if (offset >= fragment_end) {
++            plan_offset = fragment_end;
++            continue;
++        }
++        within = offset - plan_offset;
++        if (fragment->gpa > UINT64_MAX - within ||
++            fragment->mr_addr > UINT64_MAX - within) {
++            error_report("Crucible DMA frozen fragment overflow");
++            abort();
++        }
++        *mr = fragment->mr;
++        *mr_addr = fragment->mr_addr + within;
++        *gpa = fragment->gpa + within;
++        *length = MIN((uint64_t)*length, fragment->length - within);
++        *length = MIN((uint64_t)*length, transaction->length - offset);
++        return true;
++    }
++    return false;
++}
++
 +QemuCrucibleMemoryAccessResult qemu_crucible_fault_memory_access(
 +    enum QemuCrucibleMemoryAccessClass access_class, uint32_t vcpu,
 +    uint64_t vaddr, uint64_t gpa, const uint8_t *before, uint8_t *value,
@@ -9263,8 +9596,9 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +    bool write_access = access_class == QEMU_CRUCIBLE_MEMORY_CPU_STORE ||
 +                        access_class == QEMU_CRUCIBLE_MEMORY_DMA_WRITE;
 +
-+    if (!qemu_crucible_fault_memory_rules_active() || !before || !value ||
-+        length == 0) {
++    if ((!qemu_crucible_fault_memory_rules_active() &&
++         !crucible_memory_transaction.active) ||
++        !before || !value || length == 0) {
 +        return result;
 +    }
 +    if (crucible_memory_post_state.active ||
@@ -9507,8 +9841,14 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +            partial |= commit_mask[byte] != UINT8_MAX;
 +        }
 +        if (partial) {
-+            node_memory_commit_mask(gpa, before, value, commit_mask, length);
-+            result.suppress_write = true;
++            bool commits_any_bit = false;
++
++            for (size_t byte = 0; byte < length; byte++) {
++                commits_any_bit |= commit_mask[byte] != 0;
++                value[byte] = (before[byte] & ~commit_mask[byte]) |
++                              (value[byte] & commit_mask[byte]);
++            }
++            result.suppress_write = !commits_any_bit;
 +        }
 +    }
 +    if (post_state) {
@@ -9895,7 +10235,7 @@ index 0000000000000000000000000000000000000000..489aa9d2d60ba4cb737435969beb9790
 +
 +type_init(crucible_memory_access_faults_register)
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index b2e1dfca28c5713bc57ae17b204782f61e7a2714..2664ba50031d3ca28cf3a43ab70dfa5474c2c254 100644
+index b2e1dfc..2664ba5 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
 @@ -44,6 +44,7 @@ static QTAILQ_HEAD(, CrucibleCompletedFault) crucible_completed_faults =
@@ -10056,7 +10396,7 @@ index b2e1dfca28c5713bc57ae17b204782f61e7a2714..2664ba50031d3ca28cf3a43ab70dfa54
  {
      CruciblePendingFault *pending;
 diff --git a/plugins/meson.build b/plugins/meson.build
-index e5bd2ce7c6ada798e4904806d83fc9f072e5c049..dffdd973488dbca4d7d7e3ed80f709560d38659c 100644
+index e5bd2ce..dffdd97 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -60,6 +60,6 @@ endif
@@ -10068,7 +10408,7 @@ index e5bd2ce7c6ada798e4904806d83fc9f072e5c049..dffdd973488dbca4d7d7e3ed80f70956
  
  common_ss.add(files('loader.c', 'api.c', 'core.c'))
 diff --git a/system/physmem.c b/system/physmem.c
-index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49cc0d1a51 100644
+index a16c3ad..d29aabf 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
 @@ -78,6 +78,7 @@
@@ -10079,7 +10419,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
  #ifndef _WIN32
  #include "qemu/mmap-alloc.h"
  #endif
-@@ -95,6 +96,78 @@
+@@ -95,6 +96,82 @@
   */
  RAMList ram_list = { .blocks = QLIST_HEAD_INITIALIZER(ram_list.blocks) };
  
@@ -10142,8 +10482,12 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
 +
 +static bool crucible_dma_fault_active(bool is_write)
 +{
++    enum QemuCrucibleMemoryAccessClass access_class = is_write ?
++        QEMU_CRUCIBLE_MEMORY_DMA_WRITE : QEMU_CRUCIBLE_MEMORY_DMA_READ;
++
 +    return crucible_dma_depth != 0 && crucible_dma_write == is_write &&
-+           qemu_crucible_fault_memory_dma_rules_active(is_write);
++           (qemu_crucible_fault_memory_transaction_active(access_class) ||
++            qemu_crucible_fault_memory_dma_rules_active(is_write));
 +}
 +
 +static uint32_t crucible_dma_actor_id(void)
@@ -10158,7 +10502,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
  static MemoryRegion *system_memory;
  static MemoryRegion *system_io;
  
-@@ -586,6 +659,30 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
+@@ -586,6 +663,57 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
      return mr;
  }
  
@@ -10186,10 +10530,37 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
 +    return mr;
 +}
 +
++bool address_space_translate_crucible_dma(
++    AddressSpace *as, hwaddr iova, hwaddr *gpa, MemoryRegion **mr,
++    hwaddr *mr_addr, hwaddr *plen, bool is_write, MemTxAttrs attrs)
++{
++    AddressSpace *target_as = NULL;
++    MemoryRegionSection section;
++    hwaddr xlat;
++
++    RCU_READ_LOCK_GUARD();
++    section = flatview_do_translate(
++        address_space_to_flatview(as), iova, &xlat, plen, NULL,
++        is_write, true, &target_as, attrs);
++    if ((target_as && target_as != &address_space_memory) ||
++        (!target_as && as != &address_space_memory) ||
++        !memory_access_is_direct(section.mr, is_write, attrs)) {
++        *gpa = UINT64_MAX;
++        *mr = NULL;
++        *mr_addr = 0;
++        return false;
++    }
++    *gpa = xlat + section.offset_within_address_space -
++           section.offset_within_region;
++    *mr = section.mr;
++    *mr_addr = xlat;
++    return true;
++}
++
  typedef struct TCGIOMMUNotifier {
      IOMMUNotifier n;
      MemoryRegion *mr;
-@@ -2940,7 +3037,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
+@@ -2940,7 +3068,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
  static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
                                                  const uint8_t *buf,
                                                  hwaddr len, hwaddr mr_addr,
@@ -10199,7 +10570,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -2980,8 +3078,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
+@@ -2980,8 +3109,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
          uint8_t *ram_ptr = qemu_ram_ptr_length(mr->ram_block, mr_addr, l,
                                                 false, true);
  
@@ -10237,7 +10608,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
  
          return MEMTX_OK;
      }
-@@ -2992,14 +3117,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -2992,14 +3148,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
                                             MemTxAttrs attrs,
                                             const void *ptr,
                                             hwaddr len, hwaddr mr_addr,
@@ -10256,7 +10627,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
  
          len -= l;
          buf += l;
-@@ -3010,7 +3136,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3010,7 +3167,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -10266,7 +10637,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
      }
  
      return result;
-@@ -3022,21 +3149,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
+@@ -3022,21 +3180,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -10294,7 +10665,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3075,6 +3205,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
+@@ -3075,6 +3236,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
  
          memcpy(buf, ram_ptr, *l);
  
@@ -10321,7 +10692,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
          return MEMTX_OK;
      }
  }
-@@ -3087,10 +3237,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3087,10 +3268,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
  {
      MemTxResult result = MEMTX_OK;
      uint8_t *buf = ptr;
@@ -10341,7 +10712,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
  
          len -= l;
          buf += l;
-@@ -3101,7 +3259,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3101,7 +3290,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -10351,7 +10722,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
      }
  
      return result;
-@@ -3113,10 +3272,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
+@@ -3113,10 +3303,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -10365,7 +10736,81 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
      if (!flatview_access_allowed(mr, attrs, addr, len)) {
          return MEMTX_ACCESS_ERROR;
      }
-@@ -3273,6 +3434,11 @@ typedef struct {
+@@ -3165,6 +3357,73 @@ MemTxResult address_space_rw(AddressSpace *as, hwaddr addr, MemTxAttrs attrs,
+     }
+ }
+ 
++MemTxResult address_space_rw_crucible_dma_frozen(void *buf, hwaddr len,
++                                                  bool is_write)
++{
++    enum QemuCrucibleMemoryAccessClass access_class = is_write ?
++        QEMU_CRUCIBLE_MEMORY_DMA_WRITE : QEMU_CRUCIBLE_MEMORY_DMA_READ;
++    uint8_t *bytes = buf;
++    hwaddr offset = 0;
++
++    RCU_READ_LOCK_GUARD();
++    while (offset != len) {
++        MemoryRegion *mr;
++        uint64_t mr_addr;
++        uint64_t gpa;
++        size_t fragment = len - offset;
++        hwaddr mapped;
++        uint8_t *ram_ptr;
++
++        if (!qemu_crucible_fault_memory_dma_fragment(
++                offset, &mr, &mr_addr, &gpa, &fragment) || fragment == 0) {
++            return MEMTX_ERROR;
++        }
++        mapped = fragment;
++        ram_ptr = qemu_ram_ptr_length(mr->ram_block, mr_addr, &mapped,
++                                      false, is_write);
++        if (mapped == 0) {
++            return MEMTX_ERROR;
++        }
++        fragment = MIN(fragment, mapped);
++        for (size_t done = 0; done != fragment;) {
++            size_t part = MIN((size_t)4096, fragment - done);
++            QemuCrucibleMemoryAccessResult fault;
++
++            if (is_write) {
++                uint8_t value[4096];
++
++                memcpy(value, bytes + offset + done, part);
++                fault = qemu_crucible_fault_memory_access(
++                    access_class, crucible_dma_actor_id(),
++                    gpa + done, gpa + done, ram_ptr + done, value,
++                    part, false, qemu_crucible_fault_observed_icount());
++                if (fault.access_error) {
++                    return MEMTX_ERROR;
++                }
++                if (!fault.suppress_write) {
++                    memmove(ram_ptr + done, value, part);
++                    invalidate_and_set_dirty(mr, mr_addr + done, part);
++                }
++                qemu_crucible_fault_memory_access_finish(ram_ptr + done,
++                                                          part);
++            } else {
++                memcpy(bytes + offset + done, ram_ptr + done, part);
++                fault = qemu_crucible_fault_memory_access(
++                    access_class, crucible_dma_actor_id(),
++                    gpa + done, gpa + done, ram_ptr + done,
++                    bytes + offset + done, part, false,
++                    qemu_crucible_fault_observed_icount());
++                if (fault.access_error) {
++                    return MEMTX_ERROR;
++                }
++            }
++            done += part;
++        }
++        offset += fragment;
++    }
++    return MEMTX_OK;
++}
++
+ MemTxResult address_space_set(AddressSpace *as, hwaddr addr,
+                               uint8_t c, hwaddr len, MemTxAttrs attrs)
+ {
+@@ -3273,6 +3532,11 @@ typedef struct {
      MemoryRegion *mr;
      hwaddr addr;
      size_t len;
@@ -10377,7 +10822,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
      uint8_t buffer[];
  } BounceBuffer;
  
-@@ -3431,7 +3597,8 @@ void *address_space_map(AddressSpace *as,
+@@ -3431,7 +3695,8 @@ void *address_space_map(AddressSpace *as,
      fv = address_space_to_flatview(as);
      mr = flatview_translate(fv, addr, &xlat, &l, is_write, attrs);
  
@@ -10387,7 +10832,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
          size_t used = qatomic_read(&as->bounce_buffer_size);
          for (;;) {
              hwaddr alloc = MIN(as->max_bounce_buffer_size - used, l);
-@@ -3456,10 +3623,40 @@ void *address_space_map(AddressSpace *as,
+@@ -3456,10 +3721,47 @@ void *address_space_map(AddressSpace *as,
          bounce->mr = mr;
          bounce->addr = addr;
          bounce->len = l;
@@ -10406,15 +10851,22 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
 +        if (bounce->crucible_fault) {
 +            MemTxResult result = MEMTX_OK;
 +
-+            qemu_crucible_fault_memory_transaction_begin(
++            qemu_crucible_fault_memory_dma_transaction_begin(
 +                is_write ? QEMU_CRUCIBLE_MEMORY_DMA_WRITE :
 +                           QEMU_CRUCIBLE_MEMORY_DMA_READ,
-+                crucible_dma_actor_id(), addr, l,
-+                qemu_crucible_fault_observed_icount(), false, 0, 0);
++                crucible_dma_actor_id(), as, addr, l, attrs,
++                qemu_crucible_fault_observed_icount());
 +            if (qemu_crucible_fault_memory_transaction_failed()) {
 +                result = MEMTX_ERROR;
 +            } else if (!is_write) {
-+                result = flatview_read(fv, addr, attrs, bounce->buffer, l);
++                if (qemu_crucible_fault_memory_transaction_active(
++                        QEMU_CRUCIBLE_MEMORY_DMA_READ)) {
++                    result = address_space_rw_crucible_dma_frozen(
++                        bounce->buffer, l, false);
++                } else {
++                    result = flatview_read(
++                        fv, addr, attrs, bounce->buffer, l);
++                }
 +            } else {
 +                bounce->crucible_transaction =
 +                    qemu_crucible_fault_memory_transaction_detach();
@@ -10432,7 +10884,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
          }
  
          *plen = l;
-@@ -3500,8 +3697,38 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3500,8 +3802,43 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
      assert(bounce->magic == BOUNCE_BUFFER_MAGIC);
  
      if (is_write) {
@@ -10451,19 +10903,24 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
 +                bounce->crucible_transaction);
 +            bounce->crucible_transaction = NULL;
 +        } else {
-+            qemu_crucible_fault_memory_transaction_begin(
++            qemu_crucible_fault_memory_dma_transaction_begin(
 +                QEMU_CRUCIBLE_MEMORY_DMA_WRITE, crucible_dma_actor_id(),
-+                bounce->addr, access_len,
-+                qemu_crucible_fault_observed_icount(),
-+                false, 0, 0);
++                as, bounce->addr, access_len, bounce->attrs,
++                qemu_crucible_fault_observed_icount());
 +        }
 +        qemu_crucible_fault_memory_transaction_resize(access_len);
 +        if (!qemu_crucible_fault_memory_transaction_failed()) {
-+            address_space_write(
-+                as, bounce->addr,
-+                bounce->crucible_fault ? bounce->attrs :
-+                                         MEMTXATTRS_UNSPECIFIED,
-+                bounce->buffer, access_len);
++            if (qemu_crucible_fault_memory_transaction_active(
++                    QEMU_CRUCIBLE_MEMORY_DMA_WRITE)) {
++                address_space_rw_crucible_dma_frozen(
++                    bounce->buffer, access_len, true);
++            } else {
++                address_space_write(
++                    as, bounce->addr,
++                    bounce->crucible_fault ? bounce->attrs :
++                                             MEMTXATTRS_UNSPECIFIED,
++                    bounce->buffer, access_len);
++            }
 +        }
 +        qemu_crucible_fault_memory_transaction_end();
 +    } else if (bounce->crucible_transaction) {
@@ -10473,17 +10930,18 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
      }
  
      qatomic_sub(&as->bounce_buffer_size, bounce->len);
-@@ -3548,6 +3775,9 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3548,6 +3885,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
  
      assert(len > 0);
  
++    cache->crucible_as = as;
 +    cache->crucible_addr = addr;
 +    memset(cache->crucible_dma_identity, 0,
 +           sizeof(cache->crucible_dma_identity));
      l = len;
      cache->fv = address_space_get_flatview(as);
      d = flatview_to_dispatch(cache->fv);
-@@ -3583,6 +3813,53 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3583,6 +3924,66 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
      return l;
  }
  
@@ -10502,13 +10960,19 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
 +
 +    qemu_crucible_fault_dma_enter(false, attrs,
 +                                  cache->crucible_dma_identity);
-+    qemu_crucible_fault_memory_transaction_begin(
++    qemu_crucible_fault_memory_dma_transaction_begin(
 +        QEMU_CRUCIBLE_MEMORY_DMA_READ, crucible_dma_actor_id(),
-+        cache->crucible_addr + addr, len,
-+        qemu_crucible_fault_observed_icount(),
-+        false, 0, 0);
-+    result = flatview_read(cache->fv, cache->crucible_addr + addr,
-+                           attrs, buf, len);
++        cache->crucible_as, cache->crucible_addr + addr, len, attrs,
++        qemu_crucible_fault_observed_icount());
++    if (qemu_crucible_fault_memory_transaction_failed()) {
++        result = MEMTX_ERROR;
++    } else if (qemu_crucible_fault_memory_transaction_active(
++                   QEMU_CRUCIBLE_MEMORY_DMA_READ)) {
++        result = address_space_rw_crucible_dma_frozen(buf, len, false);
++    } else {
++        result = flatview_read(cache->fv, cache->crucible_addr + addr,
++                               attrs, buf, len);
++    }
 +    qemu_crucible_fault_memory_transaction_end();
 +    qemu_crucible_fault_dma_leave();
 +    return result;
@@ -10522,13 +10986,20 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
 +
 +    qemu_crucible_fault_dma_enter(true, attrs,
 +                                  cache->crucible_dma_identity);
-+    qemu_crucible_fault_memory_transaction_begin(
++    qemu_crucible_fault_memory_dma_transaction_begin(
 +        QEMU_CRUCIBLE_MEMORY_DMA_WRITE, crucible_dma_actor_id(),
-+        cache->crucible_addr + addr, len,
-+        qemu_crucible_fault_observed_icount(),
-+        false, 0, 0);
-+    result = flatview_write(cache->fv, cache->crucible_addr + addr,
-+                            attrs, buf, len);
++        cache->crucible_as, cache->crucible_addr + addr, len, attrs,
++        qemu_crucible_fault_observed_icount());
++    if (qemu_crucible_fault_memory_transaction_failed()) {
++        result = MEMTX_ERROR;
++    } else if (qemu_crucible_fault_memory_transaction_active(
++                   QEMU_CRUCIBLE_MEMORY_DMA_WRITE)) {
++        result = address_space_rw_crucible_dma_frozen(
++            (void *)buf, len, true);
++    } else {
++        result = flatview_write(cache->fv, cache->crucible_addr + addr,
++                                attrs, buf, len);
++    }
 +    qemu_crucible_fault_memory_transaction_end();
 +    qemu_crucible_fault_dma_leave();
 +    return result;
@@ -10537,7 +11008,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
  void address_space_cache_invalidate(MemoryRegionCache *cache,
                                      hwaddr addr,
                                      hwaddr access_len)
-@@ -3650,8 +3927,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
+@@ -3650,8 +4051,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
      const uint8_t *buf = ptr;
  
      for (;;) {
@@ -10548,7 +11019,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
  
          len -= l;
          buf += l;
-@@ -3677,7 +3954,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
+@@ -3677,7 +4078,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
      uint8_t *buf = ptr;
  
      for (;;) {
@@ -10559,7 +11030,7 @@ index a16c3ad014e8fe26cb93216e709031d5f56caf47..555c425c310019b2b4ce839cf6f2de49
          buf += l;
          mr_addr += l;
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index 6657597e50dda5704893a957f23b95166443c076..a513671135f6149f004e99a1e78b425b37450f49 100644
+index 6657597..a513671 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
 @@ -84,7 +84,7 @@ int crucible_sim_det_ipi_deliver_commanded(unsigned int target_vcpu,
@@ -10582,7 +11053,7 @@ index 6657597e50dda5704893a957f23b95166443c076..a513671135f6149f004e99a1e78b425b
      .write_elf32_note = arm_cpu_write_elf32_note,
      .write_elf64_note = arm_cpu_write_elf64_note,
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index 290efb9c29b9ec6113f315535d2b0f17893251f7..83b3596b1a92e370667955c99d36ade765f366ec 100644
+index 290efb9..83b3596 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
 @@ -1205,7 +1205,15 @@ void arm_v7m_cpu_do_interrupt(CPUState *cpu);
@@ -10602,7 +11073,7 @@ index 290efb9c29b9ec6113f315535d2b0f17893251f7..83b3596b1a92e370667955c99d36ade7
  
  int arm_cpu_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
 diff --git a/target/arm/internals.h b/target/arm/internals.h
-index 28585c07555b5414af0eba8d4547b8bfaea36957..4641218a5152408cdef416a84c2f68f4e2533955 100644
+index 28585c0..4641218 100644
 --- a/target/arm/internals.h
 +++ b/target/arm/internals.h
 @@ -981,6 +981,10 @@ G_NORETURN void arm_cpu_do_unaligned_access(CPUState *cs, vaddr vaddr,
@@ -10617,7 +11088,7 @@ index 28585c07555b5414af0eba8d4547b8bfaea36957..4641218a5152408cdef416a84c2f68f4
   * (eg "no device/memory present at address") by raising an external abort
   * exception
 diff --git a/target/arm/ptw.c b/target/arm/ptw.c
-index 011358e86ea4b87825491bfcb6cfd6223ddf0edd..6572090acef594b5b044c0b9f70a11df36a80a19 100644
+index 011358e..6572090 100644
 --- a/target/arm/ptw.c
 +++ b/target/arm/ptw.c
 @@ -3647,6 +3647,7 @@ hwaddr arm_cpu_get_phys_page_attrs_debug(CPUState *cs, vaddr addr,
@@ -10696,7 +11167,7 @@ index 011358e86ea4b87825491bfcb6cfd6223ddf0edd..6572090acef594b5b044c0b9f70a11df
 +                      cpu_mmu_index(cs, false), &fi);
 +}
 diff --git a/target/arm/tcg/tlb_helper.c b/target/arm/tcg/tlb_helper.c
-index 8841f039bc60172af322225e80a06a90c4781baf..0218e9cc6934198b83609ad84bd97e2c3306bc70 100644
+index 8841f03..0218e9c 100644
 --- a/target/arm/tcg/tlb_helper.c
 +++ b/target/arm/tcg/tlb_helper.c
 @@ -167,7 +167,7 @@ static unsigned encode_gpcsc(ARMMMUFaultInfo *fi)
@@ -10709,7 +11180,7 @@ index 8841f039bc60172af322225e80a06a90c4781baf..0218e9cc6934198b83609ad84bd97e2c
                         MMUAccessType access_type,
                         int mmu_idx, ARMMMUFaultInfo *fi)
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index deee0bfa79cf6748bd7619ee252a6624fb517f10..f593c0ee45078d31c0d181bc499518e2e480111c 100644
+index deee0bf..f593c0e 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
 @@ -8897,6 +8897,9 @@ static const struct SysemuCPUOps i386_sysemu_ops = {
@@ -10723,7 +11194,7 @@ index deee0bfa79cf6748bd7619ee252a6624fb517f10..f593c0ee45078d31c0d181bc499518e2
      .get_crash_info = x86_cpu_get_crash_info,
      .write_elf32_note = x86_cpu_write_elf32_note,
 diff --git a/target/i386/cpu.h b/target/i386/cpu.h
-index 0b07cae570ba4e05295c2d3592e66a8d1005c849..1ada85b2e51f214bd07dff8069643de707d94ba8 100644
+index 0b07cae..1ada85b 100644
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
 @@ -2376,7 +2376,15 @@ int x86_cpu_pending_interrupt(CPUState *cs, int interrupt_request);
@@ -10743,7 +11214,7 @@ index 0b07cae570ba4e05295c2d3592e66a8d1005c849..1ada85b2e51f214bd07dff8069643de7
  
  /* MS-DOS compatibility mode FPU exception support */
 diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
-index f7e228874ede076e90f1c77d7ab6ef06efefe6b7..06ea3c7bc7ceba1a2fbcd43209110934872a9098 100644
+index f7e2288..06ea3c7 100644
 --- a/target/i386/tcg/system/excp_helper.c
 +++ b/target/i386/tcg/system/excp_helper.c
 @@ -615,6 +615,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
@@ -10831,7 +11302,7 @@ index f7e228874ede076e90f1c77d7ab6ef06efefe6b7..06ea3c7bc7ceba1a2fbcd43209110934
                        bool probe, uintptr_t retaddr)
 diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..646bd2c32efbbff9e69f4bb1fd0ac925df98f956
+index 0000000..646bd2c
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-access.c
 @@ -0,0 +1,798 @@
@@ -11635,10 +12106,10 @@ index 0000000000000000000000000000000000000000..646bd2c32efbbff9e69f4bb1fd0ac925
 +}
 diff --git a/tests/tcg/plugins/crucible-memory-dma.c b/tests/tcg/plugins/crucible-memory-dma.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..44aef7825c5e9f1c4cc25723bb5de627243b5dba
+index 0000000..e1e096d
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-dma.c
-@@ -0,0 +1,346 @@
+@@ -0,0 +1,433 @@
 +/*
 + * Live Crucible device-scoped DMA memory-fault test plugin
 + *
@@ -11667,10 +12138,17 @@ index 0000000000000000000000000000000000000000..44aef7825c5e9f1c4cc25723bb5de627
 +static uint8_t test_device_identity[32];
 +static uint64_t test_start;
 +static uint64_t test_length;
++static uint64_t test_mailbox;
++static uint64_t test_publish_pc;
++static uint64_t test_ready_pc;
++static uint64_t test_complete_pc;
 +static uint32_t test_class;
 +static bool test_prepared;
 +static bool test_installed;
 +static bool test_complete;
++static bool test_require_translation;
++static bool test_guest_complete;
++static bool test_target_published;
 +
 +static void test_fail(const char *message)
 +{
@@ -11828,6 +12306,7 @@ index 0000000000000000000000000000000000000000..44aef7825c5e9f1c4cc25723bb5de627
 +                &evidence_length)) == 1) {
 +        uint64_t address;
 +        uint64_t length;
++        uint64_t transaction_address;
 +        const uint8_t *before;
 +        const uint8_t *after;
 +        const uint8_t *effect;
@@ -11842,6 +12321,7 @@ index 0000000000000000000000000000000000000000..44aef7825c5e9f1c4cc25723bb5de627
 +        }
 +        address = test_get_u64(test_evidence + 24);
 +        length = test_get_u64(test_evidence + 32);
++        transaction_address = test_get_u64(test_evidence + 264);
 +        if (length == 0 || length > 4096 ||
 +            address < test_start || address - test_start >= test_length ||
 +            length > test_length - (address - test_start) ||
@@ -11849,18 +12329,30 @@ index 0000000000000000000000000000000000000000..44aef7825c5e9f1c4cc25723bb5de627
 +            test_get_u32(test_evidence + 436) != length) {
 +            test_fail("DMA opportunity span is not exact");
 +        }
++        if (test_require_translation &&
++            (transaction_address == address ||
++             (transaction_address >= test_start &&
++              transaction_address - test_start < test_length))) {
++            test_fail("IOMMU DMA preflight did not select by translated GPA");
++        }
++        if (test_require_translation) {
++            g_printerr("CRUCIBLE_MEMORY_DMA_TRANSLATION iova=%" PRIx64
++                       " gpa=%" PRIx64 "\n",
++                       transaction_address, address);
++        }
 +        before = test_evidence + 480;
 +        after = before + length;
 +        effect = after + length;
 +        for (size_t i = 0; i < length; i++) {
-+            if (after[i] != (before[i] | 1) || effect[i] != 1) {
++            size_t payload_offset = address - test_start + i;
++            uint8_t expected = ((uint8_t)payload_offset ^ 0x36u) | 1u;
++
++            if (after[i] != expected || effect[i] != 1) {
 +                test_fail("DMA bytes do not match the stuck-bit transform");
 +            }
 +        }
 +        if (!test_complete) {
 +            test_complete = true;
-+            g_printerr("CRUCIBLE_MEMORY_DMA_LIVE_PASS\n");
-+            qemu_plugin_request_shutdown(0);
 +        }
 +    }
 +    if (status < 0) {
@@ -11922,19 +12414,82 @@ index 0000000000000000000000000000000000000000..44aef7825c5e9f1c4cc25723bb5de627
 +    }
 +}
 +
++static void test_target_publish_exec(unsigned int cpu_index, void *opaque)
++{
++    g_autoptr(GByteArray) bytes = g_byte_array_new();
++    uint64_t current_icount;
++
++    (void)cpu_index;
++    (void)opaque;
++    if (test_target_published ||
++        !qemu_plugin_read_memory_vaddr(test_mailbox, bytes, 8)) {
++        test_fail("guest DMA target mailbox could not be consumed once");
++    }
++    test_start = test_get_u64(bytes->data);
++    if (test_start == 0 || test_start > UINT64_MAX - test_length) {
++        test_fail("guest published an invalid DMA target GPA");
++    }
++    test_build_rule();
++    current_icount = qemu_plugin_crucible_icount();
++    test_command.target_icount = current_icount;
++    test_command.authorization_ceiling_icount = current_icount;
++    test_target_published = true;
++    if (qemu_plugin_crucible_fault_submit(
++            &test_command, test_payload->data, test_payload->len) != 0) {
++        test_fail("dynamic DMA rule preparation could not be submitted");
++    }
++    qemu_plugin_force_vcpu_exit();
++}
++
++static void test_guest_ready_exec(unsigned int cpu_index, void *opaque)
++{
++    (void)cpu_index;
++    (void)opaque;
++    test_fault_completion(NULL);
++    if (!test_installed) {
++        test_fail("guest reached DMA issue point before rule installation");
++    }
++}
++
++static void test_guest_complete_exec(unsigned int cpu_index, void *opaque)
++{
++    (void)cpu_index;
++    (void)opaque;
++    test_poll_events();
++    if (!test_complete) {
++        test_fail("guest completed without a matching payload DMA event");
++    }
++    if (!test_guest_complete) {
++        test_guest_complete = true;
++        g_printerr("CRUCIBLE_MEMORY_DMA_LIVE_PASS\n");
++        qemu_plugin_request_shutdown(0);
++    }
++}
++
 +static void test_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 +{
 +    (void)id;
-+    qemu_plugin_register_vcpu_tb_exec_cb(
-+        tb, test_tb_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
++    if (qemu_plugin_tb_vaddr(tb) == test_publish_pc) {
++        qemu_plugin_register_vcpu_tb_exec_cb(
++            tb, test_target_publish_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
++    } else if (qemu_plugin_tb_vaddr(tb) == test_ready_pc) {
++        qemu_plugin_register_vcpu_tb_exec_cb(
++            tb, test_guest_ready_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
++    } else if (qemu_plugin_tb_vaddr(tb) == test_complete_pc) {
++        qemu_plugin_register_vcpu_tb_exec_cb(
++            tb, test_guest_complete_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
++    } else {
++        qemu_plugin_register_vcpu_tb_exec_cb(
++            tb, test_tb_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
++    }
 +}
 +
 +static void test_exit(qemu_plugin_id_t id, void *opaque)
 +{
 +    (void)id;
 +    (void)opaque;
-+    if (!test_complete) {
-+        test_fail("no matching production DMA access was observed");
++    if (!test_complete || !test_guest_complete) {
++        test_fail("guest-visible production DMA transform did not complete");
 +    }
 +    g_byte_array_unref(test_payload);
 +}
@@ -11946,23 +12501,32 @@ index 0000000000000000000000000000000000000000..44aef7825c5e9f1c4cc25723bb5de627
 +    const char *device;
 +
 +    (void)info;
-+    if (argc != 4 ||
-+        !g_str_has_prefix(argv[0], "start=") ||
-+        !g_str_has_prefix(argv[1], "length=") ||
-+        !g_str_has_prefix(argv[2], "class=") ||
-+        !g_str_has_prefix(argv[3], "device=")) {
-+        test_fail("four canonical DMA arguments are required");
++    if ((argc != 7 && argc != 8) ||
++        !g_str_has_prefix(argv[0], "length=") ||
++        !g_str_has_prefix(argv[1], "class=") ||
++        !g_str_has_prefix(argv[2], "device=") ||
++        !g_str_has_prefix(argv[3], "mailbox=") ||
++        !g_str_has_prefix(argv[4], "publish-pc=") ||
++        !g_str_has_prefix(argv[5], "ready-pc=") ||
++        !g_str_has_prefix(argv[6], "complete-pc=") ||
++        (argc == 8 && strcmp(argv[7], "translated=1") != 0)) {
++        test_fail("canonical DMA arguments are required");
 +    }
-+    test_start = g_ascii_strtoull(argv[0] + 6, NULL, 0);
-+    test_length = g_ascii_strtoull(argv[1] + 7, NULL, 0);
-+    test_class = g_ascii_strtoull(argv[2] + 6, NULL, 0);
-+    device = argv[3] + 7;
-+    if (test_length == 0 || test_start > UINT64_MAX - test_length ||
-+        (test_class != 8 && test_class != 16) || *device == '\0') {
++    test_length = g_ascii_strtoull(argv[0] + 7, NULL, 0);
++    test_class = g_ascii_strtoull(argv[1] + 6, NULL, 0);
++    device = argv[2] + 7;
++    test_mailbox = g_ascii_strtoull(argv[3] + 8, NULL, 0);
++    test_publish_pc = g_ascii_strtoull(argv[4] + 11, NULL, 0);
++    test_ready_pc = g_ascii_strtoull(argv[5] + 9, NULL, 0);
++    test_complete_pc = g_ascii_strtoull(argv[6] + 12, NULL, 0);
++    test_require_translation = argc == 8;
++    if (test_length == 0 ||
++        (test_class != 8 && test_class != 16) || *device == '\0' ||
++        test_mailbox == 0 || test_publish_pc == 0 || test_ready_pc == 0 ||
++        test_complete_pc == 0) {
 +        test_fail("DMA rule arguments are outside the closed schema");
 +    }
 +    test_device_hash(device);
-+    test_build_rule();
 +    memset(&test_command, 0, sizeof(test_command));
 +    test_command.abi_major = CRUCIBLE_FAULT_COMMAND_ABI_MAJOR;
 +    test_command.abi_minor = CRUCIBLE_FAULT_COMMAND_ABI_MINOR;
@@ -11971,14 +12535,8 @@ index 0000000000000000000000000000000000000000..44aef7825c5e9f1c4cc25723bb5de627
 +    test_command.phase = CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY;
 +    test_command.semantic_version = CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION;
 +    test_command.command_sequence = 1;
-+    test_command.target_icount = 32;
-+    test_command.authorization_ceiling_icount = 32;
 +    memset(test_command.target_node_hash, 0x11, 32);
 +    memset(test_command.binding_hash, 0x41, 32);
-+    if (qemu_plugin_crucible_fault_submit(
-+            &test_command, test_payload->data, test_payload->len) != 0) {
-+        test_fail("rule preparation could not be submitted");
-+    }
 +    qemu_plugin_register_crucible_fault_completion_cb(
 +        test_fault_completion, NULL);
 +    qemu_plugin_register_vcpu_tb_trans_cb(id, test_tb_trans);
@@ -11986,7 +12544,7 @@ index 0000000000000000000000000000000000000000..44aef7825c5e9f1c4cc25723bb5de627
 +    return 0;
 +}
 diff --git a/tests/tcg/plugins/meson.build b/tests/tcg/plugins/meson.build
-index 24a8a7b92ea435de78ed10456048b143c651e37d..6b2c7aa5a326fb07b415bbc2fd8d91058b6d39f0 100644
+index 24a8a7b..6b2c7aa 100644
 --- a/tests/tcg/plugins/meson.build
 +++ b/tests/tcg/plugins/meson.build
 @@ -1,6 +1,8 @@
