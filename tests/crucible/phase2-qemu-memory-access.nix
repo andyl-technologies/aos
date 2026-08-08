@@ -6,6 +6,7 @@
   patchName ? "0050-crucible-memory-access-faults.patch",
   attrPath ? "checks.crucible.phase2.qemuMemoryAccess",
   taskIds ? ["T-QEMU-0050"],
+  focus ? "",
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
@@ -110,7 +111,7 @@ in
               ${pluginSource}/crucible-memory-dma.c \
               -o crucible-memory-dma.so \
               $(pkg-config --libs glib-2.0)
-            for mode in $(seq 1 17); do
+            for mode in $(seq 1 18); do
               ${pkgs.llvm}/bin/clang --target=i386-none-elf \
                 -c -Wa,-defsym,TEST_MODE=$mode \
                 ${./phase2-qemu-memory-access-guest.S} \
@@ -133,6 +134,10 @@ in
           script = ''
             set -eu
             mkdir -p logs
+            focus='${focus}'
+            should_run() {
+              test -z "$focus" || test "$focus" = "$1"
+            }
             run_case() {
               architecture="$1"
               mode="$2"
@@ -143,6 +148,7 @@ in
               mask="$7"
               replacement="$8"
               atomic="$9"
+              should_run "$architecture-base-$mode" || return 0
               case "$architecture" in
                 x86_64)
                   binary=${qemuPackage}/bin/qemu-system-x86_64
@@ -220,6 +226,7 @@ in
               mode="$2"
               scenario="$3"
               expected="$4"
+              should_run "$architecture-advanced-$scenario" || return 0
               case "$architecture" in
                 x86_64)
                   binary=${qemuPackage}/bin/qemu-system-x86_64
@@ -255,9 +262,13 @@ in
               set -e
               cat "logs/$architecture-advanced-$scenario.log"
               test "$case_status" -eq 0
-              grep -Fxq CRUCIBLE_MEMORY_ACCESS_LIVE_PASS \
+              case "$scenario" in
+                invalid-*) pass_marker=CRUCIBLE_MEMORY_REJECTION_LIVE_PASS ;;
+                *) pass_marker=CRUCIBLE_MEMORY_ACCESS_LIVE_PASS ;;
+              esac
+              grep -Fxq "$pass_marker" \
                 "logs/$architecture-advanced-$scenario.log"
-              test "$(grep -Fc CRUCIBLE_MEMORY_ACCESS_LIVE_PASS \
+              test "$(grep -Fc "$pass_marker" \
                 "logs/$architecture-advanced-$scenario.log")" -eq 1
             }
             run_advanced_architecture_matrix() {
@@ -275,6 +286,14 @@ in
               run_advanced_case "$architecture" 15 retention 00
               run_advanced_case "$architecture" 16 rowhammer a5
               run_advanced_case "$architecture" 17 service 5a
+              if test "$architecture" = x86_64; then
+                run_advanced_case "$architecture" 18 retry-x86 a5
+              else
+                run_advanced_case "$architecture" 18 retry-aarch64 a5
+              fi
+              run_advanced_case "$architecture" 17 invalid-mmio 5a
+              run_advanced_case "$architecture" 17 invalid-atomic 5a
+              run_advanced_case "$architecture" 17 invalid-geometry 5a
             }
             run_advanced_architecture_matrix x86_64
             run_advanced_architecture_matrix aarch64
@@ -285,6 +304,7 @@ in
             run_dma_case() {
               class="$1"
               label="$2"
+              should_run "dma-$label" || return 0
               timeout 180 ${qemuPackage}/bin/qemu-system-x86_64 \
                 -nodefaults -no-user-config -display none -monitor none \
                 -machine q35 -accel sim,thread=single \
@@ -305,18 +325,20 @@ in
             run_dma_case 8 read
             run_dma_case 16 write
 
-            set +e
-            timeout 5 ${referenceQemu}/bin/qemu-system-x86_64 \
+            if should_run stock; then
+              set +e
+              timeout 5 ${referenceQemu}/bin/qemu-system-x86_64 \
               -machine pc -m 64M -accel tcg -icount shift=0 -smp 1 \
               -nographic -no-reboot -serial none -monitor none \
               -kernel guest-x86-1.elf \
               -plugin "$PWD/crucible-memory-access.so,address=0x102000,result=0x102100,expected=a5,kind=1,classes=2,length=1,mask=ff,replacement=a5,atomic=0" \
               >logs/stock.log 2>&1
-            stock_status=$?
-            set -e
-            test "$stock_status" -ne 0
-            test "$stock_status" -ne 124
-            ! grep -q CRUCIBLE_MEMORY_ACCESS_LIVE_PASS logs/stock.log
+              stock_status=$?
+              set -e
+              test "$stock_status" -ne 0
+              test "$stock_status" -ne 124
+              ! grep -q CRUCIBLE_MEMORY_ACCESS_LIVE_PASS logs/stock.log
+            fi
 
             mkdir -p "$out"
             cp -R logs "$out/"
