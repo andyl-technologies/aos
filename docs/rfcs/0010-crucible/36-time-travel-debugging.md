@@ -1579,7 +1579,9 @@ complete from model-double evidence.
   architectures through the public CLI: repeated read-only GDB snapshots,
   non-empty reverse history, full landed-coordinate replay equality, queued
   register traffic across the atomic operation barrier, breakpoint retention,
-  scheduler `continue`/`stepi`/`vCont;s`, fork-time argv exec, PTY, SSH, typed
+  scheduler `continue`/`stepi`/`vCont;s`, including GDB's all-stop
+  thread-qualified `vCont;s:<selected>;c:<others>` form, fork-time argv exec,
+  PTY, SSH, typed
   stream closure on reposition, transcripts, and per-architecture aggregate
   evidence. It uses bounded process groups and hard TERM/KILL deadlines. This
   paragraph records the acceptance design only; T-DBG-14 remains open until the
