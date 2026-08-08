@@ -377,6 +377,7 @@ stop_gdb() {
 
 run_scheduler_control() {
   local output_file=$1
+  local packet_log="$output_file.stepi-packets"
   printf 'echo CRUCIBLE_CONTINUE_BEGIN\\n\ncontinue\necho CRUCIBLE_CONTINUE_END\\n\n' >&5
   wait_for_pattern "$output_file" CRUCIBLE_CONTINUE_END "$gdb_pid"
   sed -n '/CRUCIBLE_CONTINUE_BEGIN/,/CRUCIBLE_CONTINUE_END/p' "$output_file" \
@@ -385,24 +386,24 @@ run_scheduler_control() {
   grep -Eq 'Breakpoint 1,|Program stopped\.' \
     "$output_file.continue" || fail "GDB continue produced no correlated stop"
 
-  printf 'echo CRUCIBLE_STEPI_BEGIN\\n\nstepi\necho CRUCIBLE_STEPI_END\\n\n' >&5
+  printf 'maintenance packet vCont?\necho CRUCIBLE_VCONT_QUERY_END\\n\n' >&5
+  wait_for_pattern "$output_file" CRUCIBLE_VCONT_QUERY_END "$gdb_pid"
+  grep -Fq 'received: "vCont' "$output_file" || fail "vCont capability was not reported"
+
+  printf 'set logging file %s\n' "$packet_log" >&5
+  printf 'set logging overwrite on\nset logging debugredirect on\nset logging enabled on\n' >&5
+  printf 'set debug remote 1\necho CRUCIBLE_STEPI_BEGIN\\n\nstepi\necho CRUCIBLE_STEPI_END\\n\n' >&5
+  printf 'set debug remote 0\nset logging enabled off\necho CRUCIBLE_STEPI_TRACE_END\\n\n' >&5
   wait_for_pattern "$output_file" CRUCIBLE_STEPI_END "$gdb_pid"
+  wait_for_pattern "$output_file" CRUCIBLE_STEPI_TRACE_END "$gdb_pid"
   sed -n '/CRUCIBLE_STEPI_BEGIN/,/CRUCIBLE_STEPI_END/p' "$output_file" \
     >"$output_file.stepi"
   gdb_window_is_clean "$output_file.stepi" "GDB stepi"
   grep -Eq '0x[0-9a-f]+|Program received signal' "$output_file.stepi" \
     || fail "GDB stepi produced no correlated stop"
-
-  printf 'maintenance packet vCont?\necho CRUCIBLE_VCONT_QUERY_END\\n\n' >&5
-  wait_for_pattern "$output_file" CRUCIBLE_VCONT_QUERY_END "$gdb_pid"
-  grep -Fq 'received: "vCont' "$output_file" || fail "vCont capability was not reported"
-
-  printf 'echo CRUCIBLE_VCONT_STEP_BEGIN\\n\nmaintenance packet vCont;s\necho CRUCIBLE_VCONT_STEP_END\\n\n' >&5
-  wait_for_pattern "$output_file" CRUCIBLE_VCONT_STEP_END "$gdb_pid"
-  sed -n '/CRUCIBLE_VCONT_STEP_BEGIN/,/CRUCIBLE_VCONT_STEP_END/p' "$output_file" \
-    >"$output_file.vcont-step"
-  gdb_window_is_clean "$output_file.vcont-step" "GDB vCont;s"
-  grep -Eq 'received: "T0?5|received: "S0?5' "$output_file.vcont-step" \
+  grep -Fq 'vCont;s' "$packet_log" \
+    || fail "GDB stepi did not use scheduler-mediated vCont;s"
+  grep -Eq 'Packet received: T0?5|Packet received: S0?5' "$packet_log" \
     || fail "vCont;s produced no correlated scheduler stop"
 }
 

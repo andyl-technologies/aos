@@ -1254,6 +1254,12 @@ mod gdb_run_control_tests {
             Some(SessionCommand::Continue)
         ));
         assert!(matches!(
+            gdb_run_control_command(b"vCont;s"),
+            Some(SessionCommand::Step {
+                mode: StepMode::Quantum
+            })
+        ));
+        assert!(matches!(
             gdb_run_control_command(b"vCont;s;s"),
             Some(SessionCommand::Step {
                 mode: StepMode::Quantum
