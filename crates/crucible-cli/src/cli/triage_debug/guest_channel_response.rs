@@ -1,6 +1,11 @@
 //! Guest-introspection response handling for the remote debugger CLI.
 
 use super::*;
+// crucible-lint: allow host-nondeterminism-state -- these typed records remain guest transport and never enter scheduler state.
+use crucible_api::{
+    GuestIntrospectionFailureCode, GuestIntrospectionMessage, GuestIntrospectionRecord,
+    GuestOutputStream,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GuestChannelRecordOutcome {
@@ -9,13 +14,12 @@ pub(super) enum GuestChannelRecordOutcome {
 }
 
 pub(super) async fn handle_guest_channel_response(
-    response: Option<&crucible_api::GuestIntrospectionRecord>,
+    response: Option<&GuestIntrospectionRecord>,
     channel_id: u64,
     stdout: &mut tokio::io::Stdout,
     stderr: &mut tokio::io::Stderr,
     terminal_observed: &mut bool,
 ) -> Result<GuestChannelRecordOutcome, CliError> {
-    use crucible_api::{GuestIntrospectionMessage, GuestOutputStream};
     use tokio::io::AsyncWriteExt as _;
 
     let Some(record) = response else {
@@ -82,17 +86,16 @@ pub(super) async fn handle_guest_channel_response(
 /// Returns [`CliError`] when a nonterminal response cannot be written or is
 /// invalid for the guest-channel protocol state.
 pub(super) async fn handle_guest_channel_shutdown_response(
-    response: Option<&crucible_api::GuestIntrospectionRecord>,
+    response: Option<&GuestIntrospectionRecord>,
     channel_id: u64,
     stdout: &mut tokio::io::Stdout,
     stderr: &mut tokio::io::Stderr,
     terminal_observed: &mut bool,
 ) -> Result<(), CliError> {
-    match response.map(crucible_api::GuestIntrospectionRecord::message) {
-        Some(
-            crucible_api::GuestIntrospectionMessage::Exit { .. }
-            | crucible_api::GuestIntrospectionMessage::Error { .. },
-        ) if response.is_some_and(|record| record.channel_id() == channel_id) => {
+    match response.map(GuestIntrospectionRecord::message) {
+        Some(GuestIntrospectionMessage::Exit { .. } | GuestIntrospectionMessage::Error { .. })
+            if response.is_some_and(|record| record.channel_id() == channel_id) =>
+        {
             *terminal_observed = true;
             Ok(())
         }
@@ -111,11 +114,8 @@ pub(super) async fn handle_guest_channel_shutdown_response(
     }
 }
 
-fn guest_failure_diagnostic(
-    code: crucible_api::GuestIntrospectionFailureCode,
-    message: &str,
-) -> String {
-    if code == crucible_api::GuestIntrospectionFailureCode::ClosedChannel {
+fn guest_failure_diagnostic(code: GuestIntrospectionFailureCode, message: &str) -> String {
+    if code == GuestIntrospectionFailureCode::ClosedChannel {
         return format!("guest channel closed ({code:?}): {message}");
     }
     format!("guest introspection failed ({code:?}): {message}")
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn reposition_closure_is_not_described_as_an_introspection_failure() {
         let diagnostic = guest_failure_diagnostic(
-            crucible_api::GuestIntrospectionFailureCode::ClosedChannel,
+            GuestIntrospectionFailureCode::ClosedChannel,
             "debug runtime reposition closed the guest channel",
         );
 
@@ -140,10 +140,10 @@ mod tests {
 
     #[tokio::test]
     async fn requested_shutdown_accepts_a_terminal_guest_response() {
-        let response = crucible_api::GuestIntrospectionRecord::new(
+        let response = GuestIntrospectionRecord::new(
             7,
-            crucible_api::GuestIntrospectionMessage::Error {
-                code: crucible_api::GuestIntrospectionFailureCode::ClosedChannel,
+            GuestIntrospectionMessage::Error {
+                code: GuestIntrospectionFailureCode::ClosedChannel,
                 message: String::from("channel terminated after local hangup"),
             },
         )

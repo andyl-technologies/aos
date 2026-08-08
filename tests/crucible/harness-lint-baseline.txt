@@ -106,9 +106,6 @@ confinement	crates/crucible-cli/src/cli/run_save/test_double.rs	host nondetermin
 confinement	crates/crucible-cli/src/cli/run_save/test_double.rs	host nondeterminism reaching State	QuantumLoop		2
 confinement	crates/crucible-cli/src/cli/run_save/test_double.rs	host nondeterminism reaching State	QuantumOutcome		2
 confinement	crates/crucible-cli/src/cli/run_save/test_double.rs	host nondeterminism reaching State	ScenarioDef		1
-confinement	crates/crucible-cli/src/cli/triage_debug.rs	host nondeterminism reaches API/session route	Backend		5
-confinement	crates/crucible-cli/src/cli/triage_debug.rs	host nondeterminism reaches API/session route	crucible_api		13
-confinement	crates/crucible-cli/src/cli/triage_debug.rs	host nondeterminism reaching State	Backend		5
 confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaches API/session route	ControlClient		6
 confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaches API/session route	crucible_api		36
 confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaches API/session route	QuantumLoop		2

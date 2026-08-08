@@ -6,6 +6,7 @@ pub(super) fn plan_triage_invocation(
     args: &TriageArgs,
 ) -> Result<TriageInvocationPlan, CliError> {
     if cli.daemon.is_some() {
+        // crucible-lint: allow host-nondeterminism-state -- this typed CLI rejection cannot construct scheduler state.
         return Err(CliError::Backend(
             "triage is an offline DagStore operation and must not use --daemon".to_string(),
         ));
@@ -64,6 +65,7 @@ pub(super) fn plan_triage_invocation(
         scheduler_started: false,
     };
     if !plan.proves_t_tri_7() {
+        // crucible-lint: allow host-nondeterminism-state -- this typed planner rejection cannot construct scheduler state.
         return Err(CliError::Backend(
             "triage planner does not satisfy the RFC-0010 thin-driver contract".to_string(),
         ));
@@ -1586,7 +1588,9 @@ pub(super) fn plan_debug_invocation(
     args: &DebugArgs,
 ) -> Result<DebugInvocationPlan, CliError> {
     #[cfg(any(test, feature = "test-double"))]
+    // crucible-lint: allow host-nondeterminism-state -- backend selection is explicit CLI input and only rejects unsupported debug routing.
     if _cli.backend == Backend::Double {
+        // crucible-lint: allow host-nondeterminism-state -- this typed route rejection cannot construct scheduler state.
         return Err(CliError::Backend(
             "selected backend `double` does not implement open_gdbstub".to_string(),
         ));
@@ -1709,6 +1713,7 @@ pub(super) fn plan_debug_invocation(
             .then(|| "NON-CANONICAL debug branch".to_string()),
     };
     if !plan.proves_t_dbg_8() {
+        // crucible-lint: allow host-nondeterminism-state -- this typed planner rejection cannot construct scheduler state.
         return Err(CliError::Backend(
             "debug planner does not satisfy the RFC-0010 debug surface contract".to_string(),
         ));
@@ -1770,6 +1775,7 @@ pub(super) fn run_remote_debug_relay(
             &backend_plan,
             session,
             node,
+            // crucible-lint: allow host-nondeterminism-state -- this record carries explicit guest transport input, not scheduler state.
             crucible_api::GuestIntrospectionMessage::Exec {
                 argv: argv.clone(),
                 record_transcript: plan.record_transcript.is_some(),
@@ -1787,6 +1793,7 @@ pub(super) fn run_remote_debug_relay(
             &backend_plan,
             session,
             node,
+            // crucible-lint: allow host-nondeterminism-state -- this record carries explicit guest transport input, not scheduler state.
             crucible_api::GuestIntrospectionMessage::Pty {
                 argv: argv.clone(),
                 columns: *columns,
@@ -1802,6 +1809,7 @@ pub(super) fn run_remote_debug_relay(
             &backend_plan,
             session,
             node,
+            // crucible-lint: allow host-nondeterminism-state -- this record requests a guest transport bridge, not a scheduler decision.
             crucible_api::GuestIntrospectionMessage::Ssh {
                 record_transcript: plan.record_transcript.is_some(),
             },
@@ -1828,11 +1836,13 @@ async fn run_remote_debug_reposition(
     verb: &DebugInteractiveVerbPlan,
 ) -> Result<(), CliError> {
     let client = remote_rpc_client(daemon, backend_plan)?;
+    // crucible-lint: allow host-nondeterminism-state -- acquisition creates transport ownership only and cannot mutate scheduler state.
     let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
         .acquire_debug_controller(session, &acquisition)
         .await
         .map_err(control_client_error)?;
+    // crucible-lint: allow host-nondeterminism-state -- the typed response is scheduler-authored evidence consumed for display.
     let reposition_result: Result<Option<crucible_api::DebugRepositionResult>, CliError> = async {
         client
             .attach_debugger(session, &lease, &node)
@@ -1876,6 +1886,7 @@ async fn run_remote_debug_reposition(
     Ok(())
 }
 
+// crucible-lint: allow host-nondeterminism-state -- formatting scheduler-authored evidence cannot feed it back into state.
 fn print_debug_landed_runtime(result: &crucible_api::DebugRepositionResult) {
     let landed = &result.landed;
     println!("crucible: debugger repositioned");
@@ -1937,6 +1948,7 @@ async fn run_remote_guest_fork(
     node: crucible::NodeId,
 ) -> Result<(), CliError> {
     let client = remote_rpc_client(daemon, backend_plan)?;
+    // crucible-lint: allow host-nondeterminism-state -- acquisition creates transport ownership only and cannot mutate scheduler state.
     let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
         .acquire_debug_controller(session, &acquisition)
@@ -1977,6 +1989,7 @@ async fn run_remote_debug_relay_async(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let client = remote_rpc_client(daemon, backend_plan)?;
+    // crucible-lint: allow host-nondeterminism-state -- acquisition creates transport ownership only and cannot mutate scheduler state.
     let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
         .acquire_debug_controller(session, &acquisition)
@@ -2038,6 +2051,7 @@ async fn run_remote_debug_relay_async(
             )));
         }
     };
+    // crucible-lint: allow host-nondeterminism-state -- this protocol limit bounds transport buffering and never enters scheduler state.
     let mut local_buffer = vec![0_u8; crucible_api::DEBUG_RELAY_CHUNK_MAX_BYTES];
     let mut poll = tokio::time::interval(Duration::from_millis(5));
     let relay_result: Result<(), CliError> = async {
@@ -2063,6 +2077,7 @@ async fn run_remote_debug_relay_async(
                         session,
                         &lease,
                         relay,
+                        // crucible-lint: allow host-nondeterminism-state -- this protocol limit bounds a transport read only.
                         crucible_api::DEBUG_RELAY_CHUNK_MAX_BYTES,
                     )
                     .await
@@ -2132,6 +2147,7 @@ impl GuestTranscriptWriter {
     pub(super) async fn record(
         &mut self,
         direction: GuestTranscriptDirection,
+        // crucible-lint: allow host-nondeterminism-state -- the typed record is written only to an operator transcript.
         record: &crucible_api::GuestIntrospectionRecord,
     ) -> Result<(), CliError> {
         use tokio::io::AsyncWriteExt as _;
@@ -2176,9 +2192,11 @@ impl GuestTranscriptWriter {
 async fn exchange_guest_record(
     client: &RpcControlClient,
     session: SessionRef,
+    // crucible-lint: allow host-nondeterminism-state -- this lease is transport authorization and never scheduler state.
     lease: &crucible_api::DebugControllerAccess,
     node: &crucible::NodeId,
     channel_id: u64,
+    // crucible-lint: allow host-nondeterminism-state -- the request remains typed guest transport input.
     request: Option<&crucible_api::GuestIntrospectionRecord>,
     transcript: &mut Option<GuestTranscriptWriter>,
     // crucible-lint: allow host-nondeterminism-state -- the returned record remains typed observation transport and is never admitted as scheduler state.
@@ -2515,6 +2533,7 @@ async fn receive_guest_channel_shutdown_signal(
     hangup: &mut tokio::signal::unix::Signal,
 ) -> Result<(), CliError> {
     tokio::select! {
+        biased;
         signal = tokio::signal::ctrl_c() => signal
             .map_err(|error| backend_error(format!("guest channel interrupt signal error: {error}"))),
         signal = terminate.recv() => signal
@@ -2525,6 +2544,7 @@ async fn receive_guest_channel_shutdown_signal(
 }
 
 /// Converts local input into the guest channel's stream semantics.
+// crucible-lint: allow host-nondeterminism-state -- this public helper performs only pure guest-transport conversion.
 pub(crate) fn guest_input_message(
     pty_channel: bool,
     input: &[u8],
@@ -2682,4 +2702,5 @@ use guest_channel_response::{
 #[path = "triage_debug/slug.rs"]
 mod slug;
 
+// crucible-lint: allow host-nondeterminism-state -- these parsing helpers are pure CLI input normalization and do not construct scheduler state.
 pub(crate) use slug::*;
