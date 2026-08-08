@@ -48,9 +48,17 @@
       aos.system.version = "9999.0.0-rfc0011";
       # The fleet machine module bakes deterministic interface naming into the
       # initial UKI. Preserve that test-machine ABI in the independently built
-      # candidate so the retained host configuration can bring eth0 online.
+      # candidate and seed its fleet address so first-boot evaluation can run
+      # before the retained host configuration is rebound.
       aos.boot.kernelParams = ["net.ifnames=0"];
       environment.systemPackages = testPackages;
+      environment.etc."systemd/network/10-fleet-eth0.network".text = ''
+        [Match]
+        MACAddress=52:54:00:12:00:02
+
+        [Network]
+        Address=192.168.50.11/24
+      '';
     }
   ];
   candidateTop = candidate.config.system.build.toplevel;
