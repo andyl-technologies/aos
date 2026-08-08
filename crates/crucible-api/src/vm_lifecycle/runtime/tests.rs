@@ -240,62 +240,67 @@ fn production_lifecycle_emits_initial_started_state_for_every_vm() {
     }
 }
 
-#[test]
-fn initial_terminal_assertion_returns_without_advancing_a_backend() {
-    let source = initially_violated_scenario();
-    let mut lifecycle = production_loop_without_backends(&source);
-    let configuration = lifecycle.inner.loop_impl().configuration().clone();
-    let frontier = lifecycle.inner.loop_impl().frontier();
+#[cfg(test)]
+mod initial_terminal_boundary {
+    use super::*;
 
-    let outcome = lifecycle
-        .drive_quantum(QuantumRequest {
-            configuration: configuration.clone(),
-            control: Vec::new(),
-        })
-        .unwrap_or_else(|error| panic!("initial terminal boundary should settle: {error}"));
+    #[test]
+    fn initial_terminal_assertion_returns_without_advancing_a_backend() {
+        let source = initially_violated_scenario();
+        let mut lifecycle = production_loop_without_backends(&source);
+        let configuration = lifecycle.inner.loop_impl().configuration().clone();
+        let frontier = lifecycle.inner.loop_impl().frontier();
 
-    assert_eq!(outcome.configuration, configuration);
-    assert_eq!(outcome.frontier, frontier);
-    assert_eq!(outcome.advanced_node, None);
-    assert!(outcome.resolved_events.is_empty());
-    assert!(outcome.decisions.is_empty());
-    assert_eq!(outcome.event_log_entries.len(), 6);
-    for (entry, node) in outcome.event_log_entries[..3]
-        .iter()
-        .zip(source.world().vm_nodes())
-    {
+        let outcome = lifecycle
+            .drive_quantum(QuantumRequest {
+                configuration: configuration.clone(),
+                control: Vec::new(),
+            })
+            .unwrap_or_else(|error| panic!("initial terminal boundary should settle: {error}"));
+
+        assert_eq!(outcome.configuration, configuration);
+        assert_eq!(outcome.frontier, frontier);
+        assert_eq!(outcome.advanced_node, None);
+        assert!(outcome.resolved_events.is_empty());
+        assert!(outcome.decisions.is_empty());
+        assert_eq!(outcome.event_log_entries.len(), 6);
+        for (entry, node) in outcome.event_log_entries[..3]
+            .iter()
+            .zip(source.world().vm_nodes())
+        {
+            assert!(matches!(
+                entry.payload(),
+                crucible::SchedulerEventLogPayload::Observable(
+                    crucible::ObservableEventPayload::NodeState {
+                        node: observed,
+                        state: NodeLifecycle::Started,
+                    }
+                ) if observed == &node.id
+            ));
+        }
         assert!(matches!(
-            entry.payload(),
+            outcome.event_log_entries[3].payload(),
             crucible::SchedulerEventLogPayload::Observable(
-                crucible::ObservableEventPayload::NodeState {
-                    node: observed,
-                    state: NodeLifecycle::Started,
+                crucible::ObservableEventPayload::AssertionStateChanged {
+                    state: AssertionPhase::Violated,
+                    ..
                 }
-            ) if observed == &node.id
+            )
+        ));
+        assert!(matches!(
+            outcome.event_log_entries[4].payload(),
+            crucible::SchedulerEventLogPayload::TriggerFired(_)
+        ));
+        assert!(matches!(
+            outcome.event_log_entries[5].payload(),
+            crucible::SchedulerEventLogPayload::TriggerActionApplied(_)
+        ));
+        assert!(matches!(
+            lifecycle.take_terminal_verdict(),
+            Some(QuantumTerminalVerdict::Failed(violations))
+                if violations == vec![String::from("db-0 did not remain crashed")]
         ));
     }
-    assert!(matches!(
-        outcome.event_log_entries[3].payload(),
-        crucible::SchedulerEventLogPayload::Observable(
-            crucible::ObservableEventPayload::AssertionStateChanged {
-                state: AssertionPhase::Violated,
-                ..
-            }
-        )
-    ));
-    assert!(matches!(
-        outcome.event_log_entries[4].payload(),
-        crucible::SchedulerEventLogPayload::TriggerFired(_)
-    ));
-    assert!(matches!(
-        outcome.event_log_entries[5].payload(),
-        crucible::SchedulerEventLogPayload::TriggerActionApplied(_)
-    ));
-    assert!(matches!(
-        lifecycle.take_terminal_verdict(),
-        Some(QuantumTerminalVerdict::Failed(violations))
-            if violations == vec![String::from("db-0 did not remain crashed")]
-    ));
 }
 
 #[test]
