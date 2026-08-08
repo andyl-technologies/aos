@@ -22,9 +22,20 @@ use aos_package::types::ProfileScope;
 /// Serializes the env-var mutation across tests in this binary.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+/// Build a stock tool command with only the Nix check's build-only identity
+/// shim. Runtime packages never set this environment variable.
+fn command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    command.env_remove("LD_LIBRARY_PATH");
+    if let Some(preload) = std::env::var_os("AOS_TEST_IDENTITY_PRELOAD") {
+        command.env("LD_PRELOAD", preload);
+    }
+    command
+}
+
 /// Run a git command in `dir`, panicking with stderr on failure.
 fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
+    let out = command("git")
         .args(args)
         .current_dir(dir)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -41,7 +52,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// Run a git command capturing trimmed stdout.
 fn git_out(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = command("git")
         .args(args)
         .current_dir(dir)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -58,16 +69,17 @@ fn git_out(dir: &Path, args: &[&str]) -> String {
 
 /// Whether the host can build the SHA-256 + SSH-signed fixture.
 fn host_supports(probe: &Path) -> bool {
-    let git_ok = Command::new("git")
+    let git_ok = command("git")
         .args(["init", "--object-format=sha256", "-q", "probe"])
         .current_dir(probe)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
-    let keygen_ok = Command::new("ssh-keygen")
-        .arg("-h")
+    let keygen_ok = command("ssh-keygen")
+        .args(["-t", "ed25519", "-N", "", "-q", "-C", "probe", "-f"])
+        .arg(probe.join("probe-key"))
         .output()
-        .map(|_| true)
+        .map(|output| output.status.success())
         .unwrap_or(false);
     git_ok && keygen_ok
 }
@@ -90,7 +102,7 @@ async fn change_list_show_and_merge() {
     // Generate a roster signing key (the maintainer key `apr change merge`
     // re-signs with).
     let key_path = root.path().join("id_ed25519");
-    let kg = Command::new("ssh-keygen")
+    let kg = command("ssh-keygen")
         .args(["-t", "ed25519", "-N", "", "-q", "-f"])
         .arg(&key_path)
         .output()
