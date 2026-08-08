@@ -239,7 +239,19 @@ impl ResolvedNinepRequestDirective {
                         reason: "9p object result requires read or enumeration",
                     });
                 }
-                object.validate()
+                object.validate()?;
+                match Message::decode(frame)?.body {
+                    TMessage::Walk { ref wnames, .. } if wnames.len() <= 1 => Ok(()),
+                    TMessage::Lopen { .. }
+                    | TMessage::Read { .. }
+                    | TMessage::Readdir { .. }
+                    | TMessage::Getattr { .. }
+                    | TMessage::Readlink { .. }
+                    | TMessage::Xattrwalk { .. } => Ok(()),
+                    _ => Err(DeviceError::InvalidNinepFaultDirective {
+                        reason: "9p object result does not support this request shape",
+                    }),
+                }
             }
         }
     }
@@ -340,7 +352,36 @@ pub struct NinepVisibilityState {
     identities: BTreeMap<[u8; 32], u64>,
 }
 
+/// Layered visibility result for one canonical absolute path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NinepVisibilityLookup {
+    /// No visible update overrides the immutable base tree.
+    Base,
+    /// A committed policy hides the path or a visible tombstone deletes it.
+    Deleted,
+    /// This exact object version overrides the immutable base tree.
+    Object(NinepObjectVersion),
+}
+
 impl NinepVisibilityState {
+    /// Returns every session's metadata and data frontiers in session order.
+    #[must_use]
+    pub fn session_frontiers(&self) -> Vec<(u64, u64, u64)> {
+        self.session_metadata_frontiers
+            .iter()
+            .map(|(session, metadata)| {
+                (
+                    *session,
+                    *metadata,
+                    self.session_data_frontiers
+                        .get(session)
+                        .copied()
+                        .unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
     /// Validates all checkpoint indexes, bounds, frontiers, and object records.
     ///
     /// # Errors
@@ -531,9 +572,10 @@ impl NinepVisibilityState {
         Ok((metadata, data))
     }
 
-    /// Returns the newest visible version of one absolute path.
+    /// Resolves one path against the visibility overlay without losing deletion
+    /// information needed to suppress immutable-base fallback.
     #[must_use]
-    pub fn visible_object(&self, session: u64, path: &str) -> Option<NinepObjectVersion> {
+    pub fn lookup_object(&self, session: u64, path: &str) -> NinepVisibilityLookup {
         let metadata_frontier = self
             .session_metadata_frontiers
             .get(&session)
@@ -549,15 +591,18 @@ impl NinepVisibilityState {
                 && !update.policy.retain_deleted_objects
                 && update.sequence >= metadata_frontier
         }) {
-            return None;
+            return NinepVisibilityLookup::Deleted;
         }
-        let metadata = self
+        let Some(metadata) = self
             .updates
             .range(..metadata_frontier)
             .rev()
-            .find_map(|(_, update)| (update.object.path == path).then_some(&update.object))?;
+            .find_map(|(_, update)| (update.object.path == path).then_some(&update.object))
+        else {
+            return NinepVisibilityLookup::Base;
+        };
         if metadata.deleted {
-            return None;
+            return NinepVisibilityLookup::Deleted;
         }
         let data_frontier = self
             .session_data_frontiers
@@ -575,7 +620,16 @@ impl NinepVisibilityState {
             .unwrap_or_default();
         let mut visible = metadata.clone();
         visible.data = data;
-        Some(visible)
+        NinepVisibilityLookup::Object(visible)
+    }
+
+    /// Returns the newest visible object, excluding base-tree and deleted paths.
+    #[must_use]
+    pub fn visible_object(&self, session: u64, path: &str) -> Option<NinepObjectVersion> {
+        match self.lookup_object(session, path) {
+            NinepVisibilityLookup::Object(object) => Some(object),
+            NinepVisibilityLookup::Base | NinepVisibilityLookup::Deleted => None,
+        }
     }
 
     /// Returns the committed frontier.

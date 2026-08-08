@@ -22,12 +22,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use crucible::model::ContentHash;
 use crucible_device::{
     DeviceError, FsTree, IoCore, NinepDevice, NinepLatency, NinepObjectVersion,
-    NinepRequestIdentity, NinepRequestOpportunity, NinepVisibilityPolicy, NinepVisibilityRelease,
-    NinepVisibilityState, Node, Request, ResolvedNinepRequestDirective,
+    NinepRequestIdentity, NinepRequestOpportunity, NinepSnapshot, NinepVisibilityPolicy,
+    NinepVisibilityRelease, NinepVisibilityState, Node, Request, ResolvedNinepRequestDirective,
+    ResponseStatus,
 };
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    NodeSlotSnapshot, SLOT_9P_IO, STATUS_IDLE, SetupRegionMapError, mmap_setup_region,
+    NodeSlotSnapshot, SLOT_9P_IO, STATUS_IDLE, SetupRegionMapError, SpscRingSnapshot,
+    mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -49,6 +51,19 @@ pub struct QemuLive9pIoServicer {
     frames_delivered: usize,
     pending_fault_opportunities:
         BTreeMap<(u64, NinepRequestIdentity), (NinepRequestOpportunity, bool)>,
+}
+
+/// Complete reversible state for one coordinator-owned service transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLive9pIoTransactionCheckpoint {
+    device: NinepSnapshot,
+    requests: SpscRingSnapshot,
+    responses: SpscRingSnapshot,
+    pending_fault_opportunities:
+        BTreeMap<(u64, NinepRequestIdentity), (NinepRequestOpportunity, bool)>,
+    frames_processed: usize,
+    frames_delivered: usize,
+    device_completion_deadline_icount: u64,
 }
 
 impl QemuLive9pIoServicer {
@@ -222,6 +237,123 @@ impl QemuLive9pIoServicer {
     #[must_use]
     pub const fn visibility_state(&self) -> &NinepVisibilityState {
         self.device.visibility_state()
+    }
+
+    /// Captures every mutable 9p component touched by one coordinated phase set.
+    ///
+    /// Unlike a lifecycle checkpoint, this internal rollback point is valid
+    /// while requests are in flight and carries no external execution binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either shared-memory ring cannot be snapshotted.
+    pub fn begin_transaction(
+        &mut self,
+    ) -> Result<QemuLive9pIoTransactionCheckpoint, QemuLive9pIoServicerError> {
+        let pair = self.ring_pair()?;
+        let requests = pair
+            .first
+            .header
+            .snapshot(pair.first.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        let responses = pair
+            .second
+            .header
+            .snapshot(pair.second.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        let device_completion_deadline_icount = pair.node_slot.device_completion_deadline_icount();
+        Ok(QemuLive9pIoTransactionCheckpoint {
+            device: self.device.snapshot(),
+            requests,
+            responses,
+            pending_fault_opportunities: self.pending_fault_opportunities.clone(),
+            frames_processed: self.frames_processed,
+            frames_delivered: self.frames_delivered,
+            device_completion_deadline_icount,
+        })
+    }
+
+    /// Restores a coordinator transaction after any phase or publication error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the device snapshot or either ring cannot be
+    /// restored. The request ring is returned to its pre-rollback contents if
+    /// restoring the response ring fails.
+    pub fn rollback_transaction(
+        &mut self,
+        checkpoint: QemuLive9pIoTransactionCheckpoint,
+    ) -> Result<(), QemuLive9pIoServicerError> {
+        let staged = NinepDevice::restore(&checkpoint.device, self.tree.clone())
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        let pair = self.ring_pair()?;
+        let prior_requests = pair
+            .first
+            .header
+            .snapshot(pair.first.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        pair.first
+            .header
+            .restore(pair.first.entries, &checkpoint.requests)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        if let Err(source) = pair
+            .second
+            .header
+            .restore(pair.second.entries, &checkpoint.responses)
+        {
+            pair.first
+                .header
+                .restore(pair.first.entries, &prior_requests)
+                .map_err(DeviceError::from)
+                .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+            return Err(QemuLive9pIoServicerError::Device {
+                source: DeviceError::from(source),
+            });
+        }
+        pair.node_slot
+            .store_device_completion_deadline_icount(checkpoint.device_completion_deadline_icount);
+        self.device = staged;
+        self.pending_fault_opportunities = checkpoint.pending_fault_opportunities;
+        self.frames_processed = checkpoint.frames_processed;
+        self.frames_delivered = checkpoint.frames_delivered;
+        Ok(())
+    }
+
+    /// Returns authenticated evidence for the response computed from one pin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless exactly one in-flight response has the pin's
+    /// completion coordinate and transport sequence.
+    pub fn computed_response_evidence(
+        &self,
+        pin: &QemuLive9pIoRequestPin,
+    ) -> Result<QemuLive9pResponseEvidence, QemuLive9pIoServicerError> {
+        let matches = self
+            .device
+            .snapshot()
+            .core
+            .inflight
+            .into_iter()
+            .filter(|pending| {
+                pending.key.delivery_icount == pin.completion_icount
+                    && pending.response.request_id == pin.opportunity.identity.transport_sequence
+            })
+            .collect::<Vec<_>>();
+        let [pending] = matches.as_slice() else {
+            return Err(QemuLive9pIoServicerError::ComputedResponseMismatch);
+        };
+        Ok(QemuLive9pResponseEvidence {
+            completion_icount: pending.key.delivery_icount,
+            transport_sequence: pending.response.request_id,
+            status: pending.response.status,
+            payload_len: pending.response.payload.len(),
+            payload_digest: *blake3::hash(&pending.response.payload).as_bytes(),
+        })
     }
 
     /// Consumes and computes at most one directive-authorized request.
@@ -772,6 +904,21 @@ pub struct QemuLive9pIoRequestPin {
     pub completion_icount: u64,
 }
 
+/// Exact response evidence captured after 9p COMPUTE and before publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuLive9pResponseEvidence {
+    /// Deterministic completion coordinate.
+    pub completion_icount: u64,
+    /// Echoed request-ring transport sequence.
+    pub transport_sequence: u32,
+    /// Uniform device response status.
+    pub status: ResponseStatus,
+    /// Encoded 9p response length.
+    pub payload_len: usize,
+    /// BLAKE3 digest of the complete encoded 9p response.
+    pub payload_digest: [u8; 32],
+}
+
 /// A shared diagnostic sink for one live 9p-I/O servicing run.
 ///
 /// Parallels [`crate::supervision::BlockIoDiagnostics`]: the servicing poll loop
@@ -953,6 +1100,9 @@ pub enum QemuLive9pIoServicerError {
     /// Device delivery count differs from the authorized opportunity set.
     #[error("9p delivered replies differ from pending fault opportunities")]
     PendingOpportunityMismatch,
+    /// The computed response did not uniquely match its pinned opportunity.
+    #[error("computed 9p response differs from its pinned fault opportunity")]
+    ComputedResponseMismatch,
     /// Checkpointed pending request metadata is malformed or non-canonical.
     #[error("9p checkpoint pending fault opportunities are invalid")]
     InvalidPendingOpportunities,
@@ -1007,7 +1157,80 @@ fn validate_pending_fault_opportunities(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::io::Write;
+    use std::os::fd::AsFd;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use crucible_shmem::{RegionAllocation, RegionConfig};
+
     use super::*;
+
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+    fn transaction_fixture() -> (fs::File, QemuLive9pIoServicer) {
+        let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))
+            .unwrap_or_else(|error| panic!("allocate test region: {error}"));
+        let layout = allocation.layout();
+        let bytes = allocation
+            .setup_region_bytes()
+            .unwrap_or_else(|error| panic!("serialize test region: {error}"));
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "crucible-ninep-servicer-transaction-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap_or_else(|error| panic!("create test region: {error}"));
+        fs::remove_file(&path).unwrap_or_else(|error| panic!("unlink test region: {error}"));
+        file.set_len(layout.region_size)
+            .unwrap_or_else(|error| panic!("size test region: {error}"));
+        file.write_all(&bytes)
+            .unwrap_or_else(|error| panic!("write test region: {error}"));
+        let servicer = QemuLive9pIoServicer::from_shmem_fd(file.as_fd(), layout.region_size, 0, 0)
+            .unwrap_or_else(|error| panic!("map test servicer: {error}"));
+        (file, servicer)
+    }
+
+    #[test]
+    fn transaction_rollback_restores_exact_live_state() {
+        let (_file, mut servicer) = transaction_fixture();
+        let before = servicer
+            .begin_transaction()
+            .unwrap_or_else(|error| panic!("capture transaction: {error}"));
+        servicer
+            .commit_visibility_update(
+                [7; 32],
+                NinepObjectVersion {
+                    path: String::from("/created"),
+                    version: 1,
+                    mode: 0o100_644,
+                    data: b"created".to_vec(),
+                    deleted: false,
+                },
+                NinepVisibilityPolicy {
+                    scope: crucible_device::NinepVisibilityScope::Global,
+                    atomic_metadata_and_data: true,
+                    retain_deleted_objects: false,
+                },
+                NinepVisibilityRelease::AtNanos(10),
+                0,
+            )
+            .unwrap_or_else(|error| panic!("mutate visibility: {error}"));
+        assert_ne!(servicer.visibility_state().committed_frontier(), 0);
+        servicer
+            .rollback_transaction(before.clone())
+            .unwrap_or_else(|error| panic!("rollback transaction: {error}"));
+        let restored = servicer
+            .begin_transaction()
+            .unwrap_or_else(|error| panic!("capture restored transaction: {error}"));
+        assert_eq!(restored, before);
+    }
 
     /// The fixed 9p tree is a pure constant: two independent constructions are
     /// byte-for-byte equal. Device-level icount purity (a request's delivery

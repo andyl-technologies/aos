@@ -26,19 +26,19 @@ use crucible_device::block::{
 use crucible_device::{
     FsTree, NinepLatency, NinepObjectVersion, NinepOperation, NinepRequestOpportunity,
     NinepResultDirective, NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityScope,
-    ResolvedNinepRequestDirective,
+    NinepVisibilityState, ResolvedNinepRequestDirective,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, QemuAsyncDriverRuntimeError, QemuBlockFaultCoordinator,
-    QemuLive9pIoServiceStep, QemuLive9pIoServicer, QemuLiveBlockIoDeliveryStep,
-    QemuLiveBlockIoIntakeStep, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,
-    QemuNinepFaultCoordinator, QemuSharedBlockDevice, ResolvedVolatileCacheLoss,
-    StorageFaultResolutionContext, StorageFaultResolutionError, VolatileCacheLossReplay,
-    block_delivery_fault_opportunity, block_durability_config, block_persistence_fault_opportunity,
-    block_request_fault_opportunity, block_request_persistence_fault_opportunity,
-    merge_block_fault_phase_directive, resolve_block_fault_directive,
-    resolve_block_persistence_media_directive, resolve_volatile_cache_loss,
-    storage_recovery_event_key,
+    QemuLive9pIoServiceStep, QemuLive9pIoServicer, QemuLive9pResponseEvidence,
+    QemuLiveBlockIoDeliveryStep, QemuLiveBlockIoIntakeStep, QemuLiveBlockIoServiceStep,
+    QemuLiveBlockIoServicer, QemuNinepFaultCoordinator, QemuSharedBlockDevice,
+    ResolvedVolatileCacheLoss, StorageFaultResolutionContext, StorageFaultResolutionError,
+    VolatileCacheLossReplay, block_delivery_fault_opportunity, block_durability_config,
+    block_persistence_fault_opportunity, block_request_fault_opportunity,
+    block_request_persistence_fault_opportunity, merge_block_fault_phase_directive,
+    resolve_block_fault_directive, resolve_block_persistence_media_directive,
+    resolve_volatile_cache_loss, storage_recovery_event_key,
 };
 
 /// Maximum phase/device settle transitions performed during one host poll.
@@ -1520,10 +1520,9 @@ impl ProductionNinepFaultCoordinator {
         &self,
         request: &NinepRequestOpportunity,
         actions: &[ResolvedBindingAction],
-    ) -> Result<(NinepResultDirective, Vec<FaultObservation>), QemuAsyncDriverRuntimeError> {
+    ) -> Result<NinepResultDirective, QemuAsyncDriverRuntimeError> {
         let operation = Self::operation(request.operation);
         let mut selected = NinepResultDirective::Normal;
-        let mut observations = Vec::new();
         for action in actions {
             let EffectSpecification::Storage(StorageEffectSpecification::NinePResult {
                 operations,
@@ -1567,24 +1566,14 @@ impl ProductionNinepFaultCoordinator {
             {
                 selected = candidate;
             }
-            observations.push(FaultObservation {
-                semantic_version: FAULT_RUNTIME_STATE_VERSION,
-                kind: FaultObservationKind::EffectApplied,
-                coordinate: action.coordinate,
-                binding: Some(action.binding.clone()),
-                target: Some(action.target.clone()),
-                opportunity: action.opportunity,
-                evidence: action.mapped_digest,
-            });
         }
-        Ok((selected, observations))
+        Ok(selected)
     }
 
     fn apply_visibility(
         &self,
         servicer: &mut QemuLive9pIoServicer,
         actions: &[ResolvedBindingAction],
-        now_nanos: u64,
     ) -> Result<Vec<FaultObservation>, QemuAsyncDriverRuntimeError> {
         let mut observations = Vec::new();
         for action in actions {
@@ -1601,11 +1590,15 @@ impl ProductionNinepFaultCoordinator {
                 ));
             };
             let release = match (delay_nanos, visibility_event) {
-                (Some(delay), None) => {
-                    NinepVisibilityRelease::AtNanos(now_nanos.checked_add(delay.get()).ok_or_else(
-                        || storage_error("apply 9p visibility", "visibility deadline overflow"),
-                    )?)
-                }
+                (Some(delay), None) => NinepVisibilityRelease::AtNanos(
+                    action
+                        .coordinate
+                        .virtual_nanos
+                        .checked_add(delay.get())
+                        .ok_or_else(|| {
+                            storage_error("apply 9p visibility", "visibility deadline overflow")
+                        })?,
+                ),
                 (None, Some(event)) => {
                     NinepVisibilityRelease::OnEvent(storage_recovery_event_key(event))
                 }
@@ -1618,15 +1611,22 @@ impl ProductionNinepFaultCoordinator {
             };
             let update_id = ContentHash::from_canonical_material(
                 "crucible.ninep.visibility-update.v1",
-                update.as_str(),
+                &format!(
+                    "action={}\nupdate={}",
+                    action.id().to_hex(),
+                    update.as_str()
+                ),
             );
-            servicer
+            let object = self.object(update)?;
+            let policy = self.visibility_policy(visibility_policy)?;
+            let data_lag_nanos = self.visibility_data_lag(visibility_policy)?;
+            let sequence = servicer
                 .commit_visibility_update(
                     update_id.bytes,
-                    self.object(update)?,
-                    self.visibility_policy(visibility_policy)?,
+                    object.clone(),
+                    policy,
                     release,
-                    self.visibility_data_lag(visibility_policy)?,
+                    data_lag_nanos,
                 )
                 .map_err(|error| storage_error("apply 9p visibility", error))?;
             observations.push(FaultObservation {
@@ -1636,7 +1636,16 @@ impl ProductionNinepFaultCoordinator {
                 binding: Some(action.binding.clone()),
                 target: Some(action.target.clone()),
                 opportunity: action.opportunity,
-                evidence: action.mapped_digest,
+                evidence: ninep_visibility_evidence(
+                    action,
+                    update_id,
+                    sequence,
+                    &object,
+                    policy,
+                    release,
+                    data_lag_nanos,
+                    servicer.visibility_state(),
+                ),
             });
         }
         Ok(observations)
@@ -1690,10 +1699,8 @@ impl ProductionNinepFaultCoordinator {
             .map(crucible::model::PositiveU64::get)
             .unwrap_or_default())
     }
-}
 
-impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
-    fn service_ninep_io(
+    fn service_ninep_io_transaction(
         &mut self,
         servicer: &mut QemuLive9pIoServicer,
         guest_icount: u64,
@@ -1711,11 +1718,7 @@ impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
                 FaultPhase::Visibility,
                 completion_icount,
             )?)?;
-            let applied = self.apply_visibility(
-                servicer,
-                &visibility.actions,
-                self.virtual_nanos(completion_icount)?,
-            )?;
+            let applied = self.apply_visibility(servicer, &visibility.actions)?;
             self.observations
                 .lock()
                 .map_err(|_| storage_error("record 9p visibility", "journal is poisoned"))?
@@ -1725,11 +1728,7 @@ impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
                 FaultPhase::Deliver,
                 completion_icount,
             )?)?;
-            let applied = self.apply_visibility(
-                servicer,
-                &deliver.actions,
-                self.virtual_nanos(completion_icount)?,
-            )?;
+            let applied = self.apply_visibility(servicer, &deliver.actions)?;
             self.observations
                 .lock()
                 .map_err(|_| storage_error("record 9p delivery", "journal is poisoned"))?
@@ -1756,11 +1755,7 @@ impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
                 FaultPhase::Resolve,
                 pin.opportunity.request_icount,
             )?)?;
-            let (selected, applied) = self.resolve_result(&pin.opportunity, &resolve.actions)?;
-            self.observations
-                .lock()
-                .map_err(|_| storage_error("record 9p result", "journal is poisoned"))?
-                .append(resolve.journal_sequence, applied)?;
+            let selected = self.resolve_result(&pin.opportunity, &resolve.actions)?;
             servicer
                 .install_fault_directive(
                     pin.opportunity.request_icount,
@@ -1769,7 +1764,7 @@ impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
                     ResolvedNinepRequestDirective {
                         identity: pin.opportunity.identity,
                         operation: pin.opportunity.operation,
-                        result: selected,
+                        result: selected.clone(),
                     },
                 )
                 .map_err(|error| storage_error("install 9p result", error))?;
@@ -1778,7 +1773,7 @@ impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
                 FaultPhase::Persist,
                 pin.opportunity.request_icount,
             )?)?;
-            let applied = self.apply_visibility(servicer, &persist.actions, now_nanos)?;
+            let applied = self.apply_visibility(servicer, &persist.actions)?;
             self.observations
                 .lock()
                 .map_err(|_| storage_error("record 9p persistence", "journal is poisoned"))?
@@ -1786,12 +1781,96 @@ impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
             let processed = servicer
                 .process_one_request(&pin)
                 .map_err(|error| storage_error("process coordinated 9p request", error))?;
+            let response = servicer
+                .computed_response_evidence(&pin)
+                .map_err(|error| storage_error("record computed 9p response", error))?;
+            let applied = resolve
+                .actions
+                .iter()
+                .filter(|action| {
+                    matches!(
+                        action.effect.specification(),
+                        EffectSpecification::Storage(StorageEffectSpecification::NinePResult {
+                            operations,
+                            ..
+                        }) if operations.contains(Self::operation(pin.opportunity.operation))
+                    )
+                })
+                .map(|action| FaultObservation {
+                    semantic_version: FAULT_RUNTIME_STATE_VERSION,
+                    kind: FaultObservationKind::EffectApplied,
+                    coordinate: action.coordinate,
+                    binding: Some(action.binding.clone()),
+                    target: Some(action.target.clone()),
+                    opportunity: action.opportunity,
+                    evidence: ninep_result_evidence(action, &pin.opportunity, &selected, response),
+                })
+                .collect();
+            self.observations
+                .lock()
+                .map_err(|_| storage_error("record 9p result", "journal is poisoned"))?
+                .append(resolve.journal_sequence, applied)?;
             result.processed = processed.processed;
             result.first_request_icount = processed.first_request_icount;
             result.computed_completion_icount = processed.computed_completion_icount;
             result.next_completion_icount = processed.next_completion_icount;
         }
         Ok(result)
+    }
+}
+
+impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
+    fn service_ninep_io(
+        &mut self,
+        servicer: &mut QemuLive9pIoServicer,
+        guest_icount: u64,
+    ) -> Result<QemuLive9pIoServiceStep, QemuAsyncDriverRuntimeError> {
+        let servicer_before = servicer
+            .begin_transaction()
+            .map_err(|error| storage_error("begin coordinated 9p transaction", error))?;
+        let runtime_before = self
+            .runtime
+            .lock()
+            .map_err(|_| storage_error("begin coordinated 9p transaction", "runtime is poisoned"))?
+            .clone();
+        let cursor_before = *self
+            .cursor
+            .lock()
+            .map_err(|_| storage_error("begin coordinated 9p transaction", "cursor is poisoned"))?;
+        let observations_before = self
+            .observations
+            .lock()
+            .map_err(|_| storage_error("begin coordinated 9p transaction", "journal is poisoned"))?
+            .clone();
+
+        let error = match self.service_ninep_io_transaction(servicer, guest_icount) {
+            Ok(result) => return Ok(result),
+            Err(error) => error,
+        };
+        let mut rollback_failures = Vec::new();
+        if let Err(rollback) = servicer.rollback_transaction(servicer_before) {
+            rollback_failures.push(format!("servicer rollback failed: {rollback}"));
+        }
+        match self.runtime.lock() {
+            Ok(mut runtime) => *runtime = runtime_before,
+            Err(_) => rollback_failures.push(String::from("runtime rollback lock is poisoned")),
+        }
+        match self.cursor.lock() {
+            Ok(mut cursor) => *cursor = cursor_before,
+            Err(_) => rollback_failures.push(String::from("cursor rollback lock is poisoned")),
+        }
+        match self.observations.lock() {
+            Ok(mut observations) => *observations = observations_before,
+            Err(_) => rollback_failures.push(String::from("journal rollback lock is poisoned")),
+        }
+        if rollback_failures.is_empty() {
+            Err(error)
+        } else {
+            Err(storage_error(
+                "roll back coordinated 9p transaction",
+                format!("{error}; {}", rollback_failures.join("; ")),
+            ))
+        }
     }
 }
 
@@ -1905,6 +1984,107 @@ fn retained_release_evidence(
             identity.epoch,
             identity.request_id,
             cause.map_or_else(|| String::from("none"), |value| value.to_hex()),
+        ),
+    )
+}
+
+fn ninep_object_evidence(object: &NinepObjectVersion) -> String {
+    format!(
+        "path={}\nversion={}\nmode={}\ndeleted={}\ndata_len={}\ndata_digest={}",
+        object.path,
+        object.version,
+        object.mode,
+        object.deleted,
+        object.data.len(),
+        ContentHash {
+            bytes: *blake3::hash(&object.data).as_bytes(),
+        }
+        .to_hex(),
+    )
+}
+
+fn ninep_result_evidence(
+    action: &ResolvedBindingAction,
+    request: &NinepRequestOpportunity,
+    selected: &NinepResultDirective,
+    response: QemuLive9pResponseEvidence,
+) -> ContentHash {
+    let result = match selected {
+        NinepResultDirective::Normal => String::from("kind=normal"),
+        NinepResultDirective::Errno(errno) => format!("kind=errno\nerrno={errno}"),
+        NinepResultDirective::Stale(object) => {
+            format!("kind=stale\n{}", ninep_object_evidence(object))
+        }
+        NinepResultDirective::Misdirected(object) => {
+            format!("kind=misdirected\n{}", ninep_object_evidence(object))
+        }
+    };
+    let status = match response.status {
+        crucible_device::ResponseStatus::Ok => "ok",
+        crucible_device::ResponseStatus::Error => "error",
+    };
+    ContentHash::from_canonical_material(
+        "crucible.ninep-result-evidence.v1",
+        &format!(
+            "action={}\nrequest_icount={}\ntransport_sequence={}\ntag={}\nrequest_digest={}\noperation={:?}\n{result}\ncompletion_icount={}\nresponse_transport_sequence={}\nresponse_status={status}\nresponse_len={}\nresponse_digest={}",
+            action.id().to_hex(),
+            request.identity.request_icount,
+            request.identity.transport_sequence,
+            request.identity.tag,
+            ContentHash {
+                bytes: request.identity.digest,
+            }
+            .to_hex(),
+            request.operation,
+            response.completion_icount,
+            response.transport_sequence,
+            response.payload_len,
+            ContentHash {
+                bytes: response.payload_digest,
+            }
+            .to_hex(),
+        ),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ninep_visibility_evidence(
+    action: &ResolvedBindingAction,
+    update_id: ContentHash,
+    sequence: u64,
+    object: &NinepObjectVersion,
+    policy: NinepVisibilityPolicy,
+    release: NinepVisibilityRelease,
+    data_lag_nanos: u64,
+    state: &NinepVisibilityState,
+) -> ContentHash {
+    let scope = match policy.scope {
+        NinepVisibilityScope::Global => "global",
+        NinepVisibilityScope::PerSession => "per_session",
+        NinepVisibilityScope::WriterImmediate => "writer_immediate",
+    };
+    let release = match release {
+        NinepVisibilityRelease::AtNanos(nanos) => format!("at_nanos:{nanos}"),
+        NinepVisibilityRelease::OnEvent(event) => {
+            format!("on_event:{}", ContentHash { bytes: event }.to_hex(),)
+        }
+    };
+    let frontiers = state
+        .session_frontiers()
+        .into_iter()
+        .map(|(session, metadata, data)| format!("{session}:{metadata}:{data}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    ContentHash::from_canonical_material(
+        "crucible.ninep-visibility-evidence.v1",
+        &format!(
+            "action={}\nupdate_id={}\nsequence={sequence}\n{}\nscope={scope}\natomic_metadata_and_data={}\nretain_deleted_objects={}\nrelease={release}\ndata_lag_nanos={data_lag_nanos}\ncommitted_frontier={}\nsession_frontiers={frontiers}",
+            action.id().to_hex(),
+            update_id.to_hex(),
+            ninep_object_evidence(object),
+            policy.atomic_metadata_and_data,
+            policy.retain_deleted_objects,
+            state.committed_frontier(),
         ),
     )
 }

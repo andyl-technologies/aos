@@ -112,8 +112,9 @@ pub use netlink::{
 pub use ninep::{
     FsTree, FsTreeDecodeError, NinepDevice, NinepLatency, NinepObjectVersion, NinepOperation,
     NinepRequestIdentity, NinepRequestOpportunity, NinepResultDirective, NinepServer,
-    NinepServerSnapshot, NinepSnapshot, NinepVisibilityPolicy, NinepVisibilityRelease,
-    NinepVisibilityScope, NinepVisibilityState, Node, Qid, QidType, ResolvedNinepRequestDirective,
+    NinepServerSnapshot, NinepSnapshot, NinepVirtualFid, NinepVisibilityLookup,
+    NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityScope, NinepVisibilityState,
+    Node, Qid, QidType, ResolvedNinepRequestDirective,
 };
 pub use request::{
     AdditionalCompletion, AffineLatency, ComputedResponse, LatencyModel, Request, RequestId,

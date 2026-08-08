@@ -256,7 +256,9 @@ pub enum BlockFaultMisdirectionDestination {
 pub struct BlockExternalDurabilityDependency {
     /// Content identity of the authoritative destination block device.
     pub destination_device: [u8; 32],
-    /// Destination cache sequence that must be included in its durable frontier.
+    /// Destination's configured acknowledgement stage for the redirected write.
+    pub required_durability: BlockCompletionDurability,
+    /// Destination cache sequence that must be included in that stage's frontier.
     pub required_frontier: u64,
 }
 
@@ -2652,6 +2654,21 @@ impl BlockFaultState {
         self.actual_durable_frontier
     }
 
+    /// Returns the frontier acknowledged by one completion-durability stage.
+    ///
+    /// Controller and volatile-cache acknowledgement are irrevocable guest
+    /// completion events once admission commits, even if a later modeled reset
+    /// or power loss removes the accepted bytes. Durable acknowledgement instead
+    /// follows the exact contiguous media frontier.
+    #[must_use]
+    pub const fn completion_frontier(&self, durability: BlockCompletionDurability) -> u64 {
+        match durability {
+            BlockCompletionDurability::ControllerAccepted
+            | BlockCompletionDurability::VolatileCacheAccepted => self.next_cache_sequence,
+            BlockCompletionDurability::Durable => self.actual_durable_frontier,
+        }
+    }
+
     /// Returns the frontier most recently reported durable to the guest.
     #[must_use]
     pub const fn reported_durable_frontier(&self) -> u64 {
@@ -3846,7 +3863,7 @@ impl BlockFaultState {
     ///
     /// The destination uses its own geometry and normal durability policy at
     /// `admitted_nanos`, the source persistence opportunity's exact coordinate.
-    /// The returned frontier identifies the exact destination durability
+    /// The returned stage and frontier identify the exact destination completion
     /// acknowledgement that must gate source delivery. The multi-device owner is
     /// responsible for executing this method on cloned source/destination devices
     /// and committing both together.
@@ -3864,7 +3881,7 @@ impl BlockFaultState {
         admitted_nanos: u64,
         destination_offset: u64,
         bytes: Vec<u8>,
-    ) -> Result<u64, DeviceError> {
+    ) -> Result<(BlockCompletionDurability, u64), DeviceError> {
         let request = BlockRequest::write(request_id, destination_offset, bytes);
         let mut directive =
             ResolvedBlockFaultDirective::fault_free(&request, self.config.length_bytes);
@@ -3880,7 +3897,9 @@ impl BlockFaultState {
             });
         }
         match self.apply_write(base, durable, &request, &directive)? {
-            BlockWriteOutcome::Applied(_persistence_wait_nanos) => Ok(self.next_cache_sequence),
+            BlockWriteOutcome::Applied(_persistence_wait_nanos) => {
+                Ok((self.config.completion_durability, self.next_cache_sequence))
+            }
             BlockWriteOutcome::Rejected(_) => Err(DeviceError::BlockCacheFull {
                 requested_bytes: u64::from(request.count),
                 available_bytes: self
@@ -5658,6 +5677,30 @@ mod tests {
             completion_durability: durability,
         })
         .unwrap_or_else(|error| panic!("valid test state: {error}"))
+    }
+
+    #[test]
+    fn external_write_dependency_uses_the_destination_completion_policy() {
+        for durability in [
+            BlockCompletionDurability::ControllerAccepted,
+            BlockCompletionDurability::VolatileCacheAccepted,
+            BlockCompletionDurability::Durable,
+        ] {
+            let base = BaseImage::new(vec![0; 32]);
+            let mut durable = CowOverlay::new();
+            let mut storage = state(durability);
+            let (required_durability, required_frontier) = storage
+                .apply_external_write(&base, &mut durable, 7, 11, 13, 0, vec![0x5a; 4])
+                .unwrap_or_else(|error| panic!("external write should apply: {error}"));
+            assert_eq!(required_durability, durability);
+            assert_eq!(required_frontier, 4);
+            if durability != BlockCompletionDurability::Durable {
+                assert!(
+                    storage.completion_frontier(durability) >= required_frontier,
+                    "controller and cache acceptance must not wait for media"
+                );
+            }
+        }
     }
 
     fn reset_transition() -> ResolvedBlockControllerTransition {
