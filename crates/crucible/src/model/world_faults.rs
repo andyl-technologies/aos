@@ -2467,6 +2467,8 @@ pub struct WorldNodeFaultCapabilities {
         serialize_with = "super::toml::serialize_u64_toml_number_or_string"
     )]
     pub page_bytes: u64,
+    /// Exact GPA-to-DRAM coordinate mapping implemented by patched QEMU.
+    pub dram_geometry: WorldNodeDramGeometry,
     /// Exact routable interrupt manifest.
     pub interrupts: Vec<WorldNodeInterrupt>,
     /// Registered guest-visible clock sources.
@@ -2486,6 +2488,7 @@ impl WorldNodeFaultCapabilities {
             "node capability semantic version",
         )?;
         require(self.page_bytes.is_power_of_two(), "node page geometry")?;
+        self.dram_geometry.validate()?;
         require(!self.registers.is_empty(), "node register manifest")?;
         require(!self.address_spaces.is_empty(), "node address spaces")?;
         for register in &self.registers {
@@ -2525,6 +2528,48 @@ impl WorldNodeFaultCapabilities {
             "node accelerator semantic version",
         )?;
         hard_count(&self.accelerators, "node accelerators", 1_024)
+    }
+}
+
+/// Exact striped DRAM geometry used by memory-region fault processes.
+///
+/// A physical address is split into `interleave_bytes` lines. Successive lines
+/// select channel, then bank, then rank; the remaining byte coordinate selects
+/// the row using the row size declared by the rowhammer effect. This is the
+/// `2c2r16b64` mapping implemented by the current patched-QEMU capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldNodeDramGeometry {
+    /// Number of interleaved memory channels.
+    pub channels: u16,
+    /// Number of ranks per channel.
+    pub ranks: u16,
+    /// Number of banks per rank.
+    pub banks: u16,
+    /// Number of consecutive bytes assigned before selecting the next channel.
+    pub interleave_bytes: u16,
+    /// Exact geometry schema semantic version.
+    pub semantic_version: u16,
+}
+
+impl WorldNodeDramGeometry {
+    /// Returns the only DRAM mapping implemented by the current QEMU patch set.
+    #[must_use]
+    pub const fn qemu_v1() -> Self {
+        Self {
+            channels: 2,
+            ranks: 2,
+            banks: 16,
+            interleave_bytes: 64,
+            semantic_version: 1,
+        }
+    }
+
+    fn validate(self) -> Result<(), WorldFaultTopologyError> {
+        require(
+            self == Self::qemu_v1(),
+            "node DRAM geometry must match qemu 2c2r16b64",
+        )
     }
 }
 
@@ -3067,5 +3112,23 @@ mod tests {
             ResolvedFaultTarget::NetworkQueue { queue, .. }
                 if queue.as_str() == "owner-only-queue"
         )));
+    }
+
+    #[test]
+    fn node_dram_geometry_accepts_only_the_live_qemu_mapping() {
+        WorldNodeDramGeometry::qemu_v1()
+            .validate()
+            .unwrap_or_else(|error| panic!("live QEMU geometry should validate: {error}"));
+
+        let unsupported = WorldNodeDramGeometry {
+            channels: 4,
+            ..WorldNodeDramGeometry::qemu_v1()
+        };
+        assert!(matches!(
+            unsupported.validate(),
+            Err(WorldFaultTopologyError::Invalid(
+                "node DRAM geometry must match qemu 2c2r16b64"
+            ))
+        ));
     }
 }

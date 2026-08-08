@@ -55,6 +55,10 @@ pub mod node_fault_field {
     pub const P8: u16 = 8;
     /// Ninth command-specific parameter.
     pub const P9: u16 = 9;
+    /// Tenth command-specific parameter.
+    pub const P10: u16 = 10;
+    /// Eleventh command-specific parameter.
+    pub const P11: u16 = 11;
     /// First target-specific coordinate.
     pub const T1: u16 = 100;
     /// Second target-specific coordinate.
@@ -664,6 +668,8 @@ impl NodeFaultPayloadV1 {
                 (P7, Ty::Bytes),
                 (P8, Ty::U32),
                 (P9, Ty::Bool),
+                (P10, Ty::Bool),
+                (P11, Ty::Hash),
             ][..],
             FaultCommandKind::MemoryEccEvent => &[
                 (P1, Ty::U32),
@@ -804,6 +810,14 @@ impl NodeFaultPayloadV1 {
                 let kind = self.u32_field(P3)?;
                 let has_value = self.bool_field(P5)?;
                 let violate_atomicity = self.bool_field(P9)?;
+                let has_dma_device = self.bool_field(P10)?;
+                let dma_device_valid = if has_dma_device {
+                    !self.hash_is_zero(P11)?
+                        && self.u32_field(P8)? & !0x18 == 0
+                        && !self.bool_field(T3)?
+                } else {
+                    self.hash_is_zero(P11)?
+                };
                 let mask = self.field_with_tag(P4)?.value.as_slice();
                 let value = self.field_with_tag(P6)?.value.as_slice();
                 let mask_has_one = mask.iter().any(|byte| *byte != 0);
@@ -823,7 +837,7 @@ impl NodeFaultPayloadV1 {
                     5 => has_value && !violate_atomicity && mask == [0],
                     _ => false,
                 };
-                if valid {
+                if valid && dma_device_valid {
                     Ok(())
                 } else {
                     Err(NodeFaultPayloadError::FieldValue { tag: P3 })
@@ -1254,6 +1268,8 @@ pub(crate) fn emit_fault_node_c_header(out: &mut String) {
         ("P7", node_fault_field::P7),
         ("P8", node_fault_field::P8),
         ("P9", node_fault_field::P9),
+        ("P10", node_fault_field::P10),
+        ("P11", node_fault_field::P11),
         ("T1", node_fault_field::T1),
         ("T2", node_fault_field::T2),
         ("T3", node_fault_field::T3),
@@ -1368,6 +1384,16 @@ mod tests {
                 .find(|field| field.tag == node_fault_field::P9)
                 .expect("memory atomicity field exists");
             *violate_atomicity = NodeFaultFieldV1::boolean(node_fault_field::P9, false);
+            let has_dma_device = fields
+                .iter_mut()
+                .find(|field| field.tag == node_fault_field::P10)
+                .expect("memory DMA selector-presence field exists");
+            *has_dma_device = NodeFaultFieldV1::boolean(node_fault_field::P10, false);
+            let dma_device = fields
+                .iter_mut()
+                .find(|field| field.tag == node_fault_field::P11)
+                .expect("memory DMA selector field exists");
+            *dma_device = NodeFaultFieldV1::hash(node_fault_field::P11, [0; 32]);
         }
         if command_kind == FaultCommandKind::AcceleratorMemoryEvent {
             let has_transform = fields
@@ -1561,6 +1587,8 @@ mod tests {
                     (P7, Ty::Bytes),
                     (P8, Ty::U32),
                     (P9, Ty::Bool),
+                    (P10, Ty::Bool),
+                    (P11, Ty::Hash),
                 ],
                 memory,
             ),
@@ -1737,6 +1765,8 @@ mod tests {
             (P7, Ty::Bytes),
             (P8, Ty::U32),
             (P9, Ty::Bool),
+            (P10, Ty::Bool),
+            (P11, Ty::Hash),
         ];
         let target = &[
             (T1, Ty::Hash),

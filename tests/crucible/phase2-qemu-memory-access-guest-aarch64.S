@@ -1,5 +1,11 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
+.arch armv8.1-a+lse
+
+.ifndef TEST_MODE
+.set TEST_MODE, 1
+.endif
+
 .section .text
 .global _start
 _start:
@@ -16,22 +22,175 @@ _start:
     orr x0, x0, #1
     msr sctlr_el1, x0
     isb
-    adrp x1, fault_target
-    add x1, x1, :lo12:fault_target
-    adrp x2, fault_result
-    add x2, x2, :lo12:fault_result
+    mov x0, #20000
 1:
+    subs x0, x0, #1
+    b.ne 1b
+
+.if TEST_MODE == 1
+    adrp x1, aligned_target
+    add x1, x1, :lo12:aligned_target
+    adrp x2, aligned_result
+    add x2, x2, :lo12:aligned_result
     ldrb w0, [x1]
     strb w0, [x2]
-    b 1b
+.elseif TEST_MODE == 2
+    adrp x1, unaligned_target
+    add x1, x1, :lo12:unaligned_target
+    adrp x2, unaligned_result
+    add x2, x2, :lo12:unaligned_result
+    ldr w0, [x1]
+    str w0, [x2]
+.elseif TEST_MODE == 3
+    adrp x1, cross_page_target
+    add x1, x1, :lo12:cross_page_target
+    adrp x2, cross_page_result
+    add x2, x2, :lo12:cross_page_result
+    ldr x0, [x1]
+    str x0, [x2]
+.elseif TEST_MODE == 4
+    adrp x1, aligned_target
+    add x1, x1, :lo12:aligned_target
+    adrp x2, aligned_result
+    add x2, x2, :lo12:aligned_result
+    mov w0, #0xa5a5
+    movk w0, #0xa5a5, lsl #16
+    str w0, [x1]
+    ldr w0, [x1]
+    str w0, [x2]
+.elseif TEST_MODE == 5
+    adrp x1, unaligned_target
+    add x1, x1, :lo12:unaligned_target
+    adrp x2, unaligned_result
+    add x2, x2, :lo12:unaligned_result
+    mov w0, #0xa5a5
+    movk w0, #0xa5a5, lsl #16
+    str w0, [x1]
+    ldr w0, [x1]
+    str w0, [x2]
+.elseif TEST_MODE == 6
+    adrp x1, cross_page_target
+    add x1, x1, :lo12:cross_page_target
+    adrp x2, cross_page_result
+    add x2, x2, :lo12:cross_page_result
+    mov x0, #0xa5a5
+    movk x0, #0xa5a5, lsl #16
+    movk x0, #0xa5a5, lsl #32
+    movk x0, #0xa5a5, lsl #48
+    str x0, [x1]
+    ldr x0, [x1]
+    str x0, [x2]
+.elseif TEST_MODE == 7
+    bl fault_fetch
+.elseif TEST_MODE >= 8 && TEST_MODE <= 13
+    adrp x4, atomic_target
+    add x4, x4, :lo12:atomic_target
+    adrp x5, atomic_result
+    add x5, x5, :lo12:atomic_result
+.if TEST_MODE == 8
+    mov w0, #0xa5
+    swpb w0, w1, [x4]
+    ldrb w0, [x4]
+    strb w0, [x5]
+.elseif TEST_MODE == 9
+    mov w0, #0xa5a5
+    swph w0, w1, [x4]
+    ldrh w0, [x4]
+    strh w0, [x5]
+.elseif TEST_MODE == 10
+    mov w0, #0xa5a5
+    movk w0, #0xa5a5, lsl #16
+    swp w0, w1, [x4]
+    ldr w0, [x4]
+    str w0, [x5]
+.elseif TEST_MODE == 11
+    mov x0, #0xa5a5
+    movk x0, #0xa5a5, lsl #16
+    movk x0, #0xa5a5, lsl #32
+    movk x0, #0xa5a5, lsl #48
+    swp x0, x1, [x4]
+    ldr x0, [x4]
+    str x0, [x5]
+.elseif TEST_MODE == 12
+    mov x0, #0x5a5a
+    movk x0, #0x5a5a, lsl #16
+    movk x0, #0x5a5a, lsl #32
+    movk x0, #0x5a5a, lsl #48
+    mov x1, x0
+    mov x2, #0xa5a5
+    movk x2, #0xa5a5, lsl #16
+    movk x2, #0xa5a5, lsl #32
+    movk x2, #0xa5a5, lsl #48
+    mov x3, x2
+    casp x0, x1, x2, x3, [x4]
+    ldp x0, x1, [x4]
+    stp x0, x1, [x5]
+.elseif TEST_MODE == 13
+    mov x0, #0
+    mov x1, #0
+    mov x2, #0xa5a5
+    movk x2, #0xa5a5, lsl #16
+    movk x2, #0xa5a5, lsl #32
+    movk x2, #0xa5a5, lsl #48
+    mov x3, x2
+    casp x0, x1, x2, x3, [x4]
+    stp x0, x1, [x5]
+.endif
+.else
+    .error "unknown TEST_MODE"
+.endif
+2:
+    wfe
+    b 2b
+
+.section .fault_text, "ax"
+.global fault_fetch
+.global fetch_instruction
+fault_fetch:
+fetch_instruction:
+    .word 0x52800b40
+    adrp x1, fetch_result
+    add x1, x1, :lo12:fetch_result
+    strb w0, [x1]
+    ret
 
 .section .fault_data, "aw"
-.global fault_target
-fault_target:
-    .byte 0x5a
-.global fault_result
-fault_result:
-    .byte 0x00
+.global aligned_target
+aligned_target:
+    .fill 16, 1, 0x5a
+.org 0x100
+.global aligned_result
+aligned_result:
+    .fill 16, 1, 0
+.org 0x201
+.global unaligned_target
+unaligned_target:
+    .fill 16, 1, 0x5a
+.org 0x300
+.global unaligned_result
+unaligned_result:
+    .fill 16, 1, 0
+.org 0xffc
+.global cross_page_target
+cross_page_target:
+    .fill 16, 1, 0x5a
+.org 0x1100
+.global cross_page_result
+cross_page_result:
+    .fill 16, 1, 0
+.org 0x1200
+.global atomic_target
+.balign 16
+atomic_target:
+    .fill 16, 1, 0x5a
+.org 0x1300
+.global atomic_result
+atomic_result:
+    .fill 16, 1, 0
+.org 0x1400
+.global fetch_result
+fetch_result:
+    .byte 0
 
 .section .page_tables, "aw"
 .align 12

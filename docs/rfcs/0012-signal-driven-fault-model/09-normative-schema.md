@@ -473,8 +473,14 @@ fallback.
 
 Node declarations add a required `[world.node.fault_capabilities]` table naming
 architecture, register schema, memory address spaces/page geometry, interrupt
-controllers, clock sources, and accelerator devices. Values must equal the live
-QEMU capability handshake; authors cannot claim capabilities absent from QEMU.
+controllers, clock sources, accelerator devices, and an exact DRAM geometry.
+The v1 DRAM geometry is `{ channels = 2, ranks = 2, banks = 16,
+interleave_bytes = 64, semantic_version = 1 }`: successive 64-byte GPA lines
+select channel, bank, then rank, and the remaining coordinate selects the row
+using the `row_bytes` declared by the rowhammer effect. Values must equal the
+live QEMU capability handshake; authors cannot claim capabilities absent from
+QEMU. The geometry is canonical world content and therefore participates in
+scenario identity, checkpoint admission, and replay validation.
 
 ## 9.8 Capability and resource declarations
 

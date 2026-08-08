@@ -281,8 +281,6 @@ pub enum MemoryPoisonPolicy {
     Corrected {
         /// Repeated correction/corruption mask applied before return.
         xor_mask: HexBytes,
-        /// Architecture interrupt/vector used for corrected telemetry.
-        vector: u32,
     },
     /// Raises one architecture exception with complete numeric fields.
     Exception {
@@ -790,6 +788,9 @@ pub enum NodeEffectSpecification {
         range: ByteRange,
         /// Explicit CPU/fetch/DMA access classes selected by the rule.
         accesses: MemoryAccessClasses,
+        /// Optional canonical device identity restricting DMA opportunities.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dma_device: Option<FaultObjectId>,
         /// Allows a torn-write rule to violate a supported atomic access.
         violate_atomicity: bool,
         /// Typed access mutation.
@@ -1059,6 +1060,7 @@ impl NodeEffectSpecification {
             }
             Self::MemoryAccessTransform {
                 accesses,
+                dma_device,
                 violate_atomicity,
                 mutation,
                 ..
@@ -1081,7 +1083,7 @@ impl NodeEffectSpecification {
                             && selector.iter().any(|byte| *byte != u8::MAX)
                     }
                     MemoryAccessMutation::Poison {
-                        policy: MemoryPoisonPolicy::Corrected { xor_mask, .. },
+                        policy: MemoryPoisonPolicy::Corrected { xor_mask },
                     } => hex_has_nonzero(xor_mask),
                     MemoryAccessMutation::Poison {
                         policy: MemoryPoisonPolicy::Exception { exception },
@@ -1092,13 +1094,43 @@ impl NodeEffectSpecification {
                 };
                 let access_compatible = match mutation {
                     MemoryAccessMutation::ReadCorrupt { .. } => {
-                        accesses.fetch || accesses.cpu_load || accesses.dma_read
+                        (accesses.fetch || accesses.cpu_load || accesses.dma_read)
+                            && !accesses.cpu_store
+                            && !accesses.dma_write
+                    }
+                    MemoryAccessMutation::LostWrite | MemoryAccessMutation::TornWrite { .. } => {
+                        (accesses.cpu_store || accesses.dma_write)
+                            && !accesses.fetch
+                            && !accesses.cpu_load
+                            && !accesses.dma_read
+                    }
+                    MemoryAccessMutation::Poison {
+                        policy: MemoryPoisonPolicy::Corrected { .. },
+                    } => {
+                        (accesses.fetch || accesses.cpu_load || accesses.dma_read)
+                            && !accesses.cpu_store
+                            && !accesses.dma_write
+                    }
+                    MemoryAccessMutation::Poison {
+                        policy: MemoryPoisonPolicy::Exception { .. },
+                    } => {
+                        (accesses.fetch || accesses.cpu_load || accesses.cpu_store)
+                            && !accesses.dma_read
+                            && !accesses.dma_write
                     }
                     _ => true,
                 };
                 let atomicity_valid = !*violate_atomicity
                     || matches!(mutation, MemoryAccessMutation::TornWrite { .. });
-                if access_selected && access_compatible && mutation_valid && atomicity_valid {
+                let dma_device_valid = dma_device.is_none()
+                    || ((!accesses.fetch && !accesses.cpu_load && !accesses.cpu_store)
+                        && (accesses.dma_read || accesses.dma_write));
+                if access_selected
+                    && access_compatible
+                    && mutation_valid
+                    && atomicity_valid
+                    && dma_device_valid
+                {
                     Ok(())
                 } else {
                     Err(invalid())
@@ -1127,10 +1159,10 @@ impl NodeEffectSpecification {
             Self::MemoryRegionState {
                 process:
                     MemoryRegionProcess::Failed {
-                        policy: MemoryPoisonPolicy::Corrected { xor_mask, .. },
+                        policy: MemoryPoisonPolicy::Corrected { .. },
                     },
                 ..
-            } if !hex_has_nonzero(xor_mask) => Err(invalid()),
+            } => Err(invalid()),
             Self::MemoryRegionState {
                 process:
                     MemoryRegionProcess::Failed {
@@ -1355,6 +1387,35 @@ mod tests {
         }))
         .unwrap_or_else(|error| panic!("closed memory effect must decode: {error}"));
         assert!(effect.validate().is_err());
+    }
+
+    #[test]
+    fn access_specific_memory_mutations_reject_mixed_classes() {
+        let read_corrupt: NodeEffectSpecification = serde_json::from_value(json!({
+            "kind": "memory_access_transform",
+            "parameters": {
+                "range": {"start": 0, "length": 1},
+                "accesses": {"fetch": false, "cpu_load": true, "cpu_store": true, "dma_read": false, "dma_write": false},
+                "violate_atomicity": false,
+                "mutation": {"kind": "read_corrupt", "parameters": {"mask": "01"}},
+                "occurrence": {"kind": "every"}
+            }
+        }))
+        .unwrap_or_else(|error| panic!("closed read mutation must decode: {error}"));
+        let lost_write: NodeEffectSpecification = serde_json::from_value(json!({
+            "kind": "memory_access_transform",
+            "parameters": {
+                "range": {"start": 0, "length": 1},
+                "accesses": {"fetch": false, "cpu_load": true, "cpu_store": true, "dma_read": false, "dma_write": false},
+                "violate_atomicity": false,
+                "mutation": {"kind": "lost_write"},
+                "occurrence": {"kind": "every"}
+            }
+        }))
+        .unwrap_or_else(|error| panic!("closed write mutation must decode: {error}"));
+
+        assert!(read_corrupt.validate().is_err());
+        assert!(lost_write.validate().is_err());
     }
 
     #[test]
