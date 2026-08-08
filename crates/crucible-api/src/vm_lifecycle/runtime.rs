@@ -926,22 +926,51 @@ impl ProductionVmLifecycleLoop {
         coordinate: &crucible::DebugCoordinate,
         runtime: &RuntimeState,
     ) -> Result<RuntimeState, SchedulerError> {
-        let crucible::DebugCoordinate::EventSequence(sequence) = coordinate else {
-            return self.resolve_recorded_debug_runtime_evidence(runtime);
-        };
-        let evidence = self
-            .debug_runtime_evidence
-            .iter()
-            .find(|evidence| {
-                evidence.event_log.events > *sequence
-                    && evidence.matches_graph_runtime(runtime)
-                    && evidence.runtime.is_some()
-            })
-            .ok_or_else(|| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "event-log sequence {sequence} has no matching production runtime boundary evidence"
-                ),
-            })?;
+        let evidence = match coordinate {
+            crucible::DebugCoordinate::EventSequence(sequence) => self
+                .debug_runtime_evidence
+                .iter()
+                .filter(|evidence| {
+                    evidence.matches_graph_runtime(runtime) && evidence.runtime.is_some()
+                })
+                .find(|evidence| evidence.event_log.events > *sequence),
+            crucible::DebugCoordinate::VirtualTime(time) => self
+                .debug_runtime_evidence
+                .iter()
+                .rev()
+                .filter(|evidence| {
+                    evidence.matches_graph_runtime(runtime) && evidence.runtime.is_some()
+                })
+                .find(|evidence| evidence.scheduler_frontier(*time) <= *time),
+            crucible::DebugCoordinate::NodeIcount { node, icount } => self
+                .debug_runtime_evidence
+                .iter()
+                .rev()
+                .filter(|evidence| {
+                    evidence.matches_graph_runtime(runtime) && evidence.runtime.is_some()
+                })
+                .find(|evidence| {
+                    evidence
+                        .node_icounts
+                        .get(node)
+                        .is_some_and(|observed| observed <= icount)
+                }),
+            crucible::DebugCoordinate::Configuration(_)
+            | crucible::DebugCoordinate::Checkpoint(_) => self
+                .debug_runtime_evidence
+                .iter()
+                .find(|evidence| evidence.runtime.as_ref() == Some(runtime))
+                .or_else(|| {
+                    self.debug_runtime_evidence.iter().rev().find(|evidence| {
+                        evidence.matches_graph_runtime(runtime) && evidence.runtime.is_some()
+                    })
+                }),
+        }
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: format!(
+                "debug coordinate {coordinate:?} has no matching production runtime boundary evidence"
+            ),
+        })?;
         evidence
             .runtime
             .clone()
