@@ -39,22 +39,22 @@ fn debugger_live_scenario(architecture: VmArchitecture) -> Result<ScenarioDefFor
     let graph = EventGraph::builder()
         .event("debug-history-1")
         .when(Condition::At {
-            at: VirtualTime { ticks: 3_000_000 },
+            at: VirtualTime { ticks: 4_096 },
         })
         .action(Action::log(LogLevel::Info, "debug history boundary 1"))
         .event("debug-history-2")
         .when(Condition::At {
-            at: VirtualTime { ticks: 6_000_000 },
+            at: VirtualTime { ticks: 8_192 },
         })
         .action(Action::log(LogLevel::Info, "debug history boundary 2"))
         .event("debug-history-3")
         .when(Condition::At {
-            at: VirtualTime { ticks: 9_000_000 },
+            at: VirtualTime { ticks: 12_288 },
         })
         .action(Action::log(LogLevel::Info, "debug history boundary 3"))
         .event("debug-history-4")
         .when(Condition::At {
-            at: VirtualTime { ticks: 12_000_000 },
+            at: VirtualTime { ticks: 16_384 },
         })
         .action(Action::log(LogLevel::Info, "debug history boundary 4"))
         .build_for_world(&world)?;

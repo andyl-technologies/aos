@@ -556,16 +556,37 @@ impl<L> SessionActor<L> {
         &mut self,
         entries: &[SchedulerEventLogEntry],
     ) -> Result<(), SessionError> {
+        self.append_event_log_entries_with_history_policy(entries, false)
+    }
+
+    pub(super) fn append_event_log_entries_preserving_debug_history(
+        &mut self,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<(), SessionError> {
+        self.append_event_log_entries_with_history_policy(entries, true)
+    }
+
+    fn append_event_log_entries_with_history_policy(
+        &mut self,
+        entries: &[SchedulerEventLogEntry],
+        preserve_debug_history: bool,
+    ) -> Result<(), SessionError> {
         let base_len = self.engine.event_log_len().saturating_sub(entries.len());
         self.event_log.truncate_to_len(base_len);
         let base_sequence = u64::try_from(base_len).unwrap_or(u64::MAX);
-        self.condition_event_log
-            .retain(|entry| entry.sequence() < base_sequence);
-        self.debug_event_coordinates
-            .retain(|sequence, _| *sequence < base_sequence);
+        if !preserve_debug_history && !entries.is_empty() {
+            self.condition_event_log
+                .retain(|entry| entry.sequence() < base_sequence);
+            self.debug_event_coordinates
+                .retain(|sequence, _| *sequence < base_sequence);
+        }
         self.event_log.append_entries(entries);
-        self.condition_event_log.extend(entries.iter().cloned());
         let current = self.engine.snapshot().configuration;
+        if preserve_debug_history {
+            self.debug_index_configuration = current;
+            return Ok(());
+        }
+        self.condition_event_log.extend(entries.iter().cloned());
         let mut coordinate = self.debug_index_configuration.clone();
         for entry in entries {
             if let SchedulerEventLogPayload::Decision(decision) = entry.payload()
@@ -1061,8 +1082,18 @@ where
             complete_acknowledgement(acknowledgement, &Err(error.clone()));
             return Err(error);
         }
+        let preserve_debug_history = matches!(
+            command,
+            SessionCommand::DebugGoto { .. }
+                | SessionCommand::DebugReverseStep { .. }
+                | SessionCommand::DebugReverseContinue { .. }
+        );
         let entries = self.engine.drain_event_log_entries();
-        self.append_event_log_entries(&entries)?;
+        if preserve_debug_history {
+            self.append_event_log_entries_preserving_debug_history(&entries)?;
+        } else {
+            self.append_event_log_entries(&entries)?;
+        }
         self.sync_reproduction_log();
         let pending_control_after = self.engine.pending_control_len() as u64;
         if self.engine.quanta() > quanta_before && pending_control_after < pending_control_before {

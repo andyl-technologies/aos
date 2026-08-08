@@ -160,8 +160,9 @@ impl RpcControlClient {
     /// # Errors
     ///
     /// Returns [`ControlClientError`] when the lease is stale, the role lacks
-    /// control capability, the coordinate is unsupported by the unary wire
-    /// format, or actor-owned restore/replay and replacement fail.
+    /// control capability, the coordinate is a configuration/checkpoint
+    /// identity unsupported by the unary wire format, or actor-owned
+    /// restore/replay and replacement fail.
     pub async fn debug_goto(
         &self,
         session: SessionRef,

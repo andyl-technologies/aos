@@ -241,6 +241,15 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.resolve_recorded_debug_coordinate_runtime_evidence(coordinate, runtime)
     }
 
+    fn resolve_debug_coordinate_frontier(
+        &self,
+        coordinate: &crucible::DebugCoordinate,
+        runtime: &RuntimeState,
+        graph_fallback: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        self.resolve_recorded_debug_coordinate_frontier(coordinate, runtime, graph_fallback)
+    }
+
     fn poll_gdb_run_control(&mut self) -> Result<Option<Vec<u8>>, SchedulerError> {
         self.reconcile_indeterminate_debug_ownership()?;
         self.debug_gateway.as_mut().map_or(Ok(None), |gateway| {

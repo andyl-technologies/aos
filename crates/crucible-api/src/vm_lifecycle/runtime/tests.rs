@@ -209,6 +209,7 @@ fn evidence(configuration: ContentHash) -> ProductionVmDebugRuntimeEvidence {
         event_log: EventLogOffset::new(hash("event-log"), 3, 7),
         scheduler: SchedulerState::default(),
         node_icounts: BTreeMap::from([(node(), Icount { retired: 41 })]),
+        node_times: BTreeMap::from([(node(), VirtualTime { ticks: 17 })]),
         fingerprints: BTreeMap::new(),
         graph_runtimes: Vec::new(),
         runtime: None,
@@ -342,5 +343,48 @@ fn production_debug_evidence_rejects_forged_or_partial_graph_identity() {
         evidence
             .validate_graph_runtime(configuration, reduced_state, &forged)
             .is_err()
+    );
+}
+
+#[test]
+fn production_debug_evidence_matches_a_runtime_bound_at_a_later_boundary() {
+    let configuration = hash("configuration");
+    let reduced_state = hash("reduced-state");
+    let earlier = evidence(configuration);
+    let mut later = evidence(configuration);
+    later.event_log = EventLogOffset::new(hash("later-event-log"), 9, 17);
+    later.node_icounts = BTreeMap::from([(node(), Icount { retired: 97 })]);
+
+    let mut graph = graph_runtime(configuration, reduced_state);
+    graph
+        .node_blobs
+        .insert(node(), crucible::NodeBlobRef::baked(hash("blob")));
+    graph.node_icounts.insert(node(), Icount { retired: 5 });
+    let later_bound = later.bind_graph_runtime(&graph);
+
+    assert!(earlier.matches_graph_runtime(&later_bound));
+    assert!(later.matches_graph_runtime(&later_bound));
+}
+
+#[test]
+fn production_debug_evidence_restores_the_recorded_scheduler_frontier() {
+    let configuration = hash("configuration");
+    let mut recorded = evidence(configuration);
+    recorded.node_times.insert(
+        NodeId {
+            name: String::from("node-b"),
+        },
+        VirtualTime { ticks: 23 },
+    );
+
+    assert_eq!(
+        recorded.scheduler_frontier(VirtualTime { ticks: 99 }),
+        VirtualTime { ticks: 17 }
+    );
+
+    recorded.node_times.clear();
+    assert_eq!(
+        recorded.scheduler_frontier(VirtualTime { ticks: 99 }),
+        VirtualTime { ticks: 99 }
     );
 }

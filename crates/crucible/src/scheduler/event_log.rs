@@ -181,6 +181,26 @@ pub trait QuantumLoop {
         self.resolve_debug_runtime_evidence(runtime)
     }
 
+    /// Resolves the scheduler-owned frontier for a debugger coordinate.
+    ///
+    /// Production loops may retain logical VM clocks that are not represented
+    /// by temporal-graph configuration changes. Pure loops keep the graph
+    /// frontier supplied by the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no recorded backend boundary matches
+    /// the resolved coordinate runtime.
+    fn resolve_debug_coordinate_frontier(
+        &self,
+        coordinate: &DebugCoordinate,
+        runtime: &RuntimeState,
+        graph_fallback: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let _ = (coordinate, runtime);
+        Ok(graph_fallback)
+    }
+
     /// Returns the next GDB run-control packet awaiting scheduler admission.
     ///
     /// # Errors

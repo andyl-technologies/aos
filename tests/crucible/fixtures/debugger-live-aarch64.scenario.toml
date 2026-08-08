@@ -1,5 +1,5 @@
 [scenario]
-id = "blake3:1f41bb9f9b0f76d505c8062a11cac5d5d630d04aa2d685b3fe497e3bd4503d07"
+id = "blake3:be3d706913fe25281e87035c5ec1f5ddd56c466b5e96bbdeefacc628b73153b8"
 seed = "0x060d000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = "18446744073709551615"
 
@@ -22,7 +22,7 @@ kind = "fixed_icount"
 retired = 0
 
 [plan]
-id = "blake3:2a4bfc85a13f306cddd880d23e14f00583178b4e0a24267744fd72bda51e1e68"
+id = "blake3:83baf8d0b5067c8cc1fe6e635baac05c1ae8ea80a388347cb9e807f29d2acc5f"
 kind = "event_graph"
 
 [[plan.event]]
@@ -31,7 +31,7 @@ policy = "once"
 
 [plan.event.trigger]
 kind = "at"
-at_ticks = 3000000
+at_ticks = 4096
 
 [plan.event.action]
 kind = "log"
@@ -44,7 +44,7 @@ policy = "once"
 
 [plan.event.trigger]
 kind = "at"
-at_ticks = 6000000
+at_ticks = 8192
 
 [plan.event.action]
 kind = "log"
@@ -57,7 +57,7 @@ policy = "once"
 
 [plan.event.trigger]
 kind = "at"
-at_ticks = 9000000
+at_ticks = 12288
 
 [plan.event.action]
 kind = "log"
@@ -70,7 +70,7 @@ policy = "once"
 
 [plan.event.trigger]
 kind = "at"
-at_ticks = 12000000
+at_ticks = 16384
 
 [plan.event.action]
 kind = "log"

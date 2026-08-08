@@ -4,6 +4,15 @@ use super::*;
 use crate::cli_triage_debug::guest_input_message;
 
 #[test]
+fn debug_goto_accepts_an_unambiguous_event_log_coordinate() -> Result<(), Box<dyn Error>> {
+    assert_eq!(
+        crate::cli_triage_debug::parse_debug_at_coordinate("event:19")?,
+        crucible::DebugCoordinate::event_sequence(19)
+    );
+    Ok(())
+}
+
+#[test]
 fn guest_channel_eof_preserves_pty_output_drain() {
     assert_eq!(
         guest_input_message(true, &[]),

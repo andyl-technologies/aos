@@ -1158,6 +1158,24 @@ fn actor_debug_history_indexes_each_emitted_decision_prefix() {
     assert_eq!(actor.debug_current_event_limit(&second), Some(4));
 }
 
+#[test]
+fn actor_non_advancing_command_preserves_future_coordinate_indexes() {
+    let (_root, _first, second, graph) = debug_time_travel_fixture();
+    let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
+    let (_sender, receiver) = mpsc::channel(4);
+    let mut actor = SessionActor::new(engine, receiver);
+    actor.condition_event_log = vec![test_event_log_entry(0), test_event_log_entry(1)];
+    actor.debug_event_coordinates = BTreeMap::from([(0, second.clone()), (1, second)]);
+    actor.engine.event_log_len = 1;
+
+    actor
+        .append_event_log_entries(&[])
+        .unwrap_or_else(|error| panic!("empty command boundary must preserve history: {error}"));
+
+    assert_eq!(actor.condition_event_log.len(), 2);
+    assert!(actor.debug_event_coordinates.contains_key(&1));
+}
+
 #[tokio::test]
 async fn resumed_actor_rejects_reverse_event_history_before_its_floor() {
     let (_root, _first, second, graph) = debug_time_travel_fixture();
