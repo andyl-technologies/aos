@@ -2,7 +2,9 @@
 //!
 //! RFC-0010 QEMU-19 limits QMP use to capability negotiation, typed VM
 //! status/topology observation, VM snapshot save/load, snapshot job polling,
-//! graceful quit, and the fixed fork-time debug-agent hotplug sequence. The client parses
+//! graceful quit, plus the legacy fixed debug-agent device-add sequence used by
+//! focused compatibility tests. Production launches use the inert endpoint and
+//! do not issue those device-add commands. The client parses
 //! JSON-line QMP responses internally, skips asynchronous event objects while
 //! waiting for a command response, and exposes no public arbitrary-command
 //! execution path.
@@ -250,11 +252,11 @@ where
         self.send_command(QmpCommand::Quit)
     }
 
-    /// Hot-adds the fixed guest-introspection activation channel.
+    /// Prepares the fixed guest-introspection activation channel.
     ///
-    /// The command surface is deliberately fixed: callers cannot select an
-    /// arbitrary device, chardev, or guest-visible bytes. The guest-visible
-    /// activation device does not exist before this non-canonical operation.
+    /// Production launches return immediately because their inert endpoint is
+    /// already present. The compatibility command surface is deliberately fixed:
+    /// callers cannot select an arbitrary device, chardev, or guest-visible bytes.
     ///
     /// # Errors
     ///

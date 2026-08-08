@@ -255,10 +255,11 @@ to drain.
 
 [GHC-14] governs marker and guest-introspection **data** channels. RFC 36
 [DBG-45A] permits one narrower host-to-guest control edge after an explicit
-non-canonical debugger fork: a typed QMP operation may hot-add an activation-only
-port and send one fixed versioned token to an event-driven guest bootstrap. That
-port is absent during canonical execution, carries no marker, `CRGX`, `CRGI`,
-credential, command, or stream payload, and is discarded with the forked runtime.
+non-canonical debugger fork. A fixed, content-addressed virtio-serial endpoint is
+present but inert in the canonical topology; Crucible owns its already-connected
+Unix stream and sends one fixed versioned token to a blocking guest bootstrap
+only after the fork commits. The endpoint carries no marker, `CRGX`, `CRGI`,
+credential, command, or stream payload.
 It is not a fallback when the shared-memory rings are full. Any bidirectional,
 payload-bearing, pre-fork, or operator-selected use remains forbidden by
 [GHC-14].

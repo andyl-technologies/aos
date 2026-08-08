@@ -211,16 +211,18 @@ fork by itself, and mutation or operator-controlled execution remains rejected
 until that whole-world non-canonical branch has been created.
 
 The shipped debug fixture keeps the guest agent inactive on canonical execution.
-`fork-debug` first commits the explicit non-canonical branch, hot-adds a fixed
-activation-only port, and waits up to 64 scheduler quanta for the agent's typed
-feature advertisement. The response lists argv exec, PTY, resize, SSH bridge,
-and channel-capacity support. If activation or negotiation fails, the command
+Its content-addressed launch includes a fixed activation-only port and a single
+blocking guest reader, but no token is sent and no agent runs. `fork-debug` first
+commits the explicit non-canonical branch, writes the fixed token over the
+already-established private stream, and waits up to 64 scheduler quanta for the
+agent's typed feature advertisement. The response lists argv exec, PTY, resize,
+SSH bridge, and channel-capacity support. If activation or negotiation fails, the command
 still reports the committed branch identity together with the failure reason so
 the branch remains discoverable and diagnosable. All commands and stream bytes
-after activation use the versioned shared-memory/doorbell protocol; the hotplug
+after activation use the versioned shared-memory/doorbell protocol; the activation
 port carries only the fixed activation token.
 
-Custom images must include an event-driven bootstrap for the fixed activation
+Custom images must include a blocking bootstrap for the fixed activation
 port and must not start or poll the agent during canonical execution. A missing
 bootstrap is reported as a bounded activation failure rather than a hanging
 debug command.
@@ -315,7 +317,7 @@ For example:
 - The shipped fixtures activate the debug guest agent only after `fork-debug`
   commits the non-canonical branch. The packaged manual matrix requires feature
   negotiation and successful `exec`, PTY, resize, and SSH bridging on both
-  architectures. A custom image without the activation hook still reaches the
+  architectures. A custom image without the activation reader still reaches the
   bounded response-idle error instead of hanging indefinitely.
 - A successful debugger runtime reposition invalidates every active guest
   channel and the next channel poll returns a typed `ClosedChannel` error.

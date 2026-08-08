@@ -277,8 +277,9 @@ misdescribe this as only three kernel objects.
    counter writes.
 3. **The QMP socket** (§10.4) — out-of-band machine control: capability
    negotiation, `savevm`/`loadvm` for the VM-state half of a checkpoint, and
-   `quit` as a shutdown rung, plus the fixed activation-only debugger hotplug at
-   an explicit non-canonical fork boundary (36 [DBG-45A]).
+   `quit` as a shutdown rung. The separate fixed debugger activation stream is
+   established at launch but remains inert until an explicit non-canonical fork
+   boundary (36 [DBG-45A]).
 
 - **[QEMU-17]** A VM node MUST preserve exactly three logical channel roles — the
   plugin IPC control channel (14), the shared-memory region (13), and the QMP
@@ -321,9 +322,10 @@ pub struct QemuNode {
 QMP is QEMU's JSON-line machine-control protocol. Crucible uses a **minimal,
 typed** client — not a general QMP binding — covering exactly the commands the
 execution model needs: capability negotiation, `savevm`/`loadvm` (the VM-state
-half of a `Checkpoint`, 07), `quit` (a shutdown rung, §10.6), and the fixed
-`chardev-add`/`device_add`/`ringbuf-write` sequence that activates a guest debug
-agent only after an explicit non-canonical fork (36 [DBG-45A]). It is an
+half of a `Checkpoint`, 07), and `quit` (a shutdown rung, §10.6). Debugger
+activation does not use QMP commands: QEMU connects its fixed activation-only
+chardev to a Crucible-owned Unix stream during launch, and Crucible writes the
+fixed token only after an explicit non-canonical fork (36 [DBG-45A]). It is an
 out-of-band control channel: it carries no per-quantum timing and no frames
 ([QEMU-17]).
 
@@ -341,8 +343,8 @@ mis-parse.
   and its response as a Rust type, and (c) skips asynchronous QMP events while
   awaiting a command's `return`/`error`, surfacing an `error` response as a typed
   `Result::Err`. The client MUST cover, at minimum: capability negotiation,
-  `savevm`, `loadvm`, `quit`, and the fixed activation-only debugger hotplug. The
-  activation surface MUST NOT accept caller-selected devices or bytes and MUST
+  `savevm`, `loadvm`, and `quit`. The fixed activation-only debugger stream
+  MUST NOT accept caller-selected devices or bytes and MUST
   carry no guest-introspection payload. It MUST NOT expose a stringly-typed
   execute-arbitrary-JSON path on the determinism-critical control flow. *Gate:*
   `gate:control-responsive`. *Spec:* §10.4; references 07.

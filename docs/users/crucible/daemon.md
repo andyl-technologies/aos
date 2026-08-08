@@ -106,9 +106,10 @@ The control client has concrete remote workflows for:
   loopback GDB relay; and
 - the authenticated `fork-debug`, guest `exec`, PTY, and SSH-compatible RPC
   workflow. After the explicit non-canonical fork commits, the production VM
-  lifecycle sends the fixed QMP hotplug event and the packaged fixture starts
-  its bounded guest agent. The CLI reports the negotiated exec, PTY, resize,
-  SSH, and channel-limit features before accepting guest commands.
+  lifecycle sends the fixed token over the inert activation stream and the
+  packaged fixture starts its bounded guest agent. The CLI reports the
+  negotiated exec, PTY, resize, SSH, and channel-limit features before accepting
+  guest commands.
 
 Current restrictions include:
 
