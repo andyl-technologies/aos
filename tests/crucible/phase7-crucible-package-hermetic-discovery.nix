@@ -91,7 +91,7 @@
       }
       {
         label = "manual debugger matrix uses only AOS tools";
-        needle = "export PATH=\"" + "$" + "{coreutils}/bin:" + "$" + "{diffutils}/bin:" + "$" + "{grep}/bin:" + "$" + "{sed}/bin:" + "$" + "{util-linux}/bin:" + "$" + "{bash}/bin\"";
+        needle = "export PATH=\"" + "$" + "{coreutils}/bin:" + "$" + "{grep}/bin:" + "$" + "{sed}/bin:" + "$" + "{util-linux}/bin:" + "$" + "{bash}/bin\"";
       }
       {
         label = "QEMU package build-info field";
@@ -199,11 +199,11 @@
       }
       {
         label = "read-only GDB state comparison";
-        needle = ''cmp "$directory/read-only-before.gdb" "$directory/read-only-after.gdb"'';
+        needle = ''files_equal "$directory/read-only-before.gdb" "$directory/read-only-after.gdb"'';
       }
       {
         label = "complete landed tuple comparison";
-        needle = ''cmp "$directory/reverse-earlier.tuple" "$directory/goto-earlier.tuple"'';
+        needle = ''files_equal "$directory/reverse-earlier.tuple" "$directory/goto-earlier.tuple"'';
       }
       {
         label = "stable GDB survives replacement";
