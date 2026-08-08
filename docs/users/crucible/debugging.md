@@ -29,6 +29,12 @@ It preserves per-architecture logs, GDB transcripts, complete landed runtime
 coordinates, guest-channel transcripts, package build information, and an
 aggregate `result` file. `--help` reports the architectures retained by that
 suite; `all` fails closed unless both x86_64 and AArch64 assets are present.
+On a native-only package, an operator may add retained AArch64 assets by setting
+`CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64`,
+`CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64`, and
+`CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64` together. The runner passes
+that exact triplet to both scenario generation and the production lifecycle;
+partial overrides fail before creating evidence.
 
 ## Interactive run control
 

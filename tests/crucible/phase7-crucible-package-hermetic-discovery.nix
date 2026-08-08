@@ -62,8 +62,8 @@
         needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
       }
       {
-        label = "suite runtime closure retains AArch64 guest artifacts";
-        needle = "[aarch64Linux aarch64Fixtures]";
+        label = "suite records the external AArch64 matrix path";
+        needle = "debugger_live_matrix_external_architectures=aarch64";
       }
       {
         label = "runtime QEMU wrapper configuration";
@@ -91,7 +91,7 @@
       }
       {
         label = "manual debugger matrix uses only AOS tools";
-        needle = "export PATH=\"" + "$" + "{coreutils}/bin:" + "$" + "{grep}/bin:" + "$" + "{sed}/bin:" + "$" + "{util-linux}/bin:" + "$" + "{bash}/bin\"";
+        needle = "export PATH=\"" + "$" + "{coreutils}/bin:" + "$" + "{diffutils}/bin:" + "$" + "{grep}/bin:" + "$" + "{sed}/bin:" + "$" + "{util-linux}/bin:" + "$" + "{bash}/bin\"";
       }
       {
         label = "QEMU package build-info field";
@@ -188,6 +188,14 @@
       {
         label = "live fixture binds packaged boot assets";
         needle = ''"$CRUCIBLE_MATRIX_FIXTURE_GENERATOR"'';
+      }
+      {
+        label = "external AArch64 assets reach the production lifecycle";
+        needle = "export CRUCIBLE_KERNEL_AARCH64=";
+      }
+      {
+        label = "external AArch64 command line reaches the production lifecycle";
+        needle = "export CRUCIBLE_KERNEL_CMDLINE_AARCH64=";
       }
       {
         label = "read-only GDB state comparison";
