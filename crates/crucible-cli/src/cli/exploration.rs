@@ -252,7 +252,16 @@ pub(super) fn emit_backend_command_output(
 ) -> Result<(), CliError> {
     let trace_entries = backend_machine_readable_trace_entries(outcome);
     let format = cli.output_format();
-    let _trace = emit_canonical_trace(format, &trace_entries, cli.trace.as_deref(), !cli.quiet)?;
+    if let Some(path) = cli.trace.as_deref() {
+        // `--trace` is replay input, while the machine-readable stdout stream
+        // also carries the invocation-local final outcome. Keep that porcelain
+        // record out of the canonical trace so `replay --check` can consume a
+        // trace written by `run` without trimming it first.
+        emit_canonical_trace(format, &outcome.canonical_log, Some(path), false)?;
+        emit_canonical_trace(format, &trace_entries, None, !cli.quiet)?;
+    } else {
+        emit_canonical_trace(format, &trace_entries, None, !cli.quiet)?;
+    }
     let emit_human = !cli.quiet && should_emit_human_backend_output(format);
     if emit_human {
         for line in &outcome.stdout {

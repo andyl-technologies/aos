@@ -256,22 +256,35 @@ debug_command() {
 
 run_ssh_client() {
   local directory=$1
+  local ssh_pid ssh_status
   shift
   if "$CRUCIBLE_MATRIX_SSH" -G -F /dev/null root@crucible-guest >/dev/null 2>&1; then
-    timeout -k 5s "$stage_timeout_seconds" "$CRUCIBLE_MATRIX_SSH" "$@"
-    return
+    setsid timeout -k 5s "$stage_timeout_seconds" "$CRUCIBLE_MATRIX_SSH" "$@" &
+    ssh_pid=$!
+  else
+    # Some remote builders obtain their account through network NSS while the
+    # hermetic OpenSSH client reads only /etc/passwd. Give that client a private
+    # user/mount namespace with a minimal local identity; the network namespace
+    # and the SSH/Crucible transport remain unchanged.
+    local passwd_file="$directory/ssh-client.passwd"
+    printf 'root:x:0:0:root:/tmp:/bin/false\n' >"$passwd_file"
+    setsid timeout -k 5s "$stage_timeout_seconds" \
+      unshare --user --map-root-user --mount "$BASH" -c \
+        'mount --bind "$1" /etc/passwd; shift; exec "$@"' \
+        crucible-ssh-userns "$passwd_file" "$CRUCIBLE_MATRIX_SSH" "$@" &
+    ssh_pid=$!
   fi
 
-  # Some remote builders obtain their account through network NSS while the
-  # hermetic OpenSSH client reads only /etc/passwd. Give that client a private
-  # user/mount namespace with a minimal local identity; the network namespace
-  # and the SSH/Crucible transport remain unchanged.
-  local passwd_file="$directory/ssh-client.passwd"
-  printf 'root:x:0:0:root:/tmp:/bin/false\n' >"$passwd_file"
-  timeout -k 5s "$stage_timeout_seconds" \
-    unshare --user --map-root-user --mount "$BASH" -c \
-      'mount --bind "$1" /etc/passwd; shift; exec "$@"' \
-      crucible-ssh-userns "$passwd_file" "$CRUCIBLE_MATRIX_SSH" "$@"
+  if wait "$ssh_pid"; then
+    ssh_status=0
+  else
+    ssh_status=$?
+  fi
+  # OpenSSH may leave ProxyCommand alive after a bounded remote command exits.
+  # Terminate that private process group so its guest channel cannot leak into
+  # the following reposition exercise or append an expected closure to ssh.err.
+  terminate_group "$ssh_pid"
+  return "$ssh_status"
 }
 
 gdb_window_is_clean() {
@@ -483,6 +496,7 @@ run_architecture() {
   setsid "$CRUCIBLE_MATRIX_CRUCIBLE" \
     --daemon "$endpoint" \
     --trusted-unauthenticated-daemon \
+    --seed 0x060d \
     --backend qemu \
     --format table \
     run "$fixture" --interactive --max-quanta 768 \

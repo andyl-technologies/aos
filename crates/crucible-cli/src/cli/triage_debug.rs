@@ -2311,6 +2311,36 @@ async fn run_remote_guest_channel(
                         guest_idle_timeout.as_millis()
                     )));
                 }
+                signal = receive_guest_channel_shutdown_signal(
+                    &mut terminate_signal,
+                    &mut hangup_signal,
+                ) => {
+                    signal?;
+                    let close = GuestIntrospectionRecord::new(
+                        channel_id,
+                        GuestIntrospectionMessage::Close,
+                    )
+                    .map_err(|error| backend_error(error.to_string()))?;
+                    let response = exchange_guest_record(
+                        &client,
+                        session,
+                        &lease,
+                        &node,
+                        channel_id,
+                        Some(&close),
+                        &mut transcript,
+                    )
+                    .await?;
+                    handle_guest_channel_shutdown_response(
+                        response.as_ref(),
+                        channel_id,
+                        &mut stdout,
+                        &mut stderr,
+                        &mut terminal_observed,
+                    )
+                    .await?;
+                    break Ok(());
+                }
                 read = stdin.read(&mut input), if !input_closed => {
                     let length = read.map_err(|error| backend_error(format!("terminal input failed: {error}")))?;
                     let message = guest_input_message(pty_channel, &input[..length]);
@@ -2401,36 +2431,6 @@ async fn run_remote_guest_channel(
                             break Ok(());
                         }
                     }
-                }
-                signal = receive_guest_channel_shutdown_signal(
-                    &mut terminate_signal,
-                    &mut hangup_signal,
-                ) => {
-                    signal?;
-                    let close = GuestIntrospectionRecord::new(
-                        channel_id,
-                        GuestIntrospectionMessage::Close,
-                    )
-                    .map_err(|error| backend_error(error.to_string()))?;
-                    let response = exchange_guest_record(
-                        &client,
-                        session,
-                        &lease,
-                        &node,
-                        channel_id,
-                        Some(&close),
-                        &mut transcript,
-                    )
-                    .await?;
-                    let _outcome = handle_guest_channel_response(
-                        response.as_ref(),
-                        channel_id,
-                        &mut stdout,
-                        &mut stderr,
-                        &mut terminal_observed,
-                    )
-                    .await?;
-                    break Ok(());
                 }
             }
         }
@@ -2675,7 +2675,10 @@ pub(super) use coordinates::*;
 #[path = "triage_debug/guest_channel_response.rs"]
 mod guest_channel_response;
 
-use guest_channel_response::{GuestChannelRecordOutcome, handle_guest_channel_response};
+use guest_channel_response::{
+    GuestChannelRecordOutcome, handle_guest_channel_response,
+    handle_guest_channel_shutdown_response,
+};
 #[path = "triage_debug/slug.rs"]
 mod slug;
 
