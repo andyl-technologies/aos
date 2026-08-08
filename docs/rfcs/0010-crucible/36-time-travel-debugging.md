@@ -935,6 +935,21 @@ or overflow. The host and plugin validate not only the outer exchange direction
 but also the embedded `CRGI` request/response kind; the reserved feature channel
 can carry only the initial feature advertisement.
 
+Opening an exec, PTY, or SSH channel acquires an internal scheduler run through
+the debugger gateway. The session remains the sole quantum driver while any
+channel is active; RPC polling only exchanges bounded records between completed
+quanta. A terminal exit or error releases the run and returns QEMU to a paused
+packet boundary. Each completed quantum refreshes the attached configuration,
+checkpoint, reduced state, and complete runtime evidence. Reposition first
+releases the internal run, performs whole-world replacement, and synthesizes a
+typed close for every active channel; a pre-commit failure reacquires ownership
+and preserves the channel.
+Guest introspection therefore cannot become a free-running path around the
+scheduler or hold stale gateway ownership across `goto` or reverse execution.
+Each CLI acquisition derives a fresh nonzero channel identity from its private
+128-bit holder identity. This makes aliasing between a delayed SSH-proxy record
+and a channel opened by a later acquisition infeasible.
+
 The native surface supports argv-based noninteractive exec and an interactive PTY.
 An SSH-compatible byte bridge is also provided for existing operator tooling, but
 it terminates at the guest agent rather than exposing a host shell. Opening any of
@@ -1016,14 +1031,14 @@ same attach/read/breakpoint/reposition/run-control and guest-introspection contr
 on aarch64. Architecture support is not complete while either required live gate
 uses a model double or fallback.
 
-The native x86_64 suite retains two architecture-specific guest closures: its
-native x86_64 kernel/root image and an AArch64 kernel/root image produced by the
-AOS cross-toolchain ladder. The wrapper exports separate immutable artifact
-triplets, and the production lifecycle selects the triplet from each World VM's
-declared architecture, including restart and replacement launches. It never
-boots an AArch64 profile with x86_64 guest artifacts. Post-cross native tool
-tiers use the repository's declared QEMU-binfmt builder contract; no host
-compiler, userland, or upstream package set participates.
+The suite interface can retain two architecture-specific guest closures: a
+native x86_64 kernel/root image and an AArch64 kernel/root image. The wrapper
+exports separate immutable artifact triplets, and the production lifecycle
+selects the triplet from each World VM's declared architecture, including
+restart and replacement launches. It never boots an AArch64 profile with
+x86_64 guest artifacts. Producing the AArch64 closure remains an independent
+packaging prerequisite; the debugger does not alter the bootstrap or cross
+toolchain to manufacture one.
 
 - **[DBG-47]** The Crucible suite MUST ship a hermetic GNU GDB and MUST pass live
   x86_64 and aarch64 gates for stable attach, read-only neutrality, scheduler-routed
@@ -1458,7 +1473,12 @@ complete from model-double evidence.
   reverse/goto/fork transaction commits, then requires the gateway generation
   to advance and the same GDB connection and hardware breakpoint state to
   remain usable. These checks define the required captured evidence; they do
-  not close this task until both packaged architectures pass live.
+  not close this task until both packaged architectures pass live. A 2026-08-08
+  live x86_64 source-tree pass captured non-empty history and exact equality of
+  the landed configuration, checkpoint, scheduler frontier, event prefix, node
+  icount, and reduced runtime across reverse and repeated goto. It also exposed
+  and fixed coordinate evidence selection that had aliased an earlier virtual
+  time to the latest boundary sharing the same schedule-empty configuration.
 - [ ] **T-DBG-11** Enforce debugger identities, capability roles, one-controller
   leases, Unix peer authentication, remote HTTP/2+mTLS relay, and explicit trusted
   unauthenticated bind policy in the daemon and CLI. — satisfies [DBG-43], [DBG-44];
@@ -1529,16 +1549,26 @@ complete from model-double evidence.
   records, and remains outside canonical artifacts. The CLI now applies a
   configurable 30-second response-idle deadline, attempts bounded channel
   cleanup and controller-lease release when a forked VM has no responding agent.
+  It processes responses returned while publishing input, resize, or close
+  requests instead of assuming responses arrive only on explicit polls, and
+  folds each controller holder identity into a fresh nonzero channel identity
+  so delayed SSH-proxy cleanup cannot target a later CLI invocation.
+  Before runtime replacement, the session suspends guest scheduler ownership;
+  failed pre-commit replacement restores it, while successful replacement
+  returns typed closure records. The attached runtime tuple is refreshed after
+  every scheduler-mediated quantum so a later `goto` validates the actual live
+  coordinate rather than the original fork coordinate.
   Fork-time activation is now implemented as [DBG-45A]'s fixed inert endpoint.
   Crucible owns the pre-established private stream and writes the token only
   after the non-canonical branch commits. The shipped fixture starts one blocking
   activation reader after setup and starts `crucible-guest agent` only after the
   fixed token. The agent advertises exec/PTY/resize/SSH features through the
   shared-memory protocol.
-  Activation waits for at most 512 scheduler quanta and returns the committed
+  Activation waits for at most 1,024 scheduler quanta and returns the committed
   branch identity even when negotiation fails. Completion remains open only for
-  packaged live exec/PTY/SSH evidence, reposition-driven stream closure, and the
-  x86_64/AArch64 parity exercise.
+  the packaged AArch64 parity exercise. The 2026-08-08 live x86_64 pass exercised
+  argv exec, controlling-terminal PTY, OpenSSH over the byte bridge, opt-in
+  transcripts, and typed closure of an active PTY after committed reposition.
 - [x] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
   for local/remote GDB, reverse commands, guest exec, PTY, and SSH compatibility. —
   satisfies [DBG-47]; spec §36.9.4; cross-ref 23, 26.
@@ -1566,15 +1596,25 @@ complete from model-double evidence.
   between graph coordinates and authoritative QEMU scheduler/event-log/icount
   evidence. Two consecutive packaged-GDB clients now read identical registers and
   thread state without an intervening runtime reposition. QEMU still rejects GDB's optional
-  trace-status and detach packets. Completion remains open for the full
-  controller/gateway atomic replacement, scheduler run-control, fork-time guest
-  agent execution, and guest-introspection matrix on both architectures. The
+  trace-status and detach packets. A 2026-08-08 live x86_64 pass then exercised
+  controller/gateway replacement across reverse, repeated goto, and fork;
+  retained one GDB connection and its hardware-breakpoint model across gateway
+  generations; drove `vCont;c`, interrupt/T02, `stepi`/T05, and breakpoint
+  removal; negotiated the fork-time guest agent; ran exec, PTY, and SSH; and
+  observed typed active-stream closure on reposition. Completion remains open
+  for the equivalent AArch64 production matrix. The
   native suite selects q35/qemu64/ttyS0 or virt/cortex-a57/ttyAMA0 consistently
   and configures debugger backends for every daemon-submitted World node. The
   out-of-check runner also accepts an explicit AArch64 kernel, root image, and
   kernel command-line triplet and passes it through to the production lifecycle;
   these are required implementation prerequisites, not substitutes for the
-  remaining live gate.
+  remaining live gate. The currently evaluated AArch64 package path cannot
+  supply those assets: native evaluation stops in the phase-zero coreutils
+  bootstrap, while the x86_64-to-AArch64 form assigns a target compiler wrapper
+  to a build-platform dependency. The existing phase-zero AArch64 boot image
+  also lacks the guest agent and root filesystem required by exec, PTY, and SSH.
+  These are external asset/toolchain packaging blockers; this debugger change
+  neither modifies nor works around them.
   The suite now ships an out-of-check manual runner that exercises both retained
   architectures through the public CLI: repeated read-only GDB snapshots,
   non-empty reverse history, full landed-coordinate replay equality, queued

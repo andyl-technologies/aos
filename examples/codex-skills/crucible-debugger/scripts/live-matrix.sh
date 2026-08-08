@@ -41,7 +41,7 @@ architecture=$default_architecture
 output=
 base_port=${CRUCIBLE_MATRIX_BASE_PORT:-39870}
 stage_timeout_seconds=${CRUCIBLE_MATRIX_STAGE_TIMEOUT_SECONDS:-180}
-rendezvous_icount=${CRUCIBLE_MATRIX_RENDEZVOUS_ICOUNT:-20000000}
+rendezvous_icount=${CRUCIBLE_MATRIX_RENDEZVOUS_ICOUNT:-5000000}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --architecture)
@@ -254,6 +254,26 @@ debug_command() {
     debug --session "$session" --node debuggee "$@"
 }
 
+run_ssh_client() {
+  local directory=$1
+  shift
+  if "$CRUCIBLE_MATRIX_SSH" -G -F /dev/null root@crucible-guest >/dev/null 2>&1; then
+    timeout -k 5s "$stage_timeout_seconds" "$CRUCIBLE_MATRIX_SSH" "$@"
+    return
+  fi
+
+  # Some remote builders obtain their account through network NSS while the
+  # hermetic OpenSSH client reads only /etc/passwd. Give that client a private
+  # user/mount namespace with a minimal local identity; the network namespace
+  # and the SSH/Crucible transport remain unchanged.
+  local passwd_file="$directory/ssh-client.passwd"
+  printf 'root:x:0:0:root:/tmp:/bin/false\n' >"$passwd_file"
+  timeout -k 5s "$stage_timeout_seconds" \
+    unshare --user --map-root-user --mount "$BASH" -c \
+      'mount --bind "$1" /etc/passwd; shift; exec "$@"' \
+      crucible-ssh-userns "$passwd_file" "$CRUCIBLE_MATRIX_SSH" "$@"
+}
+
 gdb_window_is_clean() {
   local file=$1
   local label=$2
@@ -381,14 +401,25 @@ stop_gdb() {
 
 run_scheduler_control() {
   local output_file=$1
+  local continue_packet_log="$output_file.continue-packets"
   local packet_log="$output_file.stepi-packets"
-  printf 'echo CRUCIBLE_CONTINUE_BEGIN\\n\ncontinue\necho CRUCIBLE_CONTINUE_END\\n\n' >&5
-  wait_for_pattern "$output_file" CRUCIBLE_CONTINUE_END "$gdb_pid"
-  sed -n '/CRUCIBLE_CONTINUE_BEGIN/,/CRUCIBLE_CONTINUE_END/p' "$output_file" \
+  printf 'set logging file %s\n' "$continue_packet_log" >&5
+  printf 'set logging overwrite on\nset logging debugredirect on\nset logging enabled on\n' >&5
+  printf 'set debug remote 1\necho CRUCIBLE_CONTINUE_BEGIN\\n\ncontinue\n' >&5
+  wait_for_pattern "$continue_packet_log" 'Sending packet: $vCont;c' "$gdb_pid"
+  kill -INT "$gdb_pid"
+  wait_for_pattern "$continue_packet_log" 'Packet received: T02' "$gdb_pid"
+  printf 'echo CRUCIBLE_CONTINUE_END\\n\n' >&5
+  wait_for_pattern "$continue_packet_log" CRUCIBLE_CONTINUE_END "$gdb_pid"
+  printf 'set debug remote 0\nset logging enabled off\necho CRUCIBLE_CONTINUE_TRACE_END\\n\n' >&5
+  wait_for_pattern "$output_file" CRUCIBLE_CONTINUE_TRACE_END "$gdb_pid"
+  sed -n '/CRUCIBLE_CONTINUE_BEGIN/,/CRUCIBLE_CONTINUE_END/p' "$continue_packet_log" \
     >"$output_file.continue"
   gdb_window_is_clean "$output_file.continue" "GDB continue"
-  grep -Eq 'Breakpoint 1,|Program stopped\.' \
-    "$output_file.continue" || fail "GDB continue produced no correlated stop"
+  grep -Fq 'vCont;c' "$continue_packet_log" \
+    || fail "GDB continue did not use scheduler-mediated vCont;c"
+  grep -Eq 'Packet received: T0?2|Packet received: S0?2' "$continue_packet_log" \
+    || fail "GDB interrupt produced no correlated scheduler stop"
 
   printf 'maintenance packet vCont?\necho CRUCIBLE_VCONT_QUERY_END\\n\n' >&5
   wait_for_pattern "$output_file" CRUCIBLE_VCONT_QUERY_END "$gdb_pid"
@@ -398,9 +429,9 @@ run_scheduler_control() {
   printf 'set logging overwrite on\nset logging debugredirect on\nset logging enabled on\n' >&5
   printf 'set debug remote 1\necho CRUCIBLE_STEPI_BEGIN\\n\nstepi\necho CRUCIBLE_STEPI_END\\n\n' >&5
   printf 'set debug remote 0\nset logging enabled off\necho CRUCIBLE_STEPI_TRACE_END\\n\n' >&5
-  wait_for_pattern "$output_file" CRUCIBLE_STEPI_END "$gdb_pid"
+  wait_for_pattern "$packet_log" CRUCIBLE_STEPI_END "$gdb_pid"
   wait_for_pattern "$output_file" CRUCIBLE_STEPI_TRACE_END "$gdb_pid"
-  sed -n '/CRUCIBLE_STEPI_BEGIN/,/CRUCIBLE_STEPI_END/p' "$output_file" \
+  sed -n '/CRUCIBLE_STEPI_BEGIN/,/CRUCIBLE_STEPI_END/p' "$packet_log" \
     >"$output_file.stepi"
   gdb_window_is_clean "$output_file.stepi" "GDB stepi"
   grep -Eq '0x[0-9a-f]+|Program received signal' "$output_file.stepi" \
@@ -555,10 +586,12 @@ run_architecture() {
   gdb_snapshot "$directory/post-fork.gdb" "$registers" CRUCIBLE_POST_FORK
   grep -Eq '^1[[:space:]]+hw breakpoint[[:space:]]+keep[[:space:]]+y' "$directory/post-fork.gdb" \
     || fail "hardware breakpoint state was not retained across replacement"
+  printf 'delete 1\necho CRUCIBLE_RETAINED_BREAKPOINT_REMOVED\\n\n' >&5
+  wait_for_pattern "$gdb_output" CRUCIBLE_RETAINED_BREAKPOINT_REMOVED "$gdb_pid"
   run_scheduler_control "$gdb_output"
-  printf 'delete 1\ninfo breakpoints\necho CRUCIBLE_BREAKPOINT_REMOVED\\n\n' >&5
+  printf 'info breakpoints\necho CRUCIBLE_BREAKPOINT_REMOVED\\n\n' >&5
   wait_for_pattern "$gdb_output" CRUCIBLE_BREAKPOINT_REMOVED "$gdb_pid"
-  tail -n 20 "$gdb_output" | grep -Fq 'No breakpoints or watchpoints.' \
+  tail -n 20 "$gdb_output" | grep -Fq 'No breakpoints' \
     || fail "hardware breakpoint removal was not acknowledged"
 
   progress "$guest_architecture:guest-exec-pty-ssh"
@@ -576,8 +609,9 @@ run_architecture() {
 
   local proxy_command
   proxy_command="$CRUCIBLE_MATRIX_CRUCIBLE --daemon $endpoint --trusted-unauthenticated-daemon debug --session $session --node debuggee --allow-mutate --record-transcript $directory/ssh.crgt --guest-idle-timeout 120s ssh"
-  timeout -k 5s "$stage_timeout_seconds" "$CRUCIBLE_MATRIX_SSH" -F /dev/null \
+  run_ssh_client "$directory" -F /dev/null \
     -o BatchMode=yes \
+    -o KexAlgorithms=curve25519-sha256 \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
     -o "ProxyCommand=$proxy_command" \

@@ -84,6 +84,10 @@ Use `exec` for bounded probes such as `uname`, `cat`, `ps`, or application healt
 commands. Use `pty` only when terminal behavior matters. Use `ssh` as a byte
 bridge to the configured in-guest SSH server, never as access to the Crucible
 host. Record a transcript when the bytes are needed as diagnostic evidence.
+While a channel is open, let that CLI invocation retain the internal scheduler
+run; do not issue independent GDB run control concurrently. A reposition
+releases that run before replacement and returns a typed channel-closure error
+when the new runtime commits.
 
 ## Diagnose systematically
 
