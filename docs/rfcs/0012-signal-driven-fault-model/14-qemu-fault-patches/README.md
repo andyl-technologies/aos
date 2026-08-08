@@ -145,6 +145,58 @@ release a result slot only after copying the result payload. A command sequence
 remains live and cannot be reused until the host acquires its result. Ring or
 arena exhaustion fails before publishing, losing, or overwriting a command.
 
+### 14.3.1 Typed node-rule payload
+
+Every non-memory-impulse node command uses `CRUCNOD1` version 1. Its fixed
+header binds the command kind, `upsert/remove/impulse` operation, target kind,
+model phase, generation, action/target/schema hashes, and exact field count.
+Fields are strictly increasing tagged values. `P1` through `P9` are command
+parameters; `T1` through `T5` identify the resolved target. A remove carries no
+fields. Unknown, missing, duplicate, out-of-order, incorrectly typed, or
+noncanonical fields are malformed commands.
+
+Policy structures use `bytes` fields beginning with the eight literal bytes
+`CRUCJSN1`, followed by whitespace-free canonical JSON with lexicographically
+sorted object keys. The public codec validates framing, JSON syntax, canonical
+bytes, size, and the command/tag positions without importing the Apache model
+crate. The GPL-side command handler then validates the exact command-specific
+shape from the [policy JSON contract](00-typed-policy-json.md), rejects unknown
+members and enum variants, and retains a private typed C representation before
+preparation can succeed. A hash is used only for a realized manifest identity,
+never as a policy lookup key.
+
+| Command | Exact parameter fields |
+| --- | --- |
+| node lifecycle | `P1 transition:u32`, `P2 downtime:u64`, `P3 NodeBootPolicy:json`, `P4 volatile policy:u32`, `P5 device policy:u32` |
+| node hang | `P1 scope kind:u32`, `P2 NodeHangScope:json`, `P3 recovery event:hash`, `P4 NodeWatchdogPolicy:json` |
+| CPU service | `P1 sorted vCPU IDs:json`, `P2 capacity:ratio`, `P3 quantum:u64`, `P4 CpuServiceDiscipline:u32` |
+| vCPU state | `P1 state:u32`, `P2 has recovery:bool`, `P3 recovery hash or zero` |
+| register transform | `P1 register:hash`, `P2 first bit:u32`, `P3 bit count:u32`, `P4 mutation:u32`, `P5 mask/bytes`, `P6 has value:bool`, `P7 value or zero`, `P8 NodeOccurrencePolicy:json` |
+| instruction transform | `P1 InstructionSelector:json`, `P2 mutation:u32`, `P3 destination hash or zero`, `P4 RegisterMutation:json or zero`, `P5 replay count:u32` |
+| CPU exception | `P1 NodeException:json` |
+| interrupt disposition | `P1 mutation:u32`, `P2 delay:u64`, `P3 copies:u32`, `P4 gap:u64`, `P5 replacement vector:u32` |
+| interrupt storm | `P1 source:hash`, `P2 vector:u32`, `P3 period:u64`, `P4 burst:u32`, `P5 count:u32`, `P6 InterruptRoutingPolicy:json` |
+| memory access transform | `P1 start:u64`, `P2 length:u64`, `P3 mutation:u32`, `P4 mask or zero`, `P5 has value:bool`, `P6 value/selector/MemoryPoisonPolicy JSON or zero`, `P7 NodeOccurrencePolicy:json`, `P8 access-class bits:u32`, `P9 violate atomicity:bool` |
+| memory ECC event | `P1 kind:u32`, `P2 address:u64`, `P3 syndrome:u64`, `P4 bank:hash`, `P5 channel:hash`, `P6 rank:hash`, `P7 MemoryEccVisibility:json` |
+| memory region state | `P1 start:u64`, `P2 length:u64`, `P3 kind:u32`, `P4 MemoryRegionProcess:json` |
+| memory service | `P1 latency:u64`, `P2 has byte rate:bool`, `P3 byte rate:u64`, `P4 has operation rate:bool`, `P5 operation rate:u64`, `P6 MemoryServiceScope:json` |
+| clock transform | `P1 source:hash`, `P2 mutation:u32`, `P3 signed value:i64`, `P4 ratio`, `P5 unsigned value:u64`, `P6 freeze-release/jitter-table/ClockWanderProcess JSON or zero`, `P7 ClockMonotonicityPolicy:u32`, `P8 ClockOverdueTimerPolicy:u32` |
+| clock source state | `P1 sorted source hashes`, `P2 ClockSourceTransition:json`, `P3 ClockSynchronizationPolicy:json` |
+| accelerator lifecycle | `P1 device:hash`, `P2 transition:u32`, `P3 queue policy:u32`, `P4 memory policy:u32` |
+| accelerator result transform | `P1 AcceleratorJobSelector:json`, `P2 AcceleratorResultMutation:json` |
+| accelerator memory event | `P1 start:u64`, `P2 length:u64`, `P3 has ECC:bool`, `P4 ECC kind:u32`, `P5 has syndrome:bool`, `P6 syndrome:u64`, `P7 has transform:bool`, `P8 transform bytes or zero` |
+| accelerator service | `P1 capacity:ratio`, `P2 has memory rate:bool`, `P3 memory rate:u64`, `P4 has job rate:bool`, `P5 job rate:u64`, `P6 AcceleratorThermalPower:json` |
+
+| Target kind | Exact target fields |
+| --- | --- |
+| node | none |
+| vCPU | `T1 numeric vCPU ID:u32` |
+| register | `T1 vCPU:u32`, `T2 architecture:hash`, `T3 register:hash`, `T4 first bit:u32`, `T5 bit count:u32` |
+| memory | `T1 address-space identity:hash`, `T2 guest address:u64`, `T3 has vCPU:bool`, `T4 vCPU or zero:u32`, `T5 length:u64` |
+| interrupt | `T1 controller:hash`, `T2 source:hash`, `T3 target vCPU:u32`, `T4 vector:u32` |
+| clock | `T1 source:hash` |
+| accelerator | `T1 device:hash` |
+
 ## 14.4 Common per-patch acceptance template
 
 Every patch document fixes:

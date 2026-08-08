@@ -15,33 +15,38 @@ live backend for CPU service and vCPU state effects.
 
 ## Service model
 
-Each vCPU has a rational service share in `[0,1]`, a positive service-window
-length in virtual nanoseconds, exact instruction credits, and remainder. The
-node may additionally have a total service cap. At each window boundary:
+One rule carries a nonempty sorted vCPU set, reduced rational capacity in
+`(0,1]`, positive instruction quantum, and `work_conserving` or `strict_cap`
+discipline. Each selected vCPU has exact instruction credits and remainder. At
+each scheduler service quantum:
 
 ```text
-credits += floor(window_instruction_budget * share + remainder)
+credits += floor(quantum_instructions * capacity + remainder)
 remainder = exact fractional remainder
 ```
 
-The window instruction budget derives from the node's fixed icount/virtual-time
-mapping and declared CPU capacity table, never host speed. A vCPU may execute at
-most its credits and RR quantum before yielding. Credits are bounded; unused
-credit policy is `discard` or bounded `carry` with explicit maximum.
+The virtual duration derives from the node's fixed icount/virtual-time mapping,
+never host speed. A vCPU may execute at most its credits and RR quantum before
+yielding. Credits are bounded. `strict_cap` keeps each selected vCPU's ledger
+independent; `work_conserving` permits another eligible selected vCPU to consume
+unused service in canonical RR order. No unbounded carry or hidden service
+policy exists.
 
 Multiple throttle effects compose by minimum share/cap. A share of zero is
 represented as `stalled`, not a zero rational service configuration.
 
 ## Stall and offline
 
-- `stalled`: vCPU remains architecturally online, receives pending controller
-  state according to the interrupt policy, but retires no instructions until
+- `stalled`: vCPU remains architecturally online and controller pending state is
+  retained, but it retires no instructions until
   recovery. Wake events do not bypass the stall.
 - `offline`: vCPU is removed from the sim RR eligible set while remaining in the
-  fixed guest-visible topology. Interrupt routing to it follows explicit
-  reject/retain/reroute policy. This is a fault state, not QEMU CPU hotplug.
+  fixed guest-visible topology. Interrupts retain architecture controller state
+  until the vCPU is online or a separate interrupt fault changes disposition.
+  This is a fault state, not QEMU CPU hotplug.
 - `online`: vCPU re-enters at its canonical ascending-ID RR position after the
-  transition boundary with declared credit reset/preserve policy.
+  transition boundary and resumes its checkpointed service ledger. Online must
+  not carry a recovery event; offline/stalled must carry one.
 
 If no vCPU is eligible, the node has an exact next recovery/timer/device deadline
 or is hung. The scheduler may advance only through the existing authorized idle
@@ -66,8 +71,8 @@ window coordinate, credits, remainder, state, recovery timers, and cursor.
 
 1. Run fixed workloads at shares 1, 1/2, 1/3, and combined caps; prove exact
    retired-instruction trajectories and virtual-time ratios on both architectures.
-2. Exercise multi-vCPU unequal shares, stall, offline, re-online, credit reset/
-   carry, IPI and timer delivery, and all-vCPU-ineligible deadlines.
+2. Exercise multi-vCPU unequal shares, both service disciplines, stall, offline,
+   re-online, IPI/timer pending state, and all-vCPU-ineligible deadlines.
 3. Perturb host CPU load/thread scheduling and prove identical trajectories.
 4. Save/restore mid-window with fractional remainder and pending interrupts.
 5. Verify zero/overflow/bad rational, impossible routing, and bound errors.

@@ -31,8 +31,11 @@ public manifest.
 
 ## Rule and event identity
 
-Rules select source family/ID, controller, vector/type range, target vCPU, phase,
-trigger mode, occurrence, and optional producer opportunity. An interrupt event
+The resolved target selects one source ID, controller, vector/type, target vCPU,
+and command phase. Trigger mode and supported phase come from the realized
+interrupt manifest. Opportunity-scoped selection is performed by the binding
+runtime before the command; there is no second GPL-side probability or selector.
+An interrupt event
 ID includes originating device/vCPU event, controller generation, source
 sequence, routing generation, and duplicate/storm ordinal.
 
@@ -40,26 +43,27 @@ sequence, routing generation, and duplicate/storm ordinal.
 
 | Disposition | Exact semantics |
 | --- | --- |
-| `drop_raise` | Suppress an edge assertion before controller pending state; for level sources, suppress the sampled transition but leave the external line state under device control. |
-| `drop_route` | Controller accepts source state but selected route produces no target pending event for this event ID. |
-| `drop_delivery` | Pending controller state is consumed or retained according to explicit `pending_policy`; guest receives no exception entry. |
-| `delay` | Remove/withhold at selected phase and enqueue the complete event for exact virtual/icount delivery with controller-state policy. |
+| `drop` at raise | Suppress an edge assertion before controller pending state; for level sources, suppress the sampled transition but leave the external line state under device control. |
+| `drop` at route | Controller accepts source state but the selected route produces no target pending event for this event ID. |
+| `drop` at delivery | Guest receives no exception entry; QEMU uses the manifest's single architecture-correct pending-state treatment for that source/phase and rejects rows without one. |
+| `delay` | Remove/withhold at the selected phase and enqueue the complete original event for exact virtual/icount delivery; priority, route, and target remain the captured event values. |
 | `duplicate` | Create bounded child events with the same typed source and stable ordinals at declared gaps. |
-| `replace` | Produce a typed spurious event with declared controller/vector/type/target fields; original disposition is explicit. |
+| `replace` | Replace only the vector/type with the declared numeric value while retaining controller, source, and target; the original event is consumed. |
 
-Level-triggered behavior must declare `pending_policy = retain`, `consume`, or
-`reassert_if_line_high`. Edge-triggered duplicate/replacement creates new edge
-events. Delayed interrupts preserve original priority/routing snapshot or
-reroute at release according to explicit policy. No default exists.
+Level-triggered pending/reassert behavior is a capability-row invariant, not a
+per-command policy. Edge-triggered duplicate/replacement creates new edge
+events. Delayed interrupts always preserve the original priority/routing
+snapshot. Unsupported source/phase combinations are rejected before install.
 
 ## Storms
 
-A storm rule generates a finite count or bounded periodic/burst sequence from an
-exact event signal. Each event enters the normal controller path and consumes
-modeled CPU/queue service. Maximum events obey the
-[resource contract](../13-resource-and-performance-bounds.md); indefinite active
-storms use a periodic generator with finite pending state, not preallocated
-events.
+A storm rule carries a positive period, positive burst, and positive finite
+total count plus explicit sorted target vCPUs, priority, and pending-retention
+behavior. Each event enters the normal controller path and consumes modeled
+CPU/queue service. Maximum events obey the
+[resource contract](../13-resource-and-performance-bounds.md). An unbounded
+storm is modeled by a temporal signal issuing bounded generations, never by an
+unbounded QEMU queue.
 
 ## Ordering
 
@@ -81,7 +85,7 @@ sequences, controller-associated fault state, and partial acknowledgements.
 
 1. Exercise every advertised x86 and AArch64 interrupt family/phase with guest
    counters and QEMU controller evidence.
-2. Cover edge and level drop policies, delayed re-route/preserve, duplicates,
+2. Cover edge and level drop behavior, captured-route delay, duplicates,
    replacement/spurious, priority interaction, and finite/periodic storms.
 3. Interleave IPI, device, timer, and storm events at one icount and prove stable
    ordering under host perturbation.

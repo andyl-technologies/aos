@@ -41,15 +41,20 @@ ordinal.
 
 ## Fault semantics
 
-- Lifecycle transitions `reset`, `disappear`, `reconnect`, and `permanent_fail`
-  declare treatment of unadmitted, queued, executing, completed, DMA-in-flight,
-  and device-memory state.
-- Result corruption targets registered typed result fields or exact output-buffer
-  bits after execution and before guest completion; before/after digests record it.
+- Lifecycle transitions are exactly `reset`, `disappear`, and `reconnect`, with
+  explicit `preserve/clear/device_reset` treatment for pending queues and
+  attached memory. Permanent loss is a persistent `disappear` rule or node
+  lifecycle failure, not a fourth accelerator transition.
+- Result corruption selects job kind, optional queue, and occurrence, then
+  applies equal-width nonzero mask/value bytes at an exact output-buffer/result
+  schema offset after execution and before guest completion; before/after
+  digests record it.
 - Device-memory events use manifest address spaces and the memory/ECC contracts,
   including corrected telemetry and uncorrectable job/device outcomes.
-- Service throttle uses exact job-work/service curves, queue capacity, and
-  virtual-time deadlines. It never uses host accelerator utilization or sleeps.
+- Service throttle uses a capacity ratio in `(0,1]`, optional positive memory
+  byte rate, optional positive job rate, and exact thermal/power metadata to
+  update checkpointed job/queue service ledgers and virtual-time deadlines. It
+  never uses host accelerator utilization or sleeps.
 - Thermal/power values are signal metadata driving service/lifecycle effects;
   no separate thermal device is implied.
 
@@ -73,8 +78,9 @@ fault rules, and pending completions.
 ## Live microtests
 
 1. Run a real guest virtio-gpu workload and one job per co-sim GPU/TPU/FPGA class.
-2. Apply every lifecycle state with work unadmitted, queued, executing, completed,
-   and DMA-in-flight; verify declared treatment.
+2. Apply every lifecycle transition and queue/memory state policy with work
+   unadmitted, queued, executing, completed, and DMA-in-flight; verify the exact
+   treatment.
 3. Corrupt typed scalar/vector/buffer results and prove exact guest observation.
 4. Inject corrected/uncorrectable device-memory errors and verify device/guest
    outcome plus platform record where declared.

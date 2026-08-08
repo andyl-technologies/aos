@@ -24,6 +24,8 @@ pub const NODE_FAULT_FIELD_HEADER_V1_BYTES: usize = 8;
 pub const NODE_FAULT_MAX_FIELDS_V1: usize = 128;
 /// Maximum hashes in one canonical identity set.
 pub const NODE_FAULT_MAX_HASH_SET_V1: usize = 4_096;
+/// Eight-byte prefix for a closed policy encoded as canonical JSON.
+pub const NODE_FAULT_POLICY_JSON_MAGIC_V1: [u8; 8] = *b"CRUCJSN1";
 /// Eight-byte magic for typed node command evidence.
 pub const NODE_FAULT_EVIDENCE_MAGIC_V1: [u8; 8] = *b"CRUCNEV1";
 /// Fixed byte length of typed node command evidence.
@@ -277,6 +279,7 @@ impl NodeFaultFieldV1 {
             }
             NodeFaultFieldTypeV1::Ratio => {
                 self.value.len() == 16
+                    && i64::from_le_bytes(self.value[..8].try_into().unwrap_or([0; 8])) > 0
                     && u64::from_le_bytes(self.value[8..16].try_into().unwrap_or([0; 8])) != 0
             }
             NodeFaultFieldTypeV1::Hash => self.value.len() == 32,
@@ -500,6 +503,12 @@ impl NodeFaultPayloadV1 {
         {
             return Err(NodeFaultPayloadError::HeaderValue);
         }
+        if !self.command_target_pair_is_valid() {
+            return Err(NodeFaultPayloadError::TargetSchema {
+                command_kind: self.command_kind as u16,
+                target_kind: self.target_kind as u16,
+            });
+        }
         if self.operation == NodeFaultOperationV1::Remove {
             if !self.fields.is_empty() {
                 return Err(NodeFaultPayloadError::RemoveFields);
@@ -519,6 +528,49 @@ impl NodeFaultPayloadV1 {
         }
         self.validate_closed_schema()?;
         Ok(())
+    }
+
+    fn command_target_pair_is_valid(&self) -> bool {
+        use FaultCommandKind as Command;
+        use NodeFaultTargetKindV1 as Target;
+
+        matches!(
+            (self.command_kind, self.target_kind),
+            (Command::NodeLifecycle, Target::Node)
+                | (
+                    Command::NodeHang,
+                    Target::Node | Target::Vcpu | Target::Accelerator
+                )
+                | (Command::CpuService, Target::Node | Target::Vcpu)
+                | (Command::CpuVcpuState, Target::Vcpu)
+                | (Command::CpuRegisterTransform, Target::Register)
+                | (
+                    Command::CpuInstructionTransform | Command::CpuException,
+                    Target::Vcpu
+                )
+                | (
+                    Command::InterruptDisposition | Command::InterruptStorm,
+                    Target::Interrupt
+                )
+                | (
+                    Command::MemoryAccessTransform
+                        | Command::MemoryEccEvent
+                        | Command::MemoryRegionState
+                        | Command::MemoryService,
+                    Target::Memory
+                )
+                | (
+                    Command::ClockTransform | Command::ClockSourceState,
+                    Target::Clock
+                )
+                | (
+                    Command::AcceleratorLifecycle
+                        | Command::AcceleratorResultTransform
+                        | Command::AcceleratorMemoryEvent
+                        | Command::AcceleratorService,
+                    Target::Accelerator
+                )
+        )
     }
 
     fn validate_closed_schema(&self) -> Result<(), NodeFaultPayloadError> {
@@ -552,21 +604,21 @@ impl NodeFaultPayloadV1 {
             FaultCommandKind::NodeLifecycle => &[
                 (P1, Ty::U32),
                 (P2, Ty::U64),
-                (P3, Ty::Hash),
+                (P3, Ty::Bytes),
                 (P4, Ty::U32),
                 (P5, Ty::U32),
             ][..],
             FaultCommandKind::NodeHang => &[
                 (P1, Ty::U32),
-                (P2, Ty::Hash),
+                (P2, Ty::Bytes),
                 (P3, Ty::Hash),
-                (P4, Ty::Hash),
+                (P4, Ty::Bytes),
             ][..],
             FaultCommandKind::CpuService => &[
-                (P1, Ty::HashSet),
+                (P1, Ty::Bytes),
                 (P2, Ty::Ratio),
                 (P3, Ty::U64),
-                (P4, Ty::Hash),
+                (P4, Ty::U32),
             ][..],
             FaultCommandKind::CpuVcpuState => &[(P1, Ty::U32), (P2, Ty::Bool), (P3, Ty::Hash)][..],
             FaultCommandKind::CpuRegisterTransform => &[
@@ -577,16 +629,16 @@ impl NodeFaultPayloadV1 {
                 (P5, Ty::Bytes),
                 (P6, Ty::Bool),
                 (P7, Ty::Bytes),
-                (P8, Ty::Hash),
+                (P8, Ty::Bytes),
             ][..],
             FaultCommandKind::CpuInstructionTransform => &[
-                (P1, Ty::Hash),
+                (P1, Ty::Bytes),
                 (P2, Ty::U32),
                 (P3, Ty::Hash),
-                (P4, Ty::Hash),
+                (P4, Ty::Bytes),
                 (P5, Ty::U32),
             ][..],
-            FaultCommandKind::CpuException => &[(P1, Ty::Hash), (P2, Ty::Hash), (P3, Ty::Hash)][..],
+            FaultCommandKind::CpuException => &[(P1, Ty::Bytes)][..],
             FaultCommandKind::InterruptDisposition => &[
                 (P1, Ty::U32),
                 (P2, Ty::U64),
@@ -600,7 +652,7 @@ impl NodeFaultPayloadV1 {
                 (P3, Ty::U64),
                 (P4, Ty::U32),
                 (P5, Ty::U32),
-                (P6, Ty::Hash),
+                (P6, Ty::Bytes),
             ][..],
             FaultCommandKind::MemoryAccessTransform => &[
                 (P1, Ty::U64),
@@ -609,7 +661,9 @@ impl NodeFaultPayloadV1 {
                 (P4, Ty::Bytes),
                 (P5, Ty::Bool),
                 (P6, Ty::Bytes),
-                (P7, Ty::Hash),
+                (P7, Ty::Bytes),
+                (P8, Ty::U32),
+                (P9, Ty::Bool),
             ][..],
             FaultCommandKind::MemoryEccEvent => &[
                 (P1, Ty::U32),
@@ -618,10 +672,10 @@ impl NodeFaultPayloadV1 {
                 (P4, Ty::Hash),
                 (P5, Ty::Hash),
                 (P6, Ty::Hash),
-                (P7, Ty::Hash),
+                (P7, Ty::Bytes),
             ][..],
             FaultCommandKind::MemoryRegionState => {
-                &[(P1, Ty::U64), (P2, Ty::U64), (P3, Ty::U32), (P4, Ty::Hash)][..]
+                &[(P1, Ty::U64), (P2, Ty::U64), (P3, Ty::U32), (P4, Ty::Bytes)][..]
             }
             FaultCommandKind::MemoryService => &[
                 (P1, Ty::U64),
@@ -629,7 +683,7 @@ impl NodeFaultPayloadV1 {
                 (P3, Ty::U64),
                 (P4, Ty::Bool),
                 (P5, Ty::U64),
-                (P6, Ty::Hash),
+                (P6, Ty::Bytes),
             ][..],
             FaultCommandKind::ClockTransform => &[
                 (P1, Ty::Hash),
@@ -637,16 +691,17 @@ impl NodeFaultPayloadV1 {
                 (P3, Ty::I64),
                 (P4, Ty::Ratio),
                 (P5, Ty::U64),
-                (P6, Ty::Hash),
-                (P7, Ty::Hash),
+                (P6, Ty::Bytes),
+                (P7, Ty::U32),
+                (P8, Ty::U32),
             ][..],
             FaultCommandKind::ClockSourceState => {
-                &[(P1, Ty::HashSet), (P2, Ty::Hash), (P3, Ty::Hash)][..]
+                &[(P1, Ty::HashSet), (P2, Ty::Bytes), (P3, Ty::Bytes)][..]
             }
             FaultCommandKind::AcceleratorLifecycle => {
                 &[(P1, Ty::Hash), (P2, Ty::U32), (P3, Ty::U32), (P4, Ty::U32)][..]
             }
-            FaultCommandKind::AcceleratorResultTransform => &[(P1, Ty::Hash), (P2, Ty::Hash)][..],
+            FaultCommandKind::AcceleratorResultTransform => &[(P1, Ty::Bytes), (P2, Ty::Bytes)][..],
             FaultCommandKind::AcceleratorMemoryEvent => &[
                 (P1, Ty::U64),
                 (P2, Ty::U64),
@@ -655,7 +710,7 @@ impl NodeFaultPayloadV1 {
                 (P5, Ty::Bool),
                 (P6, Ty::U64),
                 (P7, Ty::Bool),
-                (P8, Ty::Hash),
+                (P8, Ty::Bytes),
             ][..],
             FaultCommandKind::AcceleratorService => &[
                 (P1, Ty::Ratio),
@@ -663,7 +718,7 @@ impl NodeFaultPayloadV1 {
                 (P3, Ty::U64),
                 (P4, Ty::Bool),
                 (P5, Ty::U64),
-                (P6, Ty::Hash),
+                (P6, Ty::Bytes),
             ][..],
             _ => return Err(NodeFaultPayloadError::CommandKind(self.command_kind as u16)),
         };
@@ -678,7 +733,259 @@ impl NodeFaultPayloadV1 {
                 command_kind: self.command_kind as u16,
             });
         }
+        self.validate_policy_fields()?;
+        self.validate_discriminants()?;
+        self.validate_cross_fields()?;
         Ok(())
+    }
+
+    fn validate_discriminants(&self) -> Result<(), NodeFaultPayloadError> {
+        use node_fault_field::*;
+
+        let allowed: &[(u16, &[u32])] = match self.command_kind {
+            FaultCommandKind::NodeLifecycle => &[
+                (P1, &[1, 2, 3, 4, 5, 6]),
+                (P4, &[1, 2, 3]),
+                (P5, &[1, 2, 3]),
+            ],
+            FaultCommandKind::NodeHang => &[(P1, &[1, 2, 3])],
+            FaultCommandKind::CpuService => &[(P4, &[1, 2])],
+            FaultCommandKind::CpuVcpuState => &[(P1, &[1, 2, 3])],
+            FaultCommandKind::CpuRegisterTransform => &[(P4, &[1, 2, 3])],
+            FaultCommandKind::CpuInstructionTransform => &[(P2, &[1, 2, 3])],
+            FaultCommandKind::InterruptDisposition => &[(P1, &[1, 2, 3, 4])],
+            FaultCommandKind::MemoryAccessTransform => &[(P3, &[1, 2, 3, 4, 5])],
+            FaultCommandKind::MemoryEccEvent => &[(P1, &[1, 2])],
+            FaultCommandKind::MemoryRegionState => &[(P3, &[1, 2, 3])],
+            FaultCommandKind::ClockTransform => &[
+                (P2, &[1, 2, 3, 4, 5, 6]),
+                (P7, &[1, 2, 3]),
+                (P8, &[1, 2, 3]),
+            ],
+            FaultCommandKind::AcceleratorLifecycle => {
+                &[(P2, &[1, 2, 3]), (P3, &[1, 2, 3]), (P4, &[1, 2, 3])]
+            }
+            _ => &[],
+        };
+        for (tag, values) in allowed {
+            if !values.contains(&self.u32_field(*tag)?) {
+                return Err(NodeFaultPayloadError::FieldValue { tag: *tag });
+            }
+        }
+        if self.command_kind == FaultCommandKind::MemoryAccessTransform {
+            let classes = self.u32_field(P8)?;
+            if classes == 0 || classes & !0x1f != 0 {
+                return Err(NodeFaultPayloadError::FieldValue { tag: P8 });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_cross_fields(&self) -> Result<(), NodeFaultPayloadError> {
+        use node_fault_field::*;
+
+        match self.command_kind {
+            FaultCommandKind::CpuInstructionTransform => match self.u32_field(P2)? {
+                1 if self.hash_is_zero(P3)? || self.u32_field(P5)? != 0 => {
+                    Err(NodeFaultPayloadError::FieldValue { tag: P3 })
+                }
+                2 if !self.hash_is_zero(P3)? || self.u32_field(P5)? != 0 => {
+                    Err(NodeFaultPayloadError::FieldValue { tag: P5 })
+                }
+                3 if !self.hash_is_zero(P3)? || !(1..=256).contains(&self.u32_field(P5)?) => {
+                    Err(NodeFaultPayloadError::FieldValue { tag: P5 })
+                }
+                _ => Ok(()),
+            },
+            FaultCommandKind::MemoryAccessTransform => {
+                if self.u64_field(P2)? == 0 {
+                    return Err(NodeFaultPayloadError::FieldValue { tag: P2 });
+                }
+                let kind = self.u32_field(P3)?;
+                let has_value = self.bool_field(P5)?;
+                let violate_atomicity = self.bool_field(P9)?;
+                let mask = self.field_with_tag(P4)?.value.as_slice();
+                let value = self.field_with_tag(P6)?.value.as_slice();
+                let mask_has_one = mask.iter().any(|byte| *byte != 0);
+                let value_has_one = value.iter().any(|byte| *byte != 0);
+                let valid = match kind {
+                    1 => {
+                        has_value && !violate_atomicity && mask_has_one && mask.len() == value.len()
+                    }
+                    2 => !has_value && !violate_atomicity && mask_has_one && value == [0],
+                    3 => !has_value && !violate_atomicity && mask == [0] && value == [0],
+                    4 => {
+                        has_value
+                            && mask == [0]
+                            && value_has_one
+                            && value.iter().any(|byte| *byte != u8::MAX)
+                    }
+                    5 => has_value && !violate_atomicity && mask == [0],
+                    _ => false,
+                };
+                if valid {
+                    Ok(())
+                } else {
+                    Err(NodeFaultPayloadError::FieldValue { tag: P3 })
+                }
+            }
+            FaultCommandKind::ClockTransform => {
+                let kind = self.u32_field(P2)?;
+                let process_is_sentinel = self.field_with_tag(P6)?.value == [0];
+                if matches!(kind, 4 | 5 | 6) == process_is_sentinel {
+                    Err(NodeFaultPayloadError::FieldValue { tag: P6 })
+                } else {
+                    Ok(())
+                }
+            }
+            FaultCommandKind::AcceleratorMemoryEvent => {
+                let has_ecc = self.bool_field(P3)?;
+                let has_syndrome = self.bool_field(P5)?;
+                let has_transform = self.bool_field(P7)?;
+                let transform = self.field_with_tag(P8)?.value.as_slice();
+                if (has_ecc && has_syndrome && !has_transform && transform == [0])
+                    || (!has_ecc && !has_syndrome && has_transform && transform != [0])
+                {
+                    Ok(())
+                } else {
+                    Err(NodeFaultPayloadError::FieldValue { tag: P7 })
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_policy_fields(&self) -> Result<(), NodeFaultPayloadError> {
+        use node_fault_field::*;
+
+        let required: &[u16] = match self.command_kind {
+            FaultCommandKind::NodeLifecycle => &[P3],
+            FaultCommandKind::NodeHang => &[P2, P4],
+            FaultCommandKind::CpuService => &[P1],
+            FaultCommandKind::CpuRegisterTransform => &[P8],
+            FaultCommandKind::CpuInstructionTransform => &[P1],
+            FaultCommandKind::CpuException => &[P1],
+            FaultCommandKind::InterruptStorm => &[P6],
+            FaultCommandKind::MemoryAccessTransform => &[P7],
+            FaultCommandKind::MemoryEccEvent => &[P7],
+            FaultCommandKind::MemoryRegionState => &[P4],
+            FaultCommandKind::MemoryService => &[P6],
+            FaultCommandKind::ClockSourceState => &[P2, P3],
+            FaultCommandKind::AcceleratorResultTransform => &[P1, P2],
+            FaultCommandKind::AcceleratorService => &[P6],
+            _ => &[],
+        };
+        for tag in required {
+            self.validate_policy_json(*tag)?;
+        }
+        if self.command_kind == FaultCommandKind::CpuInstructionTransform {
+            if self.u32_field(P2)? == 1 {
+                self.validate_policy_json(P4)?;
+            } else {
+                self.validate_sentinel(P4)?;
+            }
+        }
+        if self.command_kind == FaultCommandKind::MemoryAccessTransform {
+            if self.u32_field(P3)? == 5 {
+                self.validate_policy_json(P6)?;
+            }
+        }
+        if self.command_kind == FaultCommandKind::ClockTransform {
+            if matches!(self.u32_field(P2)?, 4 | 5 | 6) {
+                self.validate_policy_json(P6)?;
+            } else {
+                self.validate_sentinel(P6)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn field_with_tag(&self, tag: u16) -> Result<&NodeFaultFieldV1, NodeFaultPayloadError> {
+        self.fields
+            .binary_search_by_key(&tag, |field| field.tag)
+            .map(|index| &self.fields[index])
+            .map_err(|_| NodeFaultPayloadError::Schema {
+                command_kind: self.command_kind as u16,
+            })
+    }
+
+    fn u32_field(&self, tag: u16) -> Result<u32, NodeFaultPayloadError> {
+        let field = self.field_with_tag(tag)?;
+        field
+            .value
+            .as_slice()
+            .try_into()
+            .map(u32::from_le_bytes)
+            .map_err(|_| NodeFaultPayloadError::FieldValue { tag })
+    }
+
+    fn u64_field(&self, tag: u16) -> Result<u64, NodeFaultPayloadError> {
+        let field = self.field_with_tag(tag)?;
+        field
+            .value
+            .as_slice()
+            .try_into()
+            .map(u64::from_le_bytes)
+            .map_err(|_| NodeFaultPayloadError::FieldValue { tag })
+    }
+
+    fn bool_field(&self, tag: u16) -> Result<bool, NodeFaultPayloadError> {
+        match self.field_with_tag(tag)?.value.as_slice() {
+            [0] => Ok(false),
+            [1] => Ok(true),
+            _ => Err(NodeFaultPayloadError::FieldValue { tag }),
+        }
+    }
+
+    fn hash_is_zero(&self, tag: u16) -> Result<bool, NodeFaultPayloadError> {
+        let value = self.field_with_tag(tag)?.value.as_slice();
+        if value.len() == 32 {
+            Ok(value.iter().all(|byte| *byte == 0))
+        } else {
+            Err(NodeFaultPayloadError::FieldValue { tag })
+        }
+    }
+
+    fn validate_sentinel(&self, tag: u16) -> Result<(), NodeFaultPayloadError> {
+        if self.field_with_tag(tag)?.value == [0] {
+            Ok(())
+        } else {
+            Err(NodeFaultPayloadError::FieldValue { tag })
+        }
+    }
+
+    fn validate_policy_json(&self, tag: u16) -> Result<(), NodeFaultPayloadError> {
+        let bytes = &self.field_with_tag(tag)?.value;
+        let Some(json) = bytes.strip_prefix(&NODE_FAULT_POLICY_JSON_MAGIC_V1) else {
+            return Err(NodeFaultPayloadError::PolicyJson { tag });
+        };
+        let value: serde_json::Value = serde_json::from_slice(json)
+            .map_err(|_source| NodeFaultPayloadError::PolicyJson { tag })?;
+        if !matches!(
+            value,
+            serde_json::Value::Object(_)
+                | serde_json::Value::Array(_)
+                | serde_json::Value::String(_)
+        ) || !policy_json_value_is_allowed(&value)
+        {
+            return Err(NodeFaultPayloadError::PolicyJson { tag });
+        }
+        let canonical = serde_json::to_vec(&value)
+            .map_err(|_source| NodeFaultPayloadError::PolicyJson { tag })?;
+        if canonical == json {
+            Ok(())
+        } else {
+            Err(NodeFaultPayloadError::PolicyJson { tag })
+        }
+    }
+}
+
+fn policy_json_value_is_allowed(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::String(_) => true,
+        serde_json::Value::Number(number) => number.is_i64() || number.is_u64(),
+        serde_json::Value::Array(values) => values.iter().all(policy_json_value_is_allowed),
+        serde_json::Value::Object(values) => values.values().all(policy_json_value_is_allowed),
     }
 }
 
@@ -856,6 +1163,23 @@ pub enum NodeFaultPayloadError {
         /// Numeric command kind whose schema was violated.
         command_kind: u16,
     },
+    /// The command cannot operate on the supplied target category.
+    #[error("typed node-fault command {command_kind} cannot target kind {target_kind}")]
+    TargetSchema {
+        /// Numeric command kind.
+        command_kind: u16,
+        /// Numeric target kind.
+        target_kind: u16,
+    },
+    /// Resolved target coordinates conflict with effect coordinates.
+    #[error("typed node-fault effect conflicts with its resolved target")]
+    TargetValue,
+    /// A closed policy field is not framed canonical JSON.
+    #[error("typed node-fault policy field {tag} is not canonical CRUCJSN1 JSON")]
+    PolicyJson {
+        /// Invalid policy field tag.
+        tag: u16,
+    },
 }
 
 pub(crate) fn emit_fault_node_c_header(out: &mut String) {
@@ -878,6 +1202,14 @@ pub(crate) fn emit_fault_node_c_header(out: &mut String) {
     let _ = writeln!(
         out,
         "#define CRUCIBLE_NODE_FAULT_MAX_FIELDS_V1 {NODE_FAULT_MAX_FIELDS_V1}u"
+    );
+    let _ = writeln!(
+        out,
+        "#define CRUCIBLE_NODE_FAULT_POLICY_JSON_MAGIC_V1 \"CRUCJSN1\""
+    );
+    let _ = writeln!(
+        out,
+        "#define CRUCIBLE_NODE_FAULT_POLICY_JSON_MAGIC_V1_BYTES 8u"
     );
     for (name, value) in [
         ("UPSERT", NodeFaultOperationV1::Upsert as u16),
@@ -984,6 +1316,85 @@ pub(crate) fn emit_fault_node_c_header(out: &mut String) {
 mod tests {
     use super::*;
 
+    fn field(tag: u16, field_type: NodeFaultFieldTypeV1) -> NodeFaultFieldV1 {
+        match field_type {
+            NodeFaultFieldTypeV1::U32 => NodeFaultFieldV1::u32(tag, 1),
+            NodeFaultFieldTypeV1::U64 => NodeFaultFieldV1::u64(tag, 1),
+            NodeFaultFieldTypeV1::I64 => NodeFaultFieldV1::i64(tag, -1),
+            NodeFaultFieldTypeV1::Bool => NodeFaultFieldV1::boolean(tag, true),
+            NodeFaultFieldTypeV1::Ratio => NodeFaultFieldV1::ratio(tag, 1, 2),
+            NodeFaultFieldTypeV1::Hash => NodeFaultFieldV1::hash(tag, [tag as u8; 32]),
+            NodeFaultFieldTypeV1::Bytes => NodeFaultFieldV1::bytes(tag, policy_json()),
+            NodeFaultFieldTypeV1::HashSet => {
+                NodeFaultFieldV1::hash_set(tag, &[[tag as u8; 32]]).expect("canonical hash set")
+            }
+        }
+    }
+
+    fn policy_json() -> Vec<u8> {
+        let mut value = NODE_FAULT_POLICY_JSON_MAGIC_V1.to_vec();
+        value.extend_from_slice(b"{\"kind\":\"every\"}");
+        value
+    }
+
+    fn exhaustive_payload(
+        command_kind: FaultCommandKind,
+        target_kind: NodeFaultTargetKindV1,
+        parameters: &[(u16, NodeFaultFieldTypeV1)],
+        targets: &[(u16, NodeFaultFieldTypeV1)],
+    ) -> NodeFaultPayloadV1 {
+        let mut fields = parameters
+            .iter()
+            .chain(targets)
+            .map(|(tag, field_type)| field(*tag, *field_type))
+            .collect::<Vec<_>>();
+        if command_kind == FaultCommandKind::ClockTransform {
+            let kind = fields
+                .iter_mut()
+                .find(|field| field.tag == node_fault_field::P2)
+                .expect("clock kind field exists");
+            *kind = NodeFaultFieldV1::u32(node_fault_field::P2, 5);
+        }
+        if command_kind == FaultCommandKind::CpuInstructionTransform {
+            let count = fields
+                .iter_mut()
+                .find(|field| field.tag == node_fault_field::P5)
+                .expect("instruction count field exists");
+            *count = NodeFaultFieldV1::u32(node_fault_field::P5, 0);
+        }
+        if command_kind == FaultCommandKind::MemoryAccessTransform {
+            let violate_atomicity = fields
+                .iter_mut()
+                .find(|field| field.tag == node_fault_field::P9)
+                .expect("memory atomicity field exists");
+            *violate_atomicity = NodeFaultFieldV1::boolean(node_fault_field::P9, false);
+        }
+        if command_kind == FaultCommandKind::AcceleratorMemoryEvent {
+            let has_transform = fields
+                .iter_mut()
+                .find(|field| field.tag == node_fault_field::P7)
+                .expect("accelerator transform-presence field exists");
+            *has_transform = NodeFaultFieldV1::boolean(node_fault_field::P7, false);
+            let transform = fields
+                .iter_mut()
+                .find(|field| field.tag == node_fault_field::P8)
+                .expect("accelerator transform field exists");
+            *transform = NodeFaultFieldV1::bytes(node_fault_field::P8, vec![0]);
+        }
+        fields.sort_by_key(|value| value.tag);
+        NodeFaultPayloadV1 {
+            command_kind,
+            operation: NodeFaultOperationV1::Upsert,
+            target_kind,
+            model_phase: 1,
+            generation: 1,
+            action_hash: [1; 32],
+            target_hash: [2; 32],
+            schema_hash: [3; 32],
+            fields,
+        }
+    }
+
     fn payload() -> NodeFaultPayloadV1 {
         NodeFaultPayloadV1 {
             command_kind: FaultCommandKind::CpuService,
@@ -995,10 +1406,10 @@ mod tests {
             target_hash: [2; 32],
             schema_hash: [3; 32],
             fields: vec![
-                NodeFaultFieldV1::hash_set(1, &[[1; 32]]).expect("canonical set"),
+                NodeFaultFieldV1::bytes(1, policy_json()),
                 NodeFaultFieldV1::ratio(2, 1, 2),
                 NodeFaultFieldV1::u64(3, 10_000),
-                NodeFaultFieldV1::hash(4, [4; 32]),
+                NodeFaultFieldV1::u32(4, 1),
                 NodeFaultFieldV1::u32(100, 0),
             ],
         }
@@ -1012,10 +1423,344 @@ mod tests {
     }
 
     #[test]
+    fn every_typed_node_command_has_an_exact_closed_schema() {
+        use NodeFaultFieldTypeV1 as Ty;
+        use node_fault_field::*;
+
+        let vcpu = &[(T1, Ty::U32)][..];
+        let register = &[
+            (T1, Ty::U32),
+            (T2, Ty::Hash),
+            (T3, Ty::Hash),
+            (T4, Ty::U32),
+            (T5, Ty::U32),
+        ][..];
+        let memory = &[
+            (T1, Ty::Hash),
+            (T2, Ty::U64),
+            (T3, Ty::Bool),
+            (T4, Ty::U32),
+            (T5, Ty::U64),
+        ][..];
+        let interrupt = &[(T1, Ty::Hash), (T2, Ty::Hash), (T3, Ty::U32), (T4, Ty::U32)][..];
+        let hash_target = &[(T1, Ty::Hash)][..];
+        let cases: &[(
+            FaultCommandKind,
+            NodeFaultTargetKindV1,
+            &[(u16, Ty)],
+            &[(u16, Ty)],
+        )] = &[
+            (
+                FaultCommandKind::NodeLifecycle,
+                NodeFaultTargetKindV1::Node,
+                &[
+                    (P1, Ty::U32),
+                    (P2, Ty::U64),
+                    (P3, Ty::Bytes),
+                    (P4, Ty::U32),
+                    (P5, Ty::U32),
+                ],
+                &[],
+            ),
+            (
+                FaultCommandKind::NodeHang,
+                NodeFaultTargetKindV1::Node,
+                &[
+                    (P1, Ty::U32),
+                    (P2, Ty::Bytes),
+                    (P3, Ty::Hash),
+                    (P4, Ty::Bytes),
+                ],
+                &[],
+            ),
+            (
+                FaultCommandKind::CpuService,
+                NodeFaultTargetKindV1::Vcpu,
+                &[
+                    (P1, Ty::Bytes),
+                    (P2, Ty::Ratio),
+                    (P3, Ty::U64),
+                    (P4, Ty::U32),
+                ],
+                vcpu,
+            ),
+            (
+                FaultCommandKind::CpuVcpuState,
+                NodeFaultTargetKindV1::Vcpu,
+                &[(P1, Ty::U32), (P2, Ty::Bool), (P3, Ty::Hash)],
+                vcpu,
+            ),
+            (
+                FaultCommandKind::CpuRegisterTransform,
+                NodeFaultTargetKindV1::Register,
+                &[
+                    (P1, Ty::Hash),
+                    (P2, Ty::U32),
+                    (P3, Ty::U32),
+                    (P4, Ty::U32),
+                    (P5, Ty::Bytes),
+                    (P6, Ty::Bool),
+                    (P7, Ty::Bytes),
+                    (P8, Ty::Bytes),
+                ],
+                register,
+            ),
+            (
+                FaultCommandKind::CpuInstructionTransform,
+                NodeFaultTargetKindV1::Vcpu,
+                &[
+                    (P1, Ty::Bytes),
+                    (P2, Ty::U32),
+                    (P3, Ty::Hash),
+                    (P4, Ty::Bytes),
+                    (P5, Ty::U32),
+                ],
+                vcpu,
+            ),
+            (
+                FaultCommandKind::CpuException,
+                NodeFaultTargetKindV1::Vcpu,
+                &[(P1, Ty::Bytes)],
+                vcpu,
+            ),
+            (
+                FaultCommandKind::InterruptDisposition,
+                NodeFaultTargetKindV1::Interrupt,
+                &[
+                    (P1, Ty::U32),
+                    (P2, Ty::U64),
+                    (P3, Ty::U32),
+                    (P4, Ty::U64),
+                    (P5, Ty::U32),
+                ],
+                interrupt,
+            ),
+            (
+                FaultCommandKind::InterruptStorm,
+                NodeFaultTargetKindV1::Interrupt,
+                &[
+                    (P1, Ty::Hash),
+                    (P2, Ty::U32),
+                    (P3, Ty::U64),
+                    (P4, Ty::U32),
+                    (P5, Ty::U32),
+                    (P6, Ty::Bytes),
+                ],
+                interrupt,
+            ),
+            (
+                FaultCommandKind::MemoryAccessTransform,
+                NodeFaultTargetKindV1::Memory,
+                &[
+                    (P1, Ty::U64),
+                    (P2, Ty::U64),
+                    (P3, Ty::U32),
+                    (P4, Ty::Bytes),
+                    (P5, Ty::Bool),
+                    (P6, Ty::Bytes),
+                    (P7, Ty::Bytes),
+                    (P8, Ty::U32),
+                    (P9, Ty::Bool),
+                ],
+                memory,
+            ),
+            (
+                FaultCommandKind::MemoryEccEvent,
+                NodeFaultTargetKindV1::Memory,
+                &[
+                    (P1, Ty::U32),
+                    (P2, Ty::U64),
+                    (P3, Ty::U64),
+                    (P4, Ty::Hash),
+                    (P5, Ty::Hash),
+                    (P6, Ty::Hash),
+                    (P7, Ty::Bytes),
+                ],
+                memory,
+            ),
+            (
+                FaultCommandKind::MemoryRegionState,
+                NodeFaultTargetKindV1::Memory,
+                &[(P1, Ty::U64), (P2, Ty::U64), (P3, Ty::U32), (P4, Ty::Bytes)],
+                memory,
+            ),
+            (
+                FaultCommandKind::MemoryService,
+                NodeFaultTargetKindV1::Memory,
+                &[
+                    (P1, Ty::U64),
+                    (P2, Ty::Bool),
+                    (P3, Ty::U64),
+                    (P4, Ty::Bool),
+                    (P5, Ty::U64),
+                    (P6, Ty::Bytes),
+                ],
+                memory,
+            ),
+            (
+                FaultCommandKind::ClockTransform,
+                NodeFaultTargetKindV1::Clock,
+                &[
+                    (P1, Ty::Hash),
+                    (P2, Ty::U32),
+                    (P3, Ty::I64),
+                    (P4, Ty::Ratio),
+                    (P5, Ty::U64),
+                    (P6, Ty::Bytes),
+                    (P7, Ty::U32),
+                    (P8, Ty::U32),
+                ],
+                hash_target,
+            ),
+            (
+                FaultCommandKind::ClockSourceState,
+                NodeFaultTargetKindV1::Clock,
+                &[(P1, Ty::HashSet), (P2, Ty::Bytes), (P3, Ty::Bytes)],
+                hash_target,
+            ),
+            (
+                FaultCommandKind::AcceleratorLifecycle,
+                NodeFaultTargetKindV1::Accelerator,
+                &[(P1, Ty::Hash), (P2, Ty::U32), (P3, Ty::U32), (P4, Ty::U32)],
+                hash_target,
+            ),
+            (
+                FaultCommandKind::AcceleratorResultTransform,
+                NodeFaultTargetKindV1::Accelerator,
+                &[(P1, Ty::Bytes), (P2, Ty::Bytes)],
+                hash_target,
+            ),
+            (
+                FaultCommandKind::AcceleratorMemoryEvent,
+                NodeFaultTargetKindV1::Accelerator,
+                &[
+                    (P1, Ty::U64),
+                    (P2, Ty::U64),
+                    (P3, Ty::Bool),
+                    (P4, Ty::U32),
+                    (P5, Ty::Bool),
+                    (P6, Ty::U64),
+                    (P7, Ty::Bool),
+                    (P8, Ty::Bytes),
+                ],
+                hash_target,
+            ),
+            (
+                FaultCommandKind::AcceleratorService,
+                NodeFaultTargetKindV1::Accelerator,
+                &[
+                    (P1, Ty::Ratio),
+                    (P2, Ty::Bool),
+                    (P3, Ty::U64),
+                    (P4, Ty::Bool),
+                    (P5, Ty::U64),
+                    (P6, Ty::Bytes),
+                ],
+                hash_target,
+            ),
+        ];
+        assert_eq!(cases.len(), 19);
+        for (command, target, parameters, targets) in cases {
+            let payload = exhaustive_payload(*command, *target, parameters, targets);
+            let encoded = payload
+                .encode()
+                .unwrap_or_else(|error| panic!("schema for {command:?} must encode: {error}"));
+            assert_eq!(NodeFaultPayloadV1::decode(&encoded), Ok(payload));
+        }
+    }
+
+    #[test]
     fn typed_node_payload_rejects_noncanonical_fields() {
         let mut value = payload();
         value.fields.reverse();
         assert_eq!(value.encode(), Err(NodeFaultPayloadError::FieldOrder));
+    }
+
+    #[test]
+    fn typed_node_payload_rejects_noncanonical_policy_json() {
+        use node_fault_field::P1;
+
+        for invalid in [
+            b"null".as_slice(),
+            b"CRUCJSN1null".as_slice(),
+            b"CRUCJSN1 null".as_slice(),
+            b"CRUCJSN1{\"b\":1,\"a\":2}".as_slice(),
+            b"CRUCJSN1{\"a\":1,\"a\":2}".as_slice(),
+            b"CRUCJSN1{\"kind\":\"every\",\"value\":1.0}".as_slice(),
+        ] {
+            let mut value = payload();
+            value.fields[0] = NodeFaultFieldV1::bytes(P1, invalid.to_vec());
+            assert_eq!(
+                value.encode(),
+                Err(NodeFaultPayloadError::PolicyJson { tag: P1 })
+            );
+        }
+    }
+
+    #[test]
+    fn typed_node_payload_rejects_command_target_mismatch() {
+        let mut value = payload();
+        value.target_kind = NodeFaultTargetKindV1::Memory;
+        assert_eq!(
+            value.encode(),
+            Err(NodeFaultPayloadError::TargetSchema {
+                command_kind: FaultCommandKind::CpuService as u16,
+                target_kind: NodeFaultTargetKindV1::Memory as u16,
+            })
+        );
+    }
+
+    #[test]
+    fn typed_node_payload_rejects_unknown_discriminant() {
+        use node_fault_field::P4;
+
+        let mut value = payload();
+        value.fields[3] = NodeFaultFieldV1::u32(P4, 99);
+        assert_eq!(
+            value.encode(),
+            Err(NodeFaultPayloadError::FieldValue { tag: P4 })
+        );
+    }
+
+    #[test]
+    fn typed_node_payload_rejects_invalid_memory_cross_fields() {
+        use NodeFaultFieldTypeV1 as Ty;
+        use node_fault_field::*;
+
+        let parameters = &[
+            (P1, Ty::U64),
+            (P2, Ty::U64),
+            (P3, Ty::U32),
+            (P4, Ty::Bytes),
+            (P5, Ty::Bool),
+            (P6, Ty::Bytes),
+            (P7, Ty::Bytes),
+            (P8, Ty::U32),
+            (P9, Ty::Bool),
+        ];
+        let target = &[
+            (T1, Ty::Hash),
+            (T2, Ty::U64),
+            (T3, Ty::Bool),
+            (T4, Ty::U32),
+            (T5, Ty::U64),
+        ];
+        let mut value = exhaustive_payload(
+            FaultCommandKind::MemoryAccessTransform,
+            NodeFaultTargetKindV1::Memory,
+            parameters,
+            target,
+        );
+        let atomicity = value
+            .fields
+            .iter_mut()
+            .find(|field| field.tag == P9)
+            .expect("memory atomicity field exists");
+        *atomicity = NodeFaultFieldV1::boolean(P9, true);
+        assert_eq!(
+            value.encode(),
+            Err(NodeFaultPayloadError::FieldValue { tag: P3 })
+        );
     }
 
     #[test]

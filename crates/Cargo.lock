@@ -2133,6 +2133,7 @@ dependencies = [
  "crucible-shmem",
  "libc",
  "rustix 1.1.4",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
@@ -2166,6 +2167,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "libc",
+ "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
 ]

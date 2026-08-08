@@ -407,11 +407,14 @@ const BLOCK_TARGETS: &[FaultTargetKind] =
     &[FaultTargetKind::BlockDevice, FaultTargetKind::BlockRange];
 const NINEP_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::NinePDevice];
 const NODE_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::Node];
-const CPU_TARGETS: &[FaultTargetKind] = &[
+const NODE_HANG_TARGETS: &[FaultTargetKind] = &[
     FaultTargetKind::Node,
     FaultTargetKind::Vcpu,
-    FaultTargetKind::Register,
+    FaultTargetKind::Accelerator,
 ];
+const CPU_SERVICE_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::Node, FaultTargetKind::Vcpu];
+const VCPU_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::Vcpu];
+const REGISTER_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::Register];
 const MEMORY_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::MemoryRange];
 const INTERRUPT_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::Interrupt];
 const CLOCK_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::ClockSource];
@@ -596,18 +599,18 @@ effect_registry! {
 
     /// Node boot, reset, stop, crash, and power transition.
     NodeLifecycle => { key: "node.lifecycle", adapter: Node, targets: NODE_TARGETS, phases: [Boundary], lifetimes: [Impulse, StateMachine], composition: Severity, capability: "qemu.node.lifecycle.v1", evidence: ["backend_acknowledgement", "old_run_state", "new_run_state", "state_loss"] },
-    /// Node or vCPU progress outage with explicit recovery.
-    NodeHang => { key: "node.hang", adapter: Node, targets: NODE_TARGETS, phases: [Boundary, Run], lifetimes: [Persistent], composition: OutageOr, capability: "qemu.node.hang.v1", evidence: ["progress_counters", "recovery"] },
+    /// Node, vCPU-set, or accelerator progress outage with explicit recovery.
+    NodeHang => { key: "node.hang", adapter: Node, targets: NODE_HANG_TARGETS, phases: [Boundary, Run], lifetimes: [Persistent], composition: OutageOr, capability: "qemu.node.hang.v1", evidence: ["progress_counters", "recovery"] },
     /// Rational vCPU execution capacity and service schedule.
-    CpuService => { key: "cpu.service", adapter: Node, targets: CPU_TARGETS, phases: [Run], lifetimes: [Persistent, StateMachine], composition: Minimum, capability: "qemu.cpu.service.v1", evidence: ["retired_budget", "service_ledger", "vcpu_schedule"] },
+    CpuService => { key: "cpu.service", adapter: Node, targets: CPU_SERVICE_TARGETS, phases: [Run], lifetimes: [Persistent, StateMachine], composition: Minimum, capability: "qemu.cpu.service.v1", evidence: ["retired_budget", "service_ledger", "vcpu_schedule"] },
     /// Online, offline, or stalled vCPU state.
-    CpuVcpuState => { key: "cpu.vcpu_state", adapter: Node, targets: CPU_TARGETS, phases: [Boundary], lifetimes: [StateMachine], composition: Severity, capability: "qemu.cpu.vcpu-state.v1", evidence: ["round_robin_cursor", "topology", "run_state"] },
+    CpuVcpuState => { key: "cpu.vcpu_state", adapter: Node, targets: VCPU_TARGETS, phases: [Boundary], lifetimes: [StateMachine], composition: Severity, capability: "qemu.cpu.vcpu-state.v1", evidence: ["round_robin_cursor", "topology", "run_state"] },
     /// Architecture-resolved register bit, stuck, or replacement transform.
-    CpuRegisterTransform => { key: "cpu.register_transform", adapter: Node, targets: CPU_TARGETS, phases: [BeforeRead, AfterRead, BeforeWrite, AfterWrite, Boundary], lifetimes: [Persistent, Opportunity, Impulse], composition: OrderedTransform, capability: "qemu.cpu.register-transform.v1", evidence: ["resolved_register", "before_value", "after_value", "icount"] },
+    CpuRegisterTransform => { key: "cpu.register_transform", adapter: Node, targets: REGISTER_TARGETS, phases: [BeforeRead, AfterRead, BeforeWrite, AfterWrite, Boundary], lifetimes: [Persistent, Opportunity, Impulse], composition: OrderedTransform, capability: "qemu.cpu.register-transform.v1", evidence: ["resolved_register", "before_value", "after_value", "icount"] },
     /// Instruction result corruption, skip, or replay.
-    CpuInstructionTransform => { key: "cpu.instruction_transform", adapter: Node, targets: CPU_TARGETS, phases: [BeforeInstruction, AfterInstruction], lifetimes: [Opportunity], composition: Conflict, capability: "qemu.cpu.instruction-transform.v1", evidence: ["instruction", "operands", "results", "pc", "state_digest"] },
+    CpuInstructionTransform => { key: "cpu.instruction_transform", adapter: Node, targets: VCPU_TARGETS, phases: [BeforeInstruction, AfterInstruction], lifetimes: [Opportunity], composition: Conflict, capability: "qemu.cpu.instruction-transform.v1", evidence: ["instruction", "operands", "results", "pc", "state_digest"] },
     /// Architecture-specific machine check or injected exception.
-    CpuException => { key: "cpu.exception", adapter: Node, targets: CPU_TARGETS, phases: [BeforeInstruction, AfterInstruction, Boundary], lifetimes: [Impulse], composition: Severity, capability: "qemu.cpu.exception.v1", evidence: ["exception", "architecture_acknowledgement"] },
+    CpuException => { key: "cpu.exception", adapter: Node, targets: VCPU_TARGETS, phases: [BeforeInstruction, AfterInstruction, Boundary], lifetimes: [Impulse], composition: Severity, capability: "qemu.cpu.exception.v1", evidence: ["exception", "architecture_acknowledgement"] },
     /// Dropped, delayed, duplicated, or replaced interrupt.
     InterruptDisposition => { key: "interrupt.disposition", adapter: Node, targets: INTERRUPT_TARGETS, phases: [Raise, Route, InterruptDeliver], lifetimes: [Opportunity, StateMachine], composition: OrderedTransform, capability: "qemu.interrupt.control.v1", evidence: ["source", "target", "vector", "original_deliveries", "final_deliveries"] },
     /// Bounded generated interrupt event sequence.
@@ -688,5 +691,34 @@ mod tests {
         assert_eq!(EffectKind::from_key("network.availability.v2"), None);
         assert_eq!(EffectKind::from_key("sensor.bias"), None);
         assert_eq!(EffectKind::from_key("custom.effect"), None);
+    }
+
+    #[test]
+    fn node_effect_target_sets_match_the_closed_execution_contract() {
+        let cases = [
+            (EffectKind::NodeLifecycle, NODE_TARGETS),
+            (EffectKind::NodeHang, NODE_HANG_TARGETS),
+            (EffectKind::CpuService, CPU_SERVICE_TARGETS),
+            (EffectKind::CpuVcpuState, VCPU_TARGETS),
+            (EffectKind::CpuRegisterTransform, REGISTER_TARGETS),
+            (EffectKind::CpuInstructionTransform, VCPU_TARGETS),
+            (EffectKind::CpuException, VCPU_TARGETS),
+            (EffectKind::InterruptDisposition, INTERRUPT_TARGETS),
+            (EffectKind::InterruptStorm, INTERRUPT_TARGETS),
+            (EffectKind::MemoryMutation, MEMORY_TARGETS),
+            (EffectKind::MemoryAccessTransform, MEMORY_TARGETS),
+            (EffectKind::MemoryEccEvent, MEMORY_TARGETS),
+            (EffectKind::MemoryRegionState, MEMORY_TARGETS),
+            (EffectKind::MemoryService, MEMORY_TARGETS),
+            (EffectKind::ClockTransform, CLOCK_TARGETS),
+            (EffectKind::ClockSourceState, CLOCK_TARGETS),
+            (EffectKind::AcceleratorLifecycle, ACCELERATOR_TARGETS),
+            (EffectKind::AcceleratorResultTransform, ACCELERATOR_TARGETS),
+            (EffectKind::AcceleratorMemoryEvent, ACCELERATOR_TARGETS),
+            (EffectKind::AcceleratorService, ACCELERATOR_TARGETS),
+        ];
+        for (kind, expected) in cases {
+            assert_eq!(kind.descriptor().targets, expected, "{kind:?}");
+        }
     }
 }
