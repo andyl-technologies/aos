@@ -1535,7 +1535,7 @@ complete from model-double evidence.
   activation reader after setup and starts `crucible-guest agent` only after the
   fixed token. The agent advertises exec/PTY/resize/SSH features through the
   shared-memory protocol.
-  Activation waits for at most 64 scheduler quanta and returns the committed
+  Activation waits for at most 512 scheduler quanta and returns the committed
   branch identity even when negotiation fails. Completion remains open only for
   packaged live exec/PTY/SSH evidence, reposition-driven stream closure, and the
   x86_64/AArch64 parity exercise.

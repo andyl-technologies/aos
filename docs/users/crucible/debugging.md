@@ -214,7 +214,7 @@ The shipped debug fixture keeps the guest agent inactive on canonical execution.
 Its content-addressed launch includes a fixed activation-only port and a single
 blocking guest reader, but no token is sent and no agent runs. `fork-debug` first
 commits the explicit non-canonical branch, writes the fixed token over the
-already-established private stream, and waits up to 64 scheduler quanta for the
+already-established private stream, and waits up to 512 scheduler quanta for the
 agent's typed feature advertisement. The response lists argv exec, PTY, resize,
 SSH bridge, and channel-capacity support. If activation or negotiation fails, the command
 still reports the committed branch identity together with the failure reason so
