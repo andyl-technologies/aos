@@ -166,9 +166,10 @@ impl ManifestDiff {
 ///
 /// `etc` is keyed by `/etc`-relative path; a value difference (including a
 /// `kind`/`text`/`target`/`mode` change) is [`ChangeKind::Changed`]. `units`
-/// reports each candidate unit's reconcile action, marking units absent from the
-/// base as new (`start`). `fetch_plan` is the candidate `storePaths` set minus
-/// the base's — the closure delta the switch would have to materialize.
+/// reports each candidate unit's reconcile action when either its unit data or
+/// one of its generated job scripts changes, marking units absent from the base
+/// as new (`start`). `fetch_plan` is the candidate `storePaths` set minus the
+/// base's — the closure delta the switch would have to materialize.
 pub fn diff_manifests(base: &Value, candidate: &Value) -> ManifestDiff {
     ManifestDiff {
         etc: diff_etc(base, candidate),
@@ -212,12 +213,17 @@ fn diff_etc(base: &Value, candidate: &Value) -> Vec<EtcChange> {
 fn diff_units(base: &Value, candidate: &Value) -> Vec<UnitChange> {
     let base_units = object_or_empty(base.get("units"));
     let cand_units = object_or_empty(candidate.get("units"));
+    let base_job_scripts = object_or_empty(base.get("jobScripts"));
+    let cand_job_scripts = object_or_empty(candidate.get("jobScripts"));
     let mut changes = Vec::new();
     for (unit, cand_val) in &cand_units {
         let base_val = base_units.get(unit);
-        // A unit appears in the diff when it is new OR its definition changed.
+        // The rendered unit keeps a stable generation-local script path, so a
+        // script-body change must still expose the unit's reconcile action.
         let added = base_val.is_none();
-        let changed = base_val.map(|b| *b != *cand_val).unwrap_or(true);
+        let changed = base_val.map(|b| *b != *cand_val).unwrap_or(true)
+            || unit_job_scripts(&base_job_scripts, unit)
+                != unit_job_scripts(&cand_job_scripts, unit);
         if !changed {
             continue;
         }
@@ -251,6 +257,18 @@ fn diff_units(base: &Value, candidate: &Value) -> Vec<UnitChange> {
     }
     changes.sort_by(|a, b| a.unit.cmp(&b.unit));
     changes
+}
+
+/// Returns the generated scripts belonging to one unit, keyed by slot.
+fn unit_job_scripts<'map, 'value>(
+    scripts: &'map BTreeMap<String, &'value Value>,
+    unit: &str,
+) -> BTreeMap<&'map str, &'value Value> {
+    let prefix = format!("{unit}:");
+    scripts
+        .iter()
+        .filter_map(|(key, value)| key.strip_prefix(&prefix).map(|slot| (slot, *value)))
+        .collect()
 }
 
 /// The candidate `storePaths` set minus the base's (the closure delta).
@@ -445,6 +463,9 @@ mod tests {
             "units": {
                 "web.service": {"action": "reload"},
             },
+            "jobScripts": {
+                "web.service:ExecStart.0": {"text": "serve 8080\n", "mode": "0755"},
+            },
             "storePaths": [
                 "/nix/store/aaa-web-1.0",
                 "/nix/store/bbb-curl-8.12",
@@ -463,6 +484,9 @@ mod tests {
                 "web.service": {"action": "reload"},
                 "firewall.service": {"action": "restart"},
                 "tracing.service": {"action": "restart"},
+            },
+            "jobScripts": {
+                "web.service:ExecStart.0": {"text": "serve 9090\n", "mode": "0755"},
             },
             "storePaths": [
                 "/nix/store/aaa-web-1.0",
@@ -490,8 +514,9 @@ mod tests {
         let diff = diff_manifests(&base(), &candidate());
         let by_unit: BTreeMap<&str, &UnitChange> =
             diff.units.iter().map(|u| (u.unit.as_str(), u)).collect();
-        // web.service is unchanged (same action+def) -> not in the diff.
-        assert!(!by_unit.contains_key("web.service"));
+        // The unit data is unchanged, but its generated script changed.
+        assert_eq!(by_unit["web.service"].kind, ChangeKind::Changed);
+        assert_eq!(by_unit["web.service"].action, "reload");
         // firewall and tracing are new -> "start".
         assert_eq!(by_unit["firewall.service"].kind, ChangeKind::Added);
         assert_eq!(by_unit["firewall.service"].action, "start");

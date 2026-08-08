@@ -42,7 +42,7 @@ impl SystemdControl for FakeSystemd {
 
     async fn start_unit(&self, name: &str) -> Result<()> {
         self.calls.lock().unwrap().push(format!("start:{name}"));
-        if name == CONFIG_TARGET {
+        if name == ACTIVATE_SERVICE {
             if let Some((root, activation)) = &self.activation {
                 let transaction = read_transaction(root)?.context("test graph transaction")?;
                 let (transaction_manifest, dropped_packages, status, activation_exit) =
@@ -386,7 +386,8 @@ async fn compile_drives_reset_reload_start_in_order() {
     );
     assert!(calls.contains(&"stop:aos-activate.service".to_string()));
     assert!(calls.contains(&"reset-failed:aos-pkg-fetch@nginx.service".to_string()));
-    assert_eq!(calls[calls.len() - 2], "daemon-reload");
+    assert_eq!(calls[calls.len() - 3], "daemon-reload");
+    assert_eq!(calls[calls.len() - 2], "start:aos-activate.service");
     assert_eq!(
         calls.last().map(String::as_str),
         Some("start:aos-config.target")

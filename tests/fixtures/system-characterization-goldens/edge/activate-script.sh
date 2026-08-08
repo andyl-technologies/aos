@@ -402,16 +402,35 @@ if [ "$network_seed_changed" = 1 ]; then
   /nix/store/<hash>-systemd-259.1/bin/networkctl reload
   /nix/store/<hash>-systemd-259.1/bin/networkctl reconfigure --all
 fi
-set +e
-/nix/store/<hash>-aos-0.1.0/bin/.apm-unwrapped activate-post-etc-swap --plan="$plan"
-post_rc=$?
-set -e
 
-case "$post_rc" in
-  0) ;;
-  *) reconcile_degraded=1
-     echo "activate: post-swap reconcile reported failures (rc=$post_rc); switch stands" >&2 ;;
-esac
+# Apply the newly active tmpfiles.d policy before starting or restarting any
+# unit that may depend on its runtime or persistent directories. The boot-time
+# setup service has already run against the previous /etc and is not rerun by
+# daemon-reload. `--create` is idempotent and deliberately omits `--boot`, so
+# boot-only removal rules cannot disrupt an unrelated live account operation.
+tmpfiles_rc=0
+set +e
+/nix/store/<hash>-systemd-259.1/bin/systemd-tmpfiles --create
+tmpfiles_rc=$?
+set -e
+if [ "$tmpfiles_rc" -ne 0 ]; then
+  reconcile_degraded=1
+  echo "activate: tmpfiles reconciliation failed (rc=$tmpfiles_rc); switch stands" >&2
+  echo "activate: skipping daemon reconciliation because required paths may be incomplete" >&2
+else
+  set +e
+  # The activation script otherwise keeps PATH empty. Supply only systemd's bin
+  # directory so best-effort failed-unit diagnostics can invoke systemctl.
+  PATH=/nix/store/<hash>-systemd-259.1/bin /nix/store/<hash>-aos-0.1.0/bin/.apm-unwrapped activate-post-etc-swap --plan="$plan"
+  post_rc=$?
+  set -e
+
+  case "$post_rc" in
+    0) ;;
+    *) reconcile_degraded=1
+       echo "activate: post-swap reconcile reported failures (rc=$post_rc); switch stands" >&2 ;;
+  esac
+fi
 
 # --- cleanup ---
 # The swap already succeeded; a failure here is cosmetic (stale mounts),

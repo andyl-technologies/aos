@@ -1851,11 +1851,11 @@ aos.gen-attestation/v1  (canonical JSON; field order below is the struct order)
   manifest_hash   : "sha256:<hex>"  # canonicalized manifest, verify.rs::sha256 form
   inputs:
     base_lib:
-      pcr11_expected      : "sha256:<hex>"   # ukify-predicted PCR-11 of the booted UKI
+      pcr11_expected      : "sha256:<hex>" | null  # predicted PCR-11 for a measured image
       abi_hash            : "sha256:<hex>"   # hash(base-lib module API ++ module_abi)
       module_abi          : <u32>            # AOS_MODULE_ABI from /etc/os-release
-      root_verity_roothash: "<64-hex>"       # F1: Merkle root of the erofs root (dm-verity)
-      root_verity_uuid    : "<uuid>"         # F1 (optional): verity superblock UUID
+      root_verity_roothash: "<64-hex>" | null  # F1: Merkle root of the erofs root (dm-verity)
+      root_verity_uuid    : "<uuid>"         # F1: optional; omitted when unavailable
     evaluator:
       store_path          : "/nix/store/<hash>-aos-eval-<ver>"
     config_modules:
@@ -1879,6 +1879,29 @@ aos.gen-attestation/v1  (canonical JSON; field order below is the struct order)
 `root_verity_roothash` and `root_verity_uuid` under `inputs.base_lib` are the
 **F1 extension**. Everything else is the `trust-and-secrets.md` schema made
 concrete.
+
+`quoted` requires both a TPM and authenticated dm-verity metadata for the
+running image. The v1 literal `unquoted-tpm-unavailable` is retained whenever
+that complete binding is unavailable, including a TPM host running an image
+without an immutable root binding. When measured-image policy requires a
+quote, either missing prerequisite fails activation closed instead of
+producing an unquoted record.
+
+The quote decision is normative:
+
+| Quote required | TPM | Root verity | Result |
+|---|---|---|---|
+| no | no | either | unquoted record |
+| no | yes | no | unquoted record |
+| no | yes | yes | quoted record |
+| yes | no | either | activation fails closed |
+| yes | yes | no | activation fails closed |
+| yes | yes | yes | quoted record |
+
+Quote policy is required when either `expected_pcr11` is present, or both the
+seed image's observed `initrd_pcr11` and `root_verity_roothash` are present.
+An observed initrd PCR alone proves only that a TPM is available; it does not
+turn an unmeasured image into measured-image policy.
 
 ### 1.3 Field derivation (exactly how each is computed)
 

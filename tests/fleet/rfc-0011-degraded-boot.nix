@@ -1,4 +1,4 @@
-# tests/fleet/rfc-0011-degraded-boot.nix — soft and hard activation graph edges.
+# Soft and hard activation graph edge acceptance.
 #
 # The live machine first publishes three genuine exposed packages into an
 # authenticated test registry and evaluates them by name. The test then
@@ -362,8 +362,14 @@ in {
       degraded.succeed("systemctl is-active --quiet desired-config-test.service")
       degraded.fail("systemctl is-active --quiet desired-prune-test.service")
       degraded.fail("systemctl is-active --quiet test-http-server.socket")
-      degraded.fail("systemctl is-enabled --quiet aos-pkg-desired-prune-test.target")
-      degraded.fail("systemctl is-enabled --quiet aos-pkg-test-http-server.target")
+      degraded.fail(
+          "test -L /etc/systemd/system/multi-user.target.wants/"
+          "aos-pkg-desired-prune-test.target"
+      )
+      degraded.fail(
+          "test -L /etc/systemd/system/multi-user.target.wants/"
+          "aos-pkg-test-http-server.target"
+      )
       degraded.succeed(
           "test \"$(cat /etc/aos/packages/desired-config-test/config.env)\" "
           "= TOKEN=desired-token"

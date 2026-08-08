@@ -3,9 +3,9 @@
 ##! The stage-2 on-host evaluator must compute the config manifest WITHOUT
 ##! traversing the from-source `pkgs` build graph: under the eval sandbox
 ##! (`restrict-eval`, no IFD) forcing any from-source derivation pulls in the
-##! bootstrap chain's eval-time fetches, which the sandbox forbids. The image,
-##! however, already contains every store path the manifest references — they
-##! were built at stage-1.
+##! bootstrap chain's eval-time fetches, which the sandbox forbids. Store paths
+##! selected by host configuration are therefore computed at image-build time
+##! and retained in the image closure through ordinary Nix references.
 ##!
 ##! `freezePkgs` turns a live `pkgs` set into a *frozen* one: every derivation is
 ##! replaced by a plain attrset whose `outPath` (and per-output paths) are the

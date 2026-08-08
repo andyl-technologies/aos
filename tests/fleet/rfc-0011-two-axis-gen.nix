@@ -1,4 +1,4 @@
-# tests/fleet/rfc-0011-two-axis-gen.nix - two-axis generations.
+# Two-axis generation acceptance.
 #
 # Exercises the production image publisher, A/B stage and boot path, first-boot
 # evaluation, live configuration activation, and rollback porcelain. The two

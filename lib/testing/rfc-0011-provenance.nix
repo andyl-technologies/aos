@@ -1,4 +1,4 @@
-# lib/testing/rfc-0011-provenance.nix — resolver-authenticated artifact owners.
+# Resolver-authenticated artifact-owner acceptance.
 {
   pkgs,
   mkSystem,

@@ -24,11 +24,18 @@ if [ "$rc" -eq 4 ]; then
   echo "aos-activate: /etc swap is indeterminate; entering rescue mode" >&2
   /nix/store/<hash>-systemd-259.1/bin/systemctl --no-block isolate rescue.target
 fi
+if [ "$rc" -eq 6 ]; then
+  # The transaction committed after dropping unavailable package
+  # projections. Keep the degraded outcome in activation.json while
+  # allowing the ordering service and aos-config.target to settle.
+  echo "aos-activate: committed a degraded host configuration" >&2
+  exit 0
+fi
 exit "$rc"
 <<aos-job-script-end>>
 RemainAfterExit=true
 Restart=on-failure
-RestartPreventExitStatus=4 6
+RestartPreventExitStatus=4
 RestartSec=2s
 TimeoutStartSec=180s
 Type=oneshot

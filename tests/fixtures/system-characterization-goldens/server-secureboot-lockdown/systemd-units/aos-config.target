@@ -1,5 +1,5 @@
 [Unit]
 After=aos-activate.service
 Description=AOS on-host config applied
-Wants=aos-activate.service aos-config-render.target aos-fetch.target
+Requires=aos-activate.service
 
