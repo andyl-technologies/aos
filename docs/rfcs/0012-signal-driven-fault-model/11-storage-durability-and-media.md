@@ -395,14 +395,19 @@ the complete identity until visibility and deliver evaluation authorize
 publication. Backpressure may delay publication but never repeats those phase
 evaluations.
 
-One host service call is a transaction across the evaluator continuation,
-same-coordinate and journal cursors, observation journal, request/response
-rings, device queues, installed directives, pending authorization map, virtual
-fids, session state, and visibility continuation. Any error in any later phase,
-COMPUTE, authorization, evidence construction, or publication restores every
-component to its byte-equivalent pre-call state before returning the error. A
-rollback failure is terminal and reported together with the initiating error;
-the coordinator never retries from an ambiguous partial state.
+One host service call prepares a transaction across the evaluator continuation,
+same-coordinate and journal cursors, observation journal, device queues,
+installed directives, pending authorization map, virtual fids, session state,
+and visibility continuation before touching a shared ring. Any preparation,
+COMPUTE preview, authorization, or evidence error restores those host-private
+components to their byte-equivalent pre-call state. The live SPSC rings are
+never snapshotted or rewound outside the QEMU-quiesced lifecycle checkpoint
+protocol. After successful preparation, the call performs exactly one final
+shared-ring transition: either publishing already-authorized due replies or
+consuming one pinned request, never both. No fallible signal or evidence work
+follows that transition. Ring corruption or wake failure after the commit point
+is a terminal infrastructure error over an already-committed transition, not a
+request to rewind guest-visible state.
 
 The checkpoint contains the request and response rings, device queues, installed
 directives, exact pending opportunity identities, completion coordinates, and

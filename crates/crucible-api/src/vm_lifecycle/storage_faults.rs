@@ -25,8 +25,9 @@ use crucible_device::block::{
 };
 use crucible_device::{
     FsTree, NinepLatency, NinepObjectVersion, NinepOperation, NinepRequestOpportunity,
-    NinepResultDirective, NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityScope,
-    NinepVisibilityState, ResolvedNinepRequestDirective,
+    NinepResultDirective, NinepVisibilityLookup, NinepVisibilityPolicy, NinepVisibilityRelease,
+    NinepVisibilityScope, NinepVisibilityState, NinepVisibilityUpdate,
+    ResolvedNinepRequestDirective,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, QemuAsyncDriverRuntimeError, QemuBlockFaultCoordinator,
@@ -1644,6 +1645,7 @@ impl ProductionNinepFaultCoordinator {
                     policy,
                     release,
                     data_lag_nanos,
+                    servicer.visibility_session(),
                     servicer.visibility_state(),
                 ),
             });
@@ -1679,6 +1681,75 @@ impl ProductionNinepFaultCoordinator {
             .collect()
     }
 
+    fn advance_visibility(
+        &self,
+        servicer: &mut QemuLive9pIoServicer,
+        guest_icount: u64,
+        now_nanos: u64,
+        events: &BTreeMap<[u8; 32], u64>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let session = servicer.visibility_session();
+        let before = servicer.visibility_state().visible_frontier(session);
+        let after = servicer
+            .advance_visibility(now_nanos, events)
+            .map_err(|error| storage_error("advance 9p visibility", error))?;
+        if before == after {
+            return Ok(());
+        }
+        let mut sequences = std::collections::BTreeSet::new();
+        sequences.extend(before.0..after.0);
+        sequences.extend(before.1..after.1);
+        let updates = sequences
+            .into_iter()
+            .flat_map(|sequence| {
+                servicer
+                    .visibility_state()
+                    .updates_between(sequence, sequence.saturating_add(1))
+            })
+            .collect::<Vec<_>>();
+        let evidence = ninep_visibility_advance_evidence(
+            session,
+            before,
+            after,
+            now_nanos,
+            events,
+            &updates,
+            servicer.visibility_state(),
+        );
+        let mut cursor = self.cursor.lock().map_err(|_| {
+            storage_error(
+                "sequence 9p visibility advancement",
+                "production fault evaluation cursor lock is poisoned",
+            )
+        })?;
+        let cursor_before = *cursor;
+        let sequence = cursor
+            .next_sequence(now_nanos)
+            .map_err(|error| storage_error("sequence 9p visibility advancement", error))?;
+        let observation = FaultObservation {
+            semantic_version: FAULT_RUNTIME_STATE_VERSION,
+            kind: FaultObservationKind::EffectApplied,
+            coordinate: FaultCoordinate {
+                virtual_nanos: now_nanos,
+                retired_instructions: Some(guest_icount),
+            },
+            binding: None,
+            target: Some(self.target.clone()),
+            opportunity: None,
+            evidence,
+        };
+        if let Err(error) = self
+            .observations
+            .lock()
+            .map_err(|_| storage_error("record 9p visibility advancement", "journal is poisoned"))?
+            .append(sequence.journal, vec![observation])
+        {
+            *cursor = cursor_before;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn visibility_data_lag(
         &self,
         id: &crucible::model::FaultObjectId,
@@ -1704,19 +1775,20 @@ impl ProductionNinepFaultCoordinator {
         &mut self,
         servicer: &mut QemuLive9pIoServicer,
         guest_icount: u64,
+        shared_commit_started: &mut bool,
     ) -> Result<QemuLive9pIoServiceStep, QemuAsyncDriverRuntimeError> {
         let now_nanos = self.virtual_nanos(guest_icount)?;
         let events = self.observed_visibility_events(now_nanos)?;
-        servicer
-            .advance_visibility(now_nanos, &events)
-            .map_err(|error| storage_error("advance 9p visibility", error))?;
+        self.advance_visibility(servicer, guest_icount, now_nanos, &events)?;
 
         let mut result = QemuLive9pIoServiceStep::default();
-        for (completion_icount, request) in servicer.due_fault_opportunities(guest_icount) {
+        result.next_completion_icount = servicer.next_completion_icount();
+        let due = servicer.due_fault_opportunities(guest_icount);
+        for (completion_icount, request) in &due {
             let visibility = self.evaluate_phase(&self.opportunity(
-                &request,
+                request,
                 FaultPhase::Visibility,
-                completion_icount,
+                *completion_icount,
             )?)?;
             let applied = self.apply_visibility(servicer, &visibility.actions)?;
             self.observations
@@ -1724,9 +1796,9 @@ impl ProductionNinepFaultCoordinator {
                 .map_err(|_| storage_error("record 9p visibility", "journal is poisoned"))?
                 .append(visibility.journal_sequence, applied)?;
             let deliver = self.evaluate_phase(&self.opportunity(
-                &request,
+                request,
                 FaultPhase::Deliver,
-                completion_icount,
+                *completion_icount,
             )?)?;
             let applied = self.apply_visibility(servicer, &deliver.actions)?;
             self.observations
@@ -1736,15 +1808,19 @@ impl ProductionNinepFaultCoordinator {
             servicer
                 .authorize_fault_opportunities(
                     guest_icount,
-                    &[(completion_icount, request.identity)],
+                    &[(*completion_icount, request.identity)],
                 )
                 .map_err(|error| storage_error("authorize 9p delivery", error))?;
         }
-        let delivered = servicer
-            .deliver_due(guest_icount)
-            .map_err(|error| storage_error("deliver coordinated 9p replies", error))?;
-        result.delivered = delivered.delivered;
-        result.next_completion_icount = delivered.next_completion_icount;
+        if !due.is_empty() {
+            *shared_commit_started = true;
+            let delivered = servicer
+                .deliver_due(guest_icount)
+                .map_err(|error| storage_error("deliver coordinated 9p replies", error))?;
+            result.delivered = delivered.delivered;
+            result.next_completion_icount = delivered.next_completion_icount;
+            return Ok(result);
+        }
 
         if let Some(pin) = servicer
             .pin_next_request()
@@ -1778,12 +1854,9 @@ impl ProductionNinepFaultCoordinator {
                 .lock()
                 .map_err(|_| storage_error("record 9p persistence", "journal is poisoned"))?
                 .append(persist.journal_sequence, applied)?;
-            let processed = servicer
-                .process_one_request(&pin)
-                .map_err(|error| storage_error("process coordinated 9p request", error))?;
             let response = servicer
-                .computed_response_evidence(&pin)
-                .map_err(|error| storage_error("record computed 9p response", error))?;
+                .preview_computed_response_evidence(&pin)
+                .map_err(|error| storage_error("preview computed 9p response", error))?;
             let applied = resolve
                 .actions
                 .iter()
@@ -1810,6 +1883,10 @@ impl ProductionNinepFaultCoordinator {
                 .lock()
                 .map_err(|_| storage_error("record 9p result", "journal is poisoned"))?
                 .append(resolve.journal_sequence, applied)?;
+            *shared_commit_started = true;
+            let processed = servicer
+                .process_one_request(&pin)
+                .map_err(|error| storage_error("process coordinated 9p request", error))?;
             result.processed = processed.processed;
             result.first_request_icount = processed.first_request_icount;
             result.computed_completion_icount = processed.computed_completion_icount;
@@ -1843,10 +1920,18 @@ impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
             .map_err(|_| storage_error("begin coordinated 9p transaction", "journal is poisoned"))?
             .clone();
 
-        let error = match self.service_ninep_io_transaction(servicer, guest_icount) {
+        let mut shared_commit_started = false;
+        let error = match self.service_ninep_io_transaction(
+            servicer,
+            guest_icount,
+            &mut shared_commit_started,
+        ) {
             Ok(result) => return Ok(result),
             Err(error) => error,
         };
+        if shared_commit_started {
+            return Err(error);
+        }
         let mut rollback_failures = Vec::new();
         if let Err(rollback) = servicer.rollback_transaction(servicer_before) {
             rollback_failures.push(format!("servicer rollback failed: {rollback}"));
@@ -2056,6 +2141,7 @@ fn ninep_visibility_evidence(
     policy: NinepVisibilityPolicy,
     release: NinepVisibilityRelease,
     data_lag_nanos: u64,
+    writer_session: u64,
     state: &NinepVisibilityState,
 ) -> ContentHash {
     let scope = match policy.scope {
@@ -2075,16 +2161,75 @@ fn ninep_visibility_evidence(
         .map(|(session, metadata, data)| format!("{session}:{metadata}:{data}"))
         .collect::<Vec<_>>()
         .join(",");
+    let lookup =
+        ninep_visibility_lookup_evidence(state.lookup_object(writer_session, object.path.as_str()));
     ContentHash::from_canonical_material(
         "crucible.ninep-visibility-evidence.v1",
         &format!(
-            "action={}\nupdate_id={}\nsequence={sequence}\n{}\nscope={scope}\natomic_metadata_and_data={}\nretain_deleted_objects={}\nrelease={release}\ndata_lag_nanos={data_lag_nanos}\ncommitted_frontier={}\nsession_frontiers={frontiers}",
+            "action={}\nupdate_id={}\nsequence={sequence}\n{}\nscope={scope}\natomic_metadata_and_data={}\nretain_deleted_objects={}\nrelease={release}\ndata_lag_nanos={data_lag_nanos}\nwriter_session={writer_session}\ncommitted_frontier={}\nsession_frontiers={frontiers}\nlookup={lookup}",
             action.id().to_hex(),
             update_id.to_hex(),
             ninep_object_evidence(object),
             policy.atomic_metadata_and_data,
             policy.retain_deleted_objects,
             state.committed_frontier(),
+        ),
+    )
+}
+
+fn ninep_visibility_lookup_evidence(lookup: NinepVisibilityLookup) -> String {
+    match lookup {
+        NinepVisibilityLookup::Base => String::from("base"),
+        NinepVisibilityLookup::Deleted => String::from("deleted"),
+        NinepVisibilityLookup::Object(object) => {
+            format!(
+                "object:{}",
+                ninep_object_evidence(&object).replace('\n', ";")
+            )
+        }
+    }
+}
+
+fn ninep_visibility_advance_evidence(
+    session: u64,
+    before: (u64, u64),
+    after: (u64, u64),
+    observed_nanos: u64,
+    events: &BTreeMap<[u8; 32], u64>,
+    updates: &[NinepVisibilityUpdate],
+    state: &NinepVisibilityState,
+) -> ContentHash {
+    let updates = updates
+        .iter()
+        .map(|update| {
+            let release = match update.release {
+                NinepVisibilityRelease::AtNanos(deadline) => {
+                    format!("deadline:{deadline}:satisfied_at:{deadline}")
+                }
+                NinepVisibilityRelease::OnEvent(event) => format!(
+                    "event:{}:observed_at:{}",
+                    ContentHash { bytes: event }.to_hex(),
+                    events
+                        .get(&event)
+                        .map_or_else(|| String::from("absent"), u64::to_string),
+                ),
+            };
+            format!(
+                "sequence={};writer_session={};release={release};lookup={}",
+                update.sequence,
+                update.writer_session,
+                ninep_visibility_lookup_evidence(
+                    state.lookup_object(session, update.object.path.as_str())
+                ),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    ContentHash::from_canonical_material(
+        "crucible.ninep-visibility-advance-evidence.v1",
+        &format!(
+            "session={session}\nobserved_nanos={observed_nanos}\nmetadata_before={}\nmetadata_after={}\ndata_before={}\ndata_after={}\nupdates={updates}",
+            before.0, after.0, before.1, after.1,
         ),
     )
 }

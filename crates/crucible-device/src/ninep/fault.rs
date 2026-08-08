@@ -652,6 +652,15 @@ impl NinepVisibilityState {
                 .unwrap_or_default(),
         )
     }
+
+    /// Returns committed updates in the half-open sequence interval.
+    #[must_use]
+    pub fn updates_between(&self, start: u64, end: u64) -> Vec<NinepVisibilityUpdate> {
+        self.updates
+            .range(start..end)
+            .map(|(_sequence, update)| update.clone())
+            .collect()
+    }
 }
 
 fn release_coordinate(

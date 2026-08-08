@@ -21,15 +21,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crucible::model::ContentHash;
 use crucible_device::{
-    DeviceError, FsTree, IoCore, NinepDevice, NinepLatency, NinepObjectVersion,
+    DeviceError, FsTree, IoCore, IoSubNode, NinepDevice, NinepLatency, NinepObjectVersion,
     NinepRequestIdentity, NinepRequestOpportunity, NinepSnapshot, NinepVisibilityPolicy,
     NinepVisibilityRelease, NinepVisibilityState, Node, Request, ResolvedNinepRequestDirective,
     ResponseStatus,
 };
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    NodeSlotSnapshot, SLOT_9P_IO, STATUS_IDLE, SetupRegionMapError, SpscRingSnapshot,
-    mmap_setup_region,
+    NodeSlotSnapshot, SLOT_9P_IO, STATUS_IDLE, SetupRegionMapError, mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -57,8 +56,6 @@ pub struct QemuLive9pIoServicer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLive9pIoTransactionCheckpoint {
     device: NinepSnapshot,
-    requests: SpscRingSnapshot,
-    responses: SpscRingSnapshot,
     pending_fault_opportunities:
         BTreeMap<(u64, NinepRequestIdentity), (NinepRequestOpportunity, bool)>,
     frames_processed: usize,
@@ -239,35 +236,32 @@ impl QemuLive9pIoServicer {
         self.device.visibility_state()
     }
 
-    /// Captures every mutable 9p component touched by one coordinated phase set.
+    /// Returns the current negotiated visibility session identity.
+    #[must_use]
+    pub const fn visibility_session(&self) -> u64 {
+        self.device.session_epoch()
+    }
+
+    /// Captures host-private state touched before one shared-ring commit.
     ///
-    /// Unlike a lifecycle checkpoint, this internal rollback point is valid
-    /// while requests are in flight and carries no external execution binding.
+    /// This token deliberately excludes the live SPSC rings. They may only be
+    /// snapshotted while both peers are quiesced and cannot be rewound after a
+    /// wake. The coordinator may restore this token only before beginning its
+    /// one final shared-ring transition.
     ///
     /// # Errors
     ///
-    /// Returns an error when either shared-memory ring cannot be snapshotted.
+    /// Returns an error when the mapped node slot cannot be accessed.
     pub fn begin_transaction(
         &mut self,
     ) -> Result<QemuLive9pIoTransactionCheckpoint, QemuLive9pIoServicerError> {
-        let pair = self.ring_pair()?;
-        let requests = pair
-            .first
-            .header
-            .snapshot(pair.first.entries)
-            .map_err(DeviceError::from)
-            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
-        let responses = pair
-            .second
-            .header
-            .snapshot(pair.second.entries)
-            .map_err(DeviceError::from)
-            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
-        let device_completion_deadline_icount = pair.node_slot.device_completion_deadline_icount();
+        let device_completion_deadline_icount = self
+            .region
+            .node_slot(self.vm_slot)
+            .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })?
+            .device_completion_deadline_icount();
         Ok(QemuLive9pIoTransactionCheckpoint {
             device: self.device.snapshot(),
-            requests,
-            responses,
             pending_fault_opportunities: self.pending_fault_opportunities.clone(),
             frames_processed: self.frames_processed,
             frames_delivered: self.frames_delivered,
@@ -275,46 +269,20 @@ impl QemuLive9pIoServicer {
         })
     }
 
-    /// Restores a coordinator transaction after any phase or publication error.
+    /// Restores host-private state before a shared-ring transition begins.
     ///
     /// # Errors
     ///
-    /// Returns an error when the device snapshot or either ring cannot be
-    /// restored. The request ring is returned to its pre-rollback contents if
-    /// restoring the response ring fails.
+    /// Returns an error when the device snapshot or mapped node slot is invalid.
     pub fn rollback_transaction(
         &mut self,
         checkpoint: QemuLive9pIoTransactionCheckpoint,
     ) -> Result<(), QemuLive9pIoServicerError> {
         let staged = NinepDevice::restore(&checkpoint.device, self.tree.clone())
             .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
-        let pair = self.ring_pair()?;
-        let prior_requests = pair
-            .first
-            .header
-            .snapshot(pair.first.entries)
-            .map_err(DeviceError::from)
-            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
-        pair.first
-            .header
-            .restore(pair.first.entries, &checkpoint.requests)
-            .map_err(DeviceError::from)
-            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
-        if let Err(source) = pair
-            .second
-            .header
-            .restore(pair.second.entries, &checkpoint.responses)
-        {
-            pair.first
-                .header
-                .restore(pair.first.entries, &prior_requests)
-                .map_err(DeviceError::from)
-                .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
-            return Err(QemuLive9pIoServicerError::Device {
-                source: DeviceError::from(source),
-            });
-        }
-        pair.node_slot
+        self.region
+            .node_slot(self.vm_slot)
+            .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })?
             .store_device_completion_deadline_icount(checkpoint.device_completion_deadline_icount);
         self.device = staged;
         self.pending_fault_opportunities = checkpoint.pending_fault_opportunities;
@@ -323,36 +291,33 @@ impl QemuLive9pIoServicer {
         Ok(())
     }
 
-    /// Returns authenticated evidence for the response computed from one pin.
+    /// Previews authenticated response evidence without consuming the live ring.
     ///
     /// # Errors
     ///
-    /// Returns an error unless exactly one in-flight response has the pin's
-    /// completion coordinate and transport sequence.
-    pub fn computed_response_evidence(
+    /// Returns an error when the pinned request cannot be computed from a clone
+    /// of the exact directive-authorized device state.
+    pub fn preview_computed_response_evidence(
         &self,
         pin: &QemuLive9pIoRequestPin,
     ) -> Result<QemuLive9pResponseEvidence, QemuLive9pIoServicerError> {
-        let matches = self
-            .device
-            .snapshot()
-            .core
-            .inflight
-            .into_iter()
-            .filter(|pending| {
-                pending.key.delivery_icount == pin.completion_icount
-                    && pending.response.request_id == pin.opportunity.identity.transport_sequence
-            })
-            .collect::<Vec<_>>();
-        let [pending] = matches.as_slice() else {
+        let mut staged = self.device.clone();
+        let computed = staged
+            .compute(&Request::new(
+                pin.opportunity.request_icount,
+                pin.opportunity.identity.transport_sequence,
+                pin.opportunity.frame.clone(),
+            ))
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
+        let Some(response) = computed.primary else {
             return Err(QemuLive9pIoServicerError::ComputedResponseMismatch);
         };
         Ok(QemuLive9pResponseEvidence {
-            completion_icount: pending.key.delivery_icount,
-            transport_sequence: pending.response.request_id,
-            status: pending.response.status,
-            payload_len: pending.response.payload.len(),
-            payload_digest: *blake3::hash(&pending.response.payload).as_bytes(),
+            completion_icount: pin.completion_icount,
+            transport_sequence: response.request_id,
+            status: response.status,
+            payload_len: response.payload.len(),
+            payload_digest: *blake3::hash(&response.payload).as_bytes(),
         })
     }
 
@@ -1198,7 +1163,7 @@ mod tests {
     }
 
     #[test]
-    fn transaction_rollback_restores_exact_live_state() {
+    fn host_private_transaction_rollback_restores_exact_state() {
         let (_file, mut servicer) = transaction_fixture();
         let before = servicer
             .begin_transaction()
