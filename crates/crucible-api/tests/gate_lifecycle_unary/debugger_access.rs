@@ -25,10 +25,12 @@ async fn debugger_access_is_session_owned_and_generation_guarded() {
     let lease = control_plane
         .acquire_debug_controller(created.session, controller.clone(), &controller_role)
         .unwrap_or_else(|error| panic!("controller should acquire lease: {error}"));
-    let retry = control_plane
+    let reacquired = control_plane
         .acquire_debug_controller(created.session, controller, &controller_role)
-        .unwrap_or_else(|error| panic!("same controller retry should be idempotent: {error}"));
-    assert_eq!(lease, retry);
+        .unwrap_or_else(|error| {
+            panic!("same controller reacquisition should be idempotent: {error}")
+        });
+    assert_eq!(lease, reacquired);
     control_plane
         .authorize_debug_controller_operation(
             created.session,
@@ -112,7 +114,7 @@ async fn trusted_http2_debug_controller_uses_server_side_identity_and_lease() {
         client
             .acquire_debug_controller(created.session, &acquisition)
             .await
-            .unwrap_or_else(|error| panic!("acquisition retry should succeed: {error}")),
+            .unwrap_or_else(|error| panic!("repeated acquisition should succeed: {error}")),
         lease,
     );
     let concurrent_acquisition = DebugControllerAcquisition::new();
@@ -141,7 +143,7 @@ async fn trusted_http2_debug_controller_uses_server_side_identity_and_lease() {
             },
         )
         .await
-        .unwrap_or_else(|error| panic!("debug attach retry should be idempotent: {error}"));
+        .unwrap_or_else(|error| panic!("repeated debug attach should be idempotent: {error}"));
     assert!(
         client
             .attach_debugger(
@@ -153,7 +155,7 @@ async fn trusted_http2_debug_controller_uses_server_side_identity_and_lease() {
             )
             .await
             .is_err(),
-        "an attached debugger must reject a retry for a different node"
+        "an attached debugger must reject repeated attachment to a different node"
     );
     let repositioned = client
         .debug_goto(
@@ -209,7 +211,7 @@ async fn trusted_http2_debug_controller_uses_server_side_identity_and_lease() {
             .release_debug_controller(created.session, &lease)
             .await
             .is_ok(),
-        "a release retry should be idempotent while its tombstone is retained"
+        "a repeated release should be idempotent while its tombstone is retained"
     );
 
     let _ = shutdown_sender.send(());

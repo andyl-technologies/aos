@@ -338,8 +338,7 @@ async fn controller_release_cannot_bypass_a_live_relay_holder() -> Result<(), Bo
 }
 
 #[tokio::test]
-async fn rejected_holder_retry_does_not_release_existing_controller() -> Result<(), Box<dyn Error>>
-{
+async fn rejected_reacquisition_preserves_existing_controller() -> Result<(), Box<dyn Error>> {
     let mut state = test_state(LifecycleServerMode::read_write());
     let controller_role = DebugRole::new([DebugCapability::Observe, DebugCapability::Control]);
     state
@@ -397,7 +396,7 @@ async fn rejected_holder_retry_does_not_release_existing_controller() -> Result<
             .await
             .acquire_debug_controller(session, other, &controller_role)
             .is_err(),
-        "a rejected holder retry must not release the existing controller"
+        "a rejected released-holder reacquisition must not release the existing controller"
     );
     Ok(())
 }
