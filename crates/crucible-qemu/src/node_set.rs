@@ -12,7 +12,9 @@ use crucible::{
     FingerprintSample, GdbAttachInfo, GdbListen, NodeId, ObservableEvent, SimulationBackend,
     StepObservation, VirtualTime,
 };
-use crucible_shmem::{DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1};
+use crucible_shmem::{
+    DequeuedFaultEvent, DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1,
+};
 
 use crate::QemuNode;
 use crate::QemuVmSnapshot;
@@ -398,6 +400,39 @@ impl QemuNodeSet {
             })
     }
 
+    /// Drains every authenticated QEMU rule event grouped by scheduler node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when any node transport or sequence is invalid.
+    pub fn drain_fault_events(
+        &mut self,
+    ) -> Result<BTreeMap<NodeId, Vec<DequeuedFaultEvent>>, BackendError> {
+        self.nodes
+            .iter_mut()
+            .map(|(node, backend)| {
+                backend
+                    .drain_fault_events()
+                    .map(|events| (node.clone(), events))
+                    .map_err(BackendError::from)
+            })
+            .collect()
+    }
+
+    /// Reports whether any node has an event awaiting runtime admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when any event transport is invalid.
+    pub fn has_pending_fault_events(&mut self) -> Result<bool, BackendError> {
+        for node in self.nodes.values_mut() {
+            if node.fault_event_pending().map_err(BackendError::from)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Applies one admitted QEMU fault command at `node`'s current boundary.
     ///
     /// # Errors
@@ -456,6 +491,15 @@ impl QemuNodeSet {
             .collect()
     }
 
+    /// Returns the next required fault-event sequence of every live node.
+    #[must_use]
+    pub fn fault_event_sequences(&self) -> BTreeMap<NodeId, u64> {
+        self.nodes
+            .iter()
+            .map(|(node, backend)| (node.clone(), backend.next_fault_event_sequence()))
+            .collect()
+    }
+
     /// Restores the per-node command continuation paired with VM snapshots.
     ///
     /// # Errors
@@ -476,6 +520,30 @@ impl QemuNodeSet {
         for (node, sequence) in sequences {
             self.node_mut(node)?
                 .restore_fault_command_sequence(*sequence)
+                .map_err(BackendError::from)?;
+        }
+        Ok(())
+    }
+
+    /// Restores per-node event continuation paired with exact VM snapshots.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when membership differs or a sequence is zero.
+    pub fn restore_fault_event_sequences(
+        &mut self,
+        sequences: &BTreeMap<NodeId, u64>,
+    ) -> Result<(), BackendError> {
+        if self.nodes.keys().ne(sequences.keys()) {
+            return Err(BackendError::Rejected {
+                message: String::from(
+                    "QEMU fault-event checkpoint node membership differs from live nodes",
+                ),
+            });
+        }
+        for (node, sequence) in sequences {
+            self.node_mut(node)?
+                .restore_fault_event_sequence(*sequence)
                 .map_err(BackendError::from)?;
         }
         Ok(())

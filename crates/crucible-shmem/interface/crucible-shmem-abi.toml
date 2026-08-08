@@ -7,7 +7,7 @@
 name = "crucible-shmem"
 kind = "process-shared-memory"
 license = "MIT OR Apache-2.0"
-abi_version = 8
+abi_version = 9
 magic_ascii = "CRUCSHM1"
 target = "x86_64-unknown-linux-gnu"
 byte_order = "little"
@@ -70,6 +70,33 @@ unknown_tags = "reject"
 nonzero_reserved_fields = "reject"
 payload_arena = "bounded-spsc-monotonic-cursors-contiguous-reservations"
 malformed_command_consumption = "release-sound-transport-reservation-and-reject"
+
+[node_fault_protocol]
+semantic_version = 1
+payload_header_bytes = 128
+field_header_bytes = 8
+evidence_bytes = 228
+encoding = "closed-command-schema-canonical-typed-fields"
+operations = ["upsert", "remove", "apply"]
+target_kinds = ["node", "vcpu", "register", "memory", "interrupt", "clock", "accelerator"]
+preparation = "validation-only-before-equals-after"
+commit_evidence = "typed-request-and-state-digests"
+unknown_fields = "reject"
+
+[fault_event_protocol]
+semantic_version = 1
+event_header_bytes = 320
+event_slot_bytes = 384
+payload_arena_header_bytes = 128
+default_ring_capacity = 4096
+hard_ring_capacity = 65536
+encoding = "explicit-little-endian-byte-arrays"
+payload_authentication = "blake3+sha256"
+ordering = "strictly-increasing-per-node-event-sequence"
+producer = "qemu-plugin"
+consumer = "apache-host"
+command_results_are_events = false
+overflow = "fail-run-without-dropping-event"
 
 [conformance]
 c_header = "../include/crucible_shmem_abi.h"

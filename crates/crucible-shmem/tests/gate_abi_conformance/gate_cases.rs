@@ -111,6 +111,12 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_fault_payload_arena_header)",
         "offsetof(crucible_fault_payload_arena_header, read_cursor)",
         "offsetof(crucible_fault_payload_arena_header, write_cursor)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_event_slot_v1)",
+        "offsetof(crucible_fault_event_slot_v1, reservation_start)",
+        "offsetof(crucible_fault_event_slot_v1, payload_start)",
+        "offsetof(crucible_fault_event_slot_v1, reservation_end)",
+        "offsetof(crucible_fault_event_slot_v1, header)",
+        "offsetof(crucible_fault_event_slot_v1, reserved)",
     ] {
         assert!(
             header.contains(needle),

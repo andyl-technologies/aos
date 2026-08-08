@@ -472,6 +472,22 @@ pub struct RegionLayout {
     pub fault_result_arena_off: u64,
     /// Byte stride between result payload arenas.
     pub fault_result_arena_stride: u64,
+    /// Number of plugin-to-host fault event rings, one per logical VM.
+    pub fault_event_ring_count: u32,
+    /// Fixed entry capacity of every fault event ring.
+    pub fault_event_queue_capacity: u32,
+    /// Byte offset to the first fault event ring header.
+    pub fault_event_ring_hdr_off: u64,
+    /// Byte offset to the first fault event slot.
+    pub fault_event_slot_off: u64,
+    /// Byte stride between fault event slots.
+    pub fault_event_slot_stride: u64,
+    /// Byte offset to the first event payload-arena header.
+    pub fault_event_arena_hdr_off: u64,
+    /// Byte offset to the first event payload arena.
+    pub fault_event_arena_off: u64,
+    /// Byte stride between event payload arenas.
+    pub fault_event_arena_stride: u64,
     /// Total mapped region size in bytes.
     pub region_size: u64,
     /// Fixed icount shift used to derive virtual nanoseconds.
@@ -680,10 +696,54 @@ impl RegionLayout {
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
         let fault_result_arena_stride = u64::from(config.fault_payload_arena_bytes);
-        let region_size = fault_result_arena_off
+        let fault_result_data_end = fault_result_arena_off
             .checked_add(
                 u64::from(fault_result_ring_count)
                     .checked_mul(fault_result_arena_stride)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+
+        // ABI v9 section: one independent, lossless QEMU rule-event stream per
+        // logical VM. Command results remain strictly request/response shaped.
+        let fault_event_ring_count = config.vm_node_count;
+        let fault_event_queue_capacity = DEFAULT_FAULT_EVENT_CAPACITY;
+        let fault_event_ring_hdr_off =
+            checked_align_up(fault_result_data_end, usize_to_u64(RING_HEADER_ALIGN)?)?;
+        let fault_event_slot_off = fault_event_ring_hdr_off
+            .checked_add(
+                u64::from(fault_event_ring_count)
+                    .checked_mul(usize_to_u64(RING_HEADER_SIZE)?)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let fault_event_slot_stride = usize_to_u64(FAULT_EVENT_SLOT_V1_BYTES)?;
+        let fault_event_slot_count = u64::from(fault_event_ring_count)
+            .checked_mul(u64::from(fault_event_queue_capacity))
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let fault_event_slot_end = fault_event_slot_off
+            .checked_add(
+                fault_event_slot_count
+                    .checked_mul(fault_event_slot_stride)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let fault_event_arena_hdr_off = checked_align_up(
+            fault_event_slot_end,
+            usize_to_u64(FAULT_PAYLOAD_ARENA_HEADER_BYTES)?,
+        )?;
+        let fault_event_arena_off = fault_event_arena_hdr_off
+            .checked_add(
+                u64::from(fault_event_ring_count)
+                    .checked_mul(usize_to_u64(FAULT_PAYLOAD_ARENA_HEADER_BYTES)?)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let fault_event_arena_stride = u64::from(config.fault_payload_arena_bytes);
+        let region_size = fault_event_arena_off
+            .checked_add(
+                u64::from(fault_event_ring_count)
+                    .checked_mul(fault_event_arena_stride)
                     .ok_or(RegionLayoutError::GeometryOverflow)?,
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
@@ -726,6 +786,14 @@ impl RegionLayout {
             fault_result_arena_hdr_off,
             fault_result_arena_off,
             fault_result_arena_stride,
+            fault_event_ring_count,
+            fault_event_queue_capacity,
+            fault_event_ring_hdr_off,
+            fault_event_slot_off,
+            fault_event_slot_stride,
+            fault_event_arena_hdr_off,
+            fault_event_arena_off,
+            fault_event_arena_stride,
             region_size,
             icount_shift: config.icount_shift,
             fault_payload_arena_bytes: config.fault_payload_arena_bytes,
@@ -760,6 +828,12 @@ impl RegionLayout {
     #[must_use]
     pub fn fault_result_slot_count(&self) -> u64 {
         u64::from(self.fault_result_ring_count) * u64::from(self.fault_result_queue_capacity)
+    }
+
+    /// Returns the number of fault event slots in the allocation.
+    #[must_use]
+    pub fn fault_event_slot_count(&self) -> u64 {
+        u64::from(self.fault_event_ring_count) * u64::from(self.fault_event_queue_capacity)
     }
 }
 
@@ -831,6 +905,10 @@ pub struct RegionAllocation {
     fault_result_slots: Vec<FaultResultSlotV1>,
     fault_result_arena_headers: Vec<FaultPayloadArenaHeader>,
     fault_result_arena_bytes: Vec<u8>,
+    fault_event_ring_headers: Vec<RingHeader>,
+    fault_event_slots: Vec<FaultEventSlotV1>,
+    fault_event_arena_headers: Vec<FaultPayloadArenaHeader>,
+    fault_event_arena_bytes: Vec<u8>,
     rings: Vec<DirectedRing>,
     layout: RegionLayout,
 }
@@ -854,6 +932,10 @@ impl Clone for RegionAllocation {
             fault_result_slots: self.fault_result_slots.clone(),
             fault_result_arena_headers: self.fault_result_arena_headers.clone(),
             fault_result_arena_bytes: self.fault_result_arena_bytes.clone(),
+            fault_event_ring_headers: self.fault_event_ring_headers.clone(),
+            fault_event_slots: self.fault_event_slots.clone(),
+            fault_event_arena_headers: self.fault_event_arena_headers.clone(),
+            fault_event_arena_bytes: self.fault_event_arena_bytes.clone(),
             rings: self.rings.clone(),
             layout: self.layout,
         }
@@ -984,6 +1066,22 @@ impl RegionAllocation {
         )
         .map_err(|_| RegionLayoutError::GeometryOverflow)?;
         let fault_result_arena_bytes = vec![0; fault_result_arena_len];
+        let fault_event_ring_headers = (0..layout.fault_event_ring_count)
+            .map(|_| RingHeader::new())
+            .collect::<Vec<_>>();
+        let fault_event_slot_count = usize::try_from(layout.fault_event_slot_count())
+            .map_err(|_| RegionLayoutError::GeometryOverflow)?;
+        let fault_event_slots = vec![FaultEventSlotV1::new(); fault_event_slot_count];
+        let fault_event_arena_headers = (0..layout.fault_event_ring_count)
+            .map(|_| FaultPayloadArenaHeader::new())
+            .collect::<Vec<_>>();
+        let fault_event_arena_len = usize::try_from(
+            u64::from(layout.fault_event_ring_count)
+                .checked_mul(layout.fault_event_arena_stride)
+                .ok_or(RegionLayoutError::GeometryOverflow)?,
+        )
+        .map_err(|_| RegionLayoutError::GeometryOverflow)?;
+        let fault_event_arena_bytes = vec![0; fault_event_arena_len];
 
         Ok(Self {
             header,
@@ -1002,6 +1100,10 @@ impl RegionAllocation {
             fault_result_slots,
             fault_result_arena_headers,
             fault_result_arena_bytes,
+            fault_event_ring_headers,
+            fault_event_slots,
+            fault_event_arena_headers,
+            fault_event_arena_bytes,
             rings,
             layout,
         })
@@ -1101,6 +1203,30 @@ impl RegionAllocation {
     #[must_use]
     pub fn fault_result_arena_bytes(&self) -> &[u8] {
         &self.fault_result_arena_bytes
+    }
+
+    /// Returns the plugin-to-host fault event ring headers.
+    #[must_use]
+    pub fn fault_event_ring_headers(&self) -> &[RingHeader] {
+        &self.fault_event_ring_headers
+    }
+
+    /// Returns the fault event slot backing storage.
+    #[must_use]
+    pub fn fault_event_slots(&self) -> &[FaultEventSlotV1] {
+        &self.fault_event_slots
+    }
+
+    /// Returns the event payload-arena headers.
+    #[must_use]
+    pub fn fault_event_arena_headers(&self) -> &[FaultPayloadArenaHeader] {
+        &self.fault_event_arena_headers
+    }
+
+    /// Returns the event payload-arena backing bytes.
+    #[must_use]
+    pub fn fault_event_arena_bytes(&self) -> &[u8] {
+        &self.fault_event_arena_bytes
     }
 
     /// Returns the deterministic directed-ring map.
@@ -1314,6 +1440,54 @@ impl RegionAllocation {
                 region_size: self.layout.region_size,
             })?
             .copy_from_slice(&self.fault_result_arena_bytes);
+
+        for (index, ring_header) in self.fault_event_ring_headers.iter().enumerate() {
+            let base = checked_segment_offset(
+                "fault event ring header",
+                index,
+                self.layout.fault_event_ring_hdr_off,
+                RING_HEADER_SIZE,
+                region_len,
+            )?;
+            write_ring_header_bytes(&mut bytes[base..base + RING_HEADER_SIZE], ring_header);
+        }
+        for (index, slot) in self.fault_event_slots.iter().enumerate() {
+            let base = checked_segment_offset(
+                "fault event slot",
+                index,
+                self.layout.fault_event_slot_off,
+                FAULT_EVENT_SLOT_V1_BYTES,
+                region_len,
+            )?;
+            slot.write_bytes(&mut bytes[base..base + FAULT_EVENT_SLOT_V1_BYTES]);
+        }
+        for (index, header) in self.fault_event_arena_headers.iter().enumerate() {
+            let base = checked_segment_offset(
+                "fault event payload arena header",
+                index,
+                self.layout.fault_event_arena_hdr_off,
+                FAULT_PAYLOAD_ARENA_HEADER_BYTES,
+                region_len,
+            )?;
+            header.write_bytes(&mut bytes[base..base + FAULT_PAYLOAD_ARENA_HEADER_BYTES]);
+        }
+        let event_arena_base =
+            usize::try_from(self.layout.fault_event_arena_off).map_err(|_| {
+                RegionSerializationError::RegionSizeTooLarge {
+                    region_size: self.layout.region_size,
+                }
+            })?;
+        let event_arena_end = event_arena_base
+            .checked_add(self.fault_event_arena_bytes.len())
+            .ok_or(RegionSerializationError::RegionSizeTooLarge {
+                region_size: self.layout.region_size,
+            })?;
+        bytes
+            .get_mut(event_arena_base..event_arena_end)
+            .ok_or(RegionSerializationError::RegionSizeTooLarge {
+                region_size: self.layout.region_size,
+            })?
+            .copy_from_slice(&self.fault_event_arena_bytes);
 
         Ok(bytes)
     }

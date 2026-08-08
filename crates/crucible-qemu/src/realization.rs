@@ -138,6 +138,7 @@ impl QemuVmSnapshot {
             pending_preemption: None,
             pending_network_outputs: Vec::new(),
             next_fault_command_sequence: 2,
+            next_fault_event_sequence: 1,
         };
         let identity = exact_snapshot_identity(
             &checkpoint,
@@ -165,7 +166,7 @@ fn exact_snapshot_identity(
     live_capture: bool,
 ) -> ContentHash {
     ContentHash::from_canonical_material(
-        "crucible.qemu.exact-snapshot.v2",
+        "crucible.qemu.exact-snapshot.v3",
         &format!(
             "checkpoint={checkpoint:?}\nhost_io={host_io:?}\nnode={node:?}\nreplay_oracle={replay_oracle_validation:?}\nlive_capture={live_capture}"
         ),

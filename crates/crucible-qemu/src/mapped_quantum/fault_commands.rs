@@ -1,7 +1,8 @@
 //! Host-side access to one VM's lossless QEMU fault transport.
 
 use crucible_shmem::{
-    DequeuedFaultResult, FaultCommandHeaderV1, dequeue_fault_result, enqueue_fault_command,
+    DequeuedFaultEvent, DequeuedFaultResult, FaultCommandHeaderV1, dequeue_fault_event,
+    dequeue_fault_result, enqueue_fault_command, fault_event_pending,
 };
 
 use super::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError};
@@ -63,5 +64,44 @@ impl QemuMappedQuantumShmemHotPath {
             transport.arena_region_offset,
         )
         .map_err(|source| QemuMappedQuantumShmemHotPathError::FaultTransport { source })
+    }
+
+    /// Removes one authenticated QEMU fault-rule event from this VM's bridge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the VM transport is
+    /// absent or event framing, sequencing metadata, or evidence authentication
+    /// is invalid.
+    pub fn dequeue_fault_event(
+        &mut self,
+    ) -> Result<Option<DequeuedFaultEvent>, QemuMappedQuantumShmemHotPathError> {
+        let transport = self
+            .region
+            .fault_event_transport_mut(self.config.vm_slot)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?;
+        dequeue_fault_event(
+            transport.ring,
+            transport.slots,
+            transport.arena_header,
+            transport.arena,
+            transport.arena_region_offset,
+        )
+        .map_err(|source| QemuMappedQuantumShmemHotPathError::FaultEvent { source })
+    }
+
+    /// Reports whether an event is waiting without consuming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] for absent or corrupt
+    /// event transport geometry.
+    pub fn fault_event_pending(&mut self) -> Result<bool, QemuMappedQuantumShmemHotPathError> {
+        let transport = self
+            .region
+            .fault_event_transport_mut(self.config.vm_slot)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?;
+        fault_event_pending(transport.ring, transport.slots)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::FaultTransport { source })
     }
 }

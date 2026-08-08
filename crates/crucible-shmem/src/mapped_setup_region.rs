@@ -8,14 +8,15 @@ use thiserror::Error;
 
 use super::{
     COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_SIZE, CoverageEntry, DirectedRing,
-    FAULT_COMMAND_SLOT_V1_BYTES, FAULT_PAYLOAD_ARENA_HEADER_BYTES, FAULT_RESULT_SLOT_V1_BYTES,
-    FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE, FRAME_ENTRY_ALIGN,
-    FRAME_ENTRY_SIZE, FaultCommandSlotV1, FaultPayloadArenaHeader, FaultResultSlotV1,
-    FingerprintSampleSlot, FrameEntry, NODE_SLOT_ALIGN, NODE_SLOT_SIZE, NodeSlot,
-    REGION_HEADER_ALIGN, REGION_HEADER_SIZE, RING_HEADER_ALIGN, RING_HEADER_SIZE, RegionHeader,
-    RegionLayout, RegionLayoutError, RegionSetupValidationError, RingHeader, ValidatedSetupRegion,
-    WHITEBOX_MARKER_ENTRY_ALIGN, WHITEBOX_MARKER_ENTRY_SIZE, WhiteboxMarkerEntry, directed_rings,
-    layout_from_setup_region_header, validate_setup_region_header,
+    FAULT_COMMAND_SLOT_V1_BYTES, FAULT_EVENT_SLOT_V1_BYTES, FAULT_PAYLOAD_ARENA_HEADER_BYTES,
+    FAULT_RESULT_SLOT_V1_BYTES, FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE,
+    FRAME_ENTRY_ALIGN, FRAME_ENTRY_SIZE, FaultCommandSlotV1, FaultEventSlotV1,
+    FaultPayloadArenaHeader, FaultResultSlotV1, FingerprintSampleSlot, FrameEntry, NODE_SLOT_ALIGN,
+    NODE_SLOT_SIZE, NodeSlot, REGION_HEADER_ALIGN, REGION_HEADER_SIZE, RING_HEADER_ALIGN,
+    RING_HEADER_SIZE, RegionHeader, RegionLayout, RegionLayoutError, RegionSetupValidationError,
+    RingHeader, ValidatedSetupRegion, WHITEBOX_MARKER_ENTRY_ALIGN, WHITEBOX_MARKER_ENTRY_SIZE,
+    WhiteboxMarkerEntry, directed_rings, layout_from_setup_region_header,
+    validate_setup_region_header,
 };
 
 /// An owned setup-time `mmap` of the shared-memory region descriptor.
@@ -99,6 +100,22 @@ pub struct MappedFaultResultTransportMut<'a> {
     /// Circular result-payload arena bytes.
     pub arena: &'a mut [u8],
     /// Region-relative offset of `arena` for result envelopes.
+    pub arena_region_offset: u64,
+}
+
+/// A mutable view of one VM's plugin-to-host fault rule-event transport.
+pub struct MappedFaultEventTransportMut<'a> {
+    /// VM slot whose plugin exclusively produces the transport.
+    pub vm_slot: u32,
+    /// Plugin-producer/host-consumer SPSC ring header.
+    pub ring: &'a RingHeader,
+    /// Fixed event slot storage.
+    pub slots: &'a mut [FaultEventSlotV1],
+    /// Circular event-payload arena cursors.
+    pub arena_header: &'a FaultPayloadArenaHeader,
+    /// Circular event-payload arena bytes.
+    pub arena: &'a mut [u8],
+    /// Region-relative offset of `arena` for event envelopes.
     pub arena_region_offset: u64,
 }
 
@@ -544,6 +561,91 @@ impl MappedSetupRegion {
             arena,
             arena_region_offset: layout.fault_result_arena_off
                 + u64::from(vm_slot) * layout.fault_result_arena_stride,
+        })
+    }
+
+    /// Borrows one VM's plugin-to-host fault rule-event transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when the mapped header is
+    /// invalid, `vm_slot` is not a logical VM, or any event transport segment
+    /// is out of bounds or misaligned.
+    pub fn fault_event_transport_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<MappedFaultEventTransportMut<'_>, MappedSetupRegionAccessError> {
+        let layout = self
+            .layout()
+            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
+        validate_fault_vm_slot(layout, vm_slot, "fault event transport")?;
+        let ring_offset = mapped_fault_ring_header_offset(
+            layout.fault_event_ring_hdr_off,
+            layout.fault_event_ring_count,
+            self.len,
+            vm_slot,
+            "fault event ring header",
+        )?;
+        let slots_offset = mapped_fault_slot_offset(
+            layout.fault_event_slot_off,
+            layout.fault_event_ring_count,
+            layout.fault_event_queue_capacity,
+            FAULT_EVENT_SLOT_V1_BYTES,
+            self.len,
+            vm_slot,
+            "fault event slot",
+        )?;
+        let arena_header_offset = mapped_fault_arena_header_offset(
+            layout.fault_event_arena_hdr_off,
+            layout.fault_event_ring_count,
+            self.len,
+            vm_slot,
+            "fault event arena header",
+        )?;
+        let arena_offset = mapped_fault_arena_offset(
+            layout.fault_event_arena_off,
+            layout.fault_event_arena_stride,
+            layout.fault_event_ring_count,
+            self.len,
+            vm_slot,
+            "fault event arena",
+        )?;
+        let slot_count = usize::try_from(layout.fault_event_queue_capacity).map_err(|_| {
+            MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "fault event slot",
+                index: vm_slot,
+            }
+        })?;
+        let arena_len = usize::try_from(layout.fault_event_arena_stride).map_err(|_| {
+            MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "fault event arena",
+                index: vm_slot,
+            }
+        })?;
+        let base = self.base_ptr();
+        // SAFETY: all event transport ranges are validated, aligned, and
+        // disjoint; the exclusive mapping borrow prevents another mutable view.
+        let (ring, slots, arena_header, arena) = unsafe {
+            (
+                &*base.add(ring_offset).cast::<RingHeader>(),
+                core::slice::from_raw_parts_mut(
+                    base.add(slots_offset).cast::<FaultEventSlotV1>(),
+                    slot_count,
+                ),
+                &*base
+                    .add(arena_header_offset)
+                    .cast::<FaultPayloadArenaHeader>(),
+                core::slice::from_raw_parts_mut(base.add(arena_offset), arena_len),
+            )
+        };
+        Ok(MappedFaultEventTransportMut {
+            vm_slot,
+            ring,
+            slots,
+            arena_header,
+            arena,
+            arena_region_offset: layout.fault_event_arena_off
+                + u64::from(vm_slot) * layout.fault_event_arena_stride,
         })
     }
 

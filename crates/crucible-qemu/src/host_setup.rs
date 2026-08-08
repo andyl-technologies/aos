@@ -590,7 +590,7 @@ pub(crate) mod tests {
 
     #[test]
     fn qemu_host_rejects_a_v1_plugin_against_the_v6_region() {
-        assert_eq!(ABI_VERSION, 8);
+        assert_eq!(ABI_VERSION, 9);
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: ABI_VERSION,

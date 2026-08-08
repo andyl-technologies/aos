@@ -594,6 +594,18 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             .map_err(|source| source.into_channel_error("dequeue_fault_result"))
     }
 
+    fn dequeue_fault_event(
+        &mut self,
+    ) -> Result<Option<crucible_shmem::DequeuedFaultEvent>, QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::dequeue_fault_event(self)
+            .map_err(|source| source.into_channel_error("dequeue_fault_event"))
+    }
+
+    fn fault_event_pending(&mut self) -> Result<bool, QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::fault_event_pending(self)
+            .map_err(|source| source.into_channel_error("fault_event_pending"))
+    }
+
     fn coverage_enabled(&self) -> bool {
         self.coverage_bridge.is_some()
     }
