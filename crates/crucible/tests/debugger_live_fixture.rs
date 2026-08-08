@@ -2,9 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+use std::error::Error;
+
 use crucible::{
-    ContentAddressedBlobRef, ContentHash, EngineError, Icount, NodeId, Plan, Properties,
-    ReadyPoint, ScenarioDefForm, Seed, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    Action, Condition, ContentAddressedBlobRef, ContentHash, EventGraph, Icount, LogLevel, NodeId,
+    Plan, Properties, ReadyPoint, ScenarioDefForm, Seed, VirtualTime, VmArchitecture,
+    WhiteBoxPolicy, World, WorldNode,
 };
 
 fn asset(name: &str) -> ContentAddressedBlobRef {
@@ -14,7 +17,7 @@ fn asset(name: &str) -> ContentAddressedBlobRef {
     ))
 }
 
-fn debugger_live_scenario(architecture: VmArchitecture) -> Result<ScenarioDefForm, EngineError> {
+fn debugger_live_scenario(architecture: VmArchitecture) -> Result<ScenarioDefForm, Box<dyn Error>> {
     let node = WorldNode {
         id: NodeId {
             name: String::from("debuggee"),
@@ -33,17 +36,40 @@ fn debugger_live_scenario(architecture: VmArchitecture) -> Result<ScenarioDefFor
         initrd: None,
     };
     let world = World::from_nodes(vec![node])?;
+    let graph = EventGraph::builder()
+        .event("debug-history-1")
+        .when(Condition::At {
+            at: VirtualTime { ticks: 4_096 },
+        })
+        .action(Action::log(LogLevel::Info, "debug history boundary 1"))
+        .event("debug-history-2")
+        .when(Condition::At {
+            at: VirtualTime { ticks: 8_192 },
+        })
+        .action(Action::log(LogLevel::Info, "debug history boundary 2"))
+        .event("debug-history-3")
+        .when(Condition::At {
+            at: VirtualTime { ticks: 12_288 },
+        })
+        .action(Action::log(LogLevel::Info, "debug history boundary 3"))
+        .event("debug-history-4")
+        .when(Condition::At {
+            at: VirtualTime { ticks: 16_384 },
+        })
+        .action(Action::log(LogLevel::Info, "debug history boundary 4"))
+        .build_for_world(&world)?;
+    let plan = Plan::from_event_graph_for_world(&world, graph)?;
 
-    ScenarioDefForm::from_components(
+    Ok(ScenarioDefForm::from_components(
         &world,
-        &Plan::empty(),
+        &plan,
         &Properties::empty(),
         Seed::from_u64(0xd06),
-    )
+    )?)
 }
 
 #[test]
-fn live_debugger_fixtures_are_canonical() -> Result<(), EngineError> {
+fn live_debugger_fixtures_are_canonical() -> Result<(), Box<dyn Error>> {
     let cases = [
         (
             VmArchitecture::X86_64,

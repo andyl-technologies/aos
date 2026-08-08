@@ -922,7 +922,7 @@ pub(super) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
         ));
     }
     validate_serve_invocation(args)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| serve_error(format!("serve runtime error: {error}")))?;
