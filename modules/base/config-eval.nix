@@ -355,7 +355,9 @@ in {
             *) stable_stem=$uki_stem ;;
           esac
           found=
-          for candidate in "/boot/EFI/Linux/''${stable_stem}"+*.efi; do
+          for candidate in \
+            "/boot/EFI/Linux/''${stable_stem}.efi" \
+            "/boot/EFI/Linux/''${stable_stem}"+*.efi; do
             [ -f "$candidate" ] || continue
             if [ -n "$found" ]; then
               echo "aos-image-measurement-index: ambiguous live UKI for $entry" >&2

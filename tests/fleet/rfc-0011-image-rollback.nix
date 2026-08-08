@@ -18,36 +18,15 @@
     pkgs.jq
   ];
 
-  failurePreStart = ''
-    case " $(cat /proc/cmdline) " in
-      *" systemd.verity_root_data=/dev/disk/by-partlabel/root-b "*)
-        if [ ! -e /var/lib/aos-test/allow-eval ]; then
-          mkdir -p /run/aos
-          printf '{ invalid boot-count fixture\n' > /run/aos/manifest.json
-          exit 1
-        fi
-        ;;
-    esac
-  '';
+  failurePreStart = ''read -r cmdline < /proc/cmdline; case " $cmdline " in *" systemd.verity_root_data=/dev/disk/by-partlabel/root-b "*) if [ ! -e /var/lib/aos-test/allow-eval ]; then mkdir -p /run/aos; echo invalid-boot-count-fixture > /run/aos/manifest.json; exit 1; fi ;; esac'';
   bootCommitCondition =
     "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
-
-  # The current configuration generation remains authoritative across an
-  # image-only transition. Install the controlled failure hook in the baked
-  # systems as well as the host input below, and key it to the root slot that
-  # actually booted.
-  failureInjectionModule = {
-    systemd.services.aos-eval.preStart = failurePreStart;
-    systemd.services.aos-image-boot-commit.serviceConfig.ExecCondition =
-      bootCommitCondition;
-  };
 
   # The candidate deliberately changes only image identity. Keeping the module
   # ABI fixed makes the reboot test isolate image selection and first-boot
   # rebinding rather than cross-ABI migration.
   candidate = mkSystem [
     ../../systems/server-verity.nix
-    failureInjectionModule
     {
       aos.system.version = "9999.0.0-rfc0011";
       # The fleet machine module bakes deterministic interface naming into the
@@ -55,6 +34,7 @@
       # candidate and seed its fleet address so first-boot evaluation can run
       # before the retained host configuration is rebound.
       aos.boot.kernelParams = ["net.ifnames=0"];
+      aos.packages.aos-test-agent.bundle = true;
       environment.systemPackages = testPackages;
       environment.etc."systemd/network/10-fleet-eth0.network".text = ''
         [Match]
@@ -63,6 +43,20 @@
         [Network]
         Address=192.168.50.11/24
       '';
+      systemd.services.aos-test-agent = {
+        description = "AOS VM Test Guest Agent";
+        wantedBy = ["multi-user.target"];
+        restartIfChanged = false;
+        stopIfChanged = false;
+        unitConfig.RefuseManualStop = true;
+        serviceConfig = {
+          Type = "simple";
+          ExecStart = "${pkgs.aos-test-agent}/share/aos-test-agent/aos-test-agent";
+          Restart = "on-failure";
+          RestartSec = 1;
+          Environment = "PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
+        };
+      };
     }
   ];
   candidateTop = candidate.config.system.build.toplevel;
@@ -76,7 +70,6 @@
   # transition path.
   targetSystem = mkSystem [
     ../../systems/server-verity.nix
-    failureInjectionModule
     {
       environment.systemPackages = testPackages;
     }
@@ -119,7 +112,10 @@ in {
     target = {
       system = targetSystem;
       bootMode = "image";
-      imageDiskMiB = 24576;
+      # Staging retains both evaluator closures before overwriting a slot and
+      # concurrently holds the downloaded raw-image NAR. Give the lifecycle
+      # fixture enough durable workspace to exercise that safety property.
+      imageDiskMiB = 32768;
       # Importing the multi-gigabyte raw image NAR runs the package client and
       # nix-store concurrently. Leave enough headroom for both decompression
       # pipelines so the acceptance test measures rollback behavior rather
@@ -132,14 +128,11 @@ in {
       # replaces the image-baked test identity.
       metadata."host.nix" = ''
         {
-          aos.provisioning.storage.partitions.var.sizeMin = "8G";
+          aos.provisioning.storage.partitions.var.sizeMin = "16G";
           aos.networking.hostName = "target";
           aos.networking.useDHCP = false;
           aos.networking.interfaces.eth0.address = "192.168.50.11/24";
           aos.apm.desiredPackages = [ "aos-test-agent" ];
-
-          systemd.services.aos-eval.preStart = ${builtins.toJSON failurePreStart};
-          systemd.services.aos-image-boot-commit.serviceConfig.ExecCondition = ${builtins.toJSON bootCommitCondition};
 
           environment.etc."hosts".text = "127.0.0.1 localhost\n192.168.50.10 registry\n192.168.50.11 target\n";
         }
@@ -157,6 +150,7 @@ in {
       APM = "${pkgs.aos}/bin/apm"
       APR = "${pkgs.aos}/bin/apr"
       JQ = "${pkgs.jq}/bin/jq"
+      SB_GUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
       MOUNT = "mount"
       BOOTCTL = "bootctl"
       SYNC = "sync"
@@ -173,6 +167,12 @@ in {
           matches = [g for g in state["generations"] if g["number"] == number]
           assert len(matches) == 1, (number, state)
           return matches[0]
+
+
+      def efivar_byte(name):
+          path = f"/sys/firmware/efi/efivars/{name}-{SB_GUID}"
+          out = target.succeed(f"od -An -tu1 -j4 -N1 {path}").strip()
+          return int(out)
 
 
       def assert_boot_read_only():
@@ -205,9 +205,38 @@ in {
           target.wait_until_succeeds(
               "systemctl is-active --quiet multi-user.target", timeout=420
           )
-          target.wait_until_succeeds(
-              "systemctl is-failed --quiet aos-eval.service", timeout=120
-          )
+          try:
+              target.wait_until_succeeds(
+                  "systemctl is-failed --quiet aos-eval.service", timeout=120
+              )
+          except Exception:
+              print(target.succeed("cat /proc/cmdline"))
+              print(target.succeed(
+                  "${pkgs.findutils}/bin/find "
+                  "/var/etc/systemd/system -maxdepth 3 -type f -print "
+                  "-exec sed -n '1,120p' {} ';' 2>&1 || true"
+              ))
+              for unit in (
+                  "aos-credential-recovery.service",
+                  "aos-host-config-restore.service",
+                  "aos-firstboot-reeval.service",
+                  "aos-nix-db.service",
+                  "systemd-pcrphase.service",
+                  "aos-image-measurement-index.service",
+                  "aos-seed-baked-packages.service",
+                  "aos-eval.service",
+              ):
+                  print(target.succeed(
+                      f"systemctl cat {unit} --no-pager 2>&1 || true"
+                  ))
+                  print(target.succeed(
+                      f"systemctl status {unit} --no-pager 2>&1 || true"
+                  ))
+                  print(target.succeed(
+                      f"journalctl -b -u {unit} --no-pager 2>&1 || true"
+                  ))
+              print(target.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
+              raise
           target.wait_until_succeeds(
               "systemctl is-failed --quiet aos-graph-compile.service", timeout=120
           )
@@ -222,10 +251,63 @@ in {
 
 
       # -- Initial stock image ------------------------------------------------
+      try:
+          target.wait_until_succeeds(
+              "systemctl is-active --quiet aos-image-boot-commit.service", timeout=300
+          )
+      except Exception:
+          for unit in (
+              "network-online.target",
+              "aos-eval.service",
+              "aos-graph-compile.service",
+              "aos-activate.service",
+              "aos-image-boot-commit.service",
+          ):
+              print(target.succeed(
+                  f"systemctl status {unit} --no-pager 2>&1 || true"
+              ))
+              print(target.succeed(
+                  f"journalctl -b -u {unit} --no-pager 2>&1 || true"
+              ))
+          print(target.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
+          raise
       target.wait_until_succeeds(
-          "systemctl is-active --quiet aos-image-boot-commit.service", timeout=300
+          "systemctl is-active --quiet multi-user.target", timeout=420
       )
-      target.succeed("systemctl is-active --quiet multi-user.target")
+      assert_boot_read_only()
+
+      # Setup Mode intentionally uses a disposable plain /var. Enroll the
+      # image's test keys and let the first enforcing boot replace it with the
+      # durable TPM-sealed LUKS volume before exercising stateful transitions.
+      assert efivar_byte("SetupMode") == 1
+      assert efivar_byte("SecureBoot") == 0
+      efi_update = (
+          "PATH=${pkgs.util-linux}/bin:$PATH "
+          "${pkgs.efitools}/bin/efi-updatevar"
+      )
+      keys = "${pkgs.secure-boot-test-keys}"
+      for variable in ("db", "KEK", "PK"):
+          target.succeed(
+              f"{efi_update} -f {keys}/{variable}.auth {variable} 2>&1"
+          )
+      assert efivar_byte("SetupMode") == 0
+      target.reboot(timeout=600)
+      target.wait_until_succeeds(
+          "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
+      )
+      target.wait_until_succeeds(
+          "systemctl is-active --quiet multi-user.target", timeout=420
+      )
+      assert efivar_byte("SecureBoot") == 1
+      target.succeed(
+          "${pkgs.cryptsetup}/sbin/cryptsetup isLuks "
+          "/dev/disk/by-partlabel/var"
+      )
+      target.succeed(
+          "source=; while read -r device mountpoint rest; do "
+          "test \"$mountpoint\" != /var || source=$device; "
+          "done < /proc/mounts; test \"$source\" = /dev/mapper/var"
+      )
       assert_boot_read_only()
 
       initial = image_state()
@@ -234,6 +316,41 @@ in {
       assert initial.get("pending") is None, initial
       old = generation(initial, 1)
       assert old["slot"] == "A", old
+
+      # Keep fault injection outside host.nix: structural systemd units are
+      # image-owned, while host.nix is deliberately restricted to operator-
+      # owned settings. Persistent local drop-ins let the test prevent both
+      # evaluation and boot blessing only while slot B is running.
+      target.succeed(textwrap.dedent("""
+          set -eu
+          mkdir -p \
+            /var/etc/systemd/system/aos-eval.service.d \
+            /var/etc/systemd/system/aos-image-boot-commit.service.d \
+            /var/etc/systemd/system/multi-user.target.wants
+          cat > /var/etc/systemd/system/aos-test-agent.service <<'EOF'
+          [Unit]
+          Description=AOS VM Test Guest Agent
+          RefuseManualStop=true
+
+          [Service]
+          Type=simple
+          ExecStart=${pkgs.aos-test-agent}/share/aos-test-agent/aos-test-agent
+          Restart=on-failure
+          RestartSec=1
+          Environment=PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin
+          EOF
+          ln -sfn ../aos-test-agent.service \
+            /var/etc/systemd/system/multi-user.target.wants/aos-test-agent.service
+          cat > /var/etc/systemd/system/aos-eval.service.d/90-rollback-test.conf <<'EOF'
+          [Service]
+          ExecStartPre=${pkgs.bash}/bin/bash -c ${lib.escapeShellArg failurePreStart}
+          EOF
+          cat > /var/etc/systemd/system/aos-image-boot-commit.service.d/90-rollback-test.conf <<'EOF'
+          [Service]
+          ExecCondition=${bootCommitCondition}
+          EOF
+          ${pkgs.coreutils}/bin/sync
+      """))
 
       # These are real udev links to block devices, not regular-file fixtures.
       # The production writer must follow the trusted by-partlabel link and
