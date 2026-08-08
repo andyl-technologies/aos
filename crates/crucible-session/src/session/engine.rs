@@ -1749,87 +1749,11 @@ impl<L: QuantumLoop> Engine<L> {
                 reply,
             } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
-                    if !matches!(
-                        self.debug_coordinator.state(),
-                        DebugCoordinatorState::NonCanonical { .. }
-                    ) {
-                        if request.is_none()
-                            && let Some(record) = self
-                                .guest_responses
-                                .get_mut(&(node.clone(), *channel_id))
-                                .and_then(VecDeque::pop_front)
-                        {
-                            reply.complete(Ok(Some(record)));
-                            return Ok(self.snapshot());
-                        }
-                        return Err(SessionError::DebugNonCanonicalBranchRequired {
-                            operation: "guest-introspection",
-                        });
-                    }
-                    if self.white_box_policies.get(node) != Some(&WhiteBoxPolicy::Enabled) {
-                        return Err(SessionError::GuestIntrospectionNotAuthorized {
-                            node: node.name.clone(),
-                        });
-                    }
-                    let response = if let Some(record) = request {
-                        if record.channel_id() != *channel_id {
-                            return Err(SchedulerError::BoundaryViolation {
-                                message: String::from(
-                                    "guest-introspection request channel does not match envelope",
-                                ),
-                            }
-                            .into());
-                        }
-                        record.validate_host_request().map_err(|error| {
-                            SchedulerError::BoundaryViolation {
-                                message: format!("invalid guest-introspection request: {error}"),
-                            }
-                        })?;
-                        self.validate_guest_capability(node, record.message())?;
-                        self.validate_guest_channel_capacity(node, record.message())?;
-                        let opens_channel = matches!(
-                            record.message(),
-                            GuestIntrospectionMessage::Exec { .. }
-                                | GuestIntrospectionMessage::Pty { .. }
-                                | GuestIntrospectionMessage::Ssh { .. }
-                        );
-                        if opens_channel {
-                            self.begin_guest_channel_run()?;
-                        }
-                        if let Err(error) = self
-                            .quantum_loop
-                            .send_guest_introspection(node.clone(), record.clone())
-                        {
-                            if opens_channel {
-                                self.abort_empty_guest_channel_run()?;
-                            }
-                            return Err(error.into());
-                        }
-                        match record.message() {
-                            GuestIntrospectionMessage::Exec { .. }
-                            | GuestIntrospectionMessage::Pty { .. }
-                            | GuestIntrospectionMessage::Ssh { .. } => {
-                                self.guest_channels.insert((node.clone(), *channel_id));
-                            }
-                            GuestIntrospectionMessage::Input(_)
-                            | GuestIntrospectionMessage::Resize { .. }
-                            | GuestIntrospectionMessage::Close => {}
-                            GuestIntrospectionMessage::Features(_)
-                            | GuestIntrospectionMessage::Output { .. }
-                            | GuestIntrospectionMessage::Exit { .. }
-                            | GuestIntrospectionMessage::Error { .. } => {
-                                return Err(SchedulerError::BoundaryViolation {
-                                    message: String::from(
-                                        "guest response message passed host-request validation",
-                                    ),
-                                }
-                                .into());
-                            }
-                        }
-                        None
-                    } else {
-                        self.receive_guest_channel_response(node, *channel_id)?
-                    };
+                    let response = self.handle_guest_introspection_command(
+                        node,
+                        *channel_id,
+                        request.as_ref(),
+                    )?;
                     reply.complete(Ok(response));
                     Ok(self.snapshot())
                 }
