@@ -7,7 +7,7 @@
 //! the coordinator before this registry and perform both mutations without an
 //! intervening await, so request cancellation cannot split their state.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crucible_session::DebugControllerLease;
 use thiserror::Error;
@@ -29,13 +29,13 @@ pub(crate) enum DebugHolderRelease {
 
 #[derive(Default)]
 pub(crate) struct DebugControllerHolderRegistry {
-    sessions: HashMap<SessionRef, DebugControllerHolders>,
+    sessions: BTreeMap<SessionRef, DebugControllerHolders>,
     released: VecDeque<ReleasedDebugControllerHolder>,
 }
 
 struct DebugControllerHolders {
     lease: DebugControllerLease,
-    holders: HashSet<DebugControllerHolderId>,
+    holders: BTreeSet<DebugControllerHolderId>,
 }
 
 struct ReleasedDebugControllerHolder {
@@ -86,7 +86,7 @@ impl DebugControllerHolderRegistry {
                     session,
                     DebugControllerHolders {
                         lease,
-                        holders: HashSet::from([holder]),
+                        holders: BTreeSet::from([holder]),
                     },
                 );
                 Ok(())

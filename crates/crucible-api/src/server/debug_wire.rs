@@ -140,19 +140,18 @@ pub(super) fn parse_debug_relay_close_request(
     Ok((session, generation, holder, id))
 }
 
+type DebugGuestExchangeRequest = (
+    SessionRef,
+    u64,
+    DebugControllerHolderId,
+    NodeId,
+    u64,
+    Option<GuestIntrospectionRecord>,
+);
+
 pub(super) fn parse_debug_guest_exchange_request(
     body: &[u8],
-) -> Result<
-    (
-        SessionRef,
-        u64,
-        DebugControllerHolderId,
-        NodeId,
-        u64,
-        Option<GuestIntrospectionRecord>,
-    ),
-    String,
-> {
+) -> Result<DebugGuestExchangeRequest, String> {
     let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
     let mut lines = text.lines();
     expect_wire_header(lines.next(), "crucible.rpc/debug-guest-exchange-request")?;
