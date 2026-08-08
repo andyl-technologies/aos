@@ -8,44 +8,6 @@ pub(super) use network_branch::{
     LiveNetworkBranchChoice, is_live_network_branch_choice_name, live_network_branch_choices,
     live_network_branch_draws,
 };
-/// Applies combined node timing faults to a scheduler VM node.
-///
-/// This is the scheduler-facing bridge used by trigger/fault application code:
-/// slow faults stretch the VM's counter-to-virtual-time map from the current
-/// counter, and clock skew changes only the guest-visible time projection.
-///
-/// # Errors
-///
-/// Returns [`SchedulerError`] when the node is absent, is not a VM scheduler
-/// node, or its current timing projection cannot be computed.
-pub fn apply_combined_node_timing_faults_to_scheduler(
-    scheduler: &mut SingleScheduler,
-    node: &NodeId,
-    faults: &CombinedNodeFaults,
-) -> Result<NodeTimingFaults, SchedulerError> {
-    scheduler.apply_combined_node_timing_faults(node, faults)
-}
-
-/// Applies the crash component of combined node faults to a scheduler VM node.
-///
-/// Returns `Ok(None)` when the combined fault set contains no active crash.
-///
-/// # Errors
-///
-/// Returns [`SchedulerError`] when the crash target cannot be applied by
-/// [`SingleScheduler::apply_node_crash`].
-pub fn apply_combined_node_crash_to_scheduler(
-    scheduler: &mut SingleScheduler,
-    sequence: u64,
-    node: &NodeId,
-    faults: &CombinedNodeFaults,
-) -> Result<Option<SchedulerNodeCrashApplication>, SchedulerError> {
-    faults
-        .crash_restart
-        .map(|restart| scheduler.apply_node_crash(sequence, node, restart))
-        .transpose()
-}
-
 impl SchedulerSendAuthorizer for SingleScheduler {
     fn authorize_cross_node_send(
         &self,

@@ -7,8 +7,8 @@
 //! and is never folded into scheduler ordering keys or RUN ceilings.
 
 use crate::{
-    ClockDriftRate, CombinedNodeFaults, FaultSlowdownFactorBasisPoints, NodeClockSkew, NodeCounter,
-    Shift, SimInstant, TimeConversionError,
+    FaultSlowdownFactorBasisPoints, NodeClockSkew, NodeCounter, Shift, SimInstant,
+    TimeConversionError,
 };
 
 /// Effective VM timing faults for one scheduler node.
@@ -171,30 +171,6 @@ pub struct NodeTimingProjection {
     pub slow_factor: FaultSlowdownFactorBasisPoints,
     /// The clock skew used only for `guest_visible_time`.
     pub clock_skew: NodeClockSkew,
-}
-
-/// Builds anchored timing faults from combined node-fault effects.
-///
-/// `anchor_time` should be the node's current faulted scheduler time immediately
-/// before replacing its timing projection. This preserves continuity when slow
-/// faults activate, heal, or change factor while the VM has already advanced.
-#[must_use]
-pub fn node_timing_faults_from_combined_node(
-    faults: &CombinedNodeFaults,
-    anchor_counter: NodeCounter,
-    anchor_time: SimInstant,
-) -> NodeTimingFaults {
-    NodeTimingFaults {
-        slow_factor: faults
-            .slow_factor
-            .unwrap_or(FaultSlowdownFactorBasisPoints::ONE),
-        clock_skew: NodeClockSkew {
-            offset: faults.clock_skew,
-            drift_rate: ClockDriftRate::ONE,
-        },
-        anchor_counter,
-        anchor_time,
-    }
 }
 
 /// Projects one node counter under active timing faults.

@@ -52,15 +52,7 @@ pub use backend::{
 };
 pub use crucible_device::{ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffectsError};
 pub use decision::{DecisionRecordError, DecisionRecorder};
-pub use device::{
-    LinkEmitDecisionRecord, NetworkFaultApplication, NetworkLinkDirection,
-    apply_combined_network_faults, apply_combined_network_faults_to_link,
-    apply_combined_network_faults_to_scheduler, device_overlay, device_rng, device_stream_id,
-    emit_link_frame_with_recorded_faults, emit_link_frame_with_recorded_stream,
-    heal_combined_network_faults_to_scheduler, io_fault_id, io_fault_state,
-    link_faults_from_combined_network, network_partition_change, network_partition_removed_edges,
-    record_device_fault,
-};
+pub use device::{LinkEmitDecisionRecord, NetworkLinkDirection, device_overlay, device_stream_id};
 pub use device_subnode::{
     DEFAULT_WORLD_IO_INBOX_CAPACITY, DEFAULT_WORLD_IO_OUTBOX_CAPACITY, DeviceDelivery,
     DeviceSchedulingSubNode, DeviceSubNodeBindingError, WorldIoInstantiationError,
@@ -194,10 +186,7 @@ pub use model::{
     lint_guidance_determinism_source, preemption_branch_decisions, reduce,
     run_adaptive_strategy_selection, step, try_step,
 };
-pub use node_fault::{
-    NodeTimingFaults, NodeTimingProjection, node_timing_faults_from_combined_node,
-    project_node_timing,
-};
+pub use node_fault::{NodeTimingFaults, NodeTimingProjection, project_node_timing};
 #[cfg(feature = "test-double")]
 pub use scheduler::SchedulerRunCeilingHandoffError;
 /// Shared-memory ABI version used by Crucible backends and artifacts.
@@ -238,7 +227,6 @@ pub use scheduler::{
     SchedulerWorldInstantiationError, SharedTimeline, SharedTimelineKey, SingleScheduler,
     TriggerActionApplication, TriggerActionState, TriggerDiagnosticRecord, TriggerLabelRecord,
     TriggerVerdict, UnresolvedCrossNodeDependency, WorldNetworkLinkRuntime,
-    apply_combined_node_crash_to_scheduler, apply_combined_node_timing_faults_to_scheduler,
     assertion_proximity_fingerprint_from_event_log, authorize_conservative_advance,
     check_scheduler_liveness, compare_event_log_determinism, coverage_fingerprint_from_event_log,
     event_log_assertion_proximity_projection, event_log_causal_projection,
