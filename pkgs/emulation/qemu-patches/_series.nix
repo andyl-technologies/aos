@@ -459,6 +459,16 @@ let
       capability = "atomic ordered GPA/GVA mutation batches with translation, RAM-map, dirty-page, and TB evidence";
     }
     {
+      file = "0050-crucible-memory-access-faults.patch";
+      branchSubject = "crucible: add memory access fault rules";
+      branchCommit = "217f242a31a1f37796118c9213f4f5537b6d943b";
+      branchTree = "d3a8065a1f3f0edc17e856ddf128ddad1c598536";
+      catalogName = "crucible-memory-access-faults";
+      class = "D";
+      enforces = "QFP-MEMA-1,QFP-MEMA-2,FAULT-ORDER";
+      capability = "typed fetch, load, store, atomic, and identified virtio DMA memory fault rules with shared service and persistent region state";
+    }
+    {
       file = "0060-crucible-block-typed-errors.patch";
       branchCommit = "c9bebb7a91ad72981bff9b03cfbbfd101928b083";
       branchTree = "f4bacce87043573d40695ea788c98105464626d0";

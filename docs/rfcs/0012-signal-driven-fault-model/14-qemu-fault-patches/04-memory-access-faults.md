@@ -30,12 +30,32 @@ separate PC/fetch and device DMA scope indexes. Read-mostly lookups do not alloc
 or lock on the hot path. Replacing a generation occurs only at a safe boundary;
 old generations remain until no callback can reference them.
 
+A replacement is a new experiment state, not an in-place edit: its occurrence
+ordinals, retention exposure coordinate, rowhammer counters, and translation
+staleness state start fresh at zero. State is never inferred or migrated from a
+prior generation. Removing and later reinstalling a binding has the same fresh
+state semantics. Shared service ledgers are the exception because they belong to
+the declared service scope rather than to a rule generation. A node or controller
+ledger survives replacement/removal of one contributing binding while another
+binding still references that scope; a range ledger is keyed by address-space
+kind, optional vCPU, exact start, and exact length.
+
 ## Access identity and order
 
 Access identity includes node, vCPU or DMA device, architecture PC/TB/instruction
 identity where applicable, GPA, length, access type, access ordinal within the
 instruction/device transaction, and retry/replay ordinal. The hook resolves all
 matching rules and applies them in binding-hash order.
+
+For CPU memory helpers, one top-level translated load, store, fetch, or atomic
+helper is one transaction; page splits and unaligned sub-accesses increment its
+zero-based fragment ordinal. Re-entry of the same actor, access class, virtual
+address, width, and observed instruction coordinate increments the retry/replay
+ordinal. For DMA, one `dma_memory_rw`, cached virtqueue access, map fill, or
+writeback is one transaction. Virtio device identity is the SHA-256 digest of
+the realized canonical QOM path under the `qemu.virtio.dma.v1` domain. The full
+digest, not only a numeric abbreviation, is evidence. An unidentified DMA caller
+cannot satisfy a device-scoped capability gate.
 
 Ordering is:
 
@@ -77,6 +97,12 @@ dependent instruction; the sim scheduler may run another eligible vCPU or
 advance virtual time through the existing authorized time-control barrier. DMA
 completion follows the same scheduler-visible service deadline. Host sleeps or
 callback delays never model memory latency.
+
+Fixed latency is checked-summed across matching bindings and does not consume or
+serialize service capacity. Each shared ledger advances by the exact ceiling of
+bytes/rate plus operations/rate; the access waits for the maximum queue deadline
+across its ledgers. Thus two bindings sharing a controller serialize through one
+cursor, while unrelated ranges remain independently serviceable.
 
 ## Retention and rowhammer geometry
 
