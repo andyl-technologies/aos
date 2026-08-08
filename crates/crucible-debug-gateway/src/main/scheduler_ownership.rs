@@ -5,6 +5,7 @@ use super::*;
 pub(super) fn poll_scheduler_run_control(
     process: &SharedGatewayProcess,
     frame: DebugGatewayFrame,
+    // crucible-lint: allow stringly-error -- this private process-boundary module shares the gateway entrypoint's diagnostic error type
 ) -> Result<DebugGatewayFrame, String> {
     if !frame.payload.is_empty() {
         return Err(String::from("run-control poll payload must be empty"));
@@ -57,6 +58,7 @@ pub(super) fn poll_scheduler_run_control(
 pub(super) fn finish_gdb_scheduler_run(
     gateway: &mut GatewayProcess,
     stream_id: u32,
+    // crucible-lint: allow stringly-error -- this private process-boundary module shares the gateway entrypoint's diagnostic error type
 ) -> Result<(), String> {
     let Some(active_stream) = gateway.gdb_scheduler_run_active else {
         return Ok(());
@@ -79,6 +81,7 @@ pub(super) fn finish_gdb_scheduler_run(
 pub(super) fn scheduler_lease(
     process: &SharedGatewayProcess,
     payload: &[u8],
+    // crucible-lint: allow stringly-error -- this private process-boundary module shares the gateway entrypoint's diagnostic error type
 ) -> Result<DebugGatewayFrame, String> {
     let acquire = match payload {
         [1] => true,
@@ -202,6 +205,7 @@ pub(super) fn scheduler_lease(
     response(DebugGatewayMessageKind::Ack, 0, Vec::new())
 }
 
+// crucible-lint: allow stringly-error -- this private process-boundary module shares the gateway entrypoint's diagnostic error type
 fn resume_scheduler_backend(stream: &mut UnixStream) -> Result<(), String> {
     stream
         .set_read_timeout(Some(QEMU_RSP_TIMEOUT))
@@ -243,6 +247,7 @@ fn resume_scheduler_backend(stream: &mut UnixStream) -> Result<(), String> {
     }
 }
 
+// crucible-lint: allow stringly-error -- this private process-boundary module shares the gateway entrypoint's diagnostic error type
 pub(super) fn interrupt_scheduler_backend(stream: &mut UnixStream) -> Result<(), String> {
     stream
         .set_read_timeout(Some(QEMU_RSP_TIMEOUT))
@@ -288,6 +293,7 @@ pub(super) fn interrupt_scheduler_backend(stream: &mut UnixStream) -> Result<(),
 fn restore_scheduler_breakpoints(
     stream: &mut UnixStream,
     breakpoints: &[Vec<u8>],
+    // crucible-lint: allow stringly-error -- this private process-boundary module shares the gateway entrypoint's diagnostic error type
 ) -> Result<(), String> {
     for breakpoint in breakpoints {
         let reply = exchange_rsp_packet(stream, breakpoint)?;
@@ -304,6 +310,7 @@ fn restore_scheduler_breakpoints(
 pub(super) fn acknowledge_scheduler_response(
     process: &SharedGatewayProcess,
     retransmit: bool,
+    // crucible-lint: allow stringly-error -- this private process-boundary module shares the gateway entrypoint's diagnostic error type
 ) -> Result<bool, String> {
     with_gateway(process, |gateway| {
         let Some(response) = gateway.scheduler_response_pending.as_ref() else {
@@ -327,6 +334,7 @@ pub(super) fn queue_scheduler_run_control(
     process: &SharedGatewayProcess,
     packet: Vec<u8>,
     acknowledge: bool,
+    // crucible-lint: allow stringly-error -- this private process-boundary module shares the gateway entrypoint's diagnostic error type
 ) -> Result<(), String> {
     with_gateway(process, |gateway| {
         let is_interrupt = packet == [0x03];

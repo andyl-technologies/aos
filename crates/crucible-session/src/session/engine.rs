@@ -591,6 +591,7 @@ impl<L> Engine<L> {
         };
         let mut refreshed = candidate_graph.debug_attach(&attach_request)?;
         let previous_coordinator_state = self.debug_coordinator.state().clone();
+        let guest_run_suspended = self.suspend_guest_channel_run_for_reposition()?;
         self.debug_coordinator
             .begin_reposition(reposition.target.id());
         let evidence = match self
@@ -601,6 +602,15 @@ impl<L> Engine<L> {
             Err(error) => {
                 self.debug_coordinator
                     .restore_state(previous_coordinator_state);
+                if let Err(resume_error) =
+                    self.resume_guest_channel_run_after_failed_reposition(guest_run_suspended)
+                {
+                    self.close_guest_channels_for_reposition()?;
+                    self.debug_coordinator.failed(format!(
+                        "runtime replacement failed: {error}; guest scheduler ownership restoration also failed: {resume_error}"
+                    ));
+                    return Err(resume_error);
+                }
                 return Err(error.into());
             }
         };
@@ -608,6 +618,7 @@ impl<L> Engine<L> {
             self.debug_coordinator.failed(String::from(
                 "runtime replacement returned mismatched committed-backend evidence",
             ));
+            self.close_guest_channels_for_reposition()?;
             return Err(SessionError::DebugRuntimeRepositionMismatch(Box::new(
                 DebugRuntimeRepositionEvidenceMismatch {
                     expected_node: reposition.node,

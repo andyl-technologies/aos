@@ -411,6 +411,40 @@ impl<L> Engine<L> {
         Ok(())
     }
 
+    pub(crate) fn suspend_guest_channel_run_for_reposition(&mut self) -> Result<bool, SessionError>
+    where
+        L: QuantumLoop,
+    {
+        if !self.guest_channel_run_active {
+            return Ok(false);
+        }
+        self.quantum_loop.release_internal_debug_run()?;
+        self.guest_channel_run_active = false;
+        if !matches!(self.state, EngineState::Stopped { .. }) {
+            self.state = EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            };
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn resume_guest_channel_run_after_failed_reposition(
+        &mut self,
+        suspended: bool,
+    ) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        if !suspended {
+            return Ok(());
+        }
+        self.quantum_loop.acquire_internal_debug_run()?;
+        self.guest_channel_run_active = true;
+        self.active_step = None;
+        self.state = EngineState::Running;
+        Ok(())
+    }
+
     pub(crate) fn close_guest_channels_for_reposition(&mut self) -> Result<(), SessionError>
     where
         L: QuantumLoop,
