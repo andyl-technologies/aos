@@ -211,18 +211,20 @@ pub fn install_cross_device_misdirected_persistence(
     }
     let mut next_source = source.clone();
     let mut next_destination = destination.clone();
-    let destination_frontier = next_destination.storage_faults.apply_external_write(
-        &next_destination.base,
-        &mut next_destination.overlay,
-        resolved.opportunity.request.request_id,
-        resolved.directive.request_sequence,
-        resolved.opportunity.ready_nanos,
-        destination_offset,
-        resolved.opportunity.request.data.clone(),
-    )?;
+    let (destination_durability, destination_frontier) =
+        next_destination.storage_faults.apply_external_write(
+            &next_destination.base,
+            &mut next_destination.overlay,
+            resolved.opportunity.request.request_id,
+            resolved.directive.request_sequence,
+            resolved.opportunity.ready_nanos,
+            destination_offset,
+            resolved.opportunity.request.data.clone(),
+        )?;
     resolved.directive.write_disposition = super::fault::BlockFaultWriteDisposition::Lost;
     let dependency = super::fault::BlockExternalDurabilityDependency {
         destination_device,
+        required_durability: destination_durability,
         required_frontier: destination_frontier,
     };
     resolved.directive.external_durability_dependency = Some(dependency);

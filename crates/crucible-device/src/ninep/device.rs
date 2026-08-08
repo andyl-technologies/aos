@@ -34,8 +34,9 @@ use crate::subnode::{IoCore, IoCoreSnapshot, IoSubNode, ShmemDeliveryResult, Shm
 
 use super::codec::{self, GetattrReply, Message, Qid, QidType, TMessage};
 use super::fault::{
-    NinepObjectVersion, NinepRequestIdentity, NinepResultDirective, NinepVisibilityPolicy,
-    NinepVisibilityRelease, NinepVisibilityState, ResolvedNinepRequestDirective,
+    NinepObjectVersion, NinepRequestIdentity, NinepResultDirective, NinepVisibilityLookup,
+    NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityState,
+    ResolvedNinepRequestDirective,
 };
 use super::server::{NinepServer, NinepServerSnapshot};
 use super::tree::FsTree;
@@ -107,6 +108,38 @@ impl LatencyModel for NinepLatency {
     }
 }
 
+/// A fid owned by the signal-driven overlay rather than the immutable server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NinepVirtualFid {
+    /// Binds permanently to an explicit stale or misdirected object result.
+    Exact(NinepObjectVersion),
+    /// Resolves the path through the current committed-versus-visible overlay.
+    VisiblePath(String),
+}
+
+impl NinepVirtualFid {
+    fn validate(&self) -> Result<(), DeviceError> {
+        match self {
+            Self::Exact(object) => object.validate(),
+            Self::VisiblePath(path) => NinepObjectVersion {
+                path: path.clone(),
+                version: 0,
+                mode: 0o100_000,
+                data: Vec::new(),
+                deleted: false,
+            }
+            .validate(),
+        }
+    }
+
+    fn path(&self) -> &str {
+        match self {
+            Self::Exact(object) => &object.path,
+            Self::VisiblePath(path) => path,
+        }
+    }
+}
+
 /// A 9p device sub-node over a read-only filesystem tree.
 ///
 /// Composes an [`IoCore`] (clock, rings, in-flight queue) with the device state
@@ -123,7 +156,7 @@ pub struct NinepDevice {
     require_fault_directives: bool,
     directives: BTreeMap<NinepRequestIdentity, ResolvedNinepRequestDirective>,
     visibility: NinepVisibilityState,
-    virtual_fids: BTreeMap<u32, NinepObjectVersion>,
+    virtual_fids: BTreeMap<u32, NinepVirtualFid>,
     session_epoch: u64,
 }
 
@@ -402,7 +435,7 @@ impl NinepDevice {
         require_fault_directives: bool,
         directives: &mut BTreeMap<NinepRequestIdentity, ResolvedNinepRequestDirective>,
         visibility: &NinepVisibilityState,
-        virtual_fids: &mut BTreeMap<u32, NinepObjectVersion>,
+        virtual_fids: &mut BTreeMap<u32, NinepVirtualFid>,
         session_epoch: &mut u64,
     ) -> Result<(), DeviceError> {
         let mut node = NinepServerNode {
@@ -470,8 +503,8 @@ impl NinepDevice {
                 NinepResultDirective::Normal | NinepResultDirective::Errno(_) => {}
             }
         }
-        for object in snapshot.virtual_fids.values() {
-            object.validate()?;
+        for binding in snapshot.virtual_fids.values() {
+            binding.validate()?;
         }
         let core = IoCore::restore(&snapshot.core)?;
         let server = NinepServer::restore(&snapshot.server, tree);
@@ -501,13 +534,13 @@ struct NinepServerNode<'a> {
     require_fault_directives: bool,
     directives: &'a mut BTreeMap<NinepRequestIdentity, ResolvedNinepRequestDirective>,
     visibility: &'a NinepVisibilityState,
-    virtual_fids: &'a mut BTreeMap<u32, NinepObjectVersion>,
+    virtual_fids: &'a mut BTreeMap<u32, NinepVirtualFid>,
     session_epoch: &'a mut u64,
 }
 
 impl<'a> IoSubNode for NinepServerNode<'a> {
     type Latency = NinepLatency;
-    type ComputeCheckpoint = (NinepServer, BTreeMap<u32, NinepObjectVersion>, u64);
+    type ComputeCheckpoint = (NinepServer, BTreeMap<u32, NinepVirtualFid>, u64);
 
     fn latency_model(&self) -> &Self::Latency {
         self.latency
@@ -551,40 +584,38 @@ impl<'a> IoSubNode for NinepServerNode<'a> {
             directive.validate_for(request.request_icount, request.request_id, &request.payload)?;
         }
 
-        let explicit = directive
-            .as_ref()
-            .and_then(|directive| match &directive.result {
-                NinepResultDirective::Stale(object) | NinepResultDirective::Misdirected(object) => {
-                    Some(object.clone())
-                }
-                NinepResultDirective::Normal | NinepResultDirective::Errno(_) => None,
-            });
-        let visible = message.as_ref().and_then(|message| {
-            request_fid(&message.body)
-                .and_then(|fid| self.virtual_fids.get(&fid).cloned())
-                .or_else(|| {
-                    request_fid(&message.body)
-                        .and_then(|fid| self.server.fids().get(&fid))
-                        .map(|fid| format!("/{}", fid.path.join("/")))
-                        .and_then(|path| self.visibility.visible_object(*self.session_epoch, &path))
-                })
-        });
-        let selected = explicit.or(visible);
         let reply = match directive.as_ref().map(|directive| &directive.result) {
             Some(NinepResultDirective::Errno(errno)) => {
                 codec::encode_rlerror(identity.tag, *errno)?
             }
-            _ => match selected.as_ref() {
-                Some(object) => object_reply(
-                    message
-                        .as_ref()
-                        .ok_or(DeviceError::InvalidNinepFaultDirective {
-                            reason: "9p object result requires a decodable request",
-                        })?,
-                    object,
-                    self.virtual_fids,
-                )?,
-                None => {
+            Some(NinepResultDirective::Stale(object))
+            | Some(NinepResultDirective::Misdirected(object)) => object_reply(
+                message
+                    .as_ref()
+                    .ok_or(DeviceError::InvalidNinepFaultDirective {
+                        reason: "9p object result requires a decodable request",
+                    })?,
+                object,
+                NinepVirtualFid::Exact(object.clone()),
+                self.virtual_fids,
+            )?,
+            Some(NinepResultDirective::Normal) | None => {
+                let layered = message
+                    .as_ref()
+                    .map(|message| {
+                        visibility_reply(
+                            message,
+                            self.server,
+                            self.visibility,
+                            *self.session_epoch,
+                            self.virtual_fids,
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
+                if let Some(reply) = layered {
+                    reply
+                } else {
                     let reply = self.server.handle(&request.payload)?;
                     if let Some(message) = &message {
                         match message.body {
@@ -597,7 +628,7 @@ impl<'a> IoSubNode for NinepServerNode<'a> {
                     }
                     reply
                 }
-            },
+            }
         };
         if directive.is_some() {
             self.directives.remove(&identity);
@@ -640,6 +671,156 @@ fn request_fid(message: &TMessage) -> Option<u32> {
     }
 }
 
+fn canonical_path(components: &[String]) -> String {
+    if components.is_empty() {
+        String::from("/")
+    } else {
+        format!("/{}", components.join("/"))
+    }
+}
+
+fn fid_path(
+    server: &NinepServer,
+    virtual_fids: &BTreeMap<u32, NinepVirtualFid>,
+    fid: u32,
+) -> Option<String> {
+    virtual_fids
+        .get(&fid)
+        .map(|binding| binding.path().to_owned())
+        .or_else(|| {
+            server
+                .fids()
+                .get(&fid)
+                .map(|entry| canonical_path(&entry.path))
+        })
+}
+
+fn visibility_reply(
+    message: &Message,
+    server: &NinepServer,
+    visibility: &NinepVisibilityState,
+    session: u64,
+    virtual_fids: &mut BTreeMap<u32, NinepVirtualFid>,
+) -> Result<Option<Vec<u8>>, DeviceError> {
+    if let TMessage::Walk {
+        fid,
+        newfid,
+        wnames,
+    } = &message.body
+    {
+        let Some(start) = fid_path(server, virtual_fids, *fid) else {
+            return Ok(None);
+        };
+        let mut components = if start == "/" {
+            Vec::new()
+        } else {
+            start
+                .trim_start_matches('/')
+                .split('/')
+                .map(str::to_owned)
+                .collect()
+        };
+        let mut qids = Vec::new();
+        let mut overlay_touched = virtual_fids.contains_key(fid);
+        for name in wnames {
+            if super::tree::validate_component(name).is_err() {
+                return Ok(Some(codec::encode_rlerror(
+                    message.tag,
+                    super::errno::EINVAL,
+                )?));
+            }
+            components.push(name.clone());
+            let path = canonical_path(&components);
+            match visibility.lookup_object(session, &path) {
+                NinepVisibilityLookup::Object(object) => {
+                    qids.push(object_qid(&object));
+                    overlay_touched = true;
+                }
+                NinepVisibilityLookup::Deleted => {
+                    overlay_touched = true;
+                    components.pop();
+                    break;
+                }
+                NinepVisibilityLookup::Base => match server.tree().qid(&components) {
+                    Some(qid) => qids.push(qid),
+                    None => {
+                        components.pop();
+                        break;
+                    }
+                },
+            }
+        }
+        if !overlay_touched {
+            return Ok(None);
+        }
+        if qids.is_empty() && !wnames.is_empty() {
+            return Ok(Some(codec::encode_rlerror(
+                message.tag,
+                super::errno::ENOENT,
+            )?));
+        }
+        virtual_fids.insert(
+            *newfid,
+            NinepVirtualFid::VisiblePath(canonical_path(&components)),
+        );
+        return Ok(Some(codec::encode_rwalk(message.tag, &qids)?));
+    }
+
+    let Some(fid) = request_fid(&message.body) else {
+        return Ok(None);
+    };
+    if virtual_fids.contains_key(&fid) {
+        match message.body {
+            TMessage::Clunk { .. } => {
+                virtual_fids.remove(&fid);
+                return Ok(Some(codec::encode_rclunk(message.tag)?));
+            }
+            TMessage::Fsync { .. } => {
+                return Ok(Some(codec::encode_rfsync(message.tag)?));
+            }
+            TMessage::Statfs { .. } => {
+                return Ok(Some(server.tree().statfs().encode(message.tag)?));
+            }
+            _ => {}
+        }
+    }
+    if let Some(NinepVirtualFid::Exact(object)) = virtual_fids.get(&fid).cloned() {
+        return object_reply(
+            message,
+            &object,
+            NinepVirtualFid::Exact(object.clone()),
+            virtual_fids,
+        )
+        .map(Some);
+    }
+    let Some(path) = fid_path(server, virtual_fids, fid) else {
+        return Ok(None);
+    };
+    match visibility.lookup_object(session, &path) {
+        NinepVisibilityLookup::Base => {
+            if virtual_fids.contains_key(&fid) {
+                Ok(Some(codec::encode_rlerror(
+                    message.tag,
+                    super::errno::ENOENT,
+                )?))
+            } else {
+                Ok(None)
+            }
+        }
+        NinepVisibilityLookup::Deleted => Ok(Some(codec::encode_rlerror(
+            message.tag,
+            super::errno::ENOENT,
+        )?)),
+        NinepVisibilityLookup::Object(object) => object_reply(
+            message,
+            &object,
+            NinepVirtualFid::VisiblePath(path),
+            virtual_fids,
+        )
+        .map(Some),
+    }
+}
+
 fn object_qid(object: &NinepObjectVersion) -> Qid {
     let kind = match object.mode & 0o170_000 {
         0o040_000 => QidType::Dir,
@@ -656,7 +837,8 @@ fn object_qid(object: &NinepObjectVersion) -> Qid {
 fn object_reply(
     message: &Message,
     object: &NinepObjectVersion,
-    virtual_fids: &mut BTreeMap<u32, NinepObjectVersion>,
+    binding: NinepVirtualFid,
+    virtual_fids: &mut BTreeMap<u32, NinepVirtualFid>,
 ) -> Result<Vec<u8>, DeviceError> {
     object.validate()?;
     let tag = message.tag;
@@ -666,7 +848,7 @@ fn object_reply(
     let qid = object_qid(object);
     let reply = match &message.body {
         TMessage::Walk { newfid, wnames, .. } => {
-            virtual_fids.insert(*newfid, object.clone());
+            virtual_fids.insert(*newfid, binding.clone());
             let qids = if wnames.is_empty() {
                 Vec::new()
             } else {
@@ -675,7 +857,7 @@ fn object_reply(
             codec::encode_rwalk(tag, &qids)?
         }
         TMessage::Lopen { fid, .. } => {
-            virtual_fids.insert(*fid, object.clone());
+            virtual_fids.insert(*fid, binding.clone());
             codec::encode_rlopen(tag, &qid, 0)?
         }
         TMessage::Read { offset, count, .. } => {
@@ -747,7 +929,7 @@ fn object_reply(
             }
         }
         TMessage::Xattrwalk { newfid, .. } => {
-            virtual_fids.insert(*newfid, object.clone());
+            virtual_fids.insert(*newfid, binding);
             codec::encode_rxattrwalk(tag, 0)?
         }
         _ => {
@@ -783,7 +965,7 @@ pub struct NinepSnapshot {
     /// Committed-versus-visible object versions and frontiers.
     pub visibility: NinepVisibilityState,
     /// Fids bound to scenario-owned object versions outside the immutable tree.
-    pub virtual_fids: BTreeMap<u32, NinepObjectVersion>,
+    pub virtual_fids: BTreeMap<u32, NinepVirtualFid>,
     /// Monotone negotiated-session identity for per-session visibility.
     pub session_epoch: u64,
 }

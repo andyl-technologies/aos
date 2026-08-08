@@ -53,7 +53,7 @@ pub use codec::{
     GetattrReply, HEADER_LEN, Message, NinepCodecError, PROTOCOL_VERSION, QID_LEN, Qid, QidType,
     StatfsReply, TMessage,
 };
-pub use device::{NinepDevice, NinepLatency, NinepSnapshot};
+pub use device::{NinepDevice, NinepLatency, NinepSnapshot, NinepVirtualFid};
 pub use fault::*;
 pub use server::{FidEntry, FidState, MAX_MSIZE, MIN_MSIZE, NinepServer, NinepServerSnapshot};
 pub use tree::{
@@ -1196,5 +1196,96 @@ mod tests {
         assert_eq!(reply_type(&reply), codec::RREAD);
         assert_eq!(&reply[11..], b"BCD");
         assert!(restored.snapshot().directives.is_empty());
+    }
+
+    fn atomic_visibility(retain_deleted_objects: bool) -> NinepVisibilityPolicy {
+        NinepVisibilityPolicy {
+            scope: NinepVisibilityScope::Global,
+            atomic_metadata_and_data: true,
+            retain_deleted_objects,
+        }
+    }
+
+    #[test]
+    fn visible_deletion_hides_base_tree_and_already_walked_fids() {
+        let mut dev = device();
+        round_trip(
+            &mut dev,
+            0,
+            &tversion(1, MAX_MSIZE, codec::PROTOCOL_VERSION),
+        );
+        round_trip(&mut dev, 1, &tattach(2, 1));
+        round_trip(&mut dev, 2, &twalk(3, 1, 2, &["alpha"]));
+        let deletion = NinepObjectVersion {
+            path: String::from("/alpha"),
+            version: 2,
+            mode: 0,
+            data: Vec::new(),
+            deleted: true,
+        };
+        ok(dev.commit_visibility_update(
+            [7; 32],
+            deletion,
+            atomic_visibility(true),
+            NinepVisibilityRelease::AtNanos(0),
+            0,
+        ));
+        ok(dev.advance_visibility(0, &BTreeMap::new()));
+
+        let (_, existing) = round_trip(&mut dev, 3, &tread(4, 2, 0, 8));
+        assert_eq!(reply_type(&existing), codec::RLERROR);
+        assert_eq!(rlerror_code(&existing), errno::ENOENT);
+        let (_, new_walk) = round_trip(&mut dev, 4, &twalk(5, 1, 3, &["alpha"]));
+        assert_eq!(reply_type(&new_walk), codec::RLERROR);
+        assert_eq!(rlerror_code(&new_walk), errno::ENOENT);
+    }
+
+    #[test]
+    fn visible_creation_is_discoverable_by_normal_walk_and_tracks_updates() {
+        let mut dev = device();
+        round_trip(
+            &mut dev,
+            0,
+            &tversion(1, MAX_MSIZE, codec::PROTOCOL_VERSION),
+        );
+        round_trip(&mut dev, 1, &tattach(2, 1));
+        ok(dev.commit_visibility_update(
+            [1; 32],
+            file_object("/new", 1, b"first"),
+            atomic_visibility(false),
+            NinepVisibilityRelease::AtNanos(0),
+            0,
+        ));
+        ok(dev.advance_visibility(0, &BTreeMap::new()));
+        let (_, walked) = round_trip(&mut dev, 2, &twalk(3, 1, 2, &["new"]));
+        assert_eq!(reply_type(&walked), codec::RWALK);
+        let (_, first) = round_trip(&mut dev, 3, &tread(4, 2, 0, 16));
+        assert_eq!(&first[11..], b"first");
+
+        ok(dev.commit_visibility_update(
+            [2; 32],
+            file_object("/new", 2, b"second"),
+            atomic_visibility(false),
+            NinepVisibilityRelease::AtNanos(0),
+            0,
+        ));
+        ok(dev.advance_visibility(0, &BTreeMap::new()));
+        let (_, second) = round_trip(&mut dev, 4, &tread(5, 2, 0, 16));
+        assert_eq!(&second[11..], b"second");
+    }
+
+    #[test]
+    fn unsupported_object_result_shapes_are_rejected_before_installation() {
+        let mut dev = device();
+        for request in [tstatfs(8, 1), twalk(9, 1, 2, &["bin", "tool"])] {
+            let sequence = u32::from(u16::from_le_bytes([request[5], request[6]]));
+            let mut directive = ResolvedNinepRequestDirective::fault_free(4, sequence, &request)
+                .unwrap_or_else(|error| panic!("valid request identity: {error}"));
+            directive.result = NinepResultDirective::Stale(file_object("/x", 1, b"x"));
+            assert!(
+                dev.install_fault_directive(4, sequence, &request, directive)
+                    .is_err()
+            );
+        }
     }
 }

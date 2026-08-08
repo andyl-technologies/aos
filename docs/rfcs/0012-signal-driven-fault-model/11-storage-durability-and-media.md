@@ -217,6 +217,15 @@ scheduling failure leaves both devices byte-identical to their pre-operation
 checkpoints. Same-device misdirection uses the same atomic-fragment rules without
 creating a second device transaction.
 
+The source completion carries the destination's exact configured completion
+stage and the frontier allocated by the redirected write. A destination using
+`controller_accepted` or `volatile_cache_accepted` satisfies that dependency at
+admission to that stage; it MUST NOT wait for physical media. A destination
+using `durable` satisfies it only when the actual contiguous media frontier
+reaches the recorded value. The dependency therefore cannot silently strengthen
+the destination's authored durability policy or leave a non-durable policy
+waiting on a frontier that it never promises to advance.
+
 Acknowledged lost/torn/misdirected writes are distinct from failed writes. The
 event log records guest status, logical visibility, cache state, and durable
 state separately.
@@ -386,6 +395,15 @@ the complete identity until visibility and deliver evaluation authorize
 publication. Backpressure may delay publication but never repeats those phase
 evaluations.
 
+One host service call is a transaction across the evaluator continuation,
+same-coordinate and journal cursors, observation journal, request/response
+rings, device queues, installed directives, pending authorization map, virtual
+fids, session state, and visibility continuation. Any error in any later phase,
+COMPUTE, authorization, evidence construction, or publication restores every
+component to its byte-equivalent pre-call state before returning the error. A
+rollback failure is terminal and reported together with the initiating error;
+the coordinator never retries from an ambiguous partial state.
+
 The checkpoint contains the request and response rings, device queues, installed
 directives, exact pending opportunity identities, completion coordinates, and
 per-opportunity authorization bits. Admission and restore reject a directive
@@ -411,13 +429,29 @@ enumerates only `.` and `..`; this represents the exact directory object, not an
 implicit host namespace. A deleted object returns `ENOENT`. Object transforms
 for every other request shape are rejected before mutation.
 
+Ordinary (non-transformed) single-component walks consult the layered visible
+namespace at each child path, so a visible created object is discoverable and a
+visible tombstone hides an immutable-base entry. A fid obtained through that
+ordinary visible walk binds the canonical path rather than freezing the current
+object bytes; later visible versions and deletions therefore affect the already
+open fid. Exact stale and misdirected result fids instead remain pinned to their
+selected immutable object version. Multi-component object-result walks are
+rejected at directive installation rather than partially interpreted.
+
 ### 11.14.3 Committed and visible object versions
 
-Each authenticated visibility update has a unique update ID, contiguous commit
-sequence, object version, policy, release condition, writer session, and data
-lag. Repeating the same ID with byte-identical content is idempotent; reusing it
-with any differing field fails. Release is exactly one absolute virtual-time
-deadline derived from the binding's delay or one observed signal-event identity.
+Each authenticated visibility update has a unique update ID derived from the
+complete resolved action identity (binding, transition/cause, opportunity when
+opportunity-scoped, coordinate, mapped values, target, and effect) plus the
+authored object ID. It also has a contiguous commit sequence, object version,
+policy, release condition, writer session, and data lag. Re-evaluating one
+persistent action consequently produces the same ID and byte-identical commit,
+while distinct impulses or opportunities cannot collide merely because they
+reference the same object artifact. Repeating the same ID with byte-identical
+content is idempotent; reusing it with any differing field fails. Release is
+exactly one absolute virtual-time deadline derived once from the resolved
+action's original coordinate and binding delay, or one observed signal-event
+identity; a later host poll never moves that deadline.
 Frontiers advance only over a contiguous ready prefix, so a later ready update
 cannot pass an earlier blocked update.
 

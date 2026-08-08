@@ -148,6 +148,7 @@ pub enum ProductionFaultRuntimeError {
 }
 
 /// Owning signal runtime coupled to host devices and live patched QEMU.
+#[derive(Clone)]
 pub struct ProductionFaultRuntime {
     runtime: Option<OwnedFaultExecutionRuntime>,
     host: HostFaultActionSink,

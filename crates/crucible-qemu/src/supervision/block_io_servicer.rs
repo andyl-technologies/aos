@@ -189,7 +189,8 @@ impl QemuSharedBlockDevice {
         Ok(self.lock()?.storage_fault_state().actual_durable_frontier())
     }
 
-    /// Returns whether this device has acknowledged an external dependency.
+    /// Returns whether this device has acknowledged an external dependency at
+    /// its configured controller, volatile-cache, or durable-media stage.
     ///
     /// # Errors
     ///
@@ -199,8 +200,12 @@ impl QemuSharedBlockDevice {
         &self,
         dependency: BlockExternalDurabilityDependency,
     ) -> Result<bool, QemuLiveBlockIoServicerError> {
-        self.actual_durable_frontier()
-            .map(|frontier| frontier >= dependency.required_frontier)
+        self.lock().map(|device| {
+            device
+                .storage_fault_state()
+                .completion_frontier(dependency.required_durability)
+                >= dependency.required_frontier
+        })
     }
 
     /// Atomically installs one persist-phase write redirected to another device.
@@ -209,8 +214,8 @@ impl QemuSharedBlockDevice {
     /// transaction clones both complete devices and commits neither unless the
     /// destination mutation, deadline publication, and runtime wake all succeed.
     /// The returned dependency gates source completion on the destination's
-    /// actual durable frontier, while the destination is scheduled at the source
-    /// persistence opportunity's exact virtual-time coordinate.
+    /// configured normal completion frontier, while the destination is scheduled
+    /// at the source persistence opportunity's exact virtual-time coordinate.
     ///
     /// # Errors
     ///

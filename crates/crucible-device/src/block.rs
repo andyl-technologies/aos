@@ -512,6 +512,10 @@ mod tests {
             .external_durability_dependency
             .unwrap_or_else(|| panic!("source completion carries destination dependency"));
         assert_eq!(dependency.destination_device, [7; 32]);
+        assert_eq!(
+            dependency.required_durability,
+            BlockCompletionDurability::Durable
+        );
         assert!(
             destination.storage_fault_state().actual_durable_frontier()
                 < dependency.required_frontier,

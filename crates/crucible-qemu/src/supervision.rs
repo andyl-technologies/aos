@@ -59,6 +59,7 @@ pub use ninep_io_gate::{
 pub use ninep_io_servicer::{
     NinepIoDiagnostics, NinepIoDiagnosticsSnapshot, QemuLive9pIoRequestPin,
     QemuLive9pIoServiceStep, QemuLive9pIoServicer, QemuLive9pIoServicerError,
+    QemuLive9pIoTransactionCheckpoint, QemuLive9pResponseEvidence,
 };
 pub use node_step_gate::{
     QemuLiveExactSnapshotReport, QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError,
