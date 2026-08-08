@@ -925,8 +925,8 @@ pub(super) fn write_scheduler_topology_change_binary(
 
     writer.write_u64(change.sequence);
     writer.write_u8(match change.trigger {
-        SchedulerTopologyChangeTrigger::FaultActivation => 0,
-        SchedulerTopologyChangeTrigger::Heal => 1,
+        SchedulerTopologyChangeTrigger::EdgeRemoval => 0,
+        SchedulerTopologyChangeTrigger::EdgeRestore => 1,
         SchedulerTopologyChangeTrigger::LatencyChange => 2,
     });
     match change.activation_time {
@@ -979,8 +979,8 @@ pub(super) fn read_scheduler_topology_change_binary(
 
     let sequence = reader.read_u64()?;
     let trigger = match reader.read_u8()? {
-        0 => SchedulerTopologyChangeTrigger::FaultActivation,
-        1 => SchedulerTopologyChangeTrigger::Heal,
+        0 => SchedulerTopologyChangeTrigger::EdgeRemoval,
+        1 => SchedulerTopologyChangeTrigger::EdgeRestore,
         2 => SchedulerTopologyChangeTrigger::LatencyChange,
         _ => {
             return Err(scenario_serialization_error(
@@ -1143,30 +1143,24 @@ pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBi
                 writer.write_u64(event.sequence);
             }
         }
-        Decision::EffectOutcome(fault) => {
-            writer.write_u8(1);
-            writer.write_u64(fault.at.ticks);
-            writer.write_string(&fault.fault.name);
-            write_binary_bool(writer, fault.fired);
-        }
         Decision::RngDraw(draw) => {
-            writer.write_u8(2);
+            writer.write_u8(1);
             write_rng_stream_binary(&draw.stream, writer);
             writer.write_u64(draw.value);
         }
         Decision::Override(override_decision) => {
-            writer.write_u8(3);
+            writer.write_u8(2);
             writer.write_string(&override_decision.point.key);
             writer.write_string(&override_decision.choice.name);
         }
         Decision::Preemption(preemption) => {
-            writer.write_u8(4);
+            writer.write_u8(3);
             writer.write_string(&preemption.node.name);
             writer.write_u64(preemption.at.retired);
             write_preemption_kind_binary(&preemption.kind, writer);
         }
         Decision::AppRandom(random) => {
-            writer.write_u8(5);
+            writer.write_u8(4);
             writer.write_string(&random.node.name);
             write_rng_stream_binary(&random.stream, writer);
             writer.write_u64(random.request_id);
@@ -1198,20 +1192,11 @@ pub(super) fn read_decision_binary(
             }
             Ok(Decision::DeliveryOrder(DeliveryOrderDecision { at, order }))
         }
-        1 => Ok(Decision::EffectOutcome(EffectOutcomeDecision {
-            at: VirtualTime {
-                ticks: reader.read_u64()?,
-            },
-            fault: FaultId {
-                name: reader.read_string()?,
-            },
-            fired: read_binary_bool(reader, "fault decision fired")?,
-        })),
-        2 => Ok(Decision::RngDraw(RngDecision {
+        1 => Ok(Decision::RngDraw(RngDecision {
             stream: read_rng_stream_binary(reader)?,
             value: reader.read_u64()?,
         })),
-        3 => Ok(Decision::Override(OverrideDecision {
+        2 => Ok(Decision::Override(OverrideDecision {
             point: SchedulingPoint {
                 key: reader.read_string()?,
             },
@@ -1219,7 +1204,7 @@ pub(super) fn read_decision_binary(
                 name: reader.read_string()?,
             },
         })),
-        4 => Ok(Decision::Preemption(PreemptionDecision {
+        3 => Ok(Decision::Preemption(PreemptionDecision {
             node: NodeId {
                 name: reader.read_string()?,
             },
@@ -1228,7 +1213,7 @@ pub(super) fn read_decision_binary(
             },
             kind: read_preemption_kind_binary(reader)?,
         })),
-        5 => Ok(Decision::AppRandom(AppRandomDecision {
+        4 => Ok(Decision::AppRandom(AppRandomDecision {
             node: NodeId {
                 name: reader.read_string()?,
             },
@@ -1342,23 +1327,6 @@ pub(super) fn read_preemption_kind_binary(
             },
         }),
         _ => Err(scenario_serialization_error("invalid preemption-kind tag")),
-    }
-}
-
-pub(super) fn write_binary_bool(writer: &mut ScenarioBinaryWriter, value: bool) {
-    writer.write_u8(u8::from(value));
-}
-
-pub(super) fn read_binary_bool(
-    reader: &mut ScenarioBinaryReader<'_>,
-    label: &'static str,
-) -> Result<bool, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(false),
-        1 => Ok(true),
-        _ => Err(scenario_serialization_error(format!(
-            "invalid binary bool for {label}"
-        ))),
     }
 }
 

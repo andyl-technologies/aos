@@ -1077,15 +1077,9 @@ pub(super) fn record_representative_decision(recorder: &mut DecisionRecorder, in
             let _ = recorder.draw_u64(RngStreamId::for_node(format!("node-a/faults/{index}")));
         }
         1 => {
-            let _ = recorder.decide_effect_basis_points(
-                VirtualTime { ticks: index + 1 },
-                FaultId {
-                    name: format!("link-a-b/drop-{index}"),
-                },
-                RngStreamId::for_node("node-b/faults"),
-                FaultRateBasisPoints::from_basis_points(5_000)
-                    .unwrap_or_else(|error| panic!("test rate should be valid: {error}")),
-            );
+            let _ = recorder.draw_u64(RngStreamId::for_node(format!(
+                "node-b/network/link-a-b/{index}"
+            )));
         }
         _ => {
             let served = recorder.serve_app_random(
@@ -1203,14 +1197,9 @@ pub(super) fn generated_decision(seed: u64, index: u64) -> Decision {
                 event_key(seed + index, index + 1),
             ],
         }),
-        1 => Decision::EffectOutcome(EffectOutcomeDecision {
-            at: VirtualTime {
-                ticks: seed.saturating_mul(2) + index,
-            },
-            fault: FaultId {
-                name: format!("fault-{seed}-{index}"),
-            },
-            fired: index.is_multiple_of(2),
+        1 => Decision::RngDraw(RngDecision {
+            stream: RngStreamId::for_node(format!("node-{seed}/network-{index}")),
+            value: seed.wrapping_mul(0xd6e8_feb8_6659_fd93) ^ index,
         }),
         2 => Decision::RngDraw(RngDecision {
             stream: RngStreamId::for_node(format!("node-{seed}/stream-{index}")),

@@ -14,9 +14,8 @@ use std::fmt;
 use crucible_sim::{DecisionRng, DecisionStream};
 
 use crate::{
-    AppRandomDecision, Configuration, Decision, EffectOutcomeDecision, FaultId,
-    FaultRateBasisPoints, Icount, PreemptionDecision, PreemptionKind, RngDecision, RngStreamId,
-    Schedule, VcpuId, VirtualTime, step,
+    AppRandomDecision, Configuration, Decision, Icount, PreemptionDecision, PreemptionKind,
+    RngDecision, RngStreamId, Schedule, VcpuId, step,
 };
 
 /// Records intended nondeterminism into a configuration's [`Schedule`].
@@ -70,41 +69,6 @@ impl DecisionRecorder {
         let value = self.draw_stream_value(&stream).1;
         self.append_decision(Decision::RngDraw(RngDecision { stream, value }));
         value
-    }
-
-    /// Resolves a basis-point probabilistic effect through `stream`.
-    ///
-    /// The raw draw is recorded first. The fault then fires when that draw's
-    /// deterministic basis-point bucket is strictly below `rate`; the derived
-    /// [`Decision::EffectOutcome`] outcome is recorded immediately after the draw.
-    pub fn decide_effect_basis_points(
-        &mut self,
-        at: VirtualTime,
-        fault: FaultId,
-        stream: RngStreamId,
-        rate: FaultRateBasisPoints,
-    ) -> bool {
-        let value = self.draw_u64(stream);
-        let fired = rate.fires_on_draw(value);
-        self.append_decision(Decision::EffectOutcome(EffectOutcomeDecision {
-            at,
-            fault,
-            fired,
-        }));
-        fired
-    }
-
-    /// Records a pre-resolved effect outcome in the schedule.
-    ///
-    /// Unlike [`DecisionRecorder::decide_effect_basis_points`], which draws and
-    /// tests in one step, this appends a caller-resolved
-    /// [`Decision::EffectOutcome`] outcome. It is the recording surface for device
-    /// faults whose firing test is the exact-fraction `crucible-device` model:
-    /// the caller draws the raw value with [`DecisionRecorder::draw_u64`]
-    /// (recording the draw), resolves the fault, and records the derived outcome
-    /// here.
-    pub fn record_effect_outcome(&mut self, decision: EffectOutcomeDecision) {
-        self.append_decision(Decision::EffectOutcome(decision));
     }
 
     /// Serves an application-requested random value and records it.
@@ -405,11 +369,6 @@ mod tests {
         EngineError, NodeId, Plan, Properties, ScenarioDef, ScenarioDefForm, Schedule, Seed, World,
         reduce, try_step,
     };
-
-    #[test]
-    fn decision_recorder_records_rng_draws_and_effect_outcomes() {
-        assert_decision_rng_branch_coverage();
-    }
 
     #[test]
     fn decision_recorder_keeps_per_entity_streams_stable() {
@@ -975,39 +934,6 @@ mod tests {
             Err(DecisionRecordError::InvalidAppRandomWidth { width: 0 })
         );
         assert!(recorder.schedule().is_empty());
-    }
-
-    fn assert_decision_rng_branch_coverage() {
-        let config = Configuration::genesis(default_scenario());
-        let stream = rng_stream("node-a/faults");
-        let fault = FaultId {
-            name: String::from("loss"),
-        };
-        let mut recorder = DecisionRecorder::new(config);
-
-        let raw = recorder.draw_u64(stream.clone());
-        let fired = recorder.decide_effect_basis_points(
-            VirtualTime { ticks: 4 },
-            fault.clone(),
-            stream.clone(),
-            FaultRateBasisPoints::ONE,
-        );
-
-        assert_eq!(recorder.schedule().len(), 3);
-        assert!(fired);
-        assert!(matches!(
-            &recorder.schedule().decisions()[0],
-            Decision::RngDraw(RngDecision { stream: recorded, value }) if recorded == &stream && *value == raw
-        ));
-        assert!(matches!(
-            &recorder.schedule().decisions()[1],
-            Decision::RngDraw(RngDecision { stream: recorded, value }) if recorded == &stream && *value != raw
-        ));
-        assert!(matches!(
-            &recorder.schedule().decisions()[2],
-            Decision::EffectOutcome(EffectOutcomeDecision { at, fault: recorded, fired: true })
-                if *at == (VirtualTime { ticks: 4 }) && recorded == &fault
-        ));
     }
 
     fn assert_per_entity_rng_forking_coverage() {

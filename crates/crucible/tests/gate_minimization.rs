@@ -8,21 +8,21 @@ use std::error::Error;
 
 use crucible::{
     AssertionDef, AssertionId, AssertionQuantifierKind, AssertionRunVerdict, BlackBoxHostOracle,
-    ChoiceTag, Configuration, ContentHash, Decision, EffectOutcomeDecision, EngineError, FaultId,
-    FindingDiscoveryPath, FindingReproductionArtifact, Icount, MarkerId, MinimizationConfig,
-    NodeId, NodeTemplate, ObservableEvent, OfflineAssertionChecker, OverrideDecision, Plan,
-    Predicate, Properties, Property, ReadyPoint, RecordedAssertionLog, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload, SchedulingPoint, Seed, VirtualTime,
-    WhiteBoxPolicy, World, WorldNode,
+    ChoiceTag, Configuration, ContentHash, Decision, EngineError, FindingDiscoveryPath,
+    FindingReproductionArtifact, Icount, MarkerId, MinimizationConfig, NodeId, NodeTemplate,
+    ObservableEvent, OfflineAssertionChecker, OverrideDecision, Plan, Predicate, Properties,
+    Property, ReadyPoint, RecordedAssertionLog, RngDecision, RngStreamId, ScenarioDefForm,
+    Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload, SchedulingPoint, Seed,
+    VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
-fn gate_minimization_shrinks_schedule_and_fault_decisions_deterministically()
+fn gate_minimization_shrinks_schedule_and_rng_decisions_deterministically()
 -> Result<(), Box<dyn Error>> {
     let scenario = scenario_form()?;
     let original_schedule = Schedule::from_decisions([
         override_decision("guard-left", "enabled"),
-        fault_decision("unused-network-loss", false),
+        rng_decision("unused-network-draw", 0),
         override_decision("critical-assertion", "fail"),
         override_decision("guard-right", "enabled"),
     ]);
@@ -63,7 +63,7 @@ fn gate_minimization_shrinks_schedule_and_fault_decisions_deterministically()
         accepted
             .removed_decisions
             .iter()
-            .any(|decision| matches!(decision, Decision::EffectOutcome(_)))
+            .any(|decision| matches!(decision, Decision::RngDraw(_)))
     );
     assert_eq!(
         first.minimized.discovery_path,
@@ -312,13 +312,10 @@ fn override_decision(point: &str, choice: &str) -> Decision {
     })
 }
 
-fn fault_decision(name: &str, fired: bool) -> Decision {
-    Decision::EffectOutcome(EffectOutcomeDecision {
-        at: VirtualTime { ticks: 10 },
-        fault: FaultId {
-            name: name.to_owned(),
-        },
-        fired,
+fn rng_decision(name: &str, value: u64) -> Decision {
+    Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name(name),
+        value,
     })
 }
 

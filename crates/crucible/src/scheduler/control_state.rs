@@ -518,10 +518,10 @@ pub enum SchedulerEffectiveClockSource {
 /// The scheduler-side cause for a boundary topology recompute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SchedulerTopologyChangeTrigger {
-    /// A fault activation changed the effective topology or latency table.
-    FaultActivation,
-    /// A heal restored effective topology or latency state.
-    Heal,
+    /// Directed edges were removed from the effective topology.
+    EdgeRemoval,
+    /// Directed edges were restored to the effective topology.
+    EdgeRestore,
     /// A latency mutation changed the conservative lookahead bound.
     LatencyChange,
 }
@@ -573,7 +573,7 @@ impl SchedulerTopologyChange {
     pub fn partition(sequence: u64, removed_edges: Vec<SchedulerLookaheadEdgeEndpoint>) -> Self {
         Self {
             sequence,
-            trigger: SchedulerTopologyChangeTrigger::FaultActivation,
+            trigger: SchedulerTopologyChangeTrigger::EdgeRemoval,
             activation_time: None,
             effect: SchedulerTopologyChangeEffect::RemoveEffectiveEdges(removed_edges),
         }
@@ -584,7 +584,7 @@ impl SchedulerTopologyChange {
     pub fn heal(sequence: u64, restored_edges: Vec<SchedulerLookaheadEdge>) -> Self {
         Self {
             sequence,
-            trigger: SchedulerTopologyChangeTrigger::Heal,
+            trigger: SchedulerTopologyChangeTrigger::EdgeRestore,
             activation_time: None,
             effect: SchedulerTopologyChangeEffect::RestoreEffectiveEdges(restored_edges),
         }

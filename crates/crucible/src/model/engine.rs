@@ -1551,10 +1551,7 @@ pub(super) fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<Nod
     match decision {
         Decision::Preemption(preemption) => Some(BTreeSet::from([preemption.node.clone()])),
         Decision::AppRandom(random) => Some(BTreeSet::from([random.node.clone()])),
-        Decision::DeliveryOrder(_)
-        | Decision::EffectOutcome(_)
-        | Decision::RngDraw(_)
-        | Decision::Override(_) => None,
+        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => None,
     }
 }
 
@@ -2191,8 +2188,8 @@ pub(super) fn push_symmetry_topology_change_lines(
         "scheduler.pending_topology.sequence={}\nscheduler.pending_topology.trigger={}\nscheduler.pending_topology.activation_ns={}",
         change.sequence,
         match change.trigger {
-            SchedulerTopologyChangeTrigger::FaultActivation => "fault-activation",
-            SchedulerTopologyChangeTrigger::Heal => "heal",
+            SchedulerTopologyChangeTrigger::EdgeRemoval => "edge-removal",
+            SchedulerTopologyChangeTrigger::EdgeRestore => "edge-restore",
             SchedulerTopologyChangeTrigger::LatencyChange => "latency-change",
         },
         change

@@ -328,13 +328,6 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
                 lines.push(format!("{prefix}.event.sequence={}", event.sequence));
             }
         }
-        Decision::EffectOutcome(fault) => {
-            lines.push(format!("{prefix}.kind=effect-outcome"));
-            lines.push(format!("{prefix}.at_ticks={}", fault.at.ticks));
-            lines.push(format!("{prefix}.fault_len={}", fault.fault.name.len()));
-            lines.push(format!("{prefix}.fault={}", fault.fault.name));
-            lines.push(format!("{prefix}.fired={}", fault.fired));
-        }
         Decision::RngDraw(draw) => {
             lines.push(format!("{prefix}.kind=rng-draw"));
             push_rng_stream_lines(&prefix, &draw.stream, lines);

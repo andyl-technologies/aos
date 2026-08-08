@@ -134,14 +134,7 @@ struct LaunchMaterial {
 fn deterministic_run_material(form: &ScenarioDefForm) -> RunMaterial {
     let mut recorder = DecisionRecorder::new(Configuration::genesis(form.scenario_def()));
     let _node_draw = recorder.draw_u64(RngStreamId::for_node("node-a/faults/0"));
-    let _fault_fired = recorder.decide_effect_basis_points(
-        VirtualTime { ticks: 5 },
-        FaultId {
-            name: String::from("node-a/drop-frame"),
-        },
-        RngStreamId::for_node("node-a/faults/1"),
-        FaultRateBasisPoints::from_basis_points(5_000).expect("test rate should be valid"),
-    );
+    let _network_draw = recorder.draw_u64(RngStreamId::for_node("node-a/network/1"));
     recorder
         .serve_app_random(
             node_id("node-a"),

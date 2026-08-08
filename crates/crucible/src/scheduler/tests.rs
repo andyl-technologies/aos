@@ -1084,13 +1084,9 @@ fn scheduler_quiescence_fast_forwards_idle_pending_delivery_without_deadlock() {
 }
 
 #[test]
-fn scheduler_quiescence_blocks_future_io_and_fault_events() {
+fn scheduler_quiescence_blocks_future_io_events() {
     let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
-    let control_plane = scheduler_node("plan", SchedulingNodeKind::ControlPlane);
-    let fault = FaultId {
-        name: String::from("planned-fault"),
-    };
     let scheduler = test_scheduler(
         vec![test_scenario_node(
             "node-a",
@@ -1101,7 +1097,7 @@ fn scheduler_quiescence_blocks_future_io_and_fault_events() {
         )],
         vec![
             io_completion_event(5, &consumer, &disk, 1, b"io"),
-            fault_event(9, &consumer, &control_plane, 2, fault),
+            io_completion_event(9, &consumer, &disk, 2, b"later-io"),
         ],
     );
 
@@ -1121,7 +1117,7 @@ fn scheduler_quiescence_blocks_future_io_and_fault_events() {
         quiescence
             .blockers
             .contains(&SchedulerQuiescenceBlocker::PendingEvent {
-                key: event_key(9, &consumer, &control_plane, 2),
+                key: event_key(9, &consumer, &disk, 2),
             })
     );
     assert!(
@@ -1188,39 +1184,6 @@ fn scheduler_quiescence_ignores_idle_nodes_when_peer_can_advance() {
         ]
     );
     assert_eq!(outcome.advanced_node, Some(runner));
-}
-
-#[test]
-fn search_frontier_choices_from_scheduled_events_captures_probabilistic_effect_branches() {
-    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
-        "crucible.test.scheduler.search-frontier",
-        "scenario=probabilistic-fault",
-    ));
-    let consumer = scheduler_node("vm-a", SchedulingNodeKind::Vm);
-    let producer = scheduler_node("control", SchedulingNodeKind::ControlPlane);
-    let fault = FaultId {
-        name: String::from("packet-loss"),
-    };
-    let event = probabilistic_effect_event(13, &consumer, &producer, 0, fault.clone());
-
-    let choices = search_frontier_choices_from_scheduled_events(configuration, &[event]);
-    let outcomes = choices
-        .decisions()
-        .iter()
-        .map(|decision| match decision {
-            Decision::EffectOutcome(fired) if fired.fault == fault => fired.fired,
-            other => panic!("unexpected search frontier decision: {other:?}"),
-        })
-        .collect::<BTreeSet<_>>();
-
-    assert_eq!(choices.decisions().len(), 2);
-    assert!(choices.choices().iter().all(|choice| {
-        matches!(
-            choice.decisions(),
-            [Decision::RngDraw(_), Decision::EffectOutcome(_)]
-        )
-    }));
-    assert_eq!(outcomes, BTreeSet::from([false, true]));
 }
 
 #[test]
@@ -1488,37 +1451,6 @@ fn io_completion_event(
                 retired: virtual_time,
             },
             payload: payload.to_vec(),
-        }),
-    }
-}
-
-fn fault_event(
-    virtual_time: u64,
-    consumer: &SchedulerNodeId,
-    producer: &SchedulerNodeId,
-    sequence: u64,
-    fault: FaultId,
-) -> ScheduledEvent {
-    ScheduledEvent {
-        key: event_key(virtual_time, consumer, producer, sequence),
-        payload: ScheduledEventPayload::FaultActivation(fault),
-    }
-}
-
-fn probabilistic_effect_event(
-    virtual_time: u64,
-    consumer: &SchedulerNodeId,
-    producer: &SchedulerNodeId,
-    sequence: u64,
-    fault: FaultId,
-) -> ScheduledEvent {
-    ScheduledEvent {
-        key: event_key(virtual_time, consumer, producer, sequence),
-        payload: ScheduledEventPayload::ProbabilisticEffect(SchedulerResolveEffectChoice {
-            fault,
-            stream: RngStreamId::from_name("test-probabilistic-fault"),
-            rate: FaultRateBasisPoints::from_basis_points(5_000)
-                .unwrap_or_else(|error| panic!("test rate should be valid: {error}")),
         }),
     }
 }

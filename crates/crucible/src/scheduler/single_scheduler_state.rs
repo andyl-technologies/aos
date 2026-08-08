@@ -296,7 +296,6 @@ impl SingleScheduler {
             control_inbox: Vec::new(),
             decision_seed,
             decision_rng_cursor: DecisionRngState::empty(),
-            branch_effect_choices: Vec::new(),
             branch_network_choices: Vec::new(),
             search_frontiers: Vec::new(),
             event_log,
@@ -1148,10 +1147,7 @@ impl SingleScheduler {
         state.effective_topology_edges = self.effective_topology.edges().to_vec();
         state.pending_topology_changes = self.topology_changes.clone();
         state.pending_device_decisions = self.world_network_decisions.clone();
-        state.search_frontier = search_frontier_choices_from_scheduled_events(
-            self.configuration.clone(),
-            &self.pending_events,
-        );
+        state.search_frontier = SearchFrontierChoices::empty();
         Ok(state)
     }
 

@@ -14,8 +14,8 @@ use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash,
     CowDeltaKind, CowDeltaRef, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
     DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
-    EffectOutcomeDecision, EngineError, EventKey, EventLogOffset, EventSequenceState, FaultId,
-    FaultState, FrontierReductionPolicy, FrontierReductionReason, Icount, IrqVector, LocalDagStore,
+    EngineError, EventKey, EventLogOffset, EventSequenceState, FaultId, FaultState,
+    FrontierReductionPolicy, FrontierReductionReason, Icount, IrqVector, LocalDagStore,
     MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore,
     NetworkLinkRuntimeCursor, NodeBlobRef, NodeId, PartialOrderReductionPolicy, PendingFrame,
     PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, RngStreamPosition, ScenarioDef,
@@ -187,12 +187,9 @@ fn gate_content_address_excludes_materialization_cache_from_identity() {
     let scenario = scenario("scenario=cache\nnodes=a\nseed=17");
     let configuration = step(
         &Configuration::genesis(scenario.clone()),
-        Decision::EffectOutcome(EffectOutcomeDecision {
-            at: VirtualTime { ticks: 5 },
-            fault: FaultId {
-                name: String::from("disk-delay"),
-            },
-            fired: true,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("disk-delay"),
+            value: 1,
         }),
     );
     let id = configuration.content_hash();
@@ -1936,12 +1933,9 @@ fn fixed_schedule() -> Schedule {
             at: VirtualTime { ticks: 1 },
             order: vec![event_key(1, 2), event_key(1, 3)],
         }))
-        .appended(Decision::EffectOutcome(EffectOutcomeDecision {
-            at: VirtualTime { ticks: 4 },
-            fault: FaultId {
-                name: String::from("link-a-b/drop"),
-            },
-            fired: true,
+        .appended(Decision::RngDraw(RngDecision {
+            stream: RngStreamId::for_link("link-a-b/drop"),
+            value: 1,
         }))
         .appended(Decision::AppRandom(AppRandomDecision {
             node: NodeId {
@@ -1970,14 +1964,9 @@ fn generated_decision(seed: u64, index: u64) -> Decision {
             },
             order: vec![event_key(seed + index, index)],
         }),
-        1 => Decision::EffectOutcome(EffectOutcomeDecision {
-            at: VirtualTime {
-                ticks: seed + index,
-            },
-            fault: FaultId {
-                name: format!("fault-{seed}-{index}"),
-            },
-            fired: index.is_multiple_of(2),
+        1 => Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name(format!("stream-{seed}-{index}")),
+            value: u64::from(index.is_multiple_of(2)),
         }),
         _ => Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name(format!("stream-{seed}")),

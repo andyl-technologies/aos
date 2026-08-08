@@ -9,20 +9,19 @@ use std::error::Error;
 
 use crucible::{
     AssertionDef, AssertionId, ChoiceTag, CodePoint, Configuration, ContentHash, Decision,
-    EffectOutcomeDecision, EngineError, EventLogOffset, FaultId, FindingDiscoveryPath,
-    FrontierChild, FrontierReductionReport, GenesisCheckpoint, GuestAssertionDetail,
-    GuestAssertionKind, GuestAssertionMarker, Icount, MarkerId, MaterializationPolicy,
-    MaterializationTrigger, MemPlace, MemoryCmp, MemoryWidth, NodeId, NodeTemplate,
-    ObservableEvent, OverrideDecision, Plan, Predicate, Properties, Property,
-    ReachabilityExpectation, ReachableDisposition, ReadyPoint, RecordedAssertionLog,
-    ResolvedCodePoint, ResolvedMemPlace, RngDecision, RngStreamId, RuntimeState, ScenarioDefForm,
-    Schedule, SchedulerEvaluationBoundaryKind, SchedulerQuiescence, SchedulerQuiescenceBlocker,
-    SchedulerState, SchedulingPoint, SearchBudget, SearchExpansion, SearchFailureOracle,
-    SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchRetainedLogAssertionEvidence,
-    SearchRetainedLogPredicateResolutions, SearchScheduleNamedPredicateKey,
-    SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, TemporalGraph, TemporalGraphRuntime,
-    TemporalGraphSearch, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode,
-    bake, try_step,
+    DeliveryOrderDecision, EngineError, EventLogOffset, FindingDiscoveryPath, FrontierChild,
+    FrontierReductionReport, GenesisCheckpoint, GuestAssertionDetail, GuestAssertionKind,
+    GuestAssertionMarker, Icount, MarkerId, MaterializationPolicy, MaterializationTrigger,
+    MemPlace, MemoryCmp, MemoryWidth, NodeId, NodeTemplate, ObservableEvent, OverrideDecision,
+    Plan, Predicate, Properties, Property, ReachabilityExpectation, ReachableDisposition,
+    ReadyPoint, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace, RngDecision,
+    RngStreamId, RuntimeState, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
+    SchedulerQuiescence, SchedulerQuiescenceBlocker, SchedulerState, SchedulingPoint, SearchBudget,
+    SearchExpansion, SearchFailureOracle, SearchFrontierChoices, SearchReplayOracleSamplingConfig,
+    SearchRetainedLogAssertionEvidence, SearchRetainedLogPredicateResolutions,
+    SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, SearchStrategy, Seed,
+    TemporalGraph, TemporalGraphRuntime, TemporalGraphSearch, TemporalGraphSearchRun, VirtualTime,
+    WhiteBoxPolicy, World, WorldNode, bake, try_step,
 };
 
 #[test]
@@ -343,7 +342,7 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
     })?;
     let timed_safety_root = Configuration {
         def: timed_safety_scenario.scenario_def(),
-        schedule: Schedule::from_decisions([timed_fault_decision("late-boundary", time(100))]),
+        schedule: Schedule::from_decisions([timed_delivery_decision(time(100))]),
     };
     let timed_safety_run = empty_search_run_for_root(&timed_safety_root);
     let timed_safety_oracle = SearchFailureOracle::from_search_assertion_violations(
@@ -558,7 +557,7 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
     let (evidence_child_configuration, evidence_multi_configuration_run) =
         search_run_for_root_decision(
             &unsupported_symbol_coverage_root,
-            fault_decision("search-evidence/child", true),
+            rng_decision("search-evidence/child", 1),
         )?;
     let evidence_per_configuration_oracle =
         SearchFailureOracle::from_search_assertion_violations_with_retained_log_evidence(
@@ -1759,18 +1758,10 @@ fn single_node_world_with_white_box(
 
 fn strategy_root_decisions() -> Vec<Decision> {
     vec![
-        fault_decision("search-strategy/packet-loss", true),
+        rng_decision("search-strategy/packet-loss", 1),
         rng_decision("search-strategy/decision-rng", 0xa5a5_5a5a),
         override_decision("search-strategy/scheduler-point", "non-default-choice"),
     ]
-}
-
-fn fault_decision(fault: impl Into<String>, fired: bool) -> Decision {
-    Decision::EffectOutcome(EffectOutcomeDecision {
-        at: time(12),
-        fault: FaultId { name: fault.into() },
-        fired,
-    })
 }
 
 fn rng_decision(stream: impl Into<String>, value: u64) -> Decision {
@@ -1954,13 +1945,10 @@ fn search_run_for_root_decision(
     Ok((child, run))
 }
 
-fn timed_fault_decision(name: &str, at: VirtualTime) -> Decision {
-    Decision::EffectOutcome(EffectOutcomeDecision {
+fn timed_delivery_decision(at: VirtualTime) -> Decision {
+    Decision::DeliveryOrder(DeliveryOrderDecision {
         at,
-        fault: FaultId {
-            name: name.to_owned(),
-        },
-        fired: true,
+        order: Vec::new(),
     })
 }
 

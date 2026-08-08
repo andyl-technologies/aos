@@ -1,10 +1,5 @@
 //! Control admission, lookahead topology, timeline ordering, horizons, and rendezvous.
 
-mod resolve_decisions;
-
-pub use resolve_decisions::resolve_probabilistic_decisions;
-pub(super) use resolve_decisions::resolve_probabilistic_decisions_from_seed;
-
 use super::*;
 /// Maximum allowed scheduler-side control application latency in quanta.
 pub const SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA: u64 = 1;
@@ -662,32 +657,8 @@ pub enum ScheduledEventResolveClass {
     FrameDelivery,
     /// A deterministic I/O completion from a scheduler sub-node.
     IoCompletion,
-    /// A planned fault activation.
-    FaultActivation,
-    /// A probabilistic effect choice resolved by the scheduler.
-    ProbabilisticEffect,
     /// A control-plane operation admitted at the boundary.
     Control,
-}
-
-/// A probabilistic effect choice attached to a scheduled RESOLVE event.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SchedulerResolveEffectChoice {
-    /// The fault whose probabilistic outcome is being resolved.
-    pub fault: FaultId,
-    /// The seeded decision-RNG stream used for this choice.
-    pub stream: RngStreamId,
-    /// The basis-point rate whose exact integer Bernoulli decision is resolved.
-    pub rate: FaultRateBasisPoints,
-}
-
-/// The decisions recorded while resolving probabilistic RESOLVE choices.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchedulerResolveDecisionRecord {
-    /// The configuration after all recorded probabilistic decisions.
-    pub configuration: Configuration,
-    /// The decisions appended while resolving probabilistic choices.
-    pub decisions: Vec<Decision>,
 }
 
 /// Returns scheduled events in the canonical deterministic resolution order.
@@ -747,59 +718,12 @@ pub(super) fn pending_frames_from_scheduled_events(
     pending_frames
 }
 
-pub(super) fn search_frontier_choices_from_scheduled_events(
-    _configuration: Configuration,
-    events: &[ScheduledEvent],
-) -> SearchFrontierChoices {
-    let mut choices = Vec::new();
-    for event in ordered_scheduled_events(events) {
-        let ScheduledEventPayload::ProbabilisticEffect(choice) = &event.payload else {
-            continue;
-        };
-        if choice.rate.basis_points() > 0 {
-            choices.push(probabilistic_effect_search_choice(event, choice, 0, true));
-        }
-        if u32::from(choice.rate.basis_points()) < FaultRateBasisPoints::DENOMINATOR {
-            choices.push(probabilistic_effect_search_choice(
-                event,
-                choice,
-                u64::from(choice.rate.basis_points()),
-                false,
-            ));
-        }
-    }
-    SearchFrontierChoices::from_decision_sequences(choices)
-}
-
-pub(super) fn probabilistic_effect_search_choice(
-    event: &ScheduledEvent,
-    choice: &SchedulerResolveEffectChoice,
-    value: u64,
-    fired: bool,
-) -> Vec<Decision> {
-    vec![
-        Decision::RngDraw(RngDecision {
-            stream: choice.stream.clone(),
-            value,
-        }),
-        Decision::EffectOutcome(EffectOutcomeDecision {
-            at: event.key.virtual_time(),
-            fault: choice.fault.clone(),
-            fired,
-        }),
-    ]
-}
-
 /// Returns the RESOLVE payload class for `event`.
 #[must_use]
 pub fn scheduled_event_resolve_class(event: &ScheduledEvent) -> ScheduledEventResolveClass {
     match event.payload {
         ScheduledEventPayload::BackendInput(_) => ScheduledEventResolveClass::FrameDelivery,
         ScheduledEventPayload::IoCompletion(_) => ScheduledEventResolveClass::IoCompletion,
-        ScheduledEventPayload::FaultActivation(_) => ScheduledEventResolveClass::FaultActivation,
-        ScheduledEventPayload::ProbabilisticEffect(_) => {
-            ScheduledEventResolveClass::ProbabilisticEffect
-        }
         ScheduledEventPayload::Control(_) => ScheduledEventResolveClass::Control,
     }
 }
@@ -811,10 +735,6 @@ pub enum ScheduledEventPayload {
     BackendInput(BackendInput),
     /// A deterministic I/O completion from a disk, 9p, or network sub-node.
     IoCompletion(IoCompletion),
-    /// A fault activation resolved at the boundary.
-    FaultActivation(FaultId),
-    /// A probabilistic effect outcome resolved at the boundary.
-    ProbabilisticEffect(SchedulerResolveEffectChoice),
     /// A control operation admitted at a quantum boundary.
     Control(ControlOperation),
 }
@@ -849,13 +769,6 @@ pub enum ExactLocalEvent {
         /// The sub-node that computed the deterministic completion.
         sub_node: SchedulerNodeId,
     },
-    /// The node has a locally scheduled fault activation.
-    FaultActivation {
-        /// The exact virtual-time activation point.
-        virtual_time: SimInstant,
-        /// The fault that will activate locally.
-        fault: FaultId,
-    },
     /// The signal-driven fault runtime requires an exact evaluation boundary.
     SignalFaultEvaluation {
         /// The exact global virtual-time boundary requested by the runtime.
@@ -871,7 +784,6 @@ impl ExactLocalEvent {
             Self::NoArmedTimer => None,
             Self::TimerDeadline { virtual_time }
             | Self::IoCompletion { virtual_time, .. }
-            | Self::FaultActivation { virtual_time, .. }
             | Self::SignalFaultEvaluation { virtual_time } => Some(*virtual_time),
         }
     }
@@ -960,17 +872,7 @@ pub fn exact_local_event_from_scheduled_event(
             }
             Ok(Some(exact))
         }
-        ScheduledEventPayload::FaultActivation(fault) => {
-            Ok(Some(ExactLocalEvent::FaultActivation {
-                virtual_time: SimInstant {
-                    nanos: event.key.virtual_time().ticks,
-                },
-                fault: fault.clone(),
-            }))
-        }
-        ScheduledEventPayload::BackendInput(_)
-        | ScheduledEventPayload::ProbabilisticEffect(_)
-        | ScheduledEventPayload::Control(_) => Ok(None),
+        ScheduledEventPayload::BackendInput(_) | ScheduledEventPayload::Control(_) => Ok(None),
     }
 }
 
@@ -1014,9 +916,7 @@ pub fn scheduled_event_delivery_time(
                     message: String::from("I/O completion visibility time was empty"),
                 })
         }
-        ScheduledEventPayload::FaultActivation(_)
-        | ScheduledEventPayload::ProbabilisticEffect(_)
-        | ScheduledEventPayload::Control(_) => Ok(SimInstant {
+        ScheduledEventPayload::Control(_) => Ok(SimInstant {
             nanos: event.key.virtual_time().ticks,
         }),
     }
@@ -1131,8 +1031,7 @@ pub(super) fn exact_local_event_rank(event: &ExactLocalEvent) -> u8 {
         ExactLocalEvent::NoArmedTimer => 0,
         ExactLocalEvent::TimerDeadline { .. } => 1,
         ExactLocalEvent::IoCompletion { .. } => 2,
-        ExactLocalEvent::FaultActivation { .. } => 3,
-        ExactLocalEvent::SignalFaultEvaluation { .. } => 4,
+        ExactLocalEvent::SignalFaultEvaluation { .. } => 3,
     }
 }
 
@@ -1142,7 +1041,6 @@ pub(super) fn exact_local_event_source_key(event: &ExactLocalEvent) -> &str {
         | ExactLocalEvent::TimerDeadline { .. }
         | ExactLocalEvent::SignalFaultEvaluation { .. } => "",
         ExactLocalEvent::IoCompletion { sub_node, .. } => &sub_node.node.name,
-        ExactLocalEvent::FaultActivation { fault, .. } => &fault.name,
     }
 }
 
@@ -1155,8 +1053,6 @@ pub enum SchedulerHorizonSource {
     ExactLocalTimer,
     /// An exact local deterministic I/O completion selected the horizon.
     ExactLocalIoCompletion,
-    /// An exact local scheduled fault selected the horizon.
-    ExactLocalFault,
     /// An exact signal-driven fault evaluation selected the horizon.
     SignalFaultEvaluation,
 }
@@ -1562,7 +1458,6 @@ pub(super) fn exact_local_event_horizon_source(event: &ExactLocalEvent) -> Sched
     match event {
         ExactLocalEvent::TimerDeadline { .. } => SchedulerHorizonSource::ExactLocalTimer,
         ExactLocalEvent::IoCompletion { .. } => SchedulerHorizonSource::ExactLocalIoCompletion,
-        ExactLocalEvent::FaultActivation { .. } => SchedulerHorizonSource::ExactLocalFault,
         ExactLocalEvent::SignalFaultEvaluation { .. } => {
             SchedulerHorizonSource::SignalFaultEvaluation
         }
@@ -1573,9 +1468,7 @@ pub(super) fn exact_local_event_horizon_source(event: &ExactLocalEvent) -> Sched
 pub(super) fn horizon_source_allows_ceiling_past_target(source: SchedulerHorizonSource) -> bool {
     matches!(
         source,
-        SchedulerHorizonSource::ExactLocalTimer
-            | SchedulerHorizonSource::ExactLocalIoCompletion
-            | SchedulerHorizonSource::ExactLocalFault
+        SchedulerHorizonSource::ExactLocalTimer | SchedulerHorizonSource::ExactLocalIoCompletion
     )
 }
 

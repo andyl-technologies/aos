@@ -5,31 +5,28 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    BackendInput, Decision, EventKey, ExactLocalEvent, FaultId, Icount, IoCompletion,
-    NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent,
-    ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass, SchedulerError,
-    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, VirtualTime,
-    ordered_scheduled_events, resolve_due_scheduled_events, scheduled_event_delivery_time,
-    scheduled_event_resolve_class,
+    BackendInput, Decision, EventKey, ExactLocalEvent, Icount, IoCompletion, NetworkLookahead,
+    NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey,
+    ScheduledEventPayload, ScheduledEventResolveClass, SchedulerError, SchedulerLivenessScenario,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Shift,
+    SimDuration, SimInstant, SingleScheduler, VirtualTime, ordered_scheduled_events,
+    resolve_due_scheduled_events, scheduled_event_delivery_time, scheduled_event_resolve_class,
 };
 
 #[test]
-fn resolve_quantum_processes_frame_io_and_fault_at_exact_delivery_icount_in_total_order() {
+fn resolve_quantum_processes_frame_and_io_at_exact_delivery_icount_in_total_order() {
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let frame_producer = scheduler_node("alpha-frame", SchedulingNodeKind::Vm);
     let disk = scheduler_node("beta-disk", SchedulingNodeKind::Disk);
-    let fault_source = scheduler_node("gamma-fault", SchedulingNodeKind::Vm);
     let frame = backend_event(5, &consumer, &frame_producer, 2, b"frame");
     let io = io_event(5, &consumer, &disk, 1, b"io");
-    let fault = fault_event(5, &consumer, &fault_source, 0, "fault");
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "resolve-mixed-payloads",
         shift(0),
         8,
         SimInstant { nanos: 30 },
         vec![scenario_node("consumer", 0, finite_lookahead(10))],
-        vec![fault.clone(), frame.clone(), io.clone()],
+        vec![frame.clone(), io.clone()],
     ))
     .expect("scenario should build");
 
@@ -42,25 +39,17 @@ fn resolve_quantum_processes_frame_io_and_fault_at_exact_delivery_icount_in_tota
 
     assert_eq!(outcome.advanced_node, Some(consumer));
     assert_eq!(outcome.frontier, VirtualTime { ticks: 5 });
-    assert_eq!(
-        outcome.resolved_events,
-        vec![frame.clone(), io.clone(), fault.clone()]
-    );
+    assert_eq!(outcome.resolved_events, vec![frame.clone(), io.clone()]);
     assert_eq!(
         resolve_classes(&outcome.resolved_events),
         vec![
             ScheduledEventResolveClass::FrameDelivery,
             ScheduledEventResolveClass::IoCompletion,
-            ScheduledEventResolveClass::FaultActivation,
         ]
     );
     assert_eq!(
         delivery_times(&outcome.resolved_events),
-        vec![
-            SimInstant { nanos: 5 },
-            SimInstant { nanos: 5 },
-            SimInstant { nanos: 5 },
-        ]
+        vec![SimInstant { nanos: 5 }, SimInstant { nanos: 5 },]
     );
     assert_eq!(
         delivery_order(&outcome.decisions),
@@ -224,8 +213,7 @@ fn delivery_order(decisions: &[Decision]) -> Vec<EventKey> {
         .iter()
         .flat_map(|decision| match decision {
             Decision::DeliveryOrder(order) => order.order.clone(),
-            Decision::EffectOutcome(_)
-            | Decision::RngDraw(_)
+            Decision::RngDraw(_)
             | Decision::Override(_)
             | Decision::Preemption(_)
             | Decision::AppRandom(_) => Vec::new(),
@@ -341,28 +329,6 @@ fn io_event_at_virtual_time(
                 retired: delivery_icount,
             },
             payload: payload.to_vec(),
-        }),
-    }
-}
-
-fn fault_event(
-    virtual_time: u64,
-    consumer: &SchedulerNodeId,
-    producer: &SchedulerNodeId,
-    sequence: u64,
-    fault_name: &str,
-) -> ScheduledEvent {
-    ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
-            },
-            consumer.clone(),
-            producer.clone(),
-            sequence,
-        ),
-        payload: ScheduledEventPayload::FaultActivation(FaultId {
-            name: fault_name.to_owned(),
         }),
     }
 }

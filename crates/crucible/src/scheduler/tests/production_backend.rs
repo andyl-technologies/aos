@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    AppRandomDecision, BackendEffect, BackendSnapshot, MockSimulationBackend, StepObservation, step,
+    AppRandomDecision, BackendEffect, BackendSnapshot, MockSimulationBackend, StepObservation,
 };
 
 #[test]
@@ -293,54 +293,6 @@ fn branch_prefix_admission_records_only_explorer_overrides() {
 }
 
 #[test]
-fn branch_reseed_restarts_the_authoritative_rng_stream() {
-    let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
-    let producer = scheduler_node("scheduler", SchedulingNodeKind::ControlPlane);
-    let event = probabilistic_effect_event(
-        11,
-        &consumer,
-        &producer,
-        0,
-        FaultId {
-            name: String::from("reseeded-loss"),
-        },
-    );
-    let stream = RngStreamId::from_name("test-probabilistic-fault");
-    let seed = Seed::from_u64(0x0010_c111);
-    let mut expected_stream = seed
-        .decision_rng()
-        .fork_in_domain(&stream.domain, &stream.name);
-    let expected = expected_stream.next_u64();
-    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
-
-    scheduler
-        .reseed_future_decisions(seed)
-        .expect("an idle scheduler should admit a branch re-seed");
-    let decisions = scheduler
-        .emit_quantum_decisions(
-            std::slice::from_ref(&event),
-            &[],
-            &[],
-            SimInstant { nanos: 11 },
-        )
-        .expect("the re-seeded fault boundary should resolve");
-    let actual = decisions.iter().find_map(|decision| match decision {
-        Decision::RngDraw(draw) if draw.stream == stream => Some(draw.value),
-        _ => None,
-    });
-
-    assert_eq!(actual, Some(expected));
-    assert_eq!(
-        scheduler
-            .decision_rng_cursor
-            .positions
-            .get(&stream)
-            .map(|position| position.draws),
-        Some(1)
-    );
-}
-
-#[test]
 fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
     fn app_random_decisions(seed: Seed) -> Vec<Decision> {
         let node = NodeId {
@@ -393,102 +345,4 @@ fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
         .reseed_future_decisions(second_seed)
         .expect("an idle scheduler should reset World-network cursors");
     assert_eq!(scheduler.world_network_rng_positions.get(&link), Some(&0));
-}
-
-#[test]
-fn branch_effect_choice_replaces_seeded_resolution_at_matching_point() {
-    let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
-    let producer = scheduler_node("scheduler", SchedulingNodeKind::ControlPlane);
-    let fault = FaultId {
-        name: String::from("branch-loss"),
-    };
-    let event = probabilistic_effect_event(11, &consumer, &producer, 0, fault.clone());
-    let stream = RngStreamId::from_name("test-probabilistic-fault");
-    let forced = vec![
-        Decision::RngDraw(RngDecision {
-            stream: stream.clone(),
-            value: 0,
-        }),
-        Decision::EffectOutcome(EffectOutcomeDecision {
-            at: VirtualTime { ticks: 11 },
-            fault,
-            fired: true,
-        }),
-    ];
-    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
-    scheduler
-        .install_branch_effect_choices(forced.clone())
-        .expect("valid branch effect choice must install");
-    let mut resolved = resolve_probabilistic_decisions(
-        scheduler.configuration().clone(),
-        std::slice::from_ref(&event),
-    )
-    .decisions;
-
-    scheduler
-        .apply_branch_effect_choices(&[event], &mut resolved)
-        .expect("matching branch choice must replace the seeded resolution");
-
-    assert_eq!(resolved, forced);
-    assert_eq!(scheduler.pending_branch_effect_choice_count(), 0);
-}
-
-#[test]
-fn quantum_captures_pre_choice_runtime_search_frontier() {
-    let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
-    let producer = scheduler_node("scheduler", SchedulingNodeKind::ControlPlane);
-    let event = probabilistic_effect_event(
-        1,
-        &consumer,
-        &producer,
-        0,
-        FaultId {
-            name: String::from("runtime-search-loss"),
-        },
-    );
-    let node = test_scenario_node(
-        "node-a",
-        0,
-        SchedulerNodeActivity::Runnable,
-        NetworkLookahead::Infinite,
-        ExactLocalEvent::NoArmedTimer,
-    );
-    let mut scheduler = test_scheduler(vec![node], vec![event]);
-    let request = QuantumRequest {
-        configuration: scheduler.configuration().clone(),
-        control: Vec::new(),
-    };
-
-    let outcome = scheduler
-        .drive_quantum(request)
-        .expect("probabilistic quantum must complete");
-    let frontiers = scheduler.search_frontiers();
-
-    assert_eq!(frontiers.len(), 1);
-    let frontier = &frontiers[0];
-    assert_eq!(frontier.at, VirtualTime { ticks: 1 });
-    assert!(matches!(
-        frontier.configuration.schedule.decisions(),
-        [Decision::DeliveryOrder(_)]
-    ));
-    assert_eq!(frontier.choices.choices().len(), 2);
-    let outcome_prefix = outcome
-        .configuration
-        .schedule
-        .prefix(frontier.configuration.schedule.len())
-        .expect("runtime outcome must retain the frontier prefix");
-    assert_eq!(outcome_prefix, frontier.configuration.schedule);
-    let branches = frontier
-        .choices
-        .choices()
-        .iter()
-        .map(|choice| {
-            let mut branch = frontier.configuration.clone();
-            for decision in choice.decisions() {
-                branch = step(&branch, decision.clone());
-            }
-            branch.id()
-        })
-        .collect::<BTreeSet<_>>();
-    assert_eq!(branches.len(), 2);
 }

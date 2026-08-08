@@ -481,12 +481,13 @@ fn configuration_id_is_content_addressed_by_def_and_schedule() {
     };
     let changed_schedule = Configuration {
         def: scenario.clone(),
-        schedule: base_schedule.appended(Decision::EffectOutcome(EffectOutcomeDecision {
-            at: VirtualTime { ticks: 1 },
-            fault: FaultId {
-                name: String::from("link-drop"),
+        schedule: base_schedule.appended(Decision::Override(OverrideDecision {
+            point: SchedulingPoint {
+                key: String::from("link-a-b/frame-1"),
             },
-            fired: true,
+            choice: ChoiceTag {
+                name: String::from("drop"),
+            },
         })),
     };
     let base = Configuration {
@@ -565,12 +566,13 @@ fn reduce_is_pure_over_scenario_and_schedule() {
         stream: RngStreamId::for_node("node-a/faults"),
         value: 7,
     });
-    let second_decision = Decision::EffectOutcome(EffectOutcomeDecision {
-        at: VirtualTime { ticks: 10 },
-        fault: FaultId {
-            name: String::from("link-drop"),
+    let second_decision = Decision::Override(OverrideDecision {
+        point: SchedulingPoint {
+            key: String::from("link-a-b/frame-10"),
         },
-        fired: true,
+        choice: ChoiceTag {
+            name: String::from("drop"),
+        },
     });
     let schedule = Schedule::empty()
         .appended(first_decision.clone())
