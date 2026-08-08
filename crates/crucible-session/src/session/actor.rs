@@ -635,7 +635,10 @@ impl<L> SessionActor<L> {
             .sync_from_boundary_log(self.engine.boundary_control_log());
     }
 
-    fn terminalize_actor_error(&mut self, error: &SessionError) {
+    fn terminalize_actor_error(&mut self, error: &SessionError)
+    where
+        L: QuantumLoop,
+    {
         self.engine.stop_after_actor_crash(error.to_string());
         self.sync_reproduction_log();
         self.publish_live_snapshot();

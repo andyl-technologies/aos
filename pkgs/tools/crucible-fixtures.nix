@@ -240,9 +240,10 @@ in
           set -euo pipefail
 
           host_key=/run/crucible-debug-ssh-host-key
-          if [[ ! -f "$host_key" ]]; then
-            ${openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$host_key"
-          fi
+          [[ -f "$host_key" ]] || {
+            echo 'Crucible debug SSH host key is unavailable' >&2
+            exit 1
+          }
           exec ${openssh}/sbin/sshd -i -e -f /etc/crucible-debug-sshd_config
           DEBUG_SSHD
           chmod +x rootfs/usr/sbin/crucible-debug-sshd
@@ -266,7 +267,10 @@ in
           mount -t proc proc /proc || true
           mount -t sysfs sysfs /sys || true
           mount -t devtmpfs devtmpfs /dev || true
+          mkdir -p /dev/pts
+          mount -t devpts devpts /dev/pts || true
           mount -t tmpfs tmpfs /run || true
+          ${openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f /run/crucible-debug-ssh-host-key
 
           if mount -t 9p -o trans=virtio,version=9p2000.L,cache=none,ro ${hostStoreMountTag} /nix/store; then
             echo 'CRUCIBLE_9P_STORE_READY'
