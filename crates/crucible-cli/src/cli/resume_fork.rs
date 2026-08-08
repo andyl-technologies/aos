@@ -1173,7 +1173,7 @@ pub(super) fn validate_resume_property_firing(
         .find(|firing| firing.id == breakpoint_id)
         .ok_or_else(|| {
             backend_error(format!(
-                "resume property breakpoint {breakpoint_id} did not fire before resume boundary"
+                "resume property breakpoint {breakpoint_id} did not fire before resume boundary; the selected checkpoint may already be terminal and have no resumable predecessor"
             ))
         })?;
     if &firing.predicate != expected {
@@ -1217,7 +1217,7 @@ pub(super) fn validate_resume_property_suspension_summary(
         .find(|firing| firing.id == breakpoint_id)
         .ok_or_else(|| {
             backend_error(format!(
-                "remote resume property breakpoint {breakpoint_id} did not fire before resume boundary"
+                "remote resume property breakpoint {breakpoint_id} did not fire before resume boundary; the selected checkpoint may already be terminal and have no resumable predecessor"
             ))
         })?;
     if &firing.predicate != expected {

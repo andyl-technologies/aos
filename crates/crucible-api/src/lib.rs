@@ -110,7 +110,8 @@ pub use vm_lifecycle::{
 // depends on `crucible-protocol`.
 pub use crucible_protocol::CONTROL_PROTOCOL_VERSION;
 pub use crucible_protocol::guest_introspection::{
-    GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream,
+    GuestIntrospectionFailureCode, GuestIntrospectionMessage, GuestIntrospectionRecord,
+    GuestOutputStream,
 };
 // Re-exported with backend-neutral names so process-local control clients can
 // launch and attest the production backend without depending on its

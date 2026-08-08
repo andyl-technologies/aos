@@ -1174,13 +1174,10 @@ pub(super) fn cli_determinism_ergonomics_emits_trace_and_failure_artifact_from_o
     emit_backend_command_output(&cli, &outcome)?;
 
     let trace_text = fs::read_to_string(&trace)?;
-    assert_eq!(trace_text.lines().count(), outcome.canonical_log.len() + 1);
+    assert_eq!(trace_text.lines().count(), outcome.canonical_log.len());
     assert!(
-        trace_text
-            .lines()
-            .last()
-            .expect("trace should include final outcome")
-            .contains("\"kind\":\"final_outcome\"")
+        !trace_text.contains("\"kind\":\"final_outcome\""),
+        "replay input must exclude the invocation-local final outcome"
     );
     let artifact_entries = fs::read_dir(&artifact_dir)?.collect::<Result<Vec<_>, _>>()?;
     assert_eq!(artifact_entries.len(), 1);

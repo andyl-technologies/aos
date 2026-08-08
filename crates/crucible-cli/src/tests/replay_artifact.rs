@@ -2032,6 +2032,29 @@ pub(super) fn cli_exit_machine_readable_output_records_final_outcome() -> Result
     assert!(!should_emit_human_backend_output(OutputFormat::Json));
     assert!(should_emit_human_backend_output(OutputFormat::Table));
 
+    let trace_path = temp.path().join("run.trace.jsonl");
+    let trace_cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("double"),
+        String::from("--seed"),
+        String::from("1"),
+        String::from("--format"),
+        String::from("jsonl"),
+        String::from("--quiet"),
+        String::from("--trace"),
+        trace_path.display().to_string(),
+        String::from("run"),
+        scenario.display().to_string(),
+    ]);
+    emit_backend_command_output(&trace_cli, &outcome)?;
+    let trace_bytes = fs::read(&trace_path)?;
+    assert_eq!(
+        trace_bytes,
+        canonical_log_entry_bytes(&outcome.canonical_log)
+    );
+    assert!(!String::from_utf8(trace_bytes)?.contains("\"kind\":\"final_outcome\""));
+
     Ok(())
 }
 
