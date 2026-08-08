@@ -814,7 +814,15 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
 #[tokio::test]
 async fn rejected_debug_runtime_reposition_preserves_session_transaction() {
     let (_root, first, second, graph) = debug_time_travel_fixture();
-    let mut engine = Engine::new(second.clone(), graph, RejectingDebugRepositionLoop);
+    let mut engine = Engine::new(
+        second.clone(),
+        graph,
+        RejectingDebugRepositionLoop {
+            scheduler_run_active: false,
+            acquire_attempts: 0,
+            release_attempts: 0,
+        },
+    );
 
     if let Err(error) = engine.apply_command(SessionCommand::Start) {
         panic!("debug fixture should instantiate: {error}");
@@ -830,6 +838,9 @@ async fn rejected_debug_runtime_reposition_preserves_session_transaction() {
     }
     let _attach = receive_reply(attach_receiver).await;
     let active_guest_channel = (node_id("guest-a"), 41);
+    engine
+        .begin_guest_channel_run()
+        .unwrap_or_else(|error| panic!("guest channel run should start: {error}"));
     engine.guest_channels.insert(active_guest_channel.clone());
 
     let before_snapshot = engine.snapshot();
@@ -854,6 +865,9 @@ async fn rejected_debug_runtime_reposition_preserves_session_transaction() {
     assert!(!engine.debug_branch_required());
     assert!(engine.guest_channels.contains(&active_guest_channel));
     assert!(!engine.guest_responses.contains_key(&active_guest_channel));
+    assert!(engine.quantum_loop.scheduler_run_active);
+    assert_eq!(engine.quantum_loop.release_attempts, 1);
+    assert_eq!(engine.quantum_loop.acquire_attempts, 2);
 }
 
 #[tokio::test]

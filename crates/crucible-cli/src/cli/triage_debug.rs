@@ -2217,7 +2217,6 @@ async fn run_remote_guest_channel(
     use crucible_api::{GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    const CHANNEL_ID: u64 = 1;
     let pty_channel = matches!(&open, GuestIntrospectionMessage::Pty { .. });
     let _terminal_mode = LocalTerminalMode::enter_raw(interactive)?;
     let mut resize_signal = local_resize_signal(interactive)?;
@@ -2232,40 +2231,71 @@ async fn run_remote_guest_channel(
         .acquire_debug_controller(session, &acquisition)
         .await
         .map_err(control_client_error)?;
-    let open = GuestIntrospectionRecord::new(CHANNEL_ID, open)
+    let channel_id = lease.guest_channel_id();
+    let open = GuestIntrospectionRecord::new(channel_id, open)
         .map_err(|error| backend_error(error.to_string()))?;
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
+    let mut terminate_signal = tokio::signal::unix::signal(
+        tokio::signal::unix::SignalKind::terminate(),
+    )
+    .map_err(|error| backend_error(format!("guest channel termination signal error: {error}")))?;
+    let mut hangup_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .map_err(|error| backend_error(format!("guest channel hangup signal error: {error}")))?;
     let mut input_closed = !interactive;
     let mut terminal_observed = false;
     let channel_result: Result<(), CliError> = async {
-        exchange_guest_record(
+        let response = exchange_guest_record(
             &client,
             session,
             &lease,
             &node,
-            CHANNEL_ID,
+            channel_id,
             Some(&open),
             &mut transcript,
         )
         .await?;
+        if handle_guest_channel_response(
+            response.as_ref(),
+            channel_id,
+            &mut stdout,
+            &mut stderr,
+            &mut terminal_observed,
+        )
+        .await?
+            == GuestChannelRecordOutcome::Exit
+        {
+            return Ok(());
+        }
         if !interactive {
             let close = GuestIntrospectionRecord::new(
-                CHANNEL_ID,
+                channel_id,
                 GuestIntrospectionMessage::Close,
             )
             .map_err(|error| backend_error(error.to_string()))?;
-            exchange_guest_record(
+            let response = exchange_guest_record(
                 &client,
                 session,
                 &lease,
                 &node,
-                CHANNEL_ID,
+                channel_id,
                 Some(&close),
                 &mut transcript,
             )
             .await?;
+            if handle_guest_channel_response(
+                response.as_ref(),
+                channel_id,
+                &mut stdout,
+                &mut stderr,
+                &mut terminal_observed,
+            )
+            .await?
+                == GuestChannelRecordOutcome::Exit
+            {
+                return Ok(());
+            }
         }
         let mut input = vec![0_u8; 4096];
         let mut poll = tokio::time::interval(Duration::from_millis(5));
@@ -2284,18 +2314,30 @@ async fn run_remote_guest_channel(
                 read = stdin.read(&mut input), if !input_closed => {
                     let length = read.map_err(|error| backend_error(format!("terminal input failed: {error}")))?;
                     let message = guest_input_message(pty_channel, &input[..length]);
-                    let record = GuestIntrospectionRecord::new(CHANNEL_ID, message)
+                    let record = GuestIntrospectionRecord::new(channel_id, message)
                         .map_err(|error| backend_error(error.to_string()))?;
-                    exchange_guest_record(
+                    let response = exchange_guest_record(
                         &client,
                         session,
                         &lease,
                         &node,
-                        CHANNEL_ID,
+                        channel_id,
                         Some(&record),
                         &mut transcript,
                     )
                     .await?;
+                    if handle_guest_channel_response(
+                        response.as_ref(),
+                        channel_id,
+                        &mut stdout,
+                        &mut stderr,
+                        &mut terminal_observed,
+                    )
+                    .await?
+                        == GuestChannelRecordOutcome::Exit
+                    {
+                        break Ok(());
+                    }
                     if length == 0 {
                         input_closed = true;
                     }
@@ -2306,7 +2348,7 @@ async fn run_remote_guest_channel(
                         session,
                         &lease,
                         &node,
-                        CHANNEL_ID,
+                        channel_id,
                         None,
                         &mut transcript,
                     )
@@ -2315,87 +2357,77 @@ async fn run_remote_guest_channel(
                         continue;
                     };
                     idle_deadline.reset();
-                    if record.channel_id() != CHANNEL_ID {
-                        continue;
-                    }
-                    match record.message() {
-                        GuestIntrospectionMessage::Output { stream, bytes } => {
-                            match stream {
-                                GuestOutputStream::Stdout => stdout.write_all(bytes).await,
-                                GuestOutputStream::Stderr => stderr.write_all(bytes).await,
-                            }
-                            .map_err(|error| backend_error(format!("terminal output failed: {error}")))?;
-                            match stream {
-                                GuestOutputStream::Stdout => stdout.flush().await,
-                                GuestOutputStream::Stderr => stderr.flush().await,
-                            }
-                            .map_err(|error| backend_error(format!("terminal output flush failed: {error}")))?;
-                        }
-                        GuestIntrospectionMessage::Exit { status, signal } => {
-                            terminal_observed = true;
-                            stdout.flush().await.map_err(|error| backend_error(error.to_string()))?;
-                            stderr.flush().await.map_err(|error| backend_error(error.to_string()))?;
-                            if *status == 0 {
-                                break Ok(());
-                            }
-                            break Err(backend_error(format!(
-                                "guest command exited with status {status} signal {signal:?}"
-                            )));
-                        }
-                        GuestIntrospectionMessage::Error { code, message } => {
-                            terminal_observed = true;
-                            break Err(backend_error(format!(
-                                "guest introspection failed ({code:?}): {message}"
-                            )));
-                        }
-                        GuestIntrospectionMessage::Features(_)
-                        | GuestIntrospectionMessage::Exec { .. }
-                        | GuestIntrospectionMessage::Pty { .. }
-                        | GuestIntrospectionMessage::Ssh { .. }
-                        | GuestIntrospectionMessage::Input(_)
-                        | GuestIntrospectionMessage::Resize { .. }
-                        | GuestIntrospectionMessage::Close => {
-                            break Err(backend_error(
-                                "guest agent returned an unexpected protocol record",
-                            ));
-                        }
+                    if handle_guest_channel_response(
+                        Some(&record),
+                        channel_id,
+                        &mut stdout,
+                        &mut stderr,
+                        &mut terminal_observed,
+                    )
+                    .await?
+                        == GuestChannelRecordOutcome::Exit
+                    {
+                        break Ok(());
                     }
                 }
                 resized = receive_local_resize(&mut resize_signal), if resize_signal.is_some() => {
                     if resized {
                         let (columns, rows) = local_terminal_size()?;
                         let record = GuestIntrospectionRecord::new(
-                            CHANNEL_ID,
+                            channel_id,
                             GuestIntrospectionMessage::Resize { columns, rows },
                         )
                         .map_err(|error| backend_error(error.to_string()))?;
-                        exchange_guest_record(
+                        let response = exchange_guest_record(
                             &client,
                             session,
                             &lease,
                             &node,
-                            CHANNEL_ID,
+                            channel_id,
                             Some(&record),
                             &mut transcript,
                         )
                         .await?;
+                        if handle_guest_channel_response(
+                            response.as_ref(),
+                            channel_id,
+                            &mut stdout,
+                            &mut stderr,
+                            &mut terminal_observed,
+                        )
+                        .await?
+                            == GuestChannelRecordOutcome::Exit
+                        {
+                            break Ok(());
+                        }
                     }
                 }
-                signal = tokio::signal::ctrl_c() => {
-                    signal.map_err(|error| backend_error(format!("guest channel signal error: {error}")))?;
+                signal = receive_guest_channel_shutdown_signal(
+                    &mut terminate_signal,
+                    &mut hangup_signal,
+                ) => {
+                    signal?;
                     let close = GuestIntrospectionRecord::new(
-                        CHANNEL_ID,
+                        channel_id,
                         GuestIntrospectionMessage::Close,
                     )
                     .map_err(|error| backend_error(error.to_string()))?;
-                    exchange_guest_record(
+                    let response = exchange_guest_record(
                         &client,
                         session,
                         &lease,
                         &node,
-                        CHANNEL_ID,
+                        channel_id,
                         Some(&close),
                         &mut transcript,
+                    )
+                    .await?;
+                    let _outcome = handle_guest_channel_response(
+                        response.as_ref(),
+                        channel_id,
+                        &mut stdout,
+                        &mut stderr,
+                        &mut terminal_observed,
                     )
                     .await?;
                     break Ok(());
@@ -2408,14 +2440,14 @@ async fn run_remote_guest_channel(
         if terminal_observed {
             return Ok(());
         }
-        let close = GuestIntrospectionRecord::new(CHANNEL_ID, GuestIntrospectionMessage::Close)
+        let close = GuestIntrospectionRecord::new(channel_id, GuestIntrospectionMessage::Close)
             .map_err(|error| backend_error(error.to_string()))?;
         let _response = exchange_guest_record(
             &client,
             session,
             &lease,
             &node,
-            CHANNEL_ID,
+            channel_id,
             Some(&close),
             &mut transcript,
         )
@@ -2427,7 +2459,7 @@ async fn run_remote_guest_channel(
                     session,
                     &lease,
                     &node,
-                    CHANNEL_ID,
+                    channel_id,
                     None,
                     &mut transcript,
                 )
@@ -2476,6 +2508,20 @@ async fn run_remote_guest_channel(
     transcript_result?;
     release_result.map_err(control_client_error)?;
     Ok(())
+}
+
+async fn receive_guest_channel_shutdown_signal(
+    terminate: &mut tokio::signal::unix::Signal,
+    hangup: &mut tokio::signal::unix::Signal,
+) -> Result<(), CliError> {
+    tokio::select! {
+        signal = tokio::signal::ctrl_c() => signal
+            .map_err(|error| backend_error(format!("guest channel interrupt signal error: {error}"))),
+        signal = terminate.recv() => signal
+            .ok_or_else(|| backend_error("guest channel termination signal stream closed")),
+        signal = hangup.recv() => signal
+            .ok_or_else(|| backend_error("guest channel hangup signal stream closed")),
+    }
 }
 
 /// Converts local input into the guest channel's stream semantics.
@@ -2626,6 +2672,10 @@ mod remote_debug_tests {
 mod coordinates;
 
 pub(super) use coordinates::*;
+#[path = "triage_debug/guest_channel_response.rs"]
+mod guest_channel_response;
+
+use guest_channel_response::{GuestChannelRecordOutcome, handle_guest_channel_response};
 #[path = "triage_debug/slug.rs"]
 mod slug;
 

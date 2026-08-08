@@ -104,7 +104,11 @@ impl QuantumLoop for MismatchingDebugRepositionLoop {
     }
 }
 
-pub(in super::super) struct RejectingDebugRepositionLoop;
+pub(in super::super) struct RejectingDebugRepositionLoop {
+    pub(in super::super) scheduler_run_active: bool,
+    pub(in super::super) acquire_attempts: u64,
+    pub(in super::super) release_attempts: u64,
+}
 
 impl QuantumLoop for RejectingDebugRepositionLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
@@ -131,10 +135,28 @@ impl QuantumLoop for RejectingDebugRepositionLoop {
         GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen).map_err(SchedulerError::from)
     }
 
+    fn acquire_internal_debug_run(&mut self) -> Result<(), SchedulerError> {
+        assert!(!self.scheduler_run_active);
+        self.scheduler_run_active = true;
+        self.acquire_attempts = self.acquire_attempts.saturating_add(1);
+        Ok(())
+    }
+
+    fn release_internal_debug_run(&mut self) -> Result<(), SchedulerError> {
+        assert!(self.scheduler_run_active);
+        self.scheduler_run_active = false;
+        self.release_attempts = self.release_attempts.saturating_add(1);
+        Ok(())
+    }
+
     fn reposition_debug_runtime(
         &mut self,
         _request: DebugRuntimeRepositionRequest,
     ) -> Result<crucible::DebugRuntimeRepositionReport, SchedulerError> {
+        assert!(
+            !self.scheduler_run_active,
+            "runtime replacement must start after guest scheduler ownership is suspended"
+        );
         Err(BackendError::Rejected {
             message: String::from("candidate runtime verification failed"),
         }

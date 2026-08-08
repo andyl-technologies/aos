@@ -58,6 +58,19 @@ impl DebugControllerAccess {
         &self.lease
     }
 
+    /// Returns a nonzero guest-channel identity scoped to this acquisition.
+    ///
+    /// Independently released controller acquisitions receive distinct holder
+    /// identities. Folding that identity into the protocol's 64-bit channel
+    /// field prevents delayed records from an exited CLI process from aliasing
+    /// a later guest channel.
+    #[must_use]
+    pub fn guest_channel_id(&self) -> u64 {
+        let holder = self.holder.as_u128();
+        let folded = (holder as u64) ^ ((holder >> 64) as u64);
+        if folded == 0 { 1 } else { folded }
+    }
+
     fn generation(&self) -> u64 {
         self.lease.generation
     }
