@@ -22,6 +22,20 @@ _start:
     orr x0, x0, #1
     msr sctlr_el1, x0
     isb
+    adrp x0, exception_vectors
+    add x0, x0, :lo12:exception_vectors
+    msr vbar_el1, x0
+    isb
+.if TEST_MODE >= 14
+    adrp x0, scenario_result
+    add x0, x0, :lo12:scenario_result
+    mov w1, #0x7e
+    strb w1, [x0]
+0:
+    ldrb w1, [x0]
+    cmp w1, #0x7f
+    b.ne 0b
+.endif
     mov x0, #20000
 1:
     subs x0, x0, #1
@@ -136,12 +150,65 @@ _start:
     casp x0, x1, x2, x3, [x4]
     stp x0, x1, [x5]
 .endif
+.elseif TEST_MODE == 14
+    adrp x1, aligned_target
+    add x1, x1, :lo12:aligned_target
+    ldrb w0, [x1]
+    adrp x2, scenario_result
+    add x2, x2, :lo12:scenario_result
+    strb wzr, [x2]
+.elseif TEST_MODE == 15
+    adrp x1, aligned_target
+    add x1, x1, :lo12:aligned_target
+    ldrb w0, [x1]
+    mov x3, #20000
+3:
+    yield
+    subs x3, x3, #1
+    b.ne 3b
+    ldrb w0, [x1]
+    adrp x2, scenario_result
+    add x2, x2, :lo12:scenario_result
+    strb w0, [x2]
+.elseif TEST_MODE == 16
+    adrp x1, cross_page_target
+    add x1, x1, :lo12:cross_page_target
+    ldrb w0, [x1, #4]
+    adrp x1, aligned_target
+    add x1, x1, :lo12:aligned_target
+    ldrb w0, [x1]
+    adrp x2, scenario_result
+    add x2, x2, :lo12:scenario_result
+    strb w0, [x2]
+.elseif TEST_MODE == 17
+    adrp x1, aligned_target
+    add x1, x1, :lo12:aligned_target
+    ldrb w0, [x1]
+    adrp x2, scenario_result
+    add x2, x2, :lo12:scenario_result
+    strb w0, [x2]
 .else
     .error "unknown TEST_MODE"
 .endif
 2:
     wfe
     b 2b
+
+.align 11
+exception_vectors:
+.rept 16
+    b exception_handler
+    .space 124
+.endr
+
+exception_handler:
+    adrp x1, scenario_result
+    add x1, x1, :lo12:scenario_result
+    mov w0, #0xe1
+    strb w0, [x1]
+4:
+    wfe
+    b 4b
 
 .section .fault_text, "ax"
 .global fault_fetch
@@ -191,6 +258,11 @@ atomic_result:
 .global fetch_result
 fetch_result:
     .byte 0
+
+.section .scenario_data, "aw"
+.global scenario_result
+scenario_result:
+    .fill 16, 1, 0
 
 .section .page_tables, "aw"
 .align 12

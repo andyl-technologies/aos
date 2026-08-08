@@ -45,6 +45,25 @@ long_mode:
     mov %ax, %es
     mov %ax, %ss
     mov $stack_top, %rsp
+    lea exception_handler(%rip), %rax
+    movw %ax, idt + 14 * 16
+    movw $0x08, idt + 14 * 16 + 2
+    movb $0, idt + 14 * 16 + 4
+    movb $0x8e, idt + 14 * 16 + 5
+    shr $16, %rax
+    movw %ax, idt + 14 * 16 + 6
+    shr $16, %rax
+    movl %eax, idt + 14 * 16 + 8
+    movl $0, idt + 14 * 16 + 12
+    lea idt(%rip), %rax
+    movq %rax, idt_descriptor + 2
+    lidt idt_descriptor
+.if TEST_MODE >= 14
+    movb $0x7e, scenario_result
+0:
+    cmpb $0x7f, scenario_result
+    jne 0b
+.endif
     mov $20000, %ecx
 1:
     pause
@@ -114,12 +133,36 @@ long_mode:
     lock cmpxchg16b atomic_target
     movq %rax, atomic_result
     movq %rdx, atomic_result + 8
+.elseif TEST_MODE == 14
+    movb aligned_target, %al
+    movb $0, scenario_result
+.elseif TEST_MODE == 15
+    movb aligned_target, %al
+    mov $20000, %ecx
+3:
+    pause
+    loop 3b
+    movb aligned_target, %al
+    movb %al, scenario_result
+.elseif TEST_MODE == 16
+    movb cross_page_target + 4, %al
+    movb aligned_target, %al
+    movb %al, scenario_result
+.elseif TEST_MODE == 17
+    movb aligned_target, %al
+    movb %al, scenario_result
 .else
     .error "unknown TEST_MODE"
 .endif
 2:
     pause
     jmp 2b
+
+exception_handler:
+    movb $0xe1, scenario_result
+4:
+    pause
+    jmp 4b
 
 .section .fault_text, "ax"
 .global fault_fetch
@@ -169,11 +212,25 @@ atomic_result:
 fetch_result:
     .byte 0
 
+.section .scenario_data, "aw"
+.global scenario_result
+scenario_result:
+    .fill 16, 1, 0
+
 .section .bss
 .align 16
 stack_bottom:
     .skip 16384
 stack_top:
+
+.section .idt, "aw", @progbits
+.align 16
+idt:
+    .skip 16 * 256
+idt_end:
+idt_descriptor:
+    .word idt_end - idt - 1
+    .skip 8
 
 .section .page_tables, "aw"
 .align 4096

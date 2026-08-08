@@ -110,7 +110,7 @@ in
               ${pluginSource}/crucible-memory-dma.c \
               -o crucible-memory-dma.so \
               $(pkg-config --libs glib-2.0)
-            for mode in $(seq 1 13); do
+            for mode in $(seq 1 17); do
               ${pkgs.llvm}/bin/clang --target=i386-none-elf \
                 -c -Wa,-defsym,TEST_MODE=$mode \
                 ${./phase2-qemu-memory-access-guest.S} \
@@ -215,6 +215,70 @@ in
             run_architecture_matrix x86_64
             run_architecture_matrix aarch64
 
+            run_advanced_case() {
+              architecture="$1"
+              mode="$2"
+              scenario="$3"
+              expected="$4"
+              case "$architecture" in
+                x86_64)
+                  binary=${qemuPackage}/bin/qemu-system-x86_64
+                  machine='-machine pc -cpu max -m 64M'
+                  guest="guest-x86-$mode.elf"
+                  address=0x102000
+                  if test "$mode" -eq 1; then
+                    result=0x102100
+                  else
+                    result=0x108000
+                  fi
+                  ;;
+                aarch64)
+                  binary=${qemuPackage}/bin/qemu-system-aarch64
+                  machine='-machine virt -cpu max -m 64M'
+                  guest="guest-aarch64-$mode.elf"
+                  address=0x40300000
+                  if test "$mode" -eq 1; then
+                    result=0x40300100
+                  else
+                    result=0x40310000
+                  fi
+                  ;;
+                *) exit 1 ;;
+              esac
+              set +e
+              timeout 120 $binary $machine -accel sim -icount shift=0 \
+                -smp 1 -nographic -no-reboot -serial none -monitor none \
+                -kernel "$guest" \
+                -plugin "$PWD/crucible-memory-access.so,address=$address,result=$result,expected=$expected,kind=1,classes=2,length=1,mask=ff,replacement=a5,atomic=0,scenario=$scenario" \
+                >"logs/$architecture-advanced-$scenario.log" 2>&1
+              case_status=$?
+              set -e
+              cat "logs/$architecture-advanced-$scenario.log"
+              test "$case_status" -eq 0
+              grep -Fxq CRUCIBLE_MEMORY_ACCESS_LIVE_PASS \
+                "logs/$architecture-advanced-$scenario.log"
+              test "$(grep -Fc CRUCIBLE_MEMORY_ACCESS_LIVE_PASS \
+                "logs/$architecture-advanced-$scenario.log")" -eq 1
+            }
+            run_advanced_architecture_matrix() {
+              architecture="$1"
+              case "$architecture" in
+                x86_64) exception_scenario=poison-exception-x86 ;;
+                aarch64) exception_scenario=poison-exception-aarch64 ;;
+                *) exit 1 ;;
+              esac
+              run_advanced_case "$architecture" 17 poison-corrected a5
+              run_advanced_case "$architecture" 14 poison-access-error e1
+              run_advanced_case "$architecture" 14 \
+                "$exception_scenario" e1
+              run_advanced_case "$architecture" 14 failed-region e1
+              run_advanced_case "$architecture" 15 retention 00
+              run_advanced_case "$architecture" 16 rowhammer a5
+              run_advanced_case "$architecture" 17 service 5a
+            }
+            run_advanced_architecture_matrix x86_64
+            run_advanced_architecture_matrix aarch64
+
             vmlinuz=$(ls ${pkgs.linux}/boot/vmlinuz-* | head -1)
             test -n "$vmlinuz"
             dd if=/dev/zero of=dma-disk.raw bs=1M count=8 status=none
@@ -266,6 +330,7 @@ in
               printf 'architectures=x86_64,aarch64\n'
               printf 'cpu_access_matrix=fetch,aligned,unaligned,cross-page,load,store,atomic-1-2-4-8-16,cmpxchg-success-failure\n'
               printf 'transform_matrix=stuck,read-corrupt,lost-write,torn-write\n'
+              printf 'advanced_matrix=corrected-poison,access-error,architectural-exception,failed-region,retention,rowhammer,service\n'
               printf 'dma_backend=actual-device-scoped-virtio-blk-read-write\n'
             } >"$out/result"
           '';

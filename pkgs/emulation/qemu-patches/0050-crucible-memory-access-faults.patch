@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Fri, 7 Aug 2026 22:49:41 -0700
+Date: Sat, 8 Aug 2026 09:22:27 -0700
 Subject: [PATCH] crucible: add memory access fault rules
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
@@ -8,7 +8,7 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  accel/tcg/atomic_template.h                |  118 +-
  accel/tcg/cpu-exec-common.c                |    4 +
  accel/tcg/cpu-exec.c                       |   13 +-
- accel/tcg/cputlb.c                         |  623 +-
+ accel/tcg/cputlb.c                         |  624 +-
  accel/tcg/internal-common.h                |    2 +
  accel/tcg/translate-all.c                  |   23 +
  accel/tcg/translator.c                     |  122 +-
@@ -26,7 +26,7 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  include/system/dma.h                       |   51 +-
  plugins/api-system.c                       |   12 +
  plugins/crucible-fault-memory.c            |    3 +-
- plugins/crucible-fault-node.c              | 7193 ++++++++++++++++++++
+ plugins/crucible-fault-node.c              | 7196 ++++++++++++++++++++
  plugins/crucible-fault.c                   |   38 +-
  plugins/meson.build                        |    2 +-
  system/physmem.c                           |  324 +-
@@ -38,10 +38,10 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  target/i386/cpu.c                          |    3 +
  target/i386/cpu.h                          |    8 +
  target/i386/tcg/system/excp_helper.c       |   55 +-
- tests/tcg/plugins/crucible-memory-access.c |  411 ++
+ tests/tcg/plugins/crucible-memory-access.c |  652 ++
  tests/tcg/plugins/crucible-memory-dma.c    |  346 +
  tests/tcg/plugins/meson.build              |    4 +-
- 36 files changed, 9781 insertions(+), 117 deletions(-)
+ 36 files changed, 10026 insertions(+), 117 deletions(-)
  create mode 100644 plugins/crucible-fault-node.c
  create mode 100644 tests/tcg/plugins/crucible-memory-access.c
  create mode 100644 tests/tcg/plugins/crucible-memory-dma.c
@@ -386,7 +386,7 @@ index 5eeef83..b7fdc50 100644
              if (tb == NULL) {
                  CPUJumpCache *jc;
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
-index fb22048..5451f6f 100644
+index fb22048..bb1ef8c 100644
 --- a/accel/tcg/cputlb.c
 +++ b/accel/tcg/cputlb.c
 @@ -35,6 +35,7 @@
@@ -642,6 +642,7 @@ index fb22048..5451f6f 100644
 +                         (access_class == QEMU_CRUCIBLE_MEMORY_FETCH ?
 +                          MMU_INST_FETCH : MMU_DATA_LOAD);
 +
++    (void)mmu_idx;
 +    g_assert(length <= sizeof(before));
 +    memcpy(before, p->haddr, length);
 +    result = qemu_crucible_fault_memory_access(
@@ -656,8 +657,7 @@ index fb22048..5451f6f 100644
 +        if (has_exception) {
 +            cpu_inject_fault_exception(cpu, &exception, ra);
 +        }
-+        io_failed(cpu, p->full, p->addr, length, type, mmu_idx,
-+                  MEMTX_ERROR, ra);
++        cpu_inject_fault_access_error(cpu, p->addr, length, type, ra);
 +    }
 +    return result.suppress_write;
 +}
@@ -1286,7 +1286,7 @@ index fb22048..5451f6f 100644
          }
          return;
      }
-@@ -2862,6 +3333,92 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
+@@ -2862,6 +3333,93 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
      }
  }
  
@@ -1320,6 +1320,7 @@ index fb22048..5451f6f 100644
 +        QEMU_CRUCIBLE_MEMORY_CPU_LOAD |
 +        (write_happened ? QEMU_CRUCIBLE_MEMORY_CPU_STORE : 0);
 +
++    (void)mmu_idx;
 +    *transaction = crucible_fault_memory_transaction_start(
 +        cpu, access_class, page->addr, page->size, ra,
 +        !(page->flags & TLB_MMIO));
@@ -1333,9 +1334,9 @@ index fb22048..5451f6f 100644
 +        if (has_exception) {
 +            cpu_inject_fault_exception(cpu, &exception, ra);
 +        }
-+        io_failed(cpu, page->full, page->addr, page->size,
-+                  write_happened ? MMU_DATA_STORE : MMU_DATA_LOAD, mmu_idx,
-+                  MEMTX_ERROR, ra);
++        cpu_inject_fault_access_error(
++            cpu, page->addr, page->size,
++            write_happened ? MMU_DATA_STORE : MMU_DATA_LOAD, ra);
 +    }
 +}
 +
@@ -1379,7 +1380,7 @@ index fb22048..5451f6f 100644
  #include "ldst_common.c.inc"
  
  /*
-@@ -2895,6 +3452,12 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
+@@ -2895,6 +3453,12 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
  #include "atomic_template.h"
  #endif
  
@@ -2561,10 +2562,10 @@ index b1422b8..6e6c2b3 100644
              return -EFAULT;
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000..2118470
+index 0000000..66e1025
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,7193 @@
+@@ -0,0 +1,7196 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -6394,6 +6395,7 @@ index 0000000..2118470
 +            policy_kind = qdict_get_str(policy, "kind");
 +            if (strcmp(policy_kind, "corrected") != 0) {
 +                failed = true;
++                node_memory_event_span(offset, selected);
 +                node_memory_event(rule, CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR,
 +                                  access_classes, vcpu, vaddr, gpa, before,
 +                                  value, length, observed_icount);
@@ -8181,11 +8183,13 @@ index 0000000..2118470
 +    for (guint i = 0; i < rule->translations->len; i++) {
 +        CrucibleNodeTranslation *translation = &g_array_index(
 +            rule->translations, CrucibleNodeTranslation, i);
-+        uint64_t physical_start = translation->physical_page;
++        uint64_t covered_start = MAX(start, translation->virtual_page);
++        uint64_t physical_start = translation->physical_page +
++                                  (covered_start - translation->virtual_page);
 +
 +        if (gpa >= physical_start &&
 +            gpa - physical_start < translation->covered_bytes) {
-+            uint64_t logical = translation->virtual_page +
++            uint64_t logical = covered_start +
 +                               (gpa - physical_start);
 +
 +            if (logical >= start && logical - start < length) {
@@ -10611,10 +10615,10 @@ index f7e2288..06ea3c7 100644
                        bool probe, uintptr_t retaddr)
 diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
 new file mode 100644
-index 0000000..c582c99
+index 0000000..7c4dfcc
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-access.c
-@@ -0,0 +1,411 @@
+@@ -0,0 +1,652 @@
 +/*
 + * Live Crucible memory-access fault test plugin
 + *
@@ -10645,9 +10649,19 @@ index 0000000..c582c99
 +static size_t test_length;
 +static uint32_t test_classes;
 +static uint32_t test_kind;
++static uint16_t test_command_kind =
++    CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM;
++static const char *test_scenario = "transform";
++static bool test_require_full_coverage = true;
 +static uint32_t test_coverage;
++static uint8_t test_last_result[16];
++static size_t test_last_result_length;
++static bool test_last_result_readable;
++static uint64_t test_tb_count;
++static uint64_t test_last_icount;
 +static bool test_prepared;
 +static bool test_installed;
++static bool test_submitted;
 +static bool test_event_seen;
 +static bool test_complete;
 +
@@ -10758,24 +10772,16 @@ index 0000000..c582c99
 +               policy, strlen(policy));
 +}
 +
-+static void test_build_rule(uint32_t kind, uint32_t classes,
-+                            const uint8_t *mask, size_t mask_len,
-+                            bool replacement_present,
-+                            const uint8_t *replacement,
-+                            size_t replacement_len, bool violate_atomicity)
++static void test_payload_begin(uint16_t command_kind, uint16_t field_count)
 +{
 +    uint8_t header[CRUCIBLE_NODE_FAULT_PAYLOAD_HEADER_V1_BYTES] = { 0 };
-+    uint8_t node_hash[32];
-+    uint8_t no_device[32] = { 0 };
-+    uint8_t zero = 0;
 +
-+    memset(node_hash, 0x11, sizeof(node_hash));
 +    memcpy(header + CRUCIBLE_NODE_FAULT_PAYLOAD_MAGIC_OFFSET,
 +           "CRUCNOD1", 8);
 +    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_VERSION_OFFSET,
 +                 CRUCIBLE_NODE_FAULT_PAYLOAD_VERSION_V1);
 +    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_COMMAND_KIND_OFFSET,
-+                 CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM);
++                 command_kind);
 +    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_OPERATION_OFFSET,
 +                 CRUCIBLE_NODE_FAULT_OPERATION_UPSERT);
 +    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_TARGET_KIND_OFFSET,
@@ -10785,9 +10791,37 @@ index 0000000..c582c99
 +    memset(header + CRUCIBLE_NODE_FAULT_PAYLOAD_ACTION_HASH_OFFSET, 0x21, 32);
 +    memset(header + CRUCIBLE_NODE_FAULT_PAYLOAD_TARGET_HASH_OFFSET, 0x22, 32);
 +    memset(header + CRUCIBLE_NODE_FAULT_PAYLOAD_SCHEMA_HASH_OFFSET, 0x23, 32);
-+    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_FIELD_COUNT_OFFSET, 16);
++    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_FIELD_COUNT_OFFSET,
++                 field_count);
 +    test_payload = g_byte_array_new();
 +    g_byte_array_append(test_payload, header, sizeof(header));
++}
++
++static void test_payload_target(uint64_t address, uint64_t length,
++                                bool virtual_address)
++{
++    uint8_t node_hash[32];
++
++    memset(node_hash, 0x11, sizeof(node_hash));
++    test_field(CRUCIBLE_NODE_FAULT_FIELD_T1,
++               CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++               node_hash, sizeof(node_hash));
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_T2, address);
++    test_field_bool(CRUCIBLE_NODE_FAULT_FIELD_T3, virtual_address);
++    test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_T4, 0);
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_T5, length);
++}
++
++static void test_build_rule(uint32_t kind, uint32_t classes,
++                            const uint8_t *mask, size_t mask_len,
++                            bool replacement_present,
++                            const uint8_t *replacement,
++                            size_t replacement_len, bool violate_atomicity)
++{
++    uint8_t no_device[32] = { 0 };
++    uint8_t zero = 0;
++
++    test_payload_begin(CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM, 16);
 +    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P1, test_address);
 +    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P2, mask_len);
 +    test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_P3, kind);
@@ -10805,13 +10839,107 @@ index 0000000..c582c99
 +    test_field_bool(10, false);
 +    test_field(11, CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH, no_device,
 +               sizeof(no_device));
-+    test_field(CRUCIBLE_NODE_FAULT_FIELD_T1,
++    test_payload_target(test_address, mask_len, false);
++}
++
++static void test_build_poison(const char *policy)
++{
++    uint8_t no_device[32] = { 0 };
++    uint8_t zero = 0;
++
++    test_payload_begin(CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM, 16);
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P1, test_address);
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P2, 1);
++    test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_P3, 5);
++    test_field(CRUCIBLE_NODE_FAULT_FIELD_P4,
++               CRUCIBLE_NODE_FAULT_FIELD_TYPE_BYTES, &zero, 1);
++    test_field_bool(CRUCIBLE_NODE_FAULT_FIELD_P5, true);
++    test_field_policy(CRUCIBLE_NODE_FAULT_FIELD_P6, policy);
++    test_field_policy(CRUCIBLE_NODE_FAULT_FIELD_P7, "{\"kind\":\"every\"}");
++    test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_P8, 2);
++    test_field_bool(CRUCIBLE_NODE_FAULT_FIELD_P9, false);
++    test_field_bool(10, false);
++    test_field(11,
 +               CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
-+               node_hash, sizeof(node_hash));
-+    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_T2, test_address);
-+    test_field_bool(CRUCIBLE_NODE_FAULT_FIELD_T3, false);
-+    test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_T4, 0);
-+    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_T5, mask_len);
++               no_device, sizeof(no_device));
++    test_payload_target(test_address, 1, false);
++}
++
++static void test_build_region(uint32_t kind, uint64_t address,
++                              uint64_t length, const char *policy)
++{
++    test_payload_begin(CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE, 9);
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P1, address);
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P2, length);
++    test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_P3, kind);
++    test_field_policy(CRUCIBLE_NODE_FAULT_FIELD_P4, policy);
++    test_payload_target(address, length, true);
++}
++
++static void test_build_service(void)
++{
++    test_payload_begin(CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE, 11);
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P1, 1000);
++    test_field_bool(CRUCIBLE_NODE_FAULT_FIELD_P2, true);
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P3, 1000000000);
++    test_field_bool(CRUCIBLE_NODE_FAULT_FIELD_P4, true);
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P5, 1000000);
++    test_field_policy(CRUCIBLE_NODE_FAULT_FIELD_P6, "{\"kind\":\"range\"}");
++    test_payload_target(test_address, 1, true);
++}
++
++static void test_build_scenario(const char *scenario)
++{
++    g_autofree char *policy = NULL;
++
++    test_require_full_coverage = false;
++    test_kind = 0;
++    if (strcmp(scenario, "poison-corrected") == 0) {
++        test_kind = 5;
++        test_build_poison(
++            "{\"kind\":\"corrected\",\"parameters\":{\"xor_mask\":\"ff\"}}");
++    } else if (strcmp(scenario, "poison-access-error") == 0) {
++        test_kind = 5;
++        test_build_poison("{\"kind\":\"access_error\"}");
++    } else if (strcmp(scenario, "poison-exception-x86") == 0) {
++        test_kind = 5;
++        policy = g_strdup_printf(
++            "{\"kind\":\"exception\",\"parameters\":{\"exception\":{"
++            "\"architecture\":\"x86_64\",\"before_instruction\":true,"
++            "\"fault_address\":%" PRIu64 ",\"maskable\":false,"
++            "\"record\":{\"kind\":\"architecture_default\"},"
++            "\"syndrome\":0,\"vector\":14}}}", test_address);
++        test_build_poison(policy);
++    } else if (strcmp(scenario, "poison-exception-aarch64") == 0) {
++        test_kind = 5;
++        policy = g_strdup_printf(
++            "{\"kind\":\"exception\",\"parameters\":{\"exception\":{"
++            "\"architecture\":\"aarch64\",\"before_instruction\":true,"
++            "\"fault_address\":%" PRIu64 ",\"maskable\":false,"
++            "\"record\":{\"kind\":\"architecture_default\"},"
++            "\"syndrome\":0,\"vector\":4}}}", test_address);
++        test_build_poison(policy);
++    } else if (strcmp(scenario, "failed-region") == 0) {
++        test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE;
++        test_kind = 1;
++        test_build_region(1, test_address, 1,
++            "{\"kind\":\"failed\",\"parameters\":{\"policy\":{\"kind\":\"access_error\"}}}");
++    } else if (strcmp(scenario, "retention") == 0) {
++        test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE;
++        test_kind = 2;
++        test_build_region(2, test_address, 1,
++            "{\"kind\":\"retention\",\"parameters\":{\"decay_mask\":\"ff\",\"interval_nanos\":1}}");
++    } else if (strcmp(scenario, "rowhammer") == 0) {
++        test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE;
++        test_kind = 3;
++        test_build_region(3, test_address, 0x3000,
++            "{\"kind\":\"rowhammer\",\"parameters\":{\"flip_mask\":\"ff\",\"row_bytes\":64,\"threshold\":1,\"victim_distance\":1}}");
++    } else if (strcmp(scenario, "service") == 0) {
++        test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE;
++        test_build_service();
++    } else {
++        test_fail("unknown advanced scenario");
++    }
 +}
 +
 +static void test_poll_events(void)
@@ -10824,48 +10952,110 @@ index 0000000..c582c99
 +                &event, test_evidence, sizeof(test_evidence), &length)) == 1) {
 +        uint64_t access_address = test_get_u64(test_evidence + 24);
 +        uint64_t access_length = test_get_u64(test_evidence + 32);
-+        uint64_t transaction_address = test_get_u64(test_evidence + 264);
-+        uint64_t transaction_length = test_get_u64(test_evidence + 272);
-+        uint32_t event_offset = test_get_u32(test_evidence + 60);
-+        uint32_t event_length = test_get_u32(test_evidence + 108);
-+        uint64_t selected_address;
++        uint64_t rule_length = strcmp(test_scenario, "rowhammer") == 0 ?
++                               0x3000 : test_length;
 +
-+        if (event.command_kind !=
-+                CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM ||
-+            event.generation != 1 ||
-+            access_length == 0 || access_length > 4096 ||
-+            length != 480 + 3 * access_length ||
++        if (event.command_kind != test_command_kind ||
++            event.generation != 1 || access_length == 0 ||
++            access_length > 4096 ||
 +            memcmp(test_evidence, "CRUCMEM1", 8) != 0 ||
 +            (test_get_u32(test_evidence + 8) & test_classes) == 0 ||
-+            test_get_u64(test_evidence + 48) == 0 ||
-+            test_get_u32(test_evidence + 56) == 0 ||
-+            transaction_length == 0 || transaction_address > test_address ||
-+            test_address - transaction_address >= transaction_length ||
-+            test_get_u16(test_evidence + 304) !=
-+                CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM ||
-+            test_get_u32(test_evidence + 308) != test_kind ||
-+            event_length == 0 || event_length > test_length ||
-+            event_offset > access_length - event_length ||
-+            access_address > UINT64_MAX - event_offset) {
++            test_get_u64(test_evidence + 48) == 0) {
 +            g_printerr("event kind=%u generation=%" PRIu64
 +                       " class=%u access=%" PRIx64 "+%" PRIu64
-+                       " transaction=%" PRIx64 "+%" PRIu64
-+                       " event=%u+%u payload=%zu command=%u/%u\n",
++                       " payload=%zu\n",
 +                       event.command_kind, event.generation,
 +                       test_get_u32(test_evidence + 8), access_address,
-+                       access_length, transaction_address, transaction_length,
-+                       event_offset, event_length, length,
-+                       test_get_u16(test_evidence + 304),
-+                       test_get_u32(test_evidence + 308));
++                       access_length, length);
 +            test_fail("occurrence evidence is incomplete");
 +        }
-+        selected_address = access_address + event_offset;
-+        if (selected_address < test_address ||
-+            selected_address > test_address + test_length - event_length) {
-+            test_fail("occurrence evidence selected the wrong byte range");
-+        }
-+        for (size_t byte = 0; byte < event_length; byte++) {
-+            test_coverage |= 1U << (selected_address - test_address + byte);
++        if (test_command_kind == CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE) {
++            if (length != 576 || memcmp(test_evidence + 368, "CRUCSVC1", 8) ||
++                test_get_u32(test_evidence + 376) != 1 ||
++                test_get_u64(test_evidence + 400) <
++                    test_get_u64(test_evidence + 392) ||
++                test_get_u64(test_evidence + 408) != 1000 ||
++                test_get_u64(test_evidence + 416) == 0 ||
++                test_get_u64(test_evidence + 432) == 0 ||
++                test_get_u64(test_evidence + 440) != 1000 ||
++                test_get_u64(test_evidence + 448) != 1000000000 ||
++                test_get_u64(test_evidence + 456) != 1000000 ||
++                test_get_u32(test_evidence + 464) != 3 ||
++                test_get_u32(test_evidence + 468) !=
++                    CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED) {
++                test_fail("service evidence is incomplete");
++            }
++        } else {
++            uint64_t transaction_address = test_get_u64(test_evidence + 264);
++            uint64_t transaction_length = test_get_u64(test_evidence + 272);
++            uint32_t event_offset = test_get_u32(test_evidence + 60);
++            uint32_t event_length = test_get_u32(test_evidence + 108);
++            uint32_t state_flags = test_get_u32(test_evidence + 104);
++            uint16_t outcome = test_get_u16(test_evidence + 306);
++            uint64_t selected_address;
++
++            if ((state_flags & 2U) != 0) {
++                if (event_offset != 0 || event_length != 0 ||
++                    outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR) {
++                    test_fail("stale-translation evidence is incomplete");
++                }
++                continue;
++            }
++
++            if (strcmp(test_scenario, "rowhammer") == 0 &&
++                (test_get_u64(test_evidence + 176) == 0 ||
++                 test_get_u64(test_evidence + 184) == 0 ||
++                 test_get_u64(test_evidence + 344) == 0)) {
++                g_printerr(
++                    "rowhammer evidence mutations=%" PRIu64
++                    " bytes=%" PRIu64 " victims=%" PRIu64
++                    " access=%" PRIx64 "+%" PRIu64 "\n",
++                    test_get_u64(test_evidence + 176),
++                    test_get_u64(test_evidence + 184),
++                    test_get_u64(test_evidence + 344),
++                    access_address, access_length);
++                test_fail("rowhammer did not mutate a victim row");
++            }
++
++            if (length < 480 || test_get_u32(test_evidence + 56) == 0 ||
++                transaction_length == 0 ||
++                test_get_u16(test_evidence + 304) != test_command_kind ||
++                test_get_u32(test_evidence + 308) != test_kind ||
++                event_length == 0 || event_length > access_length ||
++                event_offset > access_length - event_length ||
++                access_address > UINT64_MAX - event_offset ||
++                (strcmp(test_scenario, "poison-corrected") == 0 &&
++                 outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_CORRECTED) ||
++                ((strcmp(test_scenario, "poison-access-error") == 0 ||
++                  g_str_has_prefix(test_scenario, "poison-exception-") ||
++                 strcmp(test_scenario, "failed-region") == 0) &&
++                 outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR)) {
++                g_printerr(
++                    "memory evidence scenario=%s payload=%zu matches=%u "
++                    "transaction=%" PRIx64 "+%" PRIu64
++                    " command=%u/%u kind=%u/%u event=%u+%u "
++                    "access=%" PRIx64 "+%" PRIu64 " outcome=%u\n",
++                    test_scenario, length,
++                    test_get_u32(test_evidence + 56), transaction_address,
++                    transaction_length, test_get_u16(test_evidence + 304),
++                    test_command_kind, test_get_u32(test_evidence + 308),
++                    test_kind, event_offset, event_length, access_address,
++                    access_length, outcome);
++                test_fail("memory evidence is incomplete");
++            }
++            selected_address = access_address + event_offset;
++            if (selected_address < test_address ||
++                selected_address - test_address > rule_length - event_length ||
++                transaction_address > selected_address ||
++                selected_address - transaction_address >= transaction_length) {
++                test_fail("occurrence evidence selected the wrong byte range");
++            }
++            if (test_require_full_coverage) {
++                for (size_t byte = 0; byte < event_length; byte++) {
++                    test_coverage |=
++                        1U << (selected_address - test_address + byte);
++                }
++            }
 +        }
 +        test_event_seen = true;
 +    }
@@ -10904,11 +11094,18 @@ index 0000000..c582c99
 +            }
 +            qemu_plugin_force_vcpu_exit();
 +        } else {
++            const uint8_t ready = 0x7f;
++
 +            if (result.status != CRUCIBLE_FAULT_STATUS_APPLIED ||
 +                length != sizeof(evidence)) {
 +                test_fail("rule commit was not applied");
 +            }
 +            test_installed = true;
++            if (!qemu_plugin_crucible_write_memory_vaddr(
++                    test_result_address, &ready, sizeof(ready))) {
++                test_fail(
++                    "guest installation acknowledgement could not be written");
++            }
 +        }
 +    }
 +    if (status < 0) {
@@ -10922,10 +11119,34 @@ index 0000000..c582c99
 +
 +    (void)cpu_index;
 +    (void)opaque;
++    test_tb_count++;
++    test_last_icount = qemu_plugin_crucible_icount();
++    if (!test_submitted) {
++        if (qemu_plugin_read_memory_vaddr(test_result_address, value, 1) &&
++            value->len == 1 && value->data[0] == 0x7e) {
++            test_command.target_icount = test_last_icount;
++            test_command.authorization_ceiling_icount = test_last_icount;
++            if (qemu_plugin_crucible_fault_submit(
++                    &test_command, test_payload->data,
++                    test_payload->len) != 0) {
++                test_fail("deferred rule preparation could not be submitted");
++            }
++            test_submitted = true;
++            qemu_plugin_force_vcpu_exit();
++        }
++        return;
++    }
++    g_byte_array_set_size(value, 0);
++    if (test_installed && qemu_plugin_read_memory_vaddr(
++            test_result_address, value, test_expected_length)) {
++        test_last_result_readable = true;
++        test_last_result_length = value->len;
++        memcpy(test_last_result, value->data, value->len);
++    }
 +    if (!test_installed || !test_event_seen || test_complete ||
-+        test_coverage != (1U << test_length) - 1 ||
-+        !qemu_plugin_read_memory_vaddr(
-+            test_result_address, value, test_expected_length) ||
++        (test_require_full_coverage &&
++         test_coverage != (1U << test_length) - 1) ||
++        !test_last_result_readable ||
 +        value->len != test_expected_length ||
 +        memcmp(value->data, test_expected, test_expected_length) != 0) {
 +        return;
@@ -10947,6 +11168,20 @@ index 0000000..c582c99
 +    (void)id;
 +    (void)opaque;
 +    if (!test_complete) {
++        g_printerr("state tb=%" PRIu64 " icount=%" PRIu64
++                   " prepared=%u installed=%u event=%u coverage=%08x "
++                   "readable=%u result=", test_tb_count, test_last_icount,
++                   test_prepared,
++                   test_installed, test_event_seen, test_coverage,
++                   test_last_result_readable);
++        for (size_t byte = 0; byte < test_last_result_length; byte++) {
++            g_printerr("%02x", test_last_result[byte]);
++        }
++        g_printerr(" expected=");
++        for (size_t byte = 0; byte < test_expected_length; byte++) {
++            g_printerr("%02x", test_expected[byte]);
++        }
++        g_printerr("\n");
 +        test_fail("guest-visible result was not observed");
 +    }
 +    g_byte_array_unref(test_payload);
@@ -10965,7 +11200,7 @@ index 0000000..c582c99
 +    bool violate_atomicity = false;
 +
 +    (void)info;
-+    if (argc != 9 ||
++    if ((argc != 9 && argc != 10) ||
 +        !g_str_has_prefix(argv[0], "address=") ||
 +        !g_str_has_prefix(argv[1], "result=") ||
 +        !g_str_has_prefix(argv[2], "expected=") ||
@@ -10974,8 +11209,10 @@ index 0000000..c582c99
 +        !g_str_has_prefix(argv[5], "length=") ||
 +        !g_str_has_prefix(argv[6], "mask=") ||
 +        !g_str_has_prefix(argv[7], "replacement=") ||
-+        !g_str_has_prefix(argv[8], "atomic=")) {
-+        test_fail("nine canonical arguments are required");
++        !g_str_has_prefix(argv[8], "atomic=") ||
++        (argc == 10 && !g_str_has_prefix(argv[9], "scenario="))) {
++        test_fail(
++            "nine canonical arguments and an optional scenario are required");
 +    }
 +    test_address = g_ascii_strtoull(argv[0] + 8, NULL, 0);
 +    test_result_address = g_ascii_strtoull(argv[1] + 7, NULL, 0);
@@ -11002,12 +11239,17 @@ index 0000000..c582c99
 +        test_fail("replacement length must equal the rule length");
 +    }
 +    violate_atomicity = g_ascii_strtoull(argv[8] + 7, NULL, 0) != 0;
-+    test_build_rule(kind, classes, mask, length, replacement_present,
-+                    replacement, length, violate_atomicity);
++    if (argc == 10) {
++        test_scenario = argv[9] + 9;
++        test_build_scenario(test_scenario);
++    } else {
++        test_build_rule(kind, classes, mask, length, replacement_present,
++                        replacement, length, violate_atomicity);
++    }
 +    memset(&test_command, 0, sizeof(test_command));
 +    test_command.abi_major = CRUCIBLE_FAULT_COMMAND_ABI_MAJOR;
 +    test_command.abi_minor = CRUCIBLE_FAULT_COMMAND_ABI_MINOR;
-+    test_command.command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM;
++    test_command.command_kind = test_command_kind;
 +    test_command.command_flags = CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY;
 +    test_command.phase = CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY;
 +    test_command.semantic_version = CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION;
@@ -11016,9 +11258,12 @@ index 0000000..c582c99
 +    test_command.authorization_ceiling_icount = 32;
 +    memset(test_command.target_node_hash, 0x11, 32);
 +    memset(test_command.binding_hash, 0x31, 32);
-+    if (qemu_plugin_crucible_fault_submit(
-+            &test_command, test_payload->data, test_payload->len) != 0) {
-+        test_fail("rule preparation could not be submitted");
++    if (argc != 10) {
++        if (qemu_plugin_crucible_fault_submit(
++                &test_command, test_payload->data, test_payload->len) != 0) {
++            test_fail("rule preparation could not be submitted");
++        }
++        test_submitted = true;
 +    }
 +    qemu_plugin_register_crucible_fault_completion_cb(
 +        test_fault_completion, NULL);
