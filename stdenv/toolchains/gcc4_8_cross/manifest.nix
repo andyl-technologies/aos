@@ -106,6 +106,11 @@ in {
       ];
     preConfigure = ''
       mkdir -p "$TMPDIR/fakebin"
+      # Bash's generated Makefile invokes `autoconf` literally when coarse
+      # timestamp resolution makes configure appear stale.  Keep the shipped
+      # configure script instead of introducing an unavailable regeneration
+      # tool into this early cross tier.
+      ${fakeScript "autoconf" "exit 0"}
       ${fakeScript "size" "exit 0"}
       ${fakeScript "makeinfo" "exit 0"}
       export PATH="$TMPDIR/fakebin:$PATH"
