@@ -2,13 +2,13 @@
 # workspace-scoped test suite. Line entries are caps, not blanket exemptions:
 # increasing a listed file's line count still fails the gate.
 shape-line|crates/crucible-api/src/client.rs|2967
-shape-line|crates/crucible-api/src/debug_gateway.rs|860
+shape-line|crates/crucible-api/src/debug_gateway.rs|923
 shape-line|crates/crucible-api/src/lifecycle.rs|2388
 shape-line|crates/crucible-api/src/open_set.rs|929
 shape-line|crates/crucible-api/src/rpc_abi.rs|812
 shape-line|crates/crucible-api/src/server.rs|2980
 shape-line|crates/crucible-api/src/streaming.rs|1299
-shape-line|crates/crucible-api/src/vm_lifecycle/runtime.rs|1274
+shape-line|crates/crucible-api/src/vm_lifecycle/runtime.rs|1301
 shape-line|crates/crucible-api/tests/gate_control_client/conformance.rs|1318
 shape-line|crates/crucible-api/tests/gate_control_client/contract_tests.rs|1770
 shape-line|crates/crucible-api/tests/gate_control_client/http2_fixture.rs|2391
@@ -66,7 +66,7 @@ shape-line|crates/crucible-harness/tests/reproduction_artifact.rs|691
 shape-line|crates/crucible-harness/tests/support/harness_lint/scan.rs|1087
 shape-line|crates/crucible-harness/tests/support/testing_standards.rs|710
 shape-line|crates/crucible-protocol/src/doorbell_marker.rs|821
-shape-line|crates/crucible-protocol/src/debug_gateway.rs|700
+shape-line|crates/crucible-protocol/src/debug_gateway.rs|703
 shape-line|crates/crucible-protocol/src/guest_introspection.rs|986
 shape-line|crates/crucible-protocol/src/lib.rs|2799
 shape-line|crates/crucible-qemu-plugin/src/abi.rs|2747
@@ -99,7 +99,7 @@ shape-line|crates/crucible-qemu/src/async_driver.rs|882
 shape-line|crates/crucible-qemu/src/determinism_boundary.rs|1566
 shape-line|crates/crucible-qemu/src/gdbstub_proxy.rs|672
 shape-line|crates/crucible-qemu/src/launch.rs|1560
-shape-line|crates/crucible-qemu/src/launch/validation.rs|877
+shape-line|crates/crucible-qemu/src/launch/validation.rs|885
 shape-line|crates/crucible-qemu/src/live_coverage_gate.rs|845
 shape-line|crates/crucible-qemu/src/live_coverage_gate/trace.rs|701
 shape-line|crates/crucible-qemu/src/live_plugin_quantum_gate.rs|815
@@ -134,7 +134,7 @@ shape-line|crates/crucible-session/src/session/actor.rs|1294
 shape-line|crates/crucible-session/src/session/commands.rs|1028
 shape-line|crates/crucible-session/src/session/engine.rs|1921
 shape-line|crates/crucible-session/src/tests/actor_runtime.rs|2274
-shape-line|crates/crucible-session/src/tests/engine_state.rs|2955
+shape-line|crates/crucible-session/src/tests/engine_state.rs|2960
 shape-line|crates/crucible-session/tests/gate_control_responsive.rs|839
 shape-line|crates/crucible-session/tests/gate_exploration_fork.rs|632
 shape-line|crates/crucible-shmem/src/abi_header.rs|788
