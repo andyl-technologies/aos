@@ -28,12 +28,7 @@ in
         export PATH="${prev.coreutils}/bin:${crossGccStage2}/bin:${crossBinutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin:${prev.m4}/bin:${prev.flex}/bin:${prev.bison}/bin:${prev.texinfo}/bin"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
 
-        # Do not ask old coreutils `cp` to restore directory permissions: its
-        # fallback chmod syscall is unavailable on some sandbox filesystems.
-        # The next command deliberately makes this private copy writable.
-        mkdir -p "$TMPDIR/src"
-        (cd ${src} && tar cf - .) \
-          | (cd "$TMPDIR/src" && tar --no-same-owner --no-same-permissions -xf -)
+        cp -r ${src} "$TMPDIR/src"
         chmod -R u+w "$TMPDIR/src"
 
         # Touch all files first, then touch generated .c/.h to prevent regeneration

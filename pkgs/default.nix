@@ -5,7 +5,6 @@
 {
   lib,
   stdenv,
-  guestPackageSets ? {},
 }: let
   fetchurl = lib.fetchurl;
 
@@ -502,7 +501,6 @@
       fakeHash = lib.fakeHash;
       # --- Build infrastructure ---
       inherit stdenv;
-      inherit guestPackageSets;
 
       # nuke-references uses the raw (un-wrapped) mkDerivation so it can't
       # depend on itself. Every other package gets nuke-references injected
