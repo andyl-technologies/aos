@@ -4,9 +4,8 @@
 //! probabilistic effects are pure functions of an injected RNG draw. This module
 //! is the L3 seam that supplies those draws from the scenario's determinism RNG
 //! and records each one in the [`Schedule`](crate::Schedule) ([IO-21],
-//! [SCHED-30]), and that folds each device's RNG cursor and active I/O faults
-//! into the device half of a [`MaterializedState`](crate::MaterializedState) so
-//! omitting either fails the replay oracle ([IO-23], [IO-26]).
+//! [SCHED-30]). Signal-driven block and 9p effects are owned by their production
+//! adapters and do not pass through this network-link bridge.
 //!
 //! # Per-device RNG forked by name-hash
 //!
@@ -25,30 +24,22 @@
 //!
 //! - [`device_overlay`] builds a [`DeviceOverlayDelta`] that carries the device's
 //!   RNG cursor in its [`DeviceRngState`] ([IO-23]).
-//! - [`io_fault_state`] / [`with_active_io_faults`] fold active I/O faults into
-//!   the scheduler state's `active_faults` map ([IO-26]).
-//!
-//! Both pieces feed the canonical materialized-state hash, so a checkpoint that
-//! drops a device's RNG cursor or its active faults computes a different
-//! materialized-state id and is rejected by the replay oracle. The
-//! `device_rng_cursor_or_active_fault_omission_fails_replay_oracle` test proves
-//! this end to end.
+//! The cursor feeds the canonical materialized-state hash.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_device::{
-    DeviceError, DeviceRng, Frame, FrameDraws, IoFaults, LinkCorruptionStrategy, LinkFaults,
-    NetLink, PastDeliveryPolicy, Probability, ResolveOutcome,
+    DeviceError, DeviceRng, Frame, FrameDraws, LinkCorruptionStrategy, LinkFaults, NetLink,
+    PastDeliveryPolicy, Probability, ResolveOutcome,
 };
 
 use crate::decision::DecisionRecorder;
 use crate::{
-    CombinedBlockFaults, CombinedNetworkFaults, CombinedNinePFaults, CombinedPartitionFault,
-    Decision, DeviceId, DeviceOverlayDelta, DeviceRngState, EffectOutcomeDecision, FaultId,
-    FaultRateBasisPoints, FaultState, IoFailureMode, NetworkCorruptionFault, RngDecision,
-    RngStreamId, RngStreamPosition, SchedulerError, SchedulerLookaheadEdge,
-    SchedulerLookaheadEdgeEndpoint, SchedulerNodeId, SchedulerState, SchedulerTopologyChange, Seed,
-    SingleScheduler, VirtualTime,
+    CombinedNetworkFaults, CombinedPartitionFault, Decision, DeviceId, DeviceOverlayDelta,
+    DeviceRngState, EffectOutcomeDecision, FaultId, FaultRateBasisPoints, FaultState,
+    NetworkCorruptionFault, RngDecision, RngStreamId, RngStreamPosition, SchedulerError,
+    SchedulerLookaheadEdge, SchedulerLookaheadEdgeEndpoint, SchedulerNodeId,
+    SchedulerTopologyChange, Seed, SingleScheduler, VirtualTime,
 };
 
 /// Builds a device's seeded RNG, forked by name-hash from the scenario seed.
@@ -420,166 +411,6 @@ pub fn link_faults_from_combined_network(
     link
 }
 
-/// Applies combined block faults to a live block scheduling sub-node.
-///
-/// The model layer reduces active faults into [`CombinedBlockFaults`]; this
-/// helper lowers that table into concrete [`IoFaults`] and installs it on the
-/// sub-node so pending and future completions resolve through the active set.
-#[must_use]
-pub fn apply_combined_block_faults_to_subnode(
-    sub_node: &mut crate::DeviceSchedulingSubNode,
-    faults: &CombinedBlockFaults,
-) -> IoFaults {
-    let table = block_faults_from_combined_block(faults);
-    sub_node.set_io_faults(table.clone());
-    table
-}
-
-/// Applies combined block faults and materializes the active I/O fault set.
-///
-/// This is the one-call bridge for checkpointable activation: it installs the
-/// concrete table on the live block sub-node and folds the active I/O fault kinds
-/// into `scheduler.active_faults` for `MaterializedState` hashing.
-#[must_use]
-pub fn apply_combined_block_faults_to_subnode_and_state(
-    scheduler: SchedulerState,
-    sub_node: &mut crate::DeviceSchedulingSubNode,
-    faults: &CombinedBlockFaults,
-    active_since: VirtualTime,
-) -> (IoFaults, SchedulerState) {
-    let table = apply_combined_block_faults_to_subnode(sub_node, faults);
-    let scheduler = with_active_io_faults(scheduler, sub_node.device_id(), &table, active_since);
-    (table, scheduler)
-}
-
-/// Applies combined 9p faults to a live 9p scheduling sub-node.
-///
-/// The lowering is uniform with block and network faults: latency/jitter,
-/// reorder, failure, duplicate, corruption, and bandwidth all become one active
-/// completion-fault table driven by the device RNG.
-#[must_use]
-pub fn apply_combined_ninep_faults_to_subnode(
-    sub_node: &mut crate::DeviceSchedulingSubNode,
-    faults: &CombinedNinePFaults,
-) -> IoFaults {
-    let table = ninep_faults_from_combined_ninep(faults);
-    sub_node.set_io_faults(table.clone());
-    table
-}
-
-/// Applies combined 9p faults and materializes the active I/O fault set.
-///
-/// This is the filesystem twin of
-/// [`apply_combined_block_faults_to_subnode_and_state`]: activation mutates the
-/// live sub-node and returns a scheduler state that carries the active fault set.
-#[must_use]
-pub fn apply_combined_ninep_faults_to_subnode_and_state(
-    scheduler: SchedulerState,
-    sub_node: &mut crate::DeviceSchedulingSubNode,
-    faults: &CombinedNinePFaults,
-    active_since: VirtualTime,
-) -> (IoFaults, SchedulerState) {
-    let table = apply_combined_ninep_faults_to_subnode(sub_node, faults);
-    let scheduler = with_active_io_faults(scheduler, sub_node.device_id(), &table, active_since);
-    (table, scheduler)
-}
-
-/// Lowers combined RFC block faults into the concrete block/9p fault table.
-///
-/// Failure rates remain highest-first and use the any-fires rule. Drop-mode
-/// failures suppress completion emission; error-status failures re-encode the
-/// block payload as a normal block error response.
-#[must_use]
-pub fn block_faults_from_combined_block(faults: &CombinedBlockFaults) -> IoFaults {
-    let mut table = IoFaults::none();
-    table.added_latency_ns = faults.latency_extra.nanos();
-    table.jitter_window_ns = faults.latency_jitter.nanos();
-    if let Some(window) = faults.reorder_window {
-        table.reorder_window_ns = window.nanos();
-    }
-    lower_io_failure_rates(&mut table, faults.failure_rates.iter().copied());
-    table.drop_on_loss = matches!(faults.failure_mode, Some(IoFailureMode::Drop));
-    lower_io_duplicate(&mut table, faults.duplicate);
-    lower_io_corruption(
-        &mut table,
-        faults
-            .corruption
-            .map(|corruption| (corruption.rate, corruption.bit_flips)),
-    );
-    table.bandwidth_bits_per_sec = faults
-        .bandwidth_limits
-        .iter()
-        .map(|limit| limit.bits_per_second())
-        .collect();
-    table
-}
-
-/// Lowers combined RFC 9p faults into the concrete block/9p fault table.
-///
-/// 9p failure faults keep their selected errno payloads so the sub-node can
-/// synthesize an `Rlerror` reply with the original request tag when a failure
-/// fires.
-#[must_use]
-pub fn ninep_faults_from_combined_ninep(faults: &CombinedNinePFaults) -> IoFaults {
-    let mut table = IoFaults::none();
-    table.added_latency_ns = faults.latency_extra.nanos();
-    table.jitter_window_ns = faults.latency_jitter.nanos();
-    if let Some(window) = faults.reorder_window {
-        table.reorder_window_ns = window.nanos();
-    }
-    let mut failures = faults.failures.iter();
-    if let Some(failure) = failures.next() {
-        table.loss = probability_from_basis_points(failure.rate);
-        table.failure_errno = Some(failure.errno.code() as u32);
-        for failure in failures {
-            table
-                .additional_loss
-                .push(probability_from_basis_points(failure.rate));
-            table
-                .additional_failure_errno
-                .push(failure.errno.code() as u32);
-        }
-    }
-    lower_io_duplicate(&mut table, faults.duplicate);
-    lower_io_corruption(
-        &mut table,
-        faults
-            .corruption
-            .map(|corruption| (corruption.rate, corruption.bit_flips)),
-    );
-    table.bandwidth_bits_per_sec = faults
-        .bandwidth_limits
-        .iter()
-        .map(|limit| limit.bits_per_second())
-        .collect();
-    table
-}
-
-fn lower_io_failure_rates(
-    table: &mut IoFaults,
-    rates: impl IntoIterator<Item = FaultRateBasisPoints>,
-) {
-    let mut rates = rates.into_iter();
-    if let Some(rate) = rates.next() {
-        table.loss = probability_from_basis_points(rate);
-        table.additional_loss = rates.map(probability_from_basis_points).collect();
-    }
-}
-
-fn lower_io_duplicate(table: &mut IoFaults, duplicate: Option<crate::CombinedDuplicateFault>) {
-    if let Some(duplicate) = duplicate {
-        table.duplicate = probability_from_basis_points(duplicate.rate);
-        table.duplicate_gap_ns = duplicate.gap.nanos();
-    }
-}
-
-fn lower_io_corruption(table: &mut IoFaults, corruption: Option<(FaultRateBasisPoints, u32)>) {
-    if let Some((rate, bit_flips)) = corruption {
-        table.corrupt = probability_from_basis_points(rate);
-        table.corrupt_bit_flips = bit_flips;
-    }
-}
-
 /// Builds the scheduler partition change for combined network partition faults.
 ///
 /// Endpoint A/B are the declared logical link endpoints. A directed partition
@@ -685,73 +516,10 @@ pub fn io_fault_state(active_since: VirtualTime, heal_at: Option<VirtualTime>) -
     }
 }
 
-/// Folds the device's active I/O faults into a scheduler state ([IO-26]).
-///
-/// For each latency/jitter/reorder/bandwidth/loss/duplicate/corrupt fault active
-/// in `faults`, inserts a scheduler `active_faults` entry keyed by
-/// [`io_fault_id`], all marked active since `active_since`. The active I/O fault
-/// set therefore becomes part of the scheduler state captured in
-/// `MaterializedState`, so omitting it fails the replay oracle ([IO-26],
-/// [TEMP-10]).
-#[must_use]
-pub fn with_active_io_faults(
-    mut scheduler: SchedulerState,
-    device: &DeviceId,
-    faults: &IoFaults,
-    active_since: VirtualTime,
-) -> SchedulerState {
-    for kind in active_io_fault_kinds(faults) {
-        scheduler.active_faults.insert(
-            io_fault_id(device, kind),
-            io_fault_state(active_since, None),
-        );
-    }
-    scheduler
-}
-
-/// Lists the active fault kinds in `faults`, in a fixed deterministic order.
-///
-/// Each kind that is not at its fault-free default contributes one stable label,
-/// so two equal tables list the same kinds and the active-fault set is a pure
-/// function of the table ([IO-24]).
-fn active_io_fault_kinds(faults: &IoFaults) -> Vec<&'static str> {
-    let mut kinds = Vec::new();
-    if faults.added_latency_ns != 0 {
-        kinds.push("latency");
-    }
-    if faults.jitter_window_ns != 0 {
-        kinds.push("jitter");
-    }
-    if faults.reorder_window_ns != 0 {
-        kinds.push("reorder");
-    }
-    if faults.bandwidth_bytes_per_sec != 0 || !faults.bandwidth_bits_per_sec.is_empty() {
-        kinds.push("bandwidth");
-    }
-    if faults.loss.numerator != 0
-        || faults
-            .additional_loss
-            .iter()
-            .any(|loss| loss.numerator != 0)
-    {
-        kinds.push("loss");
-    }
-    if faults.duplicate.numerator != 0 {
-        kinds.push("duplicate");
-    }
-    if faults.corrupt.numerator != 0 {
-        kinds.push("corrupt");
-    }
-    kinds
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        Checkpoint, CheckpointKind, Configuration, ContentHash, EngineError, EventLogOffset,
-        GenesisCheckpoint, MaterializedState, ScenarioDef, Seed, TemporalGraph,
-    };
+    use crate::{Configuration, ScenarioDef, Seed};
     use crucible_device::{Frame, LinkFaults, NetLink, PastDeliveryPolicy, Probability};
 
     fn scenario(seed: u64) -> ScenarioDef {
@@ -950,235 +718,6 @@ mod tests {
             }));
         }
         decisions
-    }
-
-    #[test]
-    fn active_io_fault_kinds_are_deterministic_and_uniform() {
-        let faults = IoFaults {
-            added_latency_ns: 1,
-            jitter_window_ns: 1,
-            reorder_window_ns: 1,
-            bandwidth_bytes_per_sec: 1,
-            bandwidth_bits_per_sec: vec![1],
-            loss: Probability::ALWAYS,
-            additional_loss: vec![Probability::ALWAYS],
-            duplicate: Probability::ALWAYS,
-            duplicate_gap_ns: 1,
-            corrupt: Probability::ALWAYS,
-            corrupt_bit_flips: 1,
-            ..IoFaults::none()
-        };
-        assert_eq!(
-            active_io_fault_kinds(&faults),
-            vec![
-                "latency",
-                "jitter",
-                "reorder",
-                "bandwidth",
-                "loss",
-                "duplicate",
-                "corrupt",
-            ]
-        );
-        assert!(active_io_fault_kinds(&IoFaults::none()).is_empty());
-    }
-
-    /// Builds a fat checkpoint whose materialized state has an explicit device
-    /// half: a device overlay carrying `rng_position` and the device's active
-    /// I/O faults folded into the scheduler state.
-    fn fat_checkpoint_with_device_state(
-        configuration: &Configuration,
-        device: &DeviceId,
-        rng_position: u64,
-        faults: &IoFaults,
-    ) -> Checkpoint {
-        let mut checkpoint = fat_checkpoint_for(configuration);
-        let overlay = device_overlay(
-            device,
-            ContentHash::from_canonical_material("test.parent", &device.name),
-            ContentHash::from_canonical_material("test.delta", &device.name),
-            ContentHash::from_canonical_material("test.resolved", &device.name),
-            rng_position,
-        );
-        let scheduler = with_active_io_faults(
-            SchedulerState::empty(),
-            device,
-            faults,
-            VirtualTime { ticks: 1 },
-        );
-        checkpoint.state = Some(MaterializedState::from_components(
-            BTreeMap::new(),
-            BTreeMap::from([(device.clone(), overlay)]),
-            scheduler,
-            crate::DecisionRngState::empty(),
-            EventLogOffset::default(),
-        ));
-        checkpoint
-    }
-
-    fn fat_checkpoint_for(configuration: &Configuration) -> Checkpoint {
-        let result = Checkpoint::from_recorded_configuration(
-            configuration,
-            None,
-            VirtualTime::default(),
-            BTreeMap::new(),
-            CheckpointKind::Fat,
-            BTreeMap::new(),
-        );
-        match result {
-            Ok(checkpoint) => checkpoint,
-            Err(error) => panic!("test checkpoint should be recorded-shaped: {error}"),
-        }
-    }
-
-    #[test]
-    fn device_rng_cursor_or_active_fault_omission_fails_replay_oracle() {
-        // The determinism-completeness check ([IO-23], [IO-26], T-IO-11). The
-        // reference (baked genesis) carries the FAITHFUL device half — RNG cursor
-        // = 5 with jitter + loss active — so the replay oracle compares each
-        // candidate against a non-trivial expected state. The faithful checkpoint
-        // PASSES the oracle; a checkpoint that OMITS the RNG cursor or the active
-        // faults FAILS it. This is the non-vacuous shape: an implementation that
-        // dropped the cursor/faults from the hash would make `omits_rng` /
-        // `omits_faults` wrongly pass, and `assert_faithful_then_omissions_fail`
-        // (below) confirms the test goes red in that case.
-        let disk = device("disk");
-        let faults = IoFaults {
-            jitter_window_ns: 4_096,
-            loss: Probability::new(1, 4),
-            ..IoFaults::none()
-        };
-
-        assert_faithful_then_omissions_fail(0xfa17, &disk, &faults, DeviceHashMode::Complete);
-    }
-
-    #[test]
-    fn omission_test_would_go_red_if_cursor_and_faults_were_not_hashed() {
-        // The required falsifiability proof: if the device RNG cursor and the
-        // active I/O faults were NOT folded into the materialized-state id, the
-        // `omits_rng` / `omits_faults` checkpoints would hash identically to the
-        // faithful one and wrongly PASS the oracle. `DeviceHashMode::Stripped`
-        // models exactly that defect by zeroing the device half in BOTH the
-        // reference and the candidates; under it the omission assertions must
-        // fail, so we assert the harness panics — proving the real test (above)
-        // is capable of catching the regression rather than passing vacuously.
-        let disk = device("disk");
-        let faults = IoFaults {
-            jitter_window_ns: 4_096,
-            loss: Probability::new(1, 4),
-            ..IoFaults::none()
-        };
-
-        let result = std::panic::catch_unwind(|| {
-            assert_faithful_then_omissions_fail(0xfa17, &disk, &faults, DeviceHashMode::Stripped);
-        });
-        assert!(
-            result.is_err(),
-            "with the cursor/faults stripped from the hash, the omission checkpoints \
-             would pass the oracle — the determinism-completeness test must detect this"
-        );
-    }
-
-    /// Whether the device half (RNG cursor + active faults) feeds the state id.
-    #[derive(Clone, Copy)]
-    enum DeviceHashMode {
-        /// The production behavior: the device half is part of the state id.
-        Complete,
-        /// A modeled defect: the device half is stripped, so it never affects the
-        /// state id. Used only to prove the omission test can fail.
-        Stripped,
-    }
-
-    /// Bakes the faithful device half into genesis, asserts it replays `Ok`, and
-    /// asserts the cursor-omitting and fault-omitting checkpoints each fail the
-    /// replay oracle. Under [`DeviceHashMode::Stripped`] the device half is zeroed
-    /// everywhere, so the omission checkpoints become equal to the faithful one
-    /// and the failure assertions panic (the falsifiability proof).
-    fn assert_faithful_then_omissions_fail(
-        seed: u64,
-        disk: &DeviceId,
-        faults: &IoFaults,
-        mode: DeviceHashMode,
-    ) {
-        let scenario = scenario(seed);
-        let genesis = Configuration::genesis(scenario.clone());
-
-        // The reference: genesis baked WITH the faithful device half.
-        let faithful = device_state_checkpoint(&genesis, disk, 5, faults, mode);
-        let baked = GenesisCheckpoint {
-            checkpoint: faithful.clone(),
-        };
-        let graph = match TemporalGraph::empty().with_baked_genesis(&scenario, baked) {
-            Ok(graph) => graph,
-            Err(error) => panic!("valid baked genesis should register: {error}"),
-        };
-
-        // (a) The faithful checkpoint PASSES the replay oracle.
-        match graph.replay_checkpoint(&genesis, &faithful) {
-            Ok(_) => {}
-            Err(error) => panic!("the faithful device-half checkpoint must replay Ok: {error}"),
-        }
-
-        // (b) Omitting the device RNG cursor (position 0 instead of 5) FAILS.
-        let omits_rng = device_state_checkpoint(&genesis, disk, 0, faults, mode);
-        assert_replay_oracle_rejects(
-            &graph,
-            &genesis,
-            &omits_rng,
-            "dropping the device RNG cursor must fail the replay oracle",
-        );
-
-        // (c) Omitting the active I/O faults (fault-free table) FAILS.
-        let omits_faults = device_state_checkpoint(&genesis, disk, 5, &IoFaults::none(), mode);
-        assert_replay_oracle_rejects(
-            &graph,
-            &genesis,
-            &omits_faults,
-            "dropping the active I/O faults must fail the replay oracle",
-        );
-    }
-
-    /// Asserts `candidate` is rejected by the replay oracle with a state mismatch.
-    fn assert_replay_oracle_rejects(
-        graph: &TemporalGraph,
-        genesis: &Configuration,
-        candidate: &Checkpoint,
-        context: &str,
-    ) {
-        match graph.replay_checkpoint(genesis, candidate) {
-            Ok(_) => panic!("{context}"),
-            Err(EngineError::ReplayOracleMismatch { actual, .. }) => {
-                assert_eq!(actual, state_id(candidate), "{context}");
-            }
-            Err(other) => panic!("{context}: expected a replay-oracle mismatch, got {other}"),
-        }
-    }
-
-    /// Builds a fat genesis checkpoint whose device half carries `rng_position`
-    /// and the device's active I/O faults. Under [`DeviceHashMode::Stripped`] the
-    /// device half is replaced by the empty one, modeling a defect where the
-    /// cursor and faults are not hashed.
-    fn device_state_checkpoint(
-        configuration: &Configuration,
-        device: &DeviceId,
-        rng_position: u64,
-        faults: &IoFaults,
-        mode: DeviceHashMode,
-    ) -> Checkpoint {
-        match mode {
-            DeviceHashMode::Complete => {
-                fat_checkpoint_with_device_state(configuration, device, rng_position, faults)
-            }
-            DeviceHashMode::Stripped => fat_checkpoint_for(configuration),
-        }
-    }
-
-    fn state_id(checkpoint: &Checkpoint) -> ContentHash {
-        checkpoint
-            .state
-            .as_ref()
-            .map(|state| state.id)
-            .unwrap_or_else(|| panic!("fat checkpoint should carry materialized state"))
     }
 }
 mod link_emission;

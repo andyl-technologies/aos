@@ -54,15 +54,12 @@ pub use crucible_device::{ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffec
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use device::{
     LinkEmitDecisionRecord, NetworkFaultApplication, NetworkLinkDirection,
-    apply_combined_block_faults_to_subnode, apply_combined_block_faults_to_subnode_and_state,
     apply_combined_network_faults, apply_combined_network_faults_to_link,
-    apply_combined_network_faults_to_scheduler, apply_combined_ninep_faults_to_subnode,
-    apply_combined_ninep_faults_to_subnode_and_state, block_faults_from_combined_block,
-    device_overlay, device_rng, device_stream_id, emit_link_frame_with_recorded_faults,
-    emit_link_frame_with_recorded_stream, heal_combined_network_faults_to_scheduler, io_fault_id,
-    io_fault_state, link_faults_from_combined_network, network_partition_change,
-    network_partition_removed_edges, ninep_faults_from_combined_ninep, record_device_fault,
-    with_active_io_faults,
+    apply_combined_network_faults_to_scheduler, device_overlay, device_rng, device_stream_id,
+    emit_link_frame_with_recorded_faults, emit_link_frame_with_recorded_stream,
+    heal_combined_network_faults_to_scheduler, io_fault_id, io_fault_state,
+    link_faults_from_combined_network, network_partition_change, network_partition_removed_edges,
+    record_device_fault,
 };
 pub use device_subnode::{
     DEFAULT_WORLD_IO_INBOX_CAPACITY, DEFAULT_WORLD_IO_OUTBOX_CAPACITY, DeviceDelivery,

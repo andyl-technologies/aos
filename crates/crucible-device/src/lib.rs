@@ -47,12 +47,8 @@
 //!   deterministic perturbations of the delivery icount and/or payload, with the
 //!   strictly-positive latency floor, sub-floor clamp, lookahead-recompute
 //!   signal, and into-the-past fail-loud guard ([IO-20], [IO-33], [IO-34]).
-//! - [`fault`]: the shared I/O fault taxonomy (CS-IO-5, tasks T-IO-10 / T-IO-12)
-//!   — the seeded per-device RNG ([`fault::DeviceRng`]) forked by name-hash, the
-//!   [`fault::Probability`] and integer-only transforms shared with the network
-//!   link, and the uniform [`fault::IoFaults`] completion-fault table applied to
-//!   block and 9p completions exactly as the link applies its faults ([IO-21],
-//!   [IO-23], [IO-25], [IO-26]).
+//! - [`fault`]: the seeded per-device RNG ([`fault::DeviceRng`]), exact
+//!   [`fault::Probability`], and integer-only transforms used by network effects.
 //! - [`error`]: the [`DeviceError`] taxonomy returned across the crate.
 //! - [`harness`]: the in-process device test harness (CS-IO-6, tasks
 //!   T-IO-13 / T-IO-14) — a uniform [`HarnessDevice`] adapter over all three
@@ -94,7 +90,7 @@ pub use block::{
 };
 pub use clock::{VirtualClock, ceil_ns_to_icount};
 pub use error::DeviceError;
-pub use fault::{DeviceRng, IoFaultOutcome, IoFaults, Probability, ResolvedResponse};
+pub use fault::{DeviceRng, Probability};
 pub use harness::{
     BUSY_POLL_SPIKE, BlockHarness, BusyPollSpike, DeliveryLog, DeliveryRecord, DivergedField,
     Divergence, HarnessDevice, IdleBusyPoll, LinkRequest, LogComparison, NetLinkHarness,

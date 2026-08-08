@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::fault::IoFaults;
 use crate::inflight::PendingResponse;
 use crate::subnode::IoCoreSnapshot;
 
@@ -15,7 +14,7 @@ use super::BlockLatency;
 /// Holds the overlay delta (dirty pages only), a full-overlay page set for
 /// self-contained restore, the dirty page set (so a mid-epoch restore preserves
 /// the next checkpoint's delta, [IO-7]), the latency model (part of the `World`,
-/// [IO-10]), the device RNG cursor, the active fault table, the in-flight responses
+/// [IO-10]), the in-flight responses
 /// (inside `core`), the base hash, and the device length. It **never** holds the
 /// base image bytes ([TEMP-9]); restore re-supplies the content-addressed base
 /// and verifies its hash.
@@ -37,10 +36,6 @@ pub struct BlockSnapshot {
     pub storage_faults: BlockFaultState,
     /// The deterministic latency model parameters.
     pub latency: BlockLatency,
-    /// The active I/O fault table.
-    pub faults: IoFaults,
-    /// The per-device RNG stream cursor.
-    pub rng_position: u64,
 }
 
 impl BlockSnapshot {
