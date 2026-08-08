@@ -1,11 +1,12 @@
 //! The degraded re-projected-manifest commit (build-spec §5).
 //!
 //! When the pre-commit wing finishes with some packages dropped (a fetch
-//! exhausted its retry budget, or a render hit a config error), `aos-config.target`
-//! still reaches `active` and `aos-activate` runs. It MUST NOT commit `/etc` from
-//! "whatever happened to materialize" under the full manifest's identity — that
-//! would be a generation whose content depends on transient fetch outcomes,
-//! breaking content-addressing. Instead it commits a **re-projected manifest**:
+//! exhausted its retry budget, or a render hit a config error), `aos-activate`
+//! still runs and the compiler publishes `aos-config.target` after it commits.
+//! It MUST NOT commit `/etc` from "whatever happened to materialize" under the
+//! full manifest's identity — that would be a generation whose content depends
+//! on transient fetch outcomes, breaking content-addressing. Instead it commits
+//! a **re-projected manifest**:
 //! the full manifest restricted to the packages that materialized, re-hashed
 //! into a content-addressed generation id, with the dropped set recorded.
 //!

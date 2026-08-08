@@ -5,7 +5,11 @@
 ##! security policy, users, and desired packages come from host.nix.
 ##!
 ##! Buildable with empty config root — all required options have defaults.
-{lib, ...}: {
+{
+  lib,
+  pkgs,
+  ...
+}: {
   # Image capability: immutable root with writable state provisioned on /var.
   aos.filesystems.zfs.enable = lib.mkDefault false;
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
@@ -21,6 +25,7 @@
   # without rebuilding the image.
   aos.services.chrony.enable = lib.mkOverride 1500 false;
   aos.services.ssh.enable = lib.mkOverride 1500 false;
+  aos.image.hostConfigClosures = [pkgs.chrony pkgs.openssh];
 
   # Image capability: support encrypted state/swap selected by host policy.
   aos.kernel.modules = ["dm-crypt" "aes" "xts"];

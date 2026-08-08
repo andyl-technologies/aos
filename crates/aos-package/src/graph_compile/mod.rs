@@ -19,8 +19,9 @@
 //!   mirroring the config DAG;
 //! - `.wants/` symlinks pulling each instance from its target;
 //!
-//! then it calls `daemon-reload` once and awaits `aos-config.target` through the
-//! [`SystemdControl`] seam. A changed manifest first stops the old
+//! then it calls `daemon-reload` once, awaits `aos-activate.service`, and
+//! publishes `aos-config.target` through the [`SystemdControl`] seam. A changed
+//! manifest first stops the old
 //! `RemainAfterExit` transaction so every required oneshot runs again. The
 //! on-disk surface is a pure function of the two inputs (invariant **I3**):
 //! re-running over identical inputs is a byte-identical no-op.
@@ -95,7 +96,9 @@ const INSTALL_TEMPLATE: &str = "aos-pkg-install@.service";
 const FETCH_TARGET: &str = "aos-fetch.target";
 /// The render wing target.
 const RENDER_TARGET: &str = "aos-config-render.target";
-/// The umbrella target the compiler starts.
+/// The activation service that commits the evaluated transaction.
+const ACTIVATE_SERVICE: &str = "aos-activate.service";
+/// The umbrella target the compiler publishes after activation commits.
 const CONFIG_TARGET: &str = "aos-config.target";
 
 // ---------------------------------------------------------------------------
@@ -735,8 +738,9 @@ impl GraphCompiler {
 
     /// Full compile: reconcile the filesystem, then drive systemd (build-spec
     /// §2.3–2.4, §6) — `reset-failed` every removed instance, one `daemon-reload`,
-    /// then await `aos-config.target`. Waiting is what makes the activation
-    /// service a boot-ordering barrier before presets and `multi-user.target`.
+    /// then await `aos-activate.service` and publish `aos-config.target`.
+    /// Waiting for the service directly prevents the target's soft package
+    /// dependencies from hiding an activation failure.
     ///
     /// # Errors
     ///
@@ -780,7 +784,7 @@ impl GraphCompiler {
         // RemainAfterExit oneshots and their targets retain active state. Stop
         // the complete old transaction explicitly so the new transaction is
         // guaranteed to execute rather than being treated as already active.
-        for unit in [CONFIG_TARGET, "aos-activate.service", RENDER_TARGET] {
+        for unit in [CONFIG_TARGET, ACTIVATE_SERVICE, RENDER_TARGET] {
             client.stop_unit(unit).await?;
         }
         for package in affected.iter().rev() {
@@ -806,12 +810,7 @@ impl GraphCompiler {
                 .reset_failed_unit(&format!("aos-pkg-install@{pkg}.service"))
                 .await?;
         }
-        for unit in [
-            FETCH_TARGET,
-            RENDER_TARGET,
-            "aos-activate.service",
-            CONFIG_TARGET,
-        ] {
+        for unit in [FETCH_TARGET, RENDER_TARGET, ACTIVATE_SERVICE, CONFIG_TARGET] {
             client.reset_failed_unit(unit).await?;
         }
 
@@ -825,9 +824,13 @@ impl GraphCompiler {
         // activation service publishes a replacement only after pointer commit.
         clear_activation_proof(&self.state_root)?;
 
-        // Start the umbrella target and wait for its After= chain. Fetch and
-        // render failures remain soft Wants= failures, while the target itself
-        // does not become active until aos-activate.service has settled.
+        // Start and await the commit service directly. Its Wants=/After= edges
+        // drive the soft fetch/render wings, but a failed activation job is a
+        // hard compiler failure instead of being hidden by target Wants=.
+        client.start_unit(ACTIVATE_SERVICE).await?;
+
+        // Publish the umbrella target only after activation committed. This is
+        // the stable ordering barrier consumed by the rest of the boot graph.
         client.start_unit(CONFIG_TARGET).await?;
 
         let proof = read_activation_proof(&self.state_root)?.with_context(|| {

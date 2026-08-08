@@ -1,4 +1,4 @@
-# tests/fleet/rfc-0011-gc-roots.nix — durable config-generation retention.
+# Durable config-generation retention acceptance.
 #
 # Creates four production configuration generations, selects an older current
 # generation outside the retention window, prunes under the public APM

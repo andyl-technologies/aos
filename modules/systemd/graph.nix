@@ -5,7 +5,8 @@
 ##! `aos-fetch` / `aos-config-render` / `aos-config` targets. At runtime
 ##! `aos-graph-compile.service` (`apm __graph-compile`) writes only the tiny
 ##! per-instance dropins + `.wants/` symlinks under `/run/systemd/system`, then
-##! `daemon-reload`s and starts `aos-config.target` (orchestration.md,
+##! `daemon-reload`s, awaits `aos-activate.service`, and publishes
+##! `aos-config.target` (orchestration.md,
 ##! build-spec §"Systemd unit-graph compiler").
 ##!
 ##! This is the package orchestration path and is emitted
@@ -93,8 +94,9 @@ in {
 
       # ---- aos-graph-compile.service ---------------------------------------
       # Parse manifest.json + graph.json → write /run/systemd/system dropins +
-      # .wants → daemon-reload → await aos-config.target. A missing
-      # manifest makes this a clean no-op (the box stays on the gen-0 seed).
+      # .wants → daemon-reload → await activation → publish
+      # aos-config.target. A missing manifest makes this a clean no-op (the box
+      # stays on the generation-zero seed).
       aos-graph-compile = {
         description = "Compile the AOS config eval output into a systemd unit graph";
         wantedBy = ["multi-user.target"];
@@ -145,7 +147,7 @@ in {
           RemainAfterExit = true;
           Restart = "on-failure";
           RestartSec = "2s";
-          RestartPreventExitStatus = "4 6";
+          RestartPreventExitStatus = "4";
           TimeoutStartSec = "180s";
         };
         script = ''
@@ -159,6 +161,13 @@ in {
           if [ "$rc" -eq 4 ]; then
             echo "aos-activate: /etc swap is indeterminate; entering rescue mode" >&2
             ${pkgs.systemd}/bin/systemctl --no-block isolate rescue.target
+          fi
+          if [ "$rc" -eq 6 ]; then
+            # The transaction committed after dropping unavailable package
+            # projections. Keep the degraded outcome in activation.json while
+            # allowing the ordering service and aos-config.target to settle.
+            echo "aos-activate: committed a degraded host configuration" >&2
+            exit 0
           fi
           exit "$rc"
         '';
@@ -182,11 +191,7 @@ in {
       aos-config = {
         description = "AOS on-host config applied";
         after = ["aos-activate.service"];
-        wants = [
-          "aos-activate.service"
-          "aos-config-render.target"
-          "aos-fetch.target"
-        ];
+        requires = ["aos-activate.service"];
         wantedBy = [];
       };
     };

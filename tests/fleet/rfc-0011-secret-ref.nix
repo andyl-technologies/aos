@@ -1,4 +1,4 @@
-# tests/fleet/rfc-0011-secret-ref.nix — runtime secretRef acceptance.
+# Runtime secretRef acceptance.
 {
   pkgs,
   systems,

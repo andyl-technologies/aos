@@ -686,8 +686,9 @@ pub enum PackageCommand {
     /// Called only by `aos-graph-compile.service` (`After=aos-eval`,
     /// `ConditionPathExists=/run/aos/manifest.json`). Reads `manifest.json` +
     /// `graph.json`, writes per-instance dropins and `.wants` symlinks under
-    /// `/run/systemd/system`, then `daemon-reload`s and starts
-    /// `aos-config.target`. Talks to systemd over D-Bus and needs no apm config.
+    /// `/run/systemd/system`, then `daemon-reload`s, awaits activation, and
+    /// publishes `aos-config.target`. Talks to systemd over D-Bus and needs no
+    /// apm config.
     #[command(name = "__graph-compile", hide = true)]
     GraphCompile {
         /// The eval-produced data contract

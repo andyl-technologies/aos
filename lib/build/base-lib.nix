@@ -11,8 +11,9 @@
 ##!     built on-host),
 ##!   - `frozen-pkgs.json` — every package's already-built store path, captured
 ##!     here at stage-1 (image build) via `freeze-pkgs.nix`,
-##!   - `frozen-artifacts.json` — the stage-1 store paths of the image-fixed
-##!     config artifacts (`aos.config._artifactSources`),
+##!   - `frozen-artifacts.json` plus `artifact-roots/` symlinks — the stage-1
+##!     store paths of image-fixed config artifacts, retained through ordinary
+##!     Nix output references (`aos.config._artifactSources`),
 ##!   - `image-manifest.json` — the immutable image's rendered artifact
 ##!     baseline, with the base library output linked through Nix's output
 ##!     placeholder,
@@ -108,11 +109,24 @@
 
   # logical-name -> stage-1 store path, for every registered (non-frozen)
   # artifact source. `"${drv}"` forces the artifact to its built path; context
-  # is discarded so the JSON is a plain string map.
+  # is discarded so the JSON is a plain string map. The output also carries
+  # one symlink per source below, preserving the same paths as real Nix output
+  # references so every frozen artifact is present when the base lib is copied.
+  frozenArtifactSourcesRaw =
+    lib.filterAttrs (_: v: v != null)
+    realEval.config.aos.config._artifactSources;
+  invalidArtifactNames = builtins.filter
+    (name: builtins.match "[A-Za-z0-9][A-Za-z0-9._-]*" name == null)
+    (builtins.attrNames frozenArtifactSourcesRaw);
+  frozenArtifactSources =
+    if invalidArtifactNames == []
+    then frozenArtifactSourcesRaw
+    else
+      throw
+      "base-lib: config artifact names must be single safe path components; invalid: ${lib.concatStringsSep ", " invalidArtifactNames}";
   frozenArtifacts =
     builtins.mapAttrs (_: drv: builtins.unsafeDiscardStringContext "${drv}")
-    (lib.filterAttrs (_: v: v != null)
-      realEval.config.aos.config._artifactSources);
+    frozenArtifactSources;
 
   frozenPkgsFile = builtins.toFile "frozen-pkgs.json" (freeze.freezeToJSON pkgs);
   frozenArtifactsFile = builtins.toFile "frozen-artifacts.json" (builtins.toJSON frozenArtifacts);
@@ -172,6 +186,10 @@ in
       ${./base-lib-entry.nix} > "$out/default.nix"
     cp ${frozenPkgsFile} "$out/frozen-pkgs.json"
     cp ${frozenArtifactsFile} "$out/frozen-artifacts.json"
+    mkdir -p "$out/artifact-roots"
+    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: artifact: ''
+        ln -s ${artifact} "$out/artifact-roots/${name}"
+      '') frozenArtifactSources)}
     actual_base_lib_digest=$(printf '%s' "$out" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)
     ${pkgs.sed}/bin/sed \
       -e "s|sha256:$placeholderBaseLibDigest|sha256:$actual_base_lib_digest|g" \

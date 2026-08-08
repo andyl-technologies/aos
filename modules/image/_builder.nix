@@ -126,6 +126,7 @@
       label = "aos-root";
       fsType = rootFsType;
       erofsCompressionLevel = system.config.aos.image.erofsCompressionLevel;
+      extraClosures = system.config.aos.image.hostConfigClosures;
       shrinkToFit = true;
       headroomMiB = 64;
     }

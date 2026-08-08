@@ -16,6 +16,7 @@
   exposeRenderer = import ../../pkgs/build-support/_expose-renderer.nix {
     inherit lib pkgs;
   };
+  baseLib = system.config.aos.config.evalAtBoot.baseLib;
   # The kernel-lockdown option was removed: SECURITY_LOCKDOWN_LSM selects
   # MODULE_SIG, whose default key generation breaks third-party
   # bit-reproducibility of the public base image. Fail loudly at eval time
@@ -181,7 +182,7 @@
     else if
       !(builtins.elem
         "aos-activate.service"
-        system.config.systemd.targets.aos-config.wants)
+        system.config.systemd.targets.aos-config.requires)
     then throw "aos-config.target must pull in the atomic activation commit"
     else if
       !(builtins.elem
@@ -198,6 +199,15 @@
         "__activate-config"
         system.config.systemd.services.aos-activate.script)
     then throw "aos-activate.service must invoke the configuration-generation commit"
+    else if
+      system.config.systemd.services.aos-activate.serviceConfig.RestartPreventExitStatus
+      != "4"
+    then throw "aos-activate.service must reserve failure status for indeterminate commits"
+    else if
+      !(containsStr
+        ''if [ "$rc" -eq 6 ]; then''
+        system.config.systemd.services.aos-activate.script)
+    then throw "aos-activate.service must settle after a committed degraded transaction"
     else if !(builtins.hasAttr "aos-metadata-fetch" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-metadata-fetch.service"
     else if !(builtins.hasAttr "aos-metadata-authorize" system.config.boot.initrd.systemd.services)
@@ -911,7 +921,30 @@ in
         echo "==> AOS Evaluation Checks"
         echo ""
 
+        artifact_count=0
+        while IFS=$'\t' read -r artifact_name artifact_path; do
+          artifact_root=${baseLib}/artifact-roots/$artifact_name
+          if [ ! -L "$artifact_root" ]; then
+            echo "frozen config artifact lacks a base-lib closure root: $artifact_name" >&2
+            exit 1
+          fi
+          if [ "$("$coreutils"/readlink "$artifact_root")" != "$artifact_path" ]; then
+            echo "frozen config artifact root disagrees with its serialized path: $artifact_name" >&2
+            exit 1
+          fi
+          if [ ! -e "$artifact_path" ]; then
+            echo "frozen config artifact closure is not realized: $artifact_name" >&2
+            exit 1
+          fi
+          artifact_count=$((artifact_count + 1))
+        done < <("$jq" -r 'to_entries[] | [.key, .value] | @tsv' ${baseLib}/frozen-artifacts.json)
+        if [ "$artifact_count" -eq 0 ]; then
+          echo "base-lib did not retain any frozen config artifacts" >&2
+          exit 1
+        fi
+
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
+        echo "config artifacts: $artifact_count frozen closure root(s) verified"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"

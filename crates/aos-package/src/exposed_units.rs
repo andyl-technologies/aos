@@ -3047,8 +3047,11 @@ fn preset_paths(root: &Path) -> [PathBuf; 2] {
 
 fn attached_dirs(root: &Path) -> [PathBuf; 2] {
     [
-        root.join("var/etc").join(ATTACHED_REL),
+        // Reconcile the mounted view before its persistent lower directory.
+        // That lets OverlayFS create whiteouts for removed units while the
+        // corresponding lower entries still exist.
         root.join("etc").join(ATTACHED_REL),
+        root.join("var/etc").join(ATTACHED_REL),
     ]
 }
 
@@ -3156,7 +3159,7 @@ fn copy_dropin_dir(source: &Path, destination: &Path) -> Result<()> {
 fn reset_dir(path: &Path) -> Result<()> {
     match path.symlink_metadata() {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() => {
-            std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+            remove_file_if_present(path)?;
             std::fs::create_dir_all(path)
                 .with_context(|| format!("creating {}", path.display()))?;
         }
@@ -3170,11 +3173,9 @@ fn reset_dir(path: &Path) -> Result<()> {
                     .file_type()
                     .with_context(|| format!("reading file type for {}", entry_path.display()))?;
                 if file_type.is_dir() {
-                    std::fs::remove_dir_all(&entry_path)
-                        .with_context(|| format!("removing {}", entry_path.display()))?;
+                    remove_dir_if_present(&entry_path)?;
                 } else {
-                    std::fs::remove_file(&entry_path)
-                        .with_context(|| format!("removing {}", entry_path.display()))?;
+                    remove_file_if_present(&entry_path)?;
                 }
             }
         }
@@ -3187,6 +3188,24 @@ fn reset_dir(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Removes a file or symlink, treating an already-absent overlay entry as success.
+fn remove_file_if_present(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
+    }
+}
+
+/// Removes a directory tree, treating an already-absent overlay entry as success.
+fn remove_dir_if_present(path: &Path) -> Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
+    }
 }
 
 fn atomic_symlink(target: &Path, link: &Path) -> Result<()> {
@@ -5290,6 +5309,18 @@ mod tests {
         let packages = exposed_packages(&profile, &[installed]).unwrap();
 
         assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn attached_dirs_reconcile_live_overlay_before_durable_lower() {
+        let root = Path::new("/test-root");
+        assert_eq!(
+            attached_dirs(root),
+            [
+                root.join("etc").join(ATTACHED_REL),
+                root.join("var/etc").join(ATTACHED_REL),
+            ]
+        );
     }
 
     #[test]

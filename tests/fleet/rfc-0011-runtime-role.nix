@@ -1,4 +1,4 @@
-# tests/fleet/rfc-0011-runtime-role.nix — host-selected role closure activation.
+# Host-selected role closure activation.
 #
 # The production server image carries boot/storage capability only. This gate
 # enables the edge runtime role exclusively through authenticated host.nix and
@@ -28,7 +28,9 @@ in
   assert !roleImage.config.aos.roles.server.enable;
   assert !roleImage.config.aos.roles.edge.enable;
   assert !builtins.elem (builtins.toString pkgs.openssh) roleImage.config.system.build.configManifest.storePaths;
-  assert !builtins.elem (builtins.toString pkgs.chrony) roleImage.config.system.build.configManifest.storePaths; {
+  assert !builtins.elem (builtins.toString pkgs.chrony) roleImage.config.system.build.configManifest.storePaths;
+  assert builtins.elem pkgs.openssh roleImage.config.aos.image.hostConfigClosures;
+  assert builtins.elem pkgs.chrony roleImage.config.aos.image.hostConfigClosures; {
     name = "rfc-0011-runtime-role";
     timeout = 1200;
 
@@ -64,6 +66,10 @@ in
         runtime.wait_until_succeeds(
             "systemctl is-active --quiet chronyd.service", timeout=120
         )
+        runtime.succeed("test -d /var/empty")
+        runtime.succeed("test -d /var/lib/chrony")
+        runtime.succeed("test -d /var/log/chrony")
+        runtime.succeed("test -d /run/chrony")
 
         manifest = json.loads(runtime.succeed("cat /run/aos/manifest.json"))
         expected = {
@@ -85,9 +91,43 @@ in
 
         # Role policy is live but did not mutate the golden-image storage
         # boundary or conscript feature payloads onto the login PATH.
-        runtime.succeed("test \"$(sysctl -n vm.swappiness)\" = 10")
-        runtime.succeed("test \"$(sysctl -n vm.vfs_cache_pressure)\" = 200")
+        runtime.succeed("read value < /proc/sys/vm/swappiness; test \"$value\" = 10")
+        runtime.succeed("read value < /proc/sys/vm/vfs_cache_pressure; test \"$value\" = 200")
         runtime.fail("command -v chronyd")
         runtime.fail("command -v sshd")
+
+        # A malformed newly selected tmpfiles rule is a post-commit degraded
+        # transaction, but must fail closed before any newly selected daemon
+        # can start against incomplete ownership or modes.
+        runtime.succeed(r"""
+            printf '%s\n' '{
+              aos.provisioning.storage.partitions.var.sizeMin = "2G";
+              aos.roles.edge.enable = true;
+              environment.etc."tmpfiles.d/aos-test-invalid.conf".text =
+                "d /run/aos-invalid-mode not-a-mode root root -\n";
+              systemd.services."aos-tmpfiles-fault-canary" = {
+                wantedBy = [ "multi-user.target" ];
+                serviceConfig = {
+                  Type = "oneshot";
+                  ExecStart = "${pkgs.coreutils}/bin/touch /run/aos-tmpfiles-fault-canary";
+                };
+              };
+            }' > /run/aos-tmpfiles-fault.nix
+        """)
+        status, stdout, stderr = runtime.execute(
+            "${pkgs.aos}/bin/apm switch --from /run/aos-tmpfiles-fault.nix",
+            timeout=600,
+        )
+        # The ordering service accepts a committed degraded transaction so the
+        # graph target can settle. The activation proof preserves the degraded
+        # outcome for operators and subsequent reconciliation.
+        assert status == 0, (status, stdout, stderr)
+        activation = json.loads(runtime.succeed("cat /run/aos/activation.json"))
+        assert activation["status"] == "degraded", activation
+        assert activation["activation_exit"] == 6, activation
+        runtime.fail("test -e /run/aos-tmpfiles-fault-canary")
+        runtime.fail("systemctl is-active --quiet aos-tmpfiles-fault-canary.service")
+        runtime.succeed("systemctl is-active --quiet sshd.service")
+        runtime.succeed("systemctl is-active --quiet chronyd.service")
       '';
   }

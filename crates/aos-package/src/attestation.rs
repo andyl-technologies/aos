@@ -79,7 +79,10 @@ pub const EVAL_MODE_PURE: &str = "pure-eval";
 /// The application PCR the record hash is extended into (build-spec §1.4).
 pub const APP_PCR_INDEX: u8 = 15;
 
-/// A record whose PCR binding has not been produced because no TPM exists.
+/// A record whose complete TPM and immutable-image binding is unavailable.
+///
+/// The historical wire literal is retained for v1 compatibility. It also
+/// covers an available TPM on an image without authenticated dm-verity state.
 pub const QUOTE_STATUS_UNQUOTED: &str = "unquoted-tpm-unavailable";
 
 /// A record whose hash was extended into PCR 15 and covered by a TPM quote.
@@ -116,8 +119,8 @@ pub struct GenAttestation {
     pub inputs: AttestationInputs,
     /// Literal [`EVAL_MODE_PURE`].
     pub eval_mode: String,
-    /// Whether `quote` contains TPM evidence or this TPM-less record is
-    /// deliberately retained without hardware evidence.
+    /// Whether `quote` contains TPM evidence or why this record was retained
+    /// without a hardware binding.
     pub quote_status: String,
     /// Hex of the TPM2 quote blob over PCR {7, 11, 12, 15} + this record's hash.
     /// Empty in a freshly-built, not-yet-quoted record.
@@ -430,6 +433,26 @@ fn build_unquoted_gen_attestation(
     })
 }
 
+fn generation_quote_status(
+    quote_required: bool,
+    has_tpm: bool,
+    has_root_verity: bool,
+) -> Result<Option<&'static str>> {
+    if !has_tpm {
+        if quote_required {
+            bail!("measured boot requires a TPM-backed generation attestation quote");
+        }
+        return Ok(Some(QUOTE_STATUS_UNQUOTED));
+    }
+    if !has_root_verity {
+        if quote_required {
+            bail!("TPM-backed generation attestation requires image root verity metadata");
+        }
+        return Ok(Some(QUOTE_STATUS_UNQUOTED));
+    }
+    Ok(None)
+}
+
 fn new_activation_id() -> String {
     format!("sha256:{}", hex::encode(rand::random::<[u8; 32]>()))
 }
@@ -452,9 +475,9 @@ struct EmbeddedQuote {
 /// The record is derived only from the validated manifest and authenticated
 /// running-image index. With a TPM, its canonical bare bytes are appended to
 /// the AOS CEL, extended into PCR 15, and quoted with PCR 7/11/12/15 using the
-/// existing package-attestation machinery. Without a TPM, an explicit
-/// `unquoted-tpm-unavailable` record is retained unless `require_quote` makes
-/// hardware evidence mandatory.
+/// existing package-attestation machinery. Without a TPM, or when the running
+/// image has no immutable root measurement to bind, an explicit unquoted
+/// record is retained unless `require_quote` makes hardware evidence mandatory.
 /// `detect_tpm` is kept explicit so hermetic tests do not inherit ambient host
 /// devices; the production activation path always enables detection.
 ///
@@ -485,21 +508,23 @@ pub(crate) fn persist_generation_attestation(
     let has_tpm = detect_tpm && crate::package_attestation::tpm_available()?;
     let quote_dir = generation_dir.join("gen-attestation-quote");
     let stage = generation_dir.join(".gen-attestation-quote.pending");
-    if !has_tpm {
+    if let Some(quote_status) = generation_quote_status(
+        quote_required,
+        has_tpm,
+        running_image.root_verity_roothash.is_some(),
+    )? {
         if retained_transaction.is_some() {
             bail!(
-                "cannot recover the retained TPM-backed generation attestation transaction without a TPM"
+                "cannot recover the retained TPM-backed generation attestation transaction without quote-capable running-image state"
             );
         }
-        if quote_required {
-            bail!("measured boot requires a TPM-backed generation attestation quote");
-        }
-        let record = build_unquoted_gen_attestation(
+        let mut record = build_unquoted_gen_attestation(
             generation_id.to_string(),
             manifest_hash.to_string(),
             activation_id,
             inputs,
         )?;
+        record.quote_status = quote_status.to_string();
         // All validation is complete before replacing evidence from the prior
         // activation. In particular, a corrupt retained transaction must never
         // delete an otherwise usable quote bundle.
@@ -510,9 +535,6 @@ pub(crate) fn persist_generation_attestation(
         return Ok(record);
     }
 
-    if running_image.root_verity_roothash.is_none() {
-        bail!("TPM-backed generation attestation requires image root verity metadata");
-    }
     // `aos-eval.service` hard-requires systemd-pcrphase.service on measured
     // images, so this is the stable ready-phase value. A catalog-published
     // value is immutable policy and must match; it is never replaced by a
@@ -581,12 +603,14 @@ pub(crate) fn persist_generation_attestation(
 /// Returns whether authenticated running-image metadata requires quoted
 /// generation evidence.
 ///
-/// An expected PCR 11 exists only for images published with measured boot. It
-/// is therefore the durable image-state policy bit used by every activation
-/// entry point, including direct same-ABI rollback paths that do not pass
-/// through the boot unit's command-line flag.
+/// An expected PCR 11 exists only for images published with measured boot. A
+/// seed image can instead carry the initrd's observed PCR value, but that is a
+/// measured-image policy signal only when authenticated dm-verity metadata
+/// binds the immutable root. This distinction lets an otherwise unmeasured
+/// machine expose a TPM without making ordinary host activation unbootable.
 pub(crate) fn image_requires_generation_quote(image: &ImageGeneration) -> bool {
-    image.expected_pcr11.is_some() || image.initrd_pcr11.is_some()
+    image.expected_pcr11.is_some()
+        || (image.initrd_pcr11.is_some() && image.root_verity_roothash.is_some())
 }
 
 fn read_attestation_transaction(path: &Path) -> Result<Option<GenAttestationTransaction>> {
@@ -1583,9 +1607,41 @@ mod tests {
         assert!(!image_requires_generation_quote(&image));
         image.initrd_pcr11 = Some(format!("sha256:{}", "44".repeat(32)));
         assert!(image_requires_generation_quote(&image));
+        image.root_verity_roothash = None;
+        assert!(!image_requires_generation_quote(&image));
         image.initrd_pcr11 = None;
         image.expected_pcr11 = Some(format!("sha256:{}", "33".repeat(32)));
         assert!(image_requires_generation_quote(&image));
+    }
+
+    #[test]
+    fn quote_status_matches_available_image_binding() {
+        let cases = [
+            (false, false, false, Some(QUOTE_STATUS_UNQUOTED), None),
+            (false, false, true, Some(QUOTE_STATUS_UNQUOTED), None),
+            (false, true, false, Some(QUOTE_STATUS_UNQUOTED), None),
+            (false, true, true, None, None),
+            (true, false, false, None, Some("requires a TPM-backed")),
+            (true, false, true, None, Some("requires a TPM-backed")),
+            (
+                true,
+                true,
+                false,
+                None,
+                Some("requires image root verity metadata"),
+            ),
+            (true, true, true, None, None),
+        ];
+        for (required, tpm, verity, expected, error_fragment) in cases {
+            let result = generation_quote_status(required, tpm, verity);
+            match error_fragment {
+                Some(fragment) => {
+                    let error = result.unwrap_err();
+                    assert!(format!("{error}").contains(fragment));
+                }
+                None => assert_eq!(result.unwrap(), expected),
+            }
+        }
     }
 
     #[test]

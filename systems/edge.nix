@@ -7,7 +7,11 @@
 ##! aos.roles.edge).
 ##!
 ##! Buildable with empty config root — all required options have defaults.
-{lib, ...}: {
+{
+  lib,
+  pkgs,
+  ...
+}: {
   # Image capability: the evaluator, base module library, and activation
   # machinery live on a read-only EROFS root authenticated by dm-verity.
   aos.filesystems.zfs.enable = lib.mkDefault false;
@@ -21,4 +25,5 @@
   # rebuilding the image.
   aos.services.chrony.enable = lib.mkOverride 1500 false;
   aos.services.ssh.enable = lib.mkOverride 1500 false;
+  aos.image.hostConfigClosures = [pkgs.chrony pkgs.openssh];
 }

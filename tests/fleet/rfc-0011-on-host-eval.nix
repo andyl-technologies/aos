@@ -1,4 +1,4 @@
-# tests/fleet/rfc-0011-on-host-eval.nix — general runtime host.nix activation.
+# General runtime host.nix activation acceptance.
 #
 # This is the load-bearing on-host evaluation acceptance gate. Unlike the
 # provisioning test, the machine identity exercised here is not baked into the
@@ -9,7 +9,30 @@
   pkgs,
   systems,
   ...
-}: {
+}: let
+  testCertificate = builtins.concatStringsSep "\n" [
+    "-----BEGIN CERTIFICATE-----"
+    "MIIDHzCCAgegAwIBAgIEB1vNFTANBgkqhkiG9w0BAQsFADAnMSUwIwYDVQQDDBxB"
+    "T1MgVGVzdCBVbnRydXN0ZWQgUm9vdEltYWdlMB4XDTI2MDYxODEzMjgyOFoXDTM2"
+    "MDYxNTEzMjgyOFowJzElMCMGA1UEAwwcQU9TIFRlc3QgVW50cnVzdGVkIFJvb3RJ"
+    "bWFnZTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALnmzOy6TN0du3f9"
+    "UPhB+QuNNNSdFsIk1q+SXyDdky1TwoqiFDhqTA8DxyirtyHCm942+lZTdiAl+CNs"
+    "AW2e95ba9Mo6h63YlvjEI+194gs2K/4K2SQd8L2ca4kTEK/RzJvnnMbRdqNYrnBB"
+    "4BmGdHwvwnJjvNSv8+OQosrr7g1JpOCdkvaIv0N4kC5rD6S5aIs3Pbn1EuwraPVd"
+    "8jF97i/dve4/xEnbCkTtRZY5FKT6IMeVAJmdCGsl/s9ZGzsK+ETllFdakXYnQNq9"
+    "3pSdIzlSjxyLr4yhOoW5S2ZipwFoaIqD5Y8M/9NUBWdtaAbwF2G0Sbstopviuzfw"
+    "TtDInfUCAwEAAaNTMFEwHQYDVR0OBBYEFKbYs+MTbZpdos0cmveR4g3Iw049MB8G"
+    "A1UdIwQYMBaAFKbYs+MTbZpdos0cmveR4g3Iw049MA8GA1UdEwEB/wQFMAMBAf8w"
+    "DQYJKoZIhvcNAQELBQADggEBAKuo0WhnQaUUDV4pw7W8tSm4S/MMfxwf7IbhYbhN"
+    "fB9QOHK4HrL5XuPtLviFe1m5tEaLT8UJxAf1MOZGtjbZrvMyM2erKJznpPYMzGuH"
+    "L6OoBKpqy+jj9Tc2fWqJ++Cc3cYWYbqT3j64LxtKnXgVupPwou1vMoSbtQoL6B9X"
+    "6NMDaKWEekkA9gN8gG0oQHoGJ9BuANq/6WQajWmHQSj35+BOuoBLREGCt3+boiXV"
+    "VXmMO9a57Idz4SaiM7+PazqjUHY/TwzQt8wZ1XmnfF6m9DfnyJ2rHFoHPMo3siMZ"
+    "Hm4HoUiqbsjn/ojh4G5jF7O52NmARcWLE+9eDRkSQ0BZdqI="
+    "-----END CERTIFICATE-----"
+    ""
+  ];
+in {
   name = "rfc-0011-on-host-eval";
   timeout = 1500;
   # This test waits for the evaluator/graph transaction explicitly and emits
@@ -22,7 +45,10 @@
     imageDiskMiB = 16384;
     memoryMiB = 4096;
     packages = ["aos-test-agent"];
-    extraClosures = [pkgs.diffutils];
+    extraClosures = [
+      pkgs.diffutils
+      pkgs.grep
+    ];
     metadata."host.nix" = ''
       {
         aos.provisioning.storage.partitions.var.sizeMin = "2G";
@@ -78,6 +104,7 @@
       JQ = "${pkgs.jq}/bin/jq"
       APM = "${pkgs.aos}/bin/apm"
       CMP = "${pkgs.diffutils}/bin/cmp"
+      GREP = "${pkgs.grep}/bin/grep"
 
 
       def properties(unit, names):
@@ -255,7 +282,7 @@
       assert "aos-test-agent" in manifest["packages"], manifest["packages"]
       assert manifest["inputs"]["host_nix"]["trust_mode"] == "platform"
       assert manifest["inputs"]["host_nix"]["store_path"].startswith("/nix/store/")
-      runtime.fail("grep -q MAgwADAAAwIAAA== /etc/ssl/certs/ca-certificates.crt")
+      runtime.fail(f"{GREP} -q MIIDHzCCAgeg /etc/ssl/certs/ca-certificates.crt")
 
       first = current_generation()
       assert first > 0
@@ -346,9 +373,7 @@
         aos.provisioning.storage.partitions.var.sizeMin = \"2G\";
         aos.networking.hostName = \"runtime-two\";
         aos.apm.desiredPackages = [ \"aos-test-agent\" ];
-        aos.security.pki.certificates = [
-          \"-----BEGIN CERTIFICATE-----\\nMAgwADAAAwIAAA==\\n-----END CERTIFICATE-----\"
-        ];
+        aos.security.pki.certificates = [ ${builtins.toJSON testCertificate} ];
         environment.etc.\"rfc0011/runtime.conf\" = {
           text = \"generation=two\\n\";
           mode = \"0644\";
@@ -422,7 +447,7 @@
       )
       for ca_path in ca_paths:
           runtime.succeed(f"test -f {ca_path}")
-          runtime.succeed(f"grep -q MAgwADAAAwIAAA== {ca_path}")
+          runtime.succeed(f"{GREP} -q MIIDHzCCAgeg {ca_path}")
       runtime.succeed(f"{CMP} {ca_paths[0]} {ca_paths[1]}")
       runtime.succeed(f"{CMP} {ca_paths[0]} {ca_paths[2]}")
       second_manifest = json.loads(runtime.succeed(
@@ -446,7 +471,7 @@
       ).strip() == image_before_rollback
       assert_live("one")
       for ca_path in ca_paths:
-          runtime.fail(f"grep -q MAgwADAAAwIAAA== {ca_path}")
+          runtime.fail(f"{GREP} -q MIIDHzCCAgeg {ca_path}")
 
       # Reboot with the original metadata attached. Byte-identical evaluation
       # must reuse the retained content-addressed generation.

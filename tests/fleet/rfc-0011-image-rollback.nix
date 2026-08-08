@@ -1,4 +1,4 @@
-# tests/fleet/rfc-0011-image-rollback.nix - durable A/B lifecycle.
+# Durable A/B lifecycle acceptance.
 #
 # This is the executable acceptance gate for the image lifecycle. It
 # publishes a real measured, dm-verity-backed raw image through a registry,

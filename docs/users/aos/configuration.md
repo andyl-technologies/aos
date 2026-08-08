@@ -99,6 +99,17 @@ with the running image ABI. Package render failures use the documented soft
 degradation path and are recorded in the projection; evaluation, credential,
 or pre-swap failures leave the active generation unchanged.
 
+The server and edge images retain the package closures needed by their
+built-in runtime roles. Enabling `aos.roles.server` or `aos.roles.edge` in an
+authenticated `host.nix` can therefore start SSH and time synchronization
+without rebuilding or downloading a different image. Retained role packages
+remain absent from the generation-zero manifest and interactive command path
+until host policy selects their services.
+
+After the atomic `/etc` switch, activation applies the new `tmpfiles.d` rules
+before reconciling services. Runtime roles may therefore introduce required
+state directories in the same transaction that starts their daemons.
+
 Image and configuration generations are independent. An image generation owns
 the kernel, initrd, base module library, evaluator, and A/B slot. A
 configuration generation owns the evaluated manifest and EROFS `/etc`
