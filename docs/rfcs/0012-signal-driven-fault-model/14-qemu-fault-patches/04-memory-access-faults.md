@@ -18,7 +18,8 @@ and modeled memory latency/bandwidth.
 An install/remove command at `node_boundary` carries the authenticated action,
 target, schema, and generation identities; resolved start and positive length;
 the five explicit access-class booleans (`fetch`, `cpu_load`, `cpu_store`,
-`dma_read`, `dma_write`); `violate_atomicity`; one closed transform; and one
+`dma_read`, `dma_write`); an optional canonical `dma_device` identity that is
+valid only with a DMA-only class set; `violate_atomicity`; one closed transform; and one
 closed `every/periodic` occurrence policy. The target fields carry the node,
 guest address, optional vCPU context, and length. The plugin resolves any GVA
 target to GPA intervals at install and records the translation identity in rule
@@ -51,11 +52,23 @@ For CPU memory helpers, one top-level translated load, store, fetch, or atomic
 helper is one transaction; page splits and unaligned sub-accesses increment its
 zero-based fragment ordinal. Re-entry of the same actor, access class, virtual
 address, width, and observed instruction coordinate increments the retry/replay
-ordinal. For DMA, one `dma_memory_rw`, cached virtqueue access, map fill, or
-writeback is one transaction. Virtio device identity is the SHA-256 digest of
-the realized canonical QOM path under the `qemu.virtio.dma.v1` domain. The full
-digest, not only a numeric abbreviation, is evidence. An unidentified DMA caller
-cannot satisfy a device-scoped capability gate.
+ordinal. Instruction fetch caches transformed bytes by instruction-relative
+offset inside that transaction, so overlapping decoder reads neither reapply a
+transform nor consume another opportunity. For DMA, one `dma_memory_rw`, cached virtqueue access, map fill, or
+writeback is one transaction. A selectable virtio device MUST have an explicit
+QEMU device `id`; its identity is SHA-256 over the ASCII domain
+`qemu.virtio.dma-id.v1` followed immediately by that UTF-8 ID. The host derives
+the same digest from `dma_device`. An id-less virtio device and an unidentified
+DMA caller remain usable by unscoped rules but cannot satisfy a device-scoped
+selector. The full digest, not only a numeric abbreviation, is evidence.
+
+A mapped DMA write is admitted over the full mapping grant because QEMU cannot
+report an error from `address_space_unmap`. Poison and failed-region policy
+therefore accept or reject that grant at map time. Byte transforms, persistent
+state, and service accounting use the exact `access_len` reported at unmap; a
+zero-length unmap performs none of those effects. The grant pins the complete
+ordered rule-generation snapshot and its occurrence state through unmap, so a
+concurrent rule replacement cannot retarget the transaction.
 
 Ordering is:
 
@@ -77,7 +90,7 @@ Instruction result faults occur later under patch 0052. Boundary impulses from
 | `lost_write` | Suppress selected complete write fragments while preserving the production path's ordinary successful completion semantics. Error outcomes use poison or a typed device fault. |
 | `torn_write` | Commit exact selected bytes/bits in increasing GPA order; unselected bytes retain before state. CPU architectural atomicity is deliberately violated only when capability fields permit it. |
 | `poison` | Produce architecture/device-specific poison outcome before returning data; no bytes are exposed unless policy says corrected data. |
-| `failed_region` | Every selected access applies the embedded `access_error`, `corrected`, or architecture-exception poison policy. |
+| `failed_region` | Every selected access applies the embedded `access_error` or CPU/fetch architecture-exception poison policy. Correctable data corruption is an access transform, not a failed-region state. |
 | `retention` | At each positive virtual exposure interval apply the declared repeated decay mask at the exact refresh/read/boundary opportunity. |
 | `rowhammer` | Increment exact aggressor-row access counters; at the positive threshold XOR the declared repeated mask into victims at the declared row distance. |
 
@@ -86,7 +99,9 @@ declare separate capability fields. MMIO transforms are rejected in v1 of this
 patch; MMIO instruction replay belongs to 0052 and typed device faults belong to
 their adapter. CPU atomic operations can be torn only when the effect explicitly
 sets `violate_atomicity = true`, the target architecture capability advertises
-the exact operation width, and the live gate covers it.
+the exact operation width, and the live gate covers it. The v1 capability
+advertises only 1-, 2-, 4-, 8-, and 16-byte atomics, including both
+compare-exchange success and failure paths.
 
 ## Memory service
 
@@ -103,6 +118,19 @@ serialize service capacity. Each shared ledger advances by the exact ceiling of
 bytes/rate plus operations/rate; the access waits for the maximum queue deadline
 across its ledgers. Thus two bindings sharing a controller serialize through one
 cursor, while unrelated ranges remain independently serviceable.
+Every service event carries the canonical ledger-scope hash, ready coordinate
+before and after, configured rates and fixed latency, byte and capacity demand,
+queue and composed completion delay, retry/fragment identity, ordered
+match-chain hash, and final outcome.
+
+Every reachable runtime limit is checked before memory, counters, service
+ledgers, or event state changes. Exhaustion emits one terminal `CRUCLIM1`
+record with a closed resource kind and exact `current`, incremental
+`requested`, `configured`, and implementation-hard values. Resource kinds are
+event slots (1), arithmetic composition (2), monotonic counters (3), service
+rule slots (4), accumulated service bytes (5), virtual-time coordinates (6),
+persistent sparse cells (7), and exact-evidence bytes (8). Once emitted, the
+node stops at the same boundary and no later opportunity can mutate state.
 
 ## Retention and rowhammer geometry
 
@@ -120,7 +148,9 @@ bytes or digests, suppressed/applied byte mask, outcome, service ledger,
 counter/state transitions, physical mutations, and fingerprints. QEMU dirty
 tracking/TB invalidation applies to persistent changes. Patch 0059 serializes
 rule generations, sparse region state, counters, service state, and pending
-access delay.
+access delay. Mapped DMA evidence records both the admitted mapping-grant length
+and the exact used length, so a partial writeback is distinguishable from an
+exact mapping and a zero-length writeback is provably event-free.
 
 ## Live microtests
 

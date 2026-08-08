@@ -574,13 +574,13 @@ events. Unknown fields and values fail before QEMU state changes.
 | watchdog | `disabled`; or `transition_after { timeout_nanos, transition }` |
 | occurrence | `every`; or `periodic { first, period, count }` using one-based ordinals |
 | service discipline | `work_conserving` or `strict_cap` |
-| memory access classes | independent booleans `fetch`, `cpu_load`, `cpu_store`, `dma_read`, and `dma_write`; at least one is true |
-| poison visibility | `access_error`; `corrected { xor_mask, vector }`; or `exception { exception }` |
+| memory access classes | independent booleans `fetch`, `cpu_load`, `cpu_store`, `dma_read`, and `dma_write`; at least one is true; optional `dma_device` is a canonical device identity and requires a DMA-only class set |
+| poison visibility | `access_error`; read-only `corrected { xor_mask }`; or CPU/fetch-only `exception { exception }` |
 | architecture exception | `architecture = x86_64/aarch64`, numeric `vector` and `syndrome`, optional `fault_address`, `before_instruction`, `maskable`, and matching `architecture_default/x86_machine_check/aarch64_ras` record |
 | instruction selector | `pc_start`, positive `pc_length`, optional exact `instruction_bytes`, optional numeric `opcode_class`, and occurrence |
 | interrupt routing | sorted nonempty numeric `target_vcpus`, numeric `priority`, and `retain_pending` |
 | ECC visibility | `telemetry_only`; `corrected_interrupt { vector }`; or a complete `exception` |
-| region process | `failed { policy }`; `retention { interval_nanos, decay_mask }`; or `rowhammer { row_bytes, threshold, victim_distance, flip_mask }` |
+| region process | `failed { policy = access_error/exception }`; `retention { interval_nanos, decay_mask }`; or `rowhammer { row_bytes, threshold, victim_distance, flip_mask }` |
 | memory service scope | `node`, `range`, or `controller { controller ID }` |
 | clock monotonicity | `allow_backward`, `clamp_monotonic`, or `fault_on_backward` |
 | freeze release | `resume_from_frozen` or `catch_up_jump` |

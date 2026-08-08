@@ -193,7 +193,7 @@ entries.
 
 ```json
 {"kind":"access_error"}
-{"kind":"corrected","parameters":{"vector":17,"xor_mask":"01"}}
+{"kind":"corrected","parameters":{"xor_mask":"01"}}
 {"kind":"exception","parameters":{"exception":{"architecture":"x86_64","before_instruction":true,"fault_address":4096,"maskable":false,"record":{"kind":"architecture_default"},"syndrome":0,"vector":18}}}
 ```
 

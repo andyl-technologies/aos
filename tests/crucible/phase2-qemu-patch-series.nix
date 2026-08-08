@@ -364,6 +364,13 @@
       capability = "atomic GPA/GVA mutation with translation, RAM-map, dirty-page, and TB evidence";
     }
     {
+      file = "0050-crucible-memory-access-faults.patch";
+      catalogName = "crucible-memory-access-faults";
+      class = "D";
+      enforces = "QFP-MEMA-1,QFP-MEMA-2,FAULT-ORDER";
+      capability = "typed fetch, load, store, atomic, and identified virtio DMA memory fault rules with shared service and persistent region state";
+    }
+    {
       file = "0060-crucible-block-typed-errors.patch";
       catalogName = "crucible-block-typed-errors";
       class = "F";

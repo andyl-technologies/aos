@@ -9,8 +9,12 @@ SECTIONS
   .text : { *(.text) }
   . = 0x00102000;
   .fault_data : { *(.fault_data) }
-  . = 0x00103000;
+  . = 0x00104000;
   .bss : { *(.bss) }
-  . = 0x00108000;
+  . = 0x00109000;
+  .fault_text : { *(.fault_text) }
+  . = 0x0010a000;
   .page_tables : { *(.page_tables) }
+  . = 0x0010d000;
+  .gdt : { *(.gdt) }
 }

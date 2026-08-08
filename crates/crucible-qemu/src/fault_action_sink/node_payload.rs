@@ -12,6 +12,7 @@ use crucible_shmem::{
     FaultCommandKind, NODE_FAULT_POLICY_JSON_MAGIC_V1, NodeFaultFieldV1, NodeFaultOperationV1,
     NodeFaultPayloadError, NodeFaultPayloadV1, NodeFaultTargetKindV1, node_fault_field,
 };
+use sha2::{Digest, Sha256};
 
 /// Fully encoded non-memory-impulse action and its owning QEMU node.
 pub(super) struct EncodedNodeAction {
@@ -373,6 +374,7 @@ fn effect_fields(
         NodeEffectSpecification::MemoryAccessTransform {
             range,
             accesses,
+            dma_device,
             violate_atomicity,
             mutation,
             occurrence,
@@ -388,6 +390,11 @@ fn effect_fields(
                 json_field(P7, occurrence)?,
                 NodeFaultFieldV1::u32(P8, memory_access_class_bits(*accesses)),
                 NodeFaultFieldV1::boolean(P9, *violate_atomicity),
+                NodeFaultFieldV1::boolean(P10, dma_device.is_some()),
+                dma_device.as_ref().map_or_else(
+                    || NodeFaultFieldV1::hash(P11, [0; 32]),
+                    |device| NodeFaultFieldV1::hash(P11, qemu_virtio_dma_identity(device)),
+                ),
             ]
         }
         NodeEffectSpecification::MemoryEccEvent {
@@ -596,6 +603,14 @@ fn target_fields(
 
 fn id_hash(id: &FaultObjectId) -> [u8; 32] {
     ContentHash::from_canonical_material("crucible.fault-object.v1", id.as_str()).bytes
+}
+
+fn qemu_virtio_dma_identity(id: &FaultObjectId) -> [u8; 32] {
+    let mut digest = Sha256::new();
+
+    digest.update(b"qemu.virtio.dma-id.v1");
+    digest.update(id.as_str().as_bytes());
+    digest.finalize().into()
 }
 
 fn id_field(tag: u16, id: &FaultObjectId) -> NodeFaultFieldV1 {
@@ -892,6 +907,7 @@ mod tests {
                 dma_read: false,
                 dma_write: false,
             },
+            dma_device: None,
             violate_atomicity: false,
             mutation: MemoryAccessMutation::LostWrite,
             occurrence: NodeOccurrencePolicy::Every,
@@ -904,6 +920,18 @@ mod tests {
             length_bytes: 64,
         };
         assert!(!effect_matches_target(&effect, &target));
+    }
+
+    #[test]
+    fn dma_device_identity_matches_the_qemu_wire_contract() {
+        assert_eq!(
+            qemu_virtio_dma_identity(&object_id("virtio-net0")),
+            [
+                0x73, 0x0e, 0x68, 0xf0, 0x8a, 0xfe, 0x82, 0xa7, 0x98, 0x02, 0xa9, 0xfd, 0x7c, 0xd2,
+                0xb0, 0xbf, 0x32, 0x8c, 0x96, 0x5c, 0xeb, 0x4c, 0x76, 0x5f, 0xc5, 0xdb, 0x6f, 0x73,
+                0x84, 0xab, 0x07, 0xe6,
+            ]
+        );
     }
 
     #[test]
