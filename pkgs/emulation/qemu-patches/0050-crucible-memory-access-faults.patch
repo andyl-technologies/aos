@@ -1872,10 +1872,10 @@ index e142f7e..05586dc 100644
  #define DEFINE_LDST_DMA(_lname, _sname, _bits, _end) \
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000..f56ace2
+index 0000000..5174e8c
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,4174 @@
+@@ -0,0 +1,4194 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -1943,6 +1943,7 @@ index 0000000..f56ace2
 +    uint64_t generation;
 +    uint64_t command_sequence;
 +    uint8_t binding_hash[32];
++    uint8_t target_node_hash[32];
 +    uint8_t action_hash[32];
 +    uint8_t target_hash[32];
 +    uint8_t schema_hash[32];
@@ -3495,7 +3496,14 @@ index 0000000..f56ace2
 +    uint32_t vcpu;
 +    uint64_t start, length;
 +
-+    return node_field_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_T2, &start) &&
++    CrucibleNodeField *node = node_field(
++        rule, CRUCIBLE_NODE_FAULT_FIELD_T1);
++
++    return node && node->type == CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH &&
++           node->length == sizeof(rule->target_node_hash) &&
++           memcmp(node->data, rule->target_node_hash,
++                  sizeof(rule->target_node_hash)) == 0 &&
++           node_field_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_T2, &start) &&
 +           node_field_bool(rule, CRUCIBLE_NODE_FAULT_FIELD_T3, &has_vcpu) &&
 +           node_field_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_T4, &vcpu) &&
 +           node_field_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_T5, &length) &&
@@ -3951,6 +3959,7 @@ index 0000000..f56ace2
 +        payload + CRUCIBLE_NODE_FAULT_PAYLOAD_FIELD_COUNT_OFFSET);
 +    rule->command_sequence = command->command_sequence;
 +    memcpy(rule->binding_hash, command->binding_hash, 32);
++    memcpy(rule->target_node_hash, command->target_node_hash, 32);
 +    memcpy(rule->action_hash,
 +           payload + CRUCIBLE_NODE_FAULT_PAYLOAD_ACTION_HASH_OFFSET, 32);
 +    memcpy(rule->target_hash,
@@ -4258,6 +4267,17 @@ index 0000000..f56ace2
 +    }
 +    node_sha256(payload, payload_len, staging->request_hash);
 +    node_rules_digest_with(NULL, false, staging->before_hash);
++    if (command->command_flags & CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) {
++        if (node_hash_nonzero(command->expected_precondition_hash)) {
++            result->status = CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND;
++            return -EINVAL;
++        }
++    } else if (memcmp(command->expected_precondition_hash,
++                      staging->before_hash,
++                      sizeof(staging->before_hash)) != 0) {
++        result->status = CRUCIBLE_FAULT_STATUS_PRECONDITION_MISMATCH;
++        return -ESTALE;
++    }
 +    if (staging->rule.operation == CRUCIBLE_NODE_FAULT_OPERATION_UPSERT) {
 +        node_rules_digest_with(&staging->rule, false, staging->after_hash);
 +    } else if (staging->rule.operation ==
@@ -6526,6 +6546,355 @@ index a16c3ad..481978d 100644
          len -= l;
          buf += l;
          mr_addr += l;
+diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
+new file mode 100644
+index 0000000..710ee87
+--- /dev/null
++++ b/tests/tcg/plugins/crucible-memory-access.c
+@@ -0,0 +1,330 @@
++/*
++ * Live Crucible memory-access fault test plugin
++ *
++ * Copyright (c) 2026 ANDYL Technologies
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include <glib.h>
++#include <qemu-plugin.h>
++
++#include "aos/crucible/crucible_shmem_abi.h"
++
++QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
++
++#define TEST_EVIDENCE_BYTES 400
++
++static struct qemu_plugin_crucible_fault_command test_command;
++static GByteArray *test_payload;
++static uint8_t test_evidence[TEST_EVIDENCE_BYTES];
++static uint64_t test_address;
++static uint64_t test_result_address;
++static uint8_t test_expected;
++static bool test_prepared;
++static bool test_installed;
++static bool test_event_seen;
++static bool test_complete;
++
++static void test_fail(const char *message)
++{
++    g_printerr("Crucible memory access live test failed: %s\n", message);
++    abort();
++}
++
++static void test_put_u16(uint8_t *bytes, uint16_t value)
++{
++    bytes[0] = value;
++    bytes[1] = value >> 8;
++}
++
++static void test_put_u32(uint8_t *bytes, uint32_t value)
++{
++    for (size_t i = 0; i < 4; i++) {
++        bytes[i] = value >> (i * 8);
++    }
++}
++
++static void test_put_u64(uint8_t *bytes, uint64_t value)
++{
++    for (size_t i = 0; i < 8; i++) {
++        bytes[i] = value >> (i * 8);
++    }
++}
++
++static uint32_t test_get_u32(const uint8_t *bytes)
++{
++    return bytes[0] | (uint32_t)bytes[1] << 8 |
++           (uint32_t)bytes[2] << 16 | (uint32_t)bytes[3] << 24;
++}
++
++static uint64_t test_get_u64(const uint8_t *bytes)
++{
++    return test_get_u32(bytes) | (uint64_t)test_get_u32(bytes + 4) << 32;
++}
++
++static void test_field(uint16_t tag, uint16_t type,
++                       const void *data, uint32_t length)
++{
++    uint8_t header[CRUCIBLE_NODE_FAULT_FIELD_HEADER_V1_BYTES];
++
++    test_put_u16(header + CRUCIBLE_NODE_FAULT_FIELD_TAG_OFFSET, tag);
++    test_put_u16(header + CRUCIBLE_NODE_FAULT_FIELD_TYPE_OFFSET, type);
++    test_put_u32(header + CRUCIBLE_NODE_FAULT_FIELD_LENGTH_OFFSET, length);
++    g_byte_array_append(test_payload, header, sizeof(header));
++    g_byte_array_append(test_payload, data, length);
++}
++
++static void test_field_u32(uint16_t tag, uint32_t value)
++{
++    uint8_t bytes[4];
++
++    test_put_u32(bytes, value);
++    test_field(tag, CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
++               bytes, sizeof(bytes));
++}
++
++static void test_field_u64(uint16_t tag, uint64_t value)
++{
++    uint8_t bytes[8];
++
++    test_put_u64(bytes, value);
++    test_field(tag, CRUCIBLE_NODE_FAULT_FIELD_TYPE_U64,
++               bytes, sizeof(bytes));
++}
++
++static void test_field_bool(uint16_t tag, bool value)
++{
++    uint8_t byte = value;
++
++    test_field(tag, CRUCIBLE_NODE_FAULT_FIELD_TYPE_BOOL, &byte, 1);
++}
++
++static void test_field_policy(uint16_t tag, const char *json)
++{
++    g_autofree char *policy = g_strconcat(
++        CRUCIBLE_NODE_FAULT_POLICY_JSON_MAGIC_V1, json, NULL);
++
++    test_field(tag, CRUCIBLE_NODE_FAULT_FIELD_TYPE_BYTES,
++               policy, strlen(policy));
++}
++
++static void test_build_rule(uint32_t kind, uint32_t classes,
++                            const uint8_t *mask, size_t mask_len,
++                            bool replacement_present,
++                            const uint8_t *replacement,
++                            size_t replacement_len, bool violate_atomicity)
++{
++    uint8_t header[CRUCIBLE_NODE_FAULT_PAYLOAD_HEADER_V1_BYTES] = { 0 };
++    uint8_t node_hash[32];
++    uint8_t zero = 0;
++
++    memset(node_hash, 0x11, sizeof(node_hash));
++    memcpy(header + CRUCIBLE_NODE_FAULT_PAYLOAD_MAGIC_OFFSET,
++           "CRUCNOD1", 8);
++    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_VERSION_OFFSET,
++                 CRUCIBLE_NODE_FAULT_PAYLOAD_VERSION_V1);
++    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_COMMAND_KIND_OFFSET,
++                 CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM);
++    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_OPERATION_OFFSET,
++                 CRUCIBLE_NODE_FAULT_OPERATION_UPSERT);
++    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_TARGET_KIND_OFFSET,
++                 CRUCIBLE_NODE_FAULT_TARGET_MEMORY);
++    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_MODEL_PHASE_OFFSET, 1);
++    test_put_u64(header + CRUCIBLE_NODE_FAULT_PAYLOAD_GENERATION_OFFSET, 1);
++    memset(header + CRUCIBLE_NODE_FAULT_PAYLOAD_ACTION_HASH_OFFSET, 0x21, 32);
++    memset(header + CRUCIBLE_NODE_FAULT_PAYLOAD_TARGET_HASH_OFFSET, 0x22, 32);
++    memset(header + CRUCIBLE_NODE_FAULT_PAYLOAD_SCHEMA_HASH_OFFSET, 0x23, 32);
++    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_FIELD_COUNT_OFFSET, 14);
++    test_payload = g_byte_array_new();
++    g_byte_array_append(test_payload, header, sizeof(header));
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P1, test_address);
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P2, mask_len);
++    test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_P3, kind);
++    test_field(CRUCIBLE_NODE_FAULT_FIELD_P4,
++               CRUCIBLE_NODE_FAULT_FIELD_TYPE_BYTES,
++               mask_len ? mask : &zero, MAX(mask_len, 1));
++    test_field_bool(CRUCIBLE_NODE_FAULT_FIELD_P5, replacement_present);
++    test_field(CRUCIBLE_NODE_FAULT_FIELD_P6,
++               CRUCIBLE_NODE_FAULT_FIELD_TYPE_BYTES,
++               replacement_len ? replacement : &zero,
++               MAX(replacement_len, 1));
++    test_field_policy(CRUCIBLE_NODE_FAULT_FIELD_P7, "{\"kind\":\"every\"}");
++    test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_P8, classes);
++    test_field_bool(CRUCIBLE_NODE_FAULT_FIELD_P9, violate_atomicity);
++    test_field(CRUCIBLE_NODE_FAULT_FIELD_T1,
++               CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++               node_hash, sizeof(node_hash));
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_T2, test_address);
++    test_field_bool(CRUCIBLE_NODE_FAULT_FIELD_T3, false);
++    test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_T4, 0);
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_T5, mask_len);
++}
++
++static void test_poll_events(void)
++{
++    struct qemu_plugin_crucible_fault_event event;
++    size_t length;
++    int status;
++
++    while ((status = qemu_plugin_crucible_fault_event_poll(
++                &event, test_evidence, sizeof(test_evidence), &length)) == 1) {
++        if (event.command_kind !=
++                CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM ||
++            event.generation != 1 || length != sizeof(test_evidence) ||
++            memcmp(test_evidence, "CRUCMEM1", 8) != 0 ||
++            test_get_u64(test_evidence + 48) == 0 ||
++            test_get_u32(test_evidence + 56) == 0 ||
++            test_get_u64(test_evidence + 264) != test_address) {
++            test_fail("occurrence evidence is incomplete");
++        }
++        test_event_seen = true;
++    }
++    if (status < 0) {
++        test_fail("occurrence evidence could not be polled losslessly");
++    }
++}
++
++static void test_fault_completion(void *opaque)
++{
++    struct qemu_plugin_crucible_fault_result result;
++    uint8_t evidence[CRUCIBLE_NODE_FAULT_EVIDENCE_V1_BYTES];
++    size_t length;
++    int status;
++
++    (void)opaque;
++    test_poll_events();
++    while ((status = qemu_plugin_crucible_fault_poll(
++                &result, evidence, sizeof(evidence), &length)) == 1) {
++        if (!test_prepared) {
++            if (result.status != CRUCIBLE_FAULT_STATUS_PREPARED ||
++                length != sizeof(evidence)) {
++                test_fail("rule preparation did not return canonical evidence");
++            }
++            memcpy(test_command.expected_precondition_hash,
++                   result.before_hash, 32);
++            test_command.command_flags = 0;
++            test_command.command_sequence = 2;
++            test_command.target_icount = result.observed_icount;
++            test_command.authorization_ceiling_icount = result.observed_icount;
++            test_prepared = true;
++            if (qemu_plugin_crucible_fault_submit(
++                    &test_command, test_payload->data,
++                    test_payload->len) != 0) {
++                test_fail("rule commit could not be submitted");
++            }
++            qemu_plugin_force_vcpu_exit();
++        } else {
++            if (result.status != CRUCIBLE_FAULT_STATUS_APPLIED ||
++                length != sizeof(evidence)) {
++                test_fail("rule commit was not applied");
++            }
++            test_installed = true;
++        }
++    }
++    if (status < 0) {
++        test_fail("rule result could not be polled losslessly");
++    }
++}
++
++static void test_tb_exec(unsigned int cpu_index, void *opaque)
++{
++    g_autoptr(GByteArray) value = g_byte_array_new();
++
++    (void)cpu_index;
++    (void)opaque;
++    if (!test_installed || !test_event_seen || test_complete ||
++        !qemu_plugin_read_memory_vaddr(test_result_address, value, 1) ||
++        value->data[0] != test_expected) {
++        return;
++    }
++    test_complete = true;
++    g_printerr("CRUCIBLE_MEMORY_ACCESS_LIVE_PASS\n");
++    qemu_plugin_request_shutdown(0);
++}
++
++static void test_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
++{
++    (void)id;
++    qemu_plugin_register_vcpu_tb_exec_cb(
++        tb, test_tb_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
++}
++
++static void test_exit(qemu_plugin_id_t id, void *opaque)
++{
++    (void)id;
++    (void)opaque;
++    if (!test_complete) {
++        test_fail("guest-visible result was not observed");
++    }
++    g_byte_array_unref(test_payload);
++}
++
++QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
++                                           const qemu_info_t *info,
++                                           int argc, char **argv)
++{
++    uint32_t kind = 1;
++    uint32_t classes = 2;
++    uint8_t mask[16] = { 0xff };
++    uint8_t replacement[16] = { 0xa5 };
++    size_t length = 1;
++    bool replacement_present = true;
++    bool violate_atomicity = false;
++
++    (void)info;
++    if (argc != 6 ||
++        !g_str_has_prefix(argv[0], "address=") ||
++        !g_str_has_prefix(argv[1], "result=") ||
++        !g_str_has_prefix(argv[2], "expected=") ||
++        !g_str_has_prefix(argv[3], "kind=") ||
++        !g_str_has_prefix(argv[4], "classes=") ||
++        !g_str_has_prefix(argv[5], "length=")) {
++        test_fail("six canonical arguments are required");
++    }
++    test_address = g_ascii_strtoull(argv[0] + 8, NULL, 0);
++    test_result_address = g_ascii_strtoull(argv[1] + 7, NULL, 0);
++    test_expected = g_ascii_strtoull(argv[2] + 9, NULL, 0);
++    kind = g_ascii_strtoull(argv[3] + 5, NULL, 0);
++    classes = g_ascii_strtoull(argv[4] + 8, NULL, 0);
++    length = g_ascii_strtoull(argv[5] + 7, NULL, 0);
++    if (length == 0 || length > sizeof(mask)) {
++        test_fail("test length is out of range");
++    }
++    if (kind == 2 || kind == 3) {
++        replacement_present = false;
++        memset(replacement, 0, sizeof(replacement));
++    }
++    if (kind == 3) {
++        memset(mask, 0, sizeof(mask));
++    }
++    if (kind == 4) {
++        violate_atomicity = classes == 6;
++        for (size_t i = 0; i < length; i++) {
++            replacement[i] = i % 2 ? 0 : 0xff;
++        }
++    }
++    test_build_rule(kind, classes, mask, length, replacement_present,
++                    replacement, length, violate_atomicity);
++    memset(&test_command, 0, sizeof(test_command));
++    test_command.abi_major = CRUCIBLE_FAULT_COMMAND_ABI_MAJOR;
++    test_command.abi_minor = CRUCIBLE_FAULT_COMMAND_ABI_MINOR;
++    test_command.command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM;
++    test_command.command_flags = CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY;
++    test_command.phase = CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY;
++    test_command.semantic_version = CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION;
++    test_command.command_sequence = 1;
++    test_command.target_icount = 32;
++    test_command.authorization_ceiling_icount = 32;
++    memset(test_command.target_node_hash, 0x11, 32);
++    memset(test_command.binding_hash, 0x31, 32);
++    if (qemu_plugin_crucible_fault_submit(
++            &test_command, test_payload->data, test_payload->len) != 0) {
++        test_fail("rule preparation could not be submitted");
++    }
++    qemu_plugin_register_crucible_fault_completion_cb(
++        test_fault_completion, NULL);
++    qemu_plugin_register_vcpu_tb_trans_cb(id, test_tb_trans);
++    qemu_plugin_register_atexit_cb(id, test_exit, NULL);
++    return 0;
++}
+diff --git a/tests/tcg/plugins/meson.build b/tests/tcg/plugins/meson.build
+index 24a8a7b..89bdc8e 100644
+--- a/tests/tcg/plugins/meson.build
++++ b/tests/tcg/plugins/meson.build
+@@ -1,6 +1,7 @@
+ t = []
+ if get_option('plugins')
+-  foreach i : ['bb', 'crucible-memory', 'empty', 'inline', 'insn', 'mem',
++  foreach i : ['bb', 'crucible-memory', 'crucible-memory-access',
++               'empty', 'inline', 'insn', 'mem',
+                'reset', 'syscall']
+     if host_os == 'windows'
+       t += shared_module(i, files(i + '.c') + '../../../contrib/plugins/win32_linker.c',
 -- 
 2.54.0
 
