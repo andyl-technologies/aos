@@ -8145,6 +8145,87 @@ pub async fn status(config: &ApmConfig, registry: Option<&str>, printer: &Printe
     Ok(())
 }
 
+/// `apr commit` stages explicit registry-relative paths and creates one commit
+/// with AOS's in-process SSH signer.
+///
+/// The command refuses a pre-populated index so a caller cannot accidentally
+/// include paths staged by an earlier operation. Registries with an active
+/// trust roster require `--key` or `--key-id`; an unsigned commit is permitted
+/// only while the roster is empty.
+///
+/// # Errors
+///
+/// Fails when a path is absolute or escapes the registry, the index already
+/// contains staged changes, the signing key is missing or invalid, registry
+/// validation fails, or the commit/object-store refresh fails.
+pub async fn commit_changes(
+    config: &ApmConfig,
+    paths: &[PathBuf],
+    message: &str,
+    key: Option<&str>,
+    key_id: Option<&str>,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    if message.trim().is_empty() {
+        bail!("commit message must not be empty");
+    }
+
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
+    ensure_writable_registry_clone(&registry_name, &dir)?;
+
+    let staged = git_raw(&dir, &["diff", "--cached", "--name-only"])?;
+    if !staged.is_empty() {
+        bail!(
+            "registry '{registry_name}' already has staged changes; commit or unstage them before `apr commit`"
+        );
+    }
+
+    let mut absolute_paths = Vec::with_capacity(paths.len());
+    for path in paths {
+        if path.as_os_str().is_empty()
+            || path.is_absolute()
+            || path
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            bail!(
+                "commit path must be a non-empty registry-relative path without '.' or '..': {}",
+                path.display()
+            );
+        }
+        absolute_paths.push(dir.join(path));
+    }
+
+    let roster = load_committed_roster(&dir)?;
+    let signing_key =
+        resolve_roster_commit_key(config, &dir, &registry_name, &roster, key, key_id)?;
+    commit_registry_paths(
+        &dir,
+        message,
+        &absolute_paths,
+        signing_key.as_ref().map(ResolvedSigningKey::path),
+    )?;
+    refresh_registry_object_store(&dir)
+        .context("refreshing dumb-HTTP object store after explicit commit")?;
+
+    let head = current_git_head(&dir)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "commit",
+            "registry": registry_name,
+            "commit": head,
+            "message": message,
+            "paths": paths,
+            "signed": signing_key.is_some(),
+        }));
+        return Ok(());
+    }
+    printer.success(&format!("Committed {head}: {message}"));
+    Ok(())
+}
+
 /// `apr log` — prints the last `n` commits of the registry clone, one line
 /// each, optionally restricted to the history of a single package's TOML
 /// file.
