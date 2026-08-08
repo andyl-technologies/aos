@@ -963,7 +963,7 @@ where
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
     if let Err(response) = authorize_relay_role(&role) {
-        return response;
+        return *response;
     }
     if let Err(error) = state
         .debug_relays
@@ -974,10 +974,11 @@ where
         return debug_relay_error_response(error);
     }
     let _operation_guard = debug_operation_guard(&state, session).await;
-    let stream = match {
+    let stream_result = {
         let mut relays = state.debug_relays.lock().await;
         relays.stream(id, session, &client, generation, holder)
-    } {
+    };
+    let stream = match stream_result {
         Ok(stream) => stream,
         Err(error) => return debug_relay_error_response(error),
     };
@@ -1018,7 +1019,7 @@ where
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
     if let Err(response) = authorize_relay_role(&role) {
-        return response;
+        return *response;
     }
     if let Err(error) = state
         .debug_relays
@@ -1029,10 +1030,11 @@ where
         return debug_relay_error_response(error);
     }
     let _operation_guard = debug_operation_guard(&state, session).await;
-    let chunk = match {
+    let chunk_result = {
         let mut relays = state.debug_relays.lock().await;
         relays.read(id, session, &client, generation, holder, maximum)
-    } {
+    };
+    let chunk = match chunk_result {
         Ok(chunk) => chunk,
         Err(error) => return debug_relay_error_response(error),
     };
@@ -1070,13 +1072,14 @@ where
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
     if let Err(response) = authorize_relay_role(&role) {
-        return response;
+        return *response;
     }
     let _operation_guard = debug_operation_guard(&state, session).await;
-    let closed = match {
+    let close_result = {
         let mut relays = state.debug_relays.lock().await;
         relays.close(id, session, &client, generation, holder)
-    } {
+    };
+    let closed = match close_result {
         Ok(closed) => closed,
         Err(error) => return debug_relay_error_response(error),
     };
@@ -1087,14 +1090,14 @@ where
     http2_response(StatusCode::OK, "crucible.rpc/debug-relay-close-response\n")
 }
 
-fn authorize_relay_role(role: &DebugRole) -> Result<(), Response> {
+fn authorize_relay_role(role: &DebugRole) -> Result<(), Box<Response>> {
     if role.allows(DebugCapability::Control) && role.allows(DebugCapability::Observe) {
         return Ok(());
     }
-    Err(http2_response(
+    Err(Box::new(http2_response(
         StatusCode::FORBIDDEN,
         "debug relay requires observe and control capabilities",
-    ))
+    )))
 }
 
 async fn release_debug_holder<L, F>(

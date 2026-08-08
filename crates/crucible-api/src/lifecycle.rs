@@ -215,7 +215,7 @@ impl SessionId {
 }
 
 /// Epoch-guarded reference to a live or recently-absent session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionRef {
     /// Stable session identifier.
     pub id: SessionId,

@@ -114,7 +114,7 @@ async fn relay_is_loopback_bounded_and_lease_owned() {
     }
     assert_eq!(chunk.bytes, b"gdb");
     if let Some(relay) = registry.relays.get_mut(&id) {
-        relay.last_activity = Instant::now() - DEBUG_RELAY_STALE_AFTER;
+        relay.last_activity = relay_clock_now() - DEBUG_RELAY_STALE_AFTER;
     } else {
         panic!("registered relay disappeared before stale cleanup");
     }

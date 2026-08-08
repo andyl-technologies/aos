@@ -29,6 +29,12 @@ const DEBUG_RELAY_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const DEBUG_RELAY_STALE_AFTER: Duration = Duration::from_secs(30);
 const DEBUG_RELAY_TOMBSTONE_LIMIT: usize = 128;
 
+/// Reads the operational relay clock outside deterministic scenario state.
+#[allow(clippy::disallowed_methods)]
+fn relay_clock_now() -> Instant {
+    Instant::now()
+}
+
 /// Opaque daemon-local identifier for one GDB relay connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DebugRelayId(
@@ -87,7 +93,7 @@ impl DebugRelayRegistry {
     ) -> Option<DebugRelayId> {
         self.relays.iter_mut().find_map(|(id, relay)| {
             if relay.session == session && relay.lease == *lease && relay.holder == holder {
-                relay.last_activity = Instant::now();
+                relay.last_activity = relay_clock_now();
                 Some(*id)
             } else {
                 None
@@ -146,7 +152,7 @@ impl DebugRelayRegistry {
                 lease,
                 holder,
                 stream: Arc::new(Mutex::new(stream)),
-                last_activity: Instant::now(),
+                last_activity: relay_clock_now(),
             },
         );
         Ok(id)
@@ -180,7 +186,7 @@ impl DebugRelayRegistry {
         holder: DebugControllerHolderId,
     ) -> Result<Arc<Mutex<TcpStream>>, DebugRelayError> {
         let relay = self.checked_relay_mut(id, session, client, generation, holder)?;
-        relay.last_activity = Instant::now();
+        relay.last_activity = relay_clock_now();
         Ok(relay.stream.clone())
     }
 
@@ -193,7 +199,7 @@ impl DebugRelayRegistry {
         holder: DebugControllerHolderId,
     ) -> Result<(), DebugRelayError> {
         self.checked_relay_mut(id, session, client, generation, holder)?
-            .last_activity = Instant::now();
+            .last_activity = relay_clock_now();
         Ok(())
     }
 
@@ -210,7 +216,7 @@ impl DebugRelayRegistry {
             return Err(DebugRelayError::InvalidReadMaximum { maximum });
         }
         let relay = self.checked_relay_mut(id, session, client, generation, holder)?;
-        relay.last_activity = Instant::now();
+        relay.last_activity = relay_clock_now();
         let stream = relay.stream.try_lock().map_err(|_| DebugRelayError::Busy)?;
         let mut bytes = vec![0_u8; maximum];
         match stream.try_read(&mut bytes) {
@@ -306,7 +312,7 @@ impl DebugRelayRegistry {
         &mut self,
         session: SessionRef,
     ) -> Vec<(DebugControllerLease, DebugControllerHolderId)> {
-        let now = Instant::now();
+        let now = relay_clock_now();
         let mut stale = Vec::new();
         self.relays.retain(|_, relay| {
             let expired = relay.session == session

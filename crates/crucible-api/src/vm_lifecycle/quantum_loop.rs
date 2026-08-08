@@ -513,8 +513,10 @@ mod tests {
         let listen = GdbListen::new("127.0.0.1:9000")
             .unwrap_or_else(|error| panic!("loopback listener should parse: {error}"));
 
-        let error = trusted_debug_listener(&debug_config(false), &listen)
-            .expect_err("fixed listener policy should reject a different port");
+        let error = match trusted_debug_listener(&debug_config(false), &listen) {
+            Ok(address) => panic!("fixed listener policy admitted {address}"),
+            Err(error) => error,
+        };
 
         assert!(
             error
@@ -528,8 +530,10 @@ mod tests {
         let listen = GdbListen::new("0.0.0.0:9000")
             .unwrap_or_else(|error| panic!("socket listener should parse: {error}"));
 
-        let error = trusted_debug_listener(&debug_config(true), &listen)
-            .expect_err("daemon listener policy must remain loopback-only");
+        let error = match trusted_debug_listener(&debug_config(true), &listen) {
+            Ok(address) => panic!("daemon listener policy admitted {address}"),
+            Err(error) => error,
+        };
 
         assert!(error.to_string().contains("must be loopback"));
     }
