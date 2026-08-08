@@ -1621,6 +1621,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "listen",
                 "max_sessions",
                 "production_qemu",
+                "qemu_rendezvous_icount",
                 "read_only",
                 "tls_cert",
                 "tls_key",
@@ -1628,7 +1629,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "trusted_unauthenticated_bind",
                 "debug_role",
             ][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\n",
+            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\n",
         ),
         (
             "debug",
