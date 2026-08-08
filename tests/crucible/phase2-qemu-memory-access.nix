@@ -13,7 +13,7 @@
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
-  dmaGuest = import ./phase2-qemu-live-block-io-guest.nix {inherit pkgs;};
+  dmaGuest = import ./phase2-qemu-memory-dma-guest.nix {inherit pkgs;};
   failures =
     failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
       {
@@ -298,25 +298,45 @@ in
             run_advanced_architecture_matrix x86_64
             run_advanced_architecture_matrix aarch64
 
-            vmlinuz=$(ls ${pkgs.linux}/boot/vmlinuz-* | head -1)
+            vmlinuz=$(ls ${pkgs.linux-crucible}/boot/vmlinuz-* | head -1)
             test -n "$vmlinuz"
+            . ${dmaGuest}/symbols
+            test -n "$mailbox"
+            test -n "$publish"
+            test -n "$ready"
+            test -n "$complete"
             dd if=/dev/zero of=dma-disk.raw bs=1M count=8 status=none
             run_dma_case() {
               class="$1"
               label="$2"
+              iommu="''${3:-0}"
               should_run "dma-$label" || return 0
+              iommu_device=
+              endpoint_suffix=
+              plugin_suffix=
+              if test "$iommu" = 1; then
+                iommu_device='-device virtio-iommu-pci'
+                endpoint_suffix=',iommu_platform=on,disable-legacy=on'
+                plugin_suffix=',translated=1'
+              fi
+              set +e
               timeout 180 ${qemuPackage}/bin/qemu-system-x86_64 \
                 -nodefaults -no-user-config -display none -monitor none \
+                -serial stdio -no-reboot \
                 -machine q35 -accel sim,thread=single \
                 -icount shift=0,sleep=off,align=off -m 256 -smp 1 \
                 -cpu qemu64,-rdrand,-rdseed \
                 -kernel "$vmlinuz" -initrd ${dmaGuest}/initrd.img \
-                -append 'console=ttyS0 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0 nohz=off' \
+                -append 'console=ttyS0 rdinit=/init panic=1 nokaslr norandmaps random.trust_cpu=off net.ifnames=0 nohz=off' \
                 -drive id=dma,file=dma-disk.raw,format=raw,if=none,cache=unsafe \
-                -device virtio-blk-pci,drive=dma,id=dma-probe \
-                -plugin "$PWD/crucible-memory-dma.so,start=0x100000,length=0xff00000,class=$class,device=dma-probe" \
+                $iommu_device \
+                -device "virtio-blk-pci,drive=dma,id=dma-probe$endpoint_suffix" \
+                -plugin "$PWD/crucible-memory-dma.so,length=0x200,class=$class,device=dma-probe,mailbox=$mailbox,publish-pc=$publish,ready-pc=$ready,complete-pc=$complete$plugin_suffix" \
                 >"logs/dma-$label.log" 2>&1
+              case_status=$?
+              set -e
               cat "logs/dma-$label.log"
+              test "$case_status" -eq 0
               grep -Fxq CRUCIBLE_MEMORY_DMA_LIVE_PASS \
                 "logs/dma-$label.log"
               test "$(grep -Fc CRUCIBLE_MEMORY_DMA_LIVE_PASS \
@@ -324,6 +344,8 @@ in
             }
             run_dma_case 8 read
             run_dma_case 16 write
+            run_dma_case 8 iommu-read 1
+            run_dma_case 16 iommu-write 1
 
             if should_run stock; then
               set +e
@@ -354,6 +376,7 @@ in
               printf 'transform_matrix=stuck,read-corrupt,lost-write,torn-write\n'
               printf 'advanced_matrix=corrected-poison,access-error,architectural-exception,failed-region,retention,rowhammer,service\n'
               printf 'dma_backend=actual-device-scoped-virtio-blk-read-write\n'
+              printf 'dma_translation=frozen-direct-and-virtio-iommu-iova-to-gpa\n'
             } >"$out/result"
           '';
         }
