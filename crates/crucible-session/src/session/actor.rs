@@ -678,7 +678,6 @@ fn gdb_run_control_command(packet: &[u8]) -> Option<SessionCommand> {
             _ => return None,
         }
     }
-
     if saw_step {
         // In all-stop mode GDB asks the selected thread to step and all other
         // threads to continue. The deterministic scheduler implements that
