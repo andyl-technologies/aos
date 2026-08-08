@@ -1,6 +1,7 @@
 //! Debugger CLI planning, policy, guest-channel, and transcript tests.
 
 use super::*;
+use crate::cli_triage_debug::guest_input_message;
 
 #[test]
 fn guest_channel_eof_preserves_pty_output_drain() {

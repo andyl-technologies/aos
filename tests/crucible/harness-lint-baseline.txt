@@ -108,7 +108,6 @@ confinement	crates/crucible-cli/src/cli/run_save/test_double.rs	host nondetermin
 confinement	crates/crucible-cli/src/cli/run_save/test_double.rs	host nondeterminism reaching State	ScenarioDef		1
 confinement	crates/crucible-cli/src/cli/triage_debug.rs	host nondeterminism reaches API/session route	Backend		5
 confinement	crates/crucible-cli/src/cli/triage_debug.rs	host nondeterminism reaches API/session route	crucible_api		13
-confinement	crates/crucible-cli/src/cli/triage_debug.rs	host nondeterminism reaches API/session route	crucible_session		1
 confinement	crates/crucible-cli/src/cli/triage_debug.rs	host nondeterminism reaching State	Backend		5
 confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaches API/session route	ControlClient		6
 confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaches API/session route	crucible_api		36
@@ -242,7 +241,8 @@ confinement	crates/crucible-qemu/src/supervision/ninep_io_gate.rs	host nondeterm
 confinement	crates/crucible-qemu/src/supervision/ninep_io_gate.rs	host nondeterminism reaching State	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/supervision/node_step_gate/support.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/supervision/node_step_gate/support.rs	host nondeterminism reaching State	ExecutionHorizon		1
-error-logging	crates/crucible-api/src/server.rs	stringly error	Result<_, String>		41
+error-logging	crates/crucible-api/src/server.rs	stringly error	Result<_, String>		32
+error-logging	crates/crucible-api/src/server/debug_wire.rs	stringly error	Result<_, String>		10
 error-logging	crates/crucible-api/src/server/debug_reposition.rs	stringly error	Result<_, String>		4
 error-logging	crates/crucible-api/src/server/query_wire.rs	stringly error	Result<_, String>		1
 error-logging	crates/crucible-harness/src/replay_oracle.rs	erased error	dyn Error		3

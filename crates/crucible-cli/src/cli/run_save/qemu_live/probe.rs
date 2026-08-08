@@ -402,12 +402,14 @@ mod tests {
         let root_image = PathBuf::from("aarch64-root-image");
         let kernel_cmdline = String::from("console=ttyAMA0 root=/dev/vda");
 
-        let assets = resolve_aarch64_guest_assets(
+        let assets = match resolve_aarch64_guest_assets(
             Some(kernel.clone()),
             Some(root_image.clone()),
             Some(kernel_cmdline.clone()),
-        )
-        .expect("complete AArch64 assets should resolve");
+        ) {
+            Ok(assets) => assets,
+            Err(error) => panic!("complete AArch64 assets did not resolve: {error}"),
+        };
 
         assert_eq!(assets, Some((kernel, root_image, Some(kernel_cmdline))));
     }
@@ -426,8 +428,10 @@ mod tests {
         ];
 
         for (kernel, root_image, kernel_cmdline) in configurations {
-            let error = resolve_aarch64_guest_assets(kernel, root_image, kernel_cmdline)
-                .expect_err("incomplete AArch64 assets must be rejected");
+            let error = match resolve_aarch64_guest_assets(kernel, root_image, kernel_cmdline) {
+                Ok(assets) => panic!("incomplete AArch64 assets resolved as {assets:?}"),
+                Err(error) => error,
+            };
 
             assert!(error.to_string().contains(
                 "CRUCIBLE_KERNEL_AARCH64, CRUCIBLE_ROOT_IMAGE_AARCH64, and CRUCIBLE_KERNEL_CMDLINE_AARCH64 together"
