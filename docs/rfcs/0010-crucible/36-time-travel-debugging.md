@@ -912,15 +912,16 @@ zero-checked tail. Guest and plugin directions are closed and fail loudly when
 reversed. No exec, PTY, SSH, credential, or `CRGI` payload crosses QMP or a
 virtual device, and no descriptor crosses the process boundary.
 
-Activation is a separate, one-shot control edge. The canonical launch contains
-no debugger activation device. After the explicit non-canonical fork marker has
-committed, the typed QMP client hot-adds one private ring-buffer-backed
-virtio-serial port and writes the fixed `CRUCIBLE_DEBUG_AGENT_V1` token. The
-fixture's event-driven hotplug hook consumes only that token and starts the
-agent; it does not poll during canonical execution. Callers cannot choose the
-device, token, or bytes. The activation edge is bounded, host-to-guest only,
-recorded by the branch action, carries no introspection records, and disappears
-with the forked runtime on reposition or teardown. The subsequent feature
+Activation is a separate, one-shot control edge. A fixed empty controller,
+named activation-only virtio-serial port, and Unix chardev are content-addressed
+canonical launch topology. Crucible binds the private listener before launch,
+QEMU connects as a client, and the fixture opens one blocking reader after
+setup. No token is written and no agent runs during canonical execution. After
+the explicit non-canonical fork marker has committed, Crucible writes only the
+fixed `CRUCIBLE_DEBUG_AGENT_V1` token on that already-established stream. Callers
+cannot choose the device, token, or bytes. The activation edge is bounded,
+host-to-guest only, recorded by the branch action, and carries no introspection
+records. The subsequent feature
 advertisement and every channel byte use only `CRGX`/`CRGI` and the shared-memory
 rings.
 
@@ -972,9 +973,9 @@ remaining process groups and joins their bounded readers.
 
 An idle agent still has a causal instruction-count cost. Therefore an image or
 daemon MUST NOT activate `crucible-guest agent` on canonical execution. The
-shipped fixture installs only an event-driven hotplug hook; the activation port
-it awaits is absent until the authorized whole-world non-canonical fork. Agent
-activation is recorded as part of that fork's causal configuration.
+shipped fixture opens one blocking reader on the inert activation-only port;
+Crucible sends no token until the authorized whole-world non-canonical fork.
+Agent activation is recorded as part of that fork's causal configuration.
 
 Guest streams are ephemeral by default and excluded from canonical artifacts. An
 operator may explicitly request transcript recording on the non-canonical branch.
@@ -996,13 +997,13 @@ instances.
   non-canonical branch and never changes canonical causal bytes. *Gate:*
   `gate:e2e-determinism`, `gate:replay-oracle`. *Spec:* §36.9.3; cross-ref §36.5.
 
-- **[DBG-45A]** Fork-time agent activation MAY use the existing typed QMP plane
-  to hot-add one fixed activation-only port and send one fixed versioned token,
-  but only after the non-canonical fork marker commits. The device MUST be absent
-  from canonical launch topology; the command MUST carry no `CRGI`, operator,
-  credential, or transcript bytes; activation MUST be replay-bound to the branch
-  action; and reposition or teardown MUST discard the activation device with its
-  runtime. All guest-introspection data remains exclusively on [DBG-45]'s
+- **[DBG-45A]** Fork-time agent activation MAY use one fixed, content-addressed,
+  activation-only virtio-serial endpoint whose private Unix stream is established
+  at launch, but it MUST send no bytes and start no agent until the non-canonical
+  fork marker commits. The fixed token MUST carry no `CRGI`, operator, credential,
+  or transcript bytes; activation MUST be replay-bound to the branch action; and
+  reposition or teardown MUST discard the activated runtime and its stream. All
+  guest-introspection data remains exclusively on [DBG-45]'s
   shared-memory/doorbell path. *Gate:* `gate:e2e-determinism`,
   `gate:abi-conformance`, `gate:replay-oracle`. *Spec:* §36.9.3; cross-ref 10
   §10.4, 13 §13.3.9, 16 §16.3.1.
@@ -1528,10 +1529,12 @@ complete from model-double evidence.
   records, and remains outside canonical artifacts. The CLI now applies a
   configurable 30-second response-idle deadline, attempts bounded channel
   cleanup and controller-lease release when a forked VM has no responding agent.
-  Fork-time activation is now implemented as [DBG-45A]'s fixed QMP hotplug after
-  the non-canonical branch commits. The shipped fixture installs an event-driven
-  hotplug hook, starts `crucible-guest agent` only after the fixed token, and
-  advertises exec/PTY/resize/SSH features through the shared-memory protocol.
+  Fork-time activation is now implemented as [DBG-45A]'s fixed inert endpoint.
+  Crucible owns the pre-established private stream and writes the token only
+  after the non-canonical branch commits. The shipped fixture starts one blocking
+  activation reader after setup and starts `crucible-guest agent` only after the
+  fixed token. The agent advertises exec/PTY/resize/SSH features through the
+  shared-memory protocol.
   Activation waits for at most 64 scheduler quanta and returns the committed
   branch identity even when negotiation fails. Completion remains open only for
   packaged live exec/PTY/SSH evidence, reposition-driven stream closure, and the

@@ -90,8 +90,8 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when QMP rejects the fixed hotplug
-    /// sequence or the activation socket cannot deliver the fixed token.
+    /// Returns [`QemuNodeChannelError`] when endpoint preparation fails or the
+    /// activation stream cannot deliver the fixed token.
     pub fn activate_debug_guest(&mut self) -> Result<QmpCommandComplete, QemuNodeChannelError> {
         let complete = self
             .client

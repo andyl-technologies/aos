@@ -1417,27 +1417,31 @@ becomes a new `Decided` entry referencing the one it supersedes).
 
 ### D-38 — Guest introspection uses doorbell/shared-memory data with fork-only activation
 
-- **Status:** Decided
+- **Status:** Amended
 - **Decision:** Supersede D-7's virtio-serial payload choice. White-box markers
   and every guest-introspection feature, command, stream, resize, exit, and close
   record use the trapped-instruction `CRGX` exchange and ABI-v6 shared-memory
   rings. A virtual device carries no payload. After an explicit whole-world
-  non-canonical debugger fork commits, the existing typed QMP machine-control
-  plane may hot-add one activation-only port and send one fixed versioned token
-  to the fixture's event-driven bootstrap. The port is absent before the fork
-  and discarded with the forked runtime.
+  non-canonical debugger fork commits, Crucible may send one fixed versioned
+  token over a fixed activation-only virtio-serial endpoint. The empty controller,
+  named port, and Unix chardev are content-addressed canonical launch topology;
+  the Crucible-owned stream is established at launch but no token is written and
+  no agent runs before the fork.
 - **Rationale:** The doorbell provides exact icount placement and the shared
   rings provide a bounded, pointer-free, versioned process protocol. A dormant
   guest agent cannot receive a host wake through that guest-to-host trap alone.
   The narrow one-shot activation edge solves only that wakeup problem without
-  making a device a data-channel fallback or changing canonical guest topology.
-- **Evidence:** The QEMU launch test rejects any canonical activation device;
-  the typed QMP test freezes the fixed chardev/controller/port/token sequence;
-  ABI conformance continues to cover all `CRGI` records and rings.
+  making the device a data-channel fallback. Runtime PCIe hotplug was rejected:
+  the portable fixture kernel has no PCIe hotplug support, and an output-oriented
+  QEMU ring buffer cannot inject the token. A live direct-QEMU exercise proved
+  that the host-listener/QEMU-client stream wakes the blocking guest reader.
+- **Evidence:** The launch test freezes the exact inert controller, named port,
+  chardev, absent token, and hash material; the validator permits only that fixed
+  Unix endpoint. ABI conformance continues to cover all `CRGI` records and rings.
 - **Affects:** [GHC-14], [QEMU-17]–[QEMU-19], [SHM-47], [SHM-48], [DBG-9],
   [DBG-34], [DBG-45], [DBG-45A], [DBG-46]; files 10, 13, 16, and 36.
 - **Supersedes:** D-7.
-- **Date:** 2026-08-07.
+- **Date:** 2026-08-08.
 
 ---
 
