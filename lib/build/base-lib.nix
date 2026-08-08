@@ -92,20 +92,22 @@
   bundledRootNames = builtins.sort builtins.lessThan (lib.unique (
     builtins.map (declaration: builtins.head declaration.path) realEval._optionDecls
   ));
-  bundledRoots = builtins.map (root: {
-    inherit root;
-    interface_abi = moduleAbi;
-    contributable = builtins.sort builtins.lessThan (
-      builtins.map
-      (declaration: lib.concatStringsSep "." (builtins.tail declaration.path))
-      (builtins.filter
-        (declaration:
-          declaration.contributable
-          && builtins.head declaration.path == root
-          && builtins.length declaration.path > 1)
-        realEval._optionDecls)
-    );
-  }) bundledRootNames;
+  bundledRoots =
+    builtins.map (root: {
+      inherit root;
+      interface_abi = moduleAbi;
+      contributable = builtins.sort builtins.lessThan (
+        builtins.map
+        (declaration: lib.concatStringsSep "." (builtins.tail declaration.path))
+        (builtins.filter
+          (declaration:
+            declaration.contributable
+            && builtins.head declaration.path == root
+            && builtins.length declaration.path > 1)
+          realEval._optionDecls)
+      );
+    })
+    bundledRootNames;
 
   # logical-name -> stage-1 store path, for every registered (non-frozen)
   # artifact source. `"${drv}"` forces the artifact to its built path; context
@@ -115,7 +117,8 @@
   frozenArtifactSourcesRaw =
     lib.filterAttrs (_: v: v != null)
     realEval.config.aos.config._artifactSources;
-  invalidArtifactNames = builtins.filter
+  invalidArtifactNames =
+    builtins.filter
     (name: builtins.match "[A-Za-z0-9][A-Za-z0-9._-]*" name == null)
     (builtins.attrNames frozenArtifactSourcesRaw);
   frozenArtifactSources =
@@ -137,9 +140,11 @@
   imageManifest = builtins.toJSON (rawImageManifest
     // {
       storePaths = lib.unique (rawImageManifest.storePaths ++ [baseLibOut]);
-      ownership = rawImageManifest.ownership
+      ownership =
+        rawImageManifest.ownership
         // {
-          storePaths = rawImageManifest.ownership.storePaths
+          storePaths =
+            rawImageManifest.ownership.storePaths
             // {"${baseLibOut}" = "@base";};
         };
     });
@@ -189,7 +194,8 @@ in
     mkdir -p "$out/artifact-roots"
     ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: artifact: ''
         ln -s ${artifact} "$out/artifact-roots/${name}"
-      '') frozenArtifactSources)}
+      '')
+      frozenArtifactSources)}
     actual_base_lib_digest=$(printf '%s' "$out" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)
     ${pkgs.sed}/bin/sed \
       -e "s|sha256:$placeholderBaseLibDigest|sha256:$actual_base_lib_digest|g" \

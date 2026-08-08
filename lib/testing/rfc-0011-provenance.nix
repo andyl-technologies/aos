@@ -34,36 +34,60 @@
     ];
   };
   manifest = evaluated.config.system.build.configManifest;
-  jobKeys = builtins.filter
+  jobKeys =
+    builtins.filter
     (key: builtins.match "provenance-demo\\.service:.*" key != null)
     (builtins.attrNames manifest.jobScripts);
   ancestorEtcCollision = builtins.tryEval (builtins.toJSON ((mkSystem {
-    modules = [serverModule];
-    operatorModules = [{
-      environment.etc = {
-        a.text = "ancestor";
-        "a-escape".text = "interposed sort key";
-        "a/child".text = "descendant";
-      };
-    }];
-  }).config.system.build.configManifest.etc));
+      modules = [serverModule];
+      operatorModules = [
+        {
+          environment.etc = {
+            a.text = "ancestor";
+            "a-escape".text = "interposed sort key";
+            "a/child".text = "descendant";
+          };
+        }
+      ];
+    })
+    .config
+    .system
+    .build
+    .configManifest
+    .etc));
   mixedUserGroupOwner = builtins.tryEval (builtins.toJSON ((mkSystem {
-    modules = [serverModule];
-    packageModules = [{
-      name = "group-provider";
-      authorization = {owns = ["aos"]; contributes = {};};
-      module.aos.users.groups.pkgonly = {gid = 778; members = [];};
-    }];
-    operatorModules = [{
-      aos.users.users.hostuser = {
-        uid = 778;
-        group = "pkgonly";
-        home = "/";
-        shell = "/bin/false";
-        description = "host";
-      };
-    }];
-  }).config.system.build.configManifest.ownership.users));
+      modules = [serverModule];
+      packageModules = [
+        {
+          name = "group-provider";
+          authorization = {
+            owns = ["aos"];
+            contributes = {};
+          };
+          module.aos.users.groups.pkgonly = {
+            gid = 778;
+            members = [];
+          };
+        }
+      ];
+      operatorModules = [
+        {
+          aos.users.users.hostuser = {
+            uid = 778;
+            group = "pkgonly";
+            home = "/";
+            shell = "/bin/false";
+            description = "host";
+          };
+        }
+      ];
+    })
+    .config
+    .system
+    .build
+    .configManifest
+    .ownership
+    .users));
 in
   assert manifest.ownership.etc."systemd/network/20-host.network" == "@host";
   assert manifest.ownership.etc."provenance-demo.conf" == "provenance-demo";
