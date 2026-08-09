@@ -34,7 +34,7 @@ in
         make \
           CC="${gcc}/bin/gcc" \
           CFLAGS="-O2 -fPIC -isystem ${glibc.dev}/include -D_FILE_OFFSET_BITS=64" \
-          LDFLAGS="-L${glibc}/lib -Wl,-rpath,${glibc}/lib -Wl,--dynamic-linker,${glibc}/lib/ld-linux-x86-64.so.2" \
+          LDFLAGS="-L${glibc}/lib -Wl,-rpath,${glibc}/lib -Wl,--dynamic-linker,${glibc}/lib/${hostPlatform.dynamicLinker}" \
           PREFIX="$out" \
           -j"$NIX_BUILD_CORES" \
           bzip2 bzip2recover
@@ -42,6 +42,9 @@ in
         mkdir -p "$out/bin" "$out/lib" "$out/include"
         cp bzip2 "$out/bin/"
         cp bzip2recover "$out/bin/"
+        test -e "${glibc}/lib/${hostPlatform.dynamicLinker}"
+        ${binutils}/bin/readelf -l "$out/bin/bzip2" \
+          | grep -F "${glibc}/lib/${hostPlatform.dynamicLinker}"
         ln -sf bzip2 "$out/bin/bunzip2"
         ln -sf bzip2 "$out/bin/bzcat"
         cp libbz2.a "$out/lib/"
