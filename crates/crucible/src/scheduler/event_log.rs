@@ -1,7 +1,7 @@
 //! Quantum-loop contracts plus canonical scheduler event-log storage and projections.
 
 use super::*;
-use crate::RuntimeState;
+use crate::{DebugCoordinate, RuntimeState};
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod backend_loop;
 mod observation_append;
@@ -162,6 +162,45 @@ pub trait QuantumLoop {
         Ok(runtime.clone())
     }
 
+    /// Resolves production evidence for one requested debugger coordinate.
+    ///
+    /// Event-log coordinates may identify distinct live boundaries whose graph
+    /// configuration is identical. Backends that retain boundary-indexed
+    /// evidence override this hook; pure loops retain graph runtime state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no recorded backend boundary can satisfy
+    /// the coordinate and graph runtime together.
+    fn resolve_debug_coordinate_runtime_evidence(
+        &self,
+        coordinate: &DebugCoordinate,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        let _ = coordinate;
+        self.resolve_debug_runtime_evidence(runtime)
+    }
+
+    /// Resolves the scheduler-owned frontier for a debugger coordinate.
+    ///
+    /// Production loops may retain logical VM clocks that are not represented
+    /// by temporal-graph configuration changes. Pure loops keep the graph
+    /// frontier supplied by the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no recorded backend boundary matches
+    /// the resolved coordinate runtime.
+    fn resolve_debug_coordinate_frontier(
+        &self,
+        coordinate: &DebugCoordinate,
+        runtime: &RuntimeState,
+        graph_fallback: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let _ = (coordinate, runtime);
+        Ok(graph_fallback)
+    }
+
     /// Returns the next GDB run-control packet awaiting scheduler admission.
     ///
     /// # Errors
@@ -184,6 +223,25 @@ pub trait QuantumLoop {
         .into())
     }
 
+    /// Acquires debugger-gateway ownership for an internal scheduler run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when operator RSP state cannot be suspended
+    /// at a clean packet boundary.
+    fn acquire_internal_debug_run(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
+    /// Releases debugger-gateway ownership after an internal scheduler run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when operator RSP state cannot be restored.
+    fn release_internal_debug_run(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     /// Applies scheduler-owned control at the current boundary.
     ///
     /// This hook is for control operations that must take effect without
@@ -201,6 +259,22 @@ pub trait QuantumLoop {
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         let _ = control;
         Ok(Vec::new())
+    }
+
+    /// Appends non-canonical debugger metadata to the scheduler-owned log.
+    ///
+    /// The session and scheduler must advance from the same dense offset before
+    /// fork-time guest activation is allowed to drive another quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the entries are not dense at the current
+    /// scheduler offset or fail event-log validation.
+    fn append_noncanonical_debug_event_log_entries(
+        &mut self,
+        entries: Vec<SchedulerEventLogEntry>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        Ok(entries)
     }
 
     /// Opens the optional backend gdbstub channel outside scheduler order.
@@ -221,6 +295,20 @@ pub trait QuantumLoop {
         let _ = listen;
         Err(BackendError::Unsupported {
             capability: "open_gdbstub",
+        }
+        .into())
+    }
+
+    /// Activates a node's dormant debug guest agent after a non-canonical fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the backend does not provide the fixed
+    /// activation transport or rejects the request.
+    fn activate_debug_guest(&mut self, node: NodeId) -> Result<(), SchedulerError> {
+        let _ = node;
+        Err(BackendError::Unsupported {
+            capability: "activate_debug_guest",
         }
         .into())
     }
@@ -1935,121 +2023,7 @@ pub fn assertion_proximity_fingerprint_from_event_log(
     event_log_assertion_proximity_projection(entries).content_hash()
 }
 
-pub(super) fn event_log_coverage_entry(
-    raw_index: usize,
-    entry: &SchedulerEventLogEntry,
-) -> Option<EventLogCoverageProjectionEntry> {
-    let observation = match entry.payload() {
-        SchedulerEventLogPayload::Observable(ObservableEventPayload::CoverageBlock {
-            node,
-            guest_pc,
-            block_len,
-            ..
-        }) => EventLogCoverageObservation::BasicBlock {
-            node: node.clone(),
-            guest_pc: *guest_pc,
-            block_len: *block_len,
-        },
-        SchedulerEventLogPayload::Observable(ObservableEventPayload::CoverageMarker {
-            node,
-            marker,
-            ..
-        }) => EventLogCoverageObservation::Named {
-            node: node.clone(),
-            marker: marker.clone(),
-        },
-        SchedulerEventLogPayload::ResolvedHappening(_)
-        | SchedulerEventLogPayload::Decision(_)
-        | SchedulerEventLogPayload::Observable(_)
-        | SchedulerEventLogPayload::EvaluationBoundary(_)
-        | SchedulerEventLogPayload::TriggerFired(_)
-        | SchedulerEventLogPayload::TriggerActionApplied(_)
-        | SchedulerEventLogPayload::Diagnostic(_) => return None,
-    };
-    Some(EventLogCoverageProjectionEntry {
-        raw_index,
-        at: entry.time().icount.clone(),
-        source: entry.source().clone(),
-        observation,
-    })
-}
+#[path = "event_log/projection_material.rs"]
+mod projection_material;
 
-pub(super) fn event_log_assertion_proximity_entry(
-    raw_index: usize,
-    entry: &SchedulerEventLogEntry,
-) -> Option<EventLogAssertionProximityProjectionEntry> {
-    let SchedulerEventLogPayload::Observable(ObservableEventPayload::AssertionProximity {
-        assertion,
-        quantifier,
-        distance,
-        node,
-    }) = entry.payload()
-    else {
-        return None;
-    };
-    Some(EventLogAssertionProximityProjectionEntry {
-        raw_index,
-        at: entry.time().icount.clone(),
-        source: entry.source().clone(),
-        assertion: assertion.clone(),
-        quantifier: *quantifier,
-        distance: *distance,
-        node: node.clone(),
-    })
-}
-
-pub(super) fn assertion_proximity_entry_is_better(
-    candidate: &EventLogAssertionProximityProjectionEntry,
-    current: &EventLogAssertionProximityProjectionEntry,
-) -> bool {
-    candidate
-        .distance
-        .cmp(&current.distance)
-        .then_with(|| candidate.at.icount.retired.cmp(&current.at.icount.retired))
-        .then_with(|| candidate.raw_index.cmp(&current.raw_index))
-        .is_lt()
-}
-
-pub(super) fn event_log_assertion_proximity_minimum_material(
-    entry: &EventLogAssertionProximityProjectionEntry,
-) -> String {
-    let node_material = match &entry.node {
-        Some(node) => format!(
-            "node=some\nnode_len={}\nnode={}",
-            node.name.len(),
-            node.name
-        ),
-        None => String::from("node=none"),
-    };
-    format!(
-        "assertion_len={}\nassertion={}\nquantifier={}\ndistance={}\n{}",
-        entry.assertion.name.len(),
-        entry.assertion.name,
-        assertion_quantifier_kind_label(entry.quantifier),
-        entry.distance,
-        node_material,
-    )
-}
-
-pub(super) fn event_log_coverage_observation_material(
-    entry: &EventLogCoverageProjectionEntry,
-) -> String {
-    match &entry.observation {
-        EventLogCoverageObservation::BasicBlock {
-            node,
-            guest_pc,
-            block_len,
-        } => format!(
-            "kind=basic_block\nnode_len={}\nnode={}\nguest_pc={guest_pc}\nblock_len={block_len}",
-            node.name.len(),
-            node.name
-        ),
-        EventLogCoverageObservation::Named { node, marker } => format!(
-            "kind=named\nnode_len={}\nnode={}\nid_len={}\nid={}",
-            node.name.len(),
-            node.name,
-            marker.name.len(),
-            marker.name
-        ),
-    }
-}
+pub(super) use projection_material::*;

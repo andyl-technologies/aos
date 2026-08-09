@@ -68,21 +68,84 @@ pub(crate) async fn drain_terminal_event_log(
 }
 
 fn streaming_event_summary(frame: &crucible_api::StreamingEventFrame) -> String {
-    use crucible_api::OpenSetAttributeValue;
+    use crucible_api::{OpenSetAttributeValue, OpenSetEventSource};
 
     const DIAGNOSTIC_ATTRIBUTES: &[&str] = &[
-        "id",
-        "new_state",
-        "message",
-        "reason",
         "action",
+        "assertion",
+        "at",
+        "boundary",
+        "cause",
         "condition",
+        "consumer",
+        "description",
+        "disposition",
+        "distance",
         "event",
+        "fault",
+        "fired",
+        "flavor",
+        "from_state",
+        "id",
+        "kind",
+        "location",
+        "marker",
+        "marker_kind",
+        "message",
+        "must_hit",
+        "name",
+        "new_state",
         "node",
+        "outcome",
+        "policy",
+        "predicate",
+        "producer",
+        "quantifier",
+        "ready_point",
+        "reason",
+        "retired_icount",
+        "sequence",
         "state",
+        "summary",
+        "tag",
+        "targets",
+        "to_state",
+        "virtual_time",
     ];
 
     let mut summary = frame.event.payload.kind.clone();
+    summary.push_str(" sequence=");
+    summary.push_str(&frame.event.sequence.to_string());
+    summary.push_str(" virtual_time=");
+    summary.push_str(&frame.event.at.virtual_time_ticks.to_string());
+    summary.push_str(" icount=");
+    summary.push_str(&frame.event.at.icount_retired.to_string());
+    if let Some(node) = &frame.event.at.icount_node {
+        summary.push_str(" icount_node=");
+        summary.push_str(&escape_event_summary_field(node));
+    }
+    summary.push_str(" source=");
+    let (source, source_detail) = match &frame.event.source {
+        OpenSetEventSource::Scenario { event } => ("scenario", Some(event.as_str())),
+        OpenSetEventSource::Engine => ("engine", None),
+        OpenSetEventSource::Node { node } => ("node", Some(node.as_str())),
+        OpenSetEventSource::Guest { node } => ("guest", Some(node.as_str())),
+        OpenSetEventSource::Command { command_id } => {
+            summary.push_str("command:");
+            summary.push_str(&command_id.to_string());
+            ("", None)
+        }
+    };
+    summary.push_str(source);
+    if let Some(detail) = source_detail {
+        summary.push(':');
+        summary.push_str(&escape_event_summary_field(detail));
+    }
+    summary.push_str(if frame.event.observational {
+        " class=observational"
+    } else {
+        " class=causal"
+    });
     for name in DIAGNOSTIC_ATTRIBUTES {
         let Some(value) = frame.event.payload.attribute(name) else {
             continue;
@@ -310,7 +373,63 @@ mod summary_tests {
 
         assert_eq!(
             streaming_event_summary(&frame),
-            "crucible.event.assertion_state_changed id=suspect-must-crash new_state=Violated"
+            "crucible.event.assertion_state_changed sequence=3 virtual_time=40 icount=40 source=engine class=causal id=suspect-must-crash new_state=Violated"
+        );
+    }
+
+    #[test]
+    fn fault_summary_preserves_coordinate_source_and_fault_fields() {
+        let frame = crucible_api::StreamingEventFrame {
+            generation: 0,
+            cursor: crucible_api::EventLogCursor::new(7),
+            next_cursor: crucible_api::EventLogCursor::new(8),
+            event: crucible_api::OpenSetEventEnvelope {
+                sequence: 7,
+                at: crucible_api::OpenSetEventTime {
+                    virtual_time_ticks: 91,
+                    icount_retired: 27,
+                    icount_node: Some(String::from("server")),
+                },
+                source: crucible_api::OpenSetEventSource::Scenario {
+                    event: String::from("partition-server"),
+                },
+                level: crucible::EventLevel::Info,
+                observational: false,
+                payload: crucible_api::OpenSetPayload::new(
+                    "crucible.event.fault_activated",
+                    [
+                        (
+                            String::from("description"),
+                            crucible_api::OpenSetAttributeValue::String(String::from(
+                                "partition client to server",
+                            )),
+                        ),
+                        (
+                            String::from("kind"),
+                            crucible_api::OpenSetAttributeValue::String(String::from("partition")),
+                        ),
+                        (
+                            String::from("tag"),
+                            crucible_api::OpenSetAttributeValue::String(String::from(
+                                "network-cut",
+                            )),
+                        ),
+                        (
+                            String::from("targets"),
+                            crucible_api::OpenSetAttributeValue::String(String::from(
+                                "client,server",
+                            )),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            },
+        };
+
+        assert_eq!(
+            streaming_event_summary(&frame),
+            "crucible.event.fault_activated sequence=7 virtual_time=91 icount=27 icount_node=server source=scenario:partition-server class=causal description=partition\\sclient\\sto\\sserver kind=partition tag=network-cut targets=client,server"
         );
     }
 
@@ -348,7 +467,7 @@ mod summary_tests {
         let summary = streaming_event_summary(&frame);
         assert_eq!(
             summary,
-            "crucible.event.console_output bytes_len=18 bytes_content=redacted"
+            "crucible.event.console_output sequence=1 virtual_time=1 icount=1 icount_node=suspect source=node:suspect class=observational bytes_len=18 bytes_content=redacted"
         );
         assert!(!summary.contains("super-secret"));
     }

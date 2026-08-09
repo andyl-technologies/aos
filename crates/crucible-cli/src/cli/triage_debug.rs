@@ -6,6 +6,7 @@ pub(super) fn plan_triage_invocation(
     args: &TriageArgs,
 ) -> Result<TriageInvocationPlan, CliError> {
     if cli.daemon.is_some() {
+        // crucible-lint: allow host-nondeterminism-state -- this typed CLI rejection cannot construct scheduler state.
         return Err(CliError::Backend(
             "triage is an offline DagStore operation and must not use --daemon".to_string(),
         ));
@@ -64,6 +65,7 @@ pub(super) fn plan_triage_invocation(
         scheduler_started: false,
     };
     if !plan.proves_t_tri_7() {
+        // crucible-lint: allow host-nondeterminism-state -- this typed planner rejection cannot construct scheduler state.
         return Err(CliError::Backend(
             "triage planner does not satisfy the RFC-0010 thin-driver contract".to_string(),
         ));
@@ -82,7 +84,7 @@ pub(super) fn run_triage_invocation(
     let ledger = loaded_findings.ledger;
     if ledger.artifact_count() != 0 && ledger.signed_findings().is_empty() {
         return Err(CliError::Artifact(format!(
-            "triage findings ledger contains {} artifact(s), but discovery-time signature evidence is not available in this ledger format",
+            "triage findings input contains {} artifact(s), but discovery-time signature evidence is not available; pass the signed findings ledger emitted by `search` or `fuzz` (use `--findings-out` to select its path)",
             ledger.artifact_count()
         )));
     }
@@ -774,52 +776,36 @@ pub(super) fn load_triage_findings_ledger(
             let bytes = store.get(hash).map_err(CliError::Store)?;
             parse_failure_findings_ledger_bytes(store, &bytes)
         }
-        TriageFindingsSource::Path(path) if path.is_dir() => {
-            let mut entries = fs::read_dir(path)?
-                .collect::<Result<Vec<_>, io::Error>>()?
-                .into_iter()
-                .filter_map(|entry| {
-                    entry
-                        .file_type()
-                        .ok()
-                        .filter(|kind| kind.is_file())
-                        .map(|_| entry.path())
-                })
-                .collect::<Vec<_>>();
-            entries.sort();
-            let mut artifacts = Vec::with_capacity(entries.len());
-            for entry in entries {
-                let bytes = fs::read(&entry)?;
-                artifacts.push(store.put(&bytes).map_err(CliError::Store)?);
-            }
-            Ok(loaded_artifact_only_findings(
-                crucible::FailureFindingsLedger::from_artifacts(artifacts),
-            ))
-        }
+        TriageFindingsSource::Path(path) if path.is_dir() => Err(artifact_error(format!(
+            "triage FINDINGS `{}` is a directory; pass the signed findings ledger emitted by `search` or `fuzz`",
+            path.display()
+        ))),
         TriageFindingsSource::Path(path) => {
-            let bytes = fs::read(path)?;
-            if looks_like_failure_findings_ledger(&bytes) {
-                return parse_failure_findings_ledger_bytes(store, &bytes);
+            let bytes = fs::read(path).map_err(|error| {
+                artifact_error(format!(
+                    "cannot read triage findings ledger `{}`: {error}",
+                    path.display()
+                ))
+            })?;
+            if bytes.is_empty() {
+                return Err(artifact_error(format!(
+                    "triage findings ledger `{}` is empty",
+                    path.display()
+                )));
             }
-            store
-                .put(&bytes)
-                .map(|hash| {
-                    loaded_artifact_only_findings(crucible::FailureFindingsLedger::from_artifacts(
-                        [hash],
-                    ))
-                })
-                .map_err(CliError::Store)
+            if !looks_like_failure_findings_ledger(&bytes) {
+                let input_kind = if decode_reproduction_artifact(&bytes).is_ok() {
+                    "a reproduction artifact"
+                } else {
+                    "unsupported or malformed input"
+                };
+                return Err(artifact_error(format!(
+                    "triage FINDINGS `{}` is {input_kind}, not a signed findings ledger emitted by `search` or `fuzz`",
+                    path.display()
+                )));
+            }
+            parse_failure_findings_ledger_bytes(store, &bytes)
         }
-    }
-}
-
-pub(super) fn loaded_artifact_only_findings(
-    ledger: crucible::FailureFindingsLedger,
-) -> LoadedTriageFindings {
-    LoadedTriageFindings {
-        artifact_bytes: ledger.artifact_bytes(),
-        ledger,
-        evidence: BTreeMap::new(),
     }
 }
 
@@ -1286,11 +1272,6 @@ pub(super) fn write_failure_findings_ledger_v3(
     findings_out: Option<&Path>,
     evidence: &[TriageFindingEvidence],
 ) -> Result<(PathBuf, crucible::ContentHash, Vec<u8>), CliError> {
-    if evidence.is_empty() {
-        return Err(artifact_error(
-            "cannot write a signed findings ledger without findings",
-        ));
-    }
     let bytes = failure_findings_ledger_v3_bytes(evidence)?;
     let digest = crucible::ContentHash::from_bytes(&bytes);
     let path = findings_out.map(Path::to_path_buf).unwrap_or_else(|| {
@@ -1607,13 +1588,18 @@ pub(super) fn plan_debug_invocation(
     args: &DebugArgs,
 ) -> Result<DebugInvocationPlan, CliError> {
     #[cfg(any(test, feature = "test-double"))]
+    // crucible-lint: allow host-nondeterminism-state -- backend selection is explicit CLI input and only rejects unsupported debug routing.
     if _cli.backend == Backend::Double {
+        // crucible-lint: allow host-nondeterminism-state -- this typed route rejection cannot construct scheduler state.
         return Err(CliError::Backend(
             "selected backend `double` does not implement open_gdbstub".to_string(),
         ));
     }
 
     let target = debug_target(args)?;
+    if let DebugPlanTarget::Session(session) = &target {
+        parse_debug_session_ref(session)?;
+    }
     let coordinate = debug_coordinate(args, &target)?;
     let checkpoint_stride = args
         .checkpoint_stride
@@ -1642,6 +1628,20 @@ pub(super) fn plan_debug_invocation(
             "--record-transcript is available only with debug exec, pty, or ssh",
         ));
     }
+    if args.guest_idle_timeout.is_some() && !guest_shell {
+        return Err(usage_error(
+            "--guest-idle-timeout is available only with debug exec, pty, or ssh",
+        ));
+    }
+    let guest_idle_timeout = parse_run_duration_budget_ticks(
+        args.guest_idle_timeout.as_deref().unwrap_or("30s"),
+    )
+    .map(Duration::from_nanos)
+    .ok_or_else(|| {
+        usage_error(
+            "--guest-idle-timeout must be a positive duration using ticks, ns, us, ms, or s",
+        )
+    })?;
     if (explicit_fork || guest_shell) && !args.allow_mutate {
         return Err(usage_error(
             "the selected fork-debug or guest exec/PTY/SSH operation requires --allow-mutate authorization",
@@ -1702,6 +1702,7 @@ pub(super) fn plan_debug_invocation(
         allow_mutate: args.allow_mutate,
         checkpoint_stride,
         record_transcript: args.record_transcript.clone(),
+        guest_idle_timeout,
         verb,
         session_commands,
         engine_operations,
@@ -1712,6 +1713,7 @@ pub(super) fn plan_debug_invocation(
             .then(|| "NON-CANONICAL debug branch".to_string()),
     };
     if !plan.proves_t_dbg_8() {
+        // crucible-lint: allow host-nondeterminism-state -- this typed planner rejection cannot construct scheduler state.
         return Err(CliError::Backend(
             "debug planner does not satisfy the RFC-0010 debug surface contract".to_string(),
         ));
@@ -1773,12 +1775,14 @@ pub(super) fn run_remote_debug_relay(
             &backend_plan,
             session,
             node,
+            // crucible-lint: allow host-nondeterminism-state -- this record carries explicit guest transport input, not scheduler state.
             crucible_api::GuestIntrospectionMessage::Exec {
                 argv: argv.clone(),
                 record_transcript: plan.record_transcript.is_some(),
             },
             false,
             plan.record_transcript.as_deref(),
+            plan.guest_idle_timeout,
         )),
         DebugInteractiveVerbPlan::Pty {
             argv,
@@ -1789,6 +1793,7 @@ pub(super) fn run_remote_debug_relay(
             &backend_plan,
             session,
             node,
+            // crucible-lint: allow host-nondeterminism-state -- this record carries explicit guest transport input, not scheduler state.
             crucible_api::GuestIntrospectionMessage::Pty {
                 argv: argv.clone(),
                 columns: *columns,
@@ -1797,17 +1802,20 @@ pub(super) fn run_remote_debug_relay(
             },
             true,
             plan.record_transcript.as_deref(),
+            plan.guest_idle_timeout,
         )),
         DebugInteractiveVerbPlan::Ssh => runtime.block_on(run_remote_guest_channel(
             daemon,
             &backend_plan,
             session,
             node,
+            // crucible-lint: allow host-nondeterminism-state -- this record requests a guest transport bridge, not a scheduler decision.
             crucible_api::GuestIntrospectionMessage::Ssh {
                 record_transcript: plan.record_transcript.is_some(),
             },
             true,
             plan.record_transcript.as_deref(),
+            plan.guest_idle_timeout,
         )),
         DebugInteractiveVerbPlan::ForkDebug => {
             runtime.block_on(run_remote_guest_fork(daemon, &backend_plan, session, node))
@@ -1828,11 +1836,14 @@ async fn run_remote_debug_reposition(
     verb: &DebugInteractiveVerbPlan,
 ) -> Result<(), CliError> {
     let client = remote_rpc_client(daemon, backend_plan)?;
+    // crucible-lint: allow host-nondeterminism-state -- acquisition creates transport ownership only and cannot mutate scheduler state.
+    let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
-        .acquire_debug_controller(session)
+        .acquire_debug_controller(session, &acquisition)
         .await
         .map_err(control_client_error)?;
-    let reposition_result: Result<Option<String>, CliError> = async {
+    // crucible-lint: allow host-nondeterminism-state -- the typed response is scheduler-authored evidence consumed for display.
+    let reposition_result: Result<Option<crucible_api::DebugRepositionResult>, CliError> = async {
         client
             .attach_debugger(session, &lease, &node)
             .await
@@ -1869,10 +1880,32 @@ async fn run_remote_debug_reposition(
     let target = reposition_result?;
     release_result.map_err(control_client_error)?;
     match target {
-        Some(target) => println!("crucible: debugger repositioned to {target}"),
+        Some(target) => print_debug_landed_runtime(&target),
         None => println!("crucible: reverse-continue found no matching prior condition"),
     }
     Ok(())
+}
+
+// crucible-lint: allow host-nondeterminism-state -- formatting scheduler-authored evidence cannot feed it back into state.
+fn print_debug_landed_runtime(result: &crucible_api::DebugRepositionResult) {
+    let landed = &result.landed;
+    println!("crucible: debugger repositioned");
+    println!("requested-coordinate={}", landed.requested_coordinate);
+    println!("landed-configuration={}", landed.configuration);
+    println!("landed-runtime-state={}", landed.runtime_state);
+    println!("landed-virtual-time={}", landed.virtual_time_ticks);
+    println!("landed-schedule-prefix={}", landed.schedule_prefix_len);
+    println!("landed-event-log-prefix={}", landed.event_log_prefix);
+    println!("landed-event-log-bytes={}", landed.event_log_bytes);
+    println!("landed-event-log-events={}", landed.event_log_events);
+    for (node, retired) in &landed.node_icounts {
+        println!("landed-node-icount.{node}={retired}");
+    }
+    println!("gateway-generation={}", landed.gateway_generation);
+    println!("retired-world-cleanup={}", landed.retired_world_cleanup);
+    if let Some(sequence) = result.target_event_sequence {
+        println!("target-event-sequence={sequence}");
+    }
 }
 
 pub(super) fn parse_debug_reverse_condition(value: &str) -> Result<crucible::Predicate, CliError> {
@@ -1915,11 +1948,13 @@ async fn run_remote_guest_fork(
     node: crucible::NodeId,
 ) -> Result<(), CliError> {
     let client = remote_rpc_client(daemon, backend_plan)?;
+    // crucible-lint: allow host-nondeterminism-state -- acquisition creates transport ownership only and cannot mutate scheduler state.
+    let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
-        .acquire_debug_controller(session)
+        .acquire_debug_controller(session, &acquisition)
         .await
         .map_err(control_client_error)?;
-    let fork_result: Result<(), CliError> = async {
+    let fork_result = async {
         client
             .attach_debugger(session, &lease, &node)
             .await
@@ -1931,9 +1966,16 @@ async fn run_remote_guest_fork(
     }
     .await;
     let release_result = client.release_debug_controller(session, &lease).await;
-    fork_result?;
+    let features = fork_result?;
     release_result.map_err(control_client_error)?;
-    println!("crucible: forked non-canonical guest-introspection branch");
+    println!(
+        "crucible: forked non-canonical guest-introspection branch argv-exec={} pty={} resize={} ssh-bridge={} max-channels={}",
+        features.argv_exec(),
+        features.pty(),
+        features.resize(),
+        features.ssh_bridge(),
+        features.max_channels(),
+    );
     Ok(())
 }
 
@@ -1947,8 +1989,10 @@ async fn run_remote_debug_relay_async(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let client = remote_rpc_client(daemon, backend_plan)?;
+    // crucible-lint: allow host-nondeterminism-state -- acquisition creates transport ownership only and cannot mutate scheduler state.
+    let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
-        .acquire_debug_controller(session)
+        .acquire_debug_controller(session, &acquisition)
         .await
         .map_err(control_client_error)?;
     if let Err(error) = client.attach_debugger(session, &lease, &node).await {
@@ -1966,7 +2010,6 @@ async fn run_remote_debug_relay_async(
         Ok(listener) => listener,
         Err(error) => {
             let _ = client.close_debug_relay(session, &lease, relay).await;
-            let _ = client.release_debug_controller(session, &lease).await;
             return Err(backend_error(format!(
                 "cannot bind local GDB relay {gdb_listen}: {error}"
             )));
@@ -1976,7 +2019,6 @@ async fn run_remote_debug_relay_async(
         Ok(address) => address,
         Err(error) => {
             let _ = client.close_debug_relay(session, &lease, relay).await;
-            let _ = client.release_debug_controller(session, &lease).await;
             return Err(backend_error(format!(
                 "cannot read local GDB relay address: {error}"
             )));
@@ -1991,7 +2033,6 @@ async fn run_remote_debug_relay_async(
                 Ok(()) => None,
                 Err(error) => {
                     let _ = client.close_debug_relay(session, &lease, relay).await;
-                    let _ = client.release_debug_controller(session, &lease).await;
                     return Err(backend_error(format!("debug relay signal error: {error}")));
                 }
             }
@@ -1999,19 +2040,18 @@ async fn run_remote_debug_relay_async(
     };
     let Some(accepted) = accepted else {
         let _ = client.close_debug_relay(session, &lease, relay).await;
-        let _ = client.release_debug_controller(session, &lease).await;
         return Ok(());
     };
     let (mut local, _) = match accepted {
         Ok(accepted) => accepted,
         Err(error) => {
             let _ = client.close_debug_relay(session, &lease, relay).await;
-            let _ = client.release_debug_controller(session, &lease).await;
             return Err(backend_error(format!(
                 "cannot accept local GDB connection: {error}"
             )));
         }
     };
+    // crucible-lint: allow host-nondeterminism-state -- this protocol limit bounds transport buffering and never enters scheduler state.
     let mut local_buffer = vec![0_u8; crucible_api::DEBUG_RELAY_CHUNK_MAX_BYTES];
     let mut poll = tokio::time::interval(Duration::from_millis(5));
     let relay_result: Result<(), CliError> = async {
@@ -2037,6 +2077,7 @@ async fn run_remote_debug_relay_async(
                         session,
                         &lease,
                         relay,
+                        // crucible-lint: allow host-nondeterminism-state -- this protocol limit bounds a transport read only.
                         crucible_api::DEBUG_RELAY_CHUNK_MAX_BYTES,
                     )
                     .await
@@ -2060,10 +2101,8 @@ async fn run_remote_debug_relay_async(
     }
     .await;
     let close_result = client.close_debug_relay(session, &lease, relay).await;
-    let release_result = client.release_debug_controller(session, &lease).await;
     relay_result?;
     close_result.map_err(control_client_error)?;
-    release_result.map_err(control_client_error)?;
     Ok(())
 }
 
@@ -2108,6 +2147,7 @@ impl GuestTranscriptWriter {
     pub(super) async fn record(
         &mut self,
         direction: GuestTranscriptDirection,
+        // crucible-lint: allow host-nondeterminism-state -- the typed record is written only to an operator transcript.
         record: &crucible_api::GuestIntrospectionRecord,
     ) -> Result<(), CliError> {
         use tokio::io::AsyncWriteExt as _;
@@ -2152,11 +2192,14 @@ impl GuestTranscriptWriter {
 async fn exchange_guest_record(
     client: &RpcControlClient,
     session: SessionRef,
-    lease: &crucible_session::DebugControllerLease,
+    // crucible-lint: allow host-nondeterminism-state -- this lease is transport authorization and never scheduler state.
+    lease: &crucible_api::DebugControllerAccess,
     node: &crucible::NodeId,
     channel_id: u64,
+    // crucible-lint: allow host-nondeterminism-state -- the request remains typed guest transport input.
     request: Option<&crucible_api::GuestIntrospectionRecord>,
     transcript: &mut Option<GuestTranscriptWriter>,
+    // crucible-lint: allow host-nondeterminism-state -- the returned record remains typed observation transport and is never admitted as scheduler state.
 ) -> Result<Option<crucible_api::GuestIntrospectionRecord>, CliError> {
     let response = client
         .exchange_guest_introspection(session, lease, node, channel_id, request)
@@ -2175,19 +2218,24 @@ async fn exchange_guest_record(
     Ok(response)
 }
 
+// crucible-lint: allow rust-allow -- the guest-channel boundary keeps transport policy, branch identity, terminal mode, transcript ownership, and timeout policy explicit.
+#[allow(clippy::too_many_arguments)]
 async fn run_remote_guest_channel(
     daemon: &str,
     backend_plan: &BackendSelectionPlan,
     session: SessionRef,
     node: crucible::NodeId,
+    // crucible-lint: allow host-nondeterminism-state -- the open record is a guest transport request, not a host-derived scheduler decision.
     open: crucible_api::GuestIntrospectionMessage,
     interactive: bool,
     transcript_path: Option<&Path>,
+    guest_idle_timeout: Duration,
 ) -> Result<(), CliError> {
+    // crucible-lint: allow host-nondeterminism-state -- these types encode guest transport records and do not construct authoritative scenario state.
     use crucible_api::{GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    const CHANNEL_ID: u64 = 1;
+    let pty_channel = matches!(&open, GuestIntrospectionMessage::Pty { .. });
     let _terminal_mode = LocalTerminalMode::enter_raw(interactive)?;
     let mut resize_signal = local_resize_signal(interactive)?;
     let mut transcript = match transcript_path {
@@ -2195,69 +2243,149 @@ async fn run_remote_guest_channel(
         None => None,
     };
     let client = remote_rpc_client(daemon, backend_plan)?;
+    // crucible-lint: allow host-nondeterminism-state -- controller acquisition changes only lease ownership for this transport operation.
+    let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
-        .acquire_debug_controller(session)
+        .acquire_debug_controller(session, &acquisition)
         .await
         .map_err(control_client_error)?;
-    let open = GuestIntrospectionRecord::new(CHANNEL_ID, open)
+    let channel_id = lease.guest_channel_id();
+    let open = GuestIntrospectionRecord::new(channel_id, open)
         .map_err(|error| backend_error(error.to_string()))?;
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
+    let mut terminate_signal = tokio::signal::unix::signal(
+        tokio::signal::unix::SignalKind::terminate(),
+    )
+    .map_err(|error| backend_error(format!("guest channel termination signal error: {error}")))?;
+    let mut hangup_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .map_err(|error| backend_error(format!("guest channel hangup signal error: {error}")))?;
     let mut input_closed = !interactive;
     let mut terminal_observed = false;
     let channel_result: Result<(), CliError> = async {
-        exchange_guest_record(
+        let response = exchange_guest_record(
             &client,
             session,
             &lease,
             &node,
-            CHANNEL_ID,
+            channel_id,
             Some(&open),
             &mut transcript,
         )
         .await?;
+        if handle_guest_channel_response(
+            response.as_ref(),
+            channel_id,
+            &mut stdout,
+            &mut stderr,
+            &mut terminal_observed,
+        )
+        .await?
+            == GuestChannelRecordOutcome::Exit
+        {
+            return Ok(());
+        }
         if !interactive {
             let close = GuestIntrospectionRecord::new(
-                CHANNEL_ID,
+                channel_id,
                 GuestIntrospectionMessage::Close,
             )
             .map_err(|error| backend_error(error.to_string()))?;
-            exchange_guest_record(
+            let response = exchange_guest_record(
                 &client,
                 session,
                 &lease,
                 &node,
-                CHANNEL_ID,
+                channel_id,
                 Some(&close),
                 &mut transcript,
             )
             .await?;
+            if handle_guest_channel_response(
+                response.as_ref(),
+                channel_id,
+                &mut stdout,
+                &mut stderr,
+                &mut terminal_observed,
+            )
+            .await?
+                == GuestChannelRecordOutcome::Exit
+            {
+                return Ok(());
+            }
         }
         let mut input = vec![0_u8; 4096];
         let mut poll = tokio::time::interval(Duration::from_millis(5));
+        let mut idle_deadline = tokio::time::interval(guest_idle_timeout);
+        idle_deadline.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        idle_deadline.tick().await;
         loop {
             tokio::select! {
                 biased;
-                read = stdin.read(&mut input), if !input_closed => {
-                    let length = read.map_err(|error| backend_error(format!("terminal input failed: {error}")))?;
-                    let message = if length == 0 {
-                        GuestIntrospectionMessage::Close
-                    } else {
-                        GuestIntrospectionMessage::Input(input[..length].to_vec())
-                    };
-                    let record = GuestIntrospectionRecord::new(CHANNEL_ID, message)
-                        .map_err(|error| backend_error(error.to_string()))?;
-                    exchange_guest_record(
+                _ = idle_deadline.tick() => {
+                    break Err(backend_error(format!(
+                        "guest agent produced no response for {} ms; verify that the non-canonical fork activated `crucible-guest agent` or increase --guest-idle-timeout",
+                        guest_idle_timeout.as_millis()
+                    )));
+                }
+                signal = receive_guest_channel_shutdown_signal(
+                    &mut terminate_signal,
+                    &mut hangup_signal,
+                ) => {
+                    signal?;
+                    let close = GuestIntrospectionRecord::new(
+                        channel_id,
+                        GuestIntrospectionMessage::Close,
+                    )
+                    .map_err(|error| backend_error(error.to_string()))?;
+                    let response = exchange_guest_record(
                         &client,
                         session,
                         &lease,
                         &node,
-                        CHANNEL_ID,
+                        channel_id,
+                        Some(&close),
+                        &mut transcript,
+                    )
+                    .await?;
+                    handle_guest_channel_shutdown_response(
+                        response.as_ref(),
+                        channel_id,
+                        &mut stdout,
+                        &mut stderr,
+                        &mut terminal_observed,
+                    )
+                    .await?;
+                    break Ok(());
+                }
+                read = stdin.read(&mut input), if !input_closed => {
+                    let length = read.map_err(|error| backend_error(format!("terminal input failed: {error}")))?;
+                    let message = guest_input_message(pty_channel, &input[..length]);
+                    let record = GuestIntrospectionRecord::new(channel_id, message)
+                        .map_err(|error| backend_error(error.to_string()))?;
+                    let response = exchange_guest_record(
+                        &client,
+                        session,
+                        &lease,
+                        &node,
+                        channel_id,
                         Some(&record),
                         &mut transcript,
                     )
                     .await?;
+                    if handle_guest_channel_response(
+                        response.as_ref(),
+                        channel_id,
+                        &mut stdout,
+                        &mut stderr,
+                        &mut terminal_observed,
+                    )
+                    .await?
+                        == GuestChannelRecordOutcome::Exit
+                    {
+                        break Ok(());
+                    }
                     if length == 0 {
                         input_closed = true;
                     }
@@ -2268,7 +2396,7 @@ async fn run_remote_guest_channel(
                         session,
                         &lease,
                         &node,
-                        CHANNEL_ID,
+                        channel_id,
                         None,
                         &mut transcript,
                     )
@@ -2276,85 +2404,51 @@ async fn run_remote_guest_channel(
                     else {
                         continue;
                     };
-                    if record.channel_id() != CHANNEL_ID {
-                        continue;
-                    }
-                    match record.message() {
-                        GuestIntrospectionMessage::Output { stream, bytes } => {
-                            match stream {
-                                GuestOutputStream::Stdout => stdout.write_all(bytes).await,
-                                GuestOutputStream::Stderr => stderr.write_all(bytes).await,
-                            }
-                            .map_err(|error| backend_error(format!("terminal output failed: {error}")))?;
-                        }
-                        GuestIntrospectionMessage::Exit { status, signal } => {
-                            terminal_observed = true;
-                            stdout.flush().await.map_err(|error| backend_error(error.to_string()))?;
-                            stderr.flush().await.map_err(|error| backend_error(error.to_string()))?;
-                            if *status == 0 {
-                                break Ok(());
-                            }
-                            break Err(backend_error(format!(
-                                "guest command exited with status {status} signal {signal:?}"
-                            )));
-                        }
-                        GuestIntrospectionMessage::Error { code, message } => {
-                            terminal_observed = true;
-                            break Err(backend_error(format!(
-                                "guest introspection failed ({code:?}): {message}"
-                            )));
-                        }
-                        GuestIntrospectionMessage::Features(_)
-                        | GuestIntrospectionMessage::Exec { .. }
-                        | GuestIntrospectionMessage::Pty { .. }
-                        | GuestIntrospectionMessage::Ssh { .. }
-                        | GuestIntrospectionMessage::Input(_)
-                        | GuestIntrospectionMessage::Resize { .. }
-                        | GuestIntrospectionMessage::Close => {
-                            break Err(backend_error(
-                                "guest agent returned an unexpected protocol record",
-                            ));
-                        }
+                    idle_deadline.reset();
+                    if handle_guest_channel_response(
+                        Some(&record),
+                        channel_id,
+                        &mut stdout,
+                        &mut stderr,
+                        &mut terminal_observed,
+                    )
+                    .await?
+                        == GuestChannelRecordOutcome::Exit
+                    {
+                        break Ok(());
                     }
                 }
                 resized = receive_local_resize(&mut resize_signal), if resize_signal.is_some() => {
                     if resized {
                         let (columns, rows) = local_terminal_size()?;
                         let record = GuestIntrospectionRecord::new(
-                            CHANNEL_ID,
+                            channel_id,
                             GuestIntrospectionMessage::Resize { columns, rows },
                         )
                         .map_err(|error| backend_error(error.to_string()))?;
-                        exchange_guest_record(
+                        let response = exchange_guest_record(
                             &client,
                             session,
                             &lease,
                             &node,
-                            CHANNEL_ID,
+                            channel_id,
                             Some(&record),
                             &mut transcript,
                         )
                         .await?;
+                        if handle_guest_channel_response(
+                            response.as_ref(),
+                            channel_id,
+                            &mut stdout,
+                            &mut stderr,
+                            &mut terminal_observed,
+                        )
+                        .await?
+                            == GuestChannelRecordOutcome::Exit
+                        {
+                            break Ok(());
+                        }
                     }
-                }
-                signal = tokio::signal::ctrl_c() => {
-                    signal.map_err(|error| backend_error(format!("guest channel signal error: {error}")))?;
-                    let close = GuestIntrospectionRecord::new(
-                        CHANNEL_ID,
-                        GuestIntrospectionMessage::Close,
-                    )
-                    .map_err(|error| backend_error(error.to_string()))?;
-                    exchange_guest_record(
-                        &client,
-                        session,
-                        &lease,
-                        &node,
-                        CHANNEL_ID,
-                        Some(&close),
-                        &mut transcript,
-                    )
-                    .await?;
-                    break Ok(());
                 }
             }
         }
@@ -2364,14 +2458,14 @@ async fn run_remote_guest_channel(
         if terminal_observed {
             return Ok(());
         }
-        let close = GuestIntrospectionRecord::new(CHANNEL_ID, GuestIntrospectionMessage::Close)
+        let close = GuestIntrospectionRecord::new(channel_id, GuestIntrospectionMessage::Close)
             .map_err(|error| backend_error(error.to_string()))?;
         let _response = exchange_guest_record(
             &client,
             session,
             &lease,
             &node,
-            CHANNEL_ID,
+            channel_id,
             Some(&close),
             &mut transcript,
         )
@@ -2383,7 +2477,7 @@ async fn run_remote_guest_channel(
                     session,
                     &lease,
                     &node,
-                    CHANNEL_ID,
+                    channel_id,
                     None,
                     &mut transcript,
                 )
@@ -2396,6 +2490,13 @@ async fn run_remote_guest_channel(
                         }
                         .map_err(|error| {
                             backend_error(format!("terminal cleanup output failed: {error}"))
+                        })?;
+                        match stream {
+                            GuestOutputStream::Stdout => stdout.flush().await,
+                            GuestOutputStream::Stderr => stderr.flush().await,
+                        }
+                        .map_err(|error| {
+                            backend_error(format!("terminal cleanup output flush failed: {error}"))
                         })?;
                     }
                     Some(
@@ -2514,6 +2615,7 @@ fn parse_debug_session_ref(value: &str) -> Result<SessionRef, CliError> {
             .map_err(|_| usage_error("--session seed must be lowercase hexadecimal"))?;
     }
     Ok(SessionRef::new(
+        // crucible-lint: allow host-nondeterminism-state -- the complete session identity is parsed from explicit CLI input without host-derived values.
         crucible_api::SessionId::new(id),
         epoch,
         crucible::Seed::from_bytes(seed),
@@ -2549,143 +2651,21 @@ mod remote_debug_tests {
     }
 }
 
-pub(super) fn debug_target(args: &DebugArgs) -> Result<DebugPlanTarget, CliError> {
-    match (&args.target, &args.session) {
-        (Some(_), Some(_)) => Err(usage_error(
-            "debug accepts either ARTIFACT|SAVEPOINT or --session, not both",
-        )),
-        (None, None) => Err(usage_error(
-            "debug requires ARTIFACT|SAVEPOINT or --session",
-        )),
-        (None, Some(session)) => Ok(DebugPlanTarget::Session(session.clone())),
-        (Some(target), None) => {
-            if let Ok(reference) = crucible::ContentAddressedBlobRef::parse("debug target", target)
-            {
-                Ok(DebugPlanTarget::Savepoint(reference.hash()))
-            } else {
-                Ok(DebugPlanTarget::Artifact(PathBuf::from(target)))
-            }
-        }
-    }
-}
+#[path = "triage_debug/coordinates.rs"]
+mod coordinates;
 
-pub(super) fn debug_coordinate(
-    args: &DebugArgs,
-    target: &DebugPlanTarget,
-) -> Result<DebugPlanCoordinate, CliError> {
-    if let Some(at) = &args.at {
-        return parse_debug_at_coordinate(at).map(DebugPlanCoordinate::At);
-    }
-    if let Some(sequence) = args.at_event {
-        return Ok(DebugPlanCoordinate::AtEvent(sequence));
-    }
-    if args.at_failure {
-        return Ok(DebugPlanCoordinate::AtFailure);
-    }
-    if let Some(checkpoint) = &args.at_checkpoint {
-        return crucible::ContentAddressedBlobRef::parse("at-checkpoint", checkpoint)
-            .map(|reference| DebugPlanCoordinate::AtCheckpoint(reference.hash()))
-            .map_err(|error| usage_error(format!("invalid --at-checkpoint: {error}")));
-    }
-    Ok(match target {
-        DebugPlanTarget::Artifact(_) => DebugPlanCoordinate::AtFailure,
-        DebugPlanTarget::Savepoint(hash) => DebugPlanCoordinate::AtCheckpoint(*hash),
-        DebugPlanTarget::Session(_) => DebugPlanCoordinate::Current,
-    })
-}
+pub(super) use coordinates::*;
+#[path = "triage_debug/guest_channel_response.rs"]
+mod guest_channel_response;
 
-pub(super) fn parse_debug_at_coordinate(
-    value: &str,
-) -> Result<crucible::DebugCoordinate, CliError> {
-    if let Some(ticks) = value.strip_prefix("vtime:") {
-        return parse_virtual_time(ticks);
-    }
-    if let Some(node_icount) = value.strip_prefix("icount:") {
-        return parse_node_icount(node_icount);
-    }
-    if value.contains(':') {
-        return parse_node_icount(value);
-    }
-    parse_virtual_time(value)
-}
-
-pub(super) fn parse_virtual_time(value: &str) -> Result<crucible::DebugCoordinate, CliError> {
-    let ticks = parse_u64_value("--at", value)?;
-    Ok(crucible::DebugCoordinate::virtual_time(
-        crucible::VirtualTime { ticks },
-    ))
-}
-
-pub(super) fn parse_node_icount(value: &str) -> Result<crucible::DebugCoordinate, CliError> {
-    let Some((node, retired)) = value.split_once(':') else {
-        return Err(usage_error(
-            "--at node-icount coordinates must be `icount:<node>:<retired>`",
-        ));
-    };
-    if node.is_empty() {
-        return Err(usage_error("--at node-icount coordinate has an empty node"));
-    }
-    let retired = parse_u64_value("--at", retired)?;
-    Ok(crucible::DebugCoordinate::node_icount(
-        crucible::NodeId {
-            name: node.to_string(),
-        },
-        crucible::Icount { retired },
-    ))
-}
-
-pub(super) fn parse_u64_value(field: &'static str, value: &str) -> Result<u64, CliError> {
-    value.parse::<u64>().map_err(|_| {
-        usage_error(format!(
-            "{field} must be an unsigned integer value, got `{value}`"
-        ))
-    })
-}
-
-pub(super) fn validate_debug_checkpoint_stride(stride: u64) -> Result<u64, CliError> {
-    let Ok(every) = usize::try_from(stride) else {
-        return Err(usage_error(
-            "--checkpoint-stride is too large for this platform",
-        ));
-    };
-    if crucible::DebugCheckpointStride::new(every).is_none() {
-        return Err(usage_error("--checkpoint-stride must be non-zero"));
-    }
-    Ok(stride)
-}
-
-pub(super) fn debug_verb(args: &DebugArgs) -> Result<DebugInteractiveVerbPlan, CliError> {
-    match &args.verb {
-        None | Some(DebugVerbArgs::AttachGdb) => Ok(DebugInteractiveVerbPlan::AttachGdb),
-        Some(DebugVerbArgs::ForkDebug) => Ok(DebugInteractiveVerbPlan::ForkDebug),
-        Some(DebugVerbArgs::Goto { coord }) => {
-            parse_debug_at_coordinate(coord).map(DebugInteractiveVerbPlan::Goto)
-        }
-        Some(DebugVerbArgs::ReverseStep { grain }) => Ok(DebugInteractiveVerbPlan::ReverseStep {
-            grain: grain.reverse_grain(),
-        }),
-        Some(DebugVerbArgs::ReverseContinue { condition }) => {
-            Ok(DebugInteractiveVerbPlan::ReverseContinue {
-                condition: condition.clone(),
-            })
-        }
-        Some(DebugVerbArgs::Exec { argv }) => {
-            Ok(DebugInteractiveVerbPlan::Exec { argv: argv.clone() })
-        }
-        Some(DebugVerbArgs::Pty {
-            columns,
-            rows,
-            argv,
-        }) => Ok(DebugInteractiveVerbPlan::Pty {
-            argv: argv.clone(),
-            columns: *columns,
-            rows: *rows,
-        }),
-        Some(DebugVerbArgs::Ssh) => Ok(DebugInteractiveVerbPlan::Ssh),
-    }
-}
-
+use guest_channel_response::{
+    GuestChannelRecordOutcome, handle_guest_channel_response,
+    handle_guest_channel_shutdown_response, receive_guest_channel_shutdown_signal,
+};
+// crucible-lint: allow host-nondeterminism-state -- this pure conversion is exported only for CLI contract tests.
+pub(crate) use guest_channel_response::guest_input_message;
 #[path = "triage_debug/slug.rs"]
 mod slug;
 
+// crucible-lint: allow host-nondeterminism-state -- these parsing helpers are pure CLI input normalization and do not construct scheduler state.
 pub(crate) use slug::*;

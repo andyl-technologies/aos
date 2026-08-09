@@ -94,6 +94,7 @@ pub(crate) const SERVE_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(1)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RunInvocationPlan {
     pub(crate) scenario: RunScenarioRef,
+    pub(crate) save_store_root: Option<PathBuf>,
     pub(crate) request_seed: Option<crucible::Seed>,
     pub(crate) terminal_condition: RunTerminalCondition,
     pub(crate) max_virtual_time: Option<String>,
@@ -458,10 +459,26 @@ pub(crate) struct SavepointHandle {
     pub(crate) schedule_payload: Vec<u8>,
     pub(crate) frontier_ticks: u64,
     pub(crate) at: SaveAtArg,
+    pub(crate) selector: Option<SaveAtSelector>,
+    pub(crate) boundary_proof: Option<SavepointBoundaryProof>,
+    pub(crate) boundary_predicate: Option<crucible::Predicate>,
     pub(crate) terminal_condition: RunTerminalCondition,
     pub(crate) materialization: String,
     pub(crate) oracle_status: String,
     pub(crate) canonical_log_digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SavepointBoundaryProof {
+    Coordinate {
+        frontier_ticks: u64,
+        quanta: u64,
+    },
+    Breakpoint {
+        breakpoint_id: BreakpointId,
+        frontier_ticks: u64,
+        quanta: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -834,6 +851,7 @@ pub(crate) fn plan_run_invocation(
 
     Ok(RunInvocationPlan {
         scenario,
+        save_store_root: Some(store_root.to_path_buf()),
         request_seed: None,
         terminal_condition,
         max_virtual_time: args.max_virtual_time.clone(),
@@ -905,6 +923,11 @@ pub(crate) fn plan_save_invocation(
                     "save --at quiescence does not accept --property or --marker selectors",
                 ));
             }
+            if args.max_virtual_time.is_some() {
+                return Err(usage_error(
+                    "save --at quiescence does not accept --max-virtual-time",
+                ));
+            }
             RunUntilArg::Quiescence
         }
         SaveAtArg::VirtualTime => {
@@ -960,7 +983,7 @@ pub(crate) fn plan_save_invocation(
         max_virtual_time: args.max_virtual_time.clone(),
         max_quanta: None,
         interactive: false,
-        save_on: RunSaveOnArg::Always,
+        save_on: RunSaveOnArg::Never,
         watch: false,
         #[cfg(any(test, feature = "test-double"))]
         emit_mock_failure_artifact: false,
@@ -1168,6 +1191,7 @@ pub(crate) fn plan_fork_invocation(
         .iter()
         .map(|raw| parse_fork_decision_override(raw))
         .collect::<Result<Vec<_>, _>>()?;
+    validate_fork_decision_override_domain(&decision_overrides)?;
     if let Some(duration) = &args.max_virtual_time
         && parse_run_duration_budget_ticks(duration).is_none()
     {
@@ -1273,9 +1297,72 @@ pub(crate) fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOver
         ));
     }
     Ok(ForkDecisionOverride {
-        decision: decision.to_string(),
-        value: pinned_value.to_string(),
+        decision: decode_fork_override_component(decision)?,
+        value: decode_fork_override_component(pinned_value)?,
     })
+}
+
+fn decode_fork_override_component(value: &str) -> Result<String, CliError> {
+    let mut decoded = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        let Some(encoded) = bytes.get(index + 1..index + 3) else {
+            return Err(usage_error(
+                "--override percent escapes must contain two hexadecimal digits",
+            ));
+        };
+        let text = std::str::from_utf8(encoded).map_err(|_| {
+            usage_error("--override percent escapes must contain hexadecimal ASCII")
+        })?;
+        let byte = u8::from_str_radix(text, 16).map_err(|_| {
+            usage_error("--override percent escapes must contain two hexadecimal digits")
+        })?;
+        decoded.push(byte);
+        index += 3;
+    }
+    String::from_utf8(decoded)
+        .map_err(|_| usage_error("--override percent escapes must decode to UTF-8"))
+}
+
+/// Rejects fork override coordinates that the production scheduler cannot consume.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when an override is outside the live World-network
+/// scheduling-point namespace, uses an unsupported choice, or repeats a point.
+pub(crate) fn validate_fork_decision_override_domain(
+    overrides: &[ForkDecisionOverride],
+) -> Result<(), CliError> {
+    let mut points = BTreeSet::new();
+    for override_plan in overrides {
+        let decision = OverrideDecision {
+            point: SchedulingPoint {
+                key: override_plan.decision.clone(),
+            },
+            choice: ChoiceTag {
+                name: override_plan.value.clone(),
+            },
+        };
+        if !crucible::is_supported_live_world_network_override(&decision) {
+            return Err(artifact_error(format!(
+                "fork override `{}`=`{}` is unresolvable; expected a scheduler-recorded `live-world-network/...` point and a canonical loss/duplicate/corrupt choice",
+                override_plan.decision, override_plan.value
+            )));
+        }
+        if !points.insert(override_plan.decision.as_str()) {
+            return Err(artifact_error(format!(
+                "fork override point `{}` was specified more than once",
+                override_plan.decision
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Validates search arguments and constructs the advanced-engine search plan.
@@ -1349,7 +1436,7 @@ pub(crate) fn plan_search_invocation_with_artifact_dir(
     })
 }
 
-/// Resolves a scenario for the search command's backend-facing error surface.
+/// Resolves a scenario for the search command.
 ///
 /// # Errors
 ///
@@ -1359,10 +1446,7 @@ pub(crate) fn resolve_search_scenario(
     scenario: Option<&str>,
     store_root: &Path,
 ) -> Result<RunScenarioRef, CliError> {
-    resolve_command_scenario("search", scenario, store_root).map_err(|error| match error {
-        CliError::InvalidScenario(message) => backend_error(message),
-        error => error,
-    })
+    resolve_command_scenario("search", scenario, store_root)
 }
 
 /// Loads and validates schedule-named predicate truths from a TOML file.
@@ -1855,7 +1939,7 @@ pub(crate) fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError
             .bytes()
             .any(|byte| matches!(byte, b'\t' | b'\n' | b'\r'))
     {
-        return Err(backend_error(
+        return Err(invalid_scenario(
             "family reference must not be empty or multiline",
         ));
     }
@@ -1863,14 +1947,14 @@ pub(crate) fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError
         return Ok(FuzzFamilyRef::BuiltInFaultCampaign);
     }
     if value.starts_with(CONTENT_ADDRESS_PREFIX) {
-        return Err(backend_error(format!(
+        return Err(invalid_scenario(format!(
             "family content hash `{value}` is not a DAG-store `blake3:<hash>` reference"
         )));
     }
     if value.starts_with("blake3:") {
         let reference =
             crucible::ContentAddressedBlobRef::parse("family", value).map_err(|error| {
-                backend_error(format!(
+                invalid_scenario(format!(
                     "family content hash `{value}` is malformed: {error}"
                 ))
             })?;
@@ -1879,10 +1963,10 @@ pub(crate) fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError
     let path = Path::new(value);
     validate_exploration_path_arg("FAMILY", path)?;
     if !path.exists() {
-        return Err(backend_error(format!("family `{value}` does not exist")));
+        return Err(invalid_scenario(format!("family `{value}` does not exist")));
     }
     if !path.is_file() {
-        return Err(backend_error(format!(
+        return Err(invalid_scenario(format!(
             "family `{value}` is not a regular file"
         )));
     }
@@ -1917,7 +2001,7 @@ pub(crate) fn load_fuzz_family(
 /// scenario-family document.
 pub(crate) fn load_fuzz_family_file(path: &Path) -> Result<crucible::ScenarioFamily, CliError> {
     let text = fs::read_to_string(path).map_err(|error| {
-        backend_error(format!(
+        invalid_scenario(format!(
             "family `{}` could not be read: {error}",
             path.display()
         ))
@@ -1937,14 +2021,14 @@ pub(crate) fn load_stored_fuzz_family(
 ) -> Result<crucible::ScenarioFamily, CliError> {
     let store = crucible::LocalDagStore::new(plan.store_root.clone());
     let bytes = store.get(&reference).map_err(|error| {
-        backend_error(format!(
+        invalid_scenario(format!(
             "family {} could not be loaded from store `{}`: {error}",
             format_content_hash_ref(reference),
             plan.store_root.display()
         ))
     })?;
     let text = std::str::from_utf8(&bytes).map_err(|error| {
-        backend_error(format!(
+        invalid_scenario(format!(
             "family {} in store `{}` is not UTF-8 scenario-family TOML: {error}",
             format_content_hash_ref(reference),
             plan.store_root.display()
@@ -1971,7 +2055,7 @@ pub(crate) fn load_fuzz_family_toml(
     text: &str,
 ) -> Result<crucible::ScenarioFamily, CliError> {
     let authored = toml::from_str::<CliScenarioFamilyToml>(text).map_err(|error| {
-        backend_error(format!(
+        invalid_scenario(format!(
             "family {label} is not valid scenario-family TOML: {error}"
         ))
     })?;
@@ -2276,7 +2360,7 @@ pub(crate) fn parse_family_seed_hex(
 }
 
 pub(crate) fn family_file_error(label: &str, message: impl Into<String>) -> CliError {
-    backend_error(format!("family {label} {}", message.into()))
+    invalid_scenario(format!("family {label} {}", message.into()))
 }
 
 /// Validates that an optional exploration budget is positive.
@@ -2328,181 +2412,10 @@ pub(crate) fn validate_exploration_path_arg(
     }
     Ok(())
 }
+#[path = "invocations/savepoint.rs"]
+mod savepoint;
 
-/// Resolves a command's savepoint argument as a hash or exported handle.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when the argument is absent, malformed, unreadable, or
-/// cannot be decoded as a savepoint handle.
-pub(crate) fn resolve_savepoint_ref(
-    command_name: &'static str,
-    savepoint: Option<&str>,
-) -> Result<ResumeSavepointRef, CliError> {
-    let Some(raw) = savepoint else {
-        return Err(usage_error(format!(
-            "{command_name} requires a SAVEPOINT argument"
-        )));
-    };
-    let value = raw.trim();
-    if value.is_empty()
-        || value
-            .bytes()
-            .any(|byte| matches!(byte, b'\t' | b'\n' | b'\r'))
-    {
-        return Err(artifact_error(
-            "savepoint reference must not be empty or multiline",
-        ));
-    }
-    if value.starts_with("blake3:") {
-        return parse_blake3_content_hash("savepoint", value)
-            .map(ResumeSavepointRef::CheckpointHash);
-    }
-
-    let path = Path::new(value);
-    let bytes = fs::read(path).map_err(|error| {
-        artifact_error(format!(
-            "savepoint handle `{}` could not be read: {error}",
-            path.display()
-        ))
-    })?;
-    let handle = decode_savepoint_handle(&bytes)?;
-    Ok(ResumeSavepointRef::Handle {
-        path: path.to_path_buf(),
-        handle,
-    })
-}
-
-/// Decodes and validates the canonical line-oriented savepoint-handle format.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when fields are missing, duplicated, malformed, or
-/// internally inconsistent, or when embedded payloads fail validation.
-pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, CliError> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|error| artifact_error(format!("savepoint handle is not UTF-8: {error}")))?;
-    let mut schema = None;
-    let mut label = None;
-    let mut checkpoint = None;
-    let mut scenario = None;
-    let mut scenario_payload = None;
-    let mut schedule_payload = None;
-    let mut frontier_ticks = None;
-    let mut at = None;
-    let mut terminal_condition = None;
-    let mut materialization = None;
-    let mut oracle_status = None;
-    let mut canonical_log_digest = None;
-
-    for (line_index, line_text) in text.lines().enumerate() {
-        let fields = parse_artifact_fields(line_text)?;
-        let Some(tag) = fields.first().map(String::as_str) else {
-            continue;
-        };
-        match tag {
-            "schema" => {
-                require_field_count(line_index, tag, &fields, 2)?;
-                set_once(&mut schema, line_index, tag, fields[1].clone())?;
-            }
-            "label" => {
-                require_field_count(line_index, tag, &fields, 2)?;
-                validate_required_field("savepoint label", &fields[1])?;
-                set_once(&mut label, line_index, tag, fields[1].clone())?;
-            }
-            "checkpoint" => {
-                require_field_count(line_index, tag, &fields, 2)?;
-                let parsed = parse_blake3_content_hash("checkpoint", &fields[1])?;
-                set_once(&mut checkpoint, line_index, tag, parsed)?;
-            }
-            "scenario" => {
-                require_field_count(line_index, tag, &fields, 3)?;
-                validate_content_hash_hex_line(line_index, tag, &fields[1])?;
-                validate_required_field("scenario label", &fields[2])?;
-                set_once(
-                    &mut scenario,
-                    line_index,
-                    tag,
-                    (fields[1].clone(), fields[2].clone()),
-                )?;
-            }
-            "scenario-payload" => {
-                require_field_count(line_index, tag, &fields, 3)?;
-                let payload = parse_hex_payload_line(line_index, tag, &fields[1], &fields[2])?;
-                set_once(&mut scenario_payload, line_index, tag, payload)?;
-            }
-            "schedule-payload" => {
-                require_field_count(line_index, tag, &fields, 3)?;
-                let payload = parse_hex_payload_line(line_index, tag, &fields[1], &fields[2])?;
-                set_once(&mut schedule_payload, line_index, tag, payload)?;
-            }
-            "frontier" => {
-                require_field_count(line_index, tag, &fields, 2)?;
-                let parsed = parse_u64(line_index, tag, &fields[1])?;
-                set_once(&mut frontier_ticks, line_index, tag, parsed)?;
-            }
-            "at" => {
-                require_field_count(line_index, tag, &fields, 2)?;
-                let parsed = parse_save_at_label(line_index, tag, &fields[1])?;
-                set_once(&mut at, line_index, tag, parsed)?;
-            }
-            "terminal-condition" => {
-                require_field_count(line_index, tag, &fields, 2)?;
-                let parsed = parse_run_terminal_condition_label(line_index, tag, &fields[1])?;
-                set_once(&mut terminal_condition, line_index, tag, parsed)?;
-            }
-            "materialization" => {
-                require_field_count(line_index, tag, &fields, 3)?;
-                validate_required_field("materialization kind", &fields[1])?;
-                validate_required_field("materialization source", &fields[2])?;
-                set_once(
-                    &mut materialization,
-                    line_index,
-                    tag,
-                    format!("{}:{}", fields[1], fields[2]),
-                )?;
-            }
-            "oracle" => {
-                require_field_count(line_index, tag, &fields, 2)?;
-                validate_required_field("oracle status", &fields[1])?;
-                set_once(&mut oracle_status, line_index, tag, fields[1].clone())?;
-            }
-            "canonical-log" => {
-                require_field_count(line_index, tag, &fields, 2)?;
-                validate_digest("canonical-log", &fields[1])?;
-                set_once(
-                    &mut canonical_log_digest,
-                    line_index,
-                    tag,
-                    fields[1].clone(),
-                )?;
-            }
-            _ => return Err(artifact_line_error(line_index, tag, "unknown line tag")),
-        }
-    }
-
-    let schema = schema.ok_or_else(|| missing_line("schema"))?;
-    if schema != SAVEPOINT_HANDLE_SCHEMA {
-        return Err(artifact_error(format!(
-            "unsupported savepoint handle schema `{schema}`"
-        )));
-    }
-    let (scenario_id_hex, scenario_label) = scenario.ok_or_else(|| missing_line("scenario"))?;
-    Ok(SavepointHandle {
-        label: label.ok_or_else(|| missing_line("label"))?,
-        checkpoint: checkpoint.ok_or_else(|| missing_line("checkpoint"))?,
-        scenario_id_hex,
-        scenario_label,
-        scenario_payload: scenario_payload.ok_or_else(|| missing_line("scenario-payload"))?,
-        schedule_payload: schedule_payload.ok_or_else(|| missing_line("schedule-payload"))?,
-        frontier_ticks: frontier_ticks.ok_or_else(|| missing_line("frontier"))?,
-        at: at.ok_or_else(|| missing_line("at"))?,
-        terminal_condition: terminal_condition.ok_or_else(|| missing_line("terminal-condition"))?,
-        materialization: materialization.ok_or_else(|| missing_line("materialization"))?,
-        oracle_status: oracle_status.ok_or_else(|| missing_line("oracle"))?,
-        canonical_log_digest: canonical_log_digest.ok_or_else(|| missing_line("canonical-log"))?,
-    })
-}
+pub(crate) use savepoint::*;
 
 /// Decodes one hexadecimal payload field from a savepoint handle.
 ///

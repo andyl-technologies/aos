@@ -29,6 +29,7 @@ pub mod client;
 pub mod control_responsive;
 pub mod debug_access;
 pub mod debug_gateway;
+mod debug_holders;
 pub mod debug_relay;
 pub mod event_log_stream;
 pub mod lifecycle;
@@ -44,9 +45,10 @@ pub mod vm_resume;
 
 pub use client::{
     ClientControlStream, ClientWatchStream, ControlClient, ControlClientError, ControlClientFuture,
-    ControlTransportKind, ControlWireModel, HelloRequest, HelloResponse, InProcessControlClient,
-    InProcessLifecycleControlStream, RpcControlClient, RpcControlStream, RpcEndpoint,
-    RpcMutualTlsConfig, RpcTransportProtocol, RpcWatchStream, assert_shared_wire_model,
+    ControlTransportKind, ControlWireModel, DebugControllerAccess, DebugControllerAcquisition,
+    HelloRequest, HelloResponse, InProcessControlClient, InProcessLifecycleControlStream,
+    RpcControlClient, RpcControlStream, RpcEndpoint, RpcMutualTlsConfig, RpcTransportProtocol,
+    RpcWatchStream, assert_shared_wire_model,
 };
 pub use control_responsive::{
     CONTROL_RESPONSIVE_QUANTUM_BOUND, CONTROL_RESPONSIVE_REQUIRED_OPERATIONS,
@@ -68,9 +70,10 @@ pub use event_log_stream::{
     SessionEventLogSnapshot, SessionEventLogStream, SessionEventLogStreamError,
 };
 pub use lifecycle::{
-    CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DebugRepositionDispatch,
-    DestroySessionRequest, DestroySessionResponse, GetReproductionRequest, GetReproductionResponse,
-    GuestIntrospectionDispatch, InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
+    CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DebugLandedRuntimeCoordinate,
+    DebugRepositionDispatch, DebugRepositionResult, DestroySessionRequest, DestroySessionResponse,
+    GetReproductionRequest, GetReproductionResponse, GuestIntrospectionDispatch,
+    InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
     LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
     LifecycleLoopFactory, ListScenariosResponse, ListSessionsResponse, QuiescentLifecycleLoop,
     ReproductionCommandPayload, ReproductionCommandRecord, ReproductionCommandResult,
@@ -107,7 +110,8 @@ pub use vm_lifecycle::{
 // depends on `crucible-protocol`.
 pub use crucible_protocol::CONTROL_PROTOCOL_VERSION;
 pub use crucible_protocol::guest_introspection::{
-    GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream,
+    GuestIntrospectionFailureCode, GuestIntrospectionMessage, GuestIntrospectionRecord,
+    GuestOutputStream,
 };
 // Re-exported with backend-neutral names so process-local control clients can
 // launch and attest the production backend without depending on its

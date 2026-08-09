@@ -453,6 +453,19 @@ pub trait QemuQmpMachineControlChannel: Send {
     ///
     /// Returns [`QemuNodeChannelError`] when QMP cannot send the quit command.
     fn quit(&mut self) -> Result<(), QemuNodeChannelError>;
+
+    /// Sends the fixed fork-time activation token to the dormant guest bootstrap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the channel has no activation
+    /// device or QMP rejects the bounded command.
+    fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "activate_debug_guest",
+            "QMP debug guest activation is unavailable",
+        ))
+    }
 }
 
 /// The three logical channel roles owned by one QEMU node.
@@ -517,6 +530,20 @@ pub struct QemuNode {
 }
 
 impl QemuNode {
+    /// Activates the dormant guest-introspection bootstrap after a non-canonical fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the bounded QMP activation command fails.
+    pub fn activate_debug_guest(&mut self) -> Result<(), QemuNodeError> {
+        self.channels
+            .qmp_machine_control
+            .activate_debug_guest()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
+            })
+    }
+
     /// Sends one request to this VM's debug guest agent.
     ///
     /// # Errors
@@ -950,69 +977,10 @@ impl QemuNode {
     }
 }
 
-struct QemuNodeAsyncStepTarget<'a> {
-    child: &'a mut QemuNodeChild,
-    channels: &'a mut QemuNodeChannels,
-    lifecycle_state: &'a mut QemuNodeLifecycleState,
-    shutdown_policy: QemuShutdownPolicy,
-}
+#[path = "node/async_step.rs"]
+mod async_step;
 
-impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
-    fn shutdown_after_crash(&mut self) -> Result<QemuShutdownReport, QemuAsyncDriverTargetError> {
-        shutdown_node_child(
-            self.child,
-            self.channels,
-            self.lifecycle_state,
-            self.shutdown_policy,
-        )
-        .map_err(|error| QemuAsyncDriverTargetError::new("shutdown after crash", error.to_string()))
-    }
-}
-
-impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
-    type PendingQuantum = QemuNodePendingQuantum;
-
-    fn start_quantum(
-        &mut self,
-        horizon: ExecutionHorizon,
-    ) -> Result<Self::PendingQuantum, QemuNodeChannelError> {
-        self.channels.shmem_hot_path.start_quantum(horizon)
-    }
-
-    fn finish_quantum(
-        &mut self,
-        pending: &mut Self::PendingQuantum,
-    ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
-        self.channels.shmem_hot_path.poll_quantum(pending)
-    }
-}
-
-fn shutdown_node_child(
-    child: &mut QemuNodeChild,
-    channels: &mut QemuNodeChannels,
-    lifecycle_state: &mut QemuNodeLifecycleState,
-    shutdown_policy: QemuShutdownPolicy,
-) -> Result<QemuShutdownReport, QemuNodeError> {
-    if child.reaped() {
-        *lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
-        return Ok(QemuShutdownReport {
-            attempts: Vec::new(),
-            failures: Vec::new(),
-            reaped: true,
-            leaked: false,
-        });
-    }
-
-    let mut target = QemuNodeShutdownTarget {
-        child,
-        plugin_control: channels.plugin_control.as_mut(),
-        qmp_machine_control: channels.qmp_machine_control.as_mut(),
-    };
-    let report =
-        shutdown_qemu_child(&mut target, shutdown_policy).map_err(QemuNodeError::from_shutdown)?;
-    *lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
-    Ok(report)
-}
+use async_step::*;
 
 impl Backend for QemuNode {
     fn advance_to_horizon(

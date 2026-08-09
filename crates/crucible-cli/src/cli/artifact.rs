@@ -188,7 +188,7 @@ pub(super) fn expected_replay_identity_for_backend(
     };
     CliIdentity {
         engine_version: env!("CARGO_PKG_VERSION").to_string(),
-        engine_abi: String::from("crucible-harness-e2e-v1"),
+        engine_abi: String::from("crucible-harness-e2e-v2"),
         artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
         qemu_build_id,
         qemu_patch_series_hash,

@@ -133,8 +133,8 @@
     ++ lib.optionals (manifest.crucible.cargoDeps.hash != crucibleCargoDepsHash) [
       "release manifest cargo deps hash ${manifest.crucible.cargoDeps.hash} does not match package hash ${crucibleCargoDepsHash}"
     ]
-    ++ lib.optionals (manifest.crucible.cargoDeps.kind != "fetchCargoVendor") [
-      "release manifest cargo deps kind is not fetchCargoVendor"
+    ++ lib.optionals (manifest.crucible.cargoDeps.kind != "fetchCargoDeps") [
+      "release manifest cargo deps kind is not fetchCargoDeps"
     ]
     ++ lib.optionals (!manifest.crucible.cargoDeps.vendored) [
       "release manifest does not mark cargo deps as vendored"
@@ -189,6 +189,14 @@
     ) [
       "release manifest GDB component is incomplete"
     ]
+    ++ lib.optionals (
+      manifest.components.ssh.package
+      != "openssh"
+      || manifest.components.ssh.license != "BSD-2-Clause"
+      || manifest.components.ssh.boundary != "operator-guest-bridge-client"
+    ) [
+      "release manifest SSH component is incomplete"
+    ]
     ++ lib.optionals (manifest.components.qemu.licenses != ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"]) [
       "release manifest QEMU component license inventory is incomplete"
     ]
@@ -210,7 +218,7 @@
     ++ lib.optionals (manifest.components.correspondingSource.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"]) [
       "release manifest corresponding-source license inventory is incomplete"
     ]
-    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later"]) [
+    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause"]) [
       "release manifest aggregate project license inventory is incomplete"
     ]
     ++ lib.optionals (manifest.licensing.licenseSetScope != "primary-project-components") [
@@ -378,7 +386,7 @@
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPackageNix [
       {
         label = "plugin cargo deps vendored";
-        needle = "cargoDeps = fetchCargoVendor";
+        needle = "cargoDeps = fetchCargoDeps";
       }
       {
         label = "plugin cargo deps source root";
@@ -445,8 +453,8 @@
         needle = "reproducibility_timestamp_policy=no-wall-clock-timestamps";
       }
       {
-        label = "aggregate project licenses include MIT";
-        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later";
+        label = "aggregate project licenses include packaged operator clients";
+        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause";
       }
       {
         label = "debug gateway component";
@@ -493,6 +501,10 @@
       {
         label = "GDB component";
         needle = "\"gdb\":{";
+      }
+      {
+        label = "SSH component";
+        needle = "\"ssh\":{";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -558,7 +570,10 @@ in
           grep -q '^gdb_package=gdb$' "$manifest_env"
           grep -q '^gdb_license=GPL-3.0-or-later$' "$manifest_env"
           grep -q '^gdb_boundary=operator-debugger-client$' "$manifest_env"
-          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later$' "$manifest_env"
+          grep -q '^ssh_package=openssh$' "$manifest_env"
+          grep -q '^ssh_license=BSD-2-Clause$' "$manifest_env"
+          grep -q '^ssh_boundary=operator-guest-bridge-client$' "$manifest_env"
+          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause$' "$manifest_env"
           grep -q '^aggregate_license_scope=primary-project-components$' "$manifest_env"
           grep -q '^third_party_license_metadata=vendored-source-manifests$' "$manifest_env"
           grep -q '^publication_root_package=crucible$' "$manifest_env"
@@ -581,7 +596,7 @@ in
             printf 'shmem_abi=%s\n' "$SHMEM_ABI"
             printf 'guest_host_protocol_abi=%s\n' "$GUEST_HOST_PROTOCOL_ABI"
             printf 'rpc_abi=%s\n' "$RPC_ABI"
-            printf '%s\n' 'cargo_deps=fetchCargoVendor'
+            printf '%s\n' 'cargo_deps=fetchCargoDeps'
             printf '%s\n' 'cargo_deps_vendored=true'
             printf '%s\n' 'timestamp_policy=no-wall-clock-timestamps'
             printf '%s\n' 'host_path_policy=no-host-paths'

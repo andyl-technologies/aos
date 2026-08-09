@@ -2,7 +2,9 @@
 //!
 //! RFC-0010 QEMU-19 limits QMP use to capability negotiation, typed VM
 //! status/topology observation, VM snapshot save/load, snapshot job polling,
-//! and graceful quit. The client parses
+//! graceful quit, plus the legacy fixed debug-agent device-add sequence used by
+//! focused compatibility tests. Production launches use the inert endpoint and
+//! do not issue those device-add commands. The client parses
 //! JSON-line QMP responses internally, skips asynchronous event objects while
 //! waiting for a command response, and exposes no public arbitrary-command
 //! execution path.
@@ -17,7 +19,10 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::{QemuLoadvmCommandAuthorization, QemuNodeChannelError};
+use crate::{
+    QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID, QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME,
+    QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
+};
 
 mod snapshot_tag;
 #[cfg(target_os = "linux")]
@@ -41,6 +46,12 @@ pub const QMP_QUERY_STATUS_COMMAND: &str = "query-status";
 pub const QMP_QUERY_CPUS_FAST_COMMAND: &str = "query-cpus-fast";
 /// QMP command name used for graceful QEMU termination.
 pub const QMP_QUIT_COMMAND_NAME: &str = "quit";
+/// QMP command used to create the activation-only character backend.
+pub const QMP_CHARDEV_ADD_COMMAND: &str = "chardev-add";
+/// QMP command used to hot-add the activation-only controller and port.
+pub const QMP_DEVICE_ADD_COMMAND: &str = "device_add";
+/// Versioned token consumed by the dormant fixture-side debugger bootstrap.
+pub const QMP_DEBUG_GUEST_ACTIVATION_TOKEN: &str = "CRUCIBLE_DEBUG_AGENT_V1\n";
 /// QMP snapshot device name used for diskless VMState snapshots.
 pub const QMP_SNAPSHOT_VMSTATE_DEVICE: &str = "vmstate";
 /// Default maximum number of `query-jobs` polls for a snapshot operation.
@@ -101,6 +112,17 @@ pub struct QmpClient<S> {
     greeting: QmpGreeting,
     job_poll_policy: QmpJobPollPolicy,
     io_timeout_policy: QmpIoTimeoutPolicy,
+    debug_guest_activation_stage: DebugGuestActivationStage,
+    predeclared_debug_guest_endpoint: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum DebugGuestActivationStage {
+    #[default]
+    NotStarted,
+    ChardevAdded,
+    ControllerAdded,
+    PortAdded,
 }
 
 impl<S> QmpClient<S>
@@ -158,6 +180,8 @@ where
             },
             job_poll_policy,
             io_timeout_policy,
+            debug_guest_activation_stage: DebugGuestActivationStage::NotStarted,
+            predeclared_debug_guest_endpoint: false,
         };
         client.greeting = client.read_greeting()?;
         client.send_command(QmpCommand::Capabilities)?;
@@ -168,6 +192,13 @@ where
     #[must_use]
     pub const fn greeting(&self) -> QmpGreeting {
         self.greeting
+    }
+
+    /// Returns a client whose launch already contains the fixed inert endpoint.
+    #[must_use]
+    pub const fn with_predeclared_debug_guest_endpoint(mut self) -> Self {
+        self.predeclared_debug_guest_endpoint = true;
+        self
     }
 
     /// Saves the VMState snapshot under a tag derived from a checkpoint address.
@@ -219,6 +250,42 @@ where
     /// cannot be read or decoded, or when QMP returns an error response.
     pub fn quit(&mut self) -> Result<QmpCommandComplete, QmpError> {
         self.send_command(QmpCommand::Quit)
+    }
+
+    /// Prepares the fixed guest-introspection activation channel.
+    ///
+    /// Production launches return immediately because their inert endpoint is
+    /// already present. The compatibility command surface is deliberately fixed:
+    /// callers cannot select an arbitrary device, chardev, or guest-visible bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request cannot be written, when the
+    /// response cannot be decoded, or when QEMU rejects the configured socket
+    /// chardev, controller, or port.
+    pub fn prepare_debug_guest(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        if self.predeclared_debug_guest_endpoint {
+            return Ok(QmpCommandComplete {
+                command: QmpCommandKind::AddDebugGuestPort,
+            });
+        }
+        if self.debug_guest_activation_stage < DebugGuestActivationStage::ChardevAdded {
+            self.send_command(QmpCommand::AddDebugGuestChardev)?;
+            self.debug_guest_activation_stage = DebugGuestActivationStage::ChardevAdded;
+        }
+        if self.debug_guest_activation_stage < DebugGuestActivationStage::ControllerAdded
+            && !self.predeclared_debug_guest_endpoint
+        {
+            self.send_command(QmpCommand::AddDebugGuestController)?;
+        }
+        self.debug_guest_activation_stage = DebugGuestActivationStage::ControllerAdded;
+        if self.debug_guest_activation_stage < DebugGuestActivationStage::PortAdded {
+            self.send_command(QmpCommand::AddDebugGuestPort)?;
+            self.debug_guest_activation_stage = DebugGuestActivationStage::PortAdded;
+        }
+        Ok(QmpCommandComplete {
+            command: QmpCommandKind::AddDebugGuestPort,
+        })
     }
 
     /// Returns the current VM run state.
@@ -756,6 +823,12 @@ pub enum QmpCommandKind {
     QueryCpusFast,
     /// Graceful QEMU quit.
     Quit,
+    /// Activation-only chardev hot-add.
+    AddDebugGuestChardev,
+    /// Activation-only virtio-serial controller hot-add.
+    AddDebugGuestController,
+    /// Activation-only virtio-serial port hot-add.
+    AddDebugGuestPort,
 }
 
 impl QmpCommandKind {
@@ -768,6 +841,8 @@ impl QmpCommandKind {
             Self::QueryStatus => QMP_QUERY_STATUS_COMMAND,
             Self::QueryCpusFast => QMP_QUERY_CPUS_FAST_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
+            Self::AddDebugGuestChardev => QMP_CHARDEV_ADD_COMMAND,
+            Self::AddDebugGuestController | Self::AddDebugGuestPort => QMP_DEVICE_ADD_COMMAND,
         }
     }
 }
@@ -785,153 +860,10 @@ struct QmpCommandReturn {
     value: Value,
 }
 
-/// Typed errors returned by the minimal QMP client.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum QmpError {
-    /// A QMP stream operation had no timeout budget.
-    #[error("{operation} has zero QMP timeout")]
-    UnboundedTimeout {
-        /// Operation with an invalid timeout.
-        operation: &'static str,
-    },
-    /// A QMP bound was invalid.
-    #[error("{operation} has zero QMP bound")]
-    InvalidBound {
-        /// Operation with an invalid bound.
-        operation: &'static str,
-    },
-    /// A bounded QMP stream operation timed out.
-    #[error("{operation} timed out after {timeout:?}")]
-    Timeout {
-        /// Operation being attempted.
-        operation: &'static str,
-        /// Timeout budget assigned to the operation.
-        timeout: Duration,
-    },
-    /// A QMP stream operation failed.
-    #[error("{operation} failed with {kind:?}")]
-    Io {
-        /// Operation being attempted.
-        operation: &'static str,
-        /// Error kind returned by the stream.
-        kind: ErrorKind,
-    },
-    /// A QMP JSON line could not be decoded or serialized.
-    #[error("{operation} JSON failed: {message}")]
-    Json {
-        /// Operation being attempted.
-        operation: &'static str,
-        /// JSON error message.
-        message: String,
-    },
-    /// The first QMP line was not a greeting.
-    #[error("unexpected QMP greeting: {response}")]
-    UnexpectedGreeting {
-        /// JSON response that was not a valid greeting.
-        response: String,
-    },
-    /// QMP returned an error object for a typed command.
-    #[error("QMP command {command:?} failed: {class}: {description}")]
-    Command {
-        /// Command that failed.
-        command: QmpCommandKind,
-        /// QMP error class.
-        class: String,
-        /// QMP error description.
-        description: String,
-    },
-    /// QMP returned a malformed `query-jobs` response.
-    #[error("unexpected QMP job list for {command:?}: {response}")]
-    UnexpectedJobList {
-        /// Snapshot command awaiting a job result.
-        command: QmpCommandKind,
-        /// Unexpected `query-jobs` return value.
-        response: String,
-    },
-    /// A typed query returned a structurally invalid payload.
-    #[error("malformed typed QMP response for {command:?}: {response}")]
-    MalformedTypedResponse {
-        /// Query whose response failed validation.
-        command: QmpCommandKind,
-        /// Unexpected return payload.
-        response: String,
-    },
-    /// A QMP snapshot job reported an error.
-    #[error("QMP job {job_id} for {command:?} failed: {detail}")]
-    JobFailed {
-        /// Snapshot command awaiting a job result.
-        command: QmpCommandKind,
-        /// QMP job id.
-        job_id: String,
-        /// QMP job error detail.
-        detail: String,
-    },
-    /// A QMP snapshot job did not reach the concluded state.
-    #[error("QMP job {job_id} for {command:?} did not conclude after {polls} polls")]
-    JobNotConcluded {
-        /// Snapshot command awaiting a job result.
-        command: QmpCommandKind,
-        /// QMP job id.
-        job_id: String,
-        /// Number of `query-jobs` polls attempted.
-        polls: usize,
-    },
-    /// A QMP JSON line exceeded the configured byte bound before newline.
-    #[error("QMP line for {operation} exceeded {max_bytes} bytes")]
-    LineTooLong {
-        /// Operation awaiting a line.
-        operation: &'static str,
-        /// Maximum configured line size.
-        max_bytes: usize,
-    },
-    /// Too many asynchronous event objects arrived while awaiting one command response.
-    #[error("QMP command {command:?} exceeded {limit} skipped async events")]
-    AsyncEventLimitExceeded {
-        /// Command awaiting a response.
-        command: QmpCommandKind,
-        /// Maximum events skipped for the command.
-        limit: usize,
-    },
-    /// QMP returned neither an event, a return object, nor an error object.
-    #[error("unexpected QMP response for {command:?}: {response}")]
-    UnexpectedResponse {
-        /// Command awaiting a response.
-        command: QmpCommandKind,
-        /// Unexpected JSON response.
-        response: String,
-    },
-}
+#[path = "qmp/error.rs"]
+mod error;
 
-impl QmpError {
-    fn from_io(operation: &'static str, error: io::Error) -> Self {
-        Self::Io {
-            operation,
-            kind: error.kind(),
-        }
-    }
-
-    fn from_io_with_timeout(operation: &'static str, timeout: Duration, error: io::Error) -> Self {
-        match error.kind() {
-            ErrorKind::TimedOut | ErrorKind::WouldBlock => Self::Timeout { operation, timeout },
-            kind => Self::Io { operation, kind },
-        }
-    }
-}
-
-impl From<QmpError> for QemuNodeChannelError {
-    fn from(error: QmpError) -> Self {
-        match error {
-            QmpError::Timeout { operation, timeout } => {
-                QemuNodeChannelError::bounded_await_timeout(
-                    operation,
-                    format!("QMP operation timed out after {timeout:?}"),
-                    timeout,
-                )
-            }
-            other => QemuNodeChannelError::new("qmp", other.to_string()),
-        }
-    }
-}
+pub use error::QmpError;
 
 enum QmpCommand<'a> {
     Capabilities,
@@ -947,6 +879,9 @@ enum QmpCommand<'a> {
     QueryStatus,
     QueryCpusFast,
     Quit,
+    AddDebugGuestChardev,
+    AddDebugGuestController,
+    AddDebugGuestPort,
 }
 
 impl QmpCommand<'_> {
@@ -959,6 +894,9 @@ impl QmpCommand<'_> {
             Self::QueryStatus => QmpCommandKind::QueryStatus,
             Self::QueryCpusFast => QmpCommandKind::QueryCpusFast,
             Self::Quit => QmpCommandKind::Quit,
+            Self::AddDebugGuestChardev => QmpCommandKind::AddDebugGuestChardev,
+            Self::AddDebugGuestController => QmpCommandKind::AddDebugGuestController,
+            Self::AddDebugGuestPort => QmpCommandKind::AddDebugGuestPort,
         }
     }
 
@@ -984,6 +922,41 @@ impl QmpCommand<'_> {
             }),
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,
+            }),
+            Self::AddDebugGuestChardev => json!({
+                "execute": QMP_CHARDEV_ADD_COMMAND,
+                "arguments": {
+                    "id": QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
+                    "backend": {
+                        "type": "socket",
+                        "data": {
+                            "addr": {
+                                "type": "unix",
+                                "data": { "path": crate::QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME },
+                            },
+                            "server": true,
+                            "wait": false,
+                        },
+                    },
+                },
+            }),
+            Self::AddDebugGuestController => json!({
+                "execute": QMP_DEVICE_ADD_COMMAND,
+                "arguments": {
+                    "driver": "virtio-serial-pci",
+                    "id": QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID,
+                    "bus": "pcie.0",
+                },
+            }),
+            Self::AddDebugGuestPort => json!({
+                "execute": QMP_DEVICE_ADD_COMMAND,
+                "arguments": {
+                    "driver": "virtserialport",
+                    "id": QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
+                    "chardev": QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
+                    "name": QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME,
+                    "bus": format!("{QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID}.0"),
+                },
             }),
         }
     }

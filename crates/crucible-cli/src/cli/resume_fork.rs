@@ -11,6 +11,11 @@ pub(super) fn run_local_double_fork_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     fork_plan: &ForkInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    if !fork_plan.decision_overrides.is_empty() {
+        return Err(artifact_error(
+            "fork overrides require the production QEMU scheduler; the test double cannot prove exact choice consumption",
+        ));
+    }
     let evidence = fork_handle_evidence(fork_plan)?;
     run_local_double_fork_workflow_with_driver(
         thin_plan,
@@ -42,10 +47,25 @@ pub(super) fn run_local_qemu_fork_workflow(
             crucible::Seed::from_u64(seed),
         );
     } else if !override_decisions.is_empty() {
+        let network_choices = override_decisions
+            .iter()
+            .filter_map(|decision| match decision {
+                crucible::Decision::Override(choice) => Some(choice.clone()),
+                _ => None,
+            })
+            .collect();
+        config = config
+            .with_branch_prefix_overrides(
+                evidence.configuration.clone(),
+                evidence.checkpoint.virtual_time,
+                Vec::new(),
+            )
+            .with_branch_network_choices(network_choices);
+    } else {
         config = config.with_branch_prefix_overrides(
             evidence.configuration.clone(),
             evidence.checkpoint.virtual_time,
-            override_decisions,
+            Vec::new(),
         );
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -65,10 +85,20 @@ pub(super) fn run_local_qemu_fork_workflow(
         initial_control_commands: fork_plan.initial_control_commands.clone(),
         accepted_interactive_commands: fork_plan.accepted_interactive_commands.clone(),
     };
-    let resumed = runtime.block_on(run_remote_control_client_resume_workflow_async(
-        &client,
-        &resume_plan,
-    ))?;
+    let interactive_driver = if matches!(fork_plan.execution_mode, RunExecutionMode::Interactive) {
+        ResumeInteractiveCommandDriver::Stdin
+    } else {
+        ResumeInteractiveCommandDriver::Preparsed(&[])
+    };
+    let resumed = runtime.block_on(
+        run_remote_control_client_resume_from_evidence_with_driver_async(
+            &client,
+            &resume_plan,
+            evidence.clone(),
+            interactive_driver,
+            !fork_plan.decision_overrides.is_empty(),
+        ),
+    )?;
     let report = ForkWorkflowReport {
         run: resumed.run,
         source_checkpoint: resumed.source_checkpoint,
@@ -106,6 +136,11 @@ pub(super) fn run_local_double_fork_workflow_with_driver(
     evidence: ResumeHandleEvidence,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
 ) -> Result<BackendCommandOutcome, CliError> {
+    if !fork_plan.decision_overrides.is_empty() {
+        return Err(artifact_error(
+            "fork overrides require the production QEMU scheduler; the test double cannot prove exact choice consumption",
+        ));
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -145,7 +180,40 @@ pub(super) fn resume_handle_evidence(
 pub(super) fn fork_handle_evidence(
     plan: &ForkInvocationPlan,
 ) -> Result<ResumeHandleEvidence, CliError> {
-    savepoint_evidence("fork", &plan.source, &plan.store_root)
+    let evidence = savepoint_evidence("fork", &plan.source, &plan.store_root)?;
+    validate_fork_overrides_for_world(plan, &evidence.scenario_form)?;
+    Ok(evidence)
+}
+
+fn validate_fork_overrides_for_world(
+    plan: &ForkInvocationPlan,
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<(), CliError> {
+    for decision in fork_override_decisions(plan) {
+        let crucible::Decision::Override(override_decision) = decision else {
+            continue;
+        };
+        if !crucible::live_world_network_override_matches_world(
+            scenario.world(),
+            &override_decision,
+        ) {
+            let declared = crucible::live_world_network_override_point_prefixes(scenario.world())
+                .into_iter()
+                .map(|prefix| encode_canonical_summary_value(&prefix))
+                .collect::<Vec<_>>()
+                .join(",");
+            return Err(artifact_error(format!(
+                "fork override point `{}` is not declared by the savepoint scenario; declared point prefixes={}",
+                encode_canonical_summary_value(&override_decision.point.key),
+                if declared.is_empty() {
+                    "none"
+                } else {
+                    &declared
+                }
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn savepoint_evidence(
@@ -183,6 +251,13 @@ pub(super) fn savepoint_handle_evidence(
         .map_err(|error| {
             artifact_error(format!("savepoint scenario payload is malformed: {error}"))
         })?;
+    validate_save_selector_for_scenario(handle.selector.as_ref(), &scenario_form).map_err(
+        |error| {
+            artifact_error(format!(
+                "savepoint selector is not admitted by its embedded scenario: {error}"
+            ))
+        },
+    )?;
     let scenario = scenario_form.scenario_def();
     if scenario.id().to_hex() != handle.scenario_id_hex {
         return Err(CliError::Identity(format!(
@@ -941,6 +1016,9 @@ where
             "interactive-ack\tcommand={}\tstatus=accepted",
             session_command_name(command)
         )?;
+        if command == SessionCommandKind::Query {
+            write_interactive_query_state(writer, boundary.state_kind)?;
+        }
         writer.flush()?;
     }
     Ok(())
@@ -1095,7 +1173,7 @@ pub(super) fn validate_resume_property_firing(
         .find(|firing| firing.id == breakpoint_id)
         .ok_or_else(|| {
             backend_error(format!(
-                "resume property breakpoint {breakpoint_id} did not fire before resume boundary"
+                "resume property breakpoint {breakpoint_id} did not fire before resume boundary; the selected checkpoint may already be terminal and have no resumable predecessor"
             ))
         })?;
     if &firing.predicate != expected {
@@ -1128,7 +1206,7 @@ pub(super) fn validate_resume_property_firing(
     Ok(())
 }
 
-pub(super) fn validate_resume_property_firing_summary(
+pub(super) fn validate_resume_property_suspension_summary(
     breakpoint_id: BreakpointId,
     expected: &crucible::Predicate,
     boundary: &crucible_api::SessionSummary,
@@ -1139,7 +1217,7 @@ pub(super) fn validate_resume_property_firing_summary(
         .find(|firing| firing.id == breakpoint_id)
         .ok_or_else(|| {
             backend_error(format!(
-                "remote resume property breakpoint {breakpoint_id} did not fire before resume boundary"
+                "remote resume property breakpoint {breakpoint_id} did not fire before resume boundary; the selected checkpoint may already be terminal and have no resumable predecessor"
             ))
         })?;
     if &firing.predicate != expected {
@@ -1148,14 +1226,11 @@ pub(super) fn validate_resume_property_firing_summary(
             firing.predicate, expected
         )));
     }
-    match &firing.disposition {
-        BreakpointDisposition::Action(crucible::Action::Fail { reason })
-            if reason == REQUESTED_PROPERTY_VIOLATION_REASON => {}
-        disposition => {
-            return Err(CliError::Identity(format!(
-                "remote resume property breakpoint used unexpected disposition {disposition:?}"
-            )));
-        }
+    if firing.disposition != BreakpointDisposition::Suspend {
+        return Err(CliError::Identity(format!(
+            "remote resume property breakpoint used unexpected disposition {:?}",
+            firing.disposition
+        )));
     }
     if firing.frontier != boundary.frontier {
         return Err(CliError::Identity(format!(
@@ -1220,30 +1295,7 @@ where
         session,
         |summary| summary.state == expected,
         &description,
-        RUN_INTERACTIVE_ACK_QUANTA_BOUND,
-    )
-    .await
-}
-
-pub(super) async fn wait_for_resume_workflow_advanced_paused<C>(
-    client: &C,
-    session: SessionRef,
-    before: &crucible_api::SessionSummary,
-    description: &str,
-) -> Result<crucible_api::SessionSummary, CliError>
-where
-    C: ControlClient + Sync,
-{
-    wait_for_resume_workflow_summary(
-        client,
-        session,
-        |summary| {
-            summary.state == LiveStateKind::Paused
-                && summary.frontier.ticks > before.frontier.ticks
-                && summary.quanta_stepped > before.quanta_stepped
-        },
-        description,
-        RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+        RESUME_WORKFLOW_OBSERVER_TIMEOUT,
     )
     .await
 }
@@ -1253,31 +1305,35 @@ pub(super) async fn wait_for_resume_workflow_summary<C>(
     session: SessionRef,
     mut accepts: impl FnMut(&crucible_api::SessionSummary) -> bool,
     description: &str,
-    max_attempts: u64,
+    timeout: Duration,
 ) -> Result<crucible_api::SessionSummary, CliError>
 where
     C: ControlClient + Sync,
 {
-    for _ in 0..max_attempts {
-        let sessions = client.list_sessions().await.map_err(control_client_error)?;
-        let Some(summary) = sessions
-            .sessions
-            .iter()
-            .find(|summary| summary.session == session)
-        else {
-            return Err(backend_error("resume workflow session disappeared"));
-        };
-        if accepts(summary) {
-            return Ok(summary.clone());
+    let observation = async {
+        loop {
+            let sessions = client.list_sessions().await.map_err(control_client_error)?;
+            let Some(summary) = sessions
+                .sessions
+                .iter()
+                .find(|summary| summary.session == session)
+            else {
+                return Err(backend_error("resume workflow session disappeared"));
+            };
+            if accepts(summary) {
+                return Ok(summary.clone());
+            }
+            if summary.state == LiveStateKind::Stopped {
+                return Err(CliError::Outcome(status_from_outcome(summary.outcome)?));
+            }
+            // Local ListSessions calls complete immediately. Yield real time so
+            // the actor and live backend can advance without a hot polling loop.
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        if summary.state == LiveStateKind::Stopped {
-            return Err(CliError::Outcome(status_from_outcome(summary.outcome)?));
-        }
-        tokio::task::yield_now().await;
-    }
-    Err(backend_error(format!(
-        "resume workflow did not reach {description}"
-    )))
+    };
+    tokio::time::timeout(timeout, observation)
+        .await
+        .map_err(|_| backend_error(format!("resume workflow did not reach {description}")))?
 }
 
 #[cfg(any(test, feature = "test-double"))]
@@ -1394,11 +1450,14 @@ pub(super) fn finish_fork_workflow_outcome(
 ) -> Result<BackendCommandOutcome, CliError> {
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
     let oracle = report.terminal_oracle.clone();
-    let artifact = write_fork_reproduction_artifact(
+    let artifact = should_capture_fork_reproduction_artifact(
         fork_plan,
         backend_plan.resolved_backend.as_ref(),
-        &report,
-    )?;
+    )
+    .then(|| {
+        write_fork_reproduction_artifact(fork_plan, backend_plan.resolved_backend.as_ref(), &report)
+    })
+    .transpose()?;
     outcome.status = report.run.status;
     outcome.exit_code = report.run.status.exit_code();
     outcome.terminal_savepoint = report.run.terminal_savepoint;
@@ -1416,17 +1475,30 @@ pub(super) fn finish_fork_workflow_outcome(
         report.run.final_quanta,
         report.run.acknowledged_commands.len()
     ));
-    outcome.stdout.push(format!(
-        "fork-artifact\tpath={}\tdigest={}\tseed={}\tfork_seed={}\tmodel_artifact={}\treplay_state={}\tschedule={}\tfingerprint={}",
-        artifact.path.display(),
-        artifact.digest,
-        format_seed(artifact.seed),
-        format_optional_seed(artifact.fork_seed),
-        format_content_hash_ref(artifact.model_artifact),
-        format_content_hash_ref(artifact.replay_state),
-        format_content_hash_ref(artifact.schedule),
-        format_content_hash_ref(artifact.finding_fingerprint)
-    ));
+    for decision_override in &fork_plan.decision_overrides {
+        outcome.stdout.push(format!(
+            "fork-override\tpoint={}\tchoice={}\tstatus=recorded",
+            encode_canonical_summary_value(&decision_override.decision),
+            encode_canonical_summary_value(&decision_override.value)
+        ));
+    }
+    if let Some(artifact) = &artifact {
+        outcome.stdout.push(format!(
+            "fork-artifact\tpath={}\tstatus=captured\tdigest={}\tseed={}\tfork_seed={}\tmodel_artifact={}\treplay_state={}\tschedule={}\tfingerprint={}",
+            artifact.path.display(),
+            artifact.digest,
+            format_seed(artifact.seed),
+            format_optional_seed(artifact.fork_seed),
+            format_content_hash_ref(artifact.model_artifact),
+            format_content_hash_ref(artifact.replay_state),
+            format_content_hash_ref(artifact.schedule),
+            format_content_hash_ref(artifact.finding_fingerprint)
+        ));
+    } else {
+        outcome.stdout.push(String::from(
+            "fork-artifact\tstatus=not-captured\treason=interactive-live-controls\treplayable=false",
+        ));
+    }
     for status in &report.run.watch_statuses {
         outcome.stdout.push(format!("run-watch\t{status}"));
     }
@@ -1451,6 +1523,19 @@ pub(super) fn finish_fork_workflow_outcome(
             fork_plan.terminal_condition.label()
         ),
     });
+    for decision_override in &fork_plan.decision_overrides {
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("scheduler"),
+            kind: String::from("fork_override"),
+            summary: format!(
+                "point={} choice={} status=recorded",
+                encode_canonical_summary_value(&decision_override.decision),
+                encode_canonical_summary_value(&decision_override.value)
+            ),
+        });
+    }
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
         virtual_time_ticks: outcome.canonical_log.len() as u64,
@@ -1464,25 +1549,46 @@ pub(super) fn finish_fork_workflow_outcome(
             format_content_hash_ref(oracle.thin_checkpoint)
         ),
     });
-    outcome.canonical_log.push(CanonicalLogEntry {
-        sequence: outcome.canonical_log.len() as u64,
-        virtual_time_ticks: outcome.canonical_log.len() as u64,
-        node: String::from("artifact"),
-        kind: String::from("fork_reproduction_artifact"),
-        summary: format!(
-            "path={} digest={} seed={} fork_seed={} model_artifact={} replay_state={} schedule={}",
-            artifact.path.display(),
-            artifact.digest,
-            format_seed(artifact.seed),
-            format_optional_seed(artifact.fork_seed),
-            format_content_hash_ref(artifact.model_artifact),
-            format_content_hash_ref(artifact.replay_state),
-            format_content_hash_ref(artifact.schedule)
-        ),
+    outcome.canonical_log.push(match artifact {
+        Some(artifact) => CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("artifact"),
+            kind: String::from("fork_reproduction_artifact"),
+            summary: format!(
+                "status=captured path={} digest={} seed={} fork_seed={} model_artifact={} replay_state={} schedule={}",
+                artifact.path.display(),
+                artifact.digest,
+                format_seed(artifact.seed),
+                format_optional_seed(artifact.fork_seed),
+                format_content_hash_ref(artifact.model_artifact),
+                format_content_hash_ref(artifact.replay_state),
+                format_content_hash_ref(artifact.schedule)
+            ),
+        },
+        None => CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("artifact"),
+            kind: String::from("fork_reproduction_artifact"),
+            summary: String::from(
+                "status=not-captured reason=interactive-live-controls replayable=false",
+            ),
+        },
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     outcome.savepoint_oracle = Some(oracle);
     Ok(outcome)
+}
+
+/// Returns whether the completed fork has a replay-complete artifact recipe.
+#[must_use]
+pub(super) fn should_capture_fork_reproduction_artifact(
+    plan: &ForkInvocationPlan,
+    backend: Option<&ResolvedLocalBackend>,
+) -> bool {
+    !matches!(plan.execution_mode, RunExecutionMode::Interactive)
+        || !matches!(backend, Some(ResolvedLocalBackend::Qemu { .. }))
 }
 
 pub(super) fn write_fork_reproduction_artifact(
@@ -1516,18 +1622,6 @@ pub(super) fn write_fork_reproduction_artifact(
                 base_decisions: source.configuration.schedule.len() as u64,
                 frontier_ticks: source.checkpoint.virtual_time.ticks,
                 seed,
-            }
-        } else if !plan.decision_overrides.is_empty() {
-            LiveQemuReplayBranch::PrefixOverrides {
-                base_decisions: source.configuration.schedule.len() as u64,
-                frontier_ticks: source.checkpoint.virtual_time.ticks,
-                decision_start: source.configuration.schedule.len() as u64,
-                decision_end: source
-                    .configuration
-                    .schedule
-                    .len()
-                    .saturating_add(plan.decision_overrides.len())
-                    as u64,
             }
         } else {
             LiveQemuReplayBranch::Resume {
@@ -1663,424 +1757,7 @@ pub(super) fn fork_artifact_decision_kind(decision: &crucible::Decision) -> &'st
     }
 }
 
-pub(super) fn run_remote_workflow(
-    daemon: &str,
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    run_plan: &RunInvocationPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let client = remote_rpc_client(daemon, backend_plan)?;
-    let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
-        runtime.block_on(run_control_client_workflow_stdin_async(&client, run_plan))?
-    } else {
-        runtime.block_on(run_control_client_workflow_async(&client, run_plan, &[]))?
-    };
-    finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
-}
+#[path = "resume_fork/remote.rs"]
+mod remote;
 
-pub(super) fn run_remote_verify_workflow(
-    daemon: &str,
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    verify_plan: &VerifyInvocationPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let report = match &verify_plan.mode {
-        VerifyMode::RunScenario { .. } => {
-            let client = remote_rpc_client(daemon, backend_plan)?;
-            runtime.block_on(run_control_client_verify_workflow_async(
-                &client,
-                verify_plan,
-                backend_plan.resolved_backend.as_ref(),
-                ergonomics_plan,
-            ))?
-        }
-        VerifyMode::CompareArtifacts { .. } => {
-            verify_compare_artifacts(verify_plan, backend_plan.resolved_backend.as_ref())?
-        }
-    };
-    finish_verify_workflow_outcome(
-        thin_plan,
-        backend_plan,
-        ergonomics_plan,
-        verify_plan,
-        report,
-    )
-}
-
-pub(super) fn run_remote_save_workflow(
-    daemon: &str,
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    save_plan: &SaveInvocationPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let client = remote_rpc_client(daemon, backend_plan)?;
-    let report = runtime.block_on(run_remote_control_client_save_workflow_async(
-        &client, save_plan,
-    ))?;
-    finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
-}
-
-pub(super) fn run_remote_resume_workflow(
-    daemon: &str,
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    resume_plan: &ResumeInvocationPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let client = remote_rpc_client(daemon, backend_plan)?;
-    let report = runtime.block_on(run_remote_control_client_resume_workflow_async(
-        &client,
-        resume_plan,
-    ))?;
-    finish_resume_workflow_outcome(
-        thin_plan,
-        backend_plan,
-        ergonomics_plan,
-        resume_plan,
-        report,
-    )
-}
-
-#[cfg(test)]
-pub(super) fn run_remote_resume_workflow_with_interactive_commands(
-    daemon: &str,
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    resume_plan: &ResumeInvocationPlan,
-    commands: &[SessionCommandKind],
-) -> Result<BackendCommandOutcome, CliError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let client = remote_rpc_client(daemon, backend_plan)?;
-    let report = runtime.block_on(run_remote_control_client_resume_workflow_with_driver_async(
-        &client,
-        resume_plan,
-        ResumeInteractiveCommandDriver::Preparsed(commands),
-    ))?;
-    finish_resume_workflow_outcome(
-        thin_plan,
-        backend_plan,
-        ergonomics_plan,
-        resume_plan,
-        report,
-    )
-}
-
-pub(super) fn daemon_rpc_endpoint(daemon: &str) -> String {
-    if daemon.contains("://") {
-        daemon.to_string()
-    } else {
-        format!("http://{daemon}")
-    }
-}
-
-pub(super) fn remote_rpc_client(
-    daemon: &str,
-    backend_plan: &BackendSelectionPlan,
-) -> Result<RpcControlClient, CliError> {
-    let endpoint = RpcEndpoint::http2(daemon_rpc_endpoint(daemon));
-    let Some(paths) = backend_plan.daemon_security.as_ref() else {
-        return RpcControlClient::new(endpoint).map_err(control_client_error);
-    };
-    let server_ca = fs::read(&paths.server_ca).map_err(|error| {
-        control_client_error(crucible_api::ControlClientError::HttpClientBuild {
-            message: format!(
-                "cannot read daemon CA certificate {}: {error}",
-                paths.server_ca.display()
-            ),
-        })
-    })?;
-    let mut client_identity = fs::read(&paths.client_certificate).map_err(|error| {
-        control_client_error(crucible_api::ControlClientError::HttpClientBuild {
-            message: format!(
-                "cannot read daemon client certificate {}: {error}",
-                paths.client_certificate.display()
-            ),
-        })
-    })?;
-    if !client_identity.ends_with(b"\n") {
-        client_identity.push(b'\n');
-    }
-    let private_key = fs::read(&paths.client_private_key).map_err(|error| {
-        control_client_error(crucible_api::ControlClientError::HttpClientBuild {
-            message: format!(
-                "cannot read daemon client private key {}: {error}",
-                paths.client_private_key.display()
-            ),
-        })
-    })?;
-    client_identity.extend_from_slice(&private_key);
-    RpcControlClient::new_mtls(
-        endpoint,
-        RpcMutualTlsConfig::from_pem(server_ca, client_identity),
-    )
-    .map_err(control_client_error)
-}
-
-pub(super) fn finish_run_workflow_outcome(
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    run_plan: &RunInvocationPlan,
-    report: RunWorkflowReport,
-) -> Result<BackendCommandOutcome, CliError> {
-    let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
-    outcome.status = report.status;
-    outcome.exit_code = report.status.exit_code();
-    outcome.stdout.push(format!(
-        "run-session\tcreated={}\tfinal={}\toutcome={}\tsavepoint={}\tfrontier_ticks={}\tquanta={}\tevents={}\tacks={}",
-        report.created_state,
-        report.final_state,
-        terminal_outcome_label(report.outcome),
-        report
-            .terminal_savepoint
-            .map(format_content_hash_ref)
-            .unwrap_or_else(|| String::from("none")),
-        report.final_frontier_ticks,
-        report.final_quanta,
-        report.streamed_events.len(),
-        report.acknowledged_commands.len()
-    ));
-    for status in &report.watch_statuses {
-        outcome.stdout.push(format!("run-watch\t{status}"));
-    }
-    append_local_double_run_entries(&mut outcome, run_plan, &report);
-    if let Some(savepoint) = run_terminal_savepoint_for_policy(run_plan, &report)? {
-        outcome.terminal_savepoint = Some(savepoint);
-        let savepoint = format_content_hash_ref(savepoint);
-        outcome.stdout.push(format!(
-            "run-savepoint\tpolicy={}\tcheckpoint={}\tfinal={}\toutcome={}",
-            run_save_policy_label(run_plan.save_policy),
-            savepoint,
-            report.final_state,
-            terminal_outcome_label(report.outcome)
-        ));
-        outcome.canonical_log.push(CanonicalLogEntry {
-            sequence: outcome.canonical_log.len() as u64,
-            virtual_time_ticks: outcome.canonical_log.len() as u64,
-            node: String::from("session"),
-            kind: String::from("run_savepoint"),
-            summary: format!(
-                "policy={} checkpoint={} outcome={}",
-                run_save_policy_label(run_plan.save_policy),
-                savepoint,
-                terminal_outcome_label(report.outcome)
-            ),
-        });
-        outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
-    }
-    if outcome.status.is_non_passing() && backend_plan.target == BackendExecutionTarget::Local {
-        let artifact_seed = ergonomics_plan
-            .map(|plan| plan.seed.value)
-            .unwrap_or_else(|| {
-                seed_to_u64(
-                    run_plan
-                        .request_seed
-                        .unwrap_or_else(|| run_plan.scenario.scenario_def().seed()),
-                )
-            });
-        let artifact = run_failure_reproduction_artifact_bytes(
-            artifact_seed,
-            backend_plan.resolved_backend.as_ref(),
-            run_plan,
-            &report,
-            &outcome.canonical_log,
-        )?;
-        outcome.artifact_digest = content_address_bytes(&artifact);
-        outcome.reproduction_artifact = Some(artifact);
-    }
-    Ok(outcome)
-}
-
-pub(super) fn finish_save_workflow_outcome(
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    save_plan: &SaveInvocationPlan,
-    report: SaveWorkflowReport,
-) -> Result<BackendCommandOutcome, CliError> {
-    let oracle = report.oracle;
-    let mut outcome = finish_run_workflow_outcome(
-        thin_plan,
-        backend_plan,
-        ergonomics_plan,
-        &save_plan.run_plan,
-        report.run,
-    )?;
-    outcome.terminal_savepoint = Some(oracle.fat_checkpoint);
-    outcome.stdout.push(format!(
-        "save-oracle\tstatus={}\tconfiguration={}\tfat={}\tthin={}\tstore_objects={}",
-        oracle.status_label(),
-        format_content_hash_ref(oracle.configuration),
-        format_content_hash_ref(oracle.fat_checkpoint),
-        format_content_hash_ref(oracle.thin_checkpoint),
-        oracle.store_objects
-    ));
-    outcome.canonical_log.push(CanonicalLogEntry {
-        sequence: outcome.canonical_log.len() as u64,
-        virtual_time_ticks: outcome.canonical_log.len() as u64,
-        node: String::from("replay-oracle"),
-        kind: String::from("save_oracle_validation"),
-        summary: format!(
-            "status={} configuration={} fat={} thin={}",
-            oracle.status_label(),
-            format_content_hash_ref(oracle.configuration),
-            format_content_hash_ref(oracle.fat_checkpoint),
-            format_content_hash_ref(oracle.thin_checkpoint)
-        ),
-    });
-    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
-    outcome.savepoint_oracle = Some(oracle);
-    Ok(outcome)
-}
-
-pub(super) fn finish_verify_workflow_outcome(
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    verify_plan: &VerifyInvocationPlan,
-    report: VerifyWorkflowReport,
-) -> Result<BackendCommandOutcome, CliError> {
-    let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
-    outcome.stdout.push(format!(
-        "verify-plan\tmode={}\truns={}\treductions={}\tadversarial={}\tbisect={}",
-        verify_plan.mode.label(),
-        verify_plan.requested_runs,
-        report.witnesses.len(),
-        verify_plan.applies_hostile_condition_matrix,
-        verify_plan.bisection_on_divergence
-    ));
-    for witness in &report.witnesses {
-        let canonical_log_digest = content_address_bytes(&witness.canonical_log_bytes);
-        let fingerprint_digest = content_address_bytes(&witness.fingerprint_stream);
-        outcome.stdout.push(format!(
-            "verify-run\tindex={}\trun={}\tprofile={}\tcanonical_log={}\tfingerprint={}\tsamples={}",
-            witness.reduction.index,
-            witness.reduction.run_index,
-            witness.reduction.host_profile.label(),
-            canonical_log_digest,
-            fingerprint_digest,
-            witness.fingerprint_samples.len()
-        ));
-        outcome.canonical_log.push(CanonicalLogEntry {
-            sequence: outcome.canonical_log.len() as u64,
-            virtual_time_ticks: outcome.canonical_log.len() as u64,
-            node: String::from("verify"),
-            kind: String::from("independent_reduction"),
-            summary: format!(
-                "index={} run={} profile={} canonical_log={} fingerprint={} samples={}",
-                witness.reduction.index,
-                witness.reduction.run_index,
-                witness.reduction.host_profile.label(),
-                canonical_log_digest,
-                fingerprint_digest,
-                witness.fingerprint_samples.len()
-            ),
-        });
-    }
-    if let Some(divergence) = report.divergence {
-        outcome.status = BackendCommandStatus::Failed;
-        outcome.exit_code = outcome.status.exit_code();
-        outcome.stdout.push(format!(
-            "verify-divergence\tleft={}\tright={}\tmismatch={}\tfirst_decision={}\tfirst_fingerprint_sample={}\tfirst_instruction={}\tnode={}\tbyte={}",
-            divergence.left,
-            divergence.right,
-            divergence.mismatch.label(),
-            divergence
-                .first_different_decision
-                .map(|decision| decision.to_string())
-                .unwrap_or_else(|| String::from("unknown")),
-            divergence
-                .first_different_fingerprint_sample
-                .map(|sample| sample.to_string())
-                .unwrap_or_else(|| String::from("unknown")),
-            divergence.first_different_instruction,
-            divergence.node.as_deref().unwrap_or("unknown"),
-            divergence.first_different_byte
-        ));
-        if verify_plan.print_bisection_state_dump {
-            outcome.stdout.push(format!(
-                "verify-bisect-state\tleft_state={}\tright_state={}\tleft_dump={}\tright_dump={}",
-                divergence.left_state_digest,
-                divergence.right_state_digest,
-                divergence.left_state_dump,
-                divergence.right_state_dump
-            ));
-        }
-        outcome.canonical_log.push(CanonicalLogEntry {
-            sequence: outcome.canonical_log.len() as u64,
-            virtual_time_ticks: outcome.canonical_log.len() as u64,
-            node: divergence
-                .node
-                .clone()
-                .unwrap_or_else(|| String::from("verify")),
-            kind: String::from("verify_divergence_bisection"),
-            summary: format!(
-                "left={} right={} mismatch={} first_instruction={} byte={}",
-                divergence.left,
-                divergence.right,
-                divergence.mismatch.label(),
-                divergence.first_different_instruction,
-                divergence.first_different_byte
-            ),
-        });
-        let left = report
-            .witnesses
-            .get(divergence.left)
-            .ok_or_else(|| backend_error("verify divergence left side is out of range"))?;
-        let right = report
-            .witnesses
-            .get(divergence.right)
-            .ok_or_else(|| backend_error("verify divergence right side is out of range"))?;
-        if let (Some(left_artifact), Some(right_artifact)) =
-            (left.artifact.as_ref(), right.artifact.as_ref())
-        {
-            outcome.side_reproduction_artifacts = vec![
-                (String::from("left"), left_artifact.clone()),
-                (String::from("right"), right_artifact.clone()),
-            ];
-            let mut artifact_material = Vec::new();
-            artifact_material.extend_from_slice(left_artifact);
-            artifact_material.extend_from_slice(right_artifact);
-            outcome.artifact_digest = content_address_bytes(&artifact_material);
-        } else {
-            outcome.stdout.push(String::from(
-                "verify-reproduction-artifacts\tskipped=producer-provenance-unavailable",
-            ));
-        }
-    } else {
-        outcome.stdout.push(format!(
-            "verify-result\tstatus=passed\treductions={}\tcanonical_log={}\tfingerprint={}",
-            report.witnesses.len(),
-            report
-                .witnesses
-                .first()
-                .map(|witness| content_address_bytes(&witness.canonical_log_bytes))
-                .unwrap_or_else(|| content_address_bytes(b"verify-empty-log")),
-            report
-                .witnesses
-                .first()
-                .map(|witness| content_address_bytes(&witness.fingerprint_stream))
-                .unwrap_or_else(|| content_address_bytes(b"verify-empty-fingerprint"))
-        ));
-    }
-    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
-    Ok(outcome)
-}
+pub(super) use remote::*;

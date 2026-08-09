@@ -6,8 +6,34 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.reconcile_indeterminate_debug_ownership()?;
         self.reconcile_backend_membership()?;
+        if request.configuration != *self.inner.loop_impl().configuration() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "quantum request configuration is not the scheduler frontier",
+                ),
+            });
+        }
         let pre_quantum_trigger_appends = self.settle_trigger_graph()?;
         self.reconcile_backend_membership()?;
+        if self.terminal_verdict.is_some() {
+            let scheduler = self.inner.loop_impl();
+            let mut outcome = QuantumOutcome {
+                configuration: scheduler.configuration().clone(),
+                frontier: scheduler.frontier(),
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: scheduler.event_log_offset(),
+                scheduler_quiescence: Some(scheduler.quiescence()?),
+            };
+            prepend_event_log_appends(&mut outcome, pre_quantum_trigger_appends);
+            self.capture_debug_runtime_evidence()?;
+            return Ok(outcome);
+        }
         if self.branch.as_ref().is_some_and(|branch| {
             branch.base == request.configuration && !request.control.is_empty()
         }) {
@@ -207,6 +233,23 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.resolve_recorded_debug_runtime_evidence(runtime)
     }
 
+    fn resolve_debug_coordinate_runtime_evidence(
+        &self,
+        coordinate: &crucible::DebugCoordinate,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        self.resolve_recorded_debug_coordinate_runtime_evidence(coordinate, runtime)
+    }
+
+    fn resolve_debug_coordinate_frontier(
+        &self,
+        coordinate: &crucible::DebugCoordinate,
+        runtime: &RuntimeState,
+        graph_fallback: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        self.resolve_recorded_debug_coordinate_frontier(coordinate, runtime, graph_fallback)
+    }
+
     fn poll_gdb_run_control(&mut self) -> Result<Option<Vec<u8>>, SchedulerError> {
         self.reconcile_indeterminate_debug_ownership()?;
         self.debug_gateway.as_mut().map_or(Ok(None), |gateway| {
@@ -231,11 +274,49 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             })
     }
 
+    fn acquire_internal_debug_run(&mut self) -> Result<(), SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
+        self.debug_gateway
+            .as_mut()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("production debugger gateway process is unavailable"),
+            })?
+            .acquire_scheduler_lease()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("acquire internal debugger scheduler ownership: {error}"),
+            })
+    }
+
+    fn release_internal_debug_run(&mut self) -> Result<(), SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
+        self.debug_gateway
+            .as_mut()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("production debugger gateway process is unavailable"),
+            })?
+            .release_scheduler_lease()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("release internal debugger scheduler ownership: {error}"),
+            })
+    }
+
     fn apply_control_at_boundary(
         &mut self,
         control: Vec<ControlOperation>,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.inner.apply_control_at_boundary(control)
+    }
+
+    fn append_noncanonical_debug_event_log_entries(
+        &mut self,
+        entries: Vec<crucible::SchedulerEventLogEntry>,
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
+        self.inner
+            .append_noncanonical_debug_event_log_entries(entries)
+    }
+
+    fn activate_debug_guest(&mut self, node: NodeId) -> Result<(), SchedulerError> {
+        self.inner.activate_debug_guest(node)
     }
 
     fn send_guest_introspection(
@@ -289,32 +370,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from("production debugger configuration is unavailable"),
                 })?;
-        if listen.as_str() != configured.operator_listen {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "requested debugger listener {} does not match configured listener {}",
-                    listen.as_str(),
-                    configured.operator_listen
-                ),
-            });
-        }
-        let requested: SocketAddr =
-            listen
-                .as_str()
-                .parse()
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "parse trusted debugger listener {}: {error}",
-                        listen.as_str()
-                    ),
-                })?;
-        if !requested.ip().is_loopback() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "unauthenticated production debugger listener must be loopback, not {requested}"
-                ),
-            });
-        }
+        let requested = trusted_debug_listener(configured, &listen)?;
         let executable = self
             .config
             .debug_gateway_executable
@@ -405,7 +461,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         let pending = self.inner.loop_impl().pending_branch_fault_choice_count();
         let pending_error = (pending != 0).then(|| SchedulerError::BoundaryViolation {
             message: format!(
-                "production lifecycle stopped with {pending} unconsumed branch fault choices"
+                "production lifecycle stopped with {pending} unconsumed branch choices"
             ),
         });
         let gateway_shutdown = self.debug_gateway.take().map(|gateway| {
@@ -425,5 +481,95 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             return Err(error);
         }
         shutdown
+    }
+}
+
+/// Validates an operator listener against the lifecycle's debugger policy.
+fn trusted_debug_listener(
+    configured: &ProductionVmDebugConfig,
+    listen: &GdbListen,
+) -> Result<SocketAddr, SchedulerError> {
+    let requested: SocketAddr =
+        listen
+            .as_str()
+            .parse()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "parse trusted debugger listener {}: {error}",
+                    listen.as_str()
+                ),
+            })?;
+    if !requested.ip().is_loopback() {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "unauthenticated production debugger listener must be loopback, not {requested}"
+            ),
+        });
+    }
+    if !configured.allow_requested_loopback_listen && listen.as_str() != configured.operator_listen
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "requested debugger listener {} does not match configured listener {}",
+                listen.as_str(),
+                configured.operator_listen
+            ),
+        });
+    }
+    Ok(requested)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn debug_config(allow_requested_loopback_listen: bool) -> ProductionVmDebugConfig {
+        ProductionVmDebugConfig {
+            node: None,
+            operator_listen: String::from("127.0.0.1:0"),
+            all_nodes: allow_requested_loopback_listen,
+            allow_requested_loopback_listen,
+        }
+    }
+
+    #[test]
+    fn daemon_debug_policy_accepts_an_explicit_loopback_listener() {
+        let listen = GdbListen::new("127.0.0.1:9000")
+            .unwrap_or_else(|error| panic!("loopback listener should parse: {error}"));
+
+        let requested = trusted_debug_listener(&debug_config(true), &listen)
+            .unwrap_or_else(|error| panic!("daemon listener should be admitted: {error}"));
+
+        assert_eq!(requested, SocketAddr::from(([127, 0, 0, 1], 9000)));
+    }
+
+    #[test]
+    fn fixed_debug_policy_rejects_a_different_listener() {
+        let listen = GdbListen::new("127.0.0.1:9000")
+            .unwrap_or_else(|error| panic!("loopback listener should parse: {error}"));
+
+        let error = match trusted_debug_listener(&debug_config(false), &listen) {
+            Ok(address) => panic!("fixed listener policy admitted {address}"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not match configured listener")
+        );
+    }
+
+    #[test]
+    fn daemon_debug_policy_rejects_a_non_loopback_listener() {
+        let listen = GdbListen::new("0.0.0.0:9000")
+            .unwrap_or_else(|error| panic!("socket listener should parse: {error}"));
+
+        let error = match trusted_debug_listener(&debug_config(true), &listen) {
+            Ok(address) => panic!("daemon listener policy admitted {address}"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("must be loopback"));
     }
 }
