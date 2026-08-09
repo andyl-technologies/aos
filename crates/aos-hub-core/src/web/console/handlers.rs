@@ -291,11 +291,8 @@ async fn route_permissions(
             .registry_by_slug(&path)
             .await?
             .map(|registry| Scope::parse(&registry.scope_key)),
-        aos_hub_console_contract::ConsoleScope::Cache {
-            organization,
-            cache,
-        } => db
-            .binary_cache_by_slug(&format!("{organization}/{cache}"))
+        aos_hub_console_contract::ConsoleScope::Cache { path } => db
+            .binary_cache_by_slug(&path)
             .await?
             .map(|cache| Scope::parse(&cache.scope_key)),
     };

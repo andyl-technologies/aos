@@ -282,8 +282,10 @@ default · used when no binding is selected
 `/-/orgs` is the organization directory and `/-/caches` is the global binary-
 cache directory. The cache directory lists every cache readable by the current
 caller by invoking `BinaryCacheService.ListBinaryCaches` without an owner-scope
-filter; each row links to its canonical organization-owned cache settings root.
-These are canonical application routes, not compatibility aliases.
+filter. Organization-owned rows link to `/-/org/<org>/caches/<cache>` and
+instance-owned standalone rows link to `/-/caches/<cache>`; both roots expose
+the same cache settings pages. These are canonical application routes, not
+compatibility aliases.
 
 ## Organization settings
 

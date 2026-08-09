@@ -841,12 +841,14 @@ population, and garbage collection remain separate command families below.
 List and show render `BinaryCache` resources even though the user-facing CLI
 noun remains the concise `cache`.
 
-Every `<registry>` and `<cache>` locator accepts either its canonical qualified
-slug (`organization/project/registry` or `organization/cache`) or its immutable
-`registry:` / `cache:` stable ID. Stable IDs remain the relationship and
-persistence key; canonical slugs are the human-facing Web and CLI path. Reads
-return the stable ID so automation can pin subsequent operations without
-depending on presentation paths.
+Every `<registry>` and `<cache>` locator accepts either its canonical slug
+(`registry`, `organization/project/registry`, `cache`, or
+`organization/cache`) or its immutable `registry:` / `cache:` stable ID. The
+grammars are disjoint: canonical slug segments exclude `:`, and the
+`registry:` and `cache:` prefixes are reserved exclusively for stable IDs.
+Stable IDs remain the relationship and persistence key; canonical slugs are
+the human-facing Web and CLI path. Reads return the stable ID so automation can
+pin subsequent operations without depending on presentation paths.
 
 ### Upstream registry mirror
 

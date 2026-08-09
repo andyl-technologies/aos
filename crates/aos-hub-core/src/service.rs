@@ -24397,6 +24397,10 @@ impl RpcService {
     ) -> Result<pb::GitLogResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.slug).await?;
         self.require_read(auth, &registry).await?;
+        // Validate the opaque cursor even when the registry has no HEAD. An
+        // empty collection must obey the same pagination contract as a
+        // populated one.
+        let _ = paginate::<()>(Vec::new(), req.page_size, &req.page_token)?;
         let Some(head) = self
             .db
             .index_status(registry.id)
@@ -33990,6 +33994,19 @@ mod cache_upload_tests {
 
         assert!(response.commits.is_empty());
         assert!(response.next_page_token.is_empty());
+
+        let error = service
+            .git_log(
+                None,
+                pb::GitLogRequest {
+                    slug: "empty-log/packages".into(),
+                    page_size: 100,
+                    page_token: "not-a-page-token".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "invalid_argument");
     }
 
     #[tokio::test]

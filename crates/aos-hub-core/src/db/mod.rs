@@ -3322,6 +3322,8 @@ impl Database {
         trust_keys: &[String],
         require_signatures: bool,
     ) -> Result<i64> {
+        crate::domain::iam::validate_org_slug(slug)
+            .map_err(|error| anyhow::anyhow!("invalid instance registry slug '{slug}': {error}"))?;
         if let Some(existing) = self.registry_by_slug(slug).await? {
             if existing.trust_keys == trust_keys
                 && existing.require_signatures == require_signatures
@@ -14337,6 +14339,11 @@ impl Database {
         compression: &str,
         want_mass_query: bool,
     ) -> Result<i64> {
+        if org_id.is_none() {
+            crate::domain::iam::validate_org_slug(slug).map_err(|error| {
+                anyhow::anyhow!("invalid standalone cache slug '{slug}': {error}")
+            })?;
+        }
         if self.binary_cache_by_slug(slug).await?.is_some() {
             bail!("a cache already exists at '{slug}'");
         }
@@ -23149,6 +23156,36 @@ source_nar_hash = ""
             db.index_status(reg.id).await.unwrap().unwrap().state,
             "empty"
         );
+    }
+
+    #[tokio::test]
+    async fn instance_registry_slugs_cannot_collide_with_stable_ids() {
+        let db = Database::open_in_memory().await.unwrap();
+        let error = db
+            .register_registry("registry:0123456789abcdef0123456789abcdef", &[], false)
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("invalid instance registry slug"));
+    }
+
+    #[tokio::test]
+    async fn standalone_cache_slugs_cannot_collide_with_stable_ids() {
+        let db = Database::open_in_memory().await.unwrap();
+        let error = db
+            .create_binary_cache(
+                None,
+                "cache:0123456789abcdef0123456789abcdef",
+                "Ambiguous cache",
+                "private",
+                40,
+                "zstd",
+                false,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("invalid standalone cache slug"));
     }
 
     #[tokio::test]

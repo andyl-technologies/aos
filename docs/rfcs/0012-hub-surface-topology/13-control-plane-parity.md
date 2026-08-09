@@ -72,6 +72,12 @@ Web inventory is complete rather than viewport-sized: every paginated list
 follows opaque `next_page_token` values to exhaustion. The shared browser
 transport rejects a repeated non-empty token, so a server pagination cycle
 fails visibly instead of spinning or silently truncating the resource graph.
+Malformed tokens are rejected even when the selected inventory is empty.
+
+The browser exchanges its short-lived management session again after every
+client-side history transition. Route permissions therefore always describe
+the exact current scope; a permission union obtained for a global inventory is
+never reused to render an organization, registry, or cache editor.
 
 Every durable desired-state mutation follows one interaction:
 

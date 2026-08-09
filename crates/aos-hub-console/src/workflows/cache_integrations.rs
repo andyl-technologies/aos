@@ -60,16 +60,10 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             />
         }
         .into_any(),
-        (
-            ConsoleScope::Cache {
-                organization,
-                cache,
-            },
-            "operations",
-        ) => view! {
+        (ConsoleScope::Cache { path }, "operations") => view! {
             <OperationsWorkflow
                 client=client
-                surface=OperationSurface::Cache(format!("{organization}/{cache}"))
+                surface=OperationSurface::Cache(path.clone())
             />
         }
         .into_any(),
@@ -84,19 +78,10 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             />
         }
         .into_any(),
-        (
-            ConsoleScope::Cache {
-                organization,
-                cache,
-            },
-            "access",
-        ) => view! {
+        (ConsoleScope::Cache { path }, "access") => view! {
             <ResourceAccessWorkflow
                 client=client
-                surface=ResourceAccessSurface::Cache {
-                    organization: organization.clone(),
-                    cache: cache.clone(),
-                }
+                surface=ResourceAccessSurface::Cache(path.clone())
             />
         }
         .into_any(),
@@ -127,16 +112,10 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             />
         }
         .into_any(),
-        (
-            ConsoleScope::Cache {
-                organization,
-                cache,
-            },
-            "tokens",
-        ) => view! {
+        (ConsoleScope::Cache { path }, "tokens") => view! {
             <AccessTokenWorkflow
                 client=client
-                surface=AccessTokenSurface::Cache(format!("{organization}/{cache}"))
+                surface=AccessTokenSurface::Cache(path.clone())
             />
         }
         .into_any(),
@@ -162,57 +141,27 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             />
         }
         .into_any(),
-        (
-            ConsoleScope::Cache {
-                organization,
-                cache,
-            },
-            "signing",
-        ) => view! {
+        (ConsoleScope::Cache { path }, "signing") => view! {
             <SigningKeyWorkflow
                 client=client
-                target=SigningKeyTarget::Cache(format!("{organization}/{cache}"))
+                target=SigningKeyTarget::Cache(path.clone())
             />
         }
         .into_any(),
-        (
-            ConsoleScope::Cache {
-                organization,
-                cache,
-            },
-            "integrations",
-        ) => view! {
-            <CacheIntegrations client=client cache_id=format!("{organization}/{cache}")/>
+        (ConsoleScope::Cache { path }, "integrations") => view! {
+            <CacheIntegrations client=client cache_id=path.clone()/>
         }
         .into_any(),
-        (
-            ConsoleScope::Cache {
-                organization,
-                cache,
-            },
-            "objects",
-        ) => view! {
-            <CacheObjects client=client cache_id=format!("{organization}/{cache}")/>
+        (ConsoleScope::Cache { path }, "objects") => view! {
+            <CacheObjects client=client cache_id=path.clone()/>
         }
         .into_any(),
-        (
-            ConsoleScope::Cache {
-                organization,
-                cache,
-            },
-            "retention",
-        ) => view! {
-            <CacheRetentionWorkflow client=client cache_id=format!("{organization}/{cache}")/>
+        (ConsoleScope::Cache { path }, "retention") => view! {
+            <CacheRetentionWorkflow client=client cache_id=path.clone()/>
         }
         .into_any(),
-        (
-            ConsoleScope::Cache {
-                organization,
-                cache,
-            },
-            "gc",
-        ) => view! {
-            <CacheGcWorkflow client=client cache_id=format!("{organization}/{cache}")/>
+        (ConsoleScope::Cache { path }, "gc") => view! {
+            <CacheGcWorkflow client=client cache_id=path.clone()/>
         }
         .into_any(),
         _ => unreachable!(
