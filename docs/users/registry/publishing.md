@@ -69,22 +69,23 @@ runtime-closure member. It creates a signed commit unless `--no-commit` is
 given. Use `--no-commit` only when deliberately grouping several changes; the
 final commit still needs a trusted signature.
 
-For a grouped change, stage and sign the final commit with the same OpenSSH key
-used by `apr`. `apr sign` is for release tags; it does not sign commits:
+For a grouped change, commit only the intended registry paths with `apr commit`.
+It uses the same in-process signer as the other producer commands, requires a
+trusted key when `keys.toml` has an active roster, and refuses an already-staged
+index so unrelated maintainer state cannot leak into the commit. `apr sign` is
+for release tags; it does not sign commits:
 
 ```sh
-REGISTRY="$HOME/.local/share/apm/registries/acme"
-git -C "$REGISTRY" add packages store registry.toml
-git -C "$REGISTRY" \
-  -c gpg.format=ssh \
-  -c user.signingkey="$KEY" \
-  commit -S -m "publish the 2026.8 package set"
+apr commit packages store registry.toml \
+  --registry acme \
+  --key-id initial \
+  --message "publish the 2026.8 package set"
 apr verify --registry acme
 ```
 
-Review the staged file list before committing. Add only files produced by the
-intended publish operations; a broad `git add -A` can capture unrelated
-maintainer state.
+Review `apr status` and `apr diff` before committing. Name every intended path
+explicitly; `apr commit` does not retain a shell-out signing path or silently
+fall back to a broad `git add -A`.
 
 Useful package forms include:
 
