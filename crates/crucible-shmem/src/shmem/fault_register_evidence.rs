@@ -108,6 +108,10 @@ pub struct FaultRegisterMutationEvidenceV1 {
     pub before: Vec<u8>,
     /// Complete register value after mutation and side effects.
     pub after: Vec<u8>,
+    /// Selected-bit mask, relative to `first_bit`.
+    pub mask: Vec<u8>,
+    /// Replacement bits for stuck/replace, or one zero byte for bit-flip.
+    pub value: Vec<u8>,
 }
 
 impl FaultRegisterMutationEvidenceV1 {
@@ -123,6 +127,10 @@ impl FaultRegisterMutationEvidenceV1 {
             u32::try_from(self.before.len()).map_err(|_| FaultAbiError::CapabilityInvariant)?;
         let after_len =
             u32::try_from(self.after.len()).map_err(|_| FaultAbiError::CapabilityInvariant)?;
+        let mask_len =
+            u32::try_from(self.mask.len()).map_err(|_| FaultAbiError::CapabilityInvariant)?;
+        let value_len =
+            u32::try_from(self.value.len()).map_err(|_| FaultAbiError::CapabilityInvariant)?;
         let mut bytes = vec![0_u8; FAULT_REGISTER_EVIDENCE_HEADER_V1_BYTES];
         bytes[..8].copy_from_slice(&FAULT_REGISTER_EVIDENCE_MAGIC_V1);
         bytes[8..10].copy_from_slice(&1_u16.to_le_bytes());
@@ -137,6 +145,7 @@ impl FaultRegisterMutationEvidenceV1 {
         bytes[40..44].copy_from_slice(&self.bit_count.to_le_bytes());
         bytes[44..48].copy_from_slice(&before_len.to_le_bytes());
         bytes[48..52].copy_from_slice(&after_len.to_le_bytes());
+        bytes[52..56].copy_from_slice(&mask_len.to_le_bytes());
         bytes[56..64].copy_from_slice(&self.observed_icount.to_le_bytes());
         bytes[64..72].copy_from_slice(&self.rr_current_vcpu.to_le_bytes());
         bytes[72..80].copy_from_slice(&self.rr_cursor_position.to_le_bytes());
@@ -146,8 +155,11 @@ impl FaultRegisterMutationEvidenceV1 {
         bytes[152..184].copy_from_slice(&self.before_sha256);
         bytes[184..216].copy_from_slice(&self.after_sha256);
         bytes[216..248].copy_from_slice(&self.execution_fingerprint_sha256);
+        bytes[248..252].copy_from_slice(&value_len.to_le_bytes());
         bytes.extend_from_slice(&self.before);
         bytes.extend_from_slice(&self.after);
+        bytes.extend_from_slice(&self.mask);
+        bytes.extend_from_slice(&self.value);
         Ok(bytes)
     }
 
@@ -162,8 +174,7 @@ impl FaultRegisterMutationEvidenceV1 {
             || bytes[..8] != FAULT_REGISTER_EVIDENCE_MAGIC_V1
             || u16_at(bytes, 8)? != 1
             || bytes[14..16] != [0, 0]
-            || bytes[52..56] != [0, 0, 0, 0]
-            || bytes[248..256].iter().any(|byte| *byte != 0)
+            || bytes[252..256].iter().any(|byte| *byte != 0)
         {
             return Err(FaultAbiError::HeaderLength);
         }
@@ -171,16 +182,24 @@ impl FaultRegisterMutationEvidenceV1 {
             usize::try_from(u32_at(bytes, 44)?).map_err(|_| FaultAbiError::CapabilityInvariant)?;
         let after_len =
             usize::try_from(u32_at(bytes, 48)?).map_err(|_| FaultAbiError::CapabilityInvariant)?;
+        let mask_len =
+            usize::try_from(u32_at(bytes, 52)?).map_err(|_| FaultAbiError::CapabilityInvariant)?;
+        let value_len =
+            usize::try_from(u32_at(bytes, 248)?).map_err(|_| FaultAbiError::CapabilityInvariant)?;
         if bytes.len()
             != FAULT_REGISTER_EVIDENCE_HEADER_V1_BYTES
                 .checked_add(before_len)
                 .and_then(|length| length.checked_add(after_len))
+                .and_then(|length| length.checked_add(mask_len))
+                .and_then(|length| length.checked_add(value_len))
                 .ok_or(FaultAbiError::HeaderLength)?
         {
             return Err(FaultAbiError::HeaderLength);
         }
         let before_start = FAULT_REGISTER_EVIDENCE_HEADER_V1_BYTES;
         let after_start = before_start + before_len;
+        let mask_start = after_start + after_len;
+        let value_start = mask_start + mask_len;
         let evidence = Self {
             architecture: FaultCapabilityScope::from_u16(u16_at(bytes, 10)?)?,
             model_phase: u16_at(bytes, 12)?,
@@ -201,7 +220,9 @@ impl FaultRegisterMutationEvidenceV1 {
             after_sha256: array32(bytes, 184)?,
             execution_fingerprint_sha256: array32(bytes, 216)?,
             before: bytes[before_start..after_start].to_vec(),
-            after: bytes[after_start..].to_vec(),
+            after: bytes[after_start..mask_start].to_vec(),
+            mask: bytes[mask_start..value_start].to_vec(),
+            value: bytes[value_start..].to_vec(),
         };
         evidence.validate()?;
         if evidence.encode()?.as_slice() != bytes {
@@ -218,6 +239,10 @@ impl FaultRegisterMutationEvidenceV1 {
         let width_bits = u32::try_from(self.before.len())
             .ok()
             .and_then(|length| length.checked_mul(8));
+        let mutation_bytes = usize::try_from(self.bit_count)
+            .ok()
+            .and_then(|bits| bits.checked_add(7))
+            .map(|bits| bits / 8);
         if !valid_architecture
             || self.model_phase == 0
             || self.model_phase > 64
@@ -228,6 +253,14 @@ impl FaultRegisterMutationEvidenceV1 {
             || self.bit_count == 0
             || self.before.is_empty()
             || self.before.len() != self.after.len()
+            || mutation_bytes != Some(self.mask.len())
+            || self.value.len()
+                != if self.mutation_kind == FaultRegisterMutationKindV1::BitFlip {
+                    1
+                } else {
+                    self.mask.len()
+                }
+            || (self.mutation_kind == FaultRegisterMutationKindV1::BitFlip && self.value != [0])
             || width_bits.is_none_or(|width| width > HARD_FAULT_REGISTER_WIDTH_BITS)
             || self
                 .first_bit
@@ -242,6 +275,36 @@ impl FaultRegisterMutationEvidenceV1 {
             || self.before_sha256 != Sha256::digest(&self.before).as_slice()
             || self.after_sha256 != Sha256::digest(&self.after).as_slice()
         {
+            return Err(FaultAbiError::CapabilityInvariant);
+        }
+        for bit in self.bit_count
+            ..u32::try_from(self.mask.len() * 8).map_err(|_| FaultAbiError::CapabilityInvariant)?
+        {
+            if bit_is_set(&self.mask, bit)
+                || (self.mutation_kind != FaultRegisterMutationKindV1::BitFlip
+                    && bit_is_set(&self.value, bit))
+            {
+                return Err(FaultAbiError::CapabilityInvariant);
+            }
+        }
+        let mut transformed = self.before.clone();
+        for bit in 0..self.bit_count {
+            if !bit_is_set(&self.mask, bit) {
+                continue;
+            }
+            let target = self.first_bit + bit;
+            let byte =
+                usize::try_from(target / 8).map_err(|_| FaultAbiError::CapabilityInvariant)?;
+            let bit_mask = 1_u8 << (target % 8);
+            if self.mutation_kind == FaultRegisterMutationKindV1::BitFlip {
+                transformed[byte] ^= bit_mask;
+            } else if bit_is_set(&self.value, bit) {
+                transformed[byte] |= bit_mask;
+            } else {
+                transformed[byte] &= !bit_mask;
+            }
+        }
+        if transformed != self.after {
             return Err(FaultAbiError::CapabilityInvariant);
         }
         Ok(())
@@ -283,7 +346,7 @@ pub(crate) fn emit_fault_register_evidence_c_header(out: &mut String) {
         ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_BIT_COUNT_OFFSET", 40),
         ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_BEFORE_LENGTH_OFFSET", 44),
         ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_AFTER_LENGTH_OFFSET", 48),
-        ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_RESERVED1_OFFSET", 52),
+        ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_MASK_LENGTH_OFFSET", 52),
         (
             "CRUCIBLE_FAULT_REGISTER_EVIDENCE_OBSERVED_ICOUNT_OFFSET",
             56,
@@ -314,12 +377,12 @@ pub(crate) fn emit_fault_register_evidence_c_header(out: &mut String) {
             "CRUCIBLE_FAULT_REGISTER_EVIDENCE_EXECUTION_FINGERPRINT_OFFSET",
             216,
         ),
-        ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_RESERVED2_OFFSET", 248),
+        ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_VALUE_LENGTH_OFFSET", 248),
+        ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_RESERVED2_OFFSET", 252),
         ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_VALUES_OFFSET", 256),
         ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_DIGEST_BYTES", 32),
         ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_RESERVED0_BYTES", 2),
-        ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_RESERVED1_BYTES", 4),
-        ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_RESERVED2_BYTES", 8),
+        ("CRUCIBLE_FAULT_REGISTER_EVIDENCE_RESERVED2_BYTES", 4),
         (
             "CRUCIBLE_FAULT_REGISTER_MUTATION_BIT_FLIP",
             FaultRegisterMutationKindV1::BitFlip as usize,
@@ -338,6 +401,10 @@ pub(crate) fn emit_fault_register_evidence_c_header(out: &mut String) {
 }
 
 const UINT64_C_ONE: u64 = 1;
+
+fn bit_is_set(bytes: &[u8], bit: u32) -> bool {
+    bytes[bit as usize / 8] & (1_u8 << (bit % 8)) != 0
+}
 
 fn u16_at(bytes: &[u8], offset: usize) -> Result<u16, FaultAbiError> {
     bytes
@@ -377,7 +444,8 @@ mod tests {
     #[test]
     fn register_evidence_round_trips_and_authenticates_values() {
         let before = vec![0x11; 8];
-        let after = vec![0x31; 8];
+        let mut after = before.clone();
+        after[0] = 0x31;
         let evidence = FaultRegisterMutationEvidenceV1 {
             architecture: FaultCapabilityScope::X86_64,
             model_phase: 11,
@@ -399,6 +467,8 @@ mod tests {
             execution_fingerprint_sha256: [5; 32],
             before,
             after,
+            mask: vec![1],
+            value: vec![0],
         };
         let encoded = evidence
             .encode()

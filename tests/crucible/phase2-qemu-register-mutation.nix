@@ -26,7 +26,7 @@
     ++ forbiddenFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
       {
         label = "GDB mutation shortcut";
-        needle = "gdb_write_register";
+        needle = "qemu_plugin_write_vcpu_regs";
       }
       {
         label = "native CPU-state offset in public manifest";
