@@ -474,9 +474,9 @@
         mkdir -p "$image_dir"
         publish_image_state() {
           source=$1
-          ${pkgs.coreutils}/bin/sync -f "$source"
+          ${pkgs.coreutils}/bin/sync "$source"
           mv "$source" "$image_dir/state.json"
-          ${pkgs.coreutils}/bin/sync -f "$image_dir"
+          ${pkgs.coreutils}/bin/sync "$image_dir"
         }
 
         existing=0
@@ -738,9 +738,9 @@
               })' "$profile_dir/.state.json.migrate" \
               > "$profile_dir/.state.json.next"
             mv "$profile_dir/.state.json.next" "$profile_dir/.state.json.migrate"
-            ${pkgs.coreutils}/bin/sync -f "$profile_dir/.state.json.migrate"
+            ${pkgs.coreutils}/bin/sync "$profile_dir/.state.json.migrate"
             mv "$profile_dir/.state.json.migrate" "$profile_dir/state.json"
-            ${pkgs.coreutils}/bin/sync -f "$profile_dir"
+            ${pkgs.coreutils}/bin/sync "$profile_dir"
           else
             rm -f "$profile_dir/.state.json.migrate"
           fi
@@ -753,9 +753,9 @@
           ${pkgs.jq}/bin/jq -n \
             '{current: 0, next: 1, generations: []}' \
             > "$profile_dir/.state.json.new"
-          ${pkgs.coreutils}/bin/sync -f "$profile_dir/.state.json.new"
+          ${pkgs.coreutils}/bin/sync "$profile_dir/.state.json.new"
           mv "$profile_dir/.state.json.new" "$profile_dir/state.json"
-          ${pkgs.coreutils}/bin/sync -f "$profile_dir"
+          ${pkgs.coreutils}/bin/sync "$profile_dir"
         fi
 
         link=$(readlink "$profile_dir/current" 2>/dev/null || true)

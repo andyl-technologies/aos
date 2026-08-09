@@ -201,11 +201,11 @@ in {
           fi
           ${pkgs.jq}/bin/jq --argjson running "$running" "$state_update" \
             "$image_state" > "''${image_state}.new"
-          ${pkgs.coreutils}/bin/sync -f "''${image_state}.new"
+          ${pkgs.coreutils}/bin/sync "''${image_state}.new"
           mv "''${image_state}.new" "$image_state"
-          ${pkgs.coreutils}/bin/sync -f /var/lib/profiles/image
+          ${pkgs.coreutils}/bin/sync /var/lib/profiles/image
           rm -f "$transition_intent"
-          ${pkgs.coreutils}/bin/sync -f /var/lib/profiles/image
+          ${pkgs.coreutils}/bin/sync /var/lib/profiles/image
         fi
 
         parent=$(${pkgs.jq}/bin/jq -er \
@@ -445,9 +445,9 @@ in {
         ${pkgs.jq}/bin/jq --argjson running "$running" --arg expected "$expected" \
           '(.generations[] | select(.number == $running)).expected_pcr11 = $expected' \
           "$state" > "$state.new"
-        ${pkgs.coreutils}/bin/sync -f "$state.new"
+        ${pkgs.coreutils}/bin/sync "$state.new"
         mv "$state.new" "$state"
-        ${pkgs.coreutils}/bin/sync -f "$(dirname "$state")"
+        ${pkgs.coreutils}/bin/sync "$(dirname "$state")"
       '';
     };
 
@@ -804,15 +804,15 @@ in {
 
         ${pkgs.jq}/bin/jq --argjson running "$running" \
           '.default = $running | .pending = null' "$state" > "''${state}.new"
-        ${pkgs.coreutils}/bin/sync -f "''${state}.new"
+        ${pkgs.coreutils}/bin/sync "''${state}.new"
         mv "''${state}.new" "$state"
-        ${pkgs.coreutils}/bin/sync -f "$(dirname "$state")"
+        ${pkgs.coreutils}/bin/sync "$(dirname "$state")"
         # A power loss can leave the pre-selection intent after firmware and
         # state already agree. Successful boot assessment is the authoritative
         # reconciliation point, so clear it durably here as well as in the
         # normal userspace selection path.
         rm -f /var/lib/profiles/image/.transition-intent.json
-        ${pkgs.coreutils}/bin/sync -f /var/lib/profiles/image
+        ${pkgs.coreutils}/bin/sync /var/lib/profiles/image
         rm -f /run/aos/image-reeval-required
         trap - EXIT
       '';

@@ -331,8 +331,8 @@ done
 # the atomic mount swap, closing the crash window before pointer publication.
 live_marker="/var/lib/profiles/system/gen-${N}/.etc-live-${AOS_ACTIVATION_NONCE}"
 printf '%s %s\n' "$N" "$AOS_ACTIVATION_NONCE" > "$live_marker"
-@coreutils@/bin/sync -f "$live_marker"
-@coreutils@/bin/sync -f /var/lib/profiles/system/gen-${N}
+@coreutils@/bin/sync "$live_marker"
+@coreutils@/bin/sync /var/lib/profiles/system/gen-${N}
 
 # Retarget inspection symlinks.
 prev_gen=$(@coreutils@/bin/readlink /run/etc/system \
