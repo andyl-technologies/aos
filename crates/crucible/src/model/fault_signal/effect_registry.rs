@@ -609,7 +609,7 @@ effect_registry! {
     /// Online, offline, or stalled vCPU state.
     CpuVcpuState => { key: "cpu.vcpu_state", adapter: Node, targets: VCPU_TARGETS, phases: [Boundary], lifetimes: [StateMachine], composition: Severity, capability: "qemu.cpu.vcpu-state.v1", evidence: ["round_robin_cursor", "topology", "run_state"] },
     /// Architecture-resolved register bit, stuck, or replacement transform.
-    CpuRegisterTransform => { key: "cpu.register_transform", adapter: Node, targets: REGISTER_TARGETS, phases: [BeforeRead, AfterRead, BeforeWrite, AfterWrite, Boundary], lifetimes: [Persistent, Opportunity, Impulse], composition: OrderedTransform, capability: "qemu.cpu.register-transform.v1", evidence: ["resolved_register", "before_value", "after_value", "icount"] },
+    CpuRegisterTransform => { key: "cpu.register_transform", adapter: Node, targets: REGISTER_TARGETS, phases: [BeforeInstruction, AfterInstruction, Boundary], lifetimes: [Persistent, Opportunity, Impulse], composition: OrderedTransform, capability: "qemu.register.mutate.v1", evidence: ["manifest_digest", "cpu_model_digest", "resolved_register", "vcpu_rr_cursor", "before_value", "after_value", "performed_side_effects", "execution_fingerprint", "icount"] },
     /// Instruction result corruption, skip, or replay.
     CpuInstructionTransform => { key: "cpu.instruction_transform", adapter: Node, targets: VCPU_TARGETS, phases: [BeforeInstruction, AfterInstruction], lifetimes: [Opportunity], composition: Conflict, capability: "qemu.cpu.instruction-transform.v1", evidence: ["instruction", "operands", "results", "pc", "state_digest"] },
     /// Architecture-specific machine check or injected exception.

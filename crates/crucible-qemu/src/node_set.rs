@@ -325,7 +325,7 @@ impl QemuNodeSet {
             FaultCommandKind::NodeHang => Some("qemu.node.hang.v1"),
             FaultCommandKind::CpuService => Some("qemu.cpu.service.v1"),
             FaultCommandKind::CpuVcpuState => Some("qemu.cpu.vcpu-state.v1"),
-            FaultCommandKind::CpuRegisterTransform => Some("qemu.cpu.register-transform.v1"),
+            FaultCommandKind::CpuRegisterTransform => Some("qemu.register.mutate.v1"),
             FaultCommandKind::CpuInstructionTransform => Some("qemu.cpu.instruction-transform.v1"),
             FaultCommandKind::CpuException => Some("qemu.cpu.exception.v1"),
             FaultCommandKind::InterruptDisposition => Some("qemu.interrupt.control.v1"),

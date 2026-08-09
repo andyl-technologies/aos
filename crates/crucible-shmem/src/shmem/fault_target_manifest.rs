@@ -127,6 +127,8 @@ pub enum FaultRegisterGroupV1 {
     FloatingPoint = 8,
     /// SIMD or vector register state.
     Vector = 9,
+    /// Architecture-defined error status or syndrome register.
+    Error = 10,
 }
 
 impl FaultRegisterGroupV1 {
@@ -146,6 +148,7 @@ impl FaultRegisterGroupV1 {
             7 => Ok(Self::Debug),
             8 => Ok(Self::FloatingPoint),
             9 => Ok(Self::Vector),
+            10 => Ok(Self::Error),
             _ => Err(FaultAbiError::CapabilityInvariant),
         }
     }
@@ -208,10 +211,8 @@ impl FaultRegisterCapabilityRowV1 {
             || !valid_identity(&self.name)
             || self.width_bits == 0
             || self.width_bits > HARD_FAULT_REGISTER_WIDTH_BITS
-            || self.model_phase_mask == 0
             || self.model_phase_mask & !FAULT_MODEL_PHASES_V1_MASK != 0
             || self.side_effects & !FAULT_REGISTER_SIDE_EFFECTS_V1_MASK != 0
-            || self.capabilities == 0
             || self.capabilities & !FAULT_REGISTER_CAPABILITIES_V1_MASK != 0
         {
             return Err(FaultAbiError::CapabilityInvariant);
@@ -240,6 +241,18 @@ impl FaultRegisterCapabilityRowV1 {
             if masks.iter().any(|mask| mask[mask_len - 1] & invalid != 0) {
                 return Err(FaultAbiError::CapabilityInvariant);
             }
+        }
+        let writable = self.writable_mask.iter().any(|byte| *byte != 0);
+        let mutable = self.capabilities
+            & (FAULT_REGISTER_CAPABILITY_IMPULSE | FAULT_REGISTER_CAPABILITY_PERSISTENT)
+            != 0;
+        if writable != mutable
+            || (mutable
+                && (self.model_phase_mask == 0
+                    || self.capabilities & FAULT_REGISTER_CAPABILITY_VMSTATE == 0))
+            || (!mutable && (self.model_phase_mask != 0 || self.side_effects != 0))
+        {
+            return Err(FaultAbiError::CapabilityInvariant);
         }
         Ok(())
     }
@@ -569,6 +582,10 @@ pub(crate) fn emit_fault_target_manifest_c_header(out: &mut String) {
             "CRUCIBLE_FAULT_REGISTER_GROUP_VECTOR",
             FaultRegisterGroupV1::Vector as u16,
         ),
+        (
+            "CRUCIBLE_FAULT_REGISTER_GROUP_ERROR",
+            FaultRegisterGroupV1::Error as u16,
+        ),
     ] {
         define!(name, value);
     }
@@ -790,6 +807,47 @@ mod tests {
         assert_eq!(
             FaultRegisterCapabilityManifestV1::decode(&encoded),
             Ok(manifest)
+        );
+    }
+
+    #[test]
+    fn register_manifest_carries_non_writable_rows_without_mutation_hooks() {
+        let read_only = FaultRegisterCapabilityRowV1 {
+            numeric_id: 1,
+            name: "implementation-status".to_owned(),
+            width_bits: 8,
+            group: FaultRegisterGroupV1::System,
+            model_phase_mask: 0,
+            side_effects: 0,
+            capabilities: FAULT_REGISTER_CAPABILITY_VMSTATE,
+            writable_mask: vec![0],
+            reserved_mask: vec![0],
+            ignored_mask: vec![0],
+            read_only_mask: vec![u8::MAX],
+        };
+        let manifest = FaultRegisterCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            cpu_model: "crucible-x86-64-v1".to_owned(),
+            rows: vec![read_only.clone()],
+        };
+        let encoded = manifest
+            .encode()
+            .unwrap_or_else(|error| panic!("read-only row should encode: {error}"));
+        assert_eq!(
+            FaultRegisterCapabilityManifestV1::decode(&encoded),
+            Ok(manifest)
+        );
+
+        let mut incorrectly_mutable = read_only;
+        incorrectly_mutable.capabilities |= FAULT_REGISTER_CAPABILITY_IMPULSE;
+        assert_eq!(
+            FaultRegisterCapabilityManifestV1 {
+                architecture: FaultCapabilityScope::X86_64,
+                cpu_model: "crucible-x86-64-v1".to_owned(),
+                rows: vec![incorrectly_mutable],
+            }
+            .encode(),
+            Err(FaultAbiError::CapabilityInvariant)
         );
     }
 

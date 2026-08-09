@@ -429,6 +429,10 @@ impl WorldFaultTopology {
         }
         for capabilities in &mut self.node_capabilities {
             canonicalize_by_id(&mut capabilities.registers, WorldNodeRegister::id)?;
+            for register in &mut capabilities.registers {
+                canonicalize_set(&mut register.model_phases, "register model phases")?;
+                canonicalize_set(&mut register.side_effects, "register side effects")?;
+            }
             canonicalize_by_id(&mut capabilities.address_spaces, WorldNodeAddressSpace::id)?;
             canonicalize_by_id(&mut capabilities.interrupts, WorldNodeInterrupt::id)?;
             canonicalize_by_id(&mut capabilities.clock_sources, WorldNodeClockSource::id)?;
@@ -2300,22 +2304,111 @@ impl WorldStorageArray {
     }
 }
 
+/// Closed architecture register groups exported by the live QEMU manifest.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeRegisterGroup {
+    /// Integer data and address registers.
+    GeneralPurpose,
+    /// Program counters and other explicit control-flow registers.
+    ControlFlow,
+    /// Integer condition and status flags.
+    Flags,
+    /// Segment selectors, bases, limits, and attributes.
+    Segment,
+    /// Translation and execution control registers.
+    Control,
+    /// Other guest-visible architecture system registers.
+    System,
+    /// Guest-visible debug registers.
+    Debug,
+    /// Floating-point data and control registers.
+    FloatingPoint,
+    /// SIMD, vector, and predicate registers.
+    Vector,
+    /// Architecture-defined error status and syndrome registers.
+    Error,
+}
+
+/// Closed derived-state actions completed by a QEMU register setter.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeRegisterSideEffect {
+    /// Flushes the vCPU translation lookaside buffer.
+    TlbFlush,
+    /// Flushes translated-code blocks affected by the new state.
+    TranslationBlockFlush,
+    /// Recomputes cached flags or architecture execution state.
+    FlagsRecompute,
+    /// Reevaluates interrupt masking and delivery state.
+    InterruptReevaluate,
+    /// Rearms timers derived from the mutated register.
+    TimerRearm,
+    /// Synchronizes the next guest control-flow location.
+    ControlFlowSynchronize,
+}
+
 /// One architecture register exposed by the live fault ABI.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldNodeRegister {
-    /// Stable architecture register ID.
+    /// Stable scenario object ID selected by fault bindings.
     pub id: SignalId,
+    /// Canonical lowercase name in the QEMU target manifest.
+    pub name: String,
+    /// Nonzero numeric row ID in the canonical target manifest.
+    pub numeric_id: u32,
+    /// Closed architecture register group.
+    pub group: WorldNodeRegisterGroup,
     /// Register width in bits.
-    pub width_bits: u16,
+    pub width_bits: u32,
     /// Whether the register has one independent value per vCPU.
     pub per_vcpu: bool,
-    /// Lowercase hex mask of bits which the fault ABI may mutate.
+    /// Ordered model phases at which persistent transforms are safe.
+    pub model_phases: Vec<FaultPhase>,
+    /// Derived-state actions acknowledged by the architecture setter.
+    pub side_effects: Vec<WorldNodeRegisterSideEffect>,
+    /// Whether an exact one-shot mutation is supported.
+    pub impulse: bool,
+    /// Whether an exact persistent transform is supported.
+    pub persistent: bool,
+    /// Whether the architectural value and persistent transform have VMState coverage.
+    pub vmstate: bool,
+    /// Lowercase byte-order hex mask of bits which the ABI may mutate.
     pub writable_mask_hex: String,
+    /// Lowercase byte-order hex mask of architecturally reserved bits.
+    pub reserved_mask_hex: String,
+    /// Lowercase byte-order hex mask of writes which are architecturally ignored.
+    pub ignored_mask_hex: String,
+    /// Lowercase byte-order hex mask of readable but immutable bits.
+    pub read_only_mask_hex: String,
 }
 impl WorldNodeRegister {
     const fn id(&self) -> &SignalId {
         &self.id
+    }
+
+    /// Returns whether every bit in a nonempty range is manifest-writable.
+    #[must_use]
+    pub fn range_is_writable(&self, first_bit: u32, bit_count: u32) -> bool {
+        let Some(end) = first_bit.checked_add(bit_count) else {
+            return false;
+        };
+        if bit_count == 0 || end > self.width_bits {
+            return false;
+        }
+        let Some(mask) = decode_world_mask(&self.writable_mask_hex) else {
+            return false;
+        };
+        (first_bit..end).all(|bit| {
+            let byte = (bit / 8) as usize;
+            mask.get(byte)
+                .is_some_and(|value| value & (1_u8 << (bit % 8)) != 0)
+        })
     }
 }
 
@@ -2455,6 +2548,8 @@ pub struct WorldNodeFaultCapabilities {
     pub node: SignalId,
     /// Registered architecture ABI.
     pub architecture: WorldNodeArchitecture,
+    /// Exact realized QOM CPU typename reported by QEMU.
+    pub cpu_model: String,
     /// Content address of the exact register schema.
     pub register_schema: ContentHash,
     /// Exact architecture register manifest.
@@ -2491,17 +2586,108 @@ impl WorldNodeFaultCapabilities {
         self.dram_geometry.validate()?;
         require(!self.registers.is_empty(), "node register manifest")?;
         require(!self.address_spaces.is_empty(), "node address spaces")?;
+        let mut numeric_ids = BTreeSet::new();
+        let mut register_names = BTreeSet::new();
         for register in &self.registers {
-            require(register.width_bits > 0, "node register width")?;
+            let mask_hex_bytes = usize::try_from(register.width_bits)
+                .ok()
+                .map(|width| width.div_ceil(8).saturating_mul(2));
             require(
-                register.writable_mask_hex.len() == usize::from(register.width_bits).div_ceil(4)
-                    && register
-                        .writable_mask_hex
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
-                "node register writable mask",
+                register.numeric_id > 0
+                    && register.width_bits > 0
+                    && register.width_bits <= 65_536
+                    && register.per_vcpu,
+                "node register capability",
+            )?;
+            require(
+                numeric_ids.insert(register.numeric_id)
+                    && register_names.insert(register.name.as_str()),
+                "node register manifest identity",
+            )?;
+            require(
+                !register.name.is_empty()
+                    && register.name.len() <= 96
+                    && register.name.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || matches!(byte, b'-' | b'_' | b'.')
+                    }),
+                "node register name",
+            )?;
+            require(
+                register.model_phases.iter().all(|phase| {
+                    matches!(
+                        phase,
+                        FaultPhase::BeforeInstruction | FaultPhase::AfterInstruction
+                    )
+                }) && !register
+                    .model_phases
+                    .windows(2)
+                    .any(|pair| pair[0] >= pair[1]),
+                "node register model phases",
+            )?;
+            require(
+                !register
+                    .side_effects
+                    .windows(2)
+                    .any(|pair| pair[0] >= pair[1]),
+                "node register side effects",
+            )?;
+            let masks = [
+                &register.writable_mask_hex,
+                &register.reserved_mask_hex,
+                &register.ignored_mask_hex,
+                &register.read_only_mask_hex,
+            ];
+            require(
+                mask_hex_bytes.is_some_and(|length| {
+                    masks.iter().all(|mask| {
+                        mask.len() == length
+                            && mask
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    })
+                }),
+                "node register masks",
+            )?;
+            let decoded_masks = masks
+                .map(|mask| decode_world_mask(mask))
+                .into_iter()
+                .collect::<Option<Vec<_>>>();
+            require(
+                decoded_masks.is_some_and(|masks| {
+                    let writable = masks[0].iter().any(|byte| *byte != 0);
+                    (0..register.width_bits).all(|bit| {
+                        let byte = (bit / 8) as usize;
+                        let mask = 1_u8 << (bit % 8);
+                        masks.iter().filter(|value| value[byte] & mask != 0).count() == 1
+                    }) && (register.width_bits..register.width_bits.div_ceil(8) * 8).all(|bit| {
+                        let byte = (bit / 8) as usize;
+                        let mask = 1_u8 << (bit % 8);
+                        masks.iter().all(|value| value[byte] & mask == 0)
+                    }) && if writable {
+                        (register.impulse || register.persistent)
+                            && register.vmstate
+                            && !register.model_phases.is_empty()
+                    } else {
+                        !register.impulse
+                            && !register.persistent
+                            && register.model_phases.is_empty()
+                            && register.side_effects.is_empty()
+                    }
+                }),
+                "node register mask partition",
             )?;
         }
+        require(
+            !self.cpu_model.is_empty()
+                && self.cpu_model.len() <= 96
+                && self
+                    .cpu_model
+                    .bytes()
+                    .all(|byte| byte.is_ascii_graphic() && !byte.is_ascii_whitespace()),
+            "node realized CPU model",
+        )?;
         for space in &self.address_spaces {
             require(space.length_bytes > 0, "node address-space length")?;
             require(
@@ -2528,6 +2714,26 @@ impl WorldNodeFaultCapabilities {
             "node accelerator semantic version",
         )?;
         hard_count(&self.accelerators, "node accelerators", 1_024)
+    }
+}
+
+fn decode_world_mask(value: &str) -> Option<Vec<u8>> {
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = world_hex_nibble(pair[0])?;
+            let low = world_hex_nibble(pair[1])?;
+            Some((high << 4) | low)
+        })
+        .collect()
+}
+
+const fn world_hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
     }
 }
 

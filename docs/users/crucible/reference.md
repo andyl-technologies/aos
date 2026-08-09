@@ -379,6 +379,96 @@ virtual time, and `artifact` is a content-addressed blob reference.
 Bindings refer to a unique link by its canonical link ID. Generate target IDs
 through a Rust scenario builder so they remain bound to the admitted World.
 
+### `[[world.node_fault_capabilities]]` fields
+
+Each VM that accepts node-level faults has one closed capability declaration.
+The declaration is an admission contract, not a request for best-effort QEMU
+behavior: the run fails before boot if the realized CPU type or canonical
+register manifest differs. `register_schema` is the BLAKE3 content hash of the
+complete encoded register manifest, represented in TOML as
+`{ bytes = [32 decimal byte values] }`.
+
+| Field | Required value | Meaning |
+| --- | --- | --- |
+| `id` | Unique string | Scenario-local capability declaration ID. |
+| `node` | VM node ID | VM governed by this declaration. |
+| `architecture` | `x86_64` or `aarch64` | Exact guest architecture ABI. It must agree with the VM's `arch`. |
+| `cpu_model` | Printable QOM typename | Exact realized QEMU CPU type, including the architecture suffix reported by QEMU. |
+| `register_schema` | Content hash table | BLAKE3 of the canonical public register-manifest bytes. |
+| `registers` | Nonempty array | Exhaustive register rows described below, ordered canonically by `numeric_id`. |
+| `address_spaces` | Nonempty array | Guest memory ranges which node faults may address. |
+| `page_bytes` | Power-of-two integer | Guest page size used by memory-fault contracts. |
+| `dram_geometry` | Table | Exact QEMU DRAM coordinate mapping described below. |
+| `interrupts` | Array | Fully routed interrupt targets. May be empty. |
+| `clock_sources` | Array | Guest-visible clock sources. May be empty. |
+| `accelerators` | Array | Declared accelerator devices. May be empty; sensor devices are not accepted. |
+| `semantic_version` | `1` | Capability schema version. |
+
+#### Register rows
+
+Every guest-visible or implementation-private register in the pinned CPU model
+appears in `[[world.node_fault_capabilities.registers]]`. A row with an all-zero
+`writable_mask_hex` is reference-only: it must advertise neither `impulse` nor
+`persistent`, has no model phases or side effects, and cannot be selected for a
+mutation. A writable row advertises at least one mutation mode, has VMState
+coverage, and lists every safe hook phase. The four masks partition every
+in-range bit exactly once; padding bits above `width_bits` are zero. Mask bytes
+use lowercase hexadecimal in least-significant-byte-first order.
+
+| Field | Required value | Meaning |
+| --- | --- | --- |
+| `id` | Unique string | Stable selector ID for this register. |
+| `name` | Canonical lowercase identifier | Exact name exported by QEMU. |
+| `numeric_id` | Nonzero integer | Stable private-to-public manifest row ID. |
+| `group` | Register-group value below | Architecture category used by coverage gates. |
+| `width_bits` | `1..=65536` | Architectural value width. |
+| `per_vcpu` | `true` | Values are independently selected by vCPU index. |
+| `model_phases` | Ordered unique array | Writable rows use `before_instruction`, `after_instruction`, or both; reference-only rows use `[]`. |
+| `side_effects` | Ordered unique array | Derived QEMU state recomputed by the architecture setter; reference-only rows use `[]`. |
+| `impulse` | Boolean | Supports one exact mutation at a selected occurrence. |
+| `persistent` | Boolean | Supports a rule applied at every selected register hook. |
+| `vmstate` | Boolean | Register value and any advertised persistent rule survive save/restore. Required for writable rows. |
+| `writable_mask_hex` | Exact-width lowercase hex | Bits the fault ABI may change. |
+| `reserved_mask_hex` | Exact-width lowercase hex | Architecturally reserved bits, always preserved. |
+| `ignored_mask_hex` | Exact-width lowercase hex | Bits whose architectural writes are ignored. |
+| `read_only_mask_hex` | Exact-width lowercase hex | Readable or implementation-private bits that cannot be mutated. |
+
+Register-group values are exhaustive:
+
+| Value | Contents |
+| --- | --- |
+| `general_purpose` | Integer data and address registers. |
+| `control_flow` | Program counters and explicit control-flow registers. |
+| `flags` | Integer condition and status flags. |
+| `segment` | Segment selectors, bases, limits, and attributes. |
+| `control` | Translation and execution-control registers. |
+| `system` | Other guest-visible architecture system registers. |
+| `debug` | Guest-visible debug registers. |
+| `floating_point` | Floating-point data, status, and control registers. |
+| `vector` | SIMD, vector, and predicate registers. |
+| `error` | Architecture-defined error status and syndrome registers. |
+
+Register side-effect values are exhaustive:
+
+| Value | Required architecture action |
+| --- | --- |
+| `tlb_flush` | Flush affected vCPU translations. |
+| `translation_block_flush` | Invalidate affected translated code. |
+| `flags_recompute` | Rebuild cached flags or execution state. |
+| `interrupt_reevaluate` | Recompute interrupt masking and delivery. |
+| `timer_rearm` | Recompute and arm derived timer deadlines. |
+| `control_flow_synchronize` | Synchronize the next guest instruction location. |
+
+#### Memory, interrupt, clock, and accelerator rows
+
+| Nested location | Required fields | Meaning |
+| --- | --- | --- |
+| `[[world.node_fault_capabilities.address_spaces]]` | `id`, `start_address`, positive `length_bytes` | One non-wrapping guest address range. Address and length accept a TOML integer or canonical decimal/hex string. |
+| `[world.node_fault_capabilities.dram_geometry]` | `channels=2`, `ranks=2`, `banks=16`, `interleave_bytes=64`, `semantic_version=1` | The only currently implemented GPA-to-DRAM mapping. |
+| `[[world.node_fault_capabilities.interrupts]]` | `id`, `controller`, `source`, `vector`, nonempty `target_vcpus` | One source-to-controller-to-vCPU route. |
+| `[[world.node_fault_capabilities.clock_sources]]` | `id`, `semantic_version=1`, `monotonic` | One registered guest clock and whether reads must remain monotonic. |
+| `[[world.node_fault_capabilities.accelerators]]` | `id`, `kind`, `semantic_version=1`, `capability_manifest` | One `gpu`, `tpu`, or `fpga` fault device plus its exact content-addressed capability manifest. |
+
 ## Plans, signals, bindings, and faults
 
 There is one fault authoring and execution model. A plan combines an ordinary
