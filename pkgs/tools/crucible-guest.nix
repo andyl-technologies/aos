@@ -1,6 +1,7 @@
 ##! crucible-guest — static RFC-0010 guest white-box emitter
 {
   lib,
+  stdenv,
   mkCargoPackage,
   fetchCargoDeps,
   patchelf,
@@ -70,7 +71,7 @@ in
       cargo_binary=crucible-guest
       rustflags=-C target-feature=+crt-static
       cargo_build_target=host-triple-explicit
-      packaged_guest_system=${lib.system}
+      packaged_guest_system=${stdenv.hostPlatform.system}
       instruction_abi_architectures=x86_64,aarch64
       abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS
       frame_source=crucible-protocol::doorbell_frame

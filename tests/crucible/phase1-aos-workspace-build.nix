@@ -31,6 +31,7 @@
       "aarch64-linux" = "qemu-system-aarch64";
     }.${pkgs.stdenv.hostPlatform.system}
     or (throw "crucible phase1 AOS workspace build does not support ${pkgs.stdenv.hostPlatform.system}");
+  aarch64Guests = pkgs.guestPackageSets."aarch64-linux" or null;
 in
   if attrFailures != []
   then throw "crucible phase1 AOS workspace build lint failed:\n${builtins.concatStringsSep "\n" attrFailures}"
@@ -72,6 +73,12 @@ in
             test -f ${packages.crucible}/share/licenses/crucible/GPL-2.0-or-later.txt
             test -f ${packages.crucible}/share/licenses/crucible/GPL-3.0.txt
             test -f ${packages.crucible-controller}/nix-support/crucible-build-info
+            CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64=/not-a-packaged-kernel \
+              CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64=/not-a-packaged-root \
+              CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64=untrusted \
+              ${packages.crucible}/bin/crucible-debugger-live-matrix --help \
+              > matrix-help
+            grep -q '^packaged architectures: ' matrix-help
             grep -q '^build_system=mkCargoPackage$' \
               ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^cargo_deps=fetchCargoDeps$' \
@@ -108,6 +115,12 @@ in
               grep -q '^debugger_live_matrix_architectures=x86_64,aarch64$' \
                 ${packages.crucible}/nix-support/crucible-build-info
               grep -q '^debugger_live_matrix_external_architectures=$' \
+                ${packages.crucible}/nix-support/crucible-build-info
+              grep -q '^debugger_aarch64_guest_assets=retained$' \
+                ${packages.crucible}/nix-support/crucible-build-info
+              grep -q '^debugger_aarch64_kernel_path=${aarch64Guests.linux-crucible}/boot/vmlinuz-${aarch64Guests.linux-crucible.version}$' \
+                ${packages.crucible}/nix-support/crucible-build-info
+              grep -q '^debugger_aarch64_root_image_path=${aarch64Guests.crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4$' \
                 ${packages.crucible}/nix-support/crucible-build-info
             ''}
             grep -q '^boundary_crates=crucible-protocol,crucible-shmem$' \

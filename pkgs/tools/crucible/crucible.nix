@@ -365,7 +365,10 @@
             CRUCIBLE_KERNEL_CMDLINE CRUCIBLE_KERNEL_X86_64 CRUCIBLE_ROOT_IMAGE_X86_64 \
             CRUCIBLE_KERNEL_CMDLINE_X86_64 CRUCIBLE_KERNEL_AARCH64 \
             CRUCIBLE_ROOT_IMAGE_AARCH64 CRUCIBLE_KERNEL_CMDLINE_AARCH64 \
-            CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES
+            CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES \
+            CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64 \
+            CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64 \
+            CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64
           export CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES=1
           export CRUCIBLE_MATRIX_CRUCIBLE="$out/bin/crucible"
           export CRUCIBLE_MATRIX_GDB="$out/bin/gdb"
@@ -439,6 +442,12 @@
             then ""
             else "aarch64"
           }
+          ${lib.optionalString (aarch64Guests != null) ''
+            debugger_aarch64_guest_assets=retained
+            debugger_aarch64_kernel_path=${aarch64Linux}/boot/vmlinuz-${aarch64Linux.version}
+            debugger_aarch64_root_image_path=${aarch64Fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4
+            debugger_aarch64_kernel_cmdline=${aarch64Linux.passthru.crucibleFixtureKernelCmdline} init=/init
+          ''}
           qemu_corresponding_source_package=qemu-crucible-source
           qemu_corresponding_source_path=${qemu-crucible-source}
           qemu_corresponding_source_build_id=${qemu-crucible-source.passthru.qemuBuildIdentity}

@@ -60,13 +60,12 @@
         hostPlatform = guestPlatform;
         targetPlatform = guestPlatform;
       };
-      guestLib = import ./lib {
-        system = guestSystem;
-        bash = guestStdenv.bash;
-      };
     in
       import ./pkgs {
-        lib = guestLib;
+        # Library derivations are scheduler-side. Target selection belongs to
+        # guestStdenv.hostPlatform; using the guest ISA here would incorrectly
+        # send fixed-output source fetches to AArch64-only builders.
+        inherit lib;
         stdenv = guestStdenv;
       }
     else null;

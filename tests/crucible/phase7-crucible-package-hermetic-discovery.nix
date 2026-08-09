@@ -78,6 +78,18 @@
         needle = "aarch64Guests.crucible-fixtures";
       }
       {
+        label = "packaged matrix rejects an external AArch64 kernel override";
+        needle = "CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64 \\";
+      }
+      {
+        label = "packaged matrix rejects an external AArch64 root-image override";
+        needle = "CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64 \\";
+      }
+      {
+        label = "packaged matrix rejects an external AArch64 command-line override";
+        needle = "CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64";
+      }
+      {
         label = "runtime QEMU wrapper configuration";
         needle = "CRUCIBLE_QEMU:=";
       }
