@@ -235,14 +235,6 @@
     ]
     ++ forbiddenFor "engine-facing control-flow surfaces" engineFacingSources [
       {
-        label = "direct scenario fault injection API";
-        needle = "fn inject_fault(&mut";
-      }
-      {
-        label = "direct scenario fault healing API";
-        needle = "fn heal_fault(&mut";
-      }
-      {
         label = "direct scenario poke API";
         needle = "fn poke";
       }

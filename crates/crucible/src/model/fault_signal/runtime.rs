@@ -787,8 +787,8 @@ impl AdapterCheckpointState {
 pub struct FaultRuntimeCheckpoint {
     /// Exact runtime codec semantic version.
     pub semantic_version: u16,
-    /// Exact admitted fault-plan identity.
-    pub fault_plan: ContentHash,
+    /// Exact admitted signal-plan identity.
+    pub signal_plan: ContentHash,
     /// Exact scenario-owned resource contract.
     pub resource_limits: FaultResourceLimits,
     /// Sole complete signal/binding runtime continuation.
@@ -857,7 +857,7 @@ impl FaultRuntimeCheckpoint {
         };
         let bindings = plan.bindings();
         if self.semantic_version != FAULT_RUNTIME_STATE_VERSION
-            || self.fault_plan != plan.id()
+            || self.signal_plan != plan.id()
             || self.resource_limits != plan.resource_limits()
             || self.binding_runtime.semantic_version != FAULT_RUNTIME_STATE_VERSION
             || self.binding_runtime.signal_program != program.id()

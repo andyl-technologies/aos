@@ -14,7 +14,7 @@ use super::*;
 
 /// The complete live signal-driven fault engine for one non-empty plan.
 pub struct FaultExecutionRuntime<'a> {
-    fault_plan: ContentHash,
+    signal_plan: ContentHash,
     resource_limits: FaultResourceLimits,
     program: &'a SignalProgram,
     bindings: Vec<FaultBinding>,
@@ -56,7 +56,7 @@ impl<'a> FaultExecutionRuntime<'a> {
         )?;
         let adapters = TransactionalFaultAdapters::new(manifests, resource_limits)?;
         Ok(Self {
-            fault_plan: plan.id(),
+            signal_plan: plan.id(),
             resource_limits,
             program,
             bindings,
@@ -105,7 +105,7 @@ impl<'a> FaultExecutionRuntime<'a> {
         )?;
         validate_contribution_mirror(binding_runtime.active(), &adapters)?;
         Ok(Self {
-            fault_plan: plan.id(),
+            signal_plan: plan.id(),
             resource_limits: plan.resource_limits(),
             program,
             bindings,
@@ -334,7 +334,7 @@ impl<'a> FaultExecutionRuntime<'a> {
     pub fn checkpoint(&self) -> Result<FaultRuntimeCheckpoint, FaultExecutionError> {
         let checkpoint = FaultRuntimeCheckpoint {
             semantic_version: FAULT_RUNTIME_STATE_VERSION,
-            fault_plan: self.fault_plan,
+            signal_plan: self.signal_plan,
             resource_limits: self.resource_limits,
             binding_runtime: self.binding_runtime.checkpoint()?,
             adapters: self.adapters.checkpoints()?,

@@ -130,14 +130,6 @@
         needle = "entry.has_valid_content_hash()";
       }
       {
-        label = "fault injection action";
-        needle = "Action::inject_fault";
-      }
-      {
-        label = "fault heal action";
-        needle = "Action::heal_fault";
-      }
-      {
         label = "pass action";
         needle = "Action::pass";
       }

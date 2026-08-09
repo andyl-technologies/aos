@@ -17,7 +17,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use crate::device::NetworkLinkDirection;
 use crate::model::{DagStore, FaultObservation, FaultObservationKind, MemoryDagStore, Schedule};
-use crate::node_fault::{NodeTimingFaults, NodeTimingProjection};
+use crate::node_time::{NodeTimeMapping, NodeTimeProjection};
 use crate::trigger::{
     Action, ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeafOracle, EventFiring,
     EventFirings, EventGraph, EventGraphState, HostAssertionReport, LogLevel, ObservableEvent,
@@ -27,13 +27,13 @@ use crate::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, BackendError, BackendInput,
     BackendNetworkOutput, BackendNetworkRoute, ChoiceTag, Configuration, ContentHash, Decision,
     DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventId, EventKey, EventLogOffset,
-    EventSequenceState, FaultId, FingerprintSample, GdbAttachInfo, GdbListen, Icount, LinkDef,
-    LinkId, MIN_LINK_LATENCY, MarkerId, NetworkLinkPendingFrame, NodeCounter, NodeId,
-    NodeLifecycle, OverrideDecision, PendingFrame, PreemptionDecision, PreemptionKind,
-    RestartPolicy, RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState,
-    SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices, SearchRuntimeFrontier, Seed, Shift,
-    SimDuration, SimInstant, SimulationBackend, TimeConversionError, TimerId, VcpuId, VirtualTime,
-    World, WorldIoInstantiationError, WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology,
+    EventSequenceState, FingerprintSample, GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId,
+    MIN_LINK_LATENCY, MarkerId, NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle,
+    OverrideDecision, PendingFrame, PreemptionDecision, PreemptionKind, RngStreamId,
+    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
+    SchedulingPoint, SearchFrontierChoices, SearchRuntimeFrontier, Seed, Shift, SimDuration,
+    SimInstant, SimulationBackend, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
+    WorldIoInstantiationError, WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology,
     instantiate_world_io_sub_nodes, step,
 };
 

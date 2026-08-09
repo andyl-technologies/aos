@@ -9,11 +9,11 @@ use std::error::Error;
 
 use crucible::{
     Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, Decision,
-    DeliveryOrderDecision, EngineError, EventKey, FaultId, FaultState, FrontierReductionPolicy,
-    GenesisCheckpoint, Icount, MaterializationPolicy, MaterializationTrigger, MaterializedState,
-    NodeId, NodeTemplate, OverrideDecision, PendingFrame, ReadyPoint, RngDecision, RngStreamId,
-    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices,
-    TemporalGraph, VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, instantiate, try_step,
+    DeliveryOrderDecision, EngineError, EventKey, FrontierReductionPolicy, GenesisCheckpoint,
+    Icount, MaterializationPolicy, MaterializationTrigger, MaterializedState, NodeId, NodeTemplate,
+    OverrideDecision, PendingFrame, ReadyPoint, RngDecision, RngStreamId, SchedulerNodeId,
+    SchedulerState, SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices, TemporalGraph,
+    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, instantiate, try_step,
 };
 
 #[test]
@@ -347,15 +347,6 @@ fn scheduler_state_with_captured_frontier_choices(label: &str) -> SchedulerState
             pending_frame("peer-a", 0, 21, label),
             pending_frame("peer-b", 1, 21, label),
         ],
-    )]);
-    scheduler.active_faults = BTreeMap::from([(
-        FaultId {
-            name: format!("{label}/active-fault"),
-        },
-        FaultState {
-            active_since: time(22),
-            heal_at: None,
-        },
     )]);
     scheduler.search_frontier = SearchFrontierChoices::from_decisions([
         rng_decision(format!("{label}/captured-signal-choice"), 0),

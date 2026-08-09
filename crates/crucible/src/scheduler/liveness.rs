@@ -135,48 +135,22 @@ pub fn check_scheduler_liveness(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RuntimeSchedulerNode {
     pub(super) id: SchedulerNodeId,
-    /// Counter of the baked ready-point runtime admitted at construction.
-    pub(super) ready_counter: NodeCounter,
     pub(super) counter: NodeCounter,
-    pub(super) timing_faults: NodeTimingFaults,
+    pub(super) time_mapping: NodeTimeMapping,
     pub(super) last_checkpoint: Option<SchedulerNodeCheckpoint>,
-    pub(super) crash: Option<RuntimeNodeCrashState>,
-    pub(super) stopped_crash: Option<RuntimeNodeStoppedState>,
     pub(super) activity: SchedulerNodeActivity,
     pub(super) network_lookahead: NetworkLookahead,
     pub(super) exact_local_event: ExactLocalEvent,
     pub(super) vcpu_idle_states: Vec<SchedulerVcpuIdleState>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct RuntimeNodeCrashState {
-    pub(super) activation_sequence: u64,
-    pub(super) restart: RestartPolicy,
-    pub(super) previous_activity: SchedulerNodeActivity,
-    pub(super) counter_at_crash: NodeCounter,
-    pub(super) timing_faults_at_crash: NodeTimingFaults,
-    pub(super) removed_edges: Vec<SchedulerLookaheadEdge>,
-    pub(super) checkpoint: Option<SchedulerNodeCheckpoint>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct RuntimeNodeStoppedState {
-    pub(super) activation_sequence: u64,
-    pub(super) previous_activity: SchedulerNodeActivity,
-    pub(super) timing_faults_at_stop: NodeTimingFaults,
-    pub(super) removed_edges: Vec<SchedulerLookaheadEdge>,
-}
-
 impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
     fn from(node: SchedulerScenarioNode) -> Self {
         Self {
             id: node.id,
-            ready_counter: NodeCounter { ticks: 0 },
             counter: node.counter,
-            timing_faults: NodeTimingFaults::default(),
+            time_mapping: NodeTimeMapping::default(),
             last_checkpoint: None,
-            crash: None,
-            stopped_crash: None,
             activity: node.activity,
             network_lookahead: node.network_lookahead,
             exact_local_event: node.exact_local_event,
@@ -405,22 +379,12 @@ pub(super) fn frontier_for(
     shift: Shift,
 ) -> Result<VirtualTime, SchedulerError> {
     let mut frontier = None;
-    let mut crashed_frontier = None;
-
     for node in nodes {
         let virtual_time = if node.id.kind == SchedulingNodeKind::Vm {
-            node.timing_faults
-                .faulted_virtual_time(node.counter, shift)?
+            node.time_mapping.logical_time(node.counter, shift)?
         } else {
             node.counter.to_virtual(shift)?
         };
-        if node.crash.is_some() || node.stopped_crash.is_some() {
-            crashed_frontier = Some(match crashed_frontier {
-                Some(current) => min_instant(current, virtual_time),
-                None => virtual_time,
-            });
-            continue;
-        }
         frontier = Some(match frontier {
             Some(current) => min_instant(current, virtual_time),
             None => virtual_time,
@@ -428,56 +392,12 @@ pub(super) fn frontier_for(
     }
 
     Ok(VirtualTime {
-        ticks: frontier
-            .or(crashed_frontier)
-            .unwrap_or(SimInstant::EPOCH)
-            .nanos,
+        ticks: frontier.unwrap_or(SimInstant::EPOCH).nanos,
     })
 }
 
 pub(super) fn min_instant(left: SimInstant, right: SimInstant) -> SimInstant {
     if left <= right { left } else { right }
-}
-
-pub(super) fn upsert_edge_by_endpoint(
-    edges: &mut Vec<SchedulerLookaheadEdge>,
-    edge: SchedulerLookaheadEdge,
-) {
-    let endpoint = edge.endpoint();
-    if let Some(index) = edges
-        .iter()
-        .position(|candidate| candidate.endpoint() == endpoint)
-    {
-        edges[index] = edge;
-    } else {
-        edges.push(edge);
-    }
-    edges.sort();
-    edges.dedup();
-}
-
-pub(super) fn canonical_edges_by_endpoint<I>(edges: I) -> Vec<SchedulerLookaheadEdge>
-where
-    I: IntoIterator<Item = SchedulerLookaheadEdge>,
-{
-    let mut canonical = Vec::new();
-    for edge in edges {
-        upsert_edge_by_endpoint(&mut canonical, edge);
-    }
-    canonical
-}
-
-pub(super) fn replace_existing_edges_by_endpoint(
-    edges: &mut Vec<SchedulerLookaheadEdge>,
-    updates: &BTreeMap<SchedulerLookaheadEdgeEndpoint, SchedulerLookaheadEdge>,
-) {
-    for edge in edges.iter_mut() {
-        if let Some(updated) = updates.get(&edge.endpoint()) {
-            *edge = updated.clone();
-        }
-    }
-    edges.sort();
-    edges.dedup();
 }
 
 /// An error produced by the scheduler boundary.

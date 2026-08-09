@@ -507,15 +507,6 @@ impl TimerRegistry {
     }
 }
 
-/// An active fault captured in scheduler state.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct FaultState {
-    /// Virtual time at which the fault became active.
-    pub active_since: VirtualTime,
-    /// Optional virtual time when the fault should heal.
-    pub heal_at: Option<VirtualTime>,
-}
-
 /// Authoritative scheduler state needed to resume a fat checkpoint.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SchedulerState {
@@ -535,8 +526,6 @@ pub struct SchedulerState {
     pub pending_topology_changes: Vec<crate::scheduler::SchedulerTopologyChange>,
     /// Armed timer registry.
     pub timers: TimerRegistry,
-    /// Faults currently active in the scheduler.
-    pub active_faults: BTreeMap<FaultId, FaultState>,
     /// Device decisions already drawn but not yet emitted at a scheduler boundary.
     pub pending_device_decisions: Vec<Decision>,
     /// Search choices captured from the runtime frontier.
@@ -556,7 +545,6 @@ impl SchedulerState {
             effective_topology_edges: Vec::new(),
             pending_topology_changes: Vec::new(),
             timers: TimerRegistry::empty(),
-            active_faults: BTreeMap::new(),
             pending_device_decisions: Vec::new(),
             search_frontier: SearchFrontierChoices::empty(),
         }

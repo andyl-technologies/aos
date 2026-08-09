@@ -73,10 +73,6 @@
         needle = "pub fn u64(&self, name: &str) -> Option<u64>";
       }
       {
-        label = "typed fault accessor";
-        needle = "pub fn fault(&self, name: &str) -> Option<&FaultId>";
-      }
-      {
         label = "typed level accessor";
         needle = "pub fn level(&self, name: &str) -> Option<EventLevel>";
       }

@@ -21,14 +21,9 @@ mod whitebox_setup;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use canonical::{
-    canonical_node_clock_skew_lines, canonical_node_icount_shift_lines, validate_icount_shift,
-};
+use canonical::{canonical_node_icount_shift_lines, validate_icount_shift};
 pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
-use crucible::{
-    ContentHash, NodeClockSkew, SchedulerError, SchedulerNodeId, SchedulerRunSubdivisionPolicy,
-    Seed,
-};
+use crucible::{ContentHash, SchedulerError, SchedulerNodeId, SchedulerRunSubdivisionPolicy, Seed};
 pub use crucible_shmem_9p::{
     CrucibleShmem9pDevice, CrucibleShmem9pFsdevBackend, DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID,
     DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID, DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG,
@@ -158,8 +153,6 @@ pub struct LaunchProfileCandidate {
     pub icount_shift: IcountShiftSetting,
     /// The fixed single-threaded round-robin switch quantum in node icount.
     pub rr_switch_quantum: u64,
-    /// The UTC RTC epoch supplied to QEMU.
-    pub rtc_epoch_utc: String,
     /// The QEMU RTC clock mode.
     pub rtc_clock: String,
     /// The guest kernel command line.
@@ -190,7 +183,6 @@ impl Default for LaunchProfileCandidate {
             smp_vcpus: 1,
             icount_shift: IcountShiftSetting::Fixed(0),
             rr_switch_quantum: DEFAULT_RR_SWITCH_QUANTUM,
-            rtc_epoch_utc: DEFAULT_RTC_EPOCH_UTC.to_owned(),
             rtc_clock: "vm".to_owned(),
             kernel_cmdline: DEFAULT_KERNEL_CMDLINE.to_owned(),
             scenario_seed: DEFAULT_SCENARIO_SEED,
@@ -251,13 +243,6 @@ impl LaunchProfileCandidate {
     #[must_use]
     pub fn with_rr_switch_quantum(mut self, rr_switch_quantum: u64) -> Self {
         self.rr_switch_quantum = rr_switch_quantum;
-        self
-    }
-
-    /// Returns a candidate with a different RTC epoch.
-    #[must_use]
-    pub fn with_rtc_epoch_utc(mut self, rtc_epoch_utc: impl Into<String>) -> Self {
-        self.rtc_epoch_utc = rtc_epoch_utc.into();
         self
     }
 
@@ -356,7 +341,6 @@ impl LaunchProfileCandidate {
             });
         }
 
-        validate_fixed_text("rtc_epoch_utc", &self.rtc_epoch_utc)?;
         validate_fixed_text("kernel_cmdline", &self.kernel_cmdline)?;
         if self.rtc_clock != "vm" {
             return Err(LaunchProfileError::RtcClockNotVm {
@@ -412,7 +396,6 @@ impl LaunchProfileCandidate {
             smp_vcpus: self.smp_vcpus,
             icount_shift,
             rr_switch_quantum: self.rr_switch_quantum,
-            rtc_epoch_utc: self.rtc_epoch_utc,
             kernel_cmdline: self.kernel_cmdline,
             scenario_seed: self.scenario_seed,
             run_seed: self.run_seed,
@@ -440,26 +423,6 @@ impl NodeIcountShift {
         Self {
             node_id: node_id.into(),
             shift,
-        }
-    }
-}
-
-/// A node-local guest-visible clock-skew declaration from scenario launch content.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NodeClockSkewDeclaration {
-    /// The stable scenario node identifier.
-    pub node_id: String,
-    /// The node's guest-visible clock-skew transform.
-    pub skew: NodeClockSkew,
-}
-
-impl NodeClockSkewDeclaration {
-    /// Builds a node-local guest-visible clock-skew declaration.
-    #[must_use]
-    pub fn new(node_id: impl Into<String>, skew: NodeClockSkew) -> Self {
-        Self {
-            node_id: node_id.into(),
-            skew,
         }
     }
 }
@@ -1189,7 +1152,6 @@ pub struct DeterministicLaunchProfile {
     smp_vcpus: u16,
     icount_shift: u8,
     rr_switch_quantum: u64,
-    rtc_epoch_utc: String,
     kernel_cmdline: String,
     scenario_seed: u64,
     run_seed: u64,
@@ -1256,7 +1218,7 @@ impl DeterministicLaunchProfile {
                 self.icount_shift, self.rr_switch_quantum
             ),
             "-rtc".to_owned(),
-            format!("base={},clock=vm", self.rtc_epoch_utc),
+            format!("base={DEFAULT_RTC_EPOCH_UTC},clock=vm"),
             "-seed".to_owned(),
             self.run_seed.to_string(),
             "-fw_cfg".to_owned(),
@@ -1310,7 +1272,7 @@ impl DeterministicLaunchProfile {
             "virtual_time_ns=icount<<shift".to_owned(),
             "per_vcpu_cpu_model=uniform".to_owned(),
             "per_vcpu_tsc_source=node-icount".to_owned(),
-            format!("rtc_epoch_utc={}", self.rtc_epoch_utc),
+            format!("rtc_epoch_utc={DEFAULT_RTC_EPOCH_UTC}"),
             "rtc_clock=vm".to_owned(),
             "guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time".to_owned(),
             "guest_time_epoch=fixed-rtc-epoch".to_owned(),
@@ -1379,34 +1341,6 @@ impl DeterministicLaunchProfile {
         let node_shift_lines = canonical_node_icount_shift_lines(self.icount_shift, node_shifts)?;
         let mut material = self.scenario_hash_material();
         for line in node_shift_lines {
-            material.push('\n');
-            material.push_str(&line);
-        }
-        Ok(material)
-    }
-
-    /// Returns canonical scenario hash material after validating node timing declarations.
-    ///
-    /// Node declarations are sorted by node identifier before they enter the
-    /// material so callers do not have to preserve a host-dependent iteration
-    /// order. Perfect clock-skew declarations are omitted, making explicit
-    /// perfect clocks byte-identical to no skew declarations.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LaunchProfileError`] when a node identifier is not stable text,
-    /// a node timing declaration is duplicated, a node shift is unsupported or
-    /// mismatches the profile, or a node clock-skew declaration uses an invalid
-    /// drift rate.
-    pub fn scenario_hash_material_for_node_timing(
-        &self,
-        node_shifts: &[NodeIcountShift],
-        node_clock_skews: &[NodeClockSkewDeclaration],
-    ) -> Result<String, LaunchProfileError> {
-        let node_shift_lines = canonical_node_icount_shift_lines(self.icount_shift, node_shifts)?;
-        let node_skew_lines = canonical_node_clock_skew_lines(node_clock_skews)?;
-        let mut material = self.scenario_hash_material();
-        for line in node_shift_lines.into_iter().chain(node_skew_lines) {
             material.push('\n');
             material.push_str(&line);
         }

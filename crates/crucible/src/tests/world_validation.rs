@@ -1039,21 +1039,6 @@ pub(super) fn generated_schedule(seed: u64, len: u64) -> Schedule {
     schedule
 }
 
-pub(super) fn drift_rate(numerator: u64, denominator: u64) -> ClockDriftRate {
-    match ClockDriftRate::new(numerator, denominator) {
-        Ok(rate) => rate,
-        Err(error) => panic!("test drift rate should be valid: {error}"),
-    }
-}
-
-pub(super) fn material_with_skew(base: &str, skew: NodeClockSkew) -> String {
-    match skew.scenario_hash_material() {
-        Ok(Some(skew_material)) => format!("{base}\n{skew_material}"),
-        Ok(None) => base.to_owned(),
-        Err(error) => panic!("test clock skew material should be valid: {error}"),
-    }
-}
-
 pub(super) fn swap_first_two_decisions(schedule: &Schedule) -> Schedule {
     let decisions = schedule.decisions();
     let mut swapped = Schedule::empty();

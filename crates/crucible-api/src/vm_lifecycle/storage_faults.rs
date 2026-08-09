@@ -350,11 +350,11 @@ impl ProductionBlockFaultCoordinator {
         devices: ProductionBlockDevices,
         world: World,
         target: ResolvedFaultTarget,
-        fault_plan: &FaultSignalPlan,
+        signal_plan: &FaultSignalPlan,
         scenario_seed: ContentHash,
         icount_shift: u8,
     ) -> Self {
-        let mut opportunity_targets = fault_plan
+        let mut opportunity_targets = signal_plan
             .bindings()
             .iter()
             .flat_map(|binding| binding.selector().resolved().targets())

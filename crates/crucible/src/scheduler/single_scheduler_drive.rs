@@ -42,8 +42,8 @@ impl SingleScheduler {
         counter: NodeCounter,
     ) -> Result<SimInstant, SchedulerError> {
         if node.id.kind == SchedulingNodeKind::Vm {
-            node.timing_faults
-                .faulted_virtual_time(counter, self.timeline.shift())
+            node.time_mapping
+                .logical_time(counter, self.timeline.shift())
                 .map_err(SchedulerError::from)
         } else {
             counter
@@ -58,8 +58,8 @@ impl SingleScheduler {
         target_time: SimInstant,
     ) -> Result<NodeCounter, SchedulerError> {
         if node.id.kind == SchedulingNodeKind::Vm {
-            node.timing_faults
-                .counter_for_faulted_virtual_time_ceil(target_time, self.timeline.shift())
+            node.time_mapping
+                .counter_for_logical_time_ceil(target_time, self.timeline.shift())
                 .map_err(SchedulerError::from)
         } else {
             Ok(NodeCounter {
@@ -121,9 +121,7 @@ impl SingleScheduler {
         &self,
         node: &RuntimeSchedulerNode,
     ) -> SchedulerNodeActivity {
-        if self.node_execution_stopped(node) {
-            SchedulerNodeActivity::Halted
-        } else if node.activity == SchedulerNodeActivity::Idle
+        if node.activity == SchedulerNodeActivity::Idle
             && node
                 .vcpu_idle_states
                 .iter()
@@ -132,193 +130,6 @@ impl SingleScheduler {
             SchedulerNodeActivity::Runnable
         } else {
             node.activity
-        }
-    }
-
-    pub(super) fn is_node_down(&self, node: &NodeId) -> bool {
-        self.nodes.iter().any(|runtime| {
-            runtime.id.node == *node
-                && runtime.id.kind == SchedulingNodeKind::Vm
-                && self.node_execution_stopped(runtime)
-        })
-    }
-
-    pub(super) fn node_execution_stopped(&self, node: &RuntimeSchedulerNode) -> bool {
-        node.crash.is_some() || node.stopped_crash.is_some()
-    }
-
-    pub(super) fn incident_effective_edges(
-        &self,
-        node: &SchedulerNodeId,
-    ) -> Vec<SchedulerLookaheadEdge> {
-        self.effective_topology
-            .edges()
-            .iter()
-            .filter(|edge| &edge.from == node || &edge.to == node)
-            .cloned()
-            .collect()
-    }
-
-    pub(super) fn discard_pending_events_for_node(
-        &mut self,
-        node: &SchedulerNodeId,
-    ) -> Vec<SchedulerDiscardedEvent> {
-        let mut pending = Vec::with_capacity(self.pending_events.len());
-        let mut discarded = Vec::new();
-        for event in std::mem::take(&mut self.pending_events) {
-            if event.key.consumer() == node || event.key.producer() == node {
-                let class = scheduled_event_resolve_class(&event);
-                discarded.push(SchedulerDiscardedEvent {
-                    key: event.key,
-                    class,
-                });
-            } else {
-                pending.push(event);
-            }
-        }
-        discarded.sort_by(|left, right| left.key.cmp(&right.key));
-        self.pending_events = pending;
-        discarded
-    }
-
-    pub(super) fn discard_device_completions_for_node(
-        &mut self,
-        node: &NodeId,
-    ) -> Vec<SchedulerDiscardedIoCompletion> {
-        let Some(sub_nodes) = self.device_sub_nodes.get_mut(node) else {
-            return Vec::new();
-        };
-        let mut discarded = Vec::new();
-        for sub_node in sub_nodes {
-            discarded.extend(sub_node.discard_in_flight());
-        }
-        discarded.sort_by(|left, right| {
-            left.delivery_icount
-                .cmp(&right.delivery_icount)
-                .then_with(|| left.sub_node.cmp(&right.sub_node))
-                .then_with(|| left.source_node.cmp(&right.source_node))
-                .then_with(|| left.sequence.cmp(&right.sequence))
-                .then_with(|| left.target.cmp(&right.target))
-                .then_with(|| left.payload.cmp(&right.payload))
-        });
-        discarded
-    }
-
-    pub(super) fn suppress_down_edges(
-        &mut self,
-        graph: SchedulerLookaheadGraph,
-    ) -> SchedulerLookaheadGraph {
-        let down = self
-            .nodes
-            .iter()
-            .filter(|node| self.node_execution_stopped(node))
-            .map(|node| node.id.clone())
-            .collect::<BTreeSet<_>>();
-        if down.is_empty() {
-            return graph;
-        }
-        let mut live_edges = Vec::new();
-        for edge in graph.edges() {
-            if down.contains(&edge.from) || down.contains(&edge.to) {
-                self.remember_suppressed_down_edge(edge);
-            } else {
-                live_edges.push(edge.clone());
-            }
-        }
-        SchedulerLookaheadGraph::from_edges(live_edges)
-    }
-
-    pub(super) fn replace_suppressed_down_edges(&mut self, edges: &[SchedulerLookaheadEdge]) {
-        for node in &mut self.nodes {
-            if node.crash.is_none() && node.stopped_crash.is_none() {
-                continue;
-            }
-            let incident = canonical_edges_by_endpoint(
-                edges
-                    .iter()
-                    .filter(|edge| edge.from == node.id || edge.to == node.id)
-                    .cloned(),
-            );
-            if let Some(state) = &mut node.crash {
-                state.removed_edges = incident.clone();
-            }
-            if let Some(state) = &mut node.stopped_crash {
-                state.removed_edges = incident.clone();
-            }
-        }
-    }
-
-    pub(super) fn remove_suppressed_down_edges(
-        &mut self,
-        sequence: u64,
-        endpoints: &[SchedulerLookaheadEdgeEndpoint],
-    ) {
-        let endpoints = endpoints.iter().cloned().collect::<BTreeSet<_>>();
-        for node in &mut self.nodes {
-            if let Some(state) = &mut node.crash
-                && state.activation_sequence != sequence
-            {
-                state
-                    .removed_edges
-                    .retain(|edge| !endpoints.contains(&edge.endpoint()));
-            }
-            if let Some(state) = &mut node.stopped_crash
-                && state.activation_sequence != sequence
-            {
-                state
-                    .removed_edges
-                    .retain(|edge| !endpoints.contains(&edge.endpoint()));
-            }
-        }
-    }
-
-    pub(super) fn update_suppressed_down_edges(
-        &mut self,
-        updated_edges: &[SchedulerLookaheadEdge],
-    ) {
-        let updates = updated_edges
-            .iter()
-            .map(|edge| (edge.endpoint(), edge.clone()))
-            .collect::<BTreeMap<_, _>>();
-        for node in &mut self.nodes {
-            if let Some(state) = &mut node.crash {
-                replace_existing_edges_by_endpoint(&mut state.removed_edges, &updates);
-            }
-            if let Some(state) = &mut node.stopped_crash {
-                replace_existing_edges_by_endpoint(&mut state.removed_edges, &updates);
-            }
-        }
-    }
-
-    pub(super) fn suppressed_down_edge_exists(
-        &self,
-        endpoint: &SchedulerLookaheadEdgeEndpoint,
-    ) -> bool {
-        let has_endpoint = |edges: &[SchedulerLookaheadEdge]| {
-            edges.iter().any(|edge| edge.endpoint() == *endpoint)
-        };
-        self.nodes.iter().any(|node| {
-            node.crash
-                .as_ref()
-                .is_some_and(|state| has_endpoint(&state.removed_edges))
-                || node
-                    .stopped_crash
-                    .as_ref()
-                    .is_some_and(|state| has_endpoint(&state.removed_edges))
-        })
-    }
-
-    pub(super) fn remember_suppressed_down_edge(&mut self, edge: &SchedulerLookaheadEdge) {
-        for node in &mut self.nodes {
-            if node.id != edge.from && node.id != edge.to {
-                continue;
-            }
-            if let Some(state) = &mut node.crash {
-                upsert_edge_by_endpoint(&mut state.removed_edges, edge.clone());
-            }
-            if let Some(state) = &mut node.stopped_crash {
-                upsert_edge_by_endpoint(&mut state.removed_edges, edge.clone());
-            }
         }
     }
 
@@ -427,9 +238,6 @@ impl SingleScheduler {
             }
         }
         if !found {
-            found = self.suppressed_down_edge_exists(&endpoint);
-        }
-        if !found {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
                     "network link latency recompute has no effective topology edge: producer={}:{:?} consumer={}:{:?}",
@@ -489,7 +297,7 @@ impl SingleScheduler {
     ///
     /// This is the topology-only portion of the authoritative quantum boundary.
     /// Callers that already own a checked event-log boundary can use it after
-    /// deterministic trigger actions enqueue crash, heal, partition, or latency
+    /// deterministic trigger actions enqueue partition or latency
     /// topology changes, without also running PICK/RUN/RESOLVE for a synthetic
     /// scheduler quantum.
     ///
@@ -546,23 +354,18 @@ impl SingleScheduler {
             }
             let graph = match effect {
                 SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(effective_edges) => {
-                    self.replace_suppressed_down_edges(&effective_edges);
                     SchedulerLookaheadGraph::from_edges(effective_edges)
                 }
                 SchedulerTopologyChangeEffect::RemoveEffectiveEdges(endpoints) => {
-                    self.remove_suppressed_down_edges(sequence, &endpoints);
                     self.effective_topology.remove_effective_edges(endpoints)
                 }
-                SchedulerTopologyChangeEffect::UpdateEffectiveEdges(updated_edges) => {
-                    self.update_suppressed_down_edges(&updated_edges);
-                    self.effective_topology
-                        .update_effective_edges(updated_edges)
-                }
+                SchedulerTopologyChangeEffect::UpdateEffectiveEdges(updated_edges) => self
+                    .effective_topology
+                    .update_effective_edges(updated_edges),
                 SchedulerTopologyChangeEffect::RestoreEffectiveEdges(restored_edges) => self
                     .effective_topology
                     .restore_effective_edges(restored_edges),
             };
-            let graph = self.suppress_down_edges(graph);
             let mut updates = Vec::with_capacity(self.nodes.len());
             for node in &mut self.nodes {
                 let previous_lookahead = node.network_lookahead;

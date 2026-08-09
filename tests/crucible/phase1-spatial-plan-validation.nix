@@ -47,10 +47,6 @@
         needle = "pub ticks: u64";
       }
       {
-        label = "membership fault enum";
-        needle = "pub enum MembershipFault";
-      }
-      {
         label = "crash fault params";
         needle = "Crash {";
       }

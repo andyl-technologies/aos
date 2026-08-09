@@ -70,14 +70,6 @@
         needle = "Action::Group(actions) =>";
       }
       {
-        label = "inject fault effect";
-        needle = "state.active_faults.insert(tag.clone(), fault.clone())";
-      }
-      {
-        label = "heal fault effect";
-        needle = "state.active_faults.remove(tag)";
-      }
-      {
         label = "arm timer effect";
         needle = ".armed_timers\n                .insert(name.clone(), VirtualTime { ticks })";
       }
@@ -140,10 +132,6 @@
       {
         label = "stale action batch rejection test";
         needle = "stale_firing_batch_cannot_apply_actions_twice";
-      }
-      {
-        label = "all action variants exercised";
-        needle = "Action::InjectFault";
       }
       {
         label = "nested group exercised";

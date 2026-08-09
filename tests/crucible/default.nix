@@ -203,7 +203,6 @@ in rec {
     spatialLayerOrthogonality = import ./phase1-spatial-layer-orthogonality.nix {inherit pkgs lib;};
     spatialLinkTransport = import ./phase1-spatial-link-transport.nix {inherit pkgs lib;};
     spatialLogicalTopology = import ./phase1-spatial-logical-topology.nix {inherit pkgs lib;};
-    spatialMembershipFaults = import ./phase1-spatial-membership-faults.nix {inherit pkgs lib;};
     spatialCanonicalization = import ./phase1-spatial-canonicalization.nix {inherit pkgs lib;};
     spatialNodeLaunchInputs = import ./phase1-spatial-node-launch-inputs.nix {inherit pkgs lib;};
     spatialPlanComponent = import ./phase1-spatial-plan-component.nix {inherit pkgs lib;};
@@ -220,7 +219,6 @@ in rec {
     spatialWorldTopology = import ./phase1-spatial-world-topology.nix {inherit pkgs lib;};
     standaloneDependencies = import ./phase1-standalone-dependencies.nix {inherit pkgs lib;};
     testingStandards = import ./phase1-testing-standards.nix {inherit pkgs lib;};
-    timeClockSkew = import ./phase1-time-clock-skew.nix {inherit pkgs lib;};
     timeContractADeterminism = import ./phase1-time-contract-a-determinism.nix {inherit pkgs lib;};
     timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix {inherit pkgs lib;};
     timeNoRealtimeWarp = import ./phase1-time-no-realtime-warp.nix {inherit pkgs lib;};
@@ -869,86 +867,6 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.blackBoxFirstGuarantee";
       taskIds = ["T-TRIG-19"];
-    };
-    faultTaxonomy = import ./phase4-fault-taxonomy.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultTaxonomy";
-      taskIds = ["T-FAULT-1"];
-    };
-    faultModelRule = import ./phase4-fault-model-rule.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultModelRule";
-      taskIds = ["T-FAULT-2"];
-    };
-    faultDecisionRng = import ./phase4-fault-decision-rng.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultDecisionRng";
-      taskIds = ["T-FAULT-3"];
-    };
-    faultIntegerRates = import ./phase4-fault-integer-rates.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultIntegerRates";
-      taskIds = ["T-FAULT-4"];
-    };
-    faultCombination = import ./phase4-fault-combination.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultCombination";
-      taskIds = ["T-FAULT-5"];
-    };
-    networkFaultApplication = import ./phase4-network-fault-application.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.networkFaultApplication";
-      taskIds = ["T-FAULT-6"];
-    };
-    nodeFaultApplication = import ./phase4-node-fault-application.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.nodeFaultApplication";
-      taskIds = ["T-FAULT-7"];
-    };
-    nodeCrashApplication = import ./phase4-node-crash-application.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.nodeCrashApplication";
-      taskIds = ["T-FAULT-8"];
-    };
-    ioFaultApplication = import ./phase4-io-fault-application.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.ioFaultApplication";
-      taskIds = ["T-FAULT-9"];
-    };
-    faultPlan = import ./phase4-fault-plan.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultPlan";
-      taskIds = ["T-FAULT-10"];
-    };
-    imperativeFaultControl = import ./phase4-imperative-fault-control.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.imperativeFaultControl";
-      taskIds = ["T-FAULT-11"];
-    };
-    faultTagState = import ./phase4-fault-tag-state.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultTagState";
-      taskIds = ["T-FAULT-12"];
-    };
-    activeFaultTable = import ./phase4-active-fault-table.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.activeFaultTable";
-      taskIds = ["T-FAULT-13"];
-    };
-    randomFaultConfig = import ./phase4-random-fault-config.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.randomFaultConfig";
-      taskIds = ["T-FAULT-14"];
-    };
-    faultDeterminismGate = import ./phase4-fault-determinism-gate.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultDeterminismGate";
-      taskIds = ["T-FAULT-15"];
-    };
-    faultProductionDeviceCoreGate = import ./phase4-fault-production-device-core-gate.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultProductionDeviceCoreGate";
-      taskIds = ["T-FAULT-16"];
     };
     propertyVocabulary = import ./phase4-property-vocabulary.nix {
       inherit pkgs lib;
@@ -2681,21 +2599,6 @@ in rec {
     nginxCurlHttp200 = import ./phase7-nginx-curl-http-200.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.nginxCurlHttp200";
-    };
-    partitionRecoveryExample = import ./phase7-partition-recovery-example.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase7.partitionRecoveryExample";
-      taskIds = ["T-EX-2"];
-    };
-    crashRestartExample = import ./phase7-crash-restart-example.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase7.crashRestartExample";
-      taskIds = ["T-EX-3"];
-    };
-    faultCampaignExample = import ./phase7-fault-campaign-example.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase7.faultCampaignExample";
-      taskIds = ["T-EX-4"];
     };
     adversarialExampleVerify = import ./phase7-adversarial-example-verify.nix {
       inherit pkgs lib;

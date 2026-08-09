@@ -2,9 +2,9 @@
 
 use super::{
     Configuration, ContentHash, Decision, DecisionRngState, DeviceOverlayDelta, DeviceRngState,
-    EventLogOffset, EventSequenceState, FaultState, Icount, NodeBlobRef, NodeId, PendingFrame,
-    PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerNodeId,
-    SchedulerState, SchedulingNodeKind, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef,
+    EventLogOffset, EventSequenceState, Icount, NodeBlobRef, NodeId, PendingFrame, PreemptionKind,
+    RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerNodeId, SchedulerState,
+    SchedulingNodeKind, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef,
 };
 use std::collections::BTreeMap;
 
@@ -200,11 +200,6 @@ fn write_scheduler_state(hasher: &mut MaterialHasher, state: &SchedulerState) {
         write_scheduler_topology_change(hasher, change);
     }
     write_timer_registry(hasher, &state.timers);
-    hasher.write_u64(state.active_faults.len() as u64);
-    for (fault, state) in &state.active_faults {
-        hasher.write_bytes(fault.name.as_bytes());
-        write_fault_state(hasher, state);
-    }
     hasher.write_u64(state.pending_device_decisions.len() as u64);
     for decision in &state.pending_device_decisions {
         write_decision(hasher, decision);
@@ -308,17 +303,6 @@ fn write_timer_state(hasher: &mut MaterialHasher, state: &TimerState) {
     write_virtual_time(hasher, state.armed_at);
     write_virtual_time(hasher, state.fire_at);
     write_icount(hasher, state.fire_icount);
-}
-
-fn write_fault_state(hasher: &mut MaterialHasher, state: &FaultState) {
-    write_virtual_time(hasher, state.active_since);
-    match state.heal_at {
-        Some(heal_at) => {
-            hasher.write_bool(true);
-            write_virtual_time(hasher, heal_at);
-        }
-        None => hasher.write_bool(false),
-    }
 }
 
 fn write_decision_rng_state(hasher: &mut MaterialHasher, state: &DecisionRngState) {

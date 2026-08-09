@@ -493,12 +493,8 @@ impl World {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::PlanFaultUnknownNode`],
-    /// [`EngineError::PlanFaultUnknownLink`],
-    /// [`EngineError::PlanHealUnknownTag`],
-    /// [`EngineError::PlanHealBeforeActivate`], or
-    /// [`EngineError::PlanNotYetJoinedAfterStart`] when `plan` cannot be
-    /// layered over this world's static topology.
+    /// Returns [`EngineError`] when the plan's events, predicates, signal
+    /// bindings, or resolved targets are incompatible with this World.
     pub fn scenario_def_with_plan(&self, plan: &Plan) -> Result<ScenarioDef, EngineError> {
         plan.validate_for_world(self)?;
         Ok(self.scenario_def_from_components(plan, &Properties::empty(), Seed::default()))

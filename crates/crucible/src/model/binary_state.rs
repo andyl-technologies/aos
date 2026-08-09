@@ -724,12 +724,6 @@ pub(super) fn write_scheduler_state_binary(
         writer.write_u64(timer.fire_at.ticks);
         writer.write_u64(timer.fire_icount.retired);
     }
-    writer.write_count(state.active_faults.len());
-    for (fault, state) in &state.active_faults {
-        writer.write_string(&fault.name);
-        writer.write_u64(state.active_since.ticks);
-        write_optional_virtual_time_binary(state.heal_at, writer);
-    }
     writer.write_count(state.pending_device_decisions.len());
     for decision in &state.pending_device_decisions {
         write_decision_binary(decision, writer);
@@ -857,22 +851,6 @@ pub(super) fn read_scheduler_state_binary(
         );
     }
 
-    let active_fault_count = reader.read_collection_count("scheduler-state.active-fault")?;
-    let mut active_faults = BTreeMap::new();
-    for _ in 0..active_fault_count {
-        active_faults.insert(
-            FaultId {
-                name: reader.read_string()?,
-            },
-            FaultState {
-                active_since: VirtualTime {
-                    ticks: reader.read_u64()?,
-                },
-                heal_at: read_optional_virtual_time_binary(reader)?,
-            },
-        );
-    }
-
     let pending_device_decision_count =
         reader.read_collection_count("scheduler-state.pending-device-decision")?;
     let mut pending_device_decisions = Vec::with_capacity(pending_device_decision_count);
@@ -890,7 +868,6 @@ pub(super) fn read_scheduler_state_binary(
         effective_topology_edges,
         pending_topology_changes,
         timers,
-        active_faults,
         pending_device_decisions,
         search_frontier,
     })
@@ -1040,33 +1017,6 @@ pub(super) fn read_scheduler_topology_change_binary(
         activation_time,
         effect,
     })
-}
-
-pub(super) fn write_optional_virtual_time_binary(
-    value: Option<VirtualTime>,
-    writer: &mut ScenarioBinaryWriter,
-) {
-    match value {
-        Some(value) => {
-            writer.write_u8(1);
-            writer.write_u64(value.ticks);
-        }
-        None => writer.write_u8(0),
-    }
-}
-
-pub(super) fn read_optional_virtual_time_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<Option<VirtualTime>, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(None),
-        1 => Ok(Some(VirtualTime {
-            ticks: reader.read_u64()?,
-        })),
-        _ => Err(scenario_serialization_error(
-            "invalid optional virtual-time tag",
-        )),
-    }
 }
 
 pub(super) fn write_search_frontier_choices_binary(

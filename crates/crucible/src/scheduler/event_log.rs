@@ -493,8 +493,6 @@ pub enum EventAttributeValue {
     Node(NodeId),
     /// Event-graph identifier attribute.
     Event(EventId),
-    /// Fault identifier attribute.
-    Fault(FaultId),
     /// Virtual-time attribute.
     VirtualTime(VirtualTime),
     /// Retired-instruction count attribute.
@@ -610,15 +608,6 @@ impl EventPayload {
     pub fn event(&self, name: &str) -> Option<&EventId> {
         match self.attribute(name) {
             Some(EventAttributeValue::Event(value)) => Some(value),
-            _ => None,
-        }
-    }
-
-    /// Returns a fault-id attribute by name.
-    #[must_use]
-    pub fn fault(&self, name: &str) -> Option<&FaultId> {
-        match self.attribute(name) {
-            Some(EventAttributeValue::Fault(value)) => Some(value),
             _ => None,
         }
     }

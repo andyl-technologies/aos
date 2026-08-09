@@ -413,19 +413,6 @@ pub(super) fn event_graph_plan_error(error: EventGraphError) -> EngineError {
     scenario_serialization_error(format!("event graph plan validation failed: {error}"))
 }
 
-pub(super) fn link_id_for_canonical_endpoint_pair(
-    endpoint_a: &NodeId,
-    endpoint_b: &NodeId,
-) -> LinkId {
-    LinkId::from_name(format!(
-        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
-        endpoint_a.name.len(),
-        endpoint_a.name,
-        endpoint_b.name.len(),
-        endpoint_b.name
-    ))
-}
-
 pub(super) fn validate_properties_for_world(
     world: &World,
     assertions: &[AssertionDef],
@@ -761,14 +748,6 @@ pub(super) fn validate_property_regex(regex: &RegexProgram) -> Result<(), Engine
             pattern: regex.pattern.clone(),
             reason: source.to_string(),
         })
-}
-
-pub(super) fn inverted_partition_direction(direction: PartitionDirection) -> PartitionDirection {
-    match direction {
-        PartitionDirection::Bidirectional => PartitionDirection::Bidirectional,
-        PartitionDirection::EndpointAToEndpointB => PartitionDirection::EndpointBToEndpointA,
-        PartitionDirection::EndpointBToEndpointA => PartitionDirection::EndpointAToEndpointB,
-    }
 }
 
 pub(super) fn canonical_assertions(assertions: &[AssertionDef]) -> Vec<AssertionDef> {

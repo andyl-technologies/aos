@@ -33,9 +33,8 @@ use crate::model::{
 use crate::scheduler::{
     EventLog, EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, ExactLocalEvent,
     NetworkLookahead, SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario,
-    SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeCrashApplication,
-    SchedulerNodeRestartApplication, SchedulerScenarioNode, SchedulerTopologyChangeApplication,
-    SingleScheduler, TriggerActionApplication,
+    SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerScenarioNode,
+    SchedulerTopologyChangeApplication, SingleScheduler, TriggerActionApplication,
 };
 use crate::trigger::{
     Action, AssertionViolationArtifactReplay, AssertionViolationReplayError,
@@ -133,10 +132,6 @@ pub struct ExampleScenarioRunReport {
     pub replayed_fingerprint_stream: Vec<u8>,
     /// Event graph firings observed at the passing boundary.
     pub firings: EventFirings,
-    /// Scheduler node-crash applications produced by the run proof.
-    pub scheduler_crash_applications: Vec<SchedulerNodeCrashApplication>,
-    /// Scheduler node-restart applications produced by the run proof.
-    pub scheduler_restart_applications: Vec<SchedulerNodeRestartApplication>,
     /// Scheduler topology-change applications produced by the run proof.
     pub scheduler_topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
 }
@@ -724,8 +719,6 @@ pub fn run_example_scenario(
         || replayed.fingerprint_stream != primary.fingerprint_stream
         || replayed.assertion_report != primary.assertion_report
         || replayed.firings != primary.firings
-        || replayed.scheduler_crash_applications != primary.scheduler_crash_applications
-        || replayed.scheduler_restart_applications != primary.scheduler_restart_applications
         || replayed.scheduler_topology_change_applications
             != primary.scheduler_topology_change_applications
     {
@@ -744,8 +737,6 @@ pub fn run_example_scenario(
         replayed_canonical_event_log: replayed.canonical_event_log,
         replayed_fingerprint_stream: replayed.fingerprint_stream,
         firings: primary.firings,
-        scheduler_crash_applications: primary.scheduler_crash_applications,
-        scheduler_restart_applications: primary.scheduler_restart_applications,
         scheduler_topology_change_applications: primary.scheduler_topology_change_applications,
     })
 }
@@ -1486,8 +1477,6 @@ struct ExampleScenarioRunCore {
     fingerprint_stream: Vec<u8>,
     assertion_report: HostAssertionReport,
     firings: EventFirings,
-    scheduler_crash_applications: Vec<SchedulerNodeCrashApplication>,
-    scheduler_restart_applications: Vec<SchedulerNodeRestartApplication>,
     scheduler_topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
 }
 
@@ -1575,8 +1564,6 @@ fn run_example_scenario_material(
         fingerprint_stream,
         assertion_report,
         firings,
-        scheduler_crash_applications: scheduler.node_crash_applications().to_vec(),
-        scheduler_restart_applications: scheduler.node_restart_applications().to_vec(),
         scheduler_topology_change_applications: scheduler.topology_change_applications().to_vec(),
     })
 }

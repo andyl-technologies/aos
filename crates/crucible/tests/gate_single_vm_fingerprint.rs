@@ -6,8 +6,8 @@
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, DecisionRecorder, ExecutionFingerprint,
-    FaultId, FaultRateBasisPoints, GenesisCheckpoint, NodeId, RngStreamId, RuntimeState,
-    ScenarioDef, Seed, TemporalGraph, VirtualTime, instantiate,
+    GenesisCheckpoint, NodeId, RngStreamId, RuntimeState, ScenarioDef, Seed, TemporalGraph,
+    VirtualTime, instantiate,
 };
 use crucible_harness::adversarial::{
     HostAdversaryProfile, canonical_host_adversary_matrix, run_profiled_tasks,

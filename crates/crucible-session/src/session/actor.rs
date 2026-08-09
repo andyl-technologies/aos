@@ -168,11 +168,6 @@ pub(super) fn is_recoverable_engine_rejection(error: &EngineError) -> bool {
         error,
         EngineError::CheckpointNotRecorded { .. }
             | EngineError::MissingBakedGenesis { .. }
-            | EngineError::PlanFaultUnknownNode { .. }
-            | EngineError::PlanFaultUnknownLink { .. }
-            | EngineError::PlanFaultUnknownLinkId { .. }
-            | EngineError::PlanFaultUnknownDevice { .. }
-            | EngineError::PlanHealUnknownTag { .. }
             | EngineError::PropertyPredicateUnknownNode { .. }
             | EngineError::PropertyPredicateUnknownAssertion { .. }
             | EngineError::DebugAttachUnknownNode { .. }
@@ -185,7 +180,6 @@ pub(super) fn is_recoverable_engine_rejection(error: &EngineError) -> bool {
             | EngineError::WorldNodeUnsupportedWorkloadPattern { .. }
             | EngineError::WorldNodeUnsupportedWorkloadSpikeMode { .. }
             | EngineError::WorldNodeUnsupportedWorkloadTimeSource { .. }
-            | EngineError::PlanFaultUnsupportedParam { .. }
             | EngineError::DebugBreakpointRequiresAllowMutate { .. }
             | EngineError::EventLogReplayUnsupported { .. }
             | EngineError::SchedulePrefix(_)

@@ -10,7 +10,7 @@
 //! ```text
 //! schema  crucible.reproduction-artifact.v2
 //! seed    42
-//! identity  0.1.0  engine-abi:v1  crucible.reproduction-artifact.v2  crucible-hash:...  crucible-hash:...  1  1  4.0.0  crucible-rpc-abi-v4  plugin-abi:v1
+//! identity  0.1.0  engine-abi:v1  crucible.reproduction-artifact.v2  crucible-hash:...  crucible-hash:...  1  1  5.0.0  crucible-rpc-abi-v5  plugin-abi:v1
 //! scenario  scenario_def  cluster.scn  crucible-hash:...  cas:crucible-hash:...  application/vnd.crucible.scenario+text  128
 //! payload  crucible-hash:...  7363656e6172696f
 //! schedule  crucible-hash:...  12

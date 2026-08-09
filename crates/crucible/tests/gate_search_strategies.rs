@@ -298,11 +298,7 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
     assert!(named_safety_with_missing_truth.is_empty());
 
     let named_false_truths = SearchScheduleNamedPredicateTruths::new().with_truth(
-        SearchScheduleNamedPredicateKey::new(
-            "requires-external-host-oracle",
-            Vec::new(),
-            Vec::new(),
-        ),
+        SearchScheduleNamedPredicateKey::new("requires-external-host-oracle", Vec::new()),
         false,
     );
     let named_safety_with_false_truth =
@@ -320,11 +316,7 @@ fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Resul
     );
 
     let named_true_truths = SearchScheduleNamedPredicateTruths::new().with_truth(
-        SearchScheduleNamedPredicateKey::new(
-            "requires-external-host-oracle",
-            Vec::new(),
-            Vec::new(),
-        ),
+        SearchScheduleNamedPredicateKey::new("requires-external-host-oracle", Vec::new()),
         true,
     );
     let named_safety_with_true_truth =

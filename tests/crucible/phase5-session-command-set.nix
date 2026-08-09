@@ -80,14 +80,6 @@
         needle = "pub enum QueryResult";
       }
       {
-        label = "inject command payload";
-        needle = "InjectFault {";
-      }
-      {
-        label = "heal command payload";
-        needle = "HealFault {";
-      }
-      {
         label = "set-breakpoint command";
         needle = "SetBreakpoint {";
       }

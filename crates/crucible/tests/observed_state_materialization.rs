@@ -106,12 +106,9 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
             },
         ]
     );
-    assert!(state.fault_facts().is_empty());
     assert_eq!(prefix.ordering_facts(), state.ordering_facts());
-    assert_eq!(prefix.fault_facts(), state.fault_facts());
     let expected_observable_events = state.observable_events().to_vec();
     let expected_ordering_facts = state.ordering_facts().to_vec();
-    let expected_fault_facts = state.fault_facts().to_vec();
 
     let pass = ConditionEvaluationPass::from_log_prefix(prefix, NoLeaves);
     assert_eq!(
@@ -121,10 +118,6 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
     assert_eq!(
         pass.observed_state().ordering_facts(),
         expected_ordering_facts.as_slice()
-    );
-    assert_eq!(
-        pass.observed_state().fault_facts(),
-        expected_fault_facts.as_slice()
     );
 }
 

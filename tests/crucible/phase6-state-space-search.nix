@@ -286,10 +286,6 @@
         label = "pending frames as search branches";
         needle = "fn delivery_tie_decisions_from_pending_frames";
       }
-      {
-        label = "active faults as search branches";
-        needle = "for (fault, state) in &runtime.scheduler.active_faults";
-      }
     ]
     ++ forbiddenFailuresFor "crates/crucible/tests/gate_state_space_search.rs" stateSpaceGateTest [
       {

@@ -953,13 +953,6 @@ pub(super) fn external_event_attribute_value_material(
                 value,
             ));
         }
-        EventAttributeValue::Fault(value) => {
-            lines.push(format!("{prefix}.type=fault"));
-            lines.push(external_fault_id_material(
-                &format!("{prefix}.fault"),
-                value,
-            ));
-        }
         EventAttributeValue::VirtualTime(value) => {
             lines.push(format!("{prefix}.type=virtual-time"));
             lines.push(format!("{prefix}.ticks={}", value.ticks));
@@ -1462,10 +1455,6 @@ pub(super) fn external_assertion_id_material(prefix: &str, id: &AssertionId) -> 
 }
 
 pub(super) fn external_marker_id_material(prefix: &str, id: &MarkerId) -> String {
-    external_string_material(prefix, &id.name)
-}
-
-pub(super) fn external_fault_id_material(prefix: &str, id: &FaultId) -> String {
     external_string_material(prefix, &id.name)
 }
 

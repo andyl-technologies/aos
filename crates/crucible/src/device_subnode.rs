@@ -49,7 +49,7 @@ use crucible_device::{
     IoCore, NinepDevice, NinepLatency, PendingResponse,
 };
 
-use crate::scheduler::{IoCompletion, SchedulerDiscardedIoCompletion};
+use crate::scheduler::IoCompletion;
 use crate::{
     ContentHash, DagStore, DagStoreError, Decision, DeviceId, NodeId, SchedulerNodeId, Seed, World,
     WorldDeviceKind, WorldIoNodeKind,
@@ -935,39 +935,6 @@ impl DeviceSchedulingSubNode {
         }
         delivered
     }
-
-    /// Discards every not-yet-delivered completion owned by this sub-node.
-    ///
-    /// Crash handling uses this to void in-flight device responses before they
-    /// can become scheduler-visible events. Returned completions are ordered by
-    /// the sub-node's deterministic delivery order.
-    #[must_use]
-    pub fn discard_in_flight(&mut self) -> Vec<SchedulerDiscardedIoCompletion> {
-        let discarded = self
-            .resolved
-            .iter()
-            .filter(|completion| !completion.delivered)
-            .filter_map(|completion| {
-                completion
-                    .payload
-                    .as_ref()
-                    .map(|payload| SchedulerDiscardedIoCompletion {
-                        sub_node: self.sub_node.clone(),
-                        target: self.target.clone(),
-                        delivery_icount: crate::Icount {
-                            retired: completion.delivery_icount,
-                        },
-                        source_node: completion.src_node,
-                        sequence: completion.seq,
-                        payload: payload.clone(),
-                    })
-            })
-            .collect::<Vec<_>>();
-        self.modeled.clear();
-        self.resolved.clear();
-        self.device.discard_inflight();
-        discarded
-    }
 }
 
 /// Builds the concrete uniform I/O core from one validated world I/O node.
@@ -1028,14 +995,6 @@ impl ScheduledDevice {
         match self {
             ScheduledDevice::Block(device) => device.core().snapshot().inflight,
             ScheduledDevice::Ninep(device) => device.core().snapshot().inflight,
-        }
-    }
-
-    /// Discards all concrete in-flight completions held by the device core.
-    fn discard_inflight(&mut self) -> Vec<PendingResponse> {
-        match self {
-            ScheduledDevice::Block(device) => device.core_mut().discard_inflight(),
-            ScheduledDevice::Ninep(device) => device.core_mut().discard_inflight(),
         }
     }
 }

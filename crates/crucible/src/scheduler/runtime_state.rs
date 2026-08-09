@@ -483,8 +483,6 @@ pub struct SingleScheduler {
     pub(super) quanta: u64,
     pub(super) topology_epoch: u64,
     pub(super) topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
-    pub(super) node_crash_applications: Vec<SchedulerNodeCrashApplication>,
-    pub(super) node_restart_applications: Vec<SchedulerNodeRestartApplication>,
     pub(super) rendezvous_records: Vec<SchedulerRendezvousRecord>,
     pub(super) boundary_yields: u64,
     pub(super) ceiling_publications: Vec<SchedulerRunCeilingPublication>,

@@ -97,14 +97,11 @@ impl Plan {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or an id
-    /// mismatch, [`EngineError::PlanNegativeTime`],
-    /// [`EngineError::PlanFaultUnknownDirection`], or
-    /// [`EngineError::PlanFaultUnsupportedParam`] for localized serialized plan
-    /// validation failures, or a plan validation error when the parsed entries do
-    /// not layer over `world`.
+    /// mismatch, or a plan validation error when the parsed graph and signal
+    /// bindings do not layer over `world`.
     pub fn from_canonical_toml_for_world(world: &World, input: &str) -> Result<Self, EngineError> {
         validate_scenario_toml_size(input)?;
-        validate_plan_entries_in_toml(input)?;
+        require_current_fault_schema(input)?;
         let toml = toml::from_str::<PlanToml>(input)
             .map_err(|source| scenario_serialization_error(format!("parse plan TOML: {source}")))?;
         plan_from_toml(world, toml)
@@ -123,7 +120,7 @@ impl Plan {
         input: &str,
     ) -> Result<Self, EngineError> {
         validate_scenario_toml_size(input)?;
-        validate_plan_entries_in_toml(input)?;
+        require_current_fault_schema(input)?;
         let toml = toml::from_str::<PlanToml>(input)
             .map_err(|source| scenario_serialization_error(format!("parse plan TOML: {source}")))?;
         plan_from_toml_with_assertions(world, assertions, toml)
@@ -179,16 +176,8 @@ impl Plan {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::PlanFaultUnknownNode`],
-    /// [`EngineError::PlanFaultUnknownLink`],
-    /// [`EngineError::PlanFaultUnknownLinkId`],
-    /// [`EngineError::PlanFaultUnknownDevice`],
-    /// [`EngineError::PlanFaultDeviceKindMismatch`],
-    /// [`EngineError::PlanHealUnknownTag`],
-    /// [`EngineError::PlanHealBeforeActivate`],
-    /// [`EngineError::PlanFaultDurationOverflow`], or
-    /// [`EngineError::PlanNotYetJoinedAfterStart`] when an entry cannot be
-    /// layered over the static world topology.
+    /// Returns [`EngineError`] when an event, predicate, signal binding, or
+    /// resolved target is incompatible with the admitted World.
     pub fn validate_for_world(&self, world: &World) -> Result<(), EngineError> {
         self.validate_for_world_with_assertions(world, [])
     }
@@ -1118,10 +1107,10 @@ impl Properties {
     /// Builds a properties bundle after resolving DSL predicates against `world`
     /// and `plan`.
     ///
-    /// Named DSL predicates such as `no_crashed_nodes`, `node_alive:<node>`, and
-    /// `no_active_faults` are expanded to concrete predicates before validation
-    /// and hashing. Unrecognized `Named` predicates remain available for linted
-    /// host-side assertion oracles.
+    /// Named DSL predicates such as `no_crashed_nodes` and `node_alive:<node>`
+    /// are expanded to concrete predicates before validation and hashing.
+    /// Unrecognized `Named` predicates remain available for linted host-side
+    /// assertion oracles.
     ///
     /// # Errors
     ///

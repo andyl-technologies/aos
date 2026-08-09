@@ -176,10 +176,6 @@ shape-line|crates/crucible/src/trigger/event_graph.rs|2147
 shape-line|crates/crucible/src/trigger/evidence.rs|2074
 shape-line|crates/crucible/src/trigger/observability.rs|1111
 shape-line|crates/crucible/tests/event_graph_replay_oracle.rs|778
-shape-line|crates/crucible/tests/example_corpus.rs|1047
-shape-line|crates/crucible/tests/fault_determinism_gate.rs|1416
-shape-line|crates/crucible/tests/fault_plan.rs|992
-shape-line|crates/crucible/tests/fault_production_device_core_gate.rs|1465
 shape-line|crates/crucible/tests/gate_content_address.rs|2237
 shape-line|crates/crucible/tests/gate_e2e_determinism_concurrency.rs|762
 shape-line|crates/crucible/tests/gate_failure_signature.rs|1697

@@ -239,7 +239,7 @@
     }
     {
       label = "VM-clock RTC launch flag";
-      needle = "format!(\"base={},clock=vm\", self.rtc_epoch_utc),";
+      needle = "format!(\"base={DEFAULT_RTC_EPOCH_UTC},clock=vm\"),";
     }
     {
       label = "QEMU deterministic seed launch flag";
