@@ -267,9 +267,11 @@ exposing partial state.
 - [x] Move resource creation, credential rotation, migration, and destructive
       operations to dedicated workflows; remove full create forms from list
       pages.
-- [x] Implement the wide settings workspace and responsive context rail while
-      preserving the existing visual language. Login, account security,
-      activation, and public browse retain their server-rendered operation.
+- [x] Render the management application inside the existing masthead and
+      two-column settings shell, using the shared stylesheet's navigation,
+      controls, forms, tables, badges, focus treatment, and responsive
+      disclosure unchanged. Login, account security, activation, and public
+      browse retain their server-rendered operation.
 - [x] Add role-aware grouped-nav snapshots, root-route/active-item tests,
       canonical-row ordering tests, shared-component parity tests, and wide,
       medium, and narrow layout contract tests.

@@ -263,6 +263,9 @@ async fn canonical_management_links_serve_one_authenticated_shell() {
         );
         let body = String::from_utf8(response.body).unwrap();
         assert!(body.contains("name=\"aos-session-csrf\""), "{path}");
+        assert!(body.contains("name=\"aos-site-brand\""), "{path}");
+        assert!(body.contains("/_assets/style.css?v="), "{path}");
+        assert!(body.contains("/_assets/app.js?v="), "{path}");
         assert!(body.contains(&console_bootstrap_name()), "{path}");
         assert!(
             !body.contains("<form"),

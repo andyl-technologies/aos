@@ -44,7 +44,8 @@ scope header
   concise purpose or canonical URL
 
 settings workspace
-  sectioned left nav | page header + summary strip     | optional context rail
+  sectioned left nav | page heading
+                       optional topology disclosure
                        primary content
                        secondary/advanced sections
 ```
@@ -65,21 +66,30 @@ It contains:
 The header does not repeat the selected navigation label. The page body begins
 with the selected page's `<h1>` and one sentence explaining its responsibility.
 
-### Three-column behavior
+### Shared visual primitives
 
-The default wide layout is:
+The management application does not define a second visual system. Its shell
+loads the same first-party stylesheet and progressive-enhancement script as the
+public browse, login, and account pages. It renders the existing `masthead`,
+`settings`, `settings-nav`, `settings-body`, `button`, form-control, table,
+badge, and `statline` primitives directly. Its content-addressed supplemental
+stylesheet may lay out workflow-specific structures, but it must not redefine
+theme tokens, typography, page chrome, controls, focus treatment, elevation, or
+responsive navigation.
+
+The default wide layout is the established settings layout:
 
 ```text
-220px navigation | minmax(0, 1fr) primary content | 260px context rail
+12rem navigation | minmax(0, 1fr) primary content
 ```
 
-The context rail is optional. It holds topology context, health, documentation,
-or impact summaries—not essential form fields. Pages without rail content let
-the primary column use the available width.
+Topology context is an optional ruled disclosure in the primary content. It
+holds relationship links and impact summaries, never essential form fields.
+Keeping it in the established two-column settings grid preserves the same page
+measure and rhythm as existing Hub settings pages.
 
-At medium widths the rail moves below the primary content. At narrow widths the
-navigation becomes a horizontally scrollable section bar followed by the page
-content. Navigation order and labels do not change responsively.
+At narrow widths the existing settings disclosure places navigation above the
+page content. Navigation order and labels do not change responsively.
 
 Tables and topology diagrams may use a full-width breakout within the content
 column. Forms retain a readable measure rather than stretching every input to
