@@ -13,7 +13,7 @@ use thiserror::Error;
 /// Fault command ABI major version.
 pub const FAULT_COMMAND_ABI_MAJOR: u16 = 1;
 /// Fault command ABI minor version.
-pub const FAULT_COMMAND_ABI_MINOR: u16 = 1;
+pub const FAULT_COMMAND_ABI_MINOR: u16 = 2;
 /// Exact semantic version implemented by every initial command kind.
 pub const FAULT_COMMAND_SEMANTIC_VERSION: u32 = 1;
 /// Default maximum encoded command or result payload bytes.
@@ -419,6 +419,8 @@ pub enum FaultCommandKind {
     QueryCapabilities = 1,
     /// Probes exact-boundary quiescence without mutating guest state.
     BoundaryProbe = 2,
+    /// Returns one immutable, typed target manifest selected by the payload.
+    QueryTargetManifest = 3,
     /// Applies a node lifecycle transition.
     NodeLifecycle = 16,
     /// Applies or removes node/vCPU hang state.
@@ -471,6 +473,7 @@ impl FaultCommandKind {
         match value {
             1 => Ok(Self::QueryCapabilities),
             2 => Ok(Self::BoundaryProbe),
+            3 => Ok(Self::QueryTargetManifest),
             16 => Ok(Self::NodeLifecycle),
             17 => Ok(Self::NodeHang),
             18 => Ok(Self::CpuService),
@@ -2194,6 +2197,10 @@ pub(crate) fn emit_fault_command_c_header(out: &mut String) {
         (
             "CRUCIBLE_FAULT_COMMAND_BOUNDARY_PROBE",
             FaultCommandKind::BoundaryProbe as u16,
+        ),
+        (
+            "CRUCIBLE_FAULT_COMMAND_QUERY_TARGET_MANIFEST",
+            FaultCommandKind::QueryTargetManifest as u16,
         ),
         (
             "CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE",

@@ -10,7 +10,8 @@ use crucible::model::{
 };
 use crucible_shmem::{
     FaultCommandKind, NODE_FAULT_POLICY_JSON_MAGIC_V1, NodeFaultFieldV1, NodeFaultOperationV1,
-    NodeFaultPayloadError, NodeFaultPayloadV1, NodeFaultTargetKindV1, node_fault_field,
+    NodeFaultPayloadError, NodeFaultPayloadV1, NodeFaultTargetKindV1, fault_object_id_hash_v1,
+    node_fault_field,
 };
 use sha2::{Digest, Sha256};
 
@@ -618,7 +619,7 @@ fn target_fields(
 }
 
 fn id_hash(id: &FaultObjectId) -> [u8; 32] {
-    ContentHash::from_canonical_material("crucible.fault-object.v1", id.as_str()).bytes
+    fault_object_id_hash_v1(id.as_str())
 }
 
 fn qemu_virtio_dma_identity(id: &FaultObjectId) -> [u8; 32] {
@@ -892,6 +893,16 @@ mod tests {
             volatile_state_policy: NodeStatePolicy::Clear,
             device_state_policy: NodeStatePolicy::DeviceReset,
         })
+    }
+
+    #[test]
+    fn shared_object_id_hash_matches_the_model_contract() {
+        let id = object_id("node-a/register/rip");
+
+        assert_eq!(
+            fault_object_id_hash_v1(id.as_str()),
+            ContentHash::from_canonical_material("crucible.fault-object.v1", id.as_str()).bytes,
+        );
     }
 
     #[test]

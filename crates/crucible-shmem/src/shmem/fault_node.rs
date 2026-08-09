@@ -1113,6 +1113,7 @@ impl NodeFaultEvidenceV1 {
             self.command_kind,
             FaultCommandKind::QueryCapabilities
                 | FaultCommandKind::BoundaryProbe
+                | FaultCommandKind::QueryTargetManifest
                 | FaultCommandKind::MemoryMutation
         ) || self.model_phase == 0
             || self.generation == 0

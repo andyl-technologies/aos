@@ -572,6 +572,12 @@ impl QemuLaunchCommandBuilder {
         } else {
             None
         };
+        let fault_capability_requirement = architecture.map(|architecture| {
+            crate::QemuFaultCapabilityRequirement::current_v1(
+                architecture,
+                profile.cpu_model.clone(),
+            )
+        });
         Self {
             profile,
             vm,
@@ -581,8 +587,7 @@ impl QemuLaunchCommandBuilder {
             qmp: None,
             translation_prefetch: None,
             console_capture: false,
-            fault_capability_requirement: architecture
-                .map(crate::QemuFaultCapabilityRequirement::current_v1),
+            fault_capability_requirement,
         }
     }
 

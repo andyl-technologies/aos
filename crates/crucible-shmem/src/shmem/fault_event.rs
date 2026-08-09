@@ -179,7 +179,9 @@ impl FaultEventHeaderV1 {
             FaultCommandKind::from_u16(reader.u16()?).map_err(|_| FaultEventError::CommandKind)?;
         if matches!(
             command_kind,
-            FaultCommandKind::QueryCapabilities | FaultCommandKind::BoundaryProbe
+            FaultCommandKind::QueryCapabilities
+                | FaultCommandKind::BoundaryProbe
+                | FaultCommandKind::QueryTargetManifest
         ) {
             return Err(FaultEventError::CommandKind);
         }

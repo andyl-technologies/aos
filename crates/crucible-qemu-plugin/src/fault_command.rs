@@ -12,15 +12,20 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::NonNull;
 
 use crucible_shmem::{
-    DequeuedFaultCommand, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
-    FaultCapabilityScope, FaultCommandHeaderV1, FaultCommandKind, FaultCommandSlotV1,
-    FaultEventHeaderV1, FaultEventOutcomeV1, FaultEventSlotV1, FaultPayloadArenaHeader,
-    FaultResultHeaderV1, FaultResultSlotV1, FaultResultStatus, FaultTransportError,
+    DequeuedFaultCommand, FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
+    FAULT_COMMAND_SEMANTIC_VERSION, FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError,
+    FaultBoundaryPhase, FaultCapabilityRowV1, FaultCapabilityScope, FaultCommandHeaderV1,
+    FaultCommandKind, FaultCommandSlotV1, FaultEventHeaderV1, FaultEventOutcomeV1,
+    FaultEventSlotV1, FaultPayloadArenaHeader, FaultRegisterCapabilityManifestV1,
+    FaultRegisterCapabilityRowV1, FaultRegisterGroupV1, FaultRegisterMutationEvidenceV1,
+    FaultRegisterMutationKindV1, FaultResultHeaderV1, FaultResultSlotV1, FaultResultStatus,
+    FaultTargetManifestKind, FaultTargetManifestQueryV1, FaultTransportError,
     HARD_FAULT_PAYLOAD_BYTES, MappedFaultCommandTransportMut, MappedFaultEventTransportMut,
     MappedFaultResultTransportMut, MappedSetupRegion, MappedSetupRegionAccessError, RingHeader,
     can_enqueue_fault_event, can_enqueue_fault_result, dequeue_fault_command,
     encode_fault_capability_manifest, enqueue_fault_event, enqueue_fault_result,
-    fault_capability_manifest_digest,
+    fault_capability_manifest_digest, fault_register_cpu_model_digest_v1,
+    fault_register_manifest_digest_v1,
 };
 use thiserror::Error;
 
@@ -41,6 +46,12 @@ pub const QEMU_PLUGIN_CRUCIBLE_FAULT_EVENT_PEEK_SYMBOL: &str =
 /// QEMU symbol that copies and consumes one rule event.
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_EVENT_POLL_SYMBOL: &str =
     "qemu_plugin_crucible_fault_event_poll";
+/// QEMU symbol that copies architecture-owned register target rows.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_REGISTER_MANIFEST_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_register_manifest";
+/// QEMU symbol that seals one public identity-to-private-register binding.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_REGISTER_BIND_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_register_bind";
 
 const CAPABILITIES_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_capabilities\0";
 const SUBMIT_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_submit\0";
@@ -49,6 +60,8 @@ const PEEK_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_peek\0";
 const POLL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_poll\0";
 const EVENT_PEEK_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_event_peek\0";
 const EVENT_POLL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_event_poll\0";
+const REGISTER_MANIFEST_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_register_manifest\0";
+const REGISTER_BIND_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_register_bind\0";
 const CAPABILITY_HASH_DOMAIN: &[u8] = b"crucible.qemu-fault-capability.v1\0";
 
 #[repr(C)]
@@ -121,6 +134,24 @@ struct QemuFaultCapability {
     payload_schema: *const c_char,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct QemuFaultRegisterCapability {
+    numeric_id: u32,
+    width_bits: u32,
+    group: u16,
+    reserved: u16,
+    model_phase_mask: u64,
+    side_effects: u32,
+    capabilities: u32,
+    name: *const c_char,
+    writable_mask: *const u8,
+    reserved_mask: *const u8,
+    ignored_mask: *const u8,
+    read_only_mask: *const u8,
+    mask_bytes: usize,
+}
+
 type QemuFaultCapabilitiesFn = extern "C" fn(*mut QemuFaultCapability, usize) -> usize;
 type QemuFaultSubmitFn = extern "C" fn(*const QemuFaultCommand, *const u8, usize) -> c_int;
 type QemuFaultCancelFn = extern "C" fn(u64) -> c_int;
@@ -128,6 +159,9 @@ type QemuFaultPeekFn = extern "C" fn(*mut QemuFaultResult, *mut usize) -> c_int;
 type QemuFaultPollFn = extern "C" fn(*mut QemuFaultResult, *mut u8, usize, *mut usize) -> c_int;
 type QemuFaultEventPeekFn = extern "C" fn(*mut QemuFaultEvent, *mut usize) -> c_int;
 type QemuFaultEventPollFn = extern "C" fn(*mut QemuFaultEvent, *mut u8, usize, *mut usize) -> c_int;
+type QemuFaultRegisterManifestFn =
+    extern "C" fn(*mut QemuFaultRegisterCapability, usize, *mut u16, *mut *const c_char) -> usize;
+type QemuFaultRegisterBindFn = extern "C" fn(*const u8, u32) -> c_int;
 
 /// Resolved, closed QEMU fault registry operations.
 #[derive(Clone, Copy)]
@@ -140,6 +174,8 @@ pub(crate) struct QemuFaultCommandApis {
     poll: QemuFaultPollFn,
     event_peek: QemuFaultEventPeekFn,
     event_poll: QemuFaultEventPollFn,
+    register_manifest: QemuFaultRegisterManifestFn,
+    register_bind: QemuFaultRegisterBindFn,
 }
 
 impl QemuFaultCommandApis {
@@ -162,6 +198,14 @@ impl QemuFaultCommandApis {
             event_poll: resolve_symbol(
                 EVENT_POLL_SYMBOL_C,
                 QEMU_PLUGIN_CRUCIBLE_FAULT_EVENT_POLL_SYMBOL,
+            )?,
+            register_manifest: resolve_symbol(
+                REGISTER_MANIFEST_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_REGISTER_MANIFEST_SYMBOL,
+            )?,
+            register_bind: resolve_symbol(
+                REGISTER_BIND_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_REGISTER_BIND_SYMBOL,
             )?,
         })
     }
@@ -206,6 +250,78 @@ impl QemuFaultCommandApis {
         Ok(rows)
     }
 
+    fn register_manifest(
+        self,
+    ) -> Result<FaultRegisterCapabilityManifestV1, FaultCommandBridgeError> {
+        let mut architecture = 0_u16;
+        let mut cpu_model = std::ptr::null();
+        let required =
+            (self.register_manifest)(std::ptr::null_mut(), 0, &mut architecture, &mut cpu_model);
+        if required == 0 || required > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS {
+            return Err(FaultCommandBridgeError::RegisterManifestCount { required });
+        }
+        let empty = QemuFaultRegisterCapability {
+            numeric_id: 0,
+            width_bits: 0,
+            group: 0,
+            reserved: 0,
+            model_phase_mask: 0,
+            side_effects: 0,
+            capabilities: 0,
+            name: std::ptr::null(),
+            writable_mask: std::ptr::null(),
+            reserved_mask: std::ptr::null(),
+            ignored_mask: std::ptr::null(),
+            read_only_mask: std::ptr::null(),
+            mask_bytes: 0,
+        };
+        let mut raw = vec![empty; required];
+        let observed = (self.register_manifest)(
+            raw.as_mut_ptr(),
+            raw.len(),
+            &mut architecture,
+            &mut cpu_model,
+        );
+        if observed != required {
+            return Err(FaultCommandBridgeError::RegisterManifestChanged {
+                expected: required,
+                observed,
+            });
+        }
+        let manifest = FaultRegisterCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::from_u16(architecture)
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+            cpu_model: capability_text(cpu_model, "cpu_model")?.to_owned(),
+            rows: raw
+                .into_iter()
+                .map(register_capability_row)
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        FaultRegisterCapabilityManifestV1::decode(
+            &manifest
+                .encode()
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        )
+        .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
+    }
+
+    fn bind_register_manifest(
+        self,
+        manifest: &FaultRegisterCapabilityManifestV1,
+    ) -> Result<(), FaultCommandBridgeError> {
+        for row in &manifest.rows {
+            let identity = crucible_shmem::fault_object_id_hash_v1(&row.name);
+            let status = (self.register_bind)(identity.as_ptr(), row.numeric_id);
+            if status != 0 {
+                return Err(FaultCommandBridgeError::RegisterManifestBind {
+                    numeric_id: row.numeric_id,
+                    status,
+                });
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) const fn test_stub() -> Self {
         Self {
@@ -216,6 +332,8 @@ impl QemuFaultCommandApis {
             poll: test_poll,
             event_peek: test_event_peek,
             event_poll: test_event_poll,
+            register_manifest: test_register_manifest,
+            register_bind: test_register_bind,
         }
     }
 }
@@ -332,6 +450,21 @@ extern "C" fn test_event_poll(
 }
 
 #[cfg(test)]
+extern "C" fn test_register_manifest(
+    _out: *mut QemuFaultRegisterCapability,
+    _capacity: usize,
+    _architecture: *mut u16,
+    _cpu_model: *mut *const c_char,
+) -> usize {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_register_bind(_identity: *const u8, _numeric_id: u32) -> c_int {
+    0
+}
+
+#[cfg(test)]
 fn test_result_for_command(command: QemuFaultCommand) -> QemuFaultResult {
     QemuFaultResult {
         command_kind: command.command_kind,
@@ -400,6 +533,44 @@ fn capability_row(
         .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
 }
 
+fn register_capability_row(
+    raw: QemuFaultRegisterCapability,
+) -> Result<FaultRegisterCapabilityRowV1, FaultCommandBridgeError> {
+    let expected_mask_bytes = usize::try_from(raw.width_bits.div_ceil(8))
+        .map_err(|_source| FaultCommandBridgeError::RegisterManifestRow)?;
+    if raw.reserved != 0
+        || raw.width_bits == 0
+        || raw.width_bits > crucible_shmem::HARD_FAULT_REGISTER_WIDTH_BITS
+        || raw.mask_bytes != expected_mask_bytes
+        || raw.writable_mask.is_null()
+        || raw.reserved_mask.is_null()
+        || raw.ignored_mask.is_null()
+        || raw.read_only_mask.is_null()
+    {
+        return Err(FaultCommandBridgeError::RegisterManifestRow);
+    }
+    let copy_mask = |pointer: *const u8| {
+        // SAFETY: the QEMU manifest export promises process-lifetime arrays of
+        // exactly `ceil(width_bits / 8)` bytes. Width, the redundant length,
+        // and null pointers were checked above before this synchronous copy.
+        unsafe { std::slice::from_raw_parts(pointer, raw.mask_bytes) }.to_vec()
+    };
+    Ok(FaultRegisterCapabilityRowV1 {
+        numeric_id: raw.numeric_id,
+        name: capability_text(raw.name, "register_name")?.to_owned(),
+        width_bits: raw.width_bits,
+        group: FaultRegisterGroupV1::from_u16(raw.group)
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        model_phase_mask: raw.model_phase_mask,
+        side_effects: raw.side_effects,
+        capabilities: raw.capabilities,
+        writable_mask: copy_mask(raw.writable_mask),
+        reserved_mask: copy_mask(raw.reserved_mask),
+        ignored_mask: copy_mask(raw.ignored_mask),
+        read_only_mask: copy_mask(raw.read_only_mask),
+    })
+}
+
 fn capability_text(
     pointer: *const c_char,
     field: &'static str,
@@ -446,6 +617,13 @@ struct StableFaultEventTransport {
     arena: NonNull<u8>,
     arena_len: usize,
     arena_region_offset: u64,
+}
+
+#[derive(Clone, Copy)]
+struct RegisterEvidenceIdentity {
+    architecture: FaultCapabilityScope,
+    manifest_digest: [u8; 32],
+    cpu_model_digest: [u8; 32],
 }
 
 impl StableFaultCommandTransport {
@@ -620,6 +798,9 @@ pub(crate) struct FaultCommandBridge {
     last_sequence: u64,
     capability_payload: Vec<u8>,
     capability_queries: BTreeSet<u64>,
+    register_manifest_payload: Option<Vec<u8>>,
+    register_evidence_identity: Option<RegisterEvidenceIdentity>,
+    pending_command: Option<DequeuedFaultCommand>,
 }
 
 impl FaultCommandBridge {
@@ -633,7 +814,50 @@ impl FaultCommandBridge {
         if target_node_hash == [0; 32] {
             return Err(FaultCommandBridgeError::ZeroTargetNodeHash);
         }
-        let rows = apis.capability_rows()?;
+        let mut rows = apis.capability_rows()?;
+        let (register_manifest_payload, register_evidence_identity) = if rows.iter().any(|row| {
+            row.command_kind == FaultCommandKind::CpuRegisterTransform
+                && row.required_feature_bits & FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION != 0
+        }) {
+            let manifest = apis.register_manifest()?;
+            apis.bind_register_manifest(&manifest)?;
+            let payload = manifest
+                .encode()
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
+            let manifest_digest = fault_register_manifest_digest_v1(&manifest)
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
+            let evidence_identity = RegisterEvidenceIdentity {
+                architecture: manifest.architecture,
+                manifest_digest,
+                cpu_model_digest: fault_register_cpu_model_digest_v1(
+                    manifest.architecture,
+                    &manifest.cpu_model,
+                ),
+            };
+            let register_row = rows
+                .iter_mut()
+                .find(|row| row.command_kind == FaultCommandKind::CpuRegisterTransform)
+                .ok_or(FaultCommandBridgeError::RegisterCapabilityMissing)?;
+            register_row.scope = manifest.architecture;
+            register_row.capability_hash =
+                register_capability_hash(manifest.architecture, manifest_digest);
+            rows.push(target_manifest_capability_row(
+                manifest.architecture,
+                manifest_digest,
+            ));
+            rows.sort_by_key(|row| {
+                (
+                    row.command_kind as u16,
+                    row.semantic_version,
+                    row.scope as u16,
+                )
+            });
+            fault_capability_manifest_digest(&rows)
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
+            (Some(payload), Some(evidence_identity))
+        } else {
+            (None, None)
+        };
         let capability_payload = encode_fault_capability_manifest(&rows)
             .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
         let commands = StableFaultCommandTransport::new(
@@ -660,6 +884,9 @@ impl FaultCommandBridge {
             last_sequence: 0,
             capability_payload,
             capability_queries: BTreeSet::new(),
+            register_manifest_payload,
+            register_evidence_identity,
+            pending_command: None,
         })
     }
 
@@ -690,12 +917,27 @@ impl FaultCommandBridge {
             return Ok(());
         }
         loop {
-            if !self.results.can_enqueue(0)? {
+            let command = match self.pending_command.take() {
+                Some(command) => command,
+                None => {
+                    let Some(command) = self.commands.dequeue()? else {
+                        break;
+                    };
+                    command
+                }
+            };
+            let required_result_payload = match &command {
+                DequeuedFaultCommand::Valid { header, .. }
+                    if header.command_kind == FaultCommandKind::QueryTargetManifest =>
+                {
+                    self.register_manifest_payload.as_ref().map_or(0, Vec::len)
+                }
+                DequeuedFaultCommand::Valid { .. } | DequeuedFaultCommand::Rejected { .. } => 0,
+            };
+            if !self.results.can_enqueue(required_result_payload)? {
+                self.pending_command = Some(command);
                 return Ok(());
             }
-            let Some(command) = self.commands.dequeue()? else {
-                break;
-            };
             match command {
                 DequeuedFaultCommand::Valid { header, payload } => {
                     self.submit(*header, &payload, logical_icount_offset, logical_icount)?;
@@ -756,6 +998,58 @@ impl FaultCommandBridge {
                 header.phase,
                 FaultResultStatus::InvalidTarget,
                 logical_icount,
+            );
+        }
+        if header.command_kind == FaultCommandKind::QueryTargetManifest {
+            let query = match FaultTargetManifestQueryV1::decode(payload) {
+                Ok(query) => query,
+                Err(_source) => {
+                    return self.publish_local_rejection(
+                        header.command_kind as u16,
+                        header.command_sequence,
+                        header.phase,
+                        FaultResultStatus::MalformedCommand,
+                        logical_icount,
+                    );
+                }
+            };
+            if header.phase != FaultBoundaryPhase::NodeBoundary
+                || header.target_icount != 0
+                || header.authorization_ceiling_icount != 0
+                || logical_icount != 0
+            {
+                return self.publish_local_rejection(
+                    header.command_kind as u16,
+                    header.command_sequence,
+                    header.phase,
+                    FaultResultStatus::InvalidPhase,
+                    logical_icount,
+                );
+            }
+            if query.kind != FaultTargetManifestKind::Register {
+                return self.publish_local_rejection(
+                    header.command_kind as u16,
+                    header.command_sequence,
+                    header.phase,
+                    FaultResultStatus::UnsupportedCapability,
+                    logical_icount,
+                );
+            }
+            let Some(result_payload) = self.register_manifest_payload.clone() else {
+                return self.publish_local_rejection(
+                    header.command_kind as u16,
+                    header.command_sequence,
+                    header.phase,
+                    FaultResultStatus::UnsupportedCapability,
+                    logical_icount,
+                );
+            };
+            return self.publish_local_applied(
+                header.command_kind as u16,
+                header.command_sequence,
+                header.phase,
+                logical_icount,
+                &result_payload,
             );
         }
         let Some(target_icount) = header.target_icount.checked_sub(logical_icount_offset) else {
@@ -835,8 +1129,16 @@ impl FaultCommandBridge {
             }
             let is_capability_query = self.capability_queries.contains(&peeked.command_sequence)
                 && peeked.status == FaultResultStatus::Applied as u16;
+            let is_register_result = peeked.command_kind
+                == FaultCommandKind::CpuRegisterTransform as u16
+                && peeked.status == FaultResultStatus::Applied as u16
+                && self.register_evidence_identity.is_some();
             let result_payload_len = if is_capability_query {
                 self.capability_payload.len()
+            } else if is_register_result {
+                peeked_payload_len
+                    .checked_add(128)
+                    .ok_or(FaultCommandBridgeError::PayloadCapacity)?
             } else {
                 peeked_payload_len
             };
@@ -873,9 +1175,25 @@ impl FaultCommandBridge {
                 });
             }
             let mut result_payload = &payload[..];
+            let translated_register: Vec<u8>;
             if is_capability_query {
                 self.capability_queries.remove(&result.command_sequence);
                 result_payload = &self.capability_payload;
+                result.evidence_hash = *blake3::hash(result_payload).as_bytes();
+            } else if is_register_result && payload.starts_with(b"CRUCQRW1") {
+                let identity = self
+                    .register_evidence_identity
+                    .ok_or(FaultCommandBridgeError::RegisterEvidence)?;
+                translated_register = translate_register_evidence(
+                    &payload,
+                    identity,
+                    logical_icount_offset,
+                    result.applied_icount,
+                    None,
+                    result.before_hash,
+                    result.after_hash,
+                )?;
+                result_payload = &translated_register;
                 result.evidence_hash = *blake3::hash(result_payload).as_bytes();
             }
             let observed_icount = result
@@ -931,7 +1249,15 @@ impl FaultCommandBridge {
                     capacity: payload_capacity,
                 });
             }
-            if !self.events.can_enqueue(peeked_payload_len)? {
+            let published_payload_len =
+                if peeked.command_kind == FaultCommandKind::CpuRegisterTransform as u16 {
+                    peeked_payload_len
+                        .checked_add(128)
+                        .ok_or(FaultCommandBridgeError::PayloadCapacity)?
+                } else {
+                    peeked_payload_len
+                };
+            if !self.events.can_enqueue(published_payload_len)? {
                 return Ok(false);
             }
             let mut payload = vec![0_u8; peeked_payload_len];
@@ -968,6 +1294,23 @@ impl FaultCommandBridge {
                 .observed_icount
                 .checked_add(logical_icount_offset)
                 .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+            let published_payload =
+                if event.command_kind == FaultCommandKind::CpuRegisterTransform as u16 {
+                    let identity = self
+                        .register_evidence_identity
+                        .ok_or(FaultCommandBridgeError::RegisterEvidence)?;
+                    translate_register_evidence(
+                        &payload,
+                        identity,
+                        logical_icount_offset,
+                        event.observed_icount,
+                        Some(event.model_phase),
+                        event.before_hash,
+                        event.after_hash,
+                    )?
+                } else {
+                    payload
+                };
             let header = FaultEventHeaderV1 {
                 command_kind: command_kind(event.command_kind)?,
                 outcome: event_outcome(event.outcome)?,
@@ -988,7 +1331,7 @@ impl FaultCommandBridge {
                 payload_offset: 0,
                 payload_length: 0,
             };
-            self.events.enqueue(header, &payload)?;
+            self.events.enqueue(header, &published_payload)?;
         }
     }
 
@@ -1020,6 +1363,185 @@ impl FaultCommandBridge {
         };
         self.results.enqueue(header, &[])
     }
+
+    fn publish_local_applied(
+        &mut self,
+        command_kind: u16,
+        command_sequence: u64,
+        phase: FaultBoundaryPhase,
+        logical_icount: u64,
+        payload: &[u8],
+    ) -> Result<(), FaultCommandBridgeError> {
+        let header = FaultResultHeaderV1 {
+            abi_major: crucible_shmem::FAULT_COMMAND_ABI_MAJOR,
+            abi_minor: crucible_shmem::FAULT_COMMAND_ABI_MINOR,
+            command_kind,
+            status: FaultResultStatus::Applied,
+            semantic_version: crucible_shmem::FAULT_COMMAND_SEMANTIC_VERSION,
+            command_sequence,
+            observed_icount: logical_icount,
+            applied_icount: logical_icount,
+            capability_version: 1,
+            phase,
+            before_hash: [0; 32],
+            after_hash: [0; 32],
+            evidence_hash: *blake3::hash(payload).as_bytes(),
+            result_payload_hash: [0; 32],
+            result_offset: 0,
+            result_length: 0,
+        };
+        self.results.enqueue(header, payload)
+    }
+}
+
+fn target_manifest_capability_row(
+    architecture: FaultCapabilityScope,
+    manifest_digest: [u8; 32],
+) -> FaultCapabilityRowV1 {
+    let name = b"qemu.target-manifest.register.v1";
+    let schema = b"crucible.target-manifest-query.v1";
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(CAPABILITY_HASH_DOMAIN);
+    hasher.update(name);
+    hasher.update(&[0]);
+    hasher.update(schema);
+    hasher.update(&[0]);
+    hasher.update(&manifest_digest);
+    FaultCapabilityRowV1 {
+        command_kind: FaultCommandKind::QueryTargetManifest,
+        semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+        scope: architecture,
+        phase_mask: FaultBoundaryPhase::NodeBoundary.bit(),
+        maximum_payload_bytes: FAULT_TARGET_MANIFEST_QUERY_V1_BYTES as u32,
+        maximum_pending_commands: 1,
+        required_feature_bits: FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
+        capability_hash: *hasher.finalize().as_bytes(),
+    }
+}
+
+fn register_capability_hash(
+    architecture: FaultCapabilityScope,
+    manifest_digest: [u8; 32],
+) -> [u8; 32] {
+    let name = match architecture {
+        FaultCapabilityScope::X86_64 => b"qemu.register.mutate.x86_64.v1".as_slice(),
+        FaultCapabilityScope::Aarch64 => b"qemu.register.mutate.aarch64.v1".as_slice(),
+        _ => b"qemu.register.mutate.invalid.v1".as_slice(),
+    };
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(CAPABILITY_HASH_DOMAIN);
+    hasher.update(name);
+    hasher.update(&[0]);
+    hasher.update(b"crucible.node-fault-payload.v1");
+    hasher.update(&[0]);
+    hasher.update(&manifest_digest);
+    *hasher.finalize().as_bytes()
+}
+
+fn translate_register_evidence(
+    raw: &[u8],
+    identity: RegisterEvidenceIdentity,
+    logical_icount_offset: u64,
+    expected_raw_icount: u64,
+    expected_model_phase: Option<u16>,
+    expected_before: [u8; 32],
+    expected_after: [u8; 32],
+) -> Result<Vec<u8>, FaultCommandBridgeError> {
+    const HEADER: usize = 128;
+    if raw.len() < HEADER
+        || raw[..8] != *b"CRUCQRW1"
+        || raw_u16(raw, 8)? != 1
+        || raw[14..16] != [0, 0]
+        || raw[52..56] != [0, 0, 0, 0]
+        || raw[120..128].iter().any(|byte| *byte != 0)
+    {
+        return Err(FaultCommandBridgeError::RegisterEvidence);
+    }
+    let architecture = FaultCapabilityScope::from_u16(raw_u16(raw, 10)?)
+        .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)?;
+    if architecture != identity.architecture {
+        return Err(FaultCommandBridgeError::RegisterEvidence);
+    }
+    let model_phase = raw_u16(raw, 12)?;
+    if expected_model_phase.is_some_and(|expected| expected != model_phase)
+        || raw_u64(raw, 56)? != expected_raw_icount
+    {
+        return Err(FaultCommandBridgeError::RegisterEvidence);
+    }
+    let before_len = usize::try_from(raw_u32(raw, 44)?)
+        .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)?;
+    let after_len = usize::try_from(raw_u32(raw, 48)?)
+        .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)?;
+    if raw.len()
+        != HEADER
+            .checked_add(before_len)
+            .and_then(|length| length.checked_add(after_len))
+            .ok_or(FaultCommandBridgeError::RegisterEvidence)?
+    {
+        return Err(FaultCommandBridgeError::RegisterEvidence);
+    }
+    let mutation_kind = match raw_u32(raw, 24)? {
+        1 => FaultRegisterMutationKindV1::BitFlip,
+        2 => FaultRegisterMutationKindV1::Stuck,
+        3 => FaultRegisterMutationKindV1::Replace,
+        _ => return Err(FaultCommandBridgeError::RegisterEvidence),
+    };
+    let observed_icount = raw_u64(raw, 56)?
+        .checked_add(logical_icount_offset)
+        .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+    let before_start = HEADER;
+    let after_start = before_start + before_len;
+    let evidence = FaultRegisterMutationEvidenceV1 {
+        architecture,
+        model_phase,
+        vcpu_index: raw_u32(raw, 16)?,
+        numeric_id: raw_u32(raw, 20)?,
+        mutation_kind,
+        declared_side_effects: raw_u32(raw, 28)?,
+        performed_side_effects: raw_u32(raw, 32)?,
+        first_bit: raw_u32(raw, 36)?,
+        bit_count: raw_u32(raw, 40)?,
+        observed_icount,
+        rr_current_vcpu: raw_u64(raw, 64)?,
+        rr_cursor_position: raw_u64(raw, 72)?,
+        rr_switch_quantum: raw_u64(raw, 80)?,
+        manifest_digest: identity.manifest_digest,
+        cpu_model_digest: identity.cpu_model_digest,
+        before_sha256: expected_before,
+        after_sha256: expected_after,
+        execution_fingerprint_sha256: raw[88..120]
+            .try_into()
+            .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)?,
+        before: raw[before_start..after_start].to_vec(),
+        after: raw[after_start..].to_vec(),
+    };
+    evidence
+        .encode()
+        .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)
+}
+
+fn raw_u16(bytes: &[u8], offset: usize) -> Result<u16, FaultCommandBridgeError> {
+    bytes
+        .get(offset..offset + 2)
+        .and_then(|value| value.try_into().ok())
+        .map(u16::from_le_bytes)
+        .ok_or(FaultCommandBridgeError::RegisterEvidence)
+}
+
+fn raw_u32(bytes: &[u8], offset: usize) -> Result<u32, FaultCommandBridgeError> {
+    bytes
+        .get(offset..offset + 4)
+        .and_then(|value| value.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or(FaultCommandBridgeError::RegisterEvidence)
+}
+
+fn raw_u64(bytes: &[u8], offset: usize) -> Result<u64, FaultCommandBridgeError> {
+    bytes
+        .get(offset..offset + 8)
+        .and_then(|value| value.try_into().ok())
+        .map(u64::from_le_bytes)
+        .ok_or(FaultCommandBridgeError::RegisterEvidence)
 }
 
 fn boundary_phase(value: u16) -> Result<FaultBoundaryPhase, FaultCommandBridgeError> {
@@ -1097,6 +1619,37 @@ pub enum FaultCommandBridgeError {
         /// Copy-call result.
         observed: usize,
     },
+    /// The architecture register registry reported an invalid row count.
+    #[error("QEMU register manifest reported invalid row count {required}")]
+    RegisterManifestCount {
+        /// Reported row count.
+        required: usize,
+    },
+    /// The immutable register registry changed between size and copy calls.
+    #[error("QEMU register manifest changed from {expected} to {observed} rows")]
+    RegisterManifestChanged {
+        /// First size query.
+        expected: usize,
+        /// Copy-call result.
+        observed: usize,
+    },
+    /// A raw register row contained invalid reserved, pointer, or mask state.
+    #[error("QEMU register manifest row has invalid raw framing")]
+    RegisterManifestRow,
+    /// QEMU rejected a sealed public identity-to-register binding.
+    #[error("QEMU rejected register binding for numeric ID {numeric_id}: status {status}")]
+    RegisterManifestBind {
+        /// Manifest numeric ID.
+        numeric_id: u32,
+        /// Negative errno-style status.
+        status: c_int,
+    },
+    /// Register mutation was advertised without its required capability row.
+    #[error("QEMU register manifest has no CPU register-transform capability")]
+    RegisterCapabilityMissing,
+    /// QEMU returned malformed or identity-inconsistent register evidence.
+    #[error("QEMU register mutation evidence is invalid")]
+    RegisterEvidence,
     /// A process-lifetime capability string pointer was null.
     #[error("QEMU fault capability field `{field}` is null")]
     CapabilityStringNull {
@@ -1344,6 +1897,9 @@ mod tests {
             last_sequence: 0,
             capability_payload: capability_payload.clone(),
             capability_queries: BTreeSet::new(),
+            register_manifest_payload: None,
+            register_evidence_identity: None,
+            pending_command: None,
         };
         let command = |kind, sequence, node_hash| FaultCommandHeaderV1 {
             abi_major: FAULT_COMMAND_ABI_MAJOR,

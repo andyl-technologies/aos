@@ -343,7 +343,9 @@ impl QemuNodeSet {
             }
             FaultCommandKind::AcceleratorMemoryEvent => Some("qemu.accelerator.memory-event.v1"),
             FaultCommandKind::AcceleratorService => Some("qemu.accelerator.service.v1"),
-            FaultCommandKind::QueryCapabilities | FaultCommandKind::BoundaryProbe => None,
+            FaultCommandKind::QueryCapabilities
+            | FaultCommandKind::BoundaryProbe
+            | FaultCommandKind::QueryTargetManifest => None,
         };
         let capabilities = common
             .into_iter()

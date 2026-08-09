@@ -56,6 +56,14 @@ fn generated_header_asserts_every_shared_struct_layout() {
         "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_payload_arena_header)",
         "offsetof(crucible_fault_payload_arena_header, read_cursor)",
         "offsetof(crucible_fault_payload_arena_header, write_cursor)",
+        "CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_MAGIC_V1 \"CRUCFTQ1\"",
+        "CRUCIBLE_FAULT_REGISTER_MANIFEST_BODY_DIGEST_OFFSET 24",
+        "CRUCIBLE_FAULT_REGISTER_ROW_LENGTH_OFFSET 38",
+        "CRUCIBLE_FAULT_REGISTER_SIDE_EFFECTS_V1_MASK 63",
+        "CRUCIBLE_FAULT_REGISTER_EVIDENCE_MAGIC_V1 \"CRUCREG1\"",
+        "CRUCIBLE_FAULT_REGISTER_EVIDENCE_HEADER_V1_BYTES 256",
+        "CRUCIBLE_FAULT_REGISTER_EVIDENCE_EXECUTION_FINGERPRINT_OFFSET 216",
+        "CRUCIBLE_FAULT_REGISTER_MUTATION_REPLACE 3",
     ] {
         assert!(
             header.contains(needle),
