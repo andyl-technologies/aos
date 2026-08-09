@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index e5a54f3b6..0b85c6d2f 100644
+index e5a54f3..0b85c6d 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -149,6 +149,9 @@ static void rr_crucible_sim_sync_vcpu_halt_callbacks(void)
@@ -254,7 +254,7 @@ index e5a54f3b6..0b85c6d2f 100644
  
          if (cpu && cpu->exit_request) {
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
-index 702e9bf18..d4e5c8d67 100644
+index 702e9bf..d4e5c8d 100644
 --- a/accel/tcg/tcg-accel-ops-sim-shmem.c
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
 @@ -4,6 +4,7 @@
@@ -315,7 +315,7 @@ index 702e9bf18..d4e5c8d67 100644
  
      return UINT64_MAX;
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 02dfd45e3..819a46860 100644
+index 02dfd45..819a468 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -190,6 +190,14 @@ extern void *qemu_plugin_vcpu_idle_resume_userdata;
@@ -370,7 +370,7 @@ index 02dfd45e3..819a46860 100644
      uint64_t event_id, uint64_t delivery_icount, unsigned int src_vcpu,
      unsigned int dst_vcpu, unsigned int delivery_mode, unsigned int vector)
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 7b654a05d..8caced855 100644
+index 7ae838f..1f6e66d 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1042,6 +1042,23 @@ int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,
@@ -398,7 +398,7 @@ index 7b654a05d..8caced855 100644
   * qemu_plugin_crucible_single_threaded_rr() - report the live sim execution mode
   *
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 1ca44fbd7..094f118ac 100644
+index 1ca44fb..094f118 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
 @@ -14,6 +14,7 @@
@@ -454,10 +454,10 @@ index 1ca44fbd7..094f118ac 100644
      /* if there is a dump in background, we should wait until the dump
       * finished */
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index df9ebabf8..ca9efbe73 100644
+index 39e92ce..fa09645 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -318,6 +318,103 @@ void qemu_plugin_force_vcpu_exit(void)
+@@ -335,6 +335,103 @@ void qemu_plugin_force_vcpu_exit(void)
      }
  }
  
@@ -561,7 +561,7 @@ index df9ebabf8..ca9efbe73 100644
  int qemu_plugin_crucible_single_threaded_rr(void)
  {
      return strcmp(current_accel_name(), "sim") == 0 &&
-@@ -441,8 +538,10 @@ void qemu_plugin_fire_tcg_exec_cb(CPUState *cpu)
+@@ -458,8 +555,10 @@ void qemu_plugin_fire_tcg_exec_cb(CPUState *cpu)
      qemu_plugin_tcg_exec_cb_t cb = qemu_plugin_tcg_exec_cb;
  
      if (cb && cpu) {
@@ -572,7 +572,7 @@ index df9ebabf8..ca9efbe73 100644
      }
  }
  
-@@ -460,8 +559,10 @@ void qemu_plugin_fire_vcpu_idle_cb(CPUState *cpu)
+@@ -477,8 +576,10 @@ void qemu_plugin_fire_vcpu_idle_cb(CPUState *cpu)
      qemu_plugin_vcpu_idle_resume_cb_t cb = qemu_plugin_vcpu_idle_resume_idle_cb;
  
      if (cb && cpu) {
@@ -583,7 +583,7 @@ index df9ebabf8..ca9efbe73 100644
      }
  }
  
-@@ -470,8 +571,10 @@ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu)
+@@ -487,8 +588,10 @@ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu)
      qemu_plugin_vcpu_idle_resume_cb_t cb = qemu_plugin_vcpu_idle_resume_resume_cb;
  
      if (cb && cpu) {
@@ -595,7 +595,7 @@ index df9ebabf8..ca9efbe73 100644
  }
  
 diff --git a/system/cpus.c b/system/cpus.c
-index bdaa7bba2..b6a796ec6 100644
+index bdaa7bb..b6a796e 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
 @@ -308,6 +308,9 @@ static int do_vm_stop(RunState state, bool send_stop)
