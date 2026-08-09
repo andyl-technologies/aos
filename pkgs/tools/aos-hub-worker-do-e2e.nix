@@ -374,6 +374,7 @@
         || !wasmName
         || !moduleName
         || !bootstrapSource.includes("import init, { mount }")
+        || !bootstrapSource.includes("init({ module_or_path:")
         || !bootstrapSource.includes("mount();")) {
       throw new Error("management console bootstrap/CSS assets failed");
     }
