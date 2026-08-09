@@ -4,10 +4,16 @@
   qemuPackage ? pkgs.qemu-crucible,
   referenceQemu ? pkgs.qemu-crucible-reference,
   patchName ? "0051-crucible-add-architecture-register-fault-mutations.patch",
+  attrPath ? "checks.crucible.phase2.qemuRegisterMutation",
+  taskIds ? ["T-QEMU-0051"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
+  series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
+  taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
+  liveCaseCount = 5;
+
   failures =
     failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
       {
@@ -22,6 +28,14 @@
         label = "post-write architectural readback";
         needle = "memcmp(after->data, desired, bytes)";
       }
+      {
+        label = "live impulse and persistent mutation plugin";
+        needle = "CRUCIBLE_REGISTER_MUTATION_LIVE_PASS";
+      }
+      {
+        label = "live canonical register evidence validation";
+        needle = "test_validate_register_evidence";
+      }
     ]
     ++ forbiddenFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
       {
@@ -33,6 +47,42 @@
         needle = "fieldoffset";
       }
     ];
+
+  patchedPluginSource = pkgs.mkDerivation {
+    pname = "crucible-qemu-register-live-plugin-source";
+    version = "0";
+    src = qemuPackage.src;
+    buildDeps = [pkgs.coreutils pkgs.patch pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          set -eu
+          tar -xf "$src"
+          cd qemu-${series.qemuVersion}
+        '';
+      }
+      {
+        name = "apply-authoritative-series";
+        script = ''
+          set -eu
+          for patch_file in ${builtins.concatStringsSep " " series.patchFiles}; do
+            patch --batch --forward --fuzz=0 -p1 \
+              -i "${patchDir}/$patch_file"
+          done
+        '';
+      }
+      {
+        name = "install-test-plugin-source";
+        script = ''
+          set -eu
+          mkdir -p "$out"
+          install -m 644 tests/tcg/plugins/crucible-register.c \
+            "$out/crucible-register.c"
+        '';
+      }
+    ];
+  };
 in
   if failures != []
   then throw "Crucible QEMU register-mutation microtest failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -41,10 +91,19 @@ in
       pname = "crucible-phase2-qemu-register-mutation";
       version = "0";
       src = null;
-      buildDeps = [pkgs.coreutils pkgs.glib pkgs.gnugrep pkgs.llvm pkgs.pkg-config qemuPackage referenceQemu];
+      buildDeps = [
+        pkgs.binutils
+        pkgs.coreutils
+        pkgs.glib
+        pkgs.grep
+        pkgs.llvm
+        pkgs.pkg-config
+        qemuPackage
+        referenceQemu
+      ];
       phases = [
         {
-          name = "build-live-plugin";
+          name = "build-live-fixtures";
           script = ''
             set -eu
             "$CC" -shared -fPIC \
@@ -54,10 +113,26 @@ in
               ${./phase2-qemu-register-manifest.c} \
               -o crucible-register-manifest.so \
               $(pkg-config --libs glib-2.0)
+            "$CC" -shared -fPIC \
+              -I${qemuPackage}/include/qemu \
+              -I${qemuPackage}/include \
+              $(pkg-config --cflags glib-2.0) \
+              ${patchedPluginSource}/crucible-register.c \
+              -o crucible-register.so \
+              $(pkg-config --libs glib-2.0)
+            as --32 ${./phase2-qemu-fault-guest.S} -o fault-guest-x86.o
+            ld -m elf_i386 -T ${./phase2-qemu-fault-guest.ld} \
+              fault-guest-x86.o -o fault-guest-x86.elf
+            ${pkgs.llvm}/bin/clang --target=aarch64-none-elf \
+              -c ${./phase2-qemu-fault-guest-aarch64.S} \
+              -o fault-guest-aarch64.o
+            ${pkgs.llvm}/bin/ld.lld \
+              -T ${./phase2-qemu-fault-guest-aarch64.ld} \
+              fault-guest-aarch64.o -o fault-guest-aarch64.elf
           '';
         }
         {
-          name = "run-live-manifests";
+          name = "run-live-register-matrix";
           script = ''
             set -eu
             ${qemuPackage}/bin/qemu-system-x86_64 \
@@ -74,6 +149,80 @@ in
               2> aarch64.log
             grep -q 'CRUCIBLE_REGISTER_MANIFEST_LIVE_PASS architecture=3' aarch64.log
 
+            mkdir -p logs
+            run_mutation() {
+              architecture="$1"
+              mode="$2"
+              case "$architecture" in
+                x86_64)
+                  architecture_id=2
+                  qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
+                  machine_args='-machine pc -m 64M'
+                  guest=fault-guest-x86.elf
+                  ;;
+                aarch64)
+                  architecture_id=3
+                  qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
+                  machine_args='-machine virt -cpu max -m 64M'
+                  guest=fault-guest-aarch64.elf
+                  ;;
+                *)
+                  echo "unknown register gate architecture: $architecture" >&2
+                  exit 1
+                  ;;
+              esac
+              timeout 120 $qemu_binary \
+                $machine_args \
+                -accel sim \
+                -icount shift=0,rr_switch_quantum=256 \
+                -smp 1 \
+                -nographic \
+                -no-reboot \
+                -serial none \
+                -monitor none \
+                -kernel "$guest" \
+                -plugin "$PWD/crucible-register.so,architecture=$architecture_id,mode=$mode" \
+                > "logs/$architecture-$mode.log" 2>&1
+              cat "logs/$architecture-$mode.log"
+              grep -Fq \
+                "CRUCIBLE_REGISTER_MUTATION_LIVE_PASS architecture=$architecture_id mode=$mode" \
+                "logs/$architecture-$mode.log"
+              test "$(grep -Fc CRUCIBLE_REGISTER_MUTATION_LIVE_PASS \
+                "logs/$architecture-$mode.log")" -eq 1
+              ! grep -q 'Crucible register mutation live test failed' \
+                "logs/$architecture-$mode.log"
+            }
+
+            run_mutation x86_64 impulse
+            run_mutation x86_64 persistent
+            run_mutation x86_64 reject-invalid
+            run_mutation aarch64 impulse
+            run_mutation aarch64 persistent
+
+            set +e
+            timeout 5 ${qemuPackage}/bin/qemu-system-x86_64 \
+              -machine pc -m 64M \
+              -accel tcg \
+              -icount shift=0 \
+              -smp 1 \
+              -nographic \
+              -no-reboot \
+              -serial none \
+              -monitor none \
+              -kernel fault-guest-x86.elf \
+              -plugin "$PWD/crucible-register.so,architecture=2,mode=impulse" \
+              > logs/patched-tcg-inert.log 2>&1
+            patched_tcg_status=$?
+            set -e
+            cat logs/patched-tcg-inert.log
+            test "$patched_tcg_status" -ne 0
+            test "$patched_tcg_status" -ne 124
+            grep -Fq \
+              'QEMU rejected the register mutation preparation' \
+              logs/patched-tcg-inert.log
+            ! grep -q CRUCIBLE_REGISTER_MUTATION_LIVE_PASS \
+              logs/patched-tcg-inert.log
+
             if ${referenceQemu}/bin/qemu-system-x86_64 \
               -machine pc -cpu max -accel tcg,thread=single -S \
               -display none -nodefaults \
@@ -82,6 +231,27 @@ in
               echo "unpatched QEMU unexpectedly loaded the register manifest plugin" >&2
               exit 1
             fi
+
+            set +e
+            timeout 5 ${referenceQemu}/bin/qemu-system-x86_64 \
+              -machine pc -m 64M \
+              -accel tcg \
+              -icount shift=0 \
+              -smp 1 \
+              -nographic \
+              -no-reboot \
+              -serial none \
+              -monitor none \
+              -kernel fault-guest-x86.elf \
+              -plugin "$PWD/crucible-register.so,architecture=2,mode=impulse" \
+              > logs/stock-mutation.log 2>&1
+            stock_status=$?
+            set -e
+            cat logs/stock-mutation.log
+            test "$stock_status" -ne 0
+            test "$stock_status" -ne 124
+            ! grep -q CRUCIBLE_REGISTER_MUTATION_LIVE_PASS \
+              logs/stock-mutation.log
           '';
         }
         {
@@ -89,17 +259,28 @@ in
           script = ''
             set -eu
             mkdir -p "$out"
+            cp -R logs "$out/"
             {
               echo PASS
               echo gate=gate:patch-microtests
               echo patch=${patchName}
-              echo task_ids=T-QEMU-0051
+              echo attr_path=${attrPath}
+              echo task_ids=${taskList}
               echo patched_fixture_exercised=true
               echo stock_negative_control=true
+              echo patched_non_sim_inert=true
               echo qemu_package=${qemuPackage}
               echo qemu_package_version=${qemuPackage.version}
+              echo backend=actual-patched-and-stock-qemu
+              echo live_mutation_cases=${toString liveCaseCount}
               echo live_x86_64_manifest=true
               echo live_aarch64_manifest=true
+              echo live_x86_64_impulse=true
+              echo live_x86_64_persistent=true
+              echo live_x86_64_invalid_transition_rejected=true
+              echo live_aarch64_impulse=true
+              echo live_aarch64_persistent=true
+              echo mutation_evidence=architecture,row,phase,range,before,after,mask,value,rr,nonzero_execution_fingerprint
             } > "$out/result"
           '';
         }

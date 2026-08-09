@@ -904,10 +904,10 @@ index b69d099..9bf1347 100644
  
  static const Property virtio_blk_properties[] = {
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index 5c11542..ce5ca59 100644
+index ea6d5f9..91caba2 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
-@@ -2099,19 +2099,30 @@ typedef struct VirtQueueElementOld {
+@@ -2111,19 +2111,30 @@ typedef struct VirtQueueElementOld {
      struct iovec out_sg[VIRTQUEUE_MAX_SIZE];
  } VirtQueueElementOld;
  
@@ -940,7 +940,7 @@ index 5c11542..ce5ca59 100644
      assert(ARRAY_SIZE(data.in_addr) >= data.in_num);
      assert(ARRAY_SIZE(data.out_addr) >= data.out_num);
  
-@@ -2142,10 +2153,26 @@ void *qemu_get_virtqueue_element(VirtIODevice *vdev, QEMUFile *f, size_t sz)
+@@ -2154,10 +2165,26 @@ void *qemu_get_virtqueue_element(VirtIODevice *vdev, QEMUFile *f, size_t sz)
          qemu_get_be32s(f, &elem->ndescs);
      }
  
@@ -1015,10 +1015,10 @@ index 3d8dee7..881c160 100644
      unsigned short sector_mask;
      bool original_wce;
 diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
-index 6386910..4f544f0 100644
+index 006d49b..15c9f88 100644
 --- a/include/hw/virtio/virtio.h
 +++ b/include/hw/virtio/virtio.h
-@@ -272,6 +272,8 @@ void virtqueue_map(VirtIODevice *vdev, VirtQueueElement *elem);
+@@ -273,6 +273,8 @@ void virtqueue_map(VirtIODevice *vdev, VirtQueueElement *elem);
  void *virtqueue_pop(VirtQueue *vq, size_t sz);
  unsigned int virtqueue_drop_all(VirtQueue *vq);
  void *qemu_get_virtqueue_element(VirtIODevice *vdev, QEMUFile *f, size_t sz);
@@ -1028,7 +1028,7 @@ index 6386910..4f544f0 100644
                                  VirtQueueElement *elem);
  int virtqueue_avail_bytes(VirtQueue *vq, unsigned int in_bytes,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 0c907fd..7b654a0 100644
+index e92a56b..7ae838f 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -220,7 +220,8 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
