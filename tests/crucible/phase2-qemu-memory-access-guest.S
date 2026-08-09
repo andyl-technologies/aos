@@ -58,7 +58,12 @@ long_mode:
     lea idt(%rip), %rax
     movq %rax, idt_descriptor + 2
     lidt idt_descriptor
-.if TEST_MODE >= 14
+.if TEST_MODE == 19
+    movb $0x7e, fetch_result
+0:
+    cmpb $0x7f, fetch_result
+    jne 0b
+.elseif TEST_MODE >= 14
     movb $0x7e, scenario_result
 0:
     cmpb $0x7f, scenario_result
@@ -93,7 +98,7 @@ long_mode:
     movq %rax, cross_page_target
     movq cross_page_target, %rax
     movq %rax, cross_page_result
-.elseif TEST_MODE == 7
+.elseif TEST_MODE == 7 || TEST_MODE == 19
     call fault_fetch
 .elseif TEST_MODE == 8
     mov $0xa5, %al

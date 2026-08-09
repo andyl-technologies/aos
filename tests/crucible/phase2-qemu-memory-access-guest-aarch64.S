@@ -26,7 +26,16 @@ _start:
     add x0, x0, :lo12:exception_vectors
     msr vbar_el1, x0
     isb
-.if TEST_MODE >= 14
+.if TEST_MODE == 19
+    adrp x0, fetch_result
+    add x0, x0, :lo12:fetch_result
+    mov w1, #0x7e
+    strb w1, [x0]
+0:
+    ldrb w1, [x0]
+    cmp w1, #0x7f
+    b.ne 0b
+.elseif TEST_MODE >= 14
     adrp x0, scenario_result
     add x0, x0, :lo12:scenario_result
     mov w1, #0x7e
@@ -94,7 +103,7 @@ _start:
     str x0, [x1]
     ldr x0, [x1]
     str x0, [x2]
-.elseif TEST_MODE == 7
+.elseif TEST_MODE == 7 || TEST_MODE == 19
     bl fault_fetch
 .elseif TEST_MODE >= 8 && TEST_MODE <= 13
     adrp x4, atomic_target
