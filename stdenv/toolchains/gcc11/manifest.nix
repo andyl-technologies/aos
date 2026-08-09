@@ -370,10 +370,16 @@ in {
     hash = "0zds26w4h65w75x3xpdi32hws3vb3idj5n4pm9zrny4mm6pk36jy";
     buildDeps = autotoolsDeps ++ [perl];
     makeInfo = "${texinfo}/bin/makeinfo";
-    # stdbuf requires a preloadable shared library, which this static ladder
-    # package cannot produce. The final coreutils tier omits it for the same
-    # reason.
-    configureFlags = tripletNoNls ++ ["--enable-no-install-program=stdbuf"];
+    # stdbuf requires a preloadable shared library, which the native AArch64
+    # static ladder cannot produce. Keep the established x86 bootstrap output
+    # unchanged.
+    configureFlags =
+      tripletNoNls
+      ++ (
+        if hostPlatform.config == "aarch64-unknown-linux-gnu"
+        then ["--enable-no-install-program=stdbuf"]
+        else []
+      );
     # Coreutils 8.32's removed-directory probe uses a syscall that Linux does
     # not expose on AArch64. Apply the upstream behavior-restoration backport.
     postUnpack =

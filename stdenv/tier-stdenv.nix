@@ -44,7 +44,7 @@
   };
 
   ccWrapper = import ./cc-wrapper.nix {
-    inherit storeDir hostPlatform staticDefault staticNoPie;
+    inherit buildPlatform storeDir hostPlatform staticDefault staticNoPie;
     shell = shellPath;
     coreutils = tc.coreutils;
     cc = tc.gcc;

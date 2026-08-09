@@ -60,13 +60,21 @@
         hostPlatform = guestPlatform;
         targetPlatform = guestPlatform;
       };
-    in
-      import ./pkgs {
+      guestPackages = import ./pkgs {
         # Library derivations are scheduler-side. Target selection belongs to
         # guestStdenv.hostPlatform; using the guest ISA here would incorrectly
         # send fixed-output source fetches to AArch64-only builders.
         inherit lib;
         stdenv = guestStdenv;
+      };
+    in
+      # Only the audited retained guest artifacts form public package-set
+      # surface. The complete target package set remains an implementation
+      # detail used to construct these closures.
+      {
+        inherit (guestStdenv) hostPlatform;
+        inherit (guestPackages) linux-crucible crucible-fixtures;
+        ccWrapperSystem = guestStdenv.cc.system;
       }
     else null;
   guestPackageSets =

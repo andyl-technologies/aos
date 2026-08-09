@@ -630,12 +630,14 @@
     in
       if guests == null
       then throw "x86_64 Crucible package set must retain AArch64 guest packages"
-      else if guests.stdenv.hostPlatform.constraints.cpu != "aarch64"
+      else if guests.hostPlatform.constraints.cpu != "aarch64"
       then throw "retained Crucible guest package set must target AArch64"
       else if !(guests ? linux-crucible) || !(guests ? crucible-fixtures)
       then throw "retained AArch64 package set must provide Crucible kernel and root image"
       else if guests.crucible-fixtures.system != "x86_64-linux"
       then throw "retained AArch64 guest artifacts must remain x86_64-scheduled"
+      else if guests.ccWrapperSystem != "x86_64-linux"
+      then throw "retained AArch64 compiler wrapper must remain x86_64-scheduled"
       else "ok";
 in
   # Use a raw derivation with AOS bash so we don't pull in host tools. The
