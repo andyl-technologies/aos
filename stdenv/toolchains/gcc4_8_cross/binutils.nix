@@ -28,7 +28,8 @@ in
         export PATH="${prev.coreutils}/bin:${crossGccStage2}/bin:${crossBinutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin:${prev.m4}/bin:${prev.flex}/bin:${prev.bison}/bin:${prev.texinfo}/bin"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
 
-        cp -r ${src} "$TMPDIR/src"
+        mkdir -p "$TMPDIR/src"
+        (cd ${src} && tar cf - .) | (cd "$TMPDIR/src" && tar xf -)
         chmod -R u+w "$TMPDIR/src"
 
         # Touch all files first, then touch generated .c/.h to prevent regeneration
