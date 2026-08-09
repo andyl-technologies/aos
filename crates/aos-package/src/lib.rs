@@ -1242,6 +1242,24 @@ pub enum RegistryCommand {
         #[arg(long)]
         registry: Option<String>,
     },
+    /// Commit explicit registry paths through AOS's in-process signer
+    Commit {
+        /// Registry-relative paths to stage and commit
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Commit message
+        #[arg(short, long)]
+        message: String,
+        /// Private key path used to sign the commit
+        #[arg(long)]
+        key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
     /// Show commit history
     Log {
         /// Filter log by package
@@ -4179,6 +4197,24 @@ async fn run_registry(
         }
         RegistryCommand::Status { registry } => {
             registry_ops::status(config, registry.as_deref(), printer).await
+        }
+        RegistryCommand::Commit {
+            paths,
+            message,
+            key,
+            key_id,
+            registry,
+        } => {
+            registry_ops::commit_changes(
+                config,
+                paths,
+                message,
+                key.as_deref(),
+                key_id.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
         }
         RegistryCommand::Log {
             package,
