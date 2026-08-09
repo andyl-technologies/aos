@@ -2528,43 +2528,6 @@ async fn run_remote_guest_channel(
     Ok(())
 }
 
-async fn receive_guest_channel_shutdown_signal(
-    terminate: &mut tokio::signal::unix::Signal,
-    hangup: &mut tokio::signal::unix::Signal,
-) -> Result<(), CliError> {
-    tokio::select! {
-        biased;
-        signal = tokio::signal::ctrl_c() => signal
-            .map_err(|error| backend_error(format!("guest channel interrupt signal error: {error}"))),
-        signal = terminate.recv() => signal
-            .ok_or_else(|| backend_error("guest channel termination signal stream closed")),
-        signal = hangup.recv() => signal
-            .ok_or_else(|| backend_error("guest channel hangup signal stream closed")),
-    }
-}
-
-/// Converts local input into the guest channel's stream semantics.
-// crucible-lint: allow host-nondeterminism-state -- this public helper performs only pure guest-transport conversion.
-pub(crate) fn guest_input_message(
-    pty_channel: bool,
-    input: &[u8],
-    // crucible-lint: allow host-nondeterminism-state -- this pure conversion produces only guest-channel transport input.
-) -> crucible_api::GuestIntrospectionMessage {
-    if !input.is_empty() {
-        // crucible-lint: allow host-nondeterminism-state -- caller-provided bytes remain guest-channel transport input.
-        return crucible_api::GuestIntrospectionMessage::Input(input.to_vec());
-    }
-    if pty_channel {
-        // Closing a PTY input descriptor is a hangup. EOT supplies ordinary
-        // terminal EOF without killing a command that is still draining output.
-        // crucible-lint: allow host-nondeterminism-state -- EOT is terminal transport policy and does not affect deterministic scheduler state.
-        crucible_api::GuestIntrospectionMessage::Input(vec![0x04])
-    } else {
-        // crucible-lint: allow host-nondeterminism-state -- close is guest-channel transport policy and not an engine decision.
-        crucible_api::GuestIntrospectionMessage::Close
-    }
-}
-
 struct LocalTerminalMode {
     original: Option<rustix::termios::Termios>,
 }
@@ -2697,8 +2660,10 @@ mod guest_channel_response;
 
 use guest_channel_response::{
     GuestChannelRecordOutcome, handle_guest_channel_response,
-    handle_guest_channel_shutdown_response,
+    handle_guest_channel_shutdown_response, receive_guest_channel_shutdown_signal,
 };
+// crucible-lint: allow host-nondeterminism-state -- this pure conversion is exported only for CLI contract tests.
+pub(crate) use guest_channel_response::guest_input_message;
 #[path = "triage_debug/slug.rs"]
 mod slug;
 

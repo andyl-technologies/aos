@@ -7,6 +7,40 @@ use crucible_api::{
     GuestOutputStream,
 };
 
+pub(super) async fn receive_guest_channel_shutdown_signal(
+    terminate: &mut tokio::signal::unix::Signal,
+    hangup: &mut tokio::signal::unix::Signal,
+) -> Result<(), CliError> {
+    tokio::select! {
+        biased;
+        signal = tokio::signal::ctrl_c() => signal
+            .map_err(|error| backend_error(format!("guest channel interrupt signal error: {error}"))),
+        signal = terminate.recv() => signal
+            .ok_or_else(|| backend_error("guest channel termination signal stream closed")),
+        signal = hangup.recv() => signal
+            .ok_or_else(|| backend_error("guest channel hangup signal stream closed")),
+    }
+}
+
+/// Converts local input into the guest channel's stream semantics.
+// crucible-lint: allow host-nondeterminism-state -- this public helper performs only pure guest-transport conversion.
+pub(crate) fn guest_input_message(
+    pty_channel: bool,
+    input: &[u8],
+    // crucible-lint: allow host-nondeterminism-state -- this pure conversion produces only guest-channel transport input.
+) -> GuestIntrospectionMessage {
+    if !input.is_empty() {
+        return GuestIntrospectionMessage::Input(input.to_vec());
+    }
+    if pty_channel {
+        // Closing a PTY input descriptor is a hangup. EOT supplies ordinary
+        // terminal EOF without killing a command that is still draining output.
+        GuestIntrospectionMessage::Input(vec![0x04])
+    } else {
+        GuestIntrospectionMessage::Close
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GuestChannelRecordOutcome {
     Continue,
