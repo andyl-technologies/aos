@@ -79,6 +79,12 @@ in
               ${packages.crucible}/bin/crucible-debugger-live-matrix --help \
               > matrix-help
             grep -q '^packaged architectures: ' matrix-help
+            grep -A 20 'unset CRUCIBLE_QEMU' \
+              ${packages.crucible}/bin/crucible-debugger-live-matrix \
+              > matrix-unset-block
+            grep -q 'CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64' matrix-unset-block
+            grep -q 'CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64' matrix-unset-block
+            grep -q 'CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64' matrix-unset-block
             grep -q '^build_system=mkCargoPackage$' \
               ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^cargo_deps=fetchCargoDeps$' \
