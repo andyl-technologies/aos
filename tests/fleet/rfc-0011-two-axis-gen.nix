@@ -349,14 +349,14 @@ in {
           git -C "$ORIGIN" symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
           git -C "$REG_DIR" remote add origin "$ORIGIN"
           mkdir -p "$HOME/.config/apm/registries.d"
-          cat > "$HOME/.config/apm/registries.d/sysreg.toml" <<EOF
-          [registry]
-          name = "sysreg"
-          url = "file://$REG_DIR"
-
-          [registry.signing_keys]
-          release = "$KEY"
-          EOF
+          printf '%s\n' \
+            '[registry]' \
+            'name = "sysreg"' \
+            "url = \"file://$REG_DIR\"" \
+            "" \
+            '[registry.signing_keys]' \
+            "release = \"$KEY\"" \
+            > "$HOME/.config/apm/registries.d/sysreg.toml"
 
           ${pkgs.aos}/bin/apr --json publish '${abi2Top}' \
             --name aos \
