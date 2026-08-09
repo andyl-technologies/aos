@@ -25,6 +25,10 @@
   catalogGates =
     builtins.sort builtins.lessThan
     (lib.unique (lib.concatMap gateNameFromCatalogLine catalogGateLines));
+  # Catalog-only gates define a terminal contract but intentionally have no CI
+  # target until their complete production proof exists.
+  catalogOnlyGates = ["gate:signal-fault-system"];
+  wiredCatalogGates = builtins.filter (gate: !(builtins.elem gate catalogOnlyGates)) catalogGates;
 
   phaseGateTargets = [
     {
@@ -178,7 +182,7 @@
     phaseGateTargets)));
 
   missingCatalogWiring =
-    builtins.filter (gate: !(builtins.elem gate expectedGateNames)) catalogGates;
+    builtins.filter (gate: !(builtins.elem gate expectedGateNames)) wiredCatalogGates;
   unknownPhaseGates =
     builtins.filter (gate: !(builtins.elem gate catalogGates)) expectedGateNames;
 
