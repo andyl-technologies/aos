@@ -65,10 +65,6 @@ where
         self.observed.observable_events()
     }
 
-    fn fault_facts(&self) -> &[ObservedFaultFact] {
-        self.observed.fault_facts()
-    }
-
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
         self.scheduler_quiescence
     }
@@ -369,7 +365,6 @@ pub(super) fn push_observed_state_facts(
     observable_events: &mut Vec<ObservableEvent>,
     black_box_observation_kinds: &mut BTreeSet<BlackBoxObservationKind>,
     ordering_facts: &mut Vec<ObservedOrderingFact>,
-    fault_facts: &mut Vec<ObservedFaultFact>,
 ) -> Result<(), ConditionEvaluationError> {
     match entry.payload() {
         SchedulerEventLogPayload::Observable(payload) => {
@@ -389,7 +384,6 @@ pub(super) fn push_observed_state_facts(
                 entry.at(),
                 event,
                 ordering_facts,
-                fault_facts,
             );
         }
         SchedulerEventLogPayload::Decision(Decision::DeliveryOrder(order)) => {
@@ -554,7 +548,6 @@ pub(super) fn push_resolved_happening_observed_facts(
     at: VirtualTime,
     event: &ScheduledEvent,
     ordering_facts: &mut Vec<ObservedOrderingFact>,
-    _fault_facts: &mut Vec<ObservedFaultFact>,
 ) {
     ordering_facts.push(ObservedOrderingFact::ResolvedHappening {
         sequence,
@@ -910,7 +903,6 @@ pub struct ConditionEvaluation<O> {
     timer_fires: BTreeMap<TimerId, VirtualTime>,
     observable_events: Vec<ObservableEvent>,
     ordering_facts: Vec<ObservedOrderingFact>,
-    fault_facts: Vec<ObservedFaultFact>,
     scheduler_quiescence: Option<SchedulerQuiescence>,
     white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
     once_latches: Vec<Condition>,
@@ -930,7 +922,6 @@ impl<O> ConditionEvaluation<O> {
             timer_fires: prefix.timer_fires,
             observable_events: prefix.observable_events,
             ordering_facts: prefix.ordering_facts,
-            fault_facts: prefix.fault_facts,
             scheduler_quiescence: None,
             white_box_policies: BTreeMap::new(),
             once_latches: Vec::new(),
@@ -959,7 +950,6 @@ impl<O> ConditionEvaluation<O> {
             event_log_offset: self.event_log_offset,
             observable_events: &self.observable_events,
             ordering_facts: &self.ordering_facts,
-            fault_facts: &self.fault_facts,
         }
     }
 
@@ -1195,10 +1185,6 @@ where
 
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
         self.scheduler_quiescence.as_ref()
-    }
-
-    fn fault_facts(&self) -> &[ObservedFaultFact] {
-        &self.fault_facts
     }
 
     fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {

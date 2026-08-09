@@ -1120,11 +1120,6 @@ pub(super) fn event_attribute_value_material(prefix: &str, value: &EventAttribut
             value.name.len(),
             value.name
         ),
-        EventAttributeValue::Fault(value) => format!(
-            "{prefix}.type=fault\n{prefix}.name_len={}\n{prefix}.name={}",
-            value.name.len(),
-            value.name
-        ),
         EventAttributeValue::VirtualTime(value) => {
             format!("{prefix}.type=virtual-time\n{prefix}.ticks={}", value.ticks)
         }

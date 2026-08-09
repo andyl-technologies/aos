@@ -135,15 +135,12 @@ impl ScenarioDefForm {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or id
-    /// mismatches, [`EngineError::PlanNegativeTime`],
-    /// [`EngineError::PlanFaultUnknownDirection`], or
-    /// [`EngineError::PlanFaultUnsupportedParam`] for localized serialized plan
-    /// validation failures, or the same validation errors as the component
-    /// constructors when the parsed world, plan, or properties are invalid.
+    /// mismatches, or the same validation errors as the component constructors
+    /// when the parsed world, plan, or properties are invalid.
     pub fn from_canonical_toml(input: &str) -> Result<Self, EngineError> {
         validate_scenario_toml_size(input)?;
         validate_no_host_path_image_refs_in_toml(input)?;
-        validate_plan_entries_in_toml(input)?;
+        require_current_fault_schema(input)?;
         let toml = toml::from_str::<ScenarioDefToml>(input).map_err(|source| {
             scenario_serialization_error(format!("parse scenario TOML: {source}"))
         })?;

@@ -14,12 +14,12 @@ use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash,
     CowDeltaKind, CowDeltaRef, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
     DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
-    EngineError, EventKey, EventLogOffset, EventSequenceState, FaultId, FaultState,
-    FrontierReductionPolicy, FrontierReductionReason, Icount, IrqVector, LocalDagStore,
-    MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore,
-    NetworkLinkRuntimeCursor, NodeBlobRef, NodeId, PartialOrderReductionPolicy, PendingFrame,
-    PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, RngStreamPosition, ScenarioDef,
-    Schedule, SchedulerNodeId, SchedulerState, SchedulingNodeKind, SearchFrontierChoices, State,
+    EngineError, EventKey, EventLogOffset, EventSequenceState, FrontierReductionPolicy,
+    FrontierReductionReason, Icount, IrqVector, LocalDagStore, MaterializationPolicy,
+    MaterializationTrigger, MaterializedState, MemoryDagStore, NetworkLinkRuntimeCursor,
+    NodeBlobRef, NodeId, PartialOrderReductionPolicy, PendingFrame, PreemptionDecision,
+    PreemptionKind, RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, Schedule,
+    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SearchFrontierChoices, State,
     SymmetryClassId, SymmetryReductionClasses, TemporalGraph, TemporalGraphGcRoots,
     TemporalGraphStoreError, TimerId, TimerRegistry, TimerState, VcpuId, VirtualTime,
     VmSnapshotRef, World, bake, instantiate, reduce, step,
@@ -298,9 +298,6 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
     let timer = TimerId {
         name: String::from("heal-after"),
     };
-    let fault = FaultId {
-        name: String::from("partition-a-b"),
-    };
     let stream = RngStreamId::from_name("device/disk-a");
     let parent_blob =
         ContentHash::from_canonical_material("crucible.test.materialized-state", "parent-blob");
@@ -367,13 +364,6 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
                 },
             )]),
         },
-        active_faults: BTreeMap::from([(
-            fault,
-            FaultState {
-                active_since: VirtualTime { ticks: 15 },
-                heal_at: Some(VirtualTime { ticks: 120 }),
-            },
-        )]),
         pending_device_decisions: Vec::new(),
         search_frontier: SearchFrontierChoices::empty(),
     };

@@ -121,6 +121,10 @@ fn canonical_gate_statuses_are_current() {
         find_gate("gate:basic-block-coverage").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
+    assert!(matches!(
+        find_gate("gate:signal-fault-system").map(|spec| spec.status),
+        Some(GateStatus::CatalogOnly)
+    ));
 
     let expected_phases = BTreeMap::from([
         ("gate:harness-lint", GatePhase::Always),
@@ -143,6 +147,7 @@ fn canonical_gate_statuses_are_current() {
         ("gate:perf-bench", GatePhase::Phase7),
         ("gate:fleet-equivalence", GatePhase::Phase7),
         ("gate:campaign-continuity", GatePhase::Phase7),
+        ("gate:signal-fault-system", GatePhase::Phase7),
     ]);
 
     for (gate, phase) in expected_phases {
@@ -157,7 +162,10 @@ fn canonical_gates_have_phase_gate_ci_targets() -> Result<(), Box<dyn Error>> {
         fs::read_to_string(root.join("tests/crucible/phase1-phase-gate-wiring.nix"))?;
     let mut missing = Vec::new();
 
-    for gate in canonical_gates() {
+    for gate in canonical_gates()
+        .iter()
+        .filter(|gate| gate.status != GateStatus::CatalogOnly)
+    {
         let needle = format!("gate = \"{}\";", gate.name);
         if !phase_gate_wiring.contains(&needle) {
             missing.push(format!(

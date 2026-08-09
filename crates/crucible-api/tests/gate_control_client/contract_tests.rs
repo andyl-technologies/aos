@@ -1282,7 +1282,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-request",
         &hello,
-        "crucible.rpc/hello-request\nversion=4.0.0+crucible-rpc-abi-v4\nclient=contract-client\n",
+        "crucible.rpc/hello-request\nversion=5.0.0+crucible-rpc-abi-v5\nclient=contract-client\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-request",
@@ -1443,7 +1443,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-response",
         &hello_response,
-        "crucible.rpc/hello-response\nversion=4.0.0+crucible-rpc-abi-v4\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+        "crucible.rpc/hello-response\nversion=5.0.0+crucible-rpc-abi-v5\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.event.*\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-response",
@@ -1541,7 +1541,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             }),
         }),
         &format!(
-            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=4.0.0+crucible-rpc-abi-v4\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
+            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=5.0.0+crucible-rpc-abi-v5\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
         ),
     );
     assert_rpc_snapshot(

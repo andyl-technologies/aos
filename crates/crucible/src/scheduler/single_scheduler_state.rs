@@ -242,9 +242,8 @@ impl SingleScheduler {
                         node.node.name, node.kind
                     ),
                 })?;
-            runtime.ready_counter = counter;
-            runtime.timing_faults.anchor_counter = counter;
-            runtime.timing_faults.anchor_time = SimInstant::EPOCH;
+            runtime.time_mapping.anchor_counter = counter;
+            runtime.time_mapping.anchor_time = SimInstant::EPOCH;
         }
         nodes.sort_by(|left, right| left.id.cmp(&right.id));
         let mut run_subdivision_policies = scenario.run_subdivision_policies;
@@ -306,8 +305,6 @@ impl SingleScheduler {
             quanta: 0,
             topology_epoch: 0,
             topology_change_applications: Vec::new(),
-            node_crash_applications: Vec::new(),
-            node_restart_applications: Vec::new(),
             rendezvous_records: Vec::new(),
             boundary_yields: 0,
             ceiling_publications: Vec::new(),
@@ -531,9 +528,6 @@ impl SingleScheduler {
         // iteration) so the refresh is deterministic.
         let mut earliest_by_target: Vec<(NodeId, SimInstant)> = Vec::new();
         for (target, sub_nodes) in &self.device_sub_nodes {
-            if self.is_node_down(target) {
-                continue;
-            }
             let mut earliest: Option<SimInstant> = None;
             for sub_node in sub_nodes {
                 if let Some(delivery_icount) = sub_node.next_exact_local_event() {
@@ -555,9 +549,6 @@ impl SingleScheduler {
         }
         for runtime in self.world_network_links.values() {
             let target = runtime.target();
-            if self.is_node_down(target) {
-                continue;
-            }
             let Some(delivery_icount) = runtime.link.next_exact_local_event() else {
                 continue;
             };
@@ -582,8 +573,6 @@ impl SingleScheduler {
                 .nodes
                 .iter_mut()
                 .find(|runtime| runtime.id.node == target)
-                && runtime.crash.is_none()
-                && runtime.stopped_crash.is_none()
                 && runtime.activity == SchedulerNodeActivity::Idle
             {
                 runtime.activity = SchedulerNodeActivity::Runnable;
@@ -1394,13 +1383,6 @@ impl SingleScheduler {
                 &mut action_entries,
             )?;
         }
-        for application in &action_entries {
-            if let Action::StartNode { node } = &application.action
-                && self.is_node_stopped_after_crash(node)
-            {
-                self.restart_stopped_node(application.sequence, node)?;
-            }
-        }
         for application in action_entries {
             let sequence = self.event_log.next_sequence(entries.len())?;
             entries.push(scheduler_event_log_entry(
@@ -1486,18 +1468,6 @@ impl SingleScheduler {
     #[must_use]
     pub fn topology_change_applications(&self) -> &[SchedulerTopologyChangeApplication] {
         &self.topology_change_applications
-    }
-
-    /// Returns node crash applications completed by this scheduler.
-    #[must_use]
-    pub fn node_crash_applications(&self) -> &[SchedulerNodeCrashApplication] {
-        &self.node_crash_applications
-    }
-
-    /// Returns node heal/restart applications completed by this scheduler.
-    #[must_use]
-    pub fn node_restart_applications(&self) -> &[SchedulerNodeRestartApplication] {
-        &self.node_restart_applications
     }
 
     /// Returns allowed rendezvous records completed at scheduler boundaries.
@@ -1596,13 +1566,13 @@ impl SingleScheduler {
     /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
     /// VM scheduler node in this scheduler, or [`SchedulerError::TimeConversion`]
     /// when the projection cannot be computed.
-    pub fn node_timing_projection(
+    pub fn node_time_projection(
         &self,
         node: &NodeId,
-    ) -> Result<NodeTimingProjection, SchedulerError> {
+    ) -> Result<NodeTimeProjection, SchedulerError> {
         let index = self.vm_node_index(node)?;
         self.nodes[index]
-            .timing_faults
+            .time_mapping
             .project(self.nodes[index].counter, self.timeline.shift())
             .map_err(SchedulerError::from)
     }
@@ -1613,8 +1583,8 @@ impl SingleScheduler {
     ///
     /// Returns [`SchedulerError`] when the node cannot be found or its timing
     /// projection cannot be computed.
-    pub fn guest_visible_time_for_node(&self, node: &NodeId) -> Result<SimInstant, SchedulerError> {
-        Ok(self.node_timing_projection(node)?.guest_visible_time)
+    pub fn logical_time_for_node(&self, node: &NodeId) -> Result<SimInstant, SchedulerError> {
+        Ok(self.node_time_projection(node)?.logical_time)
     }
 
     /// Computes terminal quiescence from authoritative scheduler state only.
@@ -1670,9 +1640,6 @@ impl SingleScheduler {
         // system is not quiescent while one is undelivered, even when every node
         // is parked `Idle`. Ordered by target `NodeId` (BTreeMap iteration).
         for (target, sub_nodes) in &self.device_sub_nodes {
-            if self.is_node_down(target) {
-                continue;
-            }
             if sub_nodes
                 .iter()
                 .any(|sub_node| sub_node.next_exact_local_event().is_some())
@@ -1693,7 +1660,6 @@ impl SingleScheduler {
         blockers.extend(
             network_targets
                 .into_iter()
-                .filter(|target| !self.is_node_down(target))
                 .map(|target| SchedulerQuiescenceBlocker::DeviceCompletionInFlight { target }),
         );
 

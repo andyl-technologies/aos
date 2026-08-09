@@ -110,10 +110,6 @@
         needle = "Action::start_node(burst_node)";
       }
       {
-        label = "StartNode burst holds node inactive";
-        needle = "MembershipFault::NotYetJoined";
-      }
-      {
         label = "fault-plan campaign primitive";
         needle = "Plan::from_fault_plan_for_world(&world, FaultPlan::from_entries(entries))";
       }

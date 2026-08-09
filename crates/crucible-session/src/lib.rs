@@ -31,7 +31,7 @@ pub mod engine {
         FailureSignaturePreservingMinimizationResult, FailureSignaturePreservingMinimizationRun,
         FailureTimeoutBudgetKind, FailureTimeoutRecord, FailureTriageResult,
         FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput,
-        FailureTriageStoredArtifact, FamilySpace, FaultId, FaultTag, FindingDiscoveryPath,
+        FailureTriageStoredArtifact, FamilySpace, FindingDiscoveryPath,
         FindingReproductionArtifact, FingerprintSample, GenesisCheckpoint,
         HAPPY_PATH_SCENARIO_NAME, HostAssertionEvaluator, HostAssertionOutcomeKind,
         HostAssertionViolation, Icount, LocalDagStore, MarkerId, MaterializationPolicy,

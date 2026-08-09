@@ -59,14 +59,6 @@
         needle = "Predicate::coverage_point";
       }
       {
-        label = "fault injection action";
-        needle = "Action::inject_fault";
-      }
-      {
-        label = "timer heal action";
-        needle = "Action::heal_fault";
-      }
-      {
         label = "properties assertion state steering";
         needle = "Predicate::assertion_state";
       }

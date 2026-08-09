@@ -259,12 +259,10 @@ pub(super) fn cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs()
 [[truth]]
 name = "cli-search/named-truth"
 value = true
-active_fault_tags = ["network-partition", "network-partition"]
 
 [[truth]]
 name = "cli-search/named-truth"
 value = false
-active_fault_tags = ["network-partition"]
 "#,
     )?;
     let error = match plan_search_invocation(

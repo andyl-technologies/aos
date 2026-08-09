@@ -999,11 +999,6 @@ fn engine_error_rejection_kind(error: &EngineError) -> CommandRejectionKind {
     match error {
         EngineError::CheckpointNotRecorded { .. }
         | EngineError::MissingBakedGenesis { .. }
-        | EngineError::PlanFaultUnknownNode { .. }
-        | EngineError::PlanFaultUnknownLink { .. }
-        | EngineError::PlanFaultUnknownLinkId { .. }
-        | EngineError::PlanFaultUnknownDevice { .. }
-        | EngineError::PlanHealUnknownTag { .. }
         | EngineError::PropertyPredicateUnknownNode { .. }
         | EngineError::PropertyPredicateUnknownAssertion { .. }
         | EngineError::DebugAttachUnknownNode { .. }
@@ -1016,7 +1011,6 @@ fn engine_error_rejection_kind(error: &EngineError) -> CommandRejectionKind {
         | EngineError::WorldNodeUnsupportedWorkloadPattern { .. }
         | EngineError::WorldNodeUnsupportedWorkloadSpikeMode { .. }
         | EngineError::WorldNodeUnsupportedWorkloadTimeSource { .. }
-        | EngineError::PlanFaultUnsupportedParam { .. }
         | EngineError::DebugBreakpointRequiresAllowMutate { .. }
         | EngineError::EventLogReplayUnsupported { .. } => CommandRejectionKind::Unsupported,
         EngineError::SchedulePrefix(error) => schedule_error_rejection_kind(error),

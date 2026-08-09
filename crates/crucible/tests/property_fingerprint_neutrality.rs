@@ -7,9 +7,8 @@
 #[cfg(feature = "test-double")]
 use crucible::{
     AdvanceOutcome, AssertionDef, AssertionId, Backend, BackendInput, Configuration, Decision,
-    DecisionRecorder, ExecutionFingerprint, ExecutionHorizon, FaultId, FaultRateBasisPoints,
-    Icount, NodeId, Plan, Predicate, Properties, Property, RngStreamId, ScenarioDefForm, Seed,
-    SimBackend, VirtualTime, World,
+    DecisionRecorder, ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, Plan, Predicate,
+    Properties, Property, RngStreamId, ScenarioDefForm, Seed, SimBackend, VirtualTime, World,
 };
 
 #[cfg(feature = "test-double")]

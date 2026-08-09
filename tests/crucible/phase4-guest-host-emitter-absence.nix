@@ -75,10 +75,6 @@
         needle = "Predicate::io_pattern";
       }
       {
-        label = "fault-active condition remains black-box";
-        needle = "Predicate::fault_active";
-      }
-      {
         label = "event-log determinism comparison";
         needle = "compare_event_log_determinism";
       }

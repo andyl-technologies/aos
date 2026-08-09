@@ -223,14 +223,6 @@
         needle = "Condition::At { at: *at }";
       }
       {
-        label = "inject action lowering";
-        needle = "Action::InjectFault";
-      }
-      {
-        label = "heal action lowering";
-        needle = "Action::HealFault";
-      }
-      {
         label = "source Plan hash identity";
         needle = "content_hash: self.content_hash()";
       }

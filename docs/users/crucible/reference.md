@@ -16,7 +16,7 @@ Direct implementation references:
 
 - [Clap command and option declarations](../../../crates/crucible-cli/src/main.rs)
 - [Canonical TOML schema and conversions](../../../crates/crucible/src/model/toml.rs)
-- [Fault types and parameter validation](../../../crates/crucible/src/model/topology_faults.rs)
+- [Signal-driven effect registry](../../../crates/crucible/src/model/fault_signal/effect_registry.rs)
 - [Properties and predicate types](../../../crates/crucible/src/model/plan_properties.rs)
 
 ## Value conventions
@@ -306,7 +306,7 @@ and assertion IDs are scenario-local names instead.
 | --- | --- | --- |
 | `[scenario]` | `id`, `seed`, `app_random_draw_cap` | Scenario identity, deterministic seed material, and maximum guest application-random draws. |
 | `[world]` | `id` | VM nodes, I/O device sub-nodes, and links. `node` and `link` arrays default empty. |
-| `[plan]` | `id` | Exactly one plan representation: scheduled entries, fault plan, or event graph. |
+| `[plan]` | `id`, `fault_model`, `fault_signal_semantic_version` | Event graph plus the sole signal/binding fault representation. |
 | `[properties]` | `id` | Named assertions. `assertion` defaults empty. |
 
 ### `[scenario]` fields
@@ -376,171 +376,245 @@ virtual time, and `artifact` is a content-addressed blob reference.
 | `loss_millionths` | Required integer `0..=1000000` | Baseline deterministic link-loss probability. |
 | `bandwidth_bps` | Optional positive integer | Baseline bits-per-virtual-second cap. |
 
-Taxonomy faults refer to a unique link by its link ID. For a simple unique pair,
-the readable compatibility form is `<endpoint-a>--<endpoint-b>` using canonical
-endpoint order. Prefer IDs emitted by a Rust scenario builder.
+Bindings refer to a unique link by its canonical link ID. Generate target IDs
+through a Rust scenario builder so they remain bound to the admitted World.
 
-## Plans and events
+## Plans, signals, bindings, and faults
 
-### `[plan]` representations
+There is one fault authoring and execution model. A plan combines an ordinary
+event graph with signal programs and typed bindings. Static, finite, periodic,
+stochastic, trace-replayed, and stateful behavior all use this same path; there
+is no separate imperative activation API.
 
-The three row arrays are mutually exclusive. `kind` may be omitted only when the
-populated row array makes the representation unambiguous.
+Implementation sources:
 
-| `kind` | Row array | Meaning | Reference |
-| --- | --- | --- | --- |
-| `entries` | `[[plan.entry]]` | Legacy membership-fault activation/heal schedule. An empty plan also resolves to this kind. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `fault_plan` | `[[plan.fault_entry]]` | Full taxonomy-fault schedule with finite, permanent, and heal entries. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `event_graph` | `[[plan.event]]` | Conditions trigger actions, including faults, timers, savepoints, forks, and terminal verdicts. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
+- [plan wire shape](../../../crates/crucible/src/model/toml.rs)
+- [signal value, source, operator, and state schemas](../../../crates/crucible/src/model/fault_signal/mod.rs)
+- [binding, selector, mapping, sampling, and search schemas](../../../crates/crucible/src/model/fault_signal/binding.rs)
+- [closed effect registry](../../../crates/crucible/src/model/fault_signal/effect_registry.rs)
+- [network effect parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs)
+- [storage and 9p effect parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs)
+- [node, CPU, memory, interrupt, clock, and accelerator parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs)
+- [resource-limit registry](../../../crates/crucible/src/model/fault_signal/resource_limits.rs)
 
-### `[[plan.entry]]` kinds
+### `[plan]` fields
 
-| `kind` | Required fields | Meaning |
+| Field | Required/default | Meaning |
 | --- | --- | --- |
-| `activate` | `at_ticks`, `tag`, `fault` | Activate a nested [membership fault](#membership-fault-kinds) at exact virtual time. |
-| `heal` | `at_ticks`, `tag` | Remove the active fault with this tag at exact virtual time. |
+| `id` | Required generated content address | Identity of the event graph and complete signal-driven fault layer. |
+| `fault_model` | Required; only `signal_bindings_v2` | Selects the sole accepted fault schema. Earlier forms fail before typed lowering. |
+| `fault_signal_semantic_version` | Required; only `2` | Locks signal/binding semantics for canonicalization and replay. |
+| `signal` | Empty array by default | Closed signal-program rows described below. |
+| `fault_binding` | Empty array by default | Typed bridges from signal outputs to effects. |
+| `resource_limits` | All compiled defaults | Scenario-owned limits; every value must be positive and no greater than its compiled ceiling. |
+| `event` | Empty array by default | Non-fault event-graph rows. |
 
-### `[[plan.fault_entry]]` kinds
+### `[[plan.event]]` fields and actions
 
-| `kind` | Required fields | Meaning |
+| Field | Required/default | Meaning |
 | --- | --- | --- |
-| `at` | `at_ticks`, `duration_nanos`, `tag`, `fault` | Activate a nested [taxonomy fault](#taxonomy-fault-kinds) and auto-heal after the duration. |
-| `permanent_at` | `at_ticks`, `tag`, `fault` | Activate a taxonomy fault with no automatic heal. |
-| `heal` | `at_ticks`, `tag` | Explicitly heal a previously declared tag. |
+| `id` | Required string | Unique event identity. |
+| `trigger` | Optional | Predicate table or DSL string. Omission is unconditional. |
+| `action` | Required | One closed action table. |
+| `policy` | `once` by default; `repeatable` | Fire once or on later false-to-true transitions. |
 
-For example, this is the complete nesting for a finite 25% network-loss fault:
-
-```toml
-[plan]
-id = "blake3:<generated-plan-hash>"
-kind = "fault_plan"
-
-[[plan.fault_entry]]
-kind = "at"
-at_ticks = 1000000000
-duration_nanos = 5000000000
-tag = "lossy-link"
-
-[plan.fault_entry.fault]
-kind = "network_loss"
-link = "client--server"
-rate_basis_points = 2500
-```
-
-Use the scenario builder to calculate the real `plan.id` after configuring the
-fault. The placeholder above is explanatory and is not valid canonical input.
-
-### `[[plan.event]]` fields
-
-| Field | Type/default | Meaning |
+| Action `kind` | Fields | Effect |
 | --- | --- | --- |
-| `id` | Required string | Unique event ID. |
-| `trigger` | Optional predicate table or DSL string | Condition that must become true. Omission creates an unconditional event. |
-| `action` | Required action table | Operation performed when the trigger fires. |
-| `policy` | `once` (default) or `repeatable` | Fire at most once, or fire again on later false-to-true transitions. |
+| `arm_timer` | `name`, `after_nanos` | Arm or replace a relative timer. |
+| `cancel_timer` | `name` | Cancel the timer. |
+| `start_node` | `node` | Start a declared stopped node. |
+| `stop_node` | `node` | Stop a declared node. |
+| `create_savepoint` | optional `label` | Materialize a savepoint at the firing boundary. |
+| `fork` | optional `label` | Fork a child execution at the firing boundary. |
+| `pass` | none | Produce an explicit passing terminal verdict. |
+| `fail` | `reason` | Produce an explicit failing terminal verdict. |
+| `log` | `level`, `message` | Emit deterministic text; level is `debug`, `info`, `warn`, or `error`. |
+| `group` | `actions` | Apply nested actions in declared order as one group. |
 
-### Event action kinds
+### `[[plan.signal]]` common fields
 
-`[plan.event.action]` is tagged by `kind`.
+| Field | Required/default | Meaning |
+| --- | --- | --- |
+| `id` | Required | Stable signal identity. |
+| `semantic_version` | Required; only `1` | Evaluator semantic version. |
+| `domain` | Required | `virtual_time`, `node_counter`, `operation`, `spatial`, `event`, or `state`. |
+| `value_type` | Required | `bool`, `i64`, `u64`, `ratio`, `duration_nanos`, `rate_per_second`, `probability_millionths`, `enum`, `event`, `vector2`, `vector3`, or `bytes`; parameterized types also carry their schema/scalar type. |
+| `unit` | Required | One unit from the table below. |
+| `scale_decimal_exponent` | Default `0`; `-18..=18` | Exact decimal scaling carried in signal shape. |
+| `inputs` | Empty unless required by an operator | IDs of upstream nodes; order is semantic for noncommutative operators. |
+| `node` | Required | Closed source, pure operator, or stateful operator specification. |
 
-| `kind` | Required/optional fields | Meaning | Reference |
-| --- | --- | --- | --- |
-| `inject_fault` | `tag`, `fault` | Activate a nested [membership fault](#membership-fault-kinds). Use its `taxonomy` wrapper for a full taxonomy fault. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `heal_fault` | `tag` | Remove the active fault under `tag`. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `arm_timer` | `name`, `after_nanos` | Arm or replace a relative timer. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `cancel_timer` | `name` | Cancel the named timer. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `start_node` | `node` | Start a declared, currently stopped node. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `stop_node` | `node` | Stop a declared node without changing the static topology. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `create_savepoint` | `label?` | Materialize a savepoint at the firing boundary. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `fork` | `label?` | Fork a child execution at the firing boundary. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `pass` | None | Produce an explicit passing terminal verdict. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `fail` | `reason` | Produce an explicit failing terminal verdict. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `log` | `level`, `message` | Emit deterministic log text. `level` is `debug`, `info`, `warn`, or `error`. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `group` | `actions` array | Execute nested actions as one ordered group. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
+Signal units are exhaustive:
 
-`log.level` values:
-
-| Value | Meaning |
+| Unit | Stored quantity |
 | --- | --- |
-| `debug` | Diagnostic detail intended for developers. |
-| `info` | Normal informational event. |
-| `warn` | Non-terminal warning. |
-| `error` | Error-level deterministic log event; this does not itself replace the `fail` action. |
+| `dimensionless` | Integer or rational without a physical unit. |
+| `virtual_nanoseconds` | Virtual duration or coordinate. |
+| `millimetres`, `square_millimetres`, `millimetres_per_second` | Position, squared distance, or velocity. |
+| `millidegrees` | Orientation. |
+| `millicelsius` | Temperature. |
+| `microvolts`, `microamps`, `microwatts`, `microjoules` | Voltage, current, power, or energy. |
+| `femtowatts`, `millidecibels`, `millidecibel_milliwatts` | Exact linear or logarithmic RF/optical quantity. |
+| `kilohertz` | Frequency. |
+| `bits_per_second`, `bytes_per_second`, `operations_per_second` | Service rate. |
+| `parts_per_million`, `probability_millionths` | Ratio or probability; probability is `0..=1_000_000`. |
+| `micrometres_per_second_squared`, `micrometres_per_hour` | Acceleration or precipitation rate. |
 
-### Membership fault kinds
+Signal source kinds:
 
-Membership faults are used by legacy `plan.entry` rows and event
-`inject_fault` actions.
-
-| `kind` | Required fields | Meaning | Reference |
-| --- | --- | --- | --- |
-| `crash` | `node`, `restart` | Crash a VM and apply the selected [restart policy](#supporting-fault-values) when healed. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `partition` | `endpoint_a`, `endpoint_b`, `direction` | Suppress one or both directions of the declared link. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `isolate` | `node` | Remove all effective network connectivity for the VM. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `not_yet_joined` | `node` | Model a declared member that has not joined the active membership. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `taxonomy` | `fault` | Wrap one nested [taxonomy fault](#taxonomy-fault-kinds) for use in a membership-fault position. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-
-An event action needs two nested fault tables when it injects a taxonomy fault:
-
-```toml
-[plan.event.action]
-kind = "inject_fault"
-tag = "lossy-link"
-
-[plan.event.action.fault]
-kind = "taxonomy"
-
-[plan.event.action.fault.fault]
-kind = "network_loss"
-link = "client--server"
-rate_basis_points = 2500
-```
-
-### Taxonomy fault kinds
-
-Each `fault` in a `plan.fault_entry` is one of the following tagged tables.
-Fields named `link`, `node`, or `device` must resolve to the corresponding
-declared world object.
-
-| `kind` | Required fields | Effect | Reference |
-| --- | --- | --- | --- |
-| `network_partition` | `link`, `direction` | Suppress the selected directed edge or both edges. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `network_loss` | `link`, `rate_basis_points` | Drop matching frames at the deterministic probability. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `network_reorder` | `link`, `window_nanos` | Shift delivery within the window so frames may pass one another. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `network_duplicate` | `link`, `rate_basis_points`, `gap_nanos` | Emit an additional identical frame after the modeled gap when the fault fires. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `network_corruption_bit_flip` | `link`, `rate_basis_points`, `max_bits` | Flip a seeded number of payload bits up to `max_bits`. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `network_corruption_field_mutation` | `link`, `rate_basis_points` | Mutate a parsed payload field to another seeded in-range value. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `network_corruption_truncation` | `link`, `rate_basis_points`, `max_bytes` | Shorten payload bytes by a seeded amount bounded by `max_bytes`. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `network_bandwidth` | `link`, `bits_per_second` | Add deterministic serialization delay for this bandwidth cap. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `network_latency_bump` | `link`, `extra_nanos` | Add fixed virtual latency to frame delivery. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `node_crash` | `node`, `restart` | Stop the VM and use the selected restart policy after healing. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `node_slow` | `node`, `factor_basis_points` | Stretch modeled progress by a factor of at least 10,000 basis points (1.0). | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `node_clock_skew` | `node`, `offset_nanos` | Apply a signed offset to guest-perceived wall-clock time without changing icount virtual time. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `block_latency` | `device`, `extra_nanos`, `jitter_nanos` | Delay block responses by the fixed addition plus seeded jitter. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `block_failure` | `device`, `rate_basis_points`, `mode` | Return an error-status response or drop the response at the configured rate. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `block_reorder` | `device`, `window_nanos` | Shift a block completion within the window. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `block_duplicate` | `device`, `rate_basis_points`, `gap_nanos` | Emit a duplicate block response after the modeled gap. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `block_corruption` | `device`, `rate_basis_points`, `bit_flips` | Flip the configured number of deterministic response bits. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `block_bandwidth` | `device`, `bits_per_second` | Add deterministic serialization delay for a block-device bandwidth cap. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `nine_p_latency` | `device`, `extra_nanos`, `jitter_nanos` | Delay 9p responses by the fixed addition plus seeded jitter. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `nine_p_failure` | `device`, `rate_basis_points`, `errno_code` | Return the configured positive POSIX errno at the deterministic rate; portable `EIO` is `5`. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `nine_p_reorder` | `device`, `window_nanos` | Shift a 9p completion within the window. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `nine_p_duplicate` | `device`, `rate_basis_points`, `gap_nanos` | Emit a duplicate 9p response after the modeled gap. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `nine_p_corruption` | `device`, `rate_basis_points`, `bit_flips` | Flip the configured number of deterministic response bits. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `nine_p_bandwidth` | `device`, `bits_per_second` | Add deterministic serialization delay for a 9p-device bandwidth cap. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-
-### Supporting fault values
-
-| Field | Accepted value | Meaning |
+| `kind` | Required fields | Purpose |
 | --- | --- | --- |
-| `direction` | `bidirectional` | Suppress endpoint A to B and endpoint B to A. |
-| `direction` | `endpoint_a_to_endpoint_b` | Suppress only A to B. |
-| `direction` | `endpoint_b_to_endpoint_a` | Suppress only B to A. |
-| `restart` | `from_ready_point` | Relaunch from the baked genesis ready point after healing. |
-| `restart` | `from_last_checkpoint` | Relaunch from the last pre-crash checkpoint. A checkpoint must exist. |
-| `restart` | `stay_down` | Do not relaunch automatically; an explicit `start_node` is required. |
-| block failure `mode` | `drop` | Never complete the response. |
-| block failure `mode` | `error_status` | Complete with an error-status response. |
+| `step` | ordered `points`, `before` | Piecewise-constant values. |
+| `pulse` | `start`, `duration`, `inactive`, `active` | One finite interval. |
+| `periodic_pulse` | `epoch`, `period`, `width`, `phase`, `inactive`, `active` | Repeating finite intervals. |
+| `ramp` | `start`, `end`, `start_value`, `end_value`, `rounding` | Exact linear transition. |
+| `triangle`, `sawtooth` | `epoch`, `period`, `phase`, `minimum`, `maximum`, `rounding` | Periodic analytic wave. |
+| `event_sequence` | ordered `events` | Typed events with stable same-coordinate order. |
+| `trace` | `artifact`, `raw_provenance`, `channel`, `interpolation`, `before`, `after`, `missing`; optional quality channel/threshold and time mapping | Replay a normalized recorded channel while retaining its raw provenance. |
+| `telemetry` | `adapter`, `target`, `field`, `boundary_delay=1` | Read delayed production telemetry without a feedback loop. |
+| `point_set` | `artifact`, `coordinate_frame`, `interpolation`, `outside` | Sample irregular spatial data. |
+| `regular_grid` | `artifact`, `coordinate_frame`, `origin_mm`, `cell_size_mm`, `dimensions`, `interpolation`, `outside` | Sample a dense 3-D grid. |
+| `tiled_grid` | `manifest`, `coordinate_frame`, `tile_size_mm`, `interpolation`, `outside` | Sample a bounded tiled grid. |
+| `zone_map` | `artifact`, `coordinate_frame`, `boundary`, `overlap` | Resolve polygon/polyhedron membership. |
+| `path_profile` | `artifact`, `path`, `interpolation`, `before`, `after` | Sample a quantity by distance along a path. |
+| `seeded_field` | `field_seed_domain`, `coordinate_frame`, `quantization_mm`, `correlation_mm`, `distribution`, `distribution_parameters` | Generate a deterministic correlated field. |
+| `transmitter_field` | `transmitter`, `coordinate_frame`, `position_signal`, optional `orientation_signal`, `model`, `lookup`, `environment_signals` | Apply calibrated path-loss/antenna/environment transfer. |
+| `bernoulli` | `probability_millionths`, `key_domain`, optional `opportunity_filter` | Keyed Boolean draw. |
+| `uniform_integer` | `minimum`, `maximum`, `key_domain`, optional `opportunity_filter` | Unbiased keyed inclusive integer draw. |
+| `exponential_wait` | `rate`, `sampler_version`, `sampler_table`, `key_domain`, optional `maximum_nanos` | Exact integer inverse-CDF exponential wait. |
+| `weibull_wait` | `shape`, `scale_nanos`, `sampler_version`, `sampler_table`, `key_domain`, optional `maximum_nanos` | Exact integer inverse-CDF Weibull wait. |
+
+Interpolation is `exact`, `hold_previous`, `nearest`, or `linear`; linear also
+declares `rounding` and `overflow`. Boundary behavior is `error`, `hold`,
+`constant`, `repeat`, or `inactive`. Missing-sample behavior is `error`, `hold`,
+`interpolate`, or `inactive`. Rounding is `floor`, `ceiling`, `toward_zero`,
+`away_from_zero`, or `nearest_ties_to_even`; overflow is `error` or `saturate`.
+Stochastic `key_domain` is `opportunity`, `transition`, or `coordinate`.
+
+Pure and stateful operators are also closed. Pure operators cover exact
+arithmetic (`add`, `subtract`, `min`, `max`, rational multiply/divide,
+`absolute`, `negate`, `clamp`), comparisons, Boolean logic, select, step and
+piecewise-linear lookup, enum maps, unit conversion, bounded delay/sample-hold
+and windows, distance/spatial sampling/orientation, and typed edge/merge/gate
+event operations. Stateful kinds are `hysteresis`, `debounce`, `integrator`,
+`leaky_integrator`, `finite_state_machine`, `markov_chain`, `burst_process`,
+`counter`, and `queue_model`. Their exact Rust field contracts are in the
+[signal schema source](../../../crates/crucible/src/model/fault_signal/mod.rs);
+unknown variants or fields are rejected.
+
+### `[[plan.fault_binding]]` fields
+
+| Field | Required/default | Meaning |
+| --- | --- | --- |
+| `id` | Required | Stable binding identity. |
+| `semantic_version` | Required; only `1` | Binding semantic version. |
+| `signals` | Required nonempty list; `signal` alias only for one input | Canonical input signals. |
+| `sampling` | Required | `at_boundary`, `at_opportunity`, `at_change`, `cadence_nanos`, or `at_event` with its typed parent. |
+| `mapping` | Required | Closed signal-to-effect transfer below. |
+| `selector` | Required | `exact`, `target_set`, `fault_domain`, or version-1 `dynamic_path`. |
+| `effect` | Required | One typed effect specification; `semantic_version=1`. |
+| `opportunity_filter` | Required when opportunity sampling cannot be inferred | Adapter, operation set, phase set, and optional target-kind constraints. |
+| `search_policy` | Required | Bounded search behavior below. |
+
+| Mapping `kind` | Fields | Result |
+| --- | --- | --- |
+| `active_when_true` | `invert` | Persistent activation from Boolean input. |
+| `active_when_equal` | `value` | Persistent activation for one enum value. |
+| `threshold` | `comparison`, `threshold`, optional `clear_threshold`, `residence_nanos` | Stateful threshold/hysteresis activation. |
+| `map_parameter` | `parameter` | Map one signal to one registered effect field. |
+| `piecewise_parameter` | `parameter`, ordered `points`, `rounding`, `overflow` | Exact finite transfer function. |
+| `hazard` | none | Keyed probability outcome at matching opportunities. |
+| `impulse_on_event` | none | One impulse per typed event identity. |
+| `state_transition` | `transition_table` | Exhaustively registered adapter transition. |
+| `service_profile` | `service_profile` | Registered named physical-input service model. |
+
+Search policy kinds are `fixed`, `branch_outcome { maximum_branches }`,
+`branch_transition { candidates }`, `branch_parameter { parameter, candidates }`,
+`mutate_trace_window { start_nanos, end_nanos, maximum_mutations }`, and
+`mutate_mapping { point_indices, maximum_mutations }`.
+
+### Target selector values
+
+| Target kind | Adapter | What it selects |
+| --- | --- | --- |
+| `network_interface` | network | One endpoint interface. |
+| `network_segment` | network | One directed physical or logical segment. |
+| `network_medium` | network | One shared medium/channel resource. |
+| `network_queue` | network | One bounded queue. |
+| `network_forwarder` | network | Switch, router, modem, repeater, or gateway. |
+| `network_path` | network | Versioned directed path. |
+| `network_attachment` | network | Interface association/attachment. |
+| `network_contact` | network | Scheduled or acquired contact. |
+| `block_device`, `block_range` | storage | Whole block/flash device or byte range. |
+| `storage_controller`, `storage_array` | storage | Controller namespace/path or array member/path. |
+| `ninep_device` | storage | One 9p device. |
+| `node`, `vcpu` | node | Whole emulated node or vCPU. |
+| `register`, `memory_range`, `interrupt`, `clock_source` | node | Architecture-resolved machine object. |
+| `accelerator` | node | Declared accelerator device. |
+
+Sensor targets are specification-only and are rejected by this schema.
+
+### Exhaustive effect registry
+
+Every row below is executable. `Parameters` names the primary closed table or
+fields; follow the linked family source for nested enum fields. Legal targets,
+phases, lifetimes, composition, capabilities, and replay-evidence keys are
+enforced by the [effect registry](../../../crates/crucible/src/model/fault_signal/effect_registry.rs).
+
+| Effect `kind` | Parameters and purpose | Configuration source |
+| --- | --- | --- |
+| `network.availability` | Directional `state` and queued/in-flight policies; make an interface, segment, path, or contact up, down, receive-only, or transmit-only. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.flap` | Down, training, and recovery durations; model timed link transitions. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.negotiated_mode` | Rate, duplex, lanes, FEC, and training duration. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.profile_delta` | Optional latency/rate/error/technology profile components. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.propagation_delay`, `network.access_delay`, `network.jitter` | Exact delay or keyed bounded delay variation. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.service_curve`, `network.token_bucket` | Piecewise service, rate, burst, and initial-token constraints. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.queue_policy` | Byte/frame capacity, discipline/classes, and overflow response. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.frame_loss`, `network.burst_error_state` | Independent or correlated loss/corruption probability state. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.duplicate`, `network.reorder` | Probability/copies/gap or bounded reorder window and selection. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.payload_transform` | Bit flip, field mutation, truncation, or undetected corruption. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.detected_frame_error` | CRC/FCS/framing/FEC class and corrected/retry/drop/reset receiver action. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.mtu` | MTU plus drop, fragment, or typed-error oversize policy. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.pause_backpressure`, `network.recipient_subset` | Class-scoped pause or versioned multicast recipient selection. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.forwarder_lifecycle` | Restart/reset/power-loss transition, downtime, and queue/table retention. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.forwarding_mutation` | Wrong-port, flood, blackhole, loop, or stale-age lookup mutation. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.route_transition` | Old/new paths, convergence events, and in-flight policy. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.control_plane_service` | Bounded control queue, service curve, work size, and overflow. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.firewall_disposition` | Selector/state machine plus accept, reject, or drop. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.connection_state` | NAT, conntrack, load-balancer, tunnel, or DNS table and overflow state. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.shared_medium` | Resources, arbitration, contention/collision/capture, and duty cycle. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.rf_channel` | Carrier/bandwidth, signal/noise/gain/attenuation/fading, SINR transfer, and retry outcomes. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.association` | Candidate set, authentication, selection, hysteresis, timers, handoff, and traffic policy. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.control_result_transform` | Technology operation plus drop, stale, bias, replace, or typed error result. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.contact` | Contact plan, acquisition/teardown, range delay, beam/gateway, and service resource. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.custody_queue` | Bundle/byte capacity, priority, expiry, route/contact plan, hop bound, and overflow. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `storage.availability` | Online/offline/read-only/degraded state. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.reported_capacity` | Guest-visible length and affected-range policy. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.latency`, `storage.service` | Operation-filtered delay/jitter or bandwidth/IOPS/queue/token service. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.operation_failure`, `storage.stall_timeout` | Typed operation error or stall/recovery/timeout schedule. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.completion_reorder`, `storage.duplicate_completion` | Bounded completion ordering or protocol-valid duplicates. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.read_transform` | Bit corruption, stale-version read, or cross-range/device misdirection. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.write_disposition` | Applied, lost, torn, or misdirected persistence. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.persistence_order` | Declared durable partial order and violation behavior. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.volatile_cache`, `storage.volatile_cache_loss` | Bounded cache/admission/eviction or exact selected power-loss set. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.flush_disposition` | Honest, erroring, lying, or stalled flush result. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.media_range`, `storage.flash_state` | Bad/latent/poisoned/read-only ranges or flash wear/retention/disturb state. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.controller_lifecycle`, `storage.array_state` | Reset/reconnect/enumeration/path state or member/rebuild/consistency state. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `ninep.result`, `ninep.visibility` | Typed errno/stale/misdirected result or committed-versus-visible frontier. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `node.lifecycle`, `node.hang` | Boot/crash/reset/power transition or scoped progress outage/watchdog recovery. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `cpu.service`, `cpu.vcpu_state` | Rational execution capacity/schedule or online/offline/stalled vCPU state. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `cpu.register_transform` | Architecture-resolved bit flip, stuck mask/value, or replacement. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `cpu.instruction_transform`, `cpu.exception` | Result corruption/skip/replay or architecture machine-check/exception injection. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `interrupt.disposition`, `interrupt.storm` | Drop/delay/duplicate/replace delivery or bounded generated sequence. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `memory.mutation` | Atomic GPA/GVA bit flip or byte replacement at a safe boundary. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `memory.access_transform` | Stuck/read-corrupt/lost-write/torn-write/poison transform by access class. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `memory.ecc_event`, `memory.region_state`, `memory.service` | Corrected/uncorrectable ECC; failed/retention/rowhammer state; or latency/bandwidth service. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `clock.transform`, `clock.source_state` | Offset/drift/jump/freeze/jitter/wander or source failure/fallback/synchronization. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `accelerator.lifecycle`, `accelerator.result_transform`, `accelerator.memory_event`, `accelerator.service` | Accelerator presence/reset, job/result corruption, memory error, or compute/memory/thermal/power service. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+
+The registry has 71 distinct keys even where adjacent rows above share a
+description. A reference-integrity gate compares this document with the closed
+registry so a new executable kind cannot ship undocumented.
 
 ## Properties and predicates
 
@@ -589,7 +663,6 @@ same vocabulary is accepted for assertion predicates and event triggers.
 | `node_state` | `node`, `state` | The node has the selected lifecycle state. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
 | `assertion_state` | `name`, `state` | The named assertion is satisfied or violated. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
 | `quiescent` | None | The scheduler has settled with no immediately runnable work. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `fault_active` | `tag` | A fault with this tag is active. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
 | `named` | `name`, `nodes?` | The named predicate DSL entry resolves in the current world/plan context. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
 | `guest_marker` | `marker` | The white-box-enabled guest emits the named bare marker or declared assertion marker as applicable. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
 | `all_of` | `predicates` array | Every nested predicate is true. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
@@ -606,7 +679,6 @@ These strings may appear directly where a predicate is expected. Structured
 | --- | --- |
 | `no_crashed_nodes` | `not(any_of(node_state(node, crashed) for every VM))` |
 | `quiescent` | `quiescent` |
-| `no_active_faults` | `not(any_of(fault_active(tag) for every declared tag))` |
 | `node_alive:<node>` | `not(node_state(<node>, crashed))` |
 | `node_crashed:<node>` | `once(node_state(<node>, crashed))` |
 

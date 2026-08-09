@@ -63,10 +63,6 @@
         needle = "fn plan_entry_material(entry: &PlanEntry) -> String";
       }
       {
-        label = "membership fault material helper";
-        needle = "fn membership_fault_material(fault: &MembershipFault) -> String";
-      }
-      {
         label = "world-plan scenario helper";
         needle = "pub fn scenario_def_with_plan(&self, plan: &Plan) -> Result<ScenarioDef, EngineError>";
       }

@@ -15,12 +15,12 @@ use std::ops::Deref;
 
 use crate::model::{
     AssertionDef, AssertionId, AssertionPhase, CodePoint, ContentHash, Decision, DeviceId,
-    EngineError, EventKey, EventLogOffset, FaultId, FaultTag, FramePredicate, Icount, IoEventKind,
-    LinkDef, LinkId, MarkerId, MemPlace, MembershipFault, MemoryCmp, NodeId, NodeLifecycle, Plan,
-    Predicate, PreemptionKind, Properties, Property, ReachabilityExpectation, ReachableDisposition,
-    ReadyPoint, RegexProgram, ReproductionArtifact, ReproductionReplay, RngStreamId, Schedule,
-    SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, TimeConversionError, TimerId,
-    VirtualTime, WhiteBoxPolicy, World, WorldDeviceKind, WorldStaticTopology,
+    EngineError, EventKey, EventLogOffset, FramePredicate, Icount, IoEventKind, LinkDef, LinkId,
+    MarkerId, MemPlace, MemoryCmp, NodeId, NodeLifecycle, Plan, Predicate, PreemptionKind,
+    Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram,
+    ReproductionArtifact, ReproductionReplay, RngStreamId, Schedule, SchedulerNodeId,
+    SchedulingNodeKind, Shift, SimDuration, TimeConversionError, TimerId, VirtualTime,
+    WhiteBoxPolicy, World, WorldDeviceKind, WorldStaticTopology,
 };
 use crate::scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, EventAttributeValue,

@@ -110,7 +110,7 @@ pub use ninep::{
     NinepRequestIdentity, NinepRequestOpportunity, NinepResultDirective, NinepServer,
     NinepServerSnapshot, NinepSnapshot, NinepVirtualFid, NinepVisibilityLookup,
     NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityScope, NinepVisibilityState,
-    Node, Qid, QidType, ResolvedNinepRequestDirective,
+    NinepVisibilityUpdate, Node, Qid, QidType, ResolvedNinepRequestDirective,
 };
 pub use request::{
     AdditionalCompletion, AffineLatency, ComputedResponse, LatencyModel, Request, RequestId,

@@ -653,32 +653,6 @@ pub struct SchedulerTopologyChangeApplication {
     pub updates: Vec<SchedulerTopologyLookaheadUpdate>,
 }
 
-/// One scheduler-owned event discarded by node crash handling.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SchedulerDiscardedEvent {
-    /// The event's deterministic scheduler key.
-    pub key: ScheduledEventKey,
-    /// The resolved event class that would have been emitted if it survived.
-    pub class: ScheduledEventResolveClass,
-}
-
-/// One scheduler-owned device completion discarded by node crash handling.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SchedulerDiscardedIoCompletion {
-    /// The scheduler sub-node that produced the completion.
-    pub sub_node: SchedulerNodeId,
-    /// The target VM node that would have observed the completion.
-    pub target: NodeId,
-    /// The target instruction count where the completion would become visible.
-    pub delivery_icount: Icount,
-    /// The device-core source id in the completion delivery key.
-    pub source_node: u32,
-    /// The device-core sequence number in the completion delivery key.
-    pub sequence: u32,
-    /// The deterministic completion payload.
-    pub payload: Vec<u8>,
-}
-
 /// Scheduler-side checkpoint anchor for one VM node.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerNodeCheckpoint {
@@ -688,52 +662,6 @@ pub struct SchedulerNodeCheckpoint {
     pub counter: NodeCounter,
     /// Scheduler-time projection of `counter` when the checkpoint was recorded.
     pub at: SimInstant,
-}
-
-/// Evidence that a VM node crash was applied to scheduler-owned state.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchedulerNodeCrashApplication {
-    /// Session-local sequence number of the applied crash.
-    pub sequence: u64,
-    /// The crashed VM node.
-    pub node: NodeId,
-    /// Restart policy recorded by the crash fault.
-    pub restart: RestartPolicy,
-    /// Scheduler-time point observed for the node at crash activation.
-    pub at: SimInstant,
-    /// Node counter captured at crash activation.
-    pub counter: NodeCounter,
-    /// Runtime activity the node had before the crash stopped it.
-    pub previous_activity: SchedulerNodeActivity,
-    /// Scheduler events deterministically discarded by the crash.
-    pub discarded_events: Vec<SchedulerDiscardedEvent>,
-    /// Device completions deterministically voided by the crash.
-    pub discarded_io: Vec<SchedulerDiscardedIoCompletion>,
-    /// Effective topology edges incident to the crashed node and removed.
-    pub removed_edges: Vec<SchedulerLookaheadEdge>,
-    /// Last checkpoint anchor available to checkpoint-based restart.
-    pub checkpoint: Option<SchedulerNodeCheckpoint>,
-}
-
-/// Evidence that a crashed VM node was healed or kept down.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchedulerNodeRestartApplication {
-    /// Session-local sequence number of the heal/restart application.
-    pub sequence: u64,
-    /// The VM node whose crash fault healed.
-    pub node: NodeId,
-    /// Restart policy that governed the heal.
-    pub restart: RestartPolicy,
-    /// Scheduler frontier point used as the restart anchor.
-    pub at: SimInstant,
-    /// Whether the node resumed execution automatically.
-    pub restarted: bool,
-    /// Node counter after applying the restart policy.
-    pub counter: NodeCounter,
-    /// Effective topology edges queued for restoration.
-    pub restored_edges: Vec<SchedulerLookaheadEdge>,
-    /// Checkpoint anchor used by [`RestartPolicy::FromLastCheckpoint`].
-    pub checkpoint: Option<SchedulerNodeCheckpoint>,
 }
 
 /// Authorization for emitting one cross-node frame under the current topology.

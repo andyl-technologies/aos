@@ -796,10 +796,6 @@ where
         self.inner.scheduler_quiescence()
     }
 
-    fn fault_facts(&self) -> &[ObservedFaultFact] {
-        self.inner.fault_facts()
-    }
-
     fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
         self.inner.white_box_policy_for_node(node)
     }

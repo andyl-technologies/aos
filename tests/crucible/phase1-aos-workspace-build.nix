@@ -103,9 +103,9 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^guest_host_protocol_abi=crucible-guest-host-channel-v1$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^rpc_abi_version=4.0.0$' \
+            grep -q '^rpc_abi_version=5.0.0$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^rpc_abi_build=crucible-rpc-abi-v4$' \
+            grep -q '^rpc_abi_build=crucible-rpc-abi-v5$' \
               ${packages.crucible}/nix-support/crucible-build-info
 
             test -f ${packages.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
@@ -185,7 +185,7 @@ in
             qemu_plugin_abi=qemu-plugin-api-v4
             shmem_abi=crucible-shmem-abi-v5
             guest_host_protocol_abi=crucible-guest-host-channel-v1
-            rpc_abi=4.0.0+crucible-rpc-abi-v4
+            rpc_abi=5.0.0+crucible-rpc-abi-v5
             qemu_sim_capability=qemu-crucible
             generated_shmem_header=include/aos/crucible/crucible_shmem_abi.h
             RESULT

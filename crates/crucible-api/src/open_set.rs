@@ -1,4 +1,4 @@
-//! Open-set API payloads for RFC-0010 command, event, fault, and breakpoint data.
+//! Open-set API payloads for command, event, and breakpoint data.
 //!
 //! The wire model keeps the transport envelope closed while leaving the payload
 //! body open. A payload is a dotted `kind` string plus a typed attribute map:
@@ -10,17 +10,15 @@
 //! ```
 //!
 //! Event payload kinds and attribute names are adapted directly from
-//! [`crucible::event_kind_catalog`]. Commands, faults, and breakpoint conditions
-//! use the existing session command table, fault taxonomy keys, and shared
-//! predicate vocabulary as their source vocabularies.
+//! [`crucible::event_kind_catalog`]. Commands and breakpoint conditions use the
+//! session command table and shared predicate vocabulary as their sources.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
 use crucible::{
-    Condition, EventAttributeValue, EventLevel, EventPayload, EventSource, Fault, FaultTag,
-    Predicate, SchedulerEventLogClass, SchedulerEventLogEntry, event_kind_catalog,
-    event_kind_catalog_entry,
+    Condition, EventAttributeValue, EventLevel, EventPayload, EventSource, Predicate,
+    SchedulerEventLogClass, SchedulerEventLogEntry, event_kind_catalog, event_kind_catalog_entry,
 };
 use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, BreakpointSpec, SessionCommandKind,
@@ -35,18 +33,12 @@ use crate::session_mapping::{
 pub const OPEN_SET_COMMAND_KIND_PREFIX: &str = "crucible.cmd.";
 /// Dotted namespace prefix for API breakpoint-condition payload kinds.
 pub const OPEN_SET_BREAKPOINT_KIND_PREFIX: &str = "crucible.bp.";
-/// Dotted namespace prefix for API fault payload kinds.
-pub const OPEN_SET_FAULT_KIND_PREFIX: &str = "crucible.fault.";
 /// Dotted namespace prefix for API event payload kinds.
 pub const OPEN_SET_EVENT_KIND_PREFIX: &str = "crucible.event.";
 
 /// Category names advertised by `Hello` for open-set payload discovery.
-pub const OPEN_SET_CAPABILITY_CATEGORIES: &[&str] = &[
-    "crucible.cmd.*",
-    "crucible.bp.*",
-    "crucible.fault.*",
-    "crucible.event.*",
-];
+pub const OPEN_SET_CAPABILITY_CATEGORIES: &[&str] =
+    &["crucible.cmd.*", "crucible.bp.*", "crucible.event.*"];
 
 /// One open-set payload category carried by the API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -55,8 +47,6 @@ pub enum OpenSetPayloadCategory {
     Command,
     /// Breakpoint predicate payloads sent by a client.
     Breakpoint,
-    /// Fault taxonomy payloads sent by a client.
-    Fault,
     /// Event-log payloads received by a client.
     Event,
 }
@@ -68,7 +58,6 @@ impl OpenSetPayloadCategory {
         match self {
             Self::Command => OPEN_SET_COMMAND_KIND_PREFIX,
             Self::Breakpoint => OPEN_SET_BREAKPOINT_KIND_PREFIX,
-            Self::Fault => OPEN_SET_FAULT_KIND_PREFIX,
             Self::Event => OPEN_SET_EVENT_KIND_PREFIX,
         }
     }
@@ -79,7 +68,6 @@ impl OpenSetPayloadCategory {
         match self {
             Self::Command => "command",
             Self::Breakpoint => "breakpoint",
-            Self::Fault => "fault",
             Self::Event => "event",
         }
     }
@@ -142,7 +130,6 @@ impl From<&EventAttributeValue> for OpenSetAttributeValue {
             EventAttributeValue::Bytes(value) => Self::Bytes(value.clone()),
             EventAttributeValue::Node(value) => Self::String(value.name.clone()),
             EventAttributeValue::Event(value) => Self::String(value.name.clone()),
-            EventAttributeValue::Fault(value) => Self::String(value.name.clone()),
             EventAttributeValue::VirtualTime(value) => Self::Uint(value.ticks),
             EventAttributeValue::Icount(value) => Self::Uint(value.retired),
             EventAttributeValue::Level(value) => Self::String(event_level_label(*value).to_owned()),
@@ -216,8 +203,6 @@ pub struct OpenSetCapabilities {
     pub commands: Vec<OpenSetKindSchema>,
     /// Breakpoint predicate kinds accepted by breakpoint commands.
     pub breakpoints: Vec<OpenSetKindSchema>,
-    /// Fault taxonomy kinds accepted by fault-injection commands.
-    pub faults: Vec<OpenSetKindSchema>,
     /// Event payload kinds emitted by the unified event log.
     pub event_payloads: Vec<OpenSetKindSchema>,
 }
@@ -234,10 +219,6 @@ impl OpenSetCapabilities {
             breakpoints: BREAKPOINT_KIND_TEMPLATES
                 .iter()
                 .map(|template| template.schema(OpenSetPayloadCategory::Breakpoint))
-                .collect(),
-            faults: FAULT_KIND_TEMPLATES
-                .iter()
-                .map(|template| template.schema(OpenSetPayloadCategory::Fault))
                 .collect(),
             event_payloads: event_kind_catalog()
                 .iter()
@@ -260,7 +241,6 @@ impl OpenSetCapabilities {
         match category {
             OpenSetPayloadCategory::Command => &self.commands,
             OpenSetPayloadCategory::Breakpoint => &self.breakpoints,
-            OpenSetPayloadCategory::Fault => &self.faults,
             OpenSetPayloadCategory::Event => &self.event_payloads,
         }
     }
@@ -303,27 +283,6 @@ pub fn session_command_for_open_set_command_kind(kind: &str) -> Option<SessionCo
     kind.strip_prefix(OPEN_SET_COMMAND_KIND_PREFIX)
         .filter(|local_kind| !local_kind.is_empty())
         .and_then(session_command_for_api_command)
-}
-
-/// Returns the dotted API fault kind for one taxonomy fault.
-#[must_use]
-pub fn open_set_fault_kind(fault: &Fault) -> String {
-    open_set_kind(OpenSetPayloadCategory::Fault, fault.kind_key())
-}
-
-/// Builds the API fault payload for a typed fault command.
-#[must_use]
-pub fn open_set_payload_for_fault(tag: &FaultTag, fault: &Fault) -> OpenSetPayload {
-    let mut attributes = BTreeMap::new();
-    attributes.insert(
-        String::from("tag"),
-        OpenSetAttributeValue::String(tag.name.clone()),
-    );
-    attributes.insert(
-        String::from("content_hash"),
-        OpenSetAttributeValue::String(fault.content_hash().to_hex()),
-    );
-    OpenSetPayload::new(open_set_fault_kind(fault), attributes)
 }
 
 /// Returns the dotted API breakpoint kind for one shared predicate.
@@ -655,10 +614,6 @@ const BREAKPOINT_KIND_TEMPLATES: &[OpenSetKindTemplate] = &[
         attributes: &["predicate", "policy", "disposition"],
     },
     OpenSetKindTemplate {
-        local_kind: "fault-active",
-        attributes: &["tag", "predicate", "policy", "disposition"],
-    },
-    OpenSetKindTemplate {
         local_kind: "named",
         attributes: &["name", "nodes", "predicate", "policy", "disposition"],
     },
@@ -681,165 +636,6 @@ const BREAKPOINT_KIND_TEMPLATES: &[OpenSetKindTemplate] = &[
     OpenSetKindTemplate {
         local_kind: "not",
         attributes: &["inner", "predicate", "policy", "disposition"],
-    },
-];
-
-const FAULT_KIND_TEMPLATES: &[OpenSetKindTemplate] = &[
-    OpenSetKindTemplate {
-        local_kind: "network.partition",
-        attributes: &["tag", "content_hash", "link", "direction"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "network.loss",
-        attributes: &["tag", "content_hash", "link", "rate_basis_points"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "network.reorder",
-        attributes: &["tag", "content_hash", "link", "window_nanos"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "network.duplicate",
-        attributes: &[
-            "tag",
-            "content_hash",
-            "link",
-            "rate_basis_points",
-            "gap_nanos",
-        ],
-    },
-    OpenSetKindTemplate {
-        local_kind: "network.corruption.bit-flip",
-        attributes: &[
-            "tag",
-            "content_hash",
-            "link",
-            "rate_basis_points",
-            "max_bits",
-        ],
-    },
-    OpenSetKindTemplate {
-        local_kind: "network.corruption.field-mutation",
-        attributes: &["tag", "content_hash", "link", "rate_basis_points"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "network.corruption.truncation",
-        attributes: &[
-            "tag",
-            "content_hash",
-            "link",
-            "rate_basis_points",
-            "max_bytes",
-        ],
-    },
-    OpenSetKindTemplate {
-        local_kind: "network.bandwidth",
-        attributes: &["tag", "content_hash", "link", "bits_per_second"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "network.latency-bump",
-        attributes: &["tag", "content_hash", "link", "extra_nanos"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "node.crash",
-        attributes: &["tag", "content_hash", "node", "restart"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "node.slow",
-        attributes: &["tag", "content_hash", "node", "factor_basis_points"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "node.clock-skew",
-        attributes: &["tag", "content_hash", "node", "offset_nanos"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "block.latency",
-        attributes: &[
-            "tag",
-            "content_hash",
-            "device",
-            "extra_nanos",
-            "jitter_nanos",
-        ],
-    },
-    OpenSetKindTemplate {
-        local_kind: "block.failure",
-        attributes: &["tag", "content_hash", "device", "rate_basis_points", "mode"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "block.reorder",
-        attributes: &["tag", "content_hash", "device", "window_nanos"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "block.duplicate",
-        attributes: &[
-            "tag",
-            "content_hash",
-            "device",
-            "rate_basis_points",
-            "gap_nanos",
-        ],
-    },
-    OpenSetKindTemplate {
-        local_kind: "block.corruption.bit-flip",
-        attributes: &[
-            "tag",
-            "content_hash",
-            "device",
-            "rate_basis_points",
-            "bit_flips",
-        ],
-    },
-    OpenSetKindTemplate {
-        local_kind: "block.bandwidth",
-        attributes: &["tag", "content_hash", "device", "bits_per_second"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "9p.latency",
-        attributes: &[
-            "tag",
-            "content_hash",
-            "device",
-            "extra_nanos",
-            "jitter_nanos",
-        ],
-    },
-    OpenSetKindTemplate {
-        local_kind: "9p.failure",
-        attributes: &[
-            "tag",
-            "content_hash",
-            "device",
-            "rate_basis_points",
-            "errno",
-        ],
-    },
-    OpenSetKindTemplate {
-        local_kind: "9p.reorder",
-        attributes: &["tag", "content_hash", "device", "window_nanos"],
-    },
-    OpenSetKindTemplate {
-        local_kind: "9p.duplicate",
-        attributes: &[
-            "tag",
-            "content_hash",
-            "device",
-            "rate_basis_points",
-            "gap_nanos",
-        ],
-    },
-    OpenSetKindTemplate {
-        local_kind: "9p.corruption.bit-flip",
-        attributes: &[
-            "tag",
-            "content_hash",
-            "device",
-            "rate_basis_points",
-            "bit_flips",
-        ],
-    },
-    OpenSetKindTemplate {
-        local_kind: "9p.bandwidth",
-        attributes: &["tag", "content_hash", "device", "bits_per_second"],
     },
 ];
 

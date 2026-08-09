@@ -6,17 +6,14 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use crucible::{
-    ClockDriftRate, ContentHash, NodeClockSkew, NodeId, ScenarioDef, SchedulerNodeId,
-    SchedulingNodeKind, SimOffset,
-};
+use crucible::{ContentHash, NodeId, ScenarioDef, SchedulerNodeId, SchedulingNodeKind};
 use crucible_qemu::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
     IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
-    NodeClockSkewDeclaration, NodeIcountShift, QemuLaunchArtifact, QemuLaunchCommand,
-    QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
-    QemuLaunchPluginSwitch, QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig,
-    validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
+    NodeIcountShift, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
+    QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig, validate_pre_spawn_qemu_launch_args,
+    validate_x86_whitebox_hmp_mtree,
 };
 
 #[path = "deterministic_launch/fingerprint_options.rs"]
@@ -100,23 +97,6 @@ fn scenario_material_for_nodes(
     profile
         .scenario_hash_material_for_nodes(node_shifts)
         .unwrap_or_else(|error| panic!("node shift material should be valid: {error}"))
-}
-
-fn scenario_material_for_node_timing(
-    profile: &DeterministicLaunchProfile,
-    node_shifts: &[NodeIcountShift],
-    node_clock_skews: &[NodeClockSkewDeclaration],
-) -> String {
-    profile
-        .scenario_hash_material_for_node_timing(node_shifts, node_clock_skews)
-        .unwrap_or_else(|error| panic!("node timing material should be valid: {error}"))
-}
-
-fn drift_rate(numerator: u64, denominator: u64) -> ClockDriftRate {
-    match ClockDriftRate::new(numerator, denominator) {
-        Ok(rate) => rate,
-        Err(error) => panic!("test drift rate should be valid: {error}"),
-    }
 }
 
 #[test]
@@ -1028,119 +1008,6 @@ fn launch_profile_rejects_per_node_icount_shift_mismatch() {
 }
 
 #[test]
-fn launch_profile_records_per_node_clock_skew_material() {
-    let profile = default_profile();
-    let node_shifts = [
-        NodeIcountShift::new("vm-a", 0),
-        NodeIcountShift::new("vm-b", 0),
-    ];
-    let no_skew = scenario_material_for_node_timing(&profile, &node_shifts, &[]);
-    let explicit_perfect = scenario_material_for_node_timing(
-        &profile,
-        &node_shifts,
-        &[NodeClockSkewDeclaration::new(
-            "vm-a",
-            NodeClockSkew {
-                offset: SimOffset { nanos: 0 },
-                drift_rate: drift_rate(2, 2),
-            },
-        )],
-    );
-    let with_skew = scenario_material_for_node_timing(
-        &profile,
-        &node_shifts,
-        &[
-            NodeClockSkewDeclaration::new(
-                "vm-b",
-                NodeClockSkew {
-                    offset: SimOffset { nanos: -25 },
-                    drift_rate: drift_rate(999, 1000),
-                },
-            ),
-            NodeClockSkewDeclaration::new(
-                "vm-a",
-                NodeClockSkew {
-                    offset: SimOffset { nanos: 50 },
-                    drift_rate: drift_rate(1001, 1000),
-                },
-            ),
-        ],
-    );
-
-    assert_eq!(no_skew, explicit_perfect);
-    for expected in [
-        "node_clock_skew_offset_ns[vm-a]=50",
-        "node_clock_drift_rate[vm-a]=1001/1000",
-        "node_clock_drift_rounding[vm-a]=floor",
-        "node_clock_skew_applies_to[vm-a]=guest-visible-only",
-        "node_clock_skew_scheduling_axis[vm-a]=unskewed-icount-derived",
-        "node_clock_skew_offset_ns[vm-b]=-25",
-        "node_clock_drift_rate[vm-b]=999/1000",
-    ] {
-        assert!(with_skew.contains(expected), "missing {expected}");
-    }
-    let vm_a_line = with_skew
-        .lines()
-        .position(|line| line == "node_clock_skew_offset_ns[vm-a]=50")
-        .unwrap_or_else(|| panic!("missing vm-a clock skew line in {with_skew}"));
-    let vm_b_line = with_skew
-        .lines()
-        .position(|line| line == "node_clock_skew_offset_ns[vm-b]=-25")
-        .unwrap_or_else(|| panic!("missing vm-b clock skew line in {with_skew}"));
-    assert!(
-        vm_a_line < vm_b_line,
-        "node clock skew material must be sorted by node id"
-    );
-    assert_ne!(
-        ScenarioDef::from_canonical_material("crucible.scenario.v1.qemu-launch", &no_skew).id(),
-        ScenarioDef::from_canonical_material("crucible.scenario.v1.qemu-launch", &with_skew).id(),
-    );
-}
-
-#[test]
-fn launch_profile_rejects_invalid_node_clock_skew_material() {
-    let profile = default_profile();
-    let invalid = NodeClockSkew {
-        offset: SimOffset { nanos: 1 },
-        drift_rate: ClockDriftRate {
-            numerator: 1,
-            denominator: 0,
-        },
-    };
-
-    assert_eq!(
-        profile.scenario_hash_material_for_node_timing(
-            &[],
-            &[NodeClockSkewDeclaration::new("vm-a", invalid)]
-        ),
-        Err(LaunchProfileError::InvalidNodeClockDriftRate {
-            node_id: String::from("vm-a"),
-            numerator: 1,
-            denominator: 0,
-        })
-    );
-    assert_eq!(
-        profile.scenario_hash_material_for_node_timing(
-            &[],
-            &[
-                NodeClockSkewDeclaration::new("vm-a", NodeClockSkew::PERFECT),
-                NodeClockSkewDeclaration::new("vm-a", NodeClockSkew::PERFECT),
-            ],
-        ),
-        Err(LaunchProfileError::DuplicateNodeClockSkew {
-            node_id: String::from("vm-a"),
-        })
-    );
-    assert_eq!(
-        profile.scenario_hash_material_for_node_timing(
-            &[],
-            &[NodeClockSkewDeclaration::new("", NodeClockSkew::PERFECT)]
-        ),
-        Err(LaunchProfileError::InvalidFixedText { field: "node_id" })
-    );
-}
-
-#[test]
 fn launch_hash_material_records_every_determinism_field() {
     let material = default_profile().scenario_hash_material();
 
@@ -1218,9 +1085,6 @@ fn launch_hash_material_records_every_determinism_field() {
         .scenario_hash_material();
     let memory = deterministic(LaunchProfileCandidate::default().with_memory_mib(1024))
         .scenario_hash_material();
-    let epoch =
-        deterministic(LaunchProfileCandidate::default().with_rtc_epoch_utc("2026-01-02T00:00:00"))
-            .scenario_hash_material();
     let cmdline = deterministic(
         LaunchProfileCandidate::default()
             .with_kernel_cmdline("console=ttyS0 reboot=k panic=1 quiet net.ifnames=0"),
@@ -1236,7 +1100,6 @@ fn launch_hash_material_records_every_determinism_field() {
     assert_ne!(material, smp_vcpus);
     assert_ne!(material, machine);
     assert_ne!(material, memory);
-    assert_ne!(material, epoch);
     assert_ne!(material, cmdline);
     assert_ne!(material, scenario_seed);
     assert_ne!(material, run_seed);

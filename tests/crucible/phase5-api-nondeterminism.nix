@@ -169,14 +169,6 @@
         label = "HTTP/2 transport proof";
         needle = "ControlTransportKind::Http2Rpc";
       }
-      {
-        label = "boundary-mutating injected fault";
-        needle = "SessionCommandKind::InjectFault";
-      }
-      {
-        label = "boundary-mutating healed fault";
-        needle = "SessionCommandKind::HealFault";
-      }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_reproduction_context.rs" reproductionTest [
       {

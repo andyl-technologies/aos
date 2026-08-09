@@ -7,7 +7,6 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         &mut self,
         mut request: QuantumRequest,
     ) -> Result<QuantumOutcome, SchedulerError> {
-        self.reconcile_backend_membership()?;
         let mut pre_quantum_appends = Vec::new();
         let fault_append = self.evaluate_signal_fault_boundary()?;
         if !fault_append.entries.is_empty() {
@@ -22,7 +21,6 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         if let Some(configuration) = settled_configuration {
             request.configuration = configuration;
         }
-        self.reconcile_backend_membership()?;
         if self.branch.as_ref().is_some_and(|branch| {
             branch.base == request.configuration && !request.control.is_empty()
         }) {
@@ -128,7 +126,6 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         for append in self.settle_trigger_graph()? {
             merge_event_log_append(&mut outcome, append);
         }
-        self.reconcile_backend_membership()?;
         Ok(outcome)
     }
 

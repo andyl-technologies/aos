@@ -1,6 +1,28 @@
 //! Serialized identity checks, parsing, and canonical material helpers.
 
 use super::*;
+
+pub(super) fn require_current_fault_schema(input: &str) -> Result<(), EngineError> {
+    let value = toml::from_str::<toml::Value>(input).map_err(|source| {
+        scenario_serialization_error(format!(
+            "parse TOML before fault-schema migration check: {source}"
+        ))
+    })?;
+    let root = value.as_table().ok_or_else(|| {
+        scenario_serialization_error("scenario or plan TOML root must be a table")
+    })?;
+    let plan = root
+        .get("plan")
+        .and_then(toml::Value::as_table)
+        .unwrap_or(root);
+    if plan.get("fault_model").and_then(toml::Value::as_str) != Some("signal_bindings_v2") {
+        return Err(scenario_serialization_error(
+            "unsupported pre-signal fault schema; regenerate the plan with `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_world_serialized_identity(world: &World) -> Result<(), EngineError> {
     validate_serialized_id("world", world.id(), serialized_world_identity(world))
 }
@@ -26,119 +48,6 @@ pub(super) fn validate_no_host_path_image_refs_in_toml(value: &str) -> Result<()
         scenario_serialization_error(format!("parse TOML before image-ref validation: {source}"))
     })?;
     validate_toml_image_refs_value(&value)
-}
-
-pub(super) fn validate_plan_entries_in_toml(value: &str) -> Result<(), EngineError> {
-    let value = toml::from_str::<toml::Value>(value).map_err(|source| {
-        scenario_serialization_error(format!("parse TOML before plan validation: {source}"))
-    })?;
-    let Some(plan) = toml_plan_table(&value) else {
-        return Ok(());
-    };
-    for key in ["entry"] {
-        let Some(entries) = plan.get(key) else {
-            continue;
-        };
-        let Some(entries) = entries.as_array() else {
-            return Err(scenario_serialization_error(format!(
-                "serialized plan {key} list must be an array"
-            )));
-        };
-
-        for (index, entry) in entries.iter().enumerate() {
-            validate_plan_entry_toml_value(index, entry)?;
-        }
-    }
-
-    Ok(())
-}
-
-pub(super) fn toml_plan_table(value: &toml::Value) -> Option<&toml::map::Map<String, toml::Value>> {
-    let table = value.as_table()?;
-    match table.get("plan") {
-        Some(plan) => plan.as_table(),
-        None => Some(table),
-    }
-}
-
-pub(super) fn validate_plan_entry_toml_value(
-    index: usize,
-    entry: &toml::Value,
-) -> Result<(), EngineError> {
-    let Some(entry) = entry.as_table() else {
-        return Err(scenario_serialization_error(
-            "serialized plan entry must be a table",
-        ));
-    };
-    if let Some(at_ticks) = entry
-        .get("at_ticks")
-        .and_then(toml::Value::as_integer)
-        .filter(|at_ticks| *at_ticks < 0)
-    {
-        return Err(EngineError::PlanNegativeTime {
-            entry: index,
-            at_ticks,
-        });
-    }
-    if entry.get("kind").and_then(toml::Value::as_str) != Some("activate") {
-        return Ok(());
-    }
-    let Some(fault) = entry.get("fault") else {
-        return Ok(());
-    };
-    validate_membership_fault_toml_value(index, fault)
-}
-
-pub(super) fn validate_membership_fault_toml_value(
-    index: usize,
-    fault: &toml::Value,
-) -> Result<(), EngineError> {
-    let Some(fault) = fault.as_table() else {
-        return Err(scenario_serialization_error(
-            "serialized membership fault must be a table",
-        ));
-    };
-    let Some(kind) = fault.get("kind").and_then(toml::Value::as_str) else {
-        return Ok(());
-    };
-    let allowed = match kind {
-        "crash" => &["kind", "node", "restart"][..],
-        "partition" => &["kind", "endpoint_a", "endpoint_b", "direction"][..],
-        "isolate" | "not_yet_joined" => &["kind", "node"][..],
-        _ => return Ok(()),
-    };
-    for field in fault.keys() {
-        if !allowed.contains(&field.as_str()) {
-            return Err(EngineError::PlanFaultUnsupportedParam {
-                entry: index,
-                field: field.clone(),
-            });
-        }
-    }
-    if kind == "partition" {
-        validate_partition_direction_toml_value(index, fault)?;
-    }
-    Ok(())
-}
-
-pub(super) fn validate_partition_direction_toml_value(
-    index: usize,
-    fault: &toml::map::Map<String, toml::Value>,
-) -> Result<(), EngineError> {
-    let Some(direction) = fault.get("direction").and_then(toml::Value::as_str) else {
-        return Ok(());
-    };
-    if matches!(
-        direction,
-        "bidirectional" | "endpoint_a_to_endpoint_b" | "endpoint_b_to_endpoint_a"
-    ) {
-        Ok(())
-    } else {
-        Err(EngineError::PlanFaultUnknownDirection {
-            entry: index,
-            direction: direction.to_owned(),
-        })
-    }
 }
 
 pub(super) fn validate_toml_image_refs_value(value: &toml::Value) -> Result<(), EngineError> {
@@ -1477,5 +1386,32 @@ pub(super) fn white_box_material(policy: WhiteBoxPolicy) -> &'static str {
     match policy {
         WhiteBoxPolicy::Disabled => "disabled",
         WhiteBoxPolicy::Enabled => "enabled",
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn pre_signal_forms_return_one_actionable_migration_error() {
+        for input in [
+            "id = 'x'",
+            "id = 'x'\nfault_model = 'signal_bindings_v1'",
+            "id = 'x'\n[plan]\nid = 'p'",
+        ] {
+            let error = require_current_fault_schema(input)
+                .expect_err("a pre-signal form must be rejected before typed lowering");
+            assert_eq!(
+                error.to_string(),
+                "scenario serialized form is invalid: unsupported pre-signal fault schema; regenerate the plan with `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)"
+            );
+        }
+    }
+
+    #[test]
+    fn signal_driven_plan_fields_pass_the_migration_check() {
+        let input = "fault_model = 'signal_bindings_v2'\nsignal = []\nfault_binding = []";
+        assert_eq!(require_current_fault_schema(input), Ok(()));
     }
 }

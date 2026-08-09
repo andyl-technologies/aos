@@ -225,10 +225,6 @@
         needle = "pub fn action(mut self, action: Action) -> EventGraphBuilder";
       }
       {
-        label = "inject-fault action constructor";
-        needle = "pub fn inject_fault";
-      }
-      {
         label = "pass action constructor";
         needle = "pub const fn pass() -> Self";
       }

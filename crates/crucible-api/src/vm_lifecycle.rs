@@ -26,9 +26,9 @@ use crucible::{
     EventFirings, EventGraph, EventGraphState, FingerprintSample, GdbAttachInfo, GdbListen,
     HostAssertionEvaluator, HostAssertionOutcome, HostAssertionOutcomeKind, NodeId,
     ObservableEvent, QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
-    RestartPolicy, ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogAppend,
-    SchedulerEventLogEntry, SchedulerLivenessScenario, SearchFrontierChoices, Seed, Shift,
-    SimInstant, SimulationBackend, SingleScheduler, VirtualTime, World,
+    ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
+    SchedulerLivenessScenario, SearchFrontierChoices, Seed, Shift, SimInstant, SimulationBackend,
+    SingleScheduler, VirtualTime, World,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
@@ -316,7 +316,6 @@ pub struct ProductionVmLifecycleLoop {
     assertion_oracle: BlackBoxHostOracle,
     terminal_verdict: Option<QuantumTerminalVerdict>,
     branch: Option<ProductionVmBranchConfig>,
-    launch_configs: BTreeMap<NodeId, ProductionLiveNodeStepGateConfig>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
     block_devices: storage_faults::ProductionBlockDevices,
@@ -325,16 +324,10 @@ pub struct ProductionVmLifecycleLoop {
     fault_evaluation_cursor: network_faults::SharedProductionFaultEvaluationCursor,
     icount_shift: u8,
     node_indexes: BTreeMap<NodeId, usize>,
-    restart_generations: BTreeMap<NodeId, u64>,
-    executable: PathBuf,
-    root_image: PathBuf,
     scenario: ScenarioDef,
     source: ScenarioDefForm,
     config: ProductionVmLifecycleConfig,
     checkpoint_targets: BTreeMap<NodeId, ProductionVmExactCheckpointTarget>,
-    prelaunched_restarts: BTreeMap<NodeId, (RestartPolicy, u64)>,
-    reconciled_crashes: usize,
-    reconciled_restarts: usize,
     _run_directory: tempfile::TempDir,
 }
 
@@ -626,8 +619,8 @@ pub fn build_production_vm_lifecycle_loop(
         .lower_to_event_graph_for_world(source.world())
         .map_err(|error| loop_factory_error(format!("lower scenario trigger plan: {error}")))?
         .into_event_graph();
-    let fault_plan = source.plan().fault_signals().clone();
-    let signal_artifacts = if fault_plan.programs().is_empty() {
+    let signal_plan = source.plan().fault_signals().clone();
+    let signal_artifacts = if signal_plan.programs().is_empty() {
         None
     } else {
         Some(config.signal_artifacts.clone().ok_or_else(|| {
@@ -637,7 +630,7 @@ pub fn build_production_vm_lifecycle_loop(
         })?)
     };
     let fault_runtime = ProductionFaultRuntime::new(
-        fault_plan,
+        signal_plan,
         signal_artifacts,
         SignalBoundarySnapshot::default(),
         scenario.id(),
@@ -734,7 +727,6 @@ pub fn build_production_vm_lifecycle_loop(
         assertion_oracle: BlackBoxHostOracle,
         terminal_verdict: None,
         branch: config.branch.clone(),
-        launch_configs,
         block_bindings,
         ninep_bindings,
         block_devices,
@@ -743,16 +735,10 @@ pub fn build_production_vm_lifecycle_loop(
         fault_evaluation_cursor,
         icount_shift: first.icount_shift,
         node_indexes,
-        restart_generations: BTreeMap::new(),
-        executable: config.executable.clone(),
-        root_image: config.root_image.clone(),
         scenario: scenario.clone(),
         source: source.clone(),
         config: config.clone(),
         checkpoint_targets: BTreeMap::new(),
-        prelaunched_restarts: BTreeMap::new(),
-        reconciled_crashes: 0,
-        reconciled_restarts: 0,
         _run_directory: run_directory,
     })
 }

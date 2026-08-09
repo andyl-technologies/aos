@@ -112,14 +112,6 @@
         needle = "epoch-guard-rejection";
       }
       {
-        label = "fault injection lifecycle command";
-        needle = "SessionCommandKind::InjectFault";
-      }
-      {
-        label = "fault heal lifecycle command";
-        needle = "SessionCommandKind::HealFault";
-      }
-      {
         label = "set breakpoint lifecycle command";
         needle = "SessionCommandKind::SetBreakpoint";
       }

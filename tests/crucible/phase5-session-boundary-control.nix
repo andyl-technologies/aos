@@ -76,10 +76,6 @@
         needle = "SessionCommand::Inject";
       }
       {
-        label = "heal fault boundary control coverage";
-        needle = "ControlOperationKind::HealFault";
-      }
-      {
         label = "fork local boundary coverage";
         needle = "SessionCommandKind::Fork";
       }

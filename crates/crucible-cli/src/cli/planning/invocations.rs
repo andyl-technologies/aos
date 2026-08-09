@@ -350,8 +350,6 @@ pub(crate) struct CliSearchScheduleNamedTruthToml {
     pub(crate) value: bool,
     #[serde(default)]
     pub(crate) nodes: Vec<String>,
-    #[serde(default)]
-    pub(crate) active_fault_tags: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -1436,11 +1434,6 @@ pub(crate) fn load_search_schedule_named_truths_toml(
                 .nodes
                 .into_iter()
                 .map(|name| crucible::NodeId { name })
-                .collect(),
-            truth
-                .active_fault_tags
-                .into_iter()
-                .map(crucible::FaultTag::from_name)
                 .collect(),
         );
         if let Some(previous_index) = canonical_indexes.insert(key.clone(), index) {

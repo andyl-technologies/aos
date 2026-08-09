@@ -8,17 +8,16 @@ use std::collections::BTreeMap;
 
 use crucible::test_support::condition_payload_entry_for_test;
 use crucible::{
-    Decision, EventAttributeValue, EventPayload, Fault, FaultTag, NodeFault, NodeId, RestartPolicy,
-    RngDecision, RngStreamId, SchedulerEventLogClass, SchedulerEventLogPayload, VirtualTime,
-    event_kind_catalog,
+    Decision, EventAttributeValue, EventPayload, NodeId, RngDecision, RngStreamId,
+    SchedulerEventLogClass, SchedulerEventLogPayload, VirtualTime, event_kind_catalog,
 };
 use crucible_api::{
     OPEN_SET_CAPABILITY_CATEGORIES, OpenSetAttributeValue, OpenSetPayload, OpenSetPayloadCategory,
     OpenSetPayloadError, RPC_OPEN_SET_PAYLOAD_KINDS, ReceivedOpenSetEventPayload,
     current_open_set_capabilities, open_set_breakpoint_kind, open_set_command_kind,
-    open_set_event_envelope_from_entry, open_set_fault_kind, open_set_payload_for_fault,
-    open_set_payload_from_event_payload, receive_open_set_event_payload,
-    session_command_for_open_set_command_kind, validate_open_set_send_payload,
+    open_set_event_envelope_from_entry, open_set_payload_from_event_payload,
+    receive_open_set_event_payload, session_command_for_open_set_command_kind,
+    validate_open_set_send_payload,
 };
 use crucible_session::{BreakpointSpec, SessionCommandKind};
 
@@ -236,11 +235,11 @@ fn assert_send_validation_uses_typed_unsupported_and_invalid_argument() {
 }
 
 #[test]
-fn existing_command_fault_and_breakpoint_vocabularies_are_adapted() {
-    assert_existing_command_fault_and_breakpoint_vocabularies_are_adapted();
+fn existing_command_and_breakpoint_vocabularies_are_adapted() {
+    assert_existing_command_and_breakpoint_vocabularies_are_adapted();
 }
 
-fn assert_existing_command_fault_and_breakpoint_vocabularies_are_adapted() {
+fn assert_existing_command_and_breakpoint_vocabularies_are_adapted() {
     assert_eq!(
         open_set_command_kind(SessionCommandKind::Continue),
         Some(String::from("crucible.cmd.continue"))
@@ -248,25 +247,6 @@ fn assert_existing_command_fault_and_breakpoint_vocabularies_are_adapted() {
     assert_eq!(
         session_command_for_open_set_command_kind("crucible.cmd.continue"),
         Some(SessionCommandKind::Continue)
-    );
-
-    let fault = Fault::Node(NodeFault::Crash {
-        node: NodeId {
-            name: String::from("vm-a"),
-        },
-        restart: RestartPolicy::StayDown,
-    });
-    assert_eq!(open_set_fault_kind(&fault), "crucible.fault.node.crash");
-
-    let fault_payload = open_set_payload_for_fault(&FaultTag::from_name("crash-a"), &fault);
-    assert_eq!(fault_payload.kind, "crucible.fault.node.crash");
-    assert_eq!(
-        fault_payload.attribute("tag"),
-        Some(&OpenSetAttributeValue::String(String::from("crash-a")))
-    );
-    assert_eq!(
-        validate_open_set_send_payload(OpenSetPayloadCategory::Fault, &fault_payload),
-        Ok(())
     );
 
     let breakpoint = BreakpointSpec::suspend_once(crucible::Condition::Quiescent);
