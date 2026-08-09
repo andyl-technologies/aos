@@ -1,4 +1,4 @@
-From 9fec24f886b9ab75ac01d342b2b4bcae14524617 Mon Sep 17 00:00:00 2001
+From e73f172e4934cf4c640709aa9cca77636ec10c6b Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Sat, 8 Aug 2026 11:44:15 -0700
 Subject: [PATCH] crucible: add memory access fault rules
@@ -23,15 +23,15 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  include/hw/core/cpu.h                      |   42 +-
  include/hw/core/sysemu-cpu-ops.h           |    9 +
  include/hw/virtio/virtio.h                 |    1 +
- include/qemu/crucible-fault.h              |  134 +
+ include/qemu/crucible-fault.h              |  137 +
  include/qemu/qemu-plugin.h                 |   51 +
  include/system/cpu-timers.h                |    3 +
  include/system/dma.h                       |   61 +-
  plugins/api-system.c                       |   19 +-
  plugins/api.c                              |    8 +-
  plugins/crucible-fault-memory.c            |    3 +-
- plugins/crucible-fault-node.c              | 9429 ++++++++++++++++++++
- plugins/crucible-fault.c                   |   82 +-
+ plugins/crucible-fault-node.c              | 9475 ++++++++++++++++++++
+ plugins/crucible-fault.c                   |  101 +-
  plugins/meson.build                        |    2 +-
  system/physmem.c                           |  448 +-
  target/arm/cpu.c                           |    5 +-
@@ -42,10 +42,10 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  target/i386/cpu.c                          |    3 +
  target/i386/cpu.h                          |    8 +
  target/i386/tcg/system/excp_helper.c       |   55 +-
- tests/tcg/plugins/crucible-memory-access.c |  836 ++
+ tests/tcg/plugins/crucible-memory-access.c |  866 ++
  tests/tcg/plugins/crucible-memory-dma.c    |  433 +
  tests/tcg/plugins/meson.build              |    4 +-
- 40 files changed, 12820 insertions(+), 159 deletions(-)
+ 40 files changed, 12918 insertions(+), 159 deletions(-)
  create mode 100644 plugins/crucible-fault-node.c
  create mode 100644 tests/tcg/plugins/crucible-memory-access.c
  create mode 100644 tests/tcg/plugins/crucible-memory-dma.c
@@ -2463,7 +2463,7 @@ index 6386910..006d49b 100644
      QTAILQ_ENTRY(VirtIODevice) next;
      /**
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index bbe9daa..b22829d 100644
+index bbe9daa..7f98557 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -10,9 +10,12 @@
@@ -2487,7 +2487,7 @@ index bbe9daa..b22829d 100644
  void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
                                             uint64_t observed_icount);
  bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount);
-@@ -58,4 +62,134 @@ int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
+@@ -58,4 +62,137 @@ int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
                                           uint64_t current_icount,
                                           int64_t budget);
  
@@ -2503,6 +2503,7 @@ index bbe9daa..b22829d 100644
 +    const QemuCrucibleFaultRule *rule, void *opaque);
 +typedef void (*QemuCrucibleFaultBoundaryObserverFn)(
 +    uint16_t phase, uint64_t observed_icount);
++typedef uint64_t (*QemuCrucibleFaultBoundaryDeadlineFn)(uint16_t phase);
 +
 +void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
 +                                       uint32_t phase_mask, const char *name,
@@ -2512,6 +2513,8 @@ index bbe9daa..b22829d 100644
 +                                      void *opaque);
 +void qemu_crucible_fault_boundary_observer_register(
 +    QemuCrucibleFaultBoundaryObserverFn observer);
++void qemu_crucible_fault_boundary_deadline_register(
++    QemuCrucibleFaultBoundaryDeadlineFn deadline);
 +uint64_t qemu_crucible_fault_rule_generation(
 +    const QemuCrucibleFaultRule *rule);
 +uint64_t qemu_crucible_fault_rule_command_sequence(
@@ -2887,10 +2890,10 @@ index b1422b8..6e6c2b3 100644
              return -EFAULT;
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000..2fbc4e6
+index 0000000..7468e5d
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,9429 @@
+@@ -0,0 +1,9475 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -3308,6 +3311,7 @@ index 0000000..2fbc4e6
 +static GHashTable *crucible_memory_reserved_retention;
 +static GHashTable *crucible_memory_reserved_ledgers;
 +static uint64_t crucible_memory_reserved_virtual_time;
++static uint64_t crucible_memory_retention_next_ns = UINT64_MAX;
 +
 +typedef struct CrucibleMemoryPostState {
 +    bool active;
@@ -3347,6 +3351,7 @@ index 0000000..2fbc4e6
 +    QemuCrucibleFaultRule *rule);
 +static void node_memory_retention_boundary(uint16_t phase,
 +                                           uint64_t observed_icount);
++static void node_memory_retention_deadline_recompute(void);
 +static void node_memory_index_rebuild(void);
 +static bool node_memory_rule_admissible(QemuCrucibleFaultRule *rule);
 +static void node_memory_service_ledger_release(
@@ -5809,7 +5814,8 @@ index 0000000..2fbc4e6
 +    return have_result;
 +}
 +
-+static int node_memory_resolve_target(QemuCrucibleFaultRule *rule)
++static int node_memory_resolve_target(QemuCrucibleFaultRule *rule,
++                                      uint64_t observed_icount)
 +{
 +    g_autoptr(GChecksum) checksum = NULL;
 +    uint64_t start, length;
@@ -5840,7 +5846,7 @@ index 0000000..2fbc4e6
 +            if (length > CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT) {
 +                return -ENOSPC;
 +            }
-+            rule->last_exposure_ns = node_virtual_now();
++            rule->last_exposure_ns = observed_icount;
 +            g_assert(node_json_u64(
 +                qdict_get(parameters, "interval_nanos"), &interval));
 +            if (rule->last_exposure_ns > UINT64_MAX - interval) {
@@ -5985,7 +5991,8 @@ index 0000000..2fbc4e6
 +    }
 +    if (staging->rule.operation == CRUCIBLE_NODE_FAULT_OPERATION_UPSERT &&
 +        staging->rule.target_kind == CRUCIBLE_NODE_FAULT_TARGET_MEMORY) {
-+        status = node_memory_resolve_target(&staging->rule);
++        status = node_memory_resolve_target(&staging->rule,
++                                            result->observed_icount);
 +        if (status != 0) {
 +            result->status = CRUCIBLE_FAULT_STATUS_INVALID_TARGET;
 +            return status;
@@ -6150,12 +6157,14 @@ index 0000000..2fbc4e6
 +        g_ptr_array_add(crucible_node_rules, replacement);
 +        g_ptr_array_sort(crucible_node_rules, node_rule_compare);
 +        node_memory_index_rebuild();
++        node_memory_retention_deadline_recompute();
 +    } else if (staging->rule.operation ==
 +               CRUCIBLE_NODE_FAULT_OPERATION_REMOVE) {
 +        g_assert(node_find_rule(staging->rule.command_kind,
 +                                staging->rule.binding_hash, &index));
 +        g_ptr_array_remove_index(crucible_node_rules, index);
 +        node_memory_index_rebuild();
++        node_memory_retention_deadline_recompute();
 +    } else {
 +        uint8_t opportunity_hash[32];
 +
@@ -8946,6 +8955,7 @@ index 0000000..2fbc4e6
 +        CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE,
 +        node_memory_retention_boundary_count, &count);
 +    if (!count.first || count.events == 0) {
++        node_memory_retention_deadline_recompute();
 +        return;
 +    }
 +    if (count.counter_exhausted) {
@@ -9000,6 +9010,41 @@ index 0000000..2fbc4e6
 +    qemu_crucible_fault_rule_foreach(
 +        CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE,
 +        node_memory_retention_boundary_apply, &apply);
++    node_memory_retention_deadline_recompute();
++}
++
++static void node_memory_retention_deadline_visit(
++    const QemuCrucibleFaultRule *const_rule, void *opaque)
++{
++    QemuCrucibleFaultRule *rule = (QemuCrucibleFaultRule *)const_rule;
++    uint64_t *next = opaque;
++    uint64_t start, length;
++    QDict *parameters;
++
++    if (node_memory_retention_rule(rule, &start, &length, &parameters) &&
++        rule->retention_scheduled) {
++        *next = MIN(*next, rule->retention_next_ns);
++    }
++}
++
++static void node_memory_retention_deadline_recompute(void)
++{
++    uint64_t next = UINT64_MAX;
++
++    qemu_crucible_fault_rule_foreach(
++        CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE,
++        node_memory_retention_deadline_visit, &next);
++    crucible_memory_retention_next_ns = next;
++}
++
++static uint64_t node_memory_retention_deadline(uint16_t phase)
++{
++    if (phase != CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY ||
++        crucible_memory_matches_in_use ||
++        !qemu_crucible_fault_memory_rules_active()) {
++        return UINT64_MAX;
++    }
++    return crucible_memory_retention_next_ns;
 +}
 +
 +static bool node_memory_refresh_retention(QemuCrucibleFaultRule *rule,
@@ -9047,6 +9092,8 @@ index 0000000..2fbc4e6
 +            rule->retention_next_ns = due;
 +            rule->retention_scheduled = true;
 +        }
++        crucible_memory_retention_next_ns = MIN(
++            crucible_memory_retention_next_ns, due);
 +    }
 +    return refreshed_any;
 +}
@@ -12317,22 +12364,25 @@ index 0000000..2fbc4e6
 +        "qemu.memory.service.v1", NULL);
 +    qemu_crucible_fault_boundary_observer_register(
 +        node_memory_retention_boundary);
++    qemu_crucible_fault_boundary_deadline_register(
++        node_memory_retention_deadline);
 +}
 +
 +type_init(crucible_memory_access_faults_register)
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index b2e1dfc..2664ba5 100644
+index b2e1dfc..333af60 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
-@@ -44,6 +44,7 @@ static QTAILQ_HEAD(, CrucibleCompletedFault) crucible_completed_faults =
+@@ -44,6 +44,8 @@ static QTAILQ_HEAD(, CrucibleCompletedFault) crucible_completed_faults =
  static size_t crucible_pending_count;
  static size_t crucible_completed_count;
  static bool crucible_registry_sealed;
 +static GPtrArray *crucible_boundary_observers;
++static GPtrArray *crucible_boundary_deadlines;
  static uint64_t crucible_max_command_sequence;
  
  static void crucible_fault_ensure_registry(void)
-@@ -113,6 +114,16 @@ void qemu_crucible_fault_register(const QemuCrucibleFaultHandler *handler)
+@@ -113,6 +115,26 @@ void qemu_crucible_fault_register(const QemuCrucibleFaultHandler *handler)
      g_mutex_unlock(&crucible_fault_lock);
  }
  
@@ -12346,10 +12396,20 @@ index b2e1dfc..2664ba5 100644
 +    g_ptr_array_add(crucible_boundary_observers, observer);
 +}
 +
++void qemu_crucible_fault_boundary_deadline_register(
++    QemuCrucibleFaultBoundaryDeadlineFn deadline)
++{
++    g_assert(deadline && !crucible_registry_sealed);
++    if (!crucible_boundary_deadlines) {
++        crucible_boundary_deadlines = g_ptr_array_new();
++    }
++    g_ptr_array_add(crucible_boundary_deadlines, deadline);
++}
++
  void qemu_crucible_fault_registry_seal(void)
  {
      g_mutex_lock(&crucible_fault_lock);
-@@ -279,6 +290,22 @@ static int crucible_fault_reject_submit(
+@@ -279,6 +301,22 @@ static int crucible_fault_reject_submit(
      return 0;
  }
  
@@ -12372,7 +12432,7 @@ index b2e1dfc..2664ba5 100644
  size_t qemu_plugin_crucible_fault_capabilities(
      struct qemu_plugin_crucible_fault_capability *out, size_t capacity)
  {
-@@ -328,57 +355,37 @@ int qemu_plugin_crucible_fault_submit(
+@@ -328,57 +366,37 @@ int qemu_plugin_crucible_fault_submit(
          command->phase < CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY ||
          command->phase > CRUCIBLE_FAULT_PHASE_DEVICE ||
          payload_len > CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES) {
@@ -12436,7 +12496,7 @@ index b2e1dfc..2664ba5 100644
          }
      }
      if (command->command_kind == CRUCIBLE_FAULT_COMMAND_QUERY_CAPABILITIES) {
-@@ -409,10 +416,8 @@ int qemu_plugin_crucible_fault_submit(
+@@ -409,10 +427,8 @@ int qemu_plugin_crucible_fault_submit(
          if (status != 0) {
              g_clear_pointer(&pending->payload, g_free);
              g_free(pending);
@@ -12448,7 +12508,7 @@ index b2e1dfc..2664ba5 100644
          }
      }
      crucible_fault_insert_pending(pending);
-@@ -446,6 +451,15 @@ int qemu_plugin_crucible_fault_cancel(uint64_t command_sequence)
+@@ -446,6 +462,15 @@ int qemu_plugin_crucible_fault_cancel(uint64_t command_sequence)
  void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
                                             uint64_t observed_icount)
  {
@@ -12464,7 +12524,7 @@ index b2e1dfc..2664ba5 100644
      for (;;) {
          CruciblePendingFault *pending = NULL;
          struct qemu_plugin_crucible_fault_result result;
-@@ -534,6 +548,16 @@ void qemu_plugin_register_crucible_fault_completion_cb(
+@@ -534,6 +559,16 @@ void qemu_plugin_register_crucible_fault_completion_cb(
      g_mutex_unlock(&crucible_fault_lock);
  }
  
@@ -12481,6 +12541,21 @@ index b2e1dfc..2664ba5 100644
  bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount)
  {
      CruciblePendingFault *pending;
+@@ -562,6 +597,14 @@ uint64_t qemu_crucible_fault_next_icount(uint16_t phase)
+         }
+     }
+     g_mutex_unlock(&crucible_fault_lock);
++    for (guint i = 0;
++         crucible_boundary_deadlines && i < crucible_boundary_deadlines->len;
++         i++) {
++        QemuCrucibleFaultBoundaryDeadlineFn deadline =
++            g_ptr_array_index(crucible_boundary_deadlines, i);
++
++        next = MIN(next, deadline(phase));
++    }
+     return next;
+ }
+ 
 diff --git a/plugins/meson.build b/plugins/meson.build
 index e5bd2ce..dffdd97 100644
 --- a/plugins/meson.build
@@ -13388,10 +13463,10 @@ index f7e2288..06ea3c7 100644
                        bool probe, uintptr_t retaddr)
 diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
 new file mode 100644
-index 0000000..a8daa96
+index 0000000..ded2800
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-access.c
-@@ -0,0 +1,836 @@
+@@ -0,0 +1,866 @@
 +/*
 + * Live Crucible memory-access fault test plugin
 + *
@@ -13410,6 +13485,7 @@ index 0000000..a8daa96
 +QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 +
 +#define TEST_EVIDENCE_BYTES 65536
++#define TEST_MEMORY_BOUNDARY_CLASS 0x20
 +
 +static struct qemu_plugin_crucible_fault_command test_command;
 +
@@ -13436,6 +13512,8 @@ index 0000000..a8daa96
 +static bool test_installed;
 +static bool test_submitted;
 +static bool test_event_seen;
++static bool test_retention_boundary_seen;
++static uint64_t test_install_icount;
 +static bool test_deferred_submission = true;
 +static bool test_complete;
 +static uint16_t test_expected_rejection;
@@ -13803,7 +13881,10 @@ index 0000000..a8daa96
 +            event.generation != 1 || access_length == 0 ||
 +            access_length > 4096 ||
 +            memcmp(test_evidence, "CRUCMEM1", 8) != 0 ||
-+            (test_get_u32(test_evidence + 8) & test_classes) == 0 ||
++            ((test_get_u32(test_evidence + 8) & test_classes) == 0 &&
++             !(strcmp(test_scenario, "retention") == 0 &&
++               test_get_u32(test_evidence + 8) ==
++                   TEST_MEMORY_BOUNDARY_CLASS)) ||
 +            test_get_u64(test_evidence + 48) == 0) {
 +            g_printerr("event kind=%u generation=%" PRIu64
 +                       " class=%u access=%" PRIx64 "+%" PRIu64
@@ -13859,6 +13940,10 @@ index 0000000..a8daa96
 +            uint32_t state_flags = test_get_u32(test_evidence + 104);
 +            uint16_t outcome = test_get_u16(test_evidence + 306);
 +            uint64_t selected_address;
++            bool retention_boundary =
++                strcmp(test_scenario, "retention") == 0 &&
++                test_get_u32(test_evidence + 8) ==
++                    TEST_MEMORY_BOUNDARY_CLASS;
 +
 +            if (test_retry_scenario) {
 +                uint32_t retry_ordinal =
@@ -13901,6 +13986,21 @@ index 0000000..a8daa96
 +                continue;
 +            }
 +
++            if (retention_boundary) {
++                if (test_retention_boundary_seen ||
++                    event.observed_icount != test_install_icount + 1 ||
++                    outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED) {
++                    g_printerr(
++                        "retention boundary duplicate=%u install=%" PRIu64
++                        " event=%" PRIu64 " outcome=%u\n",
++                        test_retention_boundary_seen, test_install_icount,
++                        event.observed_icount, outcome);
++                    test_fail(
++                        "retention did not decay at its exact virtual deadline");
++                }
++                test_retention_boundary_seen = true;
++            }
++
 +            if (strcmp(test_scenario, "rowhammer") == 0 &&
 +                (test_get_u64(test_evidence + 176) == 0 ||
 +                 test_get_u64(test_evidence + 184) == 0 ||
@@ -13917,7 +14017,7 @@ index 0000000..a8daa96
 +            }
 +
 +            if (length < 480 || test_get_u32(test_evidence + 56) == 0 ||
-+                transaction_length == 0 ||
++                (!retention_boundary && transaction_length == 0) ||
 +                test_get_u16(test_evidence + 304) != test_command_kind ||
 +                test_get_u32(test_evidence + 308) != test_kind ||
 +                event_length == 0 || event_length > access_length ||
@@ -13947,8 +14047,10 @@ index 0000000..a8daa96
 +            selected_address = access_address + event_offset;
 +            if (selected_address < test_address ||
 +                selected_address - test_address > rule_length - event_length ||
-+                transaction_address > selected_address ||
-+                selected_address - transaction_address >= transaction_length) {
++                (!retention_boundary &&
++                 (transaction_address > selected_address ||
++                  selected_address - transaction_address >=
++                      transaction_length))) {
 +                test_fail("occurrence evidence selected the wrong byte range");
 +            }
 +            if (test_require_full_coverage) {
@@ -14050,6 +14152,7 @@ index 0000000..a8daa96
 +            }
 +            test_rule_stage++;
 +            test_installed = true;
++            test_install_icount = result.observed_icount;
 +            if (!qemu_plugin_crucible_write_memory_vaddr(
 +                    test_result_address, &ready, sizeof(ready))) {
 +                test_fail(
@@ -14093,6 +14196,8 @@ index 0000000..a8daa96
 +        memcpy(test_last_result, value->data, value->len);
 +    }
 +    if (!test_installed || !test_event_seen || test_complete ||
++        (strcmp(test_scenario, "retention") == 0 &&
++         !test_retention_boundary_seen) ||
 +        (test_retry_scenario &&
 +         (!test_retry_poison_seen || !test_retry_applied_seen ||
 +          test_retry_event_count != 2)) ||
