@@ -183,7 +183,11 @@ in
               test -f "$GCCLIB/libgcc_eh.a" || \
                 "${crossBinutils}/bin/${hostPlatform.config}-ar" crs "$GCCLIB/libgcc_eh.a"
 
-              mkdir -p "$out/${targetPlatform.config}/lib64"
+              # GCC searches lib64 through "$target/lib/../lib64", so the
+              # intermediate lib directory must exist even when it is empty.
+              mkdir -p \
+                "$out/${targetPlatform.config}/lib" \
+                "$out/${targetPlatform.config}/lib64"
               for f in \
                 "${crossGccStage2}/${hostPlatform.config}/lib64/"libstdc++*.a \
                 "${crossGccStage2}/${hostPlatform.config}/lib64/"libsupc++*.a; do
