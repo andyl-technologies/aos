@@ -86,6 +86,7 @@
         prev.diffutils
         prev.patch
         prev.bash
+        prev.perl
       ];
     in {
       mkDerivation = args:
