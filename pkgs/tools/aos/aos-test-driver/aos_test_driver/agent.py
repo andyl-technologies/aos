@@ -415,7 +415,7 @@ class AgentClient:
                         attempts,
                     )
                 continue
-            except (OSError, _ProtocolMidstream) as e:
+            except (OSError, _ProtocolMidstream, AgentProtocolError) as e:
                 if attempts % 20 == 1:
                     log.info(
                         "[%s] wait_ready: probe failed (%s), retrying",

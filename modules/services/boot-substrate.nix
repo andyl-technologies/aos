@@ -721,7 +721,7 @@
               and (.facts_hash | type) == "string" and (.facts_hash | length) > 0
               and (.facts_ref | type) == "string" and (.facts_ref | length) > 0
               and (.base_lib_ref | type) == "string" and (.base_lib_ref | length) > 0
-              and (.evaluator_ref | type) == "string" and (.evaluator_ref | length) > 0))' \
+              and (.evaluator_ref | type) == "string" and (.evaluator_ref | length) > 0)' \
             "$profile_dir/.state.json.migrate")
           if [ "$has_legacy" = true ] && { [ "$migration_failed" -ne 0 ] || [ "$complete" != true ]; }; then
             rm -f "$profile_dir/.state.json.migrate"
