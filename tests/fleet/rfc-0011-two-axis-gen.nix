@@ -20,6 +20,7 @@
   ];
   abi2Top = abi2.config.system.build.toplevel;
   abi2Image = abi2.config.system.build.image.raw;
+  abi2Uki = abi2.config.system.build.uki;
 
   # A real installable package whose authored configuration module supports
   # ABI 1 only. Its empty expose policy gives APM a normal signed runtime
@@ -89,6 +90,7 @@ in {
       extraClosures = [
         abi2Top
         abi2Image
+        abi2Uki
         pkgs.sbsigntools
         pkgs.binutils
         pkgs.git
@@ -356,7 +358,11 @@ in {
             printf 'release = "%s"\n' "$KEY"
           } > "$HOME/.config/apm/registries.d/sysreg.toml"
 
-          ${pkgs.aos}/bin/apr --json publish '${abi2Top}' \
+          set -- '${abi2Uki}'/*.efi
+          test "$#" -eq 1
+          ABI2_UKI="$1"
+
+          if ! ${pkgs.aos}/bin/apr --json publish '${abi2Top}' \
             --name aos \
             --version 9999.0.0-rfc0011-abi2 \
             --description 'Two-axis ABI fixture' \
@@ -364,10 +370,14 @@ in {
             --maintainer test \
             --sysroot \
             --image '${abi2Image}' --image-format raw \
+            --image-uki "$ABI2_UKI" \
             --no-ca \
             --registry sysreg \
             --key-id release \
-            --no-commit > /tmp/publish.json
+            --no-commit > /tmp/publish.json; then
+            cat /tmp/publish.json >&2
+            exit 1
+          fi
           ${pkgs.aos}/bin/apr publish '${abi1OnlyConfig}' \
             --name rfc0011-abi1-config \
             --version 0 \
