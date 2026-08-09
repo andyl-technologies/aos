@@ -21,6 +21,22 @@
   failurePreStart = ''read -r cmdline < /proc/cmdline; case " $cmdline " in *" systemd.verity_root_data=/dev/disk/by-partlabel/root-b "*) if [ ! -e /var/lib/aos-test/allow-eval ]; then mkdir -p /run/aos; echo invalid-boot-count-fixture > /run/aos/manifest.json; exit 1; fi ;; esac'';
   bootCommitCondition =
     "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
+  candidateAgentUnit = pkgs.writeTextFile {
+    name = "aos-fleet-test-agent-runtime-unit";
+    destination = "/aos-test-agent.service";
+    text = ''
+      [Unit]
+      Description=AOS VM Test Guest Agent
+      RefuseManualStop=true
+
+      [Service]
+      Type=simple
+      ExecStart=${pkgs.aos-test-agent}/share/aos-test-agent/aos-test-agent
+      Restart=on-failure
+      RestartSec=1
+      Environment=PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin
+    '';
+  };
 
   # The candidate deliberately changes only image identity. Keeping the module
   # ABI fixed makes the reboot test isolate image selection and first-boot
@@ -56,6 +72,21 @@
           RestartSec = 1;
           Environment = "PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
         };
+      };
+      systemd.services.aos-test-agent-bootstrap = {
+        description = "Install the AOS VM test control channel";
+        wantedBy = ["multi-user.target"];
+        before = ["aos-eval.service"];
+        stopOnRemoval = false;
+        unitConfig.RefuseManualStop = true;
+        serviceConfig.Type = "oneshot";
+        script = ''
+          ${pkgs.coreutils}/bin/mkdir -p /run/systemd/system
+          ${pkgs.coreutils}/bin/ln -sfn ${candidateAgentUnit}/aos-test-agent.service \
+            /run/systemd/system/aos-test-agent.service
+          ${pkgs.systemd}/bin/systemctl daemon-reload
+          ${pkgs.systemd}/bin/systemctl start aos-test-agent.service
+        '';
       };
     }
   ];
