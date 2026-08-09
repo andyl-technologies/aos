@@ -92,6 +92,13 @@ in
               for item in "${crossGlibc}/include"/*; do
                 ln -sf "$item" "$out/${targetPlatform.config}/sys-include/"
               done
+              ln -sf \
+                "${crossGccStage2}/${hostPlatform.config}/sys-include/c++" \
+                "$out/${targetPlatform.config}/sys-include/c++"
+              mkdir -p "$out/include"
+              ln -sf \
+                "${crossGccStage2}/${hostPlatform.config}/sys-include/c++" \
+                "$out/include/c++"
               # Copy linux headers
               cp -r ${linuxHeaders}/include/linux "$out/${targetPlatform.config}/sys-include/" 2>/dev/null || true
               cp -r ${linuxHeaders}/include/asm "$out/${targetPlatform.config}/sys-include/" 2>/dev/null || true
@@ -164,12 +171,24 @@ in
         #endif
         SYSLIM
 
-              # Copy libgcc.a from cross-compiler (can't build it in Canadian cross —
-              # xgcc is target-arch, can't run on x86_64 build machine)
+              # Carry the target runtime support from the cross compiler. The
+              # Canadian-cross xgcc cannot run on the scheduler to rebuild it.
               GCCLIB="$out/lib/gcc/${targetPlatform.config}/4.8.5"
               mkdir -p "$GCCLIB"
-              cp "${crossGccStage2}/lib/gcc/${hostPlatform.config}/4.8.5/libgcc.a" "$GCCLIB/" 2>/dev/null || true
-              "${crossBinutils}/bin/${hostPlatform.config}-ar" crs "$GCCLIB/libgcc_eh.a"
+              for f in \
+                "${crossGccStage2}/lib/gcc/${hostPlatform.config}/4.8.5/"crt*.o \
+                "${crossGccStage2}/lib/gcc/${hostPlatform.config}/4.8.5/"libgcc*.a; do
+                test -f "$f" && cp "$f" "$GCCLIB/"
+              done
+              test -f "$GCCLIB/libgcc_eh.a" || \
+                "${crossBinutils}/bin/${hostPlatform.config}-ar" crs "$GCCLIB/libgcc_eh.a"
+
+              mkdir -p "$out/${targetPlatform.config}/lib64"
+              for f in \
+                "${crossGccStage2}/${hostPlatform.config}/lib64/"libstdc++*.a \
+                "${crossGccStage2}/${hostPlatform.config}/lib64/"libsupc++*.a; do
+                test -f "$f" && ln -sf "$f" "$out/${targetPlatform.config}/lib64/"
+              done
 
               # Symlink binutils tools so native gcc can find as/ld
               mkdir -p "$out/${targetPlatform.config}/bin"
