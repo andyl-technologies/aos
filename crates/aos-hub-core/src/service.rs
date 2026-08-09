@@ -13601,6 +13601,19 @@ impl RpcService {
         }
     }
 
+    /// Projects stored defaults or the editable empty state for an unset scope.
+    fn topology_defaults_or_empty(
+        scope_key: &str,
+        record: Option<crate::db::StableTopologyDefaultsRecord>,
+    ) -> pb::TopologyDefaults {
+        record
+            .map(Self::stable_topology_defaults_message)
+            .unwrap_or_else(|| pb::TopologyDefaults {
+                scope_key: scope_key.to_string(),
+                ..Default::default()
+            })
+    }
+
     /// Returns instance topology defaults.
     pub async fn get_instance_topology_defaults(
         &self,
@@ -13612,10 +13625,9 @@ impl RpcService {
             .db
             .stable_topology_defaults("instance")
             .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("instance topology defaults"))?;
+            .map_err(RpcError::internal)?;
         Ok(pb::TopologyDefaultsResponse {
-            defaults: Some(Self::stable_topology_defaults_message(defaults)),
+            defaults: Some(Self::topology_defaults_or_empty("instance", defaults)),
         })
     }
 
@@ -13631,10 +13643,9 @@ impl RpcService {
             .db
             .stable_topology_defaults(&scope_key)
             .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("organization topology defaults"))?;
+            .map_err(RpcError::internal)?;
         Ok(pb::TopologyDefaultsResponse {
-            defaults: Some(Self::stable_topology_defaults_message(defaults)),
+            defaults: Some(Self::topology_defaults_or_empty(&scope_key, defaults)),
         })
     }
 
@@ -21974,13 +21985,28 @@ impl RpcService {
 
     // -- BinaryCacheService (RFC-0004 "11-caches") ---------------------------------
 
-    /// Resolves a managed cache by immutable stable identity.
+    /// Resolves a managed cache by immutable stable identity or canonical slug.
+    ///
+    /// Stable identities remain the durable relationship key. Canonical slugs
+    /// are accepted at the API boundary because they are the cache locator
+    /// exposed by the CLI and Web UI. The two namespaces cannot collide:
+    /// generated stable identities use the `cache:` prefix, while validated
+    /// cache slugs are qualified ownership paths.
     async fn binary_cache_or_not_found(
         &self,
-        stable_id: &str,
+        identifier: &str,
     ) -> Result<crate::db::BinaryCache, RpcError> {
+        if let Some(cache) = self
+            .db
+            .binary_cache_by_stable_id(identifier)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Ok(cache);
+        }
+
         self.db
-            .binary_cache_by_stable_id(stable_id)
+            .binary_cache_by_slug(identifier)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("cache"))
@@ -33843,6 +33869,53 @@ mod cache_upload_tests {
             ]
         );
         assert!(identity.access_expires_at > crate::clock::now_unix_secs());
+    }
+
+    #[tokio::test]
+    async fn binary_cache_lookup_accepts_stable_identity_and_canonical_slug() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("locator", "Locator").await.unwrap();
+        db.create_binary_cache(
+            Some(org_id),
+            "locator/build",
+            "Build cache",
+            "private",
+            40,
+            "zstd",
+            false,
+        )
+        .await
+        .unwrap();
+        let stored = db
+            .binary_cache_by_slug("locator/build")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let by_slug = service
+            .binary_cache_or_not_found("locator/build")
+            .await
+            .unwrap();
+        let by_stable_id = service
+            .binary_cache_or_not_found(&stored.stable_id)
+            .await
+            .unwrap();
+
+        assert_eq!(by_slug.stable_id, stored.stable_id);
+        assert_eq!(by_stable_id.stable_id, stored.stable_id);
+    }
+
+    #[test]
+    fn unset_topology_defaults_return_editable_empty_resources() {
+        let instance = RpcService::topology_defaults_or_empty("instance", None);
+        let organization = RpcService::topology_defaults_or_empty("org:defaults", None);
+
+        assert_eq!(instance.scope_key, "instance");
+        assert!(instance.resource_version.is_empty());
+        assert!(instance.storage_binding_id.is_empty());
+        assert_eq!(organization.scope_key, "org:defaults");
+        assert!(organization.resource_version.is_empty());
+        assert!(organization.storage_binding_id.is_empty());
     }
 
     #[tokio::test]
