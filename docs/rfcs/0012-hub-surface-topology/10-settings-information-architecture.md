@@ -77,6 +77,14 @@ stylesheet may lay out workflow-specific structures, but it must not redefine
 theme tokens, typography, page chrome, controls, focus treatment, elevation, or
 responsive navigation.
 
+Canonical links between management pages are client-side history transitions.
+The application intercepts an unmodified primary click only when the target is
+recognized by the closed route registry, updates `history.pushState`, and
+rerenders the selected workflow without replacing the document. Modified
+clicks, external links, downloads, account/authentication ceremonies, and
+public browse links retain ordinary browser navigation. Back and Forward are
+driven by `popstate` and resolve through the same closed registry.
+
 The default wide layout is the established settings layout:
 
 ```text
@@ -268,6 +276,14 @@ primary · observed write authority
 writes blocked · authority or binding revision is not effectively writable
 default · used when no binding is selected
 ```
+
+## Global inventories
+
+`/-/orgs` is the organization directory and `/-/caches` is the global binary-
+cache directory. The cache directory lists every cache readable by the current
+caller by invoking `BinaryCacheService.ListBinaryCaches` without an owner-scope
+filter; each row links to its canonical organization-owned cache settings root.
+These are canonical application routes, not compatibility aliases.
 
 ## Organization settings
 

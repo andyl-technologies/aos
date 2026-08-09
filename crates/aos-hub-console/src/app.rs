@@ -5,7 +5,10 @@
 //! workflows plug into this shell without inventing their own hierarchy or
 //! transport.
 
+use leptos::ev;
+use leptos::leptos_dom::helpers::window_event_listener;
 use leptos::prelude::*;
+use wasm_bindgen::{JsCast, JsValue};
 
 use crate::route::{ConsoleRoute, ConsoleScope, PageSpec};
 use crate::transport::ApiClient;
@@ -14,7 +17,29 @@ use crate::workflows::ResourceWorkflow;
 /// Mounts the closed management application for the current canonical path.
 #[component]
 pub fn App() -> impl IntoView {
-    let route = current_route();
+    let route = RwSignal::new(current_route());
+    let navigate = Callback::new(move |path: String| {
+        let Some(next_route) = ConsoleRoute::resolve(&path) else {
+            return;
+        };
+        let Some(window) = leptos::web_sys::window() else {
+            return;
+        };
+        if window
+            .history()
+            .and_then(|history| history.push_state_with_url(&JsValue::NULL, "", Some(&path)))
+            .is_err()
+        {
+            return;
+        }
+        if let Some(document) = window.document() {
+            document.set_title(&format!("{} — AOS Hub", next_route.page.label));
+        }
+        window.scroll_to_with_x_and_y(0.0, 0.0);
+        route.set(Some(next_route));
+    });
+    let popstate = window_event_listener(ev::popstate, move |_| route.set(current_route()));
+    on_cleanup(move || popstate.remove());
     let csrf = shell_meta("aos-session-csrf").unwrap_or_default();
     let session = LocalResource::new(move || {
         let csrf = csrf.clone();
@@ -22,7 +47,7 @@ pub fn App() -> impl IntoView {
     });
 
     view! {
-        {match route {
+        {move || match route.get() {
             Some(route) => {
                 let fallback_route = route.clone();
                 view! {
@@ -32,7 +57,7 @@ pub fn App() -> impl IntoView {
                             Suspend::new(async move {
                                 match session.await.as_ref() {
                                     Ok(client) if client.allows(route.page.navigation_permission()) => view! {
-                                        <ManagementShell route=route client=client.clone()/>
+                                        <ManagementShell route=route client=client.clone() navigate=navigate/>
                                     }.into_any(),
                                     Ok(_) => view! {
                                         <PermissionDenied route=route/>
@@ -58,7 +83,11 @@ pub fn App() -> impl IntoView {
 }
 
 #[component]
-fn ManagementShell(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
+fn ManagementShell(
+    route: ConsoleRoute,
+    client: ApiClient,
+    navigate: Callback<String>,
+) -> impl IntoView {
     let principal = client
         .session()
         .principal
@@ -82,9 +111,43 @@ fn ManagementShell(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
             .map(|href| (label, href))
     })
     .collect::<Vec<_>>();
+    let on_console_link = move |event: ev::MouseEvent| {
+        if event.default_prevented()
+            || event.button() != 0
+            || event.alt_key()
+            || event.ctrl_key()
+            || event.meta_key()
+            || event.shift_key()
+        {
+            return;
+        }
+        let Some(target) = event
+            .target()
+            .and_then(|target| target.dyn_into::<leptos::web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let Ok(Some(anchor)) = target.closest("a[href]") else {
+            return;
+        };
+        if anchor.has_attribute("download") || anchor.has_attribute("target") {
+            return;
+        }
+        let Some(path) = anchor.get_attribute("href") else {
+            return;
+        };
+        if !path.starts_with('/')
+            || path.starts_with("//")
+            || ConsoleRoute::resolve(&path).is_none()
+        {
+            return;
+        }
+        event.prevent_default();
+        navigate.run(path);
+    };
 
     view! {
-        <div class="app-shell">
+        <div class="app-shell" on:click=on_console_link>
             <a class="skip-link" href="#main-content">"Skip to content"</a>
             <header class="masthead">
                 <a class="brand" href="/">{brand}</a>
@@ -221,6 +284,7 @@ fn topology_context(
             Vec::new(),
             vec![("Organizations", "/-/orgs".to_string())],
         ),
+        ConsoleScope::Caches => (Vec::new(), Vec::new(), Vec::new()),
         ConsoleScope::Organizations => (Vec::new(), Vec::new(), Vec::new()),
     }
 }
@@ -322,6 +386,7 @@ fn shell_meta(name: &str) -> Option<String> {
 fn scope_kind(scope: &ConsoleScope) -> &'static str {
     match scope {
         ConsoleScope::Instance => "Instance",
+        ConsoleScope::Caches => "Directory",
         ConsoleScope::Organizations => "Directory",
         ConsoleScope::Organization { .. } => "Organization",
         ConsoleScope::Registry { .. } => "Registry",
@@ -332,6 +397,7 @@ fn scope_kind(scope: &ConsoleScope) -> &'static str {
 fn scope_title(scope: &ConsoleScope) -> String {
     match scope {
         ConsoleScope::Instance => "Hub settings".to_string(),
+        ConsoleScope::Caches => "Caches".to_string(),
         ConsoleScope::Organizations => "Organizations".to_string(),
         ConsoleScope::Organization { slug } => slug.clone(),
         ConsoleScope::Registry { path } => path.clone(),

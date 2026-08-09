@@ -25,7 +25,7 @@ js-sys = "0.3"
 leptos = { version = "0.7", features = ["csr"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Blob", "File", "FileList", "HtmlInputElement"] }
+web-sys = { version = "0.3", features = ["Blob", "Element", "File", "FileList", "History", "HtmlInputElement", "MouseEvent"] }
 
 [lints]
 workspace = true

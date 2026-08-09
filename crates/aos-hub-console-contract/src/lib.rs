@@ -77,6 +77,8 @@ impl PageSpec {
 pub enum ConsoleScope {
     /// Deployment-wide settings.
     Instance,
+    /// Global inventory of every binary cache visible to the caller.
+    Caches,
     /// Organization inventory and creation.
     Organizations,
     /// One organization.
@@ -123,6 +125,14 @@ impl ConsoleRoute {
                 "/-/instance".to_string(),
                 &segments[2..],
                 INSTANCE_PAGES,
+            );
+        }
+        if segments.starts_with(&["-", "caches"]) {
+            return resolve_page(
+                ConsoleScope::Caches,
+                "/-/caches".to_string(),
+                &segments[2..],
+                CACHE_INVENTORY_PAGES,
             );
         }
         if segments.starts_with(&["-", "orgs"]) {
@@ -174,6 +184,7 @@ impl ConsoleRoute {
     pub fn navigation(&self) -> &'static [PageSpec] {
         match self.scope {
             ConsoleScope::Instance => INSTANCE_PAGES,
+            ConsoleScope::Caches => CACHE_INVENTORY_PAGES,
             ConsoleScope::Organizations => ORGANIZATION_INVENTORY_PAGES,
             ConsoleScope::Organization { .. } => ORGANIZATION_PAGES,
             ConsoleScope::Registry { .. } => REGISTRY_PAGES,
@@ -383,6 +394,15 @@ pub const ORGANIZATION_INVENTORY_PAGES: &[PageSpec] = &[
         "organization-inventory",
     ),
 ];
+
+/// Global binary-cache inventory pages.
+pub const CACHE_INVENTORY_PAGES: &[PageSpec] = &[PageSpec::new(
+    "overview",
+    "Caches",
+    "",
+    "",
+    "cache-overview",
+)];
 
 /// Organization settings pages in final navigation order.
 pub const ORGANIZATION_PAGES: &[PageSpec] = &[
@@ -961,16 +981,14 @@ mod tests {
 
     #[test]
     fn settings_workspace_keeps_wide_medium_and_narrow_layout_contracts() {
-        let css = include_str!("../../aos-hub-console/assets/app.css");
+        let css = include_str!("../../aos-hub-core/src/web/static_assets/style.css");
         for rule in [
-            ".workspace { display: grid; grid-template-columns: minmax(230px, 280px) minmax(0, 1fr) minmax(220px, 260px);",
-            "@media (max-width: 1100px)",
-            ".workspace { grid-template-columns: minmax(230px, 280px) minmax(0, 1fr); }",
-            ".context-rail { grid-column: 2;",
-            "@media (max-width: 760px)",
-            ".workspace { display: block; }",
-            ".settings-sidebar nav { display: flex; overflow-x: auto;",
-            ".context-rail { grid-column: auto;",
+            ".settings {",
+            "grid-template-columns: 12rem 1fr;",
+            ".settings-nav-disclosure > summary { display: none; }",
+            "@media (max-width: 48rem)",
+            ".settings { grid-template-columns: 1fr; gap: 0.6rem; }",
+            ".settings-nav-disclosure > summary {",
         ] {
             assert!(css.contains(rule), "missing responsive layout rule: {rule}");
         }
@@ -1107,6 +1125,7 @@ mod tests {
         }
         let missing = INSTANCE_PAGES
             .iter()
+            .chain(CACHE_INVENTORY_PAGES)
             .chain(ORGANIZATION_INVENTORY_PAGES)
             .chain(ORGANIZATION_PAGES)
             .chain(REGISTRY_PAGES)
