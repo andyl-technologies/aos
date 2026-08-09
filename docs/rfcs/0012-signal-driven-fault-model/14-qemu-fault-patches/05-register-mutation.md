@@ -28,6 +28,78 @@ guest-visible system registers, FP status/control, and SIMD/vector registers.
 Read-only or implementation-private fields are present as non-writable and
 cannot be targeted.
 
+### Public target-manifest process protocol
+
+The manifest crosses the Apache/GPL process boundary only as explicitly
+encoded little-endian bytes. The normative constants and independent C view
+are generated in `crates/crucible-shmem/include/crucible_shmem_abi.h`; the
+canonical Rust codec and rejection rules are implemented in
+`crates/crucible-shmem/src/shmem/fault_target_manifest.rs`. Neither view
+contains a native pointer, QEMU structure, callback, or host-language enum
+layout.
+
+The 16-byte `CRUCFTQ1` query is exactly:
+
+| Offset | Width | Field | Required value |
+|---:|---:|---|---|
+| 0 | 8 | magic | ASCII `CRUCFTQ1` |
+| 8 | 2 | codec version | `1` |
+| 10 | 2 | manifest kind | `1` (`register`) |
+| 12 | 4 | reserved | all zero |
+
+Version 1 registers only kind `1`. Unknown kinds are rejected; a kind is not
+reserved or advertised until its complete response codec, provider, consumer,
+golden vector, and live gate exist.
+
+The register response starts with this 56-byte header:
+
+| Offset | Width | Field | Rule |
+|---:|---:|---|---|
+| 0 | 8 | magic | ASCII `CRUCRGM1` |
+| 8 | 2 | codec version | `1` |
+| 10 | 2 | architecture | capability scope `x86_64` or `aarch64` |
+| 12 | 2 | CPU-model byte length | `1..=96` |
+| 14 | 2 | reserved | zero |
+| 16 | 4 | row count | `1..=4096` |
+| 20 | 4 | body byte length | exact remaining length |
+| 24 | 32 | body digest | BLAKE3 of bytes beginning at offset 56 |
+
+The body is the exact printable, non-space ASCII CPU-model identity followed
+by `row_count` variable rows. Each row begins with this 42-byte header, then
+contains `name`, `writable`, `reserved`, `ignored`, and `read_only` bytes in
+that order:
+
+| Offset | Width | Field |
+|---:|---:|---|
+| 0 | 4 | nonzero numeric ID |
+| 4 | 2 | closed register-group tag |
+| 6 | 2 | reserved, zero |
+| 8 | 4 | width in bits |
+| 12 | 8 | safe model-phase mask |
+| 20 | 4 | required side-effect flags |
+| 24 | 4 | impulse/persistent/VMState flags |
+| 28 | 2 | name length |
+| 30 | 2 | writable-mask length |
+| 32 | 2 | reserved-mask length |
+| 34 | 2 | ignored-mask length |
+| 36 | 2 | read-only-mask length |
+| 38 | 4 | complete row length |
+
+Every mask length equals `ceil(width_bits / 8)`. For every in-range bit,
+exactly one of the four masks contains that bit; padding bits are zero. Numeric
+IDs strictly increase, names are unique canonical lowercase identifiers, and
+the total header plus body cannot exceed the shared fault-payload hard limit.
+Decoders reproduce the canonical encoding byte for byte or reject it. The
+frozen cross-language vector is
+`crates/crucible-shmem/tests/fixtures/fault_register_manifest_v1.hex`.
+
+QEMU first copies its process-private row structure into the GPL plugin. The
+plugin validates width against the redundant mask length before dereferencing
+any mask pointer, converts the rows to the public byte codec, and seals a
+one-to-one mapping from the public name hash to the private numeric ID. Duplicate
+names, duplicate IDs, registry changes during the two-call copy, or a manifest
+that cannot fit the result arena fail launch before guest execution.
+
 Manifest hashes enter QEMU capabilities and scenario admission. CPU model or
 QEMU changes that alter the manifest require a semantic version/golden update.
 

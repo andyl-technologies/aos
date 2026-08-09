@@ -233,6 +233,10 @@ mod fault_memory_batch;
 mod fault_memory_evidence;
 #[path = "shmem/fault_node.rs"]
 mod fault_node;
+#[path = "shmem/fault_register_evidence.rs"]
+mod fault_register_evidence;
+#[path = "shmem/fault_target_manifest.rs"]
+mod fault_target_manifest;
 #[path = "shmem/fingerprint_sample.rs"]
 mod fingerprint_sample;
 #[path = "shmem/frame_node.rs"]
@@ -251,6 +255,8 @@ pub use fault_memory::*;
 pub use fault_memory_batch::*;
 pub use fault_memory_evidence::*;
 pub use fault_node::*;
+pub use fault_register_evidence::*;
+pub use fault_target_manifest::*;
 pub use fingerprint_sample::*;
 pub use frame_node::*;
 pub use region::*;
