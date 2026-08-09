@@ -204,6 +204,12 @@ retrying_load:
     adrp x2, scenario_result
     add x2, x2, :lo12:scenario_result
     strb w0, [x2]
+.elseif TEST_MODE == 20 || TEST_MODE == 21 || TEST_MODE == 22
+    ldr x1, =0x40600000
+    ldrb w0, [x1]
+    adrp x2, scenario_result
+    add x2, x2, :lo12:scenario_result
+    strb w0, [x2]
 .else
     .error "unknown TEST_MODE"
 .endif
@@ -219,7 +225,7 @@ exception_vectors:
 .endr
 
 exception_handler:
-.if TEST_MODE == 18
+.if TEST_MODE == 18 || TEST_MODE == 21
     adrp x10, scenario_scratch
     add x10, x10, :lo12:scenario_scratch
     ldrb w11, [x10]
@@ -303,7 +309,9 @@ level1_table:
 level2_table:
     .quad 0
     .quad level3_table + 0x3
-    .fill 510, 8, 0
+    .quad 0
+    .quad fault_level3_table + 0x3
+    .fill 508, 8, 0
 .align 12
 level3_table:
 .set page_address, 0x40200000
@@ -311,3 +319,7 @@ level3_table:
     .quad page_address + 0x703
     .set page_address, page_address + 0x1000
 .endr
+.align 12
+fault_level3_table:
+    .quad aligned_target + 0x703
+    .fill 511, 8, 0

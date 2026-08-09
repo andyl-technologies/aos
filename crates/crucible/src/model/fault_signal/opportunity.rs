@@ -598,6 +598,8 @@ pub enum FaultOperation {
     MemoryDmaRead,
     /// A DMA write.
     MemoryDmaWrite,
+    /// A vCPU MMU page-table descriptor read.
+    MemoryPageTableWalk,
     /// A modeled memory refresh.
     MemoryRefresh,
     /// An interrupt raise.
@@ -687,6 +689,7 @@ impl FaultOperation {
             | Self::MemoryStore
             | Self::MemoryDmaRead
             | Self::MemoryDmaWrite
+            | Self::MemoryPageTableWalk
             | Self::MemoryRefresh
             | Self::InterruptRaise
             | Self::InterruptRoute
@@ -760,6 +763,7 @@ impl FaultOperation {
             Self::MemoryStore => "memory_store",
             Self::MemoryDmaRead => "memory_dma_read",
             Self::MemoryDmaWrite => "memory_dma_write",
+            Self::MemoryPageTableWalk => "memory_page_table_walk",
             Self::MemoryRefresh => "memory_refresh",
             Self::InterruptRaise => "interrupt_raise",
             Self::InterruptRoute => "interrupt_route",

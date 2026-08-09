@@ -233,6 +233,8 @@ pub enum FaultPhase {
     DmaRead,
     /// A device writes guest memory through DMA.
     DmaWrite,
+    /// A vCPU MMU reads a page-table descriptor during address translation.
+    PageTableWalk,
     /// A memory or flash region performs a modeled refresh operation.
     Refresh,
     /// An interrupt source raises an interrupt.
@@ -291,6 +293,7 @@ impl FaultPhase {
             Self::Store => "store",
             Self::DmaRead => "dma_read",
             Self::DmaWrite => "dma_write",
+            Self::PageTableWalk => "page_table_walk",
             Self::Refresh => "refresh",
             Self::Raise => "raise",
             Self::Route => "route",
@@ -618,13 +621,13 @@ effect_registry! {
     /// Atomic physical or virtual memory mutation at a safe boundary.
     MemoryMutation => { key: "memory.mutation", adapter: Node, targets: MEMORY_TARGETS, phases: [Boundary], lifetimes: [Impulse], composition: OrderedTransform, capability: "qemu.memory.mutate.v1", evidence: ["translation", "before_bytes", "after_bytes", "dirty_tracking", "icount"] },
     /// Persistent or per-access memory corruption, loss, tearing, or poison.
-    MemoryAccessTransform => { key: "memory.access_transform", adapter: Node, targets: MEMORY_TARGETS, phases: [Fetch, Load, Store, DmaRead, DmaWrite], lifetimes: [Persistent, Opportunity], composition: OrderedTransform, capability: "qemu.memory.access-transform.v1", evidence: ["access", "before_bytes", "after_bytes", "outcome", "range_state"] },
+    MemoryAccessTransform => { key: "memory.access_transform", adapter: Node, targets: MEMORY_TARGETS, phases: [Fetch, Load, Store, DmaRead, DmaWrite, PageTableWalk], lifetimes: [Persistent, Opportunity], composition: OrderedTransform, capability: "qemu.memory.access-transform.v1", evidence: ["access", "before_bytes", "after_bytes", "outcome", "range_state", "page_table_walk"] },
     /// Corrected or uncorrectable memory ECC event.
-    MemoryEccEvent => { key: "memory.ecc_event", adapter: Node, targets: MEMORY_TARGETS, phases: [Fetch, Load, Store, DmaRead, DmaWrite, Boundary], lifetimes: [Impulse, Opportunity], composition: Severity, capability: "qemu.memory.ecc-event.v1", evidence: ["platform_record", "exception", "acknowledgement"] },
+    MemoryEccEvent => { key: "memory.ecc_event", adapter: Node, targets: MEMORY_TARGETS, phases: [Fetch, Load, Store, DmaRead, DmaWrite, PageTableWalk, Boundary], lifetimes: [Impulse, Opportunity], composition: Severity, capability: "qemu.memory.ecc-event.v1", evidence: ["platform_record", "exception", "acknowledgement"] },
     /// Failed, retention-decaying, or rowhammer-disturbed memory region.
-    MemoryRegionState => { key: "memory.region_state", adapter: Node, targets: MEMORY_TARGETS, phases: [Fetch, Load, Store, DmaRead, DmaWrite, Refresh], lifetimes: [Persistent, StateMachine], composition: OrderedTransform, capability: "qemu.memory.region-state.v1", evidence: ["counters", "aggressor_rows", "victim_rows", "changed_bits", "outcomes"] },
+    MemoryRegionState => { key: "memory.region_state", adapter: Node, targets: MEMORY_TARGETS, phases: [Fetch, Load, Store, DmaRead, DmaWrite, PageTableWalk, Refresh], lifetimes: [Persistent, StateMachine], composition: OrderedTransform, capability: "qemu.memory.region-state.v1", evidence: ["counters", "aggressor_rows", "victim_rows", "changed_bits", "outcomes"] },
     /// Shared latency, bandwidth, and service constraints for memory.
-    MemoryService => { key: "memory.service", adapter: Node, targets: MEMORY_TARGETS, phases: [Fetch, Load, Store, DmaRead, DmaWrite, Queue], lifetimes: [Persistent, StateMachine], composition: Composite, capability: "qemu.memory.service.v1", evidence: ["access_service_ledger"] },
+    MemoryService => { key: "memory.service", adapter: Node, targets: MEMORY_TARGETS, phases: [Fetch, Load, Store, DmaRead, DmaWrite, PageTableWalk, Queue], lifetimes: [Persistent, StateMachine], composition: Composite, capability: "qemu.memory.service.v1", evidence: ["access_service_ledger", "page_table_walk"] },
     /// Offset, drift, jump, freeze, jitter, or wander clock transform.
     ClockTransform => { key: "clock.transform", adapter: Node, targets: CLOCK_TARGETS, phases: [ClockRead, Arm, Fire], lifetimes: [Persistent, Opportunity, Impulse], composition: Composite, capability: "qemu.clock.transform.v1", evidence: ["raw_value", "transformed_value", "timer_consequences", "state"] },
     /// Guest clock failure, fallback, source selection, and synchronization state.

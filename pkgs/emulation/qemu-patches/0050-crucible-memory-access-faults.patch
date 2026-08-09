@@ -1,55 +1,3 @@
-From e73f172e4934cf4c640709aa9cca77636ec10c6b Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Sat, 8 Aug 2026 11:44:15 -0700
-Subject: [PATCH] crucible: add memory access fault rules
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- accel/tcg/atomic_template.h                |  118 +-
- accel/tcg/cpu-exec-common.c                |    4 +
- accel/tcg/cpu-exec.c                       |   62 +-
- accel/tcg/cputlb.c                         |  624 +-
- accel/tcg/icount-common.c                  |   37 +-
- accel/tcg/internal-common.h                |    3 +
- accel/tcg/translate-all.c                  |   31 +
- accel/tcg/translator.c                     |  128 +-
- hw/core/cpu-common.c                       |    3 +
- hw/core/cpu-system.c                       |   44 +-
- hw/intc/apic.c                             |    4 +-
- hw/virtio/virtio.c                         |   78 +-
- include/exec/memory.h                      |   62 +-
- include/exec/memory_ldst_cached.h.inc      |   69 +
- include/exec/translator.h                  |    5 +
- include/hw/core/cpu.h                      |   42 +-
- include/hw/core/sysemu-cpu-ops.h           |    9 +
- include/hw/virtio/virtio.h                 |    1 +
- include/qemu/crucible-fault.h              |  137 +
- include/qemu/qemu-plugin.h                 |   51 +
- include/system/cpu-timers.h                |    3 +
- include/system/dma.h                       |   61 +-
- plugins/api-system.c                       |   19 +-
- plugins/api.c                              |    8 +-
- plugins/crucible-fault-memory.c            |    3 +-
- plugins/crucible-fault-node.c              | 9475 ++++++++++++++++++++
- plugins/crucible-fault.c                   |  101 +-
- plugins/meson.build                        |    2 +-
- system/physmem.c                           |  448 +-
- target/arm/cpu.c                           |    5 +-
- target/arm/cpu.h                           |    8 +
- target/arm/internals.h                     |    4 +
- target/arm/ptw.c                           |   57 +-
- target/arm/tcg/tlb_helper.c                |    2 +-
- target/i386/cpu.c                          |    3 +
- target/i386/cpu.h                          |    8 +
- target/i386/tcg/system/excp_helper.c       |   55 +-
- tests/tcg/plugins/crucible-memory-access.c |  866 ++
- tests/tcg/plugins/crucible-memory-dma.c    |  433 +
- tests/tcg/plugins/meson.build              |    4 +-
- 40 files changed, 12918 insertions(+), 159 deletions(-)
- create mode 100644 plugins/crucible-fault-node.c
- create mode 100644 tests/tcg/plugins/crucible-memory-access.c
- create mode 100644 tests/tcg/plugins/crucible-memory-dma.c
-
 diff --git a/accel/tcg/atomic_template.h b/accel/tcg/atomic_template.h
 index 89593b2..40c4ae0 100644
 --- a/accel/tcg/atomic_template.h
@@ -2087,10 +2035,10 @@ index 5c11542..ea6d5f9 100644
              if (len < desc.len) {
                  error_setg(errp, "Cannot map indirect buffer");
 diff --git a/include/exec/memory.h b/include/exec/memory.h
-index 1a444df..5fc3a7e 100644
+index 1a444df..f16e3d2 100644
 --- a/include/exec/memory.h
 +++ b/include/exec/memory.h
-@@ -2775,6 +2775,20 @@ MemTxResult address_space_write_rom(AddressSpace *as, hwaddr addr,
+@@ -2775,6 +2775,23 @@ MemTxResult address_space_write_rom(AddressSpace *as, hwaddr addr,
  #define ARG1_DECL    AddressSpace *as
  #include "exec/memory_ldst_phys.h.inc"
  
@@ -2099,6 +2047,9 @@ index 1a444df..5fc3a7e 100644
 +bool qemu_crucible_fault_memory_rules_active(void);
 +bool qemu_crucible_fault_memory_fetch_rules_active(void);
 +bool qemu_crucible_fault_memory_cpu_rules_active(void);
++bool qemu_crucible_fault_memory_page_table_walk_rules_active(void);
++bool qemu_crucible_fault_memory_page_table_walk_matches(
++    uint64_t entry_gpa, size_t length);
 +bool qemu_crucible_fault_memory_dma_rules_active(bool is_write);
 +#endif
 +MemTxResult address_space_read_cached_fault(MemoryRegionCache *cache,
@@ -2111,7 +2062,7 @@ index 1a444df..5fc3a7e 100644
  struct MemoryRegionCache {
      uint8_t *ptr;
      hwaddr xlat;
-@@ -2782,8 +2796,14 @@ struct MemoryRegionCache {
+@@ -2782,8 +2799,14 @@ struct MemoryRegionCache {
      FlatView *fv;
      MemoryRegionSection mrs;
      bool is_write;
@@ -2126,7 +2077,7 @@ index 1a444df..5fc3a7e 100644
  /* address_space_ld*_cached: load from a cached #MemoryRegion
   * address_space_st*_cached: store into a cached #MemoryRegion
   *
-@@ -2817,7 +2837,18 @@ struct MemoryRegionCache {
+@@ -2817,7 +2840,18 @@ struct MemoryRegionCache {
  static inline uint8_t address_space_ldub_cached(MemoryRegionCache *cache,
      hwaddr addr, MemTxAttrs attrs, MemTxResult *result)
  {
@@ -2145,7 +2096,7 @@ index 1a444df..5fc3a7e 100644
      if (likely(cache->ptr)) {
          return ldub_p(cache->ptr + addr);
      } else {
-@@ -2829,6 +2860,15 @@ static inline void address_space_stb_cached(MemoryRegionCache *cache,
+@@ -2829,6 +2863,15 @@ static inline void address_space_stb_cached(MemoryRegionCache *cache,
      hwaddr addr, uint8_t val, MemTxAttrs attrs, MemTxResult *result)
  {
      assert(addr < cache->len);
@@ -2161,7 +2112,7 @@ index 1a444df..5fc3a7e 100644
      if (likely(cache->ptr)) {
          stb_p(cache->ptr + addr, val);
      } else {
-@@ -3016,6 +3056,15 @@ void address_space_unregister_map_client(AddressSpace *as, QEMUBH *bh);
+@@ -3016,6 +3059,15 @@ void address_space_unregister_map_client(AddressSpace *as, QEMUBH *bh);
  /* Internal functions, part of the implementation of address_space_read.  */
  MemTxResult address_space_read_full(AddressSpace *as, hwaddr addr,
                                      MemTxAttrs attrs, void *buf, hwaddr len);
@@ -2177,7 +2128,7 @@ index 1a444df..5fc3a7e 100644
  MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
                                     MemTxAttrs attrs, void *buf,
                                     hwaddr len, hwaddr addr1, hwaddr l,
-@@ -3093,7 +3142,8 @@ MemTxResult address_space_read(AddressSpace *as, hwaddr addr,
+@@ -3093,7 +3145,8 @@ MemTxResult address_space_read(AddressSpace *as, hwaddr addr,
              fv = address_space_to_flatview(as);
              l = len;
              mr = flatview_translate(fv, addr, &addr1, &l, false, attrs);
@@ -2187,7 +2138,7 @@ index 1a444df..5fc3a7e 100644
                  ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
                  memcpy(buf, ptr, len);
              } else {
-@@ -3120,6 +3170,11 @@ address_space_read_cached(MemoryRegionCache *cache, hwaddr addr,
+@@ -3120,6 +3173,11 @@ address_space_read_cached(MemoryRegionCache *cache, hwaddr addr,
                            void *buf, hwaddr len)
  {
      assert(addr < cache->len && len <= cache->len - addr);
@@ -2199,7 +2150,7 @@ index 1a444df..5fc3a7e 100644
      fuzz_dma_read_cb(cache->xlat + addr, len, cache->mrs.mr);
      if (likely(cache->ptr)) {
          memcpy(buf, cache->ptr + addr, len);
-@@ -3142,6 +3197,11 @@ address_space_write_cached(MemoryRegionCache *cache, hwaddr addr,
+@@ -3142,6 +3200,11 @@ address_space_write_cached(MemoryRegionCache *cache, hwaddr addr,
                             const void *buf, hwaddr len)
  {
      assert(addr < cache->len && len <= cache->len - addr);
@@ -2349,33 +2300,41 @@ index d70942a..545fcff 100644
  
  /**
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index 0258271..5958803 100644
+index 0258271..310314c 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
-@@ -424,6 +424,12 @@ struct qemu_work_item;
+@@ -424,6 +424,14 @@ struct qemu_work_item;
   * @crash_occurred: Indicates the OS reported a crash (panic) for this CPU
   * @singlestep_enabled: Flags for single-stepping.
   * @icount_extra: Instructions until next timer event.
 + * @crucible_fetch_service_nanos: Service delay staged by instruction fetch
 + * @crucible_memory_service_nanos: Service delay staged until translated code
 + *     has returned to the accelerator loop
++ * @crucible_page_table_walk_*: Identity of the live guest access whose MMU
++ *     translation is currently reading page-table descriptors
 + *   translation for application before the generated TB executes.
 + * @crucible_fetch_transaction: Opaque fetch transaction staged until TB
 + *   generation succeeds or is discarded.
   * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
   *            AddressSpaces this CPU has)
   * @num_ases: number of CPUAddressSpaces in @cpu_ases
-@@ -492,6 +498,9 @@ struct CPUState {
+@@ -492,6 +500,15 @@ struct CPUState {
      int singlestep_enabled;
      int64_t icount_budget;
      int64_t icount_extra;
 +    uint64_t crucible_fetch_service_nanos;
 +    uint64_t crucible_memory_service_nanos;
 +    void *crucible_fetch_transaction;
++    bool crucible_page_table_walk_active;
++    bool crucible_page_table_walk_has_instruction;
++    uint32_t crucible_page_table_walk_access_class;
++    uint32_t crucible_page_table_walk_instruction_ordinal;
++    uint64_t crucible_page_table_walk_target_vaddr;
++    uint64_t crucible_page_table_walk_instruction_pc;
      uint64_t random_seed;
      sigjmp_buf jmp_env;
  
-@@ -724,10 +733,33 @@ typedef struct CPUFaultTranslation {
+@@ -724,10 +741,33 @@ typedef struct CPUFaultTranslation {
      bool user;
  } CPUFaultTranslation;
  
@@ -2409,7 +2368,7 @@ index 0258271..5958803 100644
   * @result: Receives the exact translation and effective permissions.
   *
   * Performs an architecture page-table walk without updating accessed, dirty,
-@@ -735,10 +767,18 @@ typedef struct CPUFaultTranslation {
+@@ -735,10 +775,18 @@ typedef struct CPUFaultTranslation {
   * fault injection at a stopped safe boundary, not for debugger access.
   *
   * Returns: %true on success, or %false when translation is unsupported or the
@@ -2463,7 +2422,7 @@ index 6386910..006d49b 100644
      QTAILQ_ENTRY(VirtIODevice) next;
      /**
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index bbe9daa..7f98557 100644
+index bbe9daa..a9b6bb3 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -10,9 +10,12 @@
@@ -2487,7 +2446,7 @@ index bbe9daa..7f98557 100644
  void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
                                             uint64_t observed_icount);
  bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount);
-@@ -58,4 +62,137 @@ int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
+@@ -58,4 +62,152 @@ int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
                                           uint64_t current_icount,
                                           int64_t budget);
  
@@ -2547,8 +2506,9 @@ index bbe9daa..7f98557 100644
 +    QEMU_CRUCIBLE_MEMORY_CPU_STORE = 0x04,
 +    QEMU_CRUCIBLE_MEMORY_DMA_READ = 0x08,
 +    QEMU_CRUCIBLE_MEMORY_DMA_WRITE = 0x10,
++    QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK = 0x20,
 +    /* Evidence-only class for timer-driven persistent-state evaluation. */
-+    QEMU_CRUCIBLE_MEMORY_BOUNDARY = 0x20,
++    QEMU_CRUCIBLE_MEMORY_BOUNDARY = 0x40,
 +};
 +
 +typedef struct QemuCrucibleMemoryAccessResult {
@@ -2566,6 +2526,9 @@ index bbe9daa..7f98557 100644
 +bool qemu_crucible_fault_memory_rules_active(void);
 +bool qemu_crucible_fault_memory_fetch_rules_active(void);
 +bool qemu_crucible_fault_memory_cpu_rules_active(void);
++bool qemu_crucible_fault_memory_page_table_walk_rules_active(void);
++bool qemu_crucible_fault_memory_page_table_walk_matches(
++    uint64_t entry_gpa, size_t length);
 +bool qemu_crucible_fault_memory_dma_rules_active(bool is_write);
 +#endif
 +uint64_t qemu_crucible_fault_observed_icount(void);
@@ -2598,6 +2561,14 @@ index bbe9daa..7f98557 100644
 +    uint64_t *gpa, size_t *length);
 +bool qemu_crucible_fault_memory_transaction_exception(
 +    CPUFaultException *exception);
++void qemu_crucible_fault_memory_page_table_walk_context_begin(
++    CPUState *cpu, uint64_t target_vaddr,
++    enum QemuCrucibleMemoryAccessClass initiating_access_class,
++    bool has_instruction, uint64_t instruction_pc,
++    uint32_t instruction_ordinal);
++void qemu_crucible_fault_memory_page_table_walk_context_end(CPUState *cpu);
++bool qemu_crucible_fault_memory_page_table_walk_context_active(
++    const CPUState *cpu);
 +QemuCrucibleMemoryTransactionToken *
 +qemu_crucible_fault_memory_transaction_detach(void);
 +void qemu_crucible_fault_memory_transaction_resume(
@@ -2615,6 +2586,9 @@ index bbe9daa..7f98557 100644
 +    uint32_t vcpu, uint64_t vaddr, uint64_t gpa, const uint8_t *before,
 +    uint8_t *visible, uint8_t *committed, size_t length,
 +    bool write_happened, uint64_t observed_icount);
++bool qemu_crucible_fault_memory_page_table_walk(
++    CPUState *cpu, uint64_t entry_gpa, int32_t level, uint32_t stage,
++    const uint8_t *before, uint8_t *value, size_t length);
 +void qemu_crucible_fault_dma_enter(bool is_write, MemTxAttrs attrs,
 +                                   const uint8_t device_identity[32]);
 +void qemu_crucible_fault_dma_leave(void);
@@ -2890,10 +2864,10 @@ index b1422b8..6e6c2b3 100644
              return -EFAULT;
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000..7468e5d
+index 0000000..3d7d502
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,9475 @@
+@@ -0,0 +1,9711 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -3145,7 +3119,11 @@ index 0000000..7468e5d
 +    bool poison_preflighted;
 +    CPUFaultException exception;
 +    uint32_t instruction_ordinal;
++    int32_t page_table_level;
++    uint32_t page_table_stage;
++    uint32_t initiating_access_class;
 +    uint64_t address;
++    uint64_t page_table_target_vaddr;
 +    uint64_t length;
 +    uint64_t preflight_length;
 +    uint64_t observed_icount;
@@ -3173,11 +3151,23 @@ index 0000000..7468e5d
 +    uint64_t length;
 +    uint64_t observed_icount;
 +    uint64_t instruction_pc;
++    uint64_t page_table_target_vaddr;
 +    uint32_t access_class;
 +    uint32_t actor;
++    uint32_t instruction_ordinal;
++    int32_t page_table_level;
++    uint32_t page_table_stage;
++    uint32_t initiating_access_class;
 +    bool has_instruction;
 +    bool streaming;
 +} CrucibleMemoryRetryKey;
++
++typedef struct CrucibleMemoryPageTableIdentity {
++    uint64_t target_vaddr;
++    int32_t level;
++    uint32_t stage;
++    uint32_t initiating_access_class;
++} CrucibleMemoryPageTableIdentity;
 +
 +typedef struct CrucibleMemoryRetryState {
 +    uint64_t last_access_sequence;
@@ -5377,7 +5367,7 @@ index 0000000..7468e5d
 +            kind < 1 || kind > 5 ||
 +            !node_field_bool(rule, CRUCIBLE_NODE_FAULT_FIELD_P5, &present) ||
 +            !node_field_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P8, &other) ||
-+            other == 0 || (other & ~0x1fU) != 0 ||
++            other == 0 || (other & ~0x3fU) != 0 ||
 +            !node_field_bool(rule, CRUCIBLE_NODE_FAULT_FIELD_P9,
 +                             &other_present) ||
 +            !node_field_bool(rule, CRUCIBLE_NODE_FAULT_FIELD_P10,
@@ -5402,7 +5392,7 @@ index 0000000..7468e5d
 +                       field->length && !other_present;
 +        }
 +        if (kind == 2) {
-+            return !present && !other_present && (other & ~0x0bU) == 0 &&
++            return !present && !other_present && (other & ~0x2bU) == 0 &&
 +                   node_field_nonzero(rule, CRUCIBLE_NODE_FAULT_FIELD_P4) &&
 +                   node_field_zero(rule, CRUCIBLE_NODE_FAULT_FIELD_P6);
 +        }
@@ -5426,7 +5416,7 @@ index 0000000..7468e5d
 +            const char *poison_kind = qdict_get_str(poison, "kind");
 +
 +            if (strcmp(poison_kind, "corrected") == 0) {
-+                return (other & ~0x0bU) == 0;
++                return (other & ~0x2bU) == 0;
 +            }
 +            if (strcmp(poison_kind, "exception") == 0) {
 +                return (other & ~0x07U) == 0;
@@ -6227,10 +6217,13 @@ index 0000000..7468e5d
 +    handler->capability.name = name;
 +    handler->capability.payload_schema = command_kind ==
 +        CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE ?
-+        "crucible.node-fault-payload.v1;dram=2c2r16b64" :
++        "crucible.node-fault-payload.v1;dram=2c2r16b64;"
++        "page-table-walk=x86_64,aarch64" :
 +        (command_kind == CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM ?
-+         "crucible.node-fault-payload.v1;atomic-widths=1,2,4,8,16" :
-+         "crucible.node-fault-payload.v1");
++         "crucible.node-fault-payload.v1;atomic-widths=1,2,4,8,16;"
++         "page-table-walk=x86_64,aarch64" :
++         "crucible.node-fault-payload.v1;"
++         "page-table-walk=x86_64,aarch64");
 +    handler->validate = node_validate;
 +    handler->arm = node_arm;
 +    handler->prepare = node_prepare;
@@ -6518,6 +6511,17 @@ index 0000000..7468e5d
 +        persistent_counters > CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT) {
 +        return false;
 +    }
++    if (rule->command_kind ==
++            CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM) {
++        uint32_t classes;
++
++        if (!node_field_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P8,
++                            &classes) ||
++            (has_vcpu &&
++             (classes & QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK) != 0)) {
++            return false;
++        }
++    }
 +    exception_object = node_memory_poison_exception(rule);
 +
 +    if (exception_object) {
@@ -6534,6 +6538,9 @@ index 0000000..7468e5d
 +
 +            if (!node_field_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P8,
 +                                &classes)) {
++                return false;
++            }
++            if ((classes & QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK) != 0) {
 +                return false;
 +            }
 +            if (exception.architecture == CPU_FAULT_EXCEPTION_AARCH64 &&
@@ -6685,7 +6692,7 @@ index 0000000..7468e5d
 +                rule, CRUCIBLE_NODE_FAULT_FIELD_P8, &classes));
 +            crucible_memory_access_classes |= classes;
 +        } else {
-+            crucible_memory_access_classes |= 0x1fU;
++            crucible_memory_access_classes |= 0x3fU;
 +        }
 +        g_ptr_array_add(crucible_memory_binding_order, rule);
 +        g_array_append_val(has_vcpu ? crucible_memory_gva_index :
@@ -6703,7 +6710,8 @@ index 0000000..7468e5d
 +    if (was_active != is_active ||
 +        ((prior_access_classes ^ crucible_memory_access_classes) &
 +         (QEMU_CRUCIBLE_MEMORY_CPU_LOAD |
-+          QEMU_CRUCIBLE_MEMORY_CPU_STORE)) != 0) {
++          QEMU_CRUCIBLE_MEMORY_CPU_STORE |
++          QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK)) != 0) {
 +        if (!current_cpu) {
 +            error_report(
 +                "Crucible memory rule transition has no boundary vCPU");
@@ -7449,6 +7457,16 @@ index 0000000..7468e5d
 +    if (access_class == QEMU_CRUCIBLE_MEMORY_DMA_READ ||
 +        access_class == QEMU_CRUCIBLE_MEMORY_DMA_WRITE) {
 +        qemu_crucible_fault_dma_identity(identity + 224);
++    } else if (access_class ==
++               QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK) {
++        stq_le_p(identity + 224,
++                 crucible_memory_transaction.page_table_target_vaddr);
++        stl_le_p(identity + 232,
++                 crucible_memory_transaction.page_table_level);
++        stl_le_p(identity + 236,
++                 crucible_memory_transaction.page_table_stage);
++        stl_le_p(identity + 240,
++                 crucible_memory_transaction.initiating_access_class);
 +    }
 +    if (crucible_memory_transaction.active) {
 +        stl_le_p(identity + 256, crucible_memory_current_fragment);
@@ -8096,6 +8114,16 @@ index 0000000..7468e5d
 +    stq_le_p(identity + 64, pending->observed_icount);
 +    stq_le_p(identity + 72, pending->rule->generation);
 +    stq_le_p(identity + 88, pending->rule->service_ledger->ready_ns);
++    if (pending->access_class == QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK) {
++        stq_le_p(identity + 224,
++                 crucible_memory_transaction.page_table_target_vaddr);
++        stl_le_p(identity + 232,
++                 crucible_memory_transaction.page_table_level);
++        stl_le_p(identity + 236,
++                 crucible_memory_transaction.page_table_stage);
++        stl_le_p(identity + 240,
++                 crucible_memory_transaction.initiating_access_class);
++    }
 +    stq_le_p(identity + 264, crucible_memory_transaction.address);
 +    stq_le_p(identity + 272, crucible_memory_transaction.length);
 +    stq_le_p(identity + 280,
@@ -10119,6 +10147,43 @@ index 0000000..7468e5d
 +             QEMU_CRUCIBLE_MEMORY_CPU_STORE)) != 0;
 +}
 +
++bool qemu_crucible_fault_memory_page_table_walk_rules_active(void)
++{
++    return qemu_crucible_fault_memory_rules_active() &&
++           (crucible_memory_access_classes &
++            QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK) != 0;
++}
++
++bool qemu_crucible_fault_memory_page_table_walk_matches(
++    uint64_t entry_gpa, size_t length)
++{
++    uint64_t last;
++    IntervalTreeNode *node;
++
++    if (!qemu_crucible_fault_memory_page_table_walk_rules_active() ||
++        length == 0 || entry_gpa > UINT64_MAX - (length - 1)) {
++        return false;
++    }
++    last = entry_gpa + length - 1;
++    for (node = interval_tree_iter_first(
++             &crucible_memory_gpa_root, entry_gpa, last);
++         node;
++         node = interval_tree_iter_next(node, entry_gpa, last)) {
++        CrucibleMemoryIndexEntry *entry = container_of(
++            node, CrucibleMemoryIndexEntry, interval);
++        QemuCrucibleFaultRule *rule = entry->rule;
++        uint32_t classes;
++
++        if (rule->command_kind !=
++                CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM ||
++            (node_field_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P8, &classes) &&
++             (classes & QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK) != 0)) {
++            return true;
++        }
++    }
++    return false;
++}
++
 +bool qemu_crucible_fault_memory_dma_rules_active(bool is_write)
 +{
 +    uint32_t access_class = is_write ? QEMU_CRUCIBLE_MEMORY_DMA_WRITE :
@@ -10571,6 +10636,38 @@ index 0000000..7468e5d
 +    }
 +}
 +
++static void node_memory_transaction_preflight_physical(
++    enum QemuCrucibleMemoryAccessClass access_class, uint32_t actor,
++    uint64_t target_vaddr, uint64_t gpa, size_t length, uint64_t identity)
++{
++    g_autoptr(GHashTable) counter_rules = g_hash_table_new(
++        g_direct_hash, g_direct_equal);
++    g_autoptr(GHashTable) row_plans = g_hash_table_new_full(
++        g_direct_hash, g_direct_equal, NULL,
++        node_memory_row_resource_plan_free);
++    g_autoptr(GHashTable) retention_plans = g_hash_table_new_full(
++        g_direct_hash, g_direct_equal, NULL,
++        node_memory_retention_resource_plan_free);
++
++    if (!node_memory_transaction_count_segment(
++            access_class, actor, target_vaddr, gpa, length, false,
++            identity)) {
++        return;
++    }
++    if (!node_memory_transaction_resources_segment(
++            access_class, actor, target_vaddr, gpa, length, false,
++            identity, counter_rules, row_plans, retention_plans)) {
++        crucible_memory_transaction.poisoned = true;
++        return;
++    }
++    if (!node_memory_transaction_resources_finish(
++            counter_rules, row_plans, retention_plans)) {
++        return;
++    }
++    node_memory_transaction_preflight_segment(
++        access_class, actor, target_vaddr, gpa, length, false, identity);
++}
++
 +static void node_memory_dma_fragment_clear(gpointer opaque)
 +{
 +    CrucibleMemoryDmaFragment *fragment = opaque;
@@ -10800,10 +10897,15 @@ index 0000000..7468e5d
 +    uint64_t hash = key->address ^ (key->length << 7) ^
 +                    (key->length >> 57) ^ key->observed_icount ^
 +                    (key->instruction_pc << 13) ^
-+                    (key->instruction_pc >> 51);
++                    (key->instruction_pc >> 51) ^
++                    key->page_table_target_vaddr;
 +
 +    hash ^= (uint64_t)key->access_class << 32;
 +    hash ^= key->actor;
++    hash ^= (uint64_t)key->instruction_ordinal << 17;
++    hash ^= (uint64_t)(uint32_t)key->page_table_level << 29;
++    hash ^= (uint64_t)key->page_table_stage << 43;
++    hash ^= (uint64_t)key->initiating_access_class << 47;
 +    hash ^= (uint64_t)key->has_instruction << 61;
 +    hash ^= (uint64_t)key->streaming << 62;
 +    hash ^= hash >> 33;
@@ -10822,8 +10924,13 @@ index 0000000..7468e5d
 +           left->length == right->length &&
 +           left->observed_icount == right->observed_icount &&
 +           left->instruction_pc == right->instruction_pc &&
++           left->page_table_target_vaddr == right->page_table_target_vaddr &&
 +           left->access_class == right->access_class &&
 +           left->actor == right->actor &&
++           left->instruction_ordinal == right->instruction_ordinal &&
++           left->page_table_level == right->page_table_level &&
++           left->page_table_stage == right->page_table_stage &&
++           left->initiating_access_class == right->initiating_access_class &&
 +           left->has_instruction == right->has_instruction &&
 +           left->streaming == right->streaming;
 +}
@@ -10842,8 +10949,14 @@ index 0000000..7468e5d
 +        .observed_icount = transaction->has_instruction ? 0 :
 +                           transaction->observed_icount,
 +        .instruction_pc = transaction->instruction_pc,
++        .page_table_target_vaddr =
++            transaction->page_table_target_vaddr,
 +        .access_class = transaction->access_class,
 +        .actor = transaction->actor,
++        .instruction_ordinal = transaction->instruction_ordinal,
++        .page_table_level = transaction->page_table_level,
++        .page_table_stage = transaction->page_table_stage,
++        .initiating_access_class = transaction->initiating_access_class,
 +        .has_instruction = transaction->has_instruction,
 +        .streaming = transaction->streaming,
 +    };
@@ -10904,7 +11017,8 @@ index 0000000..7468e5d
 +    uint64_t address, size_t length, uint64_t observed_icount,
 +    bool has_instruction, uint64_t instruction_pc,
 +    uint32_t instruction_ordinal,
-+    bool streaming, bool automatic_preflight)
++    bool streaming, bool automatic_preflight,
++    const CrucibleMemoryPageTableIdentity *page_table)
 +{
 +    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
 +    CrucibleMemoryRetryKey retry_key;
@@ -10964,6 +11078,13 @@ index 0000000..7468e5d
 +    transaction->streaming = streaming;
 +    transaction->instruction_pc = instruction_pc;
 +    transaction->instruction_ordinal = instruction_ordinal;
++    if (page_table) {
++        transaction->page_table_target_vaddr = page_table->target_vaddr;
++        transaction->page_table_level = page_table->level;
++        transaction->page_table_stage = page_table->stage;
++        transaction->initiating_access_class =
++            page_table->initiating_access_class;
++    }
 +    transaction->identity = ++crucible_memory_access_sequence;
 +    transaction->event_count_start = crucible_node_event_count;
 +    if (!crucible_memory_retry_states) {
@@ -10995,7 +11116,8 @@ index 0000000..7468e5d
 +{
 +    node_memory_transaction_begin(
 +        access_class, actor, address, length, observed_icount,
-+        has_instruction, instruction_pc, instruction_ordinal, false, true);
++        has_instruction, instruction_pc, instruction_ordinal, false, true,
++        NULL);
 +}
 +
 +void qemu_crucible_fault_memory_dma_transaction_begin(
@@ -11010,7 +11132,7 @@ index 0000000..7468e5d
 +    }
 +    node_memory_transaction_begin(
 +        access_class, actor, iova, length, observed_icount,
-+        false, 0, 0, false, false);
++        false, 0, 0, false, false, NULL);
 +    if (crucible_memory_transaction.active) {
 +        node_memory_transaction_preflight_dma(
 +            access_class, actor, as, iova, length, attrs,
@@ -11024,7 +11146,7 @@ index 0000000..7468e5d
 +{
 +    node_memory_transaction_begin(
 +        QEMU_CRUCIBLE_MEMORY_FETCH, actor, address, 0, observed_icount,
-+        true, instruction_pc, instruction_ordinal, true, true);
++        true, instruction_pc, instruction_ordinal, true, true, NULL);
 +}
 +
 +bool qemu_crucible_fault_memory_fetch_transaction_extend(
@@ -11741,7 +11863,8 @@ index 0000000..7468e5d
 +    match_count = node_memory_matching_rules(
 +        vcpu, vaddr, gpa, length,
 +        access_class != QEMU_CRUCIBLE_MEMORY_DMA_READ &&
-+        access_class != QEMU_CRUCIBLE_MEMORY_DMA_WRITE);
++        access_class != QEMU_CRUCIBLE_MEMORY_DMA_WRITE &&
++        access_class != QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK);
 +    if (!crucible_memory_transaction.active && match_count != 0 &&
 +        !node_memory_event_capacity(crucible_memory_matches[0], match_count,
 +                                    access_class, vcpu, vaddr, gpa, length,
@@ -12072,6 +12195,93 @@ index 0000000..7468e5d
 +    }
 +    node_memory_matching_rules_done();
 +    memset(post, 0, sizeof(*post));
++}
++
++void qemu_crucible_fault_memory_page_table_walk_context_begin(
++    CPUState *cpu, uint64_t target_vaddr,
++    enum QemuCrucibleMemoryAccessClass initiating_access_class,
++    bool has_instruction, uint64_t instruction_pc,
++    uint32_t instruction_ordinal)
++{
++    if (!cpu ||
++        (initiating_access_class != QEMU_CRUCIBLE_MEMORY_FETCH &&
++         initiating_access_class != QEMU_CRUCIBLE_MEMORY_CPU_LOAD &&
++         initiating_access_class != QEMU_CRUCIBLE_MEMORY_CPU_STORE)) {
++        error_report("Invalid Crucible page-table walk context");
++        abort();
++    }
++    cpu->crucible_page_table_walk_active = true;
++    cpu->crucible_page_table_walk_has_instruction = has_instruction;
++    cpu->crucible_page_table_walk_access_class = initiating_access_class;
++    cpu->crucible_page_table_walk_instruction_ordinal =
++        instruction_ordinal;
++    cpu->crucible_page_table_walk_target_vaddr = target_vaddr;
++    cpu->crucible_page_table_walk_instruction_pc = instruction_pc;
++}
++
++void qemu_crucible_fault_memory_page_table_walk_context_end(CPUState *cpu)
++{
++    if (cpu) {
++        cpu->crucible_page_table_walk_active = false;
++    }
++}
++
++bool qemu_crucible_fault_memory_page_table_walk_context_active(
++    const CPUState *cpu)
++{
++    return cpu && cpu->crucible_page_table_walk_active;
++}
++
++bool qemu_crucible_fault_memory_page_table_walk(
++    CPUState *cpu, uint64_t entry_gpa, int32_t level, uint32_t stage,
++    const uint8_t *before, uint8_t *value, size_t length)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++    CrucibleMemoryPageTableIdentity page_table;
++    QemuCrucibleMemoryAccessResult result;
++    uint64_t observed_icount;
++    uint32_t initiating_access_class;
++
++    if (!qemu_crucible_fault_memory_page_table_walk_rules_active() ||
++        !qemu_crucible_fault_memory_page_table_walk_context_active(cpu)) {
++        return false;
++    }
++    initiating_access_class =
++        cpu->crucible_page_table_walk_access_class;
++    if (!cpu || !before || !value || (length != 4 && length != 8) ||
++        (stage != 1 && stage != 2) || level < -1 || level > 5 ||
++        (initiating_access_class != QEMU_CRUCIBLE_MEMORY_FETCH &&
++         initiating_access_class != QEMU_CRUCIBLE_MEMORY_CPU_LOAD &&
++         initiating_access_class != QEMU_CRUCIBLE_MEMORY_CPU_STORE)) {
++        error_report("Invalid Crucible page-table walk opportunity");
++        abort();
++    }
++    page_table = (CrucibleMemoryPageTableIdentity) {
++        .target_vaddr = cpu->crucible_page_table_walk_target_vaddr,
++        .level = level,
++        .stage = stage,
++        .initiating_access_class = initiating_access_class,
++    };
++    observed_icount = qemu_crucible_fault_observed_icount();
++    node_memory_transaction_begin(
++        QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK, cpu->cpu_index,
++        entry_gpa, length, observed_icount,
++        cpu->crucible_page_table_walk_has_instruction,
++        cpu->crucible_page_table_walk_instruction_pc,
++        cpu->crucible_page_table_walk_instruction_ordinal,
++        false, false, &page_table);
++    if (!transaction->active) {
++        return false;
++    }
++    node_memory_transaction_preflight_physical(
++        QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK, cpu->cpu_index,
++        page_table.target_vaddr, entry_gpa, length, transaction->identity);
++    result = qemu_crucible_fault_memory_access(
++        QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK, cpu->cpu_index,
++        page_table.target_vaddr, entry_gpa, before, value, length, false,
++        observed_icount);
++    qemu_crucible_fault_memory_transaction_end();
++    return result.access_error;
 +}
 +
 +QemuCrucibleMemoryAccessResult qemu_crucible_fault_memory_atomic(
@@ -13249,10 +13459,136 @@ index 28585c0..4641218 100644
   * (eg "no device/memory present at address") by raising an external abort
   * exception
 diff --git a/target/arm/ptw.c b/target/arm/ptw.c
-index 011358e..6572090 100644
+index 011358e..b42acb3 100644
 --- a/target/arm/ptw.c
 +++ b/target/arm/ptw.c
-@@ -3647,6 +3647,7 @@ hwaddr arm_cpu_get_phys_page_attrs_debug(CPUState *cs, vaddr addr,
+@@ -12,6 +12,7 @@
+ #include "qemu/main-loop.h"
+ #include "exec/exec-all.h"
+ #include "exec/page-protection.h"
++#include "qemu/crucible-fault.h"
+ #include "cpu.h"
+ #include "internals.h"
+ #include "cpu-features.h"
+@@ -648,6 +649,7 @@ static bool S1_ptw_translate(CPUARMState *env, S1Translate *ptw,
+ 
+ /* All loads done in the course of a page table walk go through here. */
+ static uint32_t arm_ldl_ptw(CPUARMState *env, S1Translate *ptw,
++                            int level,
+                             ARMMMUFaultInfo *fi)
+ {
+     CPUState *cs = env_cpu(env);
+@@ -682,10 +684,34 @@ static uint32_t arm_ldl_ptw(CPUARMState *env, S1Translate *ptw,
+             return 0;
+         }
+     }
++    if (!ptw->in_debug && likely(host) &&
++        qemu_crucible_fault_memory_page_table_walk_context_active(cs) &&
++        qemu_crucible_fault_memory_page_table_walk_matches(
++            ptw->out_phys, sizeof(data))) {
++        uint8_t before[4];
++        uint8_t after[4];
++
++        if (ptw->out_be) {
++            stl_be_p(before, data);
++        } else {
++            stl_le_p(before, data);
++        }
++        memcpy(after, before, sizeof(after));
++        if (qemu_crucible_fault_memory_page_table_walk(
++                env_cpu(env), ptw->out_phys, level,
++                regime_is_stage2(ptw->in_mmu_idx) ? 2 : 1,
++                before, after, sizeof(after))) {
++            fi->type = ARMFault_SyncExternalOnWalk;
++            fi->ea = 0;
++            return 0;
++        }
++        data = ptw->out_be ? ldl_be_p(after) : ldl_le_p(after);
++    }
+     return data;
+ }
+ 
+ static uint64_t arm_ldq_ptw(CPUARMState *env, S1Translate *ptw,
++                            int level,
+                             ARMMMUFaultInfo *fi)
+ {
+     CPUState *cs = env_cpu(env);
+@@ -728,6 +754,29 @@ static uint64_t arm_ldq_ptw(CPUARMState *env, S1Translate *ptw,
+             return 0;
+         }
+     }
++    if (!ptw->in_debug && likely(host) &&
++        qemu_crucible_fault_memory_page_table_walk_context_active(cs) &&
++        qemu_crucible_fault_memory_page_table_walk_matches(
++            ptw->out_phys, sizeof(data))) {
++        uint8_t before[8];
++        uint8_t after[8];
++
++        if (ptw->out_be) {
++            stq_be_p(before, data);
++        } else {
++            stq_le_p(before, data);
++        }
++        memcpy(after, before, sizeof(after));
++        if (qemu_crucible_fault_memory_page_table_walk(
++                env_cpu(env), ptw->out_phys, level,
++                regime_is_stage2(ptw->in_mmu_idx) ? 2 : 1,
++                before, after, sizeof(after))) {
++            fi->type = ARMFault_SyncExternalOnWalk;
++            fi->ea = 0;
++            return 0;
++        }
++        data = ptw->out_be ? ldq_be_p(after) : ldq_le_p(after);
++    }
+     return data;
+ }
+ 
+@@ -1000,7 +1049,7 @@ static bool get_phys_addr_v5(CPUARMState *env, S1Translate *ptw,
+     if (!S1_ptw_translate(env, ptw, table, fi)) {
+         goto do_fault;
+     }
+-    desc = arm_ldl_ptw(env, ptw, fi);
++    desc = arm_ldl_ptw(env, ptw, level, fi);
+     if (fi->type != ARMFault_None) {
+         goto do_fault;
+     }
+@@ -1041,7 +1090,7 @@ static bool get_phys_addr_v5(CPUARMState *env, S1Translate *ptw,
+         if (!S1_ptw_translate(env, ptw, table, fi)) {
+             goto do_fault;
+         }
+-        desc = arm_ldl_ptw(env, ptw, fi);
++        desc = arm_ldl_ptw(env, ptw, level, fi);
+         if (fi->type != ARMFault_None) {
+             goto do_fault;
+         }
+@@ -1130,7 +1179,7 @@ static bool get_phys_addr_v6(CPUARMState *env, S1Translate *ptw,
+     if (!S1_ptw_translate(env, ptw, table, fi)) {
+         goto do_fault;
+     }
+-    desc = arm_ldl_ptw(env, ptw, fi);
++    desc = arm_ldl_ptw(env, ptw, level, fi);
+     if (fi->type != ARMFault_None) {
+         goto do_fault;
+     }
+@@ -1186,7 +1235,7 @@ static bool get_phys_addr_v6(CPUARMState *env, S1Translate *ptw,
+         if (!S1_ptw_translate(env, ptw, table, fi)) {
+             goto do_fault;
+         }
+-        desc = arm_ldl_ptw(env, ptw, fi);
++        desc = arm_ldl_ptw(env, ptw, level, fi);
+         if (fi->type != ARMFault_None) {
+             goto do_fault;
+         }
+@@ -1859,7 +1908,7 @@ static bool get_phys_addr_lpae(CPUARMState *env, S1Translate *ptw,
+     if (!S1_ptw_translate(env, ptw, descaddr, fi)) {
+         goto do_fault;
+     }
+-    descriptor = arm_ldq_ptw(env, ptw, fi);
++    descriptor = arm_ldq_ptw(env, ptw, level, fi);
+     if (fi->type != ARMFault_None) {
+         goto do_fault;
+     }
+@@ -3647,6 +3696,7 @@ hwaddr arm_cpu_get_phys_page_attrs_debug(CPUState *cs, vaddr addr,
  }
  
  bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
@@ -13260,7 +13596,7 @@ index 011358e..6572090 100644
                                     CPUFaultTranslation *result)
  {
      ARMCPU *cpu = ARM_CPU(cs);
-@@ -3660,9 +3661,11 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+@@ -3660,9 +3710,11 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
      GetPhysAddrResult res = {};
      ARMMMUFaultInfo fi = {};
  
@@ -13275,7 +13611,7 @@ index 011358e..6572090 100644
          return false;
      }
      result->physical_address = res.f.phys_addr;
-@@ -3674,3 +3677,51 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+@@ -3674,3 +3726,51 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
      result->user = arm_current_el(env) == 0;
      return true;
  }
@@ -13328,10 +13664,19 @@ index 011358e..6572090 100644
 +                      cpu_mmu_index(cs, false), &fi);
 +}
 diff --git a/target/arm/tcg/tlb_helper.c b/target/arm/tcg/tlb_helper.c
-index 8841f03..0218e9c 100644
+index 8841f03..47616e5 100644
 --- a/target/arm/tcg/tlb_helper.c
 +++ b/target/arm/tcg/tlb_helper.c
-@@ -167,7 +167,7 @@ static unsigned encode_gpcsc(ARMMMUFaultInfo *fi)
+@@ -11,6 +11,8 @@
+ #include "cpu-features.h"
+ #include "exec/exec-all.h"
+ #include "exec/helper-proto.h"
++#include "accel/tcg/internal-common.h"
++#include "qemu/crucible-fault.h"
+ 
+ 
+ /*
+@@ -167,7 +169,7 @@ static unsigned encode_gpcsc(ARMMMUFaultInfo *fi)
      return gpcsc[fi->gpcf] | fi->level;
  }
  
@@ -13340,6 +13685,51 @@ index 8841f03..0218e9c 100644
  void arm_deliver_fault(ARMCPU *cpu, vaddr addr,
                         MMUAccessType access_type,
                         int mmu_idx, ARMMMUFaultInfo *fi)
+@@ -325,6 +327,9 @@ bool arm_cpu_tlb_fill_align(CPUState *cs, CPUTLBEntryFull *out, vaddr address,
+     ARMCPU *cpu = ARM_CPU(cs);
+     GetPhysAddrResult res = {};
+     ARMMMUFaultInfo local_fi, *fi;
++    bool walk_root = !probe &&
++        qemu_crucible_fault_memory_page_table_walk_rules_active();
++    bool translation_fault;
+ 
+     /*
+      * Allow S1_ptw_translate to see any fault generated here.
+@@ -344,9 +349,31 @@ bool arm_cpu_tlb_fill_align(CPUState *cs, CPUTLBEntryFull *out, vaddr address,
+      */
+     if (address & ((1 << memop_alignment_bits(memop)) - 1)) {
+         fi->type = ARMFault_Alignment;
+-    } else if (!get_phys_addr(&cpu->env, address, access_type, memop,
+-                              core_to_arm_mmu_idx(&cpu->env, mmu_idx),
+-                              &res, fi)) {
++        translation_fault = true;
++    } else {
++        if (walk_root) {
++            vaddr instruction_pc = 0;
++            uint32_t instruction_ordinal = 0;
++            bool has_instruction = cpu_get_fault_instruction_identity(
++                ra, &instruction_pc, &instruction_ordinal);
++            enum QemuCrucibleMemoryAccessClass initiating_access_class =
++                access_type == MMU_INST_FETCH ? QEMU_CRUCIBLE_MEMORY_FETCH :
++                access_type == MMU_DATA_STORE ?
++                    QEMU_CRUCIBLE_MEMORY_CPU_STORE :
++                    QEMU_CRUCIBLE_MEMORY_CPU_LOAD;
++
++            qemu_crucible_fault_memory_page_table_walk_context_begin(
++                cs, address, initiating_access_class, has_instruction,
++                instruction_pc, instruction_ordinal);
++        }
++        translation_fault = get_phys_addr(
++            &cpu->env, address, access_type, memop,
++            core_to_arm_mmu_idx(&cpu->env, mmu_idx), &res, fi);
++        if (walk_root) {
++            qemu_crucible_fault_memory_page_table_walk_context_end(cs);
++        }
++    }
++    if (!translation_fault) {
+         res.f.extra.arm.pte_attrs = res.cacheattrs.attrs;
+         res.f.extra.arm.shareability = res.cacheattrs.shareability;
+         *out = res.f;
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
 index deee0bf..f593c0e 100644
 --- a/target/i386/cpu.c
@@ -13375,10 +13765,220 @@ index 0b07cae..1ada85b 100644
  
  /* MS-DOS compatibility mode FPU exception support */
 diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
-index f7e2288..06ea3c7 100644
+index f7e2288..22e9dbc 100644
 --- a/target/i386/tcg/system/excp_helper.c
 +++ b/target/i386/tcg/system/excp_helper.c
-@@ -615,6 +615,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
+@@ -22,6 +22,8 @@
+ #include "exec/cpu_ldst.h"
+ #include "exec/cputlb.h"
+ #include "exec/page-protection.h"
++#include "accel/tcg/internal-common.h"
++#include "qemu/crucible-fault.h"
+ #include "tcg/helper-tcg.h"
+ 
+ typedef struct TranslateParams {
+@@ -30,6 +32,7 @@ typedef struct TranslateParams {
+     int pg_mode;
+     int mmu_idx;
+     int ptw_idx;
++    uint32_t walk_stage;
+     MMUAccessType access_type;
+     bool update_page_tables;
+ } TranslateParams;
+@@ -57,17 +60,21 @@ typedef struct PTETranslate {
+     CPUX86State *env;
+     TranslateFault *err;
+     int ptw_idx;
++    uint32_t walk_stage;
++    bool faultable;
+     void *haddr;
+     hwaddr gaddr;
++    hwaddr entry_gpa;
+ } PTETranslate;
+ 
+ static bool ptw_translate(PTETranslate *inout, hwaddr addr)
+ {
++    CPUTLBEntryFull *full;
+     int flags;
+ 
+     inout->gaddr = addr;
+     flags = probe_access_full_mmu(inout->env, addr, 0, MMU_DATA_STORE,
+-                                  inout->ptw_idx, &inout->haddr, NULL);
++                                  inout->ptw_idx, &inout->haddr, &full);
+ 
+     if (unlikely(flags & TLB_INVALID_MASK)) {
+         TranslateFault *err = inout->err;
+@@ -80,23 +87,66 @@ static bool ptw_translate(PTETranslate *inout, hwaddr addr)
+         };
+         return false;
+     }
++    inout->entry_gpa = full->phys_addr | (addr & ~TARGET_PAGE_MASK);
+     return true;
+ }
+ 
+-static inline uint32_t ptw_ldl(const PTETranslate *in, uint64_t ra)
++static uint32_t ptw_ldl(const PTETranslate *in, uint64_t ra, int level)
+ {
++    uint32_t value;
++
+     if (likely(in->haddr)) {
+-        return ldl_p(in->haddr);
++        value = ldl_p(in->haddr);
++    } else {
++        value = cpu_ldl_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
++    }
++    if (in->faultable && likely(in->haddr) &&
++        qemu_crucible_fault_memory_page_table_walk_context_active(
++            env_cpu(in->env)) &&
++        qemu_crucible_fault_memory_page_table_walk_matches(
++            in->entry_gpa, sizeof(value))) {
++        uint8_t before[4];
++        uint8_t after[4];
++
++        stl_le_p(before, value);
++        memcpy(after, before, sizeof(after));
++        if (qemu_crucible_fault_memory_page_table_walk(
++                env_cpu(in->env), in->entry_gpa, level, in->walk_stage,
++                before, after, sizeof(after))) {
++            return 0;
++        }
++        value = ldl_le_p(after);
+     }
+-    return cpu_ldl_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
++    return value;
+ }
+ 
+-static inline uint64_t ptw_ldq(const PTETranslate *in, uint64_t ra)
++static uint64_t ptw_ldq(const PTETranslate *in, uint64_t ra, int level)
+ {
++    uint64_t value;
++
+     if (likely(in->haddr)) {
+-        return ldq_p(in->haddr);
++        value = ldq_p(in->haddr);
++    } else {
++        value = cpu_ldq_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
++    }
++    if (in->faultable && likely(in->haddr) &&
++        qemu_crucible_fault_memory_page_table_walk_context_active(
++            env_cpu(in->env)) &&
++        qemu_crucible_fault_memory_page_table_walk_matches(
++            in->entry_gpa, sizeof(value))) {
++        uint8_t before[8];
++        uint8_t after[8];
++
++        stq_le_p(before, value);
++        memcpy(after, before, sizeof(after));
++        if (qemu_crucible_fault_memory_page_table_walk(
++                env_cpu(in->env), in->entry_gpa, level, in->walk_stage,
++                before, after, sizeof(after))) {
++            return 0;
++        }
++        value = ldq_le_p(after);
+     }
+-    return cpu_ldq_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
++    return value;
+ }
+ 
+ /*
+@@ -150,6 +200,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+         .env = env,
+         .err = err,
+         .ptw_idx = in->ptw_idx,
++        .walk_stage = in->walk_stage,
++        .faultable = in->update_page_tables,
+     };
+     hwaddr pte_addr, paddr;
+     uint32_t pkr;
+@@ -176,7 +228,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+                     return false;
+                 }
+             restart_5:
+-                pte = ptw_ldq(&pte_trans, ra);
++                pte = ptw_ldq(&pte_trans, ra, 5);
+                 if (!(pte & PG_PRESENT_MASK)) {
+                     goto do_fault;
+                 }
+@@ -201,7 +253,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+                 return false;
+             }
+         restart_4:
+-            pte = ptw_ldq(&pte_trans, ra);
++            pte = ptw_ldq(&pte_trans, ra, 4);
+             if (!(pte & PG_PRESENT_MASK)) {
+                 goto do_fault;
+             }
+@@ -222,7 +274,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+                 return false;
+             }
+         restart_3_lma:
+-            pte = ptw_ldq(&pte_trans, ra);
++            pte = ptw_ldq(&pte_trans, ra, 3);
+             if (!(pte & PG_PRESENT_MASK)) {
+                 goto do_fault;
+             }
+@@ -251,7 +303,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+             }
+             rsvd_mask |= PG_HI_USER_MASK;
+         restart_3_nolma:
+-            pte = ptw_ldq(&pte_trans, ra);
++            pte = ptw_ldq(&pte_trans, ra, 3);
+             if (!(pte & PG_PRESENT_MASK)) {
+                 goto do_fault;
+             }
+@@ -273,7 +325,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+             return false;
+         }
+     restart_2_pae:
+-        pte = ptw_ldq(&pte_trans, ra);
++        pte = ptw_ldq(&pte_trans, ra, 2);
+         if (!(pte & PG_PRESENT_MASK)) {
+             goto do_fault;
+         }
+@@ -299,7 +351,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+         if (!ptw_translate(&pte_trans, pte_addr)) {
+             return false;
+         }
+-        pte = ptw_ldq(&pte_trans, ra);
++        pte = ptw_ldq(&pte_trans, ra, 1);
+         if (!(pte & PG_PRESENT_MASK)) {
+             goto do_fault;
+         }
+@@ -318,7 +370,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+             return false;
+         }
+     restart_2_nopae:
+-        pte = ptw_ldl(&pte_trans, ra);
++        pte = ptw_ldl(&pte_trans, ra, 2);
+         if (!(pte & PG_PRESENT_MASK)) {
+             goto do_fault;
+         }
+@@ -347,7 +399,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+         if (!ptw_translate(&pte_trans, pte_addr)) {
+             return false;
+         }
+-        pte = ptw_ldl(&pte_trans, ra);
++        pte = ptw_ldl(&pte_trans, ra, 1);
+         if (!(pte & PG_PRESENT_MASK)) {
+             goto do_fault;
+         }
+@@ -570,6 +622,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
+             in.mmu_idx =
+                 env->nested_pg_mode & PG_MODE_LMA ? MMU_USER64_IDX : MMU_USER32_IDX;
+             in.ptw_idx = MMU_PHYS_IDX;
++            in.walk_stage = 2;
+ 
+             if (!mmu_translate(env, &in, out, err, ra)) {
+                 err->stage2 = S2_GPA;
+@@ -588,6 +641,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
+             in.cr3 = env->cr[3];
+             in.mmu_idx = mmu_idx;
+             in.ptw_idx = use_stage2 ? MMU_NESTED_IDX : MMU_PHYS_IDX;
++            in.walk_stage = 1;
+             in.pg_mode = get_pg_mode(env);
+ 
+             if (in.pg_mode & PG_MODE_LMA) {
+@@ -615,6 +669,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
  }
  
  bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
@@ -13386,16 +13986,18 @@ index f7e2288..06ea3c7 100644
                                     CPUFaultTranslation *result)
  {
      CPUX86State *env = cpu_env(cs);
-@@ -623,7 +624,7 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+@@ -623,8 +678,9 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
      int mmu_idx = cpu_mmu_index(cs, false);
      TranslateParams in = {
          .addr = addr,
 -        .access_type = MMU_DATA_STORE,
 +        .access_type = access_type,
          .update_page_tables = false,
++        .walk_stage = 1,
      };
  
-@@ -654,8 +655,10 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+     if (env->hflags2 & HF2_NPT_MASK) {
+@@ -654,8 +710,10 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
          out.prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
          out.page_size = TARGET_PAGE_SIZE;
      }
@@ -13408,7 +14010,7 @@ index f7e2288..06ea3c7 100644
          return false;
      }
      result->physical_address = out.paddr;
-@@ -668,6 +671,52 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+@@ -668,6 +726,52 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
      return true;
  }
  
@@ -13461,12 +14063,46 @@ index f7e2288..06ea3c7 100644
  bool x86_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
                        MMUAccessType access_type, int mmu_idx,
                        bool probe, uintptr_t retaddr)
+@@ -675,9 +779,31 @@ bool x86_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
+     CPUX86State *env = cpu_env(cs);
+     TranslateResult out;
+     TranslateFault err;
++    bool walk_root = !probe &&
++        qemu_crucible_fault_memory_page_table_walk_rules_active();
++    bool translated;
++
++    if (walk_root) {
++        vaddr instruction_pc = 0;
++        uint32_t instruction_ordinal = 0;
++        bool has_instruction = cpu_get_fault_instruction_identity(
++            retaddr, &instruction_pc, &instruction_ordinal);
++        enum QemuCrucibleMemoryAccessClass initiating_access_class =
++            access_type == MMU_INST_FETCH ? QEMU_CRUCIBLE_MEMORY_FETCH :
++            access_type == MMU_DATA_STORE ? QEMU_CRUCIBLE_MEMORY_CPU_STORE :
++                                            QEMU_CRUCIBLE_MEMORY_CPU_LOAD;
++
++        qemu_crucible_fault_memory_page_table_walk_context_begin(
++            cs, addr, initiating_access_class, has_instruction,
++            instruction_pc, instruction_ordinal);
++    }
++    translated = get_physical_address(
++        env, addr, access_type, mmu_idx, &out, &err, retaddr);
++    if (walk_root) {
++        qemu_crucible_fault_memory_page_table_walk_context_end(cs);
++    }
+ 
+-    if (get_physical_address(env, addr, access_type, mmu_idx, &out, &err,
+-                             retaddr)) {
++    if (translated) {
+         /*
+          * Even if 4MB pages, we map only one 4KB page in the cache to
+          * avoid filling it too fast.
 diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
 new file mode 100644
-index 0000000..ded2800
+index 0000000..25d0b04
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-access.c
-@@ -0,0 +1,866 @@
+@@ -0,0 +1,1008 @@
 +/*
 + * Live Crucible memory-access fault test plugin
 + *
@@ -13485,7 +14121,8 @@ index 0000000..ded2800
 +QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 +
 +#define TEST_EVIDENCE_BYTES 65536
-+#define TEST_MEMORY_BOUNDARY_CLASS 0x20
++#define TEST_MEMORY_PAGE_TABLE_WALK_CLASS 0x20
++#define TEST_MEMORY_BOUNDARY_CLASS 0x40
 +
 +static struct qemu_plugin_crucible_fault_command test_command;
 +
@@ -13523,6 +14160,16 @@ index 0000000..ded2800
 +static uint32_t test_retry_event_count;
 +static uint64_t test_retry_poison_icount;
 +static unsigned test_rule_stage;
++
++static bool test_is_page_table_walk_scenario(void)
++{
++    return g_str_has_prefix(test_scenario, "page-table-walk");
++}
++
++static bool test_is_nested_page_table_walk_scenario(void)
++{
++    return g_str_has_prefix(test_scenario, "page-table-walk-nested-");
++}
 +
 +static void test_fail(const char *message)
 +{
@@ -13671,11 +14318,13 @@ index 0000000..ded2800
 +    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_T5, length);
 +}
 +
-+static void test_build_rule(uint32_t kind, uint32_t classes,
-+                            const uint8_t *mask, size_t mask_len,
-+                            bool replacement_present,
-+                            const uint8_t *replacement,
-+                            size_t replacement_len, bool violate_atomicity)
++static void test_build_rule_target(uint32_t kind, uint32_t classes,
++                                   const uint8_t *mask, size_t mask_len,
++                                   bool replacement_present,
++                                   const uint8_t *replacement,
++                                   size_t replacement_len,
++                                   bool violate_atomicity,
++                                   bool virtual_address)
 +{
 +    uint8_t no_device[32] = { 0 };
 +    uint8_t zero = 0;
@@ -13698,7 +14347,18 @@ index 0000000..ded2800
 +    test_field_bool(10, false);
 +    test_field(11, CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH, no_device,
 +               sizeof(no_device));
-+    test_payload_target(test_address, mask_len, false);
++    test_payload_target(test_address, mask_len, virtual_address);
++}
++
++static void test_build_rule(uint32_t kind, uint32_t classes,
++                            const uint8_t *mask, size_t mask_len,
++                            bool replacement_present,
++                            const uint8_t *replacement,
++                            size_t replacement_len, bool violate_atomicity)
++{
++    test_build_rule_target(kind, classes, mask, mask_len,
++                           replacement_present, replacement,
++                           replacement_len, violate_atomicity, false);
 +}
 +
 +static void test_build_poison_with_occurrence(const char *policy,
@@ -13841,6 +14501,41 @@ index 0000000..ded2800
 +            policy,
 +            "{\"kind\":\"periodic\",\"parameters\":{"
 +            "\"count\":1,\"first\":1,\"period\":1}}");
++    } else if (strcmp(scenario, "page-table-walk") == 0) {
++        uint8_t mask[8] = { 1 };
++
++        test_kind = 2;
++        test_build_rule(2, TEST_MEMORY_PAGE_TABLE_WALK_CLASS,
++                        mask, test_length, false, NULL, 0, false);
++    } else if (strcmp(scenario, "page-table-walk-access-error") == 0) {
++        test_kind = 5;
++        test_build_poison("{\"kind\":\"access_error\"}");
++    } else if (strcmp(scenario, "page-table-walk-corrected") == 0) {
++        test_kind = 5;
++        test_build_poison(
++            "{\"kind\":\"corrected\",\"parameters\":{"
++            "\"xor_mask\":\"0002000000000000\"}}");
++    } else if (strcmp(scenario, "page-table-walk-failed-region") == 0) {
++        test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE;
++        test_kind = 1;
++        test_build_region(1, test_address, test_length,
++            "{\"kind\":\"failed\",\"parameters\":{\"policy\":{\"kind\":\"access_error\"}}}");
++    } else if (strcmp(scenario, "page-table-walk-service") == 0) {
++        test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE;
++        test_build_service(false);
++    } else if (strcmp(scenario, "page-table-walk-retry") == 0) {
++        test_retry_scenario = true;
++        test_kind = 5;
++        test_build_poison_with_occurrence(
++            "{\"kind\":\"access_error\"}",
++            "{\"kind\":\"periodic\",\"parameters\":{"
++            "\"count\":1,\"first\":1,\"period\":1}}");
++    } else if (test_is_nested_page_table_walk_scenario()) {
++        const uint8_t mask[8] = { 0, 2 };
++
++        test_kind = 2;
++        test_build_rule(2, TEST_MEMORY_PAGE_TABLE_WALK_CLASS,
++                        mask, sizeof(mask), false, NULL, 0, false);
 +    } else if (strcmp(scenario, "invalid-mmio") == 0) {
 +        const uint8_t mask = 0xff;
 +        const uint8_t replacement = 0xa5;
@@ -13858,6 +14553,23 @@ index 0000000..ded2800
 +        test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE;
 +        test_build_region(3, test_address, 1,
 +            "{\"kind\":\"rowhammer\",\"parameters\":{\"flip_mask\":\"ff\",\"row_bytes\":64,\"threshold\":1,\"victim_distance\":0}}");
++        test_expected_rejection = CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND;
++    } else if (strcmp(scenario, "invalid-walk-virtual") == 0) {
++        uint8_t mask[8] = { 1 };
++
++        test_kind = 2;
++        test_build_rule_target(
++            2, TEST_MEMORY_PAGE_TABLE_WALK_CLASS, mask, test_length,
++            false, NULL, 0, false, true);
++        test_expected_rejection = CRUCIBLE_FAULT_STATUS_INVALID_TARGET;
++    } else if (strcmp(scenario, "invalid-walk-exception") == 0) {
++        test_kind = 5;
++        test_build_poison(
++            "{\"kind\":\"exception\",\"parameters\":{\"exception\":{"
++            "\"architecture\":\"x86_64\",\"before_instruction\":true,"
++            "\"fault_address\":null,\"maskable\":false,"
++            "\"record\":{\"kind\":\"architecture_default\"},"
++            "\"syndrome\":0,\"vector\":14}}}");
 +        test_expected_rejection = CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND;
 +    } else {
 +        test_fail("unknown advanced scenario");
@@ -13932,6 +14644,15 @@ index 0000000..ded2800
 +                    test_get_u32(test_evidence + 468));
 +                test_fail("service evidence is incomplete");
 +            }
++            if (test_is_page_table_walk_scenario() &&
++                (test_get_u64(test_evidence + 16) !=
++                     test_get_u64(test_evidence + 224) ||
++                 test_get_u32(test_evidence + 232) !=
++                     (test_address == 0x10d000 ? 1 : 3) ||
++                 test_get_u32(test_evidence + 236) != 1 ||
++                 test_get_u32(test_evidence + 240) != 2)) {
++                test_fail("service evidence lacks page-table identity");
++            }
 +        } else {
 +            uint64_t transaction_address = test_get_u64(test_evidence + 264);
 +            uint64_t transaction_length = test_get_u64(test_evidence + 272);
@@ -13944,6 +14665,7 @@ index 0000000..ded2800
 +                strcmp(test_scenario, "retention") == 0 &&
 +                test_get_u32(test_evidence + 8) ==
 +                    TEST_MEMORY_BOUNDARY_CLASS;
++            bool page_table_walk = test_is_page_table_walk_scenario();
 +
 +            if (test_retry_scenario) {
 +                uint32_t retry_ordinal =
@@ -13955,6 +14677,15 @@ index 0000000..ded2800
 +                if (has_instruction != 1 ||
 +                    test_get_u64(test_evidence + 288) == 0) {
 +                    test_fail("retry evidence lacks instruction identity");
++                }
++                if (page_table_walk &&
++                    (test_get_u32(test_evidence + 8) !=
++                         TEST_MEMORY_PAGE_TABLE_WALK_CLASS ||
++                     test_get_u64(test_evidence + 16) !=
++                         test_get_u64(test_evidence + 224) ||
++                     test_get_u32(test_evidence + 236) != 1 ||
++                     test_get_u32(test_evidence + 240) != 2)) {
++                    test_fail("page-table retry evidence lacks walk identity");
 +                }
 +                if (outcome == CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR &&
 +                    test_get_u32(test_evidence + 308) == 5 &&
@@ -13999,6 +14730,29 @@ index 0000000..ded2800
 +                        "retention did not decay at its exact virtual deadline");
 +                }
 +                test_retention_boundary_seen = true;
++            }
++
++            if (page_table_walk &&
++                (test_get_u32(test_evidence + 8) !=
++                     TEST_MEMORY_PAGE_TABLE_WALK_CLASS ||
++                 test_get_u64(test_evidence + 16) !=
++                     test_get_u64(test_evidence + 224) ||
++                 test_get_u32(test_evidence + 236) !=
++                     (strcmp(test_scenario,
++                             "page-table-walk-nested-stage2") == 0 ? 2 : 1) ||
++                 test_get_u32(test_evidence + 240) != 2 ||
++                 (test_is_nested_page_table_walk_scenario() &&
++                  (test_get_u64(test_evidence + 224) != 0x400000 ||
++                   test_get_u32(test_evidence + 232) != 1)) ||
++                 ((!test_is_nested_page_table_walk_scenario() &&
++                   test_address == 0x10d000) &&
++                   (test_get_u64(test_evidence + 224) != 0x400000 ||
++                    test_get_u32(test_evidence + 232) != 1)) ||
++                 ((!test_is_nested_page_table_walk_scenario() &&
++                   test_address != 0x10d000) &&
++                   (test_get_u64(test_evidence + 224) != 0x40600000 ||
++                    test_get_u32(test_evidence + 232) != 3)))) {
++                test_fail("page-table walk evidence is incomplete");
 +            }
 +
 +            if (strcmp(test_scenario, "rowhammer") == 0 &&
@@ -14125,14 +14879,23 @@ index 0000000..ded2800
 +                test_fail("rule commit was not applied");
 +            }
 +            if (test_retry_scenario && test_rule_stage == 1) {
-+                const uint8_t mask = 0xff;
-+                const uint8_t replacement = 0xa5;
++                const uint8_t cpu_mask = 0xff;
++                const uint8_t cpu_replacement = 0xa5;
++                const uint8_t walk_mask[8] = { 0, 2 };
++                const uint8_t walk_replacement[8] = { 0, 2 };
 +
 +                test_rule_stage = 2;
 +                g_byte_array_unref(test_payload);
 +                test_kind = 1;
-+                test_build_rule(1, 2, &mask, 1, true,
-+                                &replacement, 1, false);
++                if (test_is_page_table_walk_scenario()) {
++                    test_build_rule(
++                        1, TEST_MEMORY_PAGE_TABLE_WALK_CLASS,
++                        walk_mask, sizeof(walk_mask), true,
++                        walk_replacement, sizeof(walk_replacement), false);
++                } else {
++                    test_build_rule(1, 2, &cpu_mask, 1, true,
++                                    &cpu_replacement, 1, false);
++                }
 +                test_command.command_flags =
 +                    CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY;
 +                test_command.command_sequence = 3;
@@ -14153,6 +14916,21 @@ index 0000000..ded2800
 +            test_rule_stage++;
 +            test_installed = true;
 +            test_install_icount = result.observed_icount;
++            if (test_is_page_table_walk_scenario() &&
++                !test_is_nested_page_table_walk_scenario()) {
++                g_autoptr(GByteArray) inspected = g_byte_array_new();
++                uint64_t alias = test_address == 0x10d000 ?
++                    UINT64_C(0x400000) : UINT64_C(0x40600000);
++
++                if (!qemu_plugin_read_memory_vaddr(alias, inspected, 1) ||
++                    inspected->len != 1 || inspected->data[0] != 0x5a) {
++                    test_fail("inspection translation could not read alias");
++                }
++                test_poll_events();
++                if (test_event_seen) {
++                    test_fail("inspection translation consumed a walk rule");
++                }
++            }
 +            if (!qemu_plugin_crucible_write_memory_vaddr(
 +                    test_result_address, &ready, sizeof(ready))) {
 +                test_fail(
@@ -14786,5 +15564,3 @@ index 24a8a7b..6b2c7aa 100644
                 'reset', 'syscall']
      if host_os == 'windows'
        t += shared_module(i, files(i + '.c') + '../../../contrib/plugins/win32_linker.c',
--- 
-2.54.0

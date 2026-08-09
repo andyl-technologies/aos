@@ -141,8 +141,24 @@ fn effect_matches_target(
             },
         ) => source == target_source && *vector == *target_vector,
         (
-            NodeEffectSpecification::MemoryAccessTransform { range, .. }
-            | NodeEffectSpecification::MemoryRegionState { range, .. },
+            NodeEffectSpecification::MemoryAccessTransform {
+                range, accesses, ..
+            },
+            ResolvedFaultTarget::MemoryRange {
+                address_space,
+                guest_address,
+                length_bytes,
+                vcpu,
+                ..
+            },
+        ) => {
+            range.start() == *guest_address
+                && range.length() == *length_bytes
+                && (!accesses.page_table_walk
+                    || (address_space.as_str() == "gpa" && vcpu.is_none()))
+        }
+        (
+            NodeEffectSpecification::MemoryRegionState { range, .. },
             ResolvedFaultTarget::MemoryRange {
                 guest_address,
                 length_bytes,
@@ -773,6 +789,7 @@ fn memory_access_class_bits(value: crucible::model::MemoryAccessClasses) -> u32 
         | (u32::from(value.cpu_store) << 2)
         | (u32::from(value.dma_read) << 3)
         | (u32::from(value.dma_write) << 4)
+        | (u32::from(value.page_table_walk) << 5)
 }
 const fn hang_scope_tag(value: &NodeHangScope) -> u32 {
     match value {
@@ -832,6 +849,7 @@ const fn phase_tag(value: FaultPhase) -> u16 {
         FaultPhase::Store => 19,
         FaultPhase::DmaRead => 20,
         FaultPhase::DmaWrite => 21,
+        FaultPhase::PageTableWalk => 37,
         FaultPhase::Refresh => 22,
         FaultPhase::Raise => 23,
         FaultPhase::Route => 24,
@@ -906,6 +924,7 @@ mod tests {
                 cpu_store: true,
                 dma_read: false,
                 dma_write: false,
+                page_table_walk: false,
             },
             dma_device: None,
             violate_atomicity: false,
@@ -919,6 +938,39 @@ mod tests {
             vcpu: None,
             length_bytes: 64,
         };
+        assert!(!effect_matches_target(&effect, &target));
+    }
+
+    #[test]
+    fn page_table_walk_rejects_a_virtual_memory_target() {
+        let range = ByteRange::new(0x1000, 8)
+            .unwrap_or_else(|error| panic!("test range must be valid: {error}"));
+        let effect = EffectSpecification::Node(NodeEffectSpecification::MemoryAccessTransform {
+            range,
+            accesses: MemoryAccessClasses {
+                fetch: false,
+                cpu_load: false,
+                cpu_store: false,
+                dma_read: false,
+                dma_write: false,
+                page_table_walk: true,
+            },
+            dma_device: None,
+            violate_atomicity: false,
+            mutation: MemoryAccessMutation::ReadCorrupt {
+                mask: crucible::model::HexBytes::parse("01", 1)
+                    .unwrap_or_else(|error| panic!("test mask must be valid: {error}")),
+            },
+            occurrence: NodeOccurrencePolicy::Every,
+        });
+        let target = ResolvedFaultTarget::MemoryRange {
+            node: object_id("node-a"),
+            address_space: object_id("gva"),
+            guest_address: 0x1000,
+            vcpu: Some(0),
+            length_bytes: 8,
+        };
+
         assert!(!effect_matches_target(&effect, &target));
     }
 
@@ -946,7 +998,7 @@ mod tests {
             json!({"kind":"cpu_exception","parameters":{"exception":{"architecture":"x86_64","vector":18,"syndrome":0,"fault_address":null,"before_instruction":true,"maskable":false,"record":{"kind":"architecture_default"}}}}),
             json!({"kind":"interrupt_disposition","parameters":{"mutation":{"kind":"delay","parameters":{"delay_nanos":10}}}}),
             json!({"kind":"interrupt_storm","parameters":{"source":"timer","vector":32,"period_nanos":100,"burst":2,"count":4,"routing":{"target_vcpus":[0],"priority":0,"retain_pending":true}}}),
-            json!({"kind":"memory_access_transform","parameters":{"range":{"start":4096,"length":64},"accesses":{"fetch":false,"cpu_load":false,"cpu_store":true,"dma_read":false,"dma_write":false},"violate_atomicity":true,"mutation":{"kind":"torn_write","parameters":{"selector":"0f"}},"occurrence":{"kind":"every"}}}),
+            json!({"kind":"memory_access_transform","parameters":{"range":{"start":4096,"length":64},"accesses":{"fetch":false,"cpu_load":false,"cpu_store":true,"dma_read":false,"dma_write":false,"page_table_walk":false},"violate_atomicity":true,"mutation":{"kind":"torn_write","parameters":{"selector":"0f"}},"occurrence":{"kind":"every"}}}),
             json!({"kind":"memory_ecc_event","parameters":{"kind":"corrected","address":4096,"syndrome":1,"bank":"bank-0","channel":"channel-0","rank":"rank-0","guest_visibility":{"kind":"telemetry_only"}}}),
             json!({"kind":"memory_region_state","parameters":{"range":{"start":4096,"length":64},"kind":"retention","process":{"kind":"retention","parameters":{"interval_nanos":100,"decay_mask":"01"}}}}),
             json!({"kind":"memory_service","parameters":{"latency_nanos":10,"bandwidth_bytes_per_second":null,"operations_per_second":null,"sharing_scope":{"kind":"range"}}}),

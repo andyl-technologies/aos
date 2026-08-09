@@ -780,7 +780,7 @@ impl NodeFaultPayloadV1 {
         }
         if self.command_kind == FaultCommandKind::MemoryAccessTransform {
             let classes = self.u32_field(P8)?;
-            if classes == 0 || classes & !0x1f != 0 {
+            if classes == 0 || classes & !0x3f != 0 {
                 return Err(NodeFaultPayloadError::FieldValue { tag: P8 });
             }
         }

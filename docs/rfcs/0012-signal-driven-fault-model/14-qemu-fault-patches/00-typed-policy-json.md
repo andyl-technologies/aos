@@ -226,8 +226,11 @@ positive.
 ```
 
 The memory access-class binary bit set is `fetch = 0x01`, `cpu_load = 0x02`,
-`cpu_store = 0x04`, `dma_read = 0x08`, and `dma_write = 0x10`. At least one bit
-is set and no other bit is accepted.
+`cpu_store = 0x04`, `dma_read = 0x08`, `dma_write = 0x10`, and
+`page_table_walk = 0x20`. At least one bit is set and no other bit is accepted.
+The host JSON carries all six booleans explicitly. `page_table_walk` requires a
+guest-physical memory target because it selects the descriptor bytes read by
+the MMU, not the virtual data address that caused translation.
 
 ## Clock policies
 

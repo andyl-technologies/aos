@@ -111,7 +111,7 @@ in
               ${pluginSource}/crucible-memory-dma.c \
               -o crucible-memory-dma.so \
               $(pkg-config --libs glib-2.0)
-            for mode in $(seq 1 19); do
+            for mode in $(seq 1 22); do
               ${pkgs.llvm}/bin/clang --target=i386-none-elf \
                 -c -Wa,-defsym,TEST_MODE=$mode \
                 ${./phase2-qemu-memory-access-guest.S} \
@@ -245,6 +245,20 @@ in
                   elif test "$mode" -ne 7 && test "$mode" -ne 19; then
                     result=0x108000
                   fi
+                  case "$scenario" in
+                    page-table-walk-nested-stage1)
+                      address=0x11a000
+                      result=0x108000
+                      ;;
+                    page-table-walk-nested-stage2)
+                      address=0x120018
+                      result=0x108000
+                      ;;
+                    page-table-walk*)
+                      address=0x10d000
+                      result=0x108000
+                      ;;
+                  esac
                   ;;
                 aarch64)
                   binary=${qemuPackage}/bin/qemu-system-aarch64
@@ -261,6 +275,12 @@ in
                   elif test "$mode" -ne 7 && test "$mode" -ne 19; then
                     result=0x40310000
                   fi
+                  case "$scenario" in
+                    page-table-walk*)
+                      address=0x40403000
+                      result=0x40310000
+                      ;;
+                  esac
                   ;;
                 *) exit 1 ;;
               esac
@@ -273,6 +293,9 @@ in
               if test "$length" -eq 2; then
                 mask=ffff
                 replacement=a014
+              elif test "$length" -eq 8; then
+                mask=ffffffffffffffff
+                replacement=a5a5a5a5a5a5a5a5
               fi
               set +e
               timeout 120 $binary $machine $accel -icount shift=0 \
@@ -316,7 +339,22 @@ in
               run_advanced_case "$architecture" 15 retention 00
               run_advanced_case "$architecture" 16 rowhammer a5
               run_advanced_case "$architecture" 17 service 5a
+              run_advanced_case "$architecture" 20 page-table-walk e1 32 8
+              run_advanced_case "$architecture" 20 \
+                page-table-walk-access-error e1 32 8
+              run_advanced_case "$architecture" 20 \
+                page-table-walk-corrected 5a 32 8
+              run_advanced_case "$architecture" 20 \
+                page-table-walk-failed-region e1 32 8
+              run_advanced_case "$architecture" 20 \
+                page-table-walk-service 5a 32 8
+              run_advanced_case "$architecture" 21 \
+                page-table-walk-retry 5a 32 8
               if test "$architecture" = x86_64; then
+                run_advanced_case "$architecture" 22 \
+                  page-table-walk-nested-stage1 5a 32 8
+                run_advanced_case "$architecture" 22 \
+                  page-table-walk-nested-stage2 5a 32 8
                 run_advanced_case "$architecture" 18 retry-x86 a5
               else
                 run_advanced_case "$architecture" 18 retry-aarch64 a5
@@ -324,6 +362,10 @@ in
               run_advanced_case "$architecture" 17 invalid-mmio 5a
               run_advanced_case "$architecture" 17 invalid-atomic 5a
               run_advanced_case "$architecture" 17 invalid-geometry 5a
+              run_advanced_case "$architecture" 17 \
+                invalid-walk-virtual 5a 32 8
+              run_advanced_case "$architecture" 17 \
+                invalid-walk-exception 5a 32 8
             }
             run_advanced_architecture_matrix x86_64
             run_advanced_architecture_matrix aarch64
@@ -404,7 +446,7 @@ in
               printf 'architectures=x86_64,aarch64\n'
               printf 'cpu_access_matrix=fetch,aligned,unaligned,cross-page,load,store,atomic-1-2-4-8-16,cmpxchg-success-failure\n'
               printf 'transform_matrix=stuck,read-corrupt,lost-write,torn-write\n'
-              printf 'advanced_matrix=corrected-poison,fetch-corrected-poison,access-error,architectural-exception,failed-region,retention,rowhammer,service\n'
+              printf 'advanced_matrix=corrected-poison,fetch-corrected-poison,access-error,architectural-exception,failed-region,retention,rowhammer,service,page-table-walk-read-corrupt-access-error-corrected-failed-region-service-retry-inspection-inert-x86-nested-stage1-stage2\n'
               printf 'dma_backend=actual-device-scoped-virtio-blk-read-write\n'
               printf 'dma_translation=frozen-direct-and-virtio-iommu-iova-to-gpa\n'
             } >"$out/result"
