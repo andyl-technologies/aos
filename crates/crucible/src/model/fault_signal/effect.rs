@@ -1,9 +1,11 @@
 //! Validated executable effect requests and resolved replay records.
 
 use super::{
-    ContentHash, EFFECT_SEMANTIC_VERSION, EffectKind, EffectLifetime, FaultCapabilityId,
-    FaultContractError, FaultCoordinate, FaultObjectId, FaultPhase, NetworkEffectSpecification,
-    NodeEffectSpecification, ResolvedFaultTarget, StorageEffectSpecification,
+    BindingActionCause, BindingActionKind, ContentHash, EFFECT_SEMANTIC_VERSION, EffectKind,
+    EffectLifetime, FaultCapabilityId, FaultContractError, FaultCoordinate, FaultDirection,
+    FaultObjectId, FaultOperation, FaultOpportunity, FaultPhase, NetworkEffectSpecification,
+    NodeEffectSpecification, ResolvedBindingAction, ResolvedFaultTarget, ResolvedMappingOutput,
+    StorageEffectSpecification,
 };
 
 /// The complete closed parameter union accepted by production adapters.
@@ -141,37 +143,146 @@ pub struct EffectContributor {
 }
 
 /// Exact effect evidence consumed by recomputed and locked replay.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResolvedEffectRecord {
     /// Stable effect kind.
     pub effect: EffectKind,
     /// Exact effect semantic version.
     pub semantic_version: u16,
+    /// Exact adapter action lifecycle operation.
+    pub action_kind: BindingActionKind,
     /// Binding that requested the effect before composition.
     pub binding: FaultObjectId,
     /// Concrete resolved target.
     pub target: ResolvedFaultTarget,
     /// Opportunity identity for opportunity-scoped effects.
     pub opportunity: Option<ContentHash>,
+    /// Exact adapter operation, when this is an opportunity outcome.
+    pub operation: Option<FaultOperation>,
+    /// Exact link direction, when this is a directional opportunity outcome.
+    pub direction: Option<FaultDirection>,
+    /// Coordinate-independent immutable network-frame identity.
+    pub network_frame_key: Option<ContentHash>,
+    /// Stable producer/direction/sequence network alignment identity.
+    pub network_producer_direction_key: Option<ContentHash>,
     /// Scheduler coordinate at application.
     pub coordinate: FaultCoordinate,
+    /// Stable order among scheduler work at the same coordinate.
+    pub same_coordinate_sequence: u64,
     /// Exact adapter application phase.
     pub phase: FaultPhase,
     /// Effect lifetime.
     pub lifetime: EffectLifetime,
+    /// Complete admitted typed effect used by locked replay.
+    pub request: EffectRequest,
+    /// Complete typed mapping result used by locked replay.
+    pub mapping_output: ResolvedMappingOutput,
     /// Digest of canonical mapped parameters.
     pub parameters_digest: ContentHash,
+    /// Binding transition sequence carried by the resolved action.
+    pub transition_sequence: u64,
+    /// Exact transition identity carried by the resolved action.
+    pub cause: BindingActionCause,
+    /// Fingerprint of the complete post-derivation signal/binding continuation.
+    ///
+    /// This authenticates sampled signal state, state-machine transitions,
+    /// keyed choices, event-log cursors, and binding execution state for
+    /// recomputed-cause replay.
+    pub derivation_fingerprint: ContentHash,
     /// Contributors in canonical binding order.
     pub contributors: Vec<EffectContributor>,
     /// Production capability used to apply the effect.
     pub capability: FaultCapabilityId,
-    /// Optional before-state digest required for destructive locked replay.
+    /// Backend-observed before-state digest required for every replayed effect.
     pub precondition_digest: Option<ContentHash>,
     /// Digest of all effect-specific replay evidence.
     pub evidence_digest: ContentHash,
 }
 
 impl ResolvedEffectRecord {
+    /// Captures one committed typed action and its backend evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultContractError`] if the action capability identifier is
+    /// invalid or the resulting record violates the effect registry.
+    pub fn from_committed_action(
+        action: &ResolvedBindingAction,
+        opportunity: Option<&FaultOpportunity>,
+        same_coordinate_sequence: u64,
+        derivation_fingerprint: ContentHash,
+        precondition_digest: Option<ContentHash>,
+        evidence_digest: ContentHash,
+    ) -> Result<Self, FaultContractError> {
+        if opportunity.map(FaultOpportunity::id) != action.opportunity {
+            return Err(FaultContractError::MissingOpportunity {
+                effect: action.effect.kind(),
+            });
+        }
+        let record = Self {
+            effect: action.effect.kind(),
+            semantic_version: EFFECT_SEMANTIC_VERSION,
+            action_kind: action.kind,
+            binding: action.binding.clone(),
+            target: action.target.clone(),
+            opportunity: action.opportunity,
+            operation: opportunity.map(FaultOpportunity::operation),
+            direction: opportunity.and_then(FaultOpportunity::direction),
+            network_frame_key: opportunity.and_then(FaultOpportunity::network_frame_key),
+            network_producer_direction_key: opportunity
+                .and_then(FaultOpportunity::network_producer_direction_key),
+            coordinate: action.coordinate,
+            same_coordinate_sequence,
+            phase: action.phase,
+            lifetime: action.effect.lifetime(),
+            request: action.effect.as_ref().clone(),
+            mapping_output: action.mapping_output.as_ref().clone(),
+            parameters_digest: action.mapped_digest,
+            transition_sequence: action.transition_sequence,
+            cause: action.cause.clone(),
+            derivation_fingerprint,
+            contributors: vec![EffectContributor {
+                binding: action.binding.clone(),
+                contribution_digest: action.mapped_digest,
+            }],
+            capability: FaultCapabilityId::parse(action.effect.capability())?,
+            precondition_digest,
+            evidence_digest,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    /// Reconstructs the exact typed action retained for locked replay.
+    #[must_use]
+    pub fn locked_action(&self) -> ResolvedBindingAction {
+        ResolvedBindingAction {
+            kind: self.action_kind,
+            binding: self.binding.clone(),
+            target: self.target.clone(),
+            phase: self.phase,
+            effect: std::sync::Arc::new(self.request.clone()),
+            mapping_output: std::sync::Arc::new(self.mapping_output.clone()),
+            mapped_digest: self.parameters_digest,
+            transition_sequence: self.transition_sequence,
+            opportunity: self.opportunity,
+            coordinate: self.coordinate,
+            cause: self.cause.clone(),
+            expected_precondition: self.precondition_digest,
+        }
+    }
+
+    /// Returns whether a recomputed action exactly matches the recorded resolution.
+    #[must_use]
+    pub fn matches_recomputed_action(&self, action: &ResolvedBindingAction) -> bool {
+        self.locked_action()
+            == ResolvedBindingAction {
+                expected_precondition: self.precondition_digest,
+                ..action.clone()
+            }
+    }
+
     /// Validates record ordering, capability version, target, and opportunity
     /// requirements before it may be retained or replayed.
     ///
@@ -186,6 +297,16 @@ impl ResolvedEffectRecord {
                 effect: self.effect,
                 expected: EFFECT_SEMANTIC_VERSION,
                 actual: self.semantic_version,
+            });
+        }
+        if self.request.kind() != self.effect
+            || self.request.lifetime() != self.lifetime
+            || matches!(self.action_kind, BindingActionKind::Apply)
+                == matches!(self.lifetime, EffectLifetime::Persistent)
+        {
+            return Err(FaultContractError::UnsupportedLifetime {
+                effect: self.effect,
+                lifetime: self.lifetime,
             });
         }
         self.target.validate()?;
@@ -228,6 +349,29 @@ impl ResolvedEffectRecord {
                 effect: self.effect,
             });
         }
+        if self.precondition_digest.is_none() {
+            return Err(FaultContractError::MissingReplayPrecondition {
+                effect: self.effect,
+            });
+        }
+        if self.opportunity.is_none()
+            && (self.operation.is_some()
+                || self.direction.is_some()
+                || self.network_frame_key.is_some()
+                || self.network_producer_direction_key.is_some())
+        {
+            return Err(FaultContractError::InvalidPayload);
+        }
+        if self.network_frame_key.is_some() != self.network_producer_direction_key.is_some() {
+            return Err(FaultContractError::InvalidPayload);
+        }
+        if self.network_frame_key.is_some()
+            && (self.operation.is_none()
+                || self.opportunity.is_none()
+                || self.effect.descriptor().adapter != super::FaultAdapter::Network)
+        {
+            return Err(FaultContractError::InvalidPayload);
+        }
         Ok(())
     }
 }
@@ -235,7 +379,9 @@ impl ResolvedEffectRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::fault_signal::FaultDirection;
+    use crate::model::fault_signal::{
+        FaultDirection, NetworkAvailabilityState, NetworkInFlightPolicy,
+    };
 
     fn availability_record() -> ResolvedEffectRecord {
         let binding = match FaultObjectId::parse("network-outage") {
@@ -253,22 +399,42 @@ mod tests {
         ResolvedEffectRecord {
             effect: EffectKind::NetworkAvailability,
             semantic_version: EFFECT_SEMANTIC_VERSION,
+            action_kind: BindingActionKind::UpsertPersistent,
             binding,
             target: ResolvedFaultTarget::NetworkSegment {
                 segment,
                 direction: FaultDirection::AToB,
             },
             opportunity: None,
+            operation: None,
+            direction: None,
+            network_frame_key: None,
+            network_producer_direction_key: None,
             coordinate: FaultCoordinate {
                 virtual_nanos: 1,
                 retired_instructions: None,
             },
+            same_coordinate_sequence: 0,
             phase: FaultPhase::Admit,
             lifetime: EffectLifetime::Persistent,
+            request: EffectRequest::new(
+                EFFECT_SEMANTIC_VERSION,
+                EffectLifetime::Persistent,
+                EffectSpecification::Network(NetworkEffectSpecification::Availability {
+                    state: NetworkAvailabilityState::Down,
+                    queued_policy: NetworkInFlightPolicy::Drop,
+                    in_flight_policy: NetworkInFlightPolicy::Drop,
+                }),
+            )
+            .unwrap_or_else(|error| panic!("test request must be valid: {error}")),
+            mapping_output: ResolvedMappingOutput::Activation { active: true },
             parameters_digest: ContentHash::from_bytes(b"parameters"),
+            transition_sequence: 1,
+            cause: BindingActionCause::Signal,
+            derivation_fingerprint: ContentHash::from_bytes(b"derivation"),
             contributors: Vec::new(),
             capability,
-            precondition_digest: None,
+            precondition_digest: Some(ContentHash::from_bytes(b"before")),
             evidence_digest: ContentHash::from_bytes(b"evidence"),
         }
     }
@@ -295,6 +461,18 @@ mod tests {
             Err(FaultContractError::UnsupportedLifetime {
                 effect: EffectKind::NetworkAvailability,
                 lifetime: EffectLifetime::Impulse,
+            })
+        );
+    }
+
+    #[test]
+    fn resolved_record_requires_before_state_for_every_replay_action() {
+        let mut record = availability_record();
+        record.precondition_digest = None;
+        assert_eq!(
+            record.validate(),
+            Err(FaultContractError::MissingReplayPrecondition {
+                effect: EffectKind::NetworkAvailability,
             })
         );
     }

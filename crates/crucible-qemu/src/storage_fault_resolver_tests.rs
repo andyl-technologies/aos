@@ -57,6 +57,7 @@ fn action(
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
+        expected_precondition: None,
     }
 }
 

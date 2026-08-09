@@ -10,14 +10,8 @@ use super::super::*;
 pub enum BindingRuntimeError {
     /// Binding IDs are not unique.
     DuplicateBinding,
-    /// Scenario exceeds the compiled binding-count ceiling.
-    BindingLimit,
-    /// One boundary exceeded the hard prepared-action ceiling.
-    ActionLimit,
-    /// Retained sample payloads exceeded the per-boundary byte ceiling.
-    RetainedSampleLimit,
-    /// Search override state exceeds the compiled ceiling.
-    SearchOverrideLimit,
+    /// A host collection or encoded length did not fit its public counter.
+    CountOverflow(&'static str),
     /// Search mutation was not materialized into a concrete program/artifact.
     UnmaterializedSearchMutation,
     /// A binding was admitted against a different signal program.
@@ -48,8 +42,6 @@ pub enum BindingRuntimeError {
     OpportunityBeforeBoundary,
     /// One scope reused an opportunity sequence for different immutable input.
     OpportunitySequenceCollision,
-    /// Consumed opportunity scope state reached its hard ceiling.
-    OpportunityStateLimit,
     /// Mapping received a value that contradicted its admitted type.
     MappingType,
     /// Runtime omitted an admitted named mapping declaration.
@@ -70,8 +62,6 @@ pub enum BindingRuntimeError {
     ObservationSequenceOverflow,
     /// Search candidate identity, bound, or override is inconsistent.
     SearchChoice,
-    /// Search decisions reached the compiled per-state ceiling.
-    SearchChoiceLimit,
     /// Locked replay ended before consuming every supplied override.
     UnusedSearchOverride,
     /// A required cadence or residence wakeup exceeded virtual time.
@@ -92,6 +82,8 @@ pub enum BindingRuntimeError {
     Rollback(SignalEvaluationError),
     /// Nested trace value codec failed.
     Trace(TraceError),
+    /// A plan-owned resource reservation was rejected.
+    ResourceLimit(FaultResourceLimitError),
     /// Nested active-table or transition state failed.
     Runtime(FaultRuntimeError),
     /// The production adapter rejected an atomic action batch.
@@ -116,6 +108,7 @@ impl Error for BindingRuntimeError {
             Self::Program(error) => Some(error),
             Self::Evaluation(error) | Self::Rollback(error) => Some(error),
             Self::Trace(error) => Some(error),
+            Self::ResourceLimit(error) => Some(error),
             Self::Runtime(error) => Some(error),
             Self::AdapterAbort(error) => Some(error),
             Self::AdapterCommit(error) => Some(error),

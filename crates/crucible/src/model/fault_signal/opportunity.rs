@@ -1198,6 +1198,77 @@ impl FaultOpportunity {
     pub const fn id(&self) -> ContentHash {
         self.id
     }
+
+    /// Returns the coordinate-independent identity of a network frame.
+    ///
+    /// The key includes the producer, destination, producer sequence, protocol
+    /// expansion ancestry, and immutable bytes. It deliberately excludes
+    /// scheduler time so a captured frame can be aligned after replay timing
+    /// changes.
+    #[must_use]
+    pub fn network_frame_key(&self) -> Option<ContentHash> {
+        let OpportunityPayload::NetworkFrame {
+            producer,
+            destination,
+            producer_sequence,
+            protocol_expansion_path,
+            generated_response_depth,
+            generated_response_cause,
+            forwarding_mutation_path,
+            length_bytes,
+            payload_digest,
+        } = &self.payload
+        else {
+            return None;
+        };
+        let mut material = String::new();
+        push_text(&mut material, producer.as_str());
+        push_text(&mut material, destination.as_str());
+        push_u64(&mut material, *producer_sequence);
+        push_u64(&mut material, protocol_expansion_path.len() as u64);
+        for ordinal in protocol_expansion_path {
+            push_u64(&mut material, u64::from(*ordinal));
+        }
+        push_u64(&mut material, u64::from(*generated_response_depth));
+        match generated_response_cause {
+            Some(cause) => push_text(&mut material, &cause.to_hex()),
+            None => material.push_str("no_generated_cause;"),
+        }
+        push_u64(&mut material, forwarding_mutation_path.len() as u64);
+        for mutation in forwarding_mutation_path {
+            push_text(&mut material, &mutation.to_hex());
+        }
+        push_u64(&mut material, *length_bytes);
+        push_text(&mut material, &payload_digest.to_hex());
+        Some(ContentHash::from_canonical_material(
+            "crucible.network-frame-key.v1",
+            &material,
+        ))
+    }
+
+    /// Returns the stable producer/direction sequence alignment key for a frame.
+    #[must_use]
+    pub fn network_producer_direction_key(&self) -> Option<ContentHash> {
+        let OpportunityPayload::NetworkFrame {
+            producer,
+            producer_sequence,
+            ..
+        } = &self.payload
+        else {
+            return None;
+        };
+        let mut material = String::new();
+        push_text(&mut material, producer.as_str());
+        push_text(
+            &mut material,
+            self.direction.map_or("none", FaultDirection::as_str),
+        );
+        push_u64(&mut material, *producer_sequence);
+        Some(ContentHash::from_canonical_material(
+            "crucible.network-producer-direction-sequence.v1",
+            &material,
+        ))
+    }
 }
 
 /// Validation failure for targets, opportunities, bindings, or effects.
@@ -1321,6 +1392,11 @@ pub enum FaultContractError {
         /// Effect being validated.
         effect: EffectKind,
     },
+    /// A replay record omits the live before-state digest.
+    MissingReplayPrecondition {
+        /// Effect whose mutation cannot be replayed safely.
+        effect: EffectKind,
+    },
     /// A production capability identifier is not canonical.
     InvalidCapabilityId {
         /// Rejected capability text.
@@ -1422,6 +1498,10 @@ impl fmt::Display for FaultContractError {
                     "effect {effect} capability does not match its registry"
                 )
             }
+            Self::MissingReplayPrecondition { effect } => write!(
+                formatter,
+                "effect {effect} omits its replay before-state digest"
+            ),
             Self::InvalidCapabilityId { value } => {
                 write!(formatter, "invalid fault capability identifier {value:?}")
             }

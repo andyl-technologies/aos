@@ -13,7 +13,8 @@ use crucible::{
 };
 use crucible_shmem::{
     FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR, FAULT_COMMAND_SEMANTIC_VERSION,
-    FaultBoundaryPhase, FaultCapabilityScope, FaultCommandKind, FaultResultHeaderV1,
+    FaultBoundaryPhase, FaultCapabilityScope, FaultCommandKind, FaultEventHeaderV1,
+    FaultEventOutcomeV1, FaultResultHeaderV1,
 };
 
 use crate::{
@@ -27,6 +28,7 @@ mod shutdown_and_preemption;
 
 type SharedLog = Arc<Mutex<Vec<ChannelCall>>>;
 type SharedFaultCommands = Arc<Mutex<Vec<(FaultCommandHeaderV1, Vec<u8>)>>>;
+type SharedFaultEvents = Arc<Mutex<VecDeque<DequeuedFaultEvent>>>;
 
 #[test]
 fn child_poll_preserves_clean_exit_status_and_disarms_drop_cleanup() -> Result<(), Box<dyn Error>> {
@@ -120,6 +122,7 @@ struct ScriptedShmemHotPath {
     teardown_coverage: Arc<Mutex<Vec<ObservableEvent>>>,
     fault_commands: SharedFaultCommands,
     stale_fault_results: Arc<Mutex<VecDeque<DequeuedFaultResult>>>,
+    fault_events: SharedFaultEvents,
 }
 
 #[derive(Clone)]
@@ -238,11 +241,11 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
     }
 
     fn dequeue_fault_event(&mut self) -> Result<Option<DequeuedFaultEvent>, QemuNodeChannelError> {
-        Ok(None)
+        Ok(self.fault_events.lock().unwrap().pop_front())
     }
 
     fn fault_event_pending(&mut self) -> Result<bool, QemuNodeChannelError> {
-        Ok(false)
+        Ok(!self.fault_events.lock().unwrap().is_empty())
     }
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
@@ -428,6 +431,34 @@ fn live_fault_sequences_continue_after_capability_admission() -> Result<(), Box<
 }
 
 #[test]
+fn invalid_fault_event_sequence_is_terminal_across_retries() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_fault_events(
+        Arc::clone(&log),
+        [fault_event_with_sequence(1), fault_event_with_sequence(3)],
+    )?;
+    let mut retained = Vec::new();
+
+    let first_error = node
+        .drain_fault_events(&mut retained)
+        .expect_err("a sequence gap must fail closed");
+    assert_eq!(retained.len(), 2);
+    let second_error = node
+        .drain_fault_events(&mut retained)
+        .expect_err("retry must preserve the terminal sequence failure");
+    assert_eq!(retained.len(), 2);
+    assert_eq!(first_error.to_string(), second_error.to_string());
+    assert!(first_error.to_string().contains("expected 2, observed 3"));
+    let pending_error = node
+        .fault_event_pending()
+        .expect_err("checkpoint admission must observe the terminal failure");
+    assert_eq!(first_error.to_string(), pending_error.to_string());
+
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
 fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
 -> Result<(), Box<dyn Error>> {
     let log = shared_log();
@@ -485,6 +516,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
             teardown_coverage: Arc::new(Mutex::new(Vec::new())),
             fault_commands: Arc::clone(&fault_commands),
             stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
+            fault_events: Arc::new(Mutex::new(VecDeque::new())),
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
@@ -961,6 +993,73 @@ fn scripted_node_with_options(
     )
 }
 
+fn scripted_node_with_fault_events(
+    log: SharedLog,
+    events: impl IntoIterator<Item = DequeuedFaultEvent>,
+) -> Result<QemuNode, Box<dyn Error>> {
+    let channels = QemuNodeChannels::new(
+        ScriptedPluginControl {
+            log: Arc::clone(&log),
+            fail_quit: false,
+        },
+        ScriptedShmemHotPath {
+            log: Arc::clone(&log),
+            fail_advance: false,
+            coverage_enabled: false,
+            quantum_coverage: Arc::new(Mutex::new(VecDeque::new())),
+            teardown_coverage: Arc::new(Mutex::new(Vec::new())),
+            fault_commands: Arc::new(Mutex::new(Vec::new())),
+            stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
+            fault_events: Arc::new(Mutex::new(events.into_iter().collect())),
+        },
+        ScriptedQmpMachineControl {
+            log: Arc::clone(&log),
+            fail_snapshot: false,
+            timeout_snapshot: false,
+        },
+    );
+    let child = Command::new("sleep").arg("60").spawn()?;
+    Ok(QemuNode::new(
+        QemuNodeChild::new(child),
+        channels,
+        node_shutdown_policy(),
+        QemuAsyncDriverPolicy::fast_test(),
+        QemuCrashDetector::new("vm-a"),
+        ScriptedHostIoRuntime {
+            log,
+            outcomes: VecDeque::new(),
+            fault_results: VecDeque::new(),
+        },
+    ))
+}
+
+fn fault_event_with_sequence(event_sequence: u64) -> DequeuedFaultEvent {
+    let payload = Vec::new();
+    DequeuedFaultEvent {
+        header: FaultEventHeaderV1 {
+            command_kind: FaultCommandKind::CpuService,
+            outcome: FaultEventOutcomeV1::Applied,
+            event_sequence,
+            rule_command_sequence: 1,
+            observed_icount: 1,
+            model_phase: 1,
+            target_kind: 1,
+            generation: 1,
+            binding_hash: [1; 32],
+            opportunity_hash: [2; 32],
+            action_hash: [3; 32],
+            target_hash: [4; 32],
+            before_hash: [5; 32],
+            after_hash: [6; 32],
+            evidence_hash: [7; 32],
+            payload_hash: *blake3::hash(&payload).as_bytes(),
+            payload_offset: 0,
+            payload_length: 0,
+        },
+        payload,
+    }
+}
+
 fn scripted_node_with_coverage(
     log: SharedLog,
     options: ScriptedNodeOptions,
@@ -984,6 +1083,7 @@ fn scripted_node_with_coverage(
             teardown_coverage: Arc::new(Mutex::new(teardown_coverage)),
             fault_commands: Arc::new(Mutex::new(Vec::new())),
             stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
+            fault_events: Arc::new(Mutex::new(VecDeque::new())),
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),

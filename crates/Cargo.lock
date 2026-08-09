@@ -2006,6 +2006,7 @@ name = "crucible"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ciborium",
  "crucible-device",
  "crucible-harness",
  "crucible-protocol",

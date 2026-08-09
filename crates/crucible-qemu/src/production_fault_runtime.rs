@@ -12,18 +12,15 @@ use crucible::model::{
     BindingActionKind, BindingEvaluation, ContentHash, EffectKind, EffectSpecification,
     FaultAdapterManifests, FaultCapabilityId, FaultCapabilityManifest, FaultCoordinate,
     FaultExecutionError, FaultObjectId, FaultObservation, FaultObservationKind, FaultOpportunity,
-    FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink, HostFaultActionState,
-    OwnedFaultExecutionRuntime, ReferencedSignalEvent, ResolvedBindingAction,
-    SignalArtifactProvider, SignalBoundarySnapshot,
+    FaultReplayMode, FaultResourceLimitError, FaultResourceLimits, FaultRuntimeCheckpoint,
+    FaultSignalPlan, HostFaultActionSink, HostFaultActionState, OwnedFaultExecutionRuntime,
+    ReferencedSignalEvent, ResolvedBindingAction, ResolvedEffectTrace, SignalArtifactProvider,
+    SignalBoundarySnapshot,
 };
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
+use crucible_shmem::DequeuedFaultEvent;
 
 use crate::{ProductionFaultActionSink, QemuNodeSet};
-
-/// Hard bound on recovery-event occurrences retained for device subscriptions.
-const HARD_PRODUCTION_REFERENCED_EVENTS: usize = 262_144;
-/// Hard bound on canonical typed event bytes retained for subscriptions.
-const HARD_PRODUCTION_REFERENCED_EVENT_BYTES: u64 = 268_435_456;
 
 /// Complete resumable state for the production fault runtime.
 #[derive(Clone, Debug)]
@@ -44,6 +41,10 @@ pub struct ProductionFaultRuntimeCheckpoint {
     network_state: Option<ProductionNetworkStateCheckpoint>,
     /// Referenced event occurrences retained for device recovery subscriptions.
     emitted_events: Vec<ReferencedSignalEvent>,
+    /// Drained QEMU occurrences awaiting a successfully committed boundary.
+    pending_qemu_observations: Vec<FaultObservation>,
+    /// Raw drained QEMU events retained until validation succeeds atomically.
+    pending_qemu_events: BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
     /// Aggregate identity binding every continuation component to the plan.
     identity: ContentHash,
 }
@@ -149,26 +150,23 @@ pub enum ProductionFaultRuntimeError {
     /// A QEMU occurrence event has not yet entered the authoritative log.
     #[error("cannot checkpoint while QEMU fault events await boundary admission")]
     PendingQemuFaultEvents,
-    /// Referenced recovery-event history reached its declared hard bound.
-    #[error(
-        "production referenced-event history exceeds {HARD_PRODUCTION_REFERENCED_EVENTS} entries"
-    )]
-    ReferencedEventLimit,
-    /// Referenced recovery-event values exceeded their retained-byte ceiling.
-    #[error(
-        "production referenced-event history exceeds {HARD_PRODUCTION_REFERENCED_EVENT_BYTES} canonical value bytes"
-    )]
-    ReferencedEventBytesLimit,
+    /// A scenario-owned production resource reservation failed.
+    #[error(transparent)]
+    ResourceLimit(#[from] FaultResourceLimitError),
 }
 
 /// Owning signal runtime coupled to host devices and live patched QEMU.
 #[derive(Clone)]
 pub struct ProductionFaultRuntime {
+    plan_id: ContentHash,
+    resource_limits: FaultResourceLimits,
     runtime: Option<OwnedFaultExecutionRuntime>,
     host: HostFaultActionSink,
     restored_network_state: Option<ProductionNetworkStateCheckpoint>,
     emitted_events: Vec<ReferencedSignalEvent>,
     qemu_active_rules: BTreeMap<ContentHash, ResolvedBindingAction>,
+    pending_qemu_observations: Vec<FaultObservation>,
+    pending_qemu_events: BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
 }
 
 impl ProductionFaultRuntime {
@@ -186,6 +184,8 @@ impl ProductionFaultRuntime {
         nodes: &QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
         let manifests = production_manifests(nodes)?;
+        let plan_id = plan.id();
+        let resource_limits = plan.resource_limits();
         let runtime = if plan.programs().is_empty() {
             None
         } else {
@@ -200,11 +200,15 @@ impl ProductionFaultRuntime {
             )?)
         };
         Ok(Self {
+            plan_id,
+            resource_limits,
             runtime,
-            host: HostFaultActionSink::new(),
+            host: HostFaultActionSink::new(resource_limits),
             restored_network_state: None,
             emitted_events: Vec::new(),
             qemu_active_rules: BTreeMap::new(),
+            pending_qemu_observations: Vec::new(),
+            pending_qemu_events: BTreeMap::new(),
         })
     }
 
@@ -222,10 +226,20 @@ impl ProductionFaultRuntime {
         nodes: &mut QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
         let manifests = production_manifests(nodes)?;
-        if checkpoint.emitted_events.len() > HARD_PRODUCTION_REFERENCED_EVENTS {
-            return Err(ProductionFaultRuntimeError::ReferencedEventLimit);
-        }
-        referenced_event_bytes(&checkpoint.emitted_events)?;
+        let plan_id = plan.id();
+        let resource_limits = plan.resource_limits();
+        validate_production_event_state(
+            &checkpoint.emitted_events,
+            &[],
+            &checkpoint.pending_qemu_observations,
+            &[],
+            &checkpoint.pending_qemu_events,
+            resource_limits,
+        )?;
+        validate_pending_qemu_event_sequences(
+            &checkpoint.pending_qemu_events,
+            &checkpoint.qemu_fault_event_sequences,
+        )?;
         validate_qemu_active_rules(&checkpoint.qemu_active_rules)?;
         if checkpoint.identity
             != production_checkpoint_identity(
@@ -238,7 +252,9 @@ impl ProductionFaultRuntime {
                 &checkpoint.qemu_active_rules,
                 checkpoint.network_state.as_ref(),
                 &checkpoint.emitted_events,
-            )
+                &checkpoint.pending_qemu_observations,
+                &checkpoint.pending_qemu_events,
+            )?
         {
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
@@ -265,6 +281,8 @@ impl ProductionFaultRuntime {
         let host = checkpoint.host;
         let restored_network_state = checkpoint.network_state;
         let emitted_events = checkpoint.emitted_events;
+        let pending_qemu_observations = checkpoint.pending_qemu_observations;
+        let pending_qemu_events = checkpoint.pending_qemu_events;
         let runtime = match (plan.programs().is_empty(), checkpoint.runtime) {
             (true, None) => None,
             (false, Some(checkpoint)) => {
@@ -283,11 +301,15 @@ impl ProductionFaultRuntime {
         nodes.restore_fault_command_sequences(&qemu_fault_sequences)?;
         nodes.restore_fault_event_sequences(&qemu_fault_event_sequences)?;
         Ok(Self {
+            plan_id,
+            resource_limits,
             runtime,
-            host: HostFaultActionSink::from_state(host),
+            host: HostFaultActionSink::from_state(host, resource_limits),
             restored_network_state,
             emitted_events,
             qemu_active_rules,
+            pending_qemu_observations,
+            pending_qemu_events,
         })
     }
 
@@ -295,6 +317,54 @@ impl ProductionFaultRuntime {
     #[must_use]
     pub fn take_restored_network_state(&mut self) -> Option<ProductionNetworkStateCheckpoint> {
         self.restored_network_state.take()
+    }
+
+    /// Installs a fresh authoritative replay trace for subsequent live execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError`] when the plan is inert or the
+    /// trace is malformed, oversized, already consumed, or mode-incompatible.
+    pub fn install_replay(
+        &mut self,
+        trace: ResolvedEffectTrace,
+    ) -> Result<(), ProductionFaultRuntimeError> {
+        self.runtime
+            .as_mut()
+            .ok_or(FaultExecutionError::CheckpointPresence)?
+            .install_replay(trace)?;
+        Ok(())
+    }
+
+    /// Requires every installed replay record to have been consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError`] when no trace is installed or
+    /// the run stopped before consuming the complete trace.
+    pub fn verify_replay_exhausted(&self) -> Result<(), ProductionFaultRuntimeError> {
+        self.runtime
+            .as_ref()
+            .ok_or(FaultExecutionError::CheckpointPresence)?
+            .verify_replay_exhausted()?;
+        Ok(())
+    }
+
+    /// Returns every committed production effect as an unconsumed replay trace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError`] when the plan is inert or the
+    /// selected replay mode rejects one of the recorded effects.
+    pub fn recorded_trace(
+        &self,
+        mode: FaultReplayMode,
+    ) -> Result<ResolvedEffectTrace, ProductionFaultRuntimeError> {
+        Ok(self
+            .runtime
+            .as_ref()
+            .ok_or(FaultExecutionError::CheckpointPresence)?
+            .recorded_trace(mode)?)
     }
 
     /// Evaluates one scheduler boundary against host devices and live QEMU.
@@ -309,9 +379,9 @@ impl ProductionFaultRuntime {
         same_coordinate_sequence: u64,
         nodes: &mut QemuNodeSet,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
-        let mut qemu_observations = self.drain_qemu_observations(nodes, coordinate)?;
-        let Some(runtime) = &mut self.runtime else {
-            if qemu_observations.is_empty() {
+        let Some(runtime) = self.runtime.as_ref() else {
+            self.drain_qemu_observations(nodes, coordinate)?;
+            if self.pending_qemu_observations.is_empty() {
                 return Ok(BindingEvaluation::default());
             }
             return Err(BackendError::Rejected {
@@ -319,30 +389,34 @@ impl ProductionFaultRuntime {
             }
             .into());
         };
-        if self
-            .emitted_events
-            .len()
-            .checked_add(referenced_event_signal_count(runtime.plan()))
-            .is_none_or(|count| count > HARD_PRODUCTION_REFERENCED_EVENTS)
-        {
-            return Err(ProductionFaultRuntimeError::ReferencedEventLimit);
-        }
+        let preview = runtime.preview_boundary(coordinate, same_coordinate_sequence)?;
+        self.drain_qemu_observations(nodes, coordinate)?;
+        validate_production_event_state(
+            &self.emitted_events,
+            &preview.emitted_events,
+            &self.pending_qemu_observations,
+            &[],
+            &self.pending_qemu_events,
+            self.resource_limits,
+        )?;
         let mut sink = ProductionFaultActionSink::new(&mut self.host, nodes);
-        let mut evaluation = runtime.evaluate_boundary_with_backend(
+        let runtime = self
+            .runtime
+            .as_mut()
+            .ok_or(FaultExecutionError::CheckpointPresence)?;
+        let mut evaluation = match runtime.evaluate_boundary_with_backend(
             coordinate,
             same_coordinate_sequence,
             &mut sink,
-        )?;
-        qemu_observations.append(&mut evaluation.observations);
-        evaluation.observations = qemu_observations;
-        let existing_bytes = referenced_event_bytes(&self.emitted_events)?;
-        let new_bytes = referenced_event_bytes(&evaluation.emitted_events)?;
-        if existing_bytes
-            .checked_add(new_bytes)
-            .is_none_or(|bytes| bytes > HARD_PRODUCTION_REFERENCED_EVENT_BYTES)
+        ) {
+            Ok(evaluation) => evaluation,
+            Err(error) => return Err(error.into()),
+        };
+        if evaluation.emitted_events != preview.emitted_events
+            || evaluation.state_machine_events != preview.state_machine_events
         {
             runtime.poison();
-            return Err(ProductionFaultRuntimeError::ReferencedEventBytesLimit);
+            return Err(FaultExecutionError::CheckpointPresence.into());
         }
         if let Err(error) = self.update_qemu_rule_registry(&evaluation.actions) {
             if let Some(runtime) = &mut self.runtime {
@@ -350,18 +424,44 @@ impl ProductionFaultRuntime {
             }
             return Err(error);
         }
+        let mut qemu_observations = std::mem::take(&mut self.pending_qemu_observations);
+        qemu_observations.append(&mut evaluation.observations);
+        evaluation.observations = qemu_observations;
         self.emitted_events
             .extend(evaluation.emitted_events.iter().cloned());
         Ok(evaluation)
     }
 
     fn drain_qemu_observations(
-        &self,
+        &mut self,
         nodes: &mut QemuNodeSet,
         boundary: FaultCoordinate,
-    ) -> Result<Vec<FaultObservation>, ProductionFaultRuntimeError> {
+    ) -> Result<(), ProductionFaultRuntimeError> {
+        let mut drained = BTreeMap::new();
+        let drain_result = nodes.drain_fault_events(&mut drained);
+        for (node, mut events) in drained {
+            if !events.is_empty() {
+                self.pending_qemu_events
+                    .entry(node)
+                    .or_default()
+                    .append(&mut events);
+            }
+        }
+        drain_result?;
+        validate_production_event_state(
+            &self.emitted_events,
+            &[],
+            &self.pending_qemu_observations,
+            &[],
+            &self.pending_qemu_events,
+            self.resource_limits,
+        )?;
+        validate_pending_qemu_event_sequences(
+            &self.pending_qemu_events,
+            &nodes.fault_event_sequences(),
+        )?;
         let mut observations = Vec::new();
-        for (_node, events) in nodes.drain_fault_events()? {
+        for events in self.pending_qemu_events.values() {
             for event in events {
                 let action_identity = ContentHash {
                     bytes: event.header.action_hash,
@@ -432,7 +532,17 @@ impl ProductionFaultRuntime {
                 });
             }
         }
-        Ok(observations)
+        validate_production_event_state(
+            &self.emitted_events,
+            &[],
+            &self.pending_qemu_observations,
+            &observations,
+            &BTreeMap::new(),
+            self.resource_limits,
+        )?;
+        self.pending_qemu_observations.extend(observations);
+        self.pending_qemu_events.clear();
+        Ok(())
     }
 
     fn update_qemu_rule_registry(
@@ -482,15 +592,37 @@ impl ProductionFaultRuntime {
         same_coordinate_sequence: u64,
         nodes: &mut QemuNodeSet,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
-        let Some(runtime) = &mut self.runtime else {
+        let Some(runtime) = self.runtime.as_ref() else {
             return Ok(BindingEvaluation::default());
         };
+        let preview = runtime.preview_opportunity(opportunity, same_coordinate_sequence)?;
+        validate_production_event_state(
+            &self.emitted_events,
+            &preview.emitted_events,
+            &self.pending_qemu_observations,
+            &[],
+            &self.pending_qemu_events,
+            self.resource_limits,
+        )?;
         let mut sink = ProductionFaultActionSink::new(&mut self.host, nodes);
-        Ok(runtime.evaluate_opportunity_with_backend(
+        let runtime = self
+            .runtime
+            .as_mut()
+            .ok_or(FaultExecutionError::CheckpointPresence)?;
+        let evaluation = runtime.evaluate_opportunity_with_backend(
             opportunity,
             same_coordinate_sequence,
             &mut sink,
-        )?)
+        )?;
+        if evaluation.emitted_events != preview.emitted_events
+            || evaluation.state_machine_events != preview.state_machine_events
+        {
+            runtime.poison();
+            return Err(FaultExecutionError::CheckpointPresence.into());
+        }
+        self.emitted_events
+            .extend(evaluation.emitted_events.iter().cloned());
+        Ok(evaluation)
     }
 
     /// Evaluates one host-device opportunity without borrowing the live node set.
@@ -510,14 +642,36 @@ impl ProductionFaultRuntime {
         opportunity: &FaultOpportunity,
         same_coordinate_sequence: u64,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
-        let Some(runtime) = &mut self.runtime else {
+        let Some(runtime) = self.runtime.as_ref() else {
             return Ok(BindingEvaluation::default());
         };
-        Ok(runtime.evaluate_opportunity_with_backend(
+        let preview = runtime.preview_opportunity(opportunity, same_coordinate_sequence)?;
+        validate_production_event_state(
+            &self.emitted_events,
+            &preview.emitted_events,
+            &self.pending_qemu_observations,
+            &[],
+            &self.pending_qemu_events,
+            self.resource_limits,
+        )?;
+        let runtime = self
+            .runtime
+            .as_mut()
+            .ok_or(FaultExecutionError::CheckpointPresence)?;
+        let evaluation = runtime.evaluate_opportunity_with_backend(
             opportunity,
             same_coordinate_sequence,
             &mut self.host,
-        )?)
+        )?;
+        if evaluation.emitted_events != preview.emitted_events
+            || evaluation.state_machine_events != preview.state_machine_events
+        {
+            runtime.poison();
+            return Err(FaultExecutionError::CheckpointPresence.into());
+        }
+        self.emitted_events
+            .extend(evaluation.emitted_events.iter().cloned());
+        Ok(evaluation)
     }
 
     /// Replaces the one-boundary-delayed telemetry snapshot.
@@ -549,6 +703,14 @@ impl ProductionFaultRuntime {
         if nodes.has_pending_fault_events()? {
             return Err(ProductionFaultRuntimeError::PendingQemuFaultEvents);
         }
+        validate_production_event_state(
+            &self.emitted_events,
+            &[],
+            &self.pending_qemu_observations,
+            &[],
+            &self.pending_qemu_events,
+            self.resource_limits,
+        )?;
         let runtime = self
             .runtime
             .as_ref()
@@ -557,12 +719,12 @@ impl ProductionFaultRuntime {
         let qemu_fingerprints = nodes.execution_fingerprints()?;
         let qemu_fault_sequences = nodes.fault_command_sequences();
         let qemu_fault_event_sequences = nodes.fault_event_sequences();
-        let plan = self.runtime.as_ref().map_or_else(
-            || FaultSignalPlan::empty().id(),
-            |runtime| runtime.plan().id(),
-        );
+        validate_pending_qemu_event_sequences(
+            &self.pending_qemu_events,
+            &qemu_fault_event_sequences,
+        )?;
         let identity = production_checkpoint_identity(
-            plan,
+            self.plan_id,
             runtime.as_ref(),
             &host,
             &qemu_fingerprints,
@@ -571,7 +733,9 @@ impl ProductionFaultRuntime {
             &self.qemu_active_rules,
             self.restored_network_state.as_ref(),
             &self.emitted_events,
-        );
+            &self.pending_qemu_observations,
+            &self.pending_qemu_events,
+        )?;
         Ok(ProductionFaultRuntimeCheckpoint {
             runtime,
             host,
@@ -581,6 +745,8 @@ impl ProductionFaultRuntime {
             qemu_active_rules: self.qemu_active_rules.clone(),
             network_state: self.restored_network_state.clone(),
             emitted_events: self.emitted_events.clone(),
+            pending_qemu_observations: self.pending_qemu_observations.clone(),
+            pending_qemu_events: self.pending_qemu_events.clone(),
             identity,
         })
     }
@@ -597,13 +763,9 @@ impl ProductionFaultRuntime {
         network_state: ProductionNetworkStateCheckpoint,
     ) -> Result<ProductionFaultRuntimeCheckpoint, ProductionFaultRuntimeError> {
         let mut checkpoint = self.checkpoint(nodes)?;
-        let plan = self.runtime.as_ref().map_or_else(
-            || FaultSignalPlan::empty().id(),
-            |runtime| runtime.plan().id(),
-        );
         checkpoint.network_state = Some(network_state);
         checkpoint.identity = production_checkpoint_identity(
-            plan,
+            self.plan_id,
             checkpoint.runtime.as_ref(),
             &checkpoint.host,
             &checkpoint.qemu_fingerprints,
@@ -612,7 +774,9 @@ impl ProductionFaultRuntime {
             &checkpoint.qemu_active_rules,
             checkpoint.network_state.as_ref(),
             &checkpoint.emitted_events,
-        );
+            &checkpoint.pending_qemu_observations,
+            &checkpoint.pending_qemu_events,
+        )?;
         Ok(checkpoint)
     }
 
@@ -653,29 +817,99 @@ impl ProductionFaultRuntime {
     }
 }
 
-fn referenced_event_signal_count(plan: &FaultSignalPlan) -> usize {
-    plan.bindings()
-        .iter()
-        .filter_map(|binding| match binding.effect().specification() {
-            crucible::model::EffectSpecification::Storage(
-                crucible::model::StorageEffectSpecification::StallTimeout {
-                    recovery_event, ..
-                }
-                | crucible::model::StorageEffectSpecification::FlushDisposition {
-                    recovery_event,
-                    ..
-                },
-            ) => recovery_event.as_ref(),
-            _ => None,
-        })
-        .collect::<std::collections::BTreeSet<_>>()
-        .len()
+fn validate_production_event_state(
+    emitted_events: &[ReferencedSignalEvent],
+    additional_emitted_events: &[ReferencedSignalEvent],
+    pending_observations: &[FaultObservation],
+    additional_observations: &[FaultObservation],
+    pending_qemu_events: &BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+    resource_limits: FaultResourceLimits,
+) -> Result<(), ProductionFaultRuntimeError> {
+    let (records, bytes) = extend_referenced_event_usage(emitted_events, resource_limits, 0, 0)?;
+    let (records, bytes) =
+        extend_referenced_event_usage(additional_emitted_events, resource_limits, records, bytes)?;
+    let (records, bytes) =
+        extend_observation_usage(pending_observations, resource_limits, records, bytes)?;
+    let (records, bytes) =
+        extend_observation_usage(additional_observations, resource_limits, records, bytes)?;
+    let _ = extend_pending_qemu_event_usage(pending_qemu_events, resource_limits, records, bytes)?;
+    Ok(())
 }
 
-fn referenced_event_bytes(
+fn validate_pending_qemu_event_sequences(
+    pending_qemu_events: &BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+    next_sequences: &BTreeMap<NodeId, u64>,
+) -> Result<(), ProductionFaultRuntimeError> {
+    for (node, events) in pending_qemu_events {
+        let Some(first) = events.first() else {
+            continue;
+        };
+        let next_sequence = next_sequences
+            .get(node)
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!(
+                    "pending QEMU fault events name unknown node `{}`",
+                    node.name
+                ),
+            })?;
+        if first.header.event_sequence == 0 {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "pending QEMU fault events for `{}` begin with sequence zero",
+                    node.name
+                ),
+            }
+            .into());
+        }
+        for pair in events.windows(2) {
+            let expected = pair[0]
+                .header
+                .event_sequence
+                .checked_add(1)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: format!(
+                        "pending QEMU fault-event sequence for `{}` is exhausted",
+                        node.name
+                    ),
+                })?;
+            if pair[1].header.event_sequence != expected {
+                return Err(BackendError::Rejected {
+                    message: format!(
+                        "pending QEMU fault events for `{}` are not contiguous: expected {}, observed {}",
+                        node.name, expected, pair[1].header.event_sequence
+                    ),
+                }
+                .into());
+            }
+        }
+        let observed_next = events
+            .last()
+            .and_then(|event| event.header.event_sequence.checked_add(1))
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!(
+                    "pending QEMU fault-event sequence for `{}` is exhausted",
+                    node.name
+                ),
+            })?;
+        if observed_next != *next_sequence {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "pending QEMU fault events for `{}` end before sequence {}, but the live continuation requires {}",
+                    node.name, observed_next, next_sequence
+                ),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn extend_referenced_event_usage(
     events: &[ReferencedSignalEvent],
-) -> Result<u64, ProductionFaultRuntimeError> {
-    let mut total = 0_u64;
+    resource_limits: FaultResourceLimits,
+    mut records: u64,
+    mut total_bytes: u64,
+) -> Result<(u64, u64), ProductionFaultRuntimeError> {
     for event in events {
         let (evidence, bytes) = event
             .canonical_value_identity()
@@ -683,16 +917,177 @@ fn referenced_event_bytes(
         if evidence != event.evidence {
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
-        let bytes = u64::try_from(bytes)
-            .map_err(|_| ProductionFaultRuntimeError::ReferencedEventBytesLimit)?;
-        total = total
-            .checked_add(bytes)
-            .ok_or(ProductionFaultRuntimeError::ReferencedEventBytesLimit)?;
-        if total > HARD_PRODUCTION_REFERENCED_EVENT_BYTES {
-            return Err(ProductionFaultRuntimeError::ReferencedEventBytesLimit);
+        resource_limits.reserve("event_records", records, 1)?;
+        records += 1;
+        let value_bytes =
+            u64::try_from(bytes).map_err(|_| FaultResourceLimitError::Representation {
+                field: "event_inline_payload_bytes",
+                value: u64::MAX,
+            })?;
+        resource_limits.reserve("event_inline_payload_bytes", 0, value_bytes)?;
+        let signal_bytes = u64::try_from(event.signal.as_str().len()).map_err(|_| {
+            FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: u64::MAX,
+            }
+        })?;
+        let record_bytes = signal_bytes
+            .checked_add(value_bytes)
+            .and_then(|value| value.checked_add(81))
+            .ok_or(FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: u64::MAX,
+            })?;
+        resource_limits.reserve("event_log_bytes", total_bytes, record_bytes)?;
+        total_bytes += record_bytes;
+    }
+    Ok((records, total_bytes))
+}
+
+fn extend_observation_usage(
+    observations: &[FaultObservation],
+    resource_limits: FaultResourceLimits,
+    mut records: u64,
+    mut total_bytes: u64,
+) -> Result<(u64, u64), ProductionFaultRuntimeError> {
+    for observation in observations {
+        let material = observation_identity_material(observation)?;
+        resource_limits.reserve("event_records", records, 1)?;
+        records = records
+            .checked_add(1)
+            .ok_or(FaultResourceLimitError::Representation {
+                field: "event_records",
+                value: u64::MAX,
+            })?;
+        let record_bytes =
+            u64::try_from(material.len()).map_err(|_| FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: u64::MAX,
+            })?;
+        resource_limits.reserve("event_log_bytes", total_bytes, record_bytes)?;
+        total_bytes = total_bytes.checked_add(record_bytes).ok_or(
+            FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: u64::MAX,
+            },
+        )?;
+    }
+    Ok((records, total_bytes))
+}
+
+fn extend_pending_qemu_event_usage(
+    events_by_node: &BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+    resource_limits: FaultResourceLimits,
+    mut records: u64,
+    mut total_bytes: u64,
+) -> Result<(u64, u64), ProductionFaultRuntimeError> {
+    for events in events_by_node.values() {
+        for event in events {
+            resource_limits.reserve("event_records", records, 1)?;
+            records = records
+                .checked_add(1)
+                .ok_or(FaultResourceLimitError::Representation {
+                    field: "event_records",
+                    value: u64::MAX,
+                })?;
+            let payload_bytes = u64::try_from(event.payload.len()).map_err(|_| {
+                FaultResourceLimitError::Representation {
+                    field: "event_inline_payload_bytes",
+                    value: u64::MAX,
+                }
+            })?;
+            resource_limits.reserve("event_inline_payload_bytes", 0, payload_bytes)?;
+            let header_bytes =
+                u64::try_from(crucible_shmem::FAULT_EVENT_HEADER_V1_BYTES).map_err(|_| {
+                    FaultResourceLimitError::Representation {
+                        field: "event_log_bytes",
+                        value: u64::MAX,
+                    }
+                })?;
+            let record_bytes = payload_bytes.checked_add(header_bytes).ok_or(
+                FaultResourceLimitError::Representation {
+                    field: "event_log_bytes",
+                    value: u64::MAX,
+                },
+            )?;
+            resource_limits.reserve("event_log_bytes", total_bytes, record_bytes)?;
+            total_bytes = total_bytes.checked_add(record_bytes).ok_or(
+                FaultResourceLimitError::Representation {
+                    field: "event_log_bytes",
+                    value: u64::MAX,
+                },
+            )?;
         }
     }
-    Ok(total)
+    Ok((records, total_bytes))
+}
+
+fn observation_identity_material(
+    observation: &FaultObservation,
+) -> Result<Vec<u8>, ProductionFaultRuntimeError> {
+    if observation.semantic_version != crucible::model::FAULT_RUNTIME_STATE_VERSION
+        || observation.evidence == ContentHash::default()
+        || !matches!(
+            observation.kind,
+            FaultObservationKind::FaultOpportunity | FaultObservationKind::EffectApplied
+        )
+        || observation.binding.is_none()
+        || observation.target.is_none()
+        || observation
+            .target
+            .as_ref()
+            .is_some_and(|target| target.validate().is_err())
+    {
+        return Err(FaultExecutionError::CheckpointPresence.into());
+    }
+    let mut material = Vec::new();
+    material.extend_from_slice(&observation.semantic_version.to_be_bytes());
+    append_length_prefixed(&mut material, observation.kind.as_str().as_bytes())?;
+    material.extend_from_slice(&observation.coordinate.virtual_nanos.to_be_bytes());
+    match observation.coordinate.retired_instructions {
+        Some(retired) => {
+            material.push(1);
+            material.extend_from_slice(&retired.to_be_bytes());
+        }
+        None => material.push(0),
+    }
+    match &observation.binding {
+        Some(binding) => {
+            material.push(1);
+            append_length_prefixed(&mut material, binding.as_str().as_bytes())?;
+        }
+        None => material.push(0),
+    }
+    match &observation.target {
+        Some(target) => {
+            material.push(1);
+            append_length_prefixed(&mut material, target.canonical_material().as_bytes())?;
+        }
+        None => material.push(0),
+    }
+    match observation.opportunity {
+        Some(opportunity) => {
+            material.push(1);
+            material.extend_from_slice(&opportunity.bytes);
+        }
+        None => material.push(0),
+    }
+    material.extend_from_slice(&observation.evidence.bytes);
+    Ok(material)
+}
+
+fn append_length_prefixed(
+    output: &mut Vec<u8>,
+    value: &[u8],
+) -> Result<(), ProductionFaultRuntimeError> {
+    let length =
+        u64::try_from(value.len()).map_err(|_| FaultResourceLimitError::Representation {
+            field: "event_log_bytes",
+            value: u64::MAX,
+        })?;
+    output.extend_from_slice(&length.to_be_bytes());
+    output.extend_from_slice(value);
+    Ok(())
 }
 
 fn production_checkpoint_identity(
@@ -705,7 +1100,9 @@ fn production_checkpoint_identity(
     qemu_active_rules: &BTreeMap<ContentHash, ResolvedBindingAction>,
     network_state: Option<&ProductionNetworkStateCheckpoint>,
     emitted_events: &[ReferencedSignalEvent],
-) -> ContentHash {
+    pending_qemu_observations: &[FaultObservation],
+    pending_qemu_events: &BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+) -> Result<ContentHash, ProductionFaultRuntimeError> {
     let mut material = Vec::new();
     material.extend_from_slice(&plan.bytes);
     material.extend_from_slice(&host.digest().bytes);
@@ -717,24 +1114,12 @@ fn production_checkpoint_identity(
         None => material.push(0),
     }
     if let Some(runtime) = runtime {
-        material.extend_from_slice(&runtime.binding_runtime.evaluator.content().bytes);
-        material.push(u8::from(runtime.poisoned));
-        for (adapter, state) in &runtime.adapters {
-            material.push(match adapter {
-                crucible::model::FaultAdapter::Network => 1,
-                crucible::model::FaultAdapter::Storage => 2,
-                crucible::model::FaultAdapter::Node => 3,
-            });
-            material.extend_from_slice(&state.digest.bytes);
-        }
-        if let Some(cursor) = runtime.binding_runtime.scheduler_cursor {
-            material.extend_from_slice(&cursor.virtual_nanos.to_be_bytes());
-            material.extend_from_slice(&cursor.same_coordinate_sequence.to_be_bytes());
-        }
-        if let Some(cursor) = runtime.binding_runtime.boundary_completed_cursor {
-            material.extend_from_slice(&cursor.virtual_nanos.to_be_bytes());
-            material.extend_from_slice(&cursor.same_coordinate_sequence.to_be_bytes());
-        }
+        material.extend_from_slice(
+            &runtime
+                .content_id()
+                .map_err(FaultExecutionError::from)?
+                .bytes,
+        );
     }
     for event in emitted_events {
         material.extend_from_slice(event.signal.as_str().as_bytes());
@@ -749,6 +1134,17 @@ fn production_checkpoint_identity(
         );
         material.extend_from_slice(&event.same_coordinate_sequence.to_be_bytes());
         material.extend_from_slice(&event.evidence.bytes);
+    }
+    for observation in pending_qemu_observations {
+        append_length_prefixed(&mut material, &observation_identity_material(observation)?)?;
+    }
+    for (node, events) in pending_qemu_events {
+        material.extend_from_slice(node.name.as_bytes());
+        material.push(0);
+        for event in events {
+            material.extend_from_slice(&event.header.encode());
+            material.extend_from_slice(&event.payload);
+        }
     }
     for (node, fingerprint) in qemu_fingerprints {
         material.extend_from_slice(node.name.as_bytes());
@@ -765,10 +1161,10 @@ fn production_checkpoint_identity(
         material.extend_from_slice(&identity.bytes);
         material.extend_from_slice(&action.id().bytes);
     }
-    ContentHash::from_canonical_material(
-        "crucible.production-fault-runtime-checkpoint.v3",
+    Ok(ContentHash::from_canonical_material(
+        "crucible.production-fault-runtime-checkpoint.v6",
         &hex_bytes(&material),
-    )
+    ))
 }
 
 fn validate_qemu_active_rules(
@@ -868,6 +1264,7 @@ mod tests {
             _same_coordinate_sequence: u64,
             _choice: &SignalChoiceContext,
             _inputs: &[EvaluatedSignal],
+            _resource_limits: FaultResourceLimits,
         ) -> Result<EvaluatedSignal, SignalEvaluationError> {
             Err(SignalEvaluationError::ArtifactSourceRequired(
                 node.id.clone(),
@@ -883,6 +1280,23 @@ mod tests {
     fn signal_id(value: &str) -> SignalId {
         SignalId::parse(value)
             .unwrap_or_else(|error| panic!("test signal ID should be valid: {error}"))
+    }
+
+    fn pending_qemu_observation() -> FaultObservation {
+        FaultObservation {
+            semantic_version: crucible::model::FAULT_RUNTIME_STATE_VERSION,
+            kind: FaultObservationKind::EffectApplied,
+            coordinate: FaultCoordinate {
+                virtual_nanos: 7,
+                retired_instructions: Some(11),
+            },
+            binding: Some(object_id("node-fault")),
+            target: Some(ResolvedFaultTarget::Node {
+                node: object_id("node-a"),
+            }),
+            opportunity: Some(ContentHash::from_bytes(b"node-opportunity")),
+            evidence: ContentHash::from_bytes(b"qemu-evidence"),
+        }
     }
 
     fn availability_plan(
@@ -967,6 +1381,29 @@ mod tests {
         let storage = host_production_manifest("storage-host", std::iter::empty())
             .unwrap_or_else(|error| panic!("empty storage manifest should build: {error}"));
         assert!(storage.capabilities.is_empty());
+    }
+
+    #[test]
+    fn empty_plan_checkpoint_preserves_custom_resource_identity() {
+        let mut limits = FaultResourceLimits::default();
+        limits.event_records -= 1;
+        let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), limits)
+            .unwrap_or_else(|error| panic!("custom empty plan should be valid: {error}"));
+        let mut nodes = QemuNodeSet::new();
+        let seed = ContentHash::from_bytes(b"custom-empty-plan");
+        let runtime = ProductionFaultRuntime::new(
+            plan.clone(),
+            None,
+            SignalBoundarySnapshot::default(),
+            seed,
+            &nodes,
+        )
+        .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
+        let checkpoint = runtime
+            .checkpoint(&mut nodes)
+            .unwrap_or_else(|error| panic!("empty checkpoint should encode: {error}"));
+        ProductionFaultRuntime::restore(plan, None, seed, checkpoint, &mut nodes)
+            .unwrap_or_else(|error| panic!("custom empty checkpoint should restore: {error}"));
     }
 
     #[test]
@@ -1270,5 +1707,127 @@ mod tests {
             ProductionFaultRuntime::restore(plan, Some(artifacts), seed, checkpoint, &mut nodes)
                 .unwrap_or_else(|error| panic!("production checkpoint should restore: {error}"));
         assert_eq!(restored.emitted_events(), runtime.emitted_events());
+    }
+
+    #[test]
+    fn rejected_qemu_event_validation_retains_the_raw_event() {
+        let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
+            .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));
+        let mut nodes = QemuNodeSet::new();
+        let mut runtime = ProductionFaultRuntime::new(
+            plan,
+            None,
+            SignalBoundarySnapshot::default(),
+            ContentHash::from_bytes(b"retain-rejected-qemu-event"),
+            &nodes,
+        )
+        .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        let payload = vec![1, 2, 3];
+        let event = DequeuedFaultEvent {
+            header: crucible_shmem::FaultEventHeaderV1 {
+                command_kind: crucible_shmem::FaultCommandKind::CpuService,
+                outcome: crucible_shmem::FaultEventOutcomeV1::Applied,
+                event_sequence: 1,
+                rule_command_sequence: 1,
+                observed_icount: 1,
+                model_phase: 1,
+                target_kind: 1,
+                generation: 1,
+                binding_hash: [1; 32],
+                opportunity_hash: [2; 32],
+                action_hash: [3; 32],
+                target_hash: [4; 32],
+                before_hash: [5; 32],
+                after_hash: [6; 32],
+                evidence_hash: [7; 32],
+                payload_hash: *blake3::hash(&payload).as_bytes(),
+                payload_offset: 0,
+                payload_length: u32::try_from(payload.len())
+                    .unwrap_or_else(|_| panic!("test payload length should fit")),
+            },
+            payload,
+        };
+        runtime
+            .pending_qemu_events
+            .insert(node.clone(), vec![event.clone()]);
+
+        let result = runtime.drain_qemu_observations(
+            &mut nodes,
+            FaultCoordinate {
+                virtual_nanos: 1,
+                retired_instructions: Some(1),
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            runtime.pending_qemu_events.get(&node),
+            Some(&vec![event.clone()])
+        );
+
+        let mut second = event.clone();
+        second.header.event_sequence = 2;
+        let sequences = BTreeMap::from([(node.clone(), 3)]);
+        assert!(
+            validate_pending_qemu_event_sequences(
+                &BTreeMap::from([(node.clone(), vec![event.clone(), second.clone()])]),
+                &sequences,
+            )
+            .is_ok()
+        );
+        second.header.event_sequence = 3;
+        assert!(
+            validate_pending_qemu_event_sequences(
+                &BTreeMap::from([(node, vec![event, second])]),
+                &sequences,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn production_event_limits_cover_all_retained_event_classes_in_aggregate() {
+        let mut limits = FaultResourceLimits::default();
+        limits.event_records = 1;
+        let observations = vec![pending_qemu_observation(), pending_qemu_observation()];
+
+        assert!(
+            validate_production_event_state(
+                &[],
+                &[],
+                &observations,
+                &[],
+                &BTreeMap::new(),
+                limits,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pending_qemu_observation_identity_covers_kind_binding_and_target() {
+        let original = pending_qemu_observation();
+        let original_material = observation_identity_material(&original)
+            .unwrap_or_else(|error| panic!("observation should encode: {error}"));
+
+        let mut changed_kind = original.clone();
+        changed_kind.kind = FaultObservationKind::FaultOpportunity;
+        let mut changed_binding = original.clone();
+        changed_binding.binding = Some(object_id("other-binding"));
+        let mut changed_target = original;
+        changed_target.target = Some(ResolvedFaultTarget::Node {
+            node: object_id("node-b"),
+        });
+
+        for changed in [changed_kind, changed_binding, changed_target] {
+            assert_ne!(
+                observation_identity_material(&changed)
+                    .unwrap_or_else(|error| panic!("changed observation should encode: {error}")),
+                original_material
+            );
+        }
     }
 }

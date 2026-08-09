@@ -9,13 +9,14 @@ use std::sync::Arc;
 
 use super::*;
 
-const ADAPTER_CHECKPOINT_VERSION: u16 = 1;
+const ADAPTER_CHECKPOINT_VERSION: u16 = 2;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AdapterCheckpointWire {
     semantic_version: u16,
     adapter: FaultAdapter,
+    resource_limits: FaultResourceLimits,
     impulse_sequence: u64,
     entries: Vec<AdapterContributionWire>,
 }
@@ -250,11 +251,26 @@ impl TransactionalFaultAdapters {
     /// # Errors
     ///
     /// Returns [`FaultRuntimeError`] when a manifest names the wrong family.
-    pub fn new(manifests: FaultAdapterManifests) -> Result<Self, FaultRuntimeError> {
+    pub fn new(
+        manifests: FaultAdapterManifests,
+        resource_limits: FaultResourceLimits,
+    ) -> Result<Self, FaultRuntimeError> {
         Ok(Self {
-            network: TransactionalAdapterRuntime::new(FaultAdapter::Network, manifests.network)?,
-            storage: TransactionalAdapterRuntime::new(FaultAdapter::Storage, manifests.storage)?,
-            node: TransactionalAdapterRuntime::new(FaultAdapter::Node, manifests.node)?,
+            network: TransactionalAdapterRuntime::new(
+                FaultAdapter::Network,
+                manifests.network,
+                resource_limits,
+            )?,
+            storage: TransactionalAdapterRuntime::new(
+                FaultAdapter::Storage,
+                manifests.storage,
+                resource_limits,
+            )?,
+            node: TransactionalAdapterRuntime::new(
+                FaultAdapter::Node,
+                manifests.node,
+                resource_limits,
+            )?,
             prepared: None,
         })
     }
@@ -297,6 +313,7 @@ impl TransactionalFaultAdapters {
     pub fn restore(
         manifests: FaultAdapterManifests,
         mut checkpoints: BTreeMap<FaultAdapter, AdapterCheckpointState>,
+        resource_limits: FaultResourceLimits,
     ) -> Result<Self, FaultRuntimeError> {
         let network = checkpoints
             .remove(&FaultAdapter::Network)
@@ -315,13 +332,20 @@ impl TransactionalFaultAdapters {
                 FaultAdapter::Network,
                 manifests.network,
                 &network,
+                resource_limits,
             )?,
             storage: TransactionalAdapterRuntime::restore(
                 FaultAdapter::Storage,
                 manifests.storage,
                 &storage,
+                resource_limits,
             )?,
-            node: TransactionalAdapterRuntime::restore(FaultAdapter::Node, manifests.node, &node)?,
+            node: TransactionalAdapterRuntime::restore(
+                FaultAdapter::Node,
+                manifests.node,
+                &node,
+                resource_limits,
+            )?,
             prepared: None,
         })
     }
@@ -514,6 +538,7 @@ impl FaultActionSink for TransactionalFaultAdapters {
 pub struct TransactionalAdapterRuntime {
     adapter: FaultAdapter,
     manifest: FaultCapabilityManifest,
+    resource_limits: FaultResourceLimits,
     active: ActiveContributionTable,
     impulse_sequence: u64,
     digest: ContentHash,
@@ -539,7 +564,11 @@ impl TransactionalAdapterRuntime {
     pub fn new(
         adapter: FaultAdapter,
         manifest: FaultCapabilityManifest,
+        resource_limits: FaultResourceLimits,
     ) -> Result<Self, FaultRuntimeError> {
+        resource_limits
+            .validate()
+            .map_err(FaultRuntimeError::ResourceLimit)?;
         let family = adapter_name(adapter);
         if manifest.backend.as_str() != family
             && !manifest.backend.as_str().starts_with(&format!("{family}-"))
@@ -547,10 +576,11 @@ impl TransactionalAdapterRuntime {
             return Err(FaultRuntimeError::AdapterManifestMismatch);
         }
         let active = ActiveContributionTable::default();
-        let digest = state_digest(adapter, 0, &active);
+        let digest = state_digest(adapter, 0, &active, resource_limits);
         Ok(Self {
             adapter,
             manifest,
+            resource_limits,
             active,
             impulse_sequence: 0,
             digest,
@@ -602,11 +632,12 @@ impl TransactionalAdapterRuntime {
         let bytes = serde_json::to_vec(&AdapterCheckpointWire {
             semantic_version: ADAPTER_CHECKPOINT_VERSION,
             adapter: self.adapter,
+            resource_limits: self.resource_limits,
             impulse_sequence: self.impulse_sequence,
             entries,
         })
         .map_err(|_| FaultRuntimeError::AdapterCheckpointCodec)?;
-        AdapterCheckpointState::new(ADAPTER_CHECKPOINT_VERSION, bytes)
+        AdapterCheckpointState::new(ADAPTER_CHECKPOINT_VERSION, bytes, self.resource_limits)
     }
 
     /// Restores and revalidates one committed production-adapter state.
@@ -619,17 +650,21 @@ impl TransactionalAdapterRuntime {
         adapter: FaultAdapter,
         manifest: FaultCapabilityManifest,
         checkpoint: &AdapterCheckpointState,
+        resource_limits: FaultResourceLimits,
     ) -> Result<Self, FaultRuntimeError> {
-        checkpoint.validate()?;
+        checkpoint.validate(resource_limits)?;
         if checkpoint.semantic_version != ADAPTER_CHECKPOINT_VERSION {
             return Err(FaultRuntimeError::VersionOrIdentityMismatch);
         }
         let wire: AdapterCheckpointWire = serde_json::from_slice(&checkpoint.bytes)
             .map_err(|_| FaultRuntimeError::AdapterCheckpointCodec)?;
-        if wire.semantic_version != ADAPTER_CHECKPOINT_VERSION || wire.adapter != adapter {
+        if wire.semantic_version != ADAPTER_CHECKPOINT_VERSION
+            || wire.adapter != adapter
+            || wire.resource_limits != resource_limits
+        {
             return Err(FaultRuntimeError::VersionOrIdentityMismatch);
         }
-        let mut runtime = Self::new(adapter, manifest)?;
+        let mut runtime = Self::new(adapter, manifest, resource_limits)?;
         for entry in wire.entries {
             let descriptor = entry.request.kind().descriptor();
             let capability = FaultCapabilityId::parse(entry.request.capability())
@@ -648,10 +683,16 @@ impl TransactionalAdapterRuntime {
                     mapping_output: Arc::new(entry.mapping_output),
                     transition_sequence: entry.transition_sequence,
                 },
+                resource_limits,
             )?;
         }
         runtime.impulse_sequence = wire.impulse_sequence;
-        runtime.digest = state_digest(adapter, runtime.impulse_sequence, &runtime.active);
+        runtime.digest = state_digest(
+            adapter,
+            runtime.impulse_sequence,
+            &runtime.active,
+            resource_limits,
+        );
         Ok(runtime)
     }
 
@@ -742,6 +783,7 @@ impl FaultActionSink for TransactionalAdapterRuntime {
                                 mapping_output: action.mapping_output.clone(),
                                 transition_sequence: action.transition_sequence,
                             },
+                            self.resource_limits,
                         )
                         .map_err(|error| self.rejection(Some(action), error))?;
                 }
@@ -759,13 +801,19 @@ impl FaultActionSink for TransactionalAdapterRuntime {
             }
             action_ids.push(id);
         }
-        let digest = state_digest(self.adapter, impulse_sequence, &active);
+        let digest = state_digest(
+            self.adapter,
+            impulse_sequence,
+            &active,
+            self.resource_limits,
+        );
         let transaction = transaction_digest(self.digest, digest, &action_ids);
         let results: Vec<PreparedActionResult> = actions
             .iter()
             .zip(action_ids)
             .map(|(action, id)| PreparedActionResult {
                 action: id,
+                precondition: Some(self.digest),
                 observation: FaultObservation {
                     semantic_version: FAULT_RUNTIME_STATE_VERSION,
                     kind: match action.kind {
@@ -847,16 +895,18 @@ fn state_digest(
     adapter: FaultAdapter,
     impulse_sequence: u64,
     active: &ActiveContributionTable,
+    resource_limits: FaultResourceLimits,
 ) -> ContentHash {
     let mut material = format!(
-        "adapter={};impulses={impulse_sequence};",
-        adapter_name(adapter)
+        "adapter={};impulses={impulse_sequence};\n{}",
+        adapter_name(adapter),
+        resource_limits.canonical_material(),
     );
     for group in active.composition_groups() {
         material.push_str(&group.digest.to_hex());
         material.push(';');
     }
-    ContentHash::from_canonical_material("crucible.production-adapter-state.v1", &material)
+    ContentHash::from_canonical_material("crucible.production-adapter-state.v2", &material)
 }
 
 fn transaction_digest(
@@ -942,6 +992,7 @@ mod tests {
                 retired_instructions: None,
             },
             cause: BindingActionCause::Signal,
+            expected_precondition: None,
         }
     }
 
@@ -962,8 +1013,11 @@ mod tests {
     impl TransactionProbe {
         fn new(reject_commit: bool) -> Self {
             Self {
-                ledger: TransactionalFaultAdapters::new(manifests())
-                    .unwrap_or_else(|error| panic!("transaction probe: {error}")),
+                ledger: TransactionalFaultAdapters::new(
+                    manifests(),
+                    FaultResourceLimits::default(),
+                )
+                .unwrap_or_else(|error| panic!("transaction probe: {error}")),
                 reject_commit,
                 evidence: ContentHash::from_bytes(b"backend-evidence"),
             }
@@ -1011,6 +1065,7 @@ mod tests {
         let mut runtime = TransactionalAdapterRuntime::new(
             FaultAdapter::Network,
             manifest(FaultAdapter::Network),
+            FaultResourceLimits::default(),
         )
         .unwrap_or_else(|error| panic!("adapter runtime: {error}"));
         let initial = runtime.state_digest();
@@ -1039,8 +1094,12 @@ mod tests {
     fn capability_and_cross_adapter_checks_fail_before_staging() {
         let mut missing = manifest(FaultAdapter::Network);
         missing.capabilities.clear();
-        let mut runtime = TransactionalAdapterRuntime::new(FaultAdapter::Network, missing)
-            .unwrap_or_else(|error| panic!("adapter runtime: {error}"));
+        let mut runtime = TransactionalAdapterRuntime::new(
+            FaultAdapter::Network,
+            missing,
+            FaultResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("adapter runtime: {error}"));
         let action = network_action();
         let rejection = match runtime.prepare_batch(&[action]) {
             Ok(_) => panic!("missing capability must reject"),
@@ -1058,6 +1117,7 @@ mod tests {
         let mut runtime = TransactionalAdapterRuntime::new(
             FaultAdapter::Network,
             manifest(FaultAdapter::Network),
+            FaultResourceLimits::default(),
         )
         .unwrap_or_else(|error| panic!("adapter runtime: {error}"));
         let action = network_action();
@@ -1075,14 +1135,32 @@ mod tests {
             FaultAdapter::Network,
             manifest(FaultAdapter::Network),
             &checkpoint,
+            FaultResourceLimits::default(),
         )
         .unwrap_or_else(|error| panic!("restore: {error}"));
         assert_eq!(restored, runtime);
 
+        let mut different_limits = FaultResourceLimits::default();
+        different_limits.active_contributions_per_target = 1;
+        assert_eq!(
+            TransactionalAdapterRuntime::restore(
+                FaultAdapter::Network,
+                manifest(FaultAdapter::Network),
+                &checkpoint,
+                different_limits,
+            ),
+            Err(FaultRuntimeError::VersionOrIdentityMismatch)
+        );
+
         let mut insufficient = manifest(FaultAdapter::Network);
         insufficient.capabilities.clear();
         assert!(matches!(
-            TransactionalAdapterRuntime::restore(FaultAdapter::Network, insufficient, &checkpoint,),
+            TransactionalAdapterRuntime::restore(
+                FaultAdapter::Network,
+                insufficient,
+                &checkpoint,
+                FaultResourceLimits::default(),
+            ),
             Err(FaultRuntimeError::AdapterActionMismatch)
         ));
 
@@ -1093,6 +1171,7 @@ mod tests {
                 FaultAdapter::Network,
                 manifest(FaultAdapter::Network),
                 &corrupt,
+                FaultResourceLimits::default(),
             ),
             Err(FaultRuntimeError::AdapterCheckpointDigest)
         );
@@ -1100,8 +1179,9 @@ mod tests {
 
     #[test]
     fn mirrored_sink_returns_backend_evidence_and_commits_both_views() {
-        let mut state = TransactionalFaultAdapters::new(manifests())
-            .unwrap_or_else(|error| panic!("adapter state: {error}"));
+        let mut state =
+            TransactionalFaultAdapters::new(manifests(), FaultResourceLimits::default())
+                .unwrap_or_else(|error| panic!("adapter state: {error}"));
         let mut backend = TransactionProbe::new(false);
         let expected_evidence = backend.evidence;
         let action = network_action();
@@ -1132,8 +1212,9 @@ mod tests {
 
     #[test]
     fn mirrored_sink_restores_canonical_state_after_backend_commit_rejection() {
-        let mut state = TransactionalFaultAdapters::new(manifests())
-            .unwrap_or_else(|error| panic!("adapter state: {error}"));
+        let mut state =
+            TransactionalFaultAdapters::new(manifests(), FaultResourceLimits::default())
+                .unwrap_or_else(|error| panic!("adapter state: {error}"));
         let before = state.clone();
         let mut backend = TransactionProbe::new(true);
         let action = network_action();

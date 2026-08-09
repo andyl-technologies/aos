@@ -358,6 +358,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             .iter()
             .map(|action| PreparedActionResult {
                 action: action.id(),
+                precondition: None,
                 observation: applied_observation(
                     action,
                     ContentHash::from_bytes(b"qemu-predicted-evidence"),
@@ -474,10 +475,28 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 .map_err(|_source| {
                     FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
                 })?;
-            if preparation_header.before_hash
-                != preparation.before_sha256().map_err(|_source| {
-                    FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
-                })?
+            let before_sha256 = preparation.before_sha256().map_err(|_source| {
+                FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
+            })?;
+            let observed_precondition = ContentHash::from_bytes(&before_sha256);
+            if let Some((action, expected)) = prepared.actions.iter().find_map(|prepared| {
+                prepared
+                    .action
+                    .expected_precondition
+                    .filter(|expected| *expected != observed_precondition)
+                    .map(|expected| (&prepared.action, expected))
+            }) {
+                return Err(FaultActionCommitError::Rejected(Self::reject(
+                    Some(action),
+                    FaultRuntimeError::ReplayPreconditionMismatch {
+                        action: action.id(),
+                        expected,
+                        observed: observed_precondition,
+                    },
+                    result_evidence_hash(&preparation_header, &preparation_evidence),
+                )));
+            }
+            if preparation_header.before_hash != before_sha256
                 || !memory_batch_evidence_matches(&preparation, &prepared)
             {
                 let evidence = result_evidence_hash(&preparation_header, &preparation_evidence);
@@ -531,6 +550,22 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 return Err(FaultActionCommitError::Fatal(
                     FaultRuntimeError::IncompleteAdapterState,
                 ));
+            }
+            let observed_precondition = ContentHash::from_bytes(&evidence.before_sha256);
+            if let Some(expected) = prepared.action.expected_precondition {
+                if expected != observed_precondition {
+                    return Err(FaultActionCommitError::Rejected(Self::reject(
+                        Some(&prepared.action),
+                        FaultRuntimeError::ReplayPreconditionMismatch {
+                            action: prepared.action.id(),
+                            expected,
+                            observed: observed_precondition,
+                        },
+                        ContentHash::from_bytes(&evidence.encode().map_err(|_source| {
+                            FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
+                        })?),
+                    )));
+                }
             }
             authorized_typed.push((prepared, evidence));
         }
@@ -620,6 +655,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     FaultRuntimeError::IncompleteAdapterState,
                 ));
             }
+            let precondition = ContentHash::from_bytes(&result_header.before_hash);
             applied = true;
             results.extend(
                 prepared
@@ -627,6 +663,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     .into_iter()
                     .map(|prepared| PreparedActionResult {
                         action: prepared.action.id(),
+                        precondition: Some(precondition),
                         observation: applied_observation(&prepared.action, evidence),
                     }),
             );
@@ -667,6 +704,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             })?);
             results.push(PreparedActionResult {
                 action: prepared.action.id(),
+                precondition: Some(ContentHash::from_bytes(&preparation.before_sha256)),
                 observation: applied_observation(&prepared.action, evidence_hash),
             });
         }

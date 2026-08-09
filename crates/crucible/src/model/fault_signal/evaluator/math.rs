@@ -1677,6 +1677,7 @@ pub(super) fn evaluate_stateful_node(
     inputs: &[EvaluatedSignal],
     state: &mut EvaluatorNodeState,
     emitted_events: &mut Vec<StatefulSignalEvent>,
+    resource_limits: FaultResourceLimits,
 ) -> Result<EvaluatedSignal, SignalEvaluationError> {
     match (specification, &mut *state) {
         (
@@ -1880,6 +1881,11 @@ pub(super) fn evaluate_stateful_node(
                         })
                 });
                 if let Some(transition) = transition {
+                    if transition.emit.is_some() {
+                        resource_limits
+                            .reserve("events_emitted_per_signal_transition", 0, 1)
+                            .map_err(SignalEvaluationError::PlanResourceLimit)?;
+                    }
                     *state = transition.to.clone();
                     for operation in &transition.timer_operations {
                         match operation {

@@ -29,6 +29,7 @@ fn prepared_actions(actions: &[ResolvedBindingAction]) -> PreparedActionBatch {
             .iter()
             .map(|action| PreparedActionResult {
                 action: action.id(),
+                precondition: None,
                 observation: FaultObservation {
                     semantic_version: FAULT_RUNTIME_STATE_VERSION,
                     kind: match action.kind {
@@ -254,6 +255,7 @@ impl SignalArtifactProvider for NoArtifacts {
         _same_coordinate_sequence: u64,
         _choice: &SignalChoiceContext,
         _inputs: &[EvaluatedSignal],
+        _resource_limits: FaultResourceLimits,
     ) -> Result<EvaluatedSignal, SignalEvaluationError> {
         Err(SignalEvaluationError::ArtifactSourceRequired(
             node.id.clone(),
@@ -429,6 +431,7 @@ fn persistent_activation_is_installed_once_and_retains_values() {
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
 
@@ -511,6 +514,7 @@ fn piecewise_parameter_actions_carry_the_transferred_value() {
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
 
@@ -553,6 +557,7 @@ fn initially_inactive_binding_does_not_emit_removal_actions() {
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
 
@@ -595,6 +600,7 @@ fn dynamic_membership_reconciles_active_adapter_contributions() {
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
     runtime
@@ -684,6 +690,7 @@ fn dynamic_membership_computes_wakeup_before_adapter_prepare() {
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid terminal runtime: {error}"));
     runtime
@@ -743,6 +750,7 @@ fn adapter_rejection_rolls_back_the_entire_boundary() {
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
 
@@ -785,6 +793,7 @@ fn malformed_adapter_success_rolls_back_the_entire_boundary() {
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
 
@@ -829,6 +838,7 @@ fn event_parent_drives_exactly_one_impulse() {
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid event runtime: {error}"));
 
@@ -897,6 +907,7 @@ fn state_transition_uses_the_exhaustive_default_for_an_unknown_request() {
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid transition runtime: {error}"));
 
@@ -941,6 +952,7 @@ fn scheduler_rejects_a_backward_boundary() {
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid monotone runtime: {error}"));
     runtime
@@ -979,6 +991,7 @@ fn opportunity_before_boundary_is_rejected() {
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid boundary runtime: {error}"));
     let opportunity = FaultOpportunity::new(
@@ -1115,6 +1128,7 @@ fn fat_checkpoint_restore_matches_uninterrupted_continuation() {
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
     uninterrupted
@@ -1129,6 +1143,7 @@ fn fat_checkpoint_restore_matches_uninterrupted_continuation() {
             vec![binding.clone()],
             &NoArtifacts,
             ContentHash::from_bytes(b"different-seed"),
+            FaultResourceLimits::default(),
             &checkpoint,
         ),
         Err(BindingRuntimeError::CheckpointIdentity)
@@ -1145,6 +1160,7 @@ fn fat_checkpoint_restore_matches_uninterrupted_continuation() {
             vec![binding.clone()],
             &NoArtifacts,
             ContentHash::from_bytes(b"seed"),
+            FaultResourceLimits::default(),
             &tampered,
         ),
         Err(BindingRuntimeError::CheckpointState)
@@ -1161,6 +1177,7 @@ fn fat_checkpoint_restore_matches_uninterrupted_continuation() {
             vec![binding.clone()],
             &NoArtifacts,
             ContentHash::from_bytes(b"seed"),
+            FaultResourceLimits::default(),
             &future,
         ),
         Err(BindingRuntimeError::CheckpointState)
@@ -1170,6 +1187,7 @@ fn fat_checkpoint_restore_matches_uninterrupted_continuation() {
         vec![binding],
         &NoArtifacts,
         ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
         &checkpoint,
     )
     .unwrap_or_else(|error| panic!("restore failed: {error}"));
@@ -1216,16 +1234,16 @@ fn service_profile_identity_includes_named_physical_input_contracts() {
         inputs: vec![SignalValue::U64(42)],
     };
 
-    let distance_digest = resolved_mapping_output_digest(&distance)
+    let distance_digest = resolved_mapping_output_digest(&distance, FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("distance digest: {error}"));
     assert_ne!(
         distance_digest,
-        resolved_mapping_output_digest(&count)
+        resolved_mapping_output_digest(&count, FaultResourceLimits::default())
             .unwrap_or_else(|error| panic!("count digest: {error}")),
     );
     assert_ne!(
         distance_digest,
-        resolved_mapping_output_digest(&range)
+        resolved_mapping_output_digest(&range, FaultResourceLimits::default())
             .unwrap_or_else(|error| panic!("range digest: {error}")),
     );
 }

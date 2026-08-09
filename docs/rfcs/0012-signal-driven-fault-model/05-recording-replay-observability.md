@@ -176,6 +176,12 @@ reevaluates signals and bindings. It verifies:
 - adapter outcomes;
 - event-log and execution fingerprints.
 
+The trace contains one work-item envelope for every evaluated boundary and
+opportunity, even when it resolves to no adapter action. Each envelope carries
+the post-derivation fingerprint and an ordered, possibly empty, effect list.
+Consequently, a pass outcome, an inactive binding, and a state-machine-only
+transition are authenticated rather than disappearing from the replay stream.
+
 This mode proves the signal evaluator and adapters are deterministic.
 
 ### Locked-effect replay
@@ -193,12 +199,31 @@ shims for older effect semantics.
 ### Outcome-only network replay
 
 A recorded packet/network outcome stream is a specialized locked-effect source.
+It contains every observed network-frame work item, including pass frames with
+an empty effect list; sparse or sporadic faults therefore retain their exact
+position in the stream.
 Alignment modes are:
 
-- exact stable packet/frame key;
-- producer/direction sequence;
-- exact event coordinate and sequence;
-- declared aggregate time bucket with a deterministic matching rule.
+- **exact stable frame key** — matches producer, destination, producer-owned
+  sequence, protocol-expansion ancestry, generated-response ancestry,
+  forwarding-mutation ancestry, immutable length, and payload digest while
+  allowing the replay scheduler coordinate to differ;
+- **producer/direction sequence** — matches the producer identity, link
+  direction, and producer-owned sequence;
+- **exact event coordinate and sequence** — matches virtual/retired-instruction
+  coordinate and same-coordinate scheduler sequence;
+- **ordered time bucket** — requires a positive bucket width and consumes
+  compatible target/operation/phase/direction frame groups in recorded order
+  within the same `floor(virtual_nanos / width)` bucket.
+
+Every mode also requires exact target, operation, phase, and direction. Every
+observed frame consumes exactly one aligned work item, whether its effect list
+is empty or nonempty. Once a recorded work item aligns, each typed effect is rebound to the observed frame's
+current opportunity identity and scheduler coordinate before adapter
+application. Thus frame-key and producer-sequence replay can tolerate timing
+drift without applying an old opportunity identity to the live frame. A zero
+bucket width, non-frame record, incompatible context, reordering, exhaustion,
+or leftover work item fails replay.
 
 Ambiguous matching is an error, not a “closest packet” guess.
 
@@ -206,8 +231,10 @@ Ambiguous matching is an error, not a “closest packet” guess.
   cause/effect artifacts.
 - **[REP-14]** Locked replay MUST fail at the first mismatch with expected and
   observed opportunity context, not silently fall back to recomputation.
-- **[REP-15]** A destructive memory/register/storage mutation MUST verify a
-  before digest or declared precondition before applying locked bytes.
+- **[REP-15]** Every resolved record MUST carry the backend-observed before-state
+  digest. A destructive memory/register/storage mutation MUST verify that exact
+  digest before applying locked bytes; absence or mismatch fails before
+  mutation.
 - **[REP-16]** Recomputed and locked replay SHOULD converge on the same final
   execution fingerprint when model and capability versions match.
 

@@ -9,7 +9,28 @@ in §8.7; adapters may not replace it with a vaguely similar generic effect.
 
 ## 8.1 Common contract
 
-Every effect record contains:
+Replay and recording first encode every evaluated scheduler work item:
+
+```text
+ReplayWorkItem {
+  coordinate
+  same_coordinate_sequence
+  opportunity_id?
+  resolved_target?
+  operation?
+  direction?
+  phase?
+  network_frame_key?
+  network_producer_direction_key?
+  derivation_fingerprint
+  effects[]
+}
+```
+
+`effects` is deliberately allowed to be empty. An empty list records an
+unaffected/pass opportunity or a zero-action causal transition and prevents
+sparse faults from being shifted onto an earlier frame during outcome replay.
+Every element of `effects` contains:
 
 ```text
 EffectRecord {
@@ -18,14 +39,34 @@ EffectRecord {
   binding_id
   resolved_target
   opportunity_id?
+  operation?
+  direction?
+  network_frame_key?
+  network_producer_direction_key?
   coordinate
+  same_coordinate_sequence
   lifetime
   canonical_parameters
+  mapping_output
+  transition_sequence
+  transition_cause
+  derivation_fingerprint
   contributor_ids
   capability_id
-  precondition_digest?
+  precondition_digest
+  evidence_digest
 }
 ```
+
+The work-item and effect copies of `derivation_fingerprint` must agree.
+`precondition_digest` is mandatory for every resolved effect, including
+non-destructive records. This uniform rule prevents a newly destructive effect
+or backend interpretation from accidentally entering locked replay through an
+optional-evidence path. `derivation_fingerprint` authenticates the complete
+post-derivation signal/binding continuation and emitted state-machine events;
+recomputed-cause replay compares it before adapter mutation. The four network
+fields are present together only for frame opportunities and supply the
+outcome-stream alignment contract in §5.5.
 
 Parameter names below are exact TOML field names. Durations are `u64` virtual
 nanoseconds; rates are `u64` units per virtual second; probabilities are `u32`

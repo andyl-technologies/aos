@@ -407,16 +407,14 @@ impl QemuNodeSet {
     /// Returns [`BackendError`] when any node transport or sequence is invalid.
     pub fn drain_fault_events(
         &mut self,
-    ) -> Result<BTreeMap<NodeId, Vec<DequeuedFaultEvent>>, BackendError> {
-        self.nodes
-            .iter_mut()
-            .map(|(node, backend)| {
-                backend
-                    .drain_fault_events()
-                    .map(|events| (node.clone(), events))
-                    .map_err(BackendError::from)
-            })
-            .collect()
+        drained: &mut BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+    ) -> Result<(), BackendError> {
+        for (node, backend) in &mut self.nodes {
+            backend
+                .drain_fault_events(drained.entry(node.clone()).or_default())
+                .map_err(BackendError::from)?;
+        }
+        Ok(())
     }
 
     /// Reports whether any node has an event awaiting runtime admission.
