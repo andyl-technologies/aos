@@ -137,7 +137,9 @@ in
               # plugins are disabled. They require target libstdc++ headers,
               # which cannot exist until this target-native compiler does.
               ${prev.sed}/bin/sed -i \
+                -e 's/[[:space:]]*lto-wrapper$(exeext)//' \
                 -e 's/[[:space:]]*gcc-ar$(exeext) gcc-nm$(exeext) gcc-ranlib$(exeext)//' \
+                -e 's/[[:space:]]*install-lto-wrapper//' \
                 -e 's/[[:space:]]*install-gcc-ar//' \
                 gcc/Makefile
 
