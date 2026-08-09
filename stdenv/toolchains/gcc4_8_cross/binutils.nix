@@ -59,8 +59,8 @@ in
           --with-sysroot=/ \
           --program-transform-name=
 
-        make -j"$NIX_BUILD_CORES"
-        make install
+        make -j"$NIX_BUILD_CORES" MAKEINFO=true
+        make install MAKEINFO=true
 
         echo "Native binutils 2.25 (${hostPlatform.config}) installed to $out"
       ''
