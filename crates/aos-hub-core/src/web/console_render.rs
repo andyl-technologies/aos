@@ -81,6 +81,21 @@ struct SiteChrome {
     support_url: Option<String>,
 }
 
+/// Browser-safe values needed to render the shared site chrome in the CSR shell.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SiteChromeSnapshot {
+    /// Configured masthead tagline.
+    pub(crate) tagline: String,
+    /// Configured global announcement.
+    pub(crate) announcement: String,
+    /// Configured terms-of-service URL.
+    pub(crate) tos_url: String,
+    /// Configured privacy-policy URL.
+    pub(crate) privacy_url: String,
+    /// Configured support URL.
+    pub(crate) support_url: String,
+}
+
 static SITE_CHROME: RwLock<SiteChrome> = RwLock::new(SiteChrome {
     title: None,
     tagline: None,
@@ -128,6 +143,18 @@ pub(crate) fn effective_brand() -> String {
     match &chrome.title {
         Some(t) if !t.is_empty() => t.clone(),
         _ => brand().to_string(),
+    }
+}
+
+/// Returns the editable chrome values consumed by the browser application shell.
+pub(crate) fn site_chrome_snapshot() -> SiteChromeSnapshot {
+    let chrome = SITE_CHROME.read().unwrap_or_else(|e| e.into_inner());
+    SiteChromeSnapshot {
+        tagline: chrome.tagline.clone().unwrap_or_default(),
+        announcement: chrome.announcement.clone().unwrap_or_default(),
+        tos_url: chrome.tos_url.clone().unwrap_or_default(),
+        privacy_url: chrome.privacy_url.clone().unwrap_or_default(),
+        support_url: chrome.support_url.clone().unwrap_or_default(),
     }
 }
 
