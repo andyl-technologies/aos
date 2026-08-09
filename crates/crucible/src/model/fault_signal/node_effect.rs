@@ -303,6 +303,8 @@ pub struct MemoryAccessClasses {
     pub dma_read: bool,
     /// Selects device DMA writes.
     pub dma_write: bool,
+    /// Selects implicit page-table descriptor reads performed by a vCPU MMU walk.
+    pub page_table_walk: bool,
 }
 
 /// Architecture family for an injected CPU exception.
@@ -1069,7 +1071,8 @@ impl NodeEffectSpecification {
                     || accesses.cpu_load
                     || accesses.cpu_store
                     || accesses.dma_read
-                    || accesses.dma_write;
+                    || accesses.dma_write
+                    || accesses.page_table_walk;
                 let mutation_valid = match mutation {
                     MemoryAccessMutation::Stuck { mask, value } => {
                         hex_has_nonzero(mask) && mask.decoded_len() == value.decoded_len()
@@ -1094,7 +1097,10 @@ impl NodeEffectSpecification {
                 };
                 let access_compatible = match mutation {
                     MemoryAccessMutation::ReadCorrupt { .. } => {
-                        (accesses.fetch || accesses.cpu_load || accesses.dma_read)
+                        (accesses.fetch
+                            || accesses.cpu_load
+                            || accesses.dma_read
+                            || accesses.page_table_walk)
                             && !accesses.cpu_store
                             && !accesses.dma_write
                     }
@@ -1107,7 +1113,10 @@ impl NodeEffectSpecification {
                     MemoryAccessMutation::Poison {
                         policy: MemoryPoisonPolicy::Corrected { .. },
                     } => {
-                        (accesses.fetch || accesses.cpu_load || accesses.dma_read)
+                        (accesses.fetch
+                            || accesses.cpu_load
+                            || accesses.dma_read
+                            || accesses.page_table_walk)
                             && !accesses.cpu_store
                             && !accesses.dma_write
                     }
@@ -1117,13 +1126,17 @@ impl NodeEffectSpecification {
                         (accesses.fetch || accesses.cpu_load || accesses.cpu_store)
                             && !accesses.dma_read
                             && !accesses.dma_write
+                            && !accesses.page_table_walk
                     }
                     _ => true,
                 };
                 let atomicity_valid = !*violate_atomicity
                     || matches!(mutation, MemoryAccessMutation::TornWrite { .. });
                 let dma_device_valid = dma_device.is_none()
-                    || ((!accesses.fetch && !accesses.cpu_load && !accesses.cpu_store)
+                    || ((!accesses.fetch
+                        && !accesses.cpu_load
+                        && !accesses.cpu_store
+                        && !accesses.page_table_walk)
                         && (accesses.dma_read || accesses.dma_write));
                 if access_selected
                     && access_compatible
@@ -1379,7 +1392,7 @@ mod tests {
             "kind": "memory_access_transform",
             "parameters": {
                 "range": {"start": 0, "length": 1},
-                "accesses": {"fetch": false, "cpu_load": false, "cpu_store": true, "dma_read": false, "dma_write": false},
+                "accesses": {"fetch": false, "cpu_load": false, "cpu_store": true, "dma_read": false, "dma_write": false, "page_table_walk": false},
                 "violate_atomicity": false,
                 "mutation": {"kind": "read_corrupt", "parameters": {"mask": "01"}},
                 "occurrence": {"kind": "every"}
@@ -1395,7 +1408,7 @@ mod tests {
             "kind": "memory_access_transform",
             "parameters": {
                 "range": {"start": 0, "length": 1},
-                "accesses": {"fetch": false, "cpu_load": true, "cpu_store": true, "dma_read": false, "dma_write": false},
+                "accesses": {"fetch": false, "cpu_load": true, "cpu_store": true, "dma_read": false, "dma_write": false, "page_table_walk": false},
                 "violate_atomicity": false,
                 "mutation": {"kind": "read_corrupt", "parameters": {"mask": "01"}},
                 "occurrence": {"kind": "every"}
@@ -1406,7 +1419,7 @@ mod tests {
             "kind": "memory_access_transform",
             "parameters": {
                 "range": {"start": 0, "length": 1},
-                "accesses": {"fetch": false, "cpu_load": true, "cpu_store": true, "dma_read": false, "dma_write": false},
+                "accesses": {"fetch": false, "cpu_load": true, "cpu_store": true, "dma_read": false, "dma_write": false, "page_table_walk": false},
                 "violate_atomicity": false,
                 "mutation": {"kind": "lost_write"},
                 "occurrence": {"kind": "every"}
@@ -1425,7 +1438,7 @@ mod tests {
                 "kind": "memory_access_transform",
                 "parameters": {
                     "range": {"start": 0, "length": 1},
-                    "accesses": {"fetch": false, "cpu_load": false, "cpu_store": true, "dma_read": false, "dma_write": false},
+                    "accesses": {"fetch": false, "cpu_load": false, "cpu_store": true, "dma_read": false, "dma_write": false, "page_table_walk": false},
                     "violate_atomicity": true,
                     "mutation": {"kind": "torn_write", "parameters": {"selector": selector}},
                     "occurrence": {"kind": "every"}

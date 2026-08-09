@@ -160,6 +160,21 @@ long_mode:
 retrying_load:
     movb aligned_target, %al
     movb %al, scenario_result
+.elseif TEST_MODE == 20 || TEST_MODE == 21
+    movabs $0x400000, %rax
+    movb (%rax), %al
+    movb %al, scenario_result
+.elseif TEST_MODE == 22
+    mov $0xc0000080, %ecx
+    rdmsr
+    or $0x1000, %eax
+    wrmsr
+    mov $0xc0010117, %ecx
+    mov $nested_hsave, %eax
+    xor %edx, %edx
+    wrmsr
+    mov $nested_vmcb, %rax
+    .byte 0x0f, 0x01, 0xd8
 .else
     .error "unknown TEST_MODE"
 .endif
@@ -168,7 +183,7 @@ retrying_load:
     jmp 2b
 
 exception_handler:
-.if TEST_MODE == 18
+.if TEST_MODE == 18 || TEST_MODE == 21
     movb scenario_scratch, %dl
     incb %dl
     movb %dl, scenario_scratch
@@ -266,6 +281,12 @@ page_directory_pointer:
 .align 4096
 page_directory:
     .quad 0x0000000000000083
+    .quad 0
+    .quad 0x10d003
+    .fill 509, 8, 0
+.align 4096
+fault_page_table:
+    .quad 0x102003
     .fill 511, 8, 0
 
 .section .gdt, "a"
@@ -278,5 +299,137 @@ gdt_end:
 gdt_descriptor:
     .word gdt_end - gdt - 1
     .long gdt
+
+.section .nested_vm, "awx"
+.align 4096
+.global nested_vmcb
+nested_vmcb:
+    .org nested_vmcb + 0x0c
+    .quad (1 << 32) | (1 << 33)
+    .org nested_vmcb + 0x40
+    .quad 0x112000
+    .quad 0x115000
+    .org nested_vmcb + 0x58
+    .long 1
+    .org nested_vmcb + 0x90
+    .quad 1
+    .org nested_vmcb + 0xb0
+    .quad 0x11d000
+    .org nested_vmcb + 0x400
+    .word 0x10
+    .word 0xc093
+    .long 0xffffffff
+    .quad 0
+    .word 0x08
+    .word 0xa09b
+    .long 0xffffffff
+    .quad 0
+    .word 0x10
+    .word 0xc093
+    .long 0xffffffff
+    .quad 0
+    .word 0x10
+    .word 0xc093
+    .long 0xffffffff
+    .quad 0
+    .org nested_vmcb + 0x4d0
+    .quad 0x500
+    .org nested_vmcb + 0x548
+    .quad 0x20
+    .quad 0x200000
+    .quad 0x80010001
+    .org nested_vmcb + 0x570
+    .quad 2
+    .quad 0x800000
+    .org nested_vmcb + 0x5d8
+    .quad 0x802000
+    .org nested_vmcb + 0x5f8
+    .quad 0
+    .org nested_vmcb + 0x1000
+
+.align 4096
+nested_hsave:
+    .fill 4096, 1, 0
+.align 4096
+nested_iopm:
+    .fill 12288, 1, 0xff
+.align 4096
+nested_msrpm:
+    .fill 8192, 1, 0xff
+
+.align 4096
+nested_l2_pml4:
+    .quad 0x201003
+    .fill 511, 8, 0
+.align 4096
+nested_l2_pdpt:
+    .quad 0x202003
+    .fill 511, 8, 0
+.align 4096
+nested_l2_pd:
+    .quad 0
+    .quad 0
+    .quad 0x203003
+    .quad 0x204003
+    .quad 0x205003
+    .fill 507, 8, 0
+.align 4096
+.global nested_l2_data_pt
+nested_l2_data_pt:
+    .quad 0x300003
+    .fill 511, 8, 0
+.align 4096
+nested_l2_result_pt:
+    .quad 0x303003
+    .fill 511, 8, 0
+.align 4096
+nested_l2_code_pt:
+    .quad 0x301003
+    .quad 0x302003
+    .fill 510, 8, 0
+
+.align 4096
+nested_npt_pml4:
+    .quad 0x11e003
+    .fill 511, 8, 0
+.align 4096
+nested_npt_pdpt:
+    .quad 0x11f003
+    .fill 511, 8, 0
+.align 4096
+nested_npt_pd:
+    .quad 0x83
+    .quad 0x120003
+    .fill 510, 8, 0
+.align 4096
+.global nested_npt_pt
+nested_npt_pt:
+    .quad 0x117003
+    .quad 0x118003
+    .quad 0x119003
+    .quad 0x11a003
+    .quad 0x11b003
+    .quad 0x11c003
+    .fill 250, 8, 0
+    .quad 0x102003
+    .quad 0x121003
+    .quad 0x122003
+    .quad 0x108003
+    .fill 252, 8, 0
+
+.align 4096
+nested_l2_code:
+    movabs $0x400000, %rax
+    movb (%rax), %al
+    movabs $0x600000, %rdx
+    movb %al, (%rdx)
+    .byte 0x0f, 0x01, 0xd9
+5:
+    pause
+    jmp 5b
+    .org nested_l2_code + 0x1000
+.align 4096
+nested_l2_stack:
+    .fill 4096, 1, 0
 
 .section .note.GNU-stack, "", @progbits

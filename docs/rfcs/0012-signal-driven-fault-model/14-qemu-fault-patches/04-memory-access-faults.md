@@ -17,8 +17,8 @@ and modeled memory latency/bandwidth.
 
 An install/remove command at `node_boundary` carries the authenticated action,
 target, schema, and generation identities; resolved start and positive length;
-the five explicit access-class booleans (`fetch`, `cpu_load`, `cpu_store`,
-`dma_read`, `dma_write`); an optional canonical `dma_device` identity that is
+the six explicit access-class booleans (`fetch`, `cpu_load`, `cpu_store`,
+`dma_read`, `dma_write`, `page_table_walk`); an optional canonical `dma_device` identity that is
 valid only with a DMA-only class set; `violate_atomicity`; one closed transform; and one
 closed `every/periodic` occurrence policy. The target fields carry the node,
 guest address, optional vCPU context, and length. The plugin resolves any GVA
@@ -62,6 +62,36 @@ the same digest from `dma_device`. An id-less virtio device and an unidentified
 DMA caller remain usable by unscoped rules but cannot satisfy a device-scoped
 selector. The full digest, not only a numeric abbreviation, is evidence.
 
+`page_table_walk` selects the architecture MMU's implicit reads of normal-RAM
+page-table descriptors. Its rule range is always guest physical and identifies
+the descriptor bytes, while evidence separately records the initiating virtual
+address, initiating fetch/load/store class, vCPU, architecture level (`-1`
+through `3` on AArch64 and `1` through `5` on x86-64), translation stage, entry
+GPA, entry width, retry ordinal, and before/after descriptor bytes. Debugger,
+capability-probe, command-admission, and other inspection translations are not
+opportunities and never consume occurrence state. Each live descriptor read is
+one transaction; an architecture retry of the same descriptor at the same
+instruction coordinate increments the retry ordinal. That retry key includes
+the instruction PC and ordinal, initiating virtual address and access class,
+descriptor GPA and width, translation stage, and architecture walk level.
+Under nested translation, the descriptor GPA is the final ordinary-RAM address
+after the outer descriptor address has crossed the second-stage translation;
+stage identifies the table being walked rather than the MMU index used to read
+that table.
+
+`stuck`, `read_corrupt`, corrected poison, retention, rowhammer accounting,
+and memory service apply to a selected descriptor read exactly as they do to
+another read. `lost_write` and
+`torn_write` reject a `page_table_walk` class because the walk opportunity is a
+read; explicit guest writes of accessed/dirty bits remain CPU stores.
+`access_error` and failed-region error policy produce the architecture's native
+page-table-walk fault without exposing descriptor bytes. A configured generic
+CPU `exception` policy rejects `page_table_walk`, because its numeric exception
+contract lacks the architecture walk-level/stage fields needed to replace the
+native fault precisely. MMIO page tables remain outside the advertised class;
+installation requires the complete selected GPA range to resolve to ordinary
+writable RAM.
+
 A mapped DMA write is admitted over the full mapping grant because QEMU cannot
 report an error from `address_space_unmap`. Poison and failed-region policy
 therefore accept or reject that grant at map time. Byte transforms, persistent
@@ -95,7 +125,8 @@ Instruction result faults occur later under patch 0052. Boundary impulses from
 | `rowhammer` | Increment exact aggressor-row access counters; at the positive threshold XOR the declared repeated mask into victims at the declared row distance. |
 
 Atomic/locked instructions, page-table walks, instruction fetch, DMA, and MMIO
-declare separate capability fields. MMIO transforms are rejected in v1 of this
+declare separate capability fields. Page-table-walk support covers normal-RAM
+descriptor reads on x86-64 and AArch64. MMIO transforms are rejected in v1 of this
 patch; MMIO instruction replay belongs to 0052 and typed device faults belong to
 their adapter. CPU atomic operations can be torn only when the effect explicitly
 sets `violate_atomicity = true`, the target architecture capability advertises
@@ -156,16 +187,22 @@ exact mapping and a zero-length writeback is provably event-free.
 
 1. x86-64 and AArch64 guests exercise every transform on aligned, unaligned,
    cross-page, fetch, load/store, atomic, and permitted DMA accesses.
-2. Verify CPU and DMA access identity/order, retries, and instruction replay
-   ordinals under host perturbation.
-3. Run stuck bits, transient corruption, lost/torn write, poison, retention, and
+2. On both architectures, exercise page-table `read_corrupt`, corrected poison,
+   native walk `access_error`, failed-region error, service, and a guest-handled
+   retry. Prove inspection translations produce no opportunity or occurrence.
+3. Run a real x86 nested guest and independently target the final-RAM
+   stage-1 descriptor and the NPT stage-2 descriptor. Assert stage, level,
+   initiating virtual address/class, final descriptor GPA, and guest result.
+4. Verify CPU, DMA, and page-walk access identity/order, retries, and
+   instruction replay ordinals under host perturbation.
+5. Run stuck bits, transient corruption, lost/torn write, poison, retention, and
    rowhammer with known bytes and exact guest/QEMU evidence.
-4. Verify row geometry, threshold, counter overflow, range overlap, and invalid
+6. Verify row geometry, threshold, counter overflow, range overlap, and invalid
    MMIO/atomic requests fail loudly.
-5. Prove latency/service blocks architectural completion at the exact virtual
+7. Prove latency/service blocks architectural completion at the exact virtual
    coordinate and resumes identically after checkpoint.
-6. Benchmark disabled, enabled-empty-index, sparse non-match, and active match.
-7. Revert patch and prove live gates fail; prove non-sim inertness.
+8. Benchmark disabled, enabled-empty-index, sparse non-match, and active match.
+9. Revert patch and prove live gates fail; prove non-sim inertness.
 
 ## Licensing checklist
 

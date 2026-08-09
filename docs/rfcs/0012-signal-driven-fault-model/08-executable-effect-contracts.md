@@ -549,7 +549,7 @@ dropping history or inventing a completion.
 | `interrupt.disposition` | opportunity/state; raise/route/deliver | kind `drop/delay/duplicate/replace`, delay/copies/vector fields | ordered by source event then binding | `qemu.interrupt.control.v1`; source/target/vector, original/final deliveries |
 | `interrupt.storm` | state/event sequence; raise | vector/source, period/burst/count, routing | event merge by coordinate/sequence | `qemu.interrupt.storm.v1`; generated event sequence and acknowledgements |
 | `memory.mutation` | impulse; boundary | `guest_physical/guest_virtual`, range, `bit_flip/replace` bytes, `all_or_nothing` atomicity | ordered-transform with overlap evidence | `qemu.memory.mutate.v1`; translation, before/after bytes, dirty tracking and icount |
-| `memory.access_transform` | persistent/opportunity; fetch/load/store/DMA | range, explicit access-class booleans, atomicity-violation flag, closed `stuck/read_corrupt/lost_write/torn_write/poison` mutation, occurrence | range overlay then ordered-transform | `qemu.memory.access-transform.v1`; access, transformed bytes/outcome and range state |
+| `memory.access_transform` | persistent/opportunity; fetch/load/store/DMA/page-table walk | range, explicit access-class booleans, atomicity-violation flag, closed `stuck/read_corrupt/lost_write/torn_write/poison` mutation, occurrence | range overlay then ordered-transform | `qemu.memory.access-transform.v1`; access, transformed bytes/outcome, range state, and walk identity |
 | `memory.ecc_event` | impulse/opportunity; access/boundary | corrected/uncorrectable, address, syndrome, bank/channel/rank, guest visibility | severity | architecture capability; injected platform record/exception and acknowledgement |
 | `memory.region_state` | persistent state; access/refresh | range plus matching closed `failed`, `retention`, or `rowhammer` process | range overlay and state-machine | `qemu.memory.region-state.v1`; counters, aggressor/victim rows, changed bits/outcomes |
 | `memory.service` | persistent state; access/queue | latency, optional positive byte/operation rates, closed node/range/controller sharing scope | checked-sum latency; minimum service | `qemu.memory.service.v1`; access service ledger |
@@ -574,8 +574,8 @@ events. Unknown fields and values fail before QEMU state changes.
 | watchdog | `disabled`; or `transition_after { timeout_nanos, transition }` |
 | occurrence | `every`; or `periodic { first, period, count }` using one-based ordinals |
 | service discipline | `work_conserving` or `strict_cap` |
-| memory access classes | independent booleans `fetch`, `cpu_load`, `cpu_store`, `dma_read`, and `dma_write`; at least one is true; optional `dma_device` is a canonical device identity and requires a DMA-only class set |
-| poison visibility | `access_error`; read-only `corrected { xor_mask }`; or CPU/fetch-only `exception { exception }` |
+| memory access classes | independent booleans `fetch`, `cpu_load`, `cpu_store`, `dma_read`, `dma_write`, and `page_table_walk`; at least one is true; `page_table_walk` selects normal-RAM descriptor reads by the architecture MMU and requires a guest-physical target; optional `dma_device` is a canonical device identity and requires a DMA-only class set |
+| poison visibility | `access_error`, including a native architecture walk fault for `page_table_walk`; read-only `corrected { xor_mask }`; or CPU fetch/load/store-only `exception { exception }` |
 | architecture exception | `architecture = x86_64/aarch64`, numeric `vector` and `syndrome`, optional `fault_address`, `before_instruction`, `maskable`, and matching `architecture_default/x86_machine_check/aarch64_ras` record |
 | instruction selector | `pc_start`, positive `pc_length`, optional exact `instruction_bytes`, optional numeric `opcode_class`, and occurrence |
 | interrupt routing | sorted nonempty numeric `target_vcpus`, numeric `priority`, and `retain_pending` |

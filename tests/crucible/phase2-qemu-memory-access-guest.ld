@@ -17,8 +17,10 @@ SECTIONS
   .fault_text : { *(.fault_text) }
   . = 0x0010a000;
   .page_tables : { *(.page_tables) }
-  . = 0x0010d000;
-  .gdt : { *(.gdt) }
   . = 0x0010e000;
+  .gdt : { *(.gdt) }
+  . = 0x0010f000;
   .idt : { *(.idt) }
+  . = 0x00110000;
+  .nested_vm : { *(.nested_vm) }
 }
