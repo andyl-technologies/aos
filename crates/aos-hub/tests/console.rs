@@ -245,6 +245,7 @@ async fn canonical_management_links_serve_one_authenticated_shell() {
     for path in [
         "/-/instance",
         "/-/instance/storage-bindings",
+        "/-/caches",
         "/-/orgs",
         "/-/org/acme/projects",
         "/-/org/acme/caches/build/garbage-collection",

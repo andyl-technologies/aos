@@ -129,6 +129,7 @@ pub const CONSOLE_ROUTES: &[RouteSpec] = &[
     route("/-/instance/network-boundaries/new", RouteMethods::Get),
     route("/-/instance/delivery-endpoints/new", RouteMethods::Get),
     route("/-/instance/storage-gateways/new", RouteMethods::Get),
+    route("/-/caches", RouteMethods::Get),
     route("/-/orgs", RouteMethods::Get),
     route("/-/orgs/new", RouteMethods::Get),
     route("/-/org/{org}", RouteMethods::Get),
@@ -187,6 +188,7 @@ fn is_management_shell_template(path: &str) -> bool {
             | "/-/instance/network-boundaries/new"
             | "/-/instance/delivery-endpoints/new"
             | "/-/instance/storage-gateways/new"
+            | "/-/caches"
             | "/-/orgs"
             | "/-/orgs/new"
             | "/-/org/{org}"

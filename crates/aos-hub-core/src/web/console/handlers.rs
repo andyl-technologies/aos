@@ -262,6 +262,7 @@ async fn route_permissions(
     if matches!(
         route.scope,
         aos_hub_console_contract::ConsoleScope::Organizations
+            | aos_hub_console_contract::ConsoleScope::Caches
     ) {
         let mut permissions = std::collections::BTreeSet::new();
         // The authenticated organization directory is also the bootstrap
@@ -280,6 +281,7 @@ async fn route_permissions(
     }
     let scope = match route.scope {
         aos_hub_console_contract::ConsoleScope::Instance => Some(Scope::root()),
+        aos_hub_console_contract::ConsoleScope::Caches => None,
         aos_hub_console_contract::ConsoleScope::Organizations => None,
         aos_hub_console_contract::ConsoleScope::Organization { slug } => db
             .org_by_slug(&slug)

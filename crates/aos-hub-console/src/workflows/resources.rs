@@ -20,6 +20,9 @@ use super::organization_scope::organization_authorization_scope;
 #[component]
 pub(crate) fn ResourceWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
     match (&route.scope, route.page.key) {
+        (ConsoleScope::Caches, "overview") => {
+            view! { <GlobalCacheInventory client=client/> }.into_any()
+        }
         (ConsoleScope::Organizations, "overview") => {
             view! { <OrganizationInventory client=client/> }.into_any()
         }
@@ -79,6 +82,75 @@ pub(crate) fn ResourceWorkflow(route: ConsoleRoute, client: ApiClient) -> impl I
         }
         .into_any(),
         _ => view! { <InfrastructureWorkflow route=route client=client/> }.into_any(),
+    }
+}
+
+#[component]
+fn GlobalCacheInventory(client: ApiClient) -> impl IntoView {
+    let inventory = LocalResource::new(move || {
+        let client = client.clone();
+        async move {
+            client
+                .collect_pages::<_, aos_proto_types::ListBinaryCachesResponse, _, _, _>(
+                    aos_proto_types::BINARY_CACHE_SERVICE_LIST_BINARY_CACHES_PATH,
+                    |page_token| aos_proto_types::ListBinaryCachesRequest {
+                        owner_scope_key: String::new(),
+                        page_size: 100,
+                        page_token,
+                    },
+                    |response| (response.caches, response.next_page_token),
+                )
+                .await
+        }
+    });
+
+    view! {
+        <section class="panel resource-panel">
+            <div class="section-heading">
+                <div>
+                    <p class="section-kicker">"Reusable object stores"</p>
+                    <h2>"Caches"</h2>
+                    <p>"Binary caches visible across your organizations and public Hub resources."</p>
+                </div>
+            </div>
+            <Suspense fallback=move || view! { <p class="loading-row">"Loading caches…"</p> }>
+                {move || Suspend::new(async move {
+                    match inventory.await.as_ref() {
+                        Ok(caches) if caches.is_empty() => view! {
+                            <p class="muted">"No visible binary caches."</p>
+                        }.into_any(),
+                        Ok(caches) => view! {
+                            <div class="resource-grid">
+                                {caches.iter().cloned().map(|cache| {
+                                    let href = cache_path(&cache.slug);
+                                    view! {
+                                        <a class="resource-card" href=href>
+                                            <div>
+                                                <span class="resource-kind">{cache.visibility}</span>
+                                                <h3>{cache.name}</h3>
+                                                <code>{cache.slug}</code>
+                                                <p class="resource-metric">{format!("{} objects · {} placements", cache.object_count, cache.placement_count)}</p>
+                                            </div>
+                                            <span class="card-arrow">"→"</span>
+                                        </a>
+                                    }
+                                }).collect_view()}
+                            </div>
+                        }.into_any(),
+                        Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
+                    }
+                })}
+            </Suspense>
+        </section>
+    }
+}
+
+#[component]
+fn VisibilityOptions(value: RwSignal<String>) -> impl IntoView {
+    view! {
+        <option value="private" selected=move || value.get() == "private">"Private"</option>
+        <option value="internal" selected=move || value.get() == "internal">"Internal"</option>
+        <option value="public" selected=move || value.get() == "public">"Public"</option>
     }
 }
 
@@ -691,7 +763,7 @@ fn RegistryInventory(
             {creation_only.then(|| view! { <section class="panel editor-panel"><h2>"Create registry"</h2><form class="editor-form compact-form" on:submit=on_plan>
                 <label><span>"Project path"</span><input placeholder="Optional; for example platform/runtime" prop:value=move || project_path.get() on:input=move |event| project_path.set(event_target_value(&event))/></label>
                 <label><span>"Registry name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label>
-                <label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><option value="private">"Private"</option><option value="internal">"Internal"</option><option value="public">"Public"</option></select></label>
+                <label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label>
                 <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
             </form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> })}
         </div>
@@ -838,7 +910,7 @@ fn CacheInventory(
         });
     });
     view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Reusable object stores"</p><h2>"Binary caches"</h2><p>"Caches may stand alone or be shared by several registry consumer stacks and retention subscriptions."</p></div>{can_create.then(|| view! { <a class="button" href=format!("/-/org/{organization}/caches/new")>"Create binary cache"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading caches…"</p> }>{move || { let organization = organization.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(caches) if caches.is_empty() => view! { <p class="muted">"No binary caches in this organization."</p> }.into_any(), Ok(caches) => view! { <div class="resource-grid">{caches.iter().cloned().map(|cache| { let href = format!("/-/org/{}/caches/{}", organization, cache.slug.rsplit('/').next().unwrap_or(&cache.slug)); view! { <a class="resource-card" href=href><div><span class="resource-kind">{cache.visibility}</span><h3>{cache.name}</h3><code>{cache.slug}</code><p class="resource-metric">{format!("{} objects · {} placements", cache.object_count, cache.placement_count)}</p></div><span class="card-arrow">"→"</span></a> } }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}
-    {creation_only.then(|| view! { <section class="panel editor-panel"><h2>"Create binary cache"</h2><form class="editor-form compact-form" on:submit=on_plan><label><span>"Cache slug"</span><input required placeholder="build" prop:value=move || cache_name.get() on:input=move |event| cache_name.set(event_target_value(&event))/></label><label><span>"Display name"</span><input required prop:value=move || display_name.get() on:input=move |event| display_name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><option value="private">"Private"</option><option value="internal">"Internal"</option><option value="public">"Public"</option></select></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> })}</div> }
+    {creation_only.then(|| view! { <section class="panel editor-panel"><h2>"Create binary cache"</h2><form class="editor-form compact-form" on:submit=on_plan><label><span>"Cache slug"</span><input required placeholder="build" prop:value=move || cache_name.get() on:input=move |event| cache_name.set(event_target_value(&event))/></label><label><span>"Display name"</span><input required prop:value=move || display_name.get() on:input=move |event| display_name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> })}</div> }
 }
 
 #[component]
@@ -931,7 +1003,7 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="resource-identity"><div><span>"Registry"</span><code>{slug}</code></div><div><span>"Index"</span><StatusBadge state=registry.index_state.clone() positive=registry.index_state == "fresh"/></div><div><span>"Version"</span><code>{registry.resource_version}</code></div></div><form class="editor-form" on:submit=on_plan><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><option value="private">"Private"</option><option value="internal">"Internal"</option><option value="public">"Public"</option></select></label><label><span>"Crawler policy"</span><select prop:value=move || crawl_policy.get() on:change=move |event| crawl_policy.set(event_target_value(&event))><option value="allow_all">"Allow all"</option><option value="allow_no_ai">"Allow search; deny AI crawlers"</option><option value="deny_all">"Deny all"</option></select></label><label class="full-field"><span>"llms.txt body"</span><textarea rows="8" prop:value=move || llms.get() on:input=move |event| llms.set(event_target_value(&event))></textarea></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel editor-panel"><div class="resource-identity"><div><span>"Registry"</span><code>{slug}</code></div><div><span>"Index"</span><StatusBadge state=registry.index_state.clone() positive=registry.index_state == "fresh"/></div><div><span>"Version"</span><code>{registry.resource_version}</code></div></div><form class="editor-form" on:submit=on_plan><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Crawler policy"</span><select prop:value=move || crawl_policy.get() on:change=move |event| crawl_policy.set(event_target_value(&event))><option value="allow_all">"Allow all"</option><option value="allow_no_ai">"Allow search; deny AI crawlers"</option><option value="deny_all">"Deny all"</option></select></label><label class="full-field"><span>"llms.txt body"</span><textarea rows="8" prop:value=move || llms.get() on:input=move |event| llms.set(event_target_value(&event))></textarea></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
@@ -1040,7 +1112,7 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="resource-identity"><div><span>"Cache"</span><code>{cache.slug}</code></div><div><span>"Usage"</span><strong>{format_bytes(cache.used_bytes)}</strong></div><div><span>"Objects"</span><strong>{cache.object_count}</strong></div><div><span>"Roots"</span><strong>{cache.retention_root_count}</strong></div></div><form class="editor-form" on:submit=on_plan><label><span>"Display name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><option value="private">"Private"</option><option value="internal">"Internal"</option><option value="public">"Public"</option></select></label><label><span>"Nix priority"</span><input type="number" min="0" prop:value=move || priority.get() on:input=move |event| priority.set(event_target_value(&event))/></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || mass_query.get() on:change=move |event| mass_query.set(event_target_checked(&event))/><span>"Advertise WantMassQuery"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel editor-panel"><div class="resource-identity"><div><span>"Cache"</span><code>{cache.slug}</code></div><div><span>"Usage"</span><strong>{format_bytes(cache.used_bytes)}</strong></div><div><span>"Objects"</span><strong>{cache.object_count}</strong></div><div><span>"Roots"</span><strong>{cache.retention_root_count}</strong></div></div><form class="editor-form" on:submit=on_plan><label><span>"Display name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Nix priority"</span><input type="number" min="0" prop:value=move || priority.get() on:input=move |event| priority.set(event_target_value(&event))/></label><label><span>"Compression"</span><select prop:value=move || compression.get() on:change=move |event| compression.set(event_target_value(&event))><option value="zstd">"Zstandard"</option><option value="xz">"XZ"</option><option value="none">"None"</option></select></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || mass_query.get() on:change=move |event| mass_query.set(event_target_checked(&event))/><span>"Advertise WantMassQuery"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]

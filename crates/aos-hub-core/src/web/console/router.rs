@@ -314,6 +314,7 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         .route("/-/instance/network-boundaries/new", management_get())
         .route("/-/instance/delivery-endpoints/new", management_get())
         .route("/-/instance/storage-gateways/new", management_get())
+        .route("/-/caches", management_get())
         .route("/-/orgs", management_get())
         .route("/-/orgs/new", management_get())
         .route("/-/org/{org}", management_get())
