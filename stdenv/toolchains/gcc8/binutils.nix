@@ -12,6 +12,15 @@
     url = "https://mirrors.kernel.org/gnu/binutils/binutils-2.30.tar.xz";
     sha256 = "11x6da64y0i165nxhyyb6m89ig5n00hnvj6k6pf8wbz5xicrmiig";
   };
+
+  # GCC 8's AArch64 cc1 deterministically crashes in the
+  # printf-return-value pass while compiling opcodes/aarch64-opc.c at -O2.
+  # This tier exists to bootstrap newer tools, so prefer the stable -O1 path
+  # for this old native compiler/assembler pairing.
+  optimizationFlags =
+    if hostPlatform.config == "aarch64-unknown-linux-gnu"
+    then "-O1"
+    else "-O2";
 in
   builtins.derivation {
     name = "binutils-2.30";
@@ -49,8 +58,8 @@ in
         cd "$TMPDIR/build"
 
         CC="$TMPDIR/ccwrap/gcc" CXX="$TMPDIR/ccwrap/g++" \
-        CFLAGS="-O2" \
-        CXXFLAGS="-O2" \
+        CFLAGS="${optimizationFlags}" \
+        CXXFLAGS="${optimizationFlags}" \
         "$TMPDIR/binutils-2.30/configure" \
           --prefix="$out" \
           --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
