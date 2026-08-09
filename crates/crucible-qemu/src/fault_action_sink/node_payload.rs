@@ -897,7 +897,7 @@ mod tests {
 
     #[test]
     fn shared_object_id_hash_matches_the_model_contract() {
-        let id = object_id("node-a/register/rip");
+        let id = object_id("node-a-register-rip");
 
         assert_eq!(
             fault_object_id_hash_v1(id.as_str()),

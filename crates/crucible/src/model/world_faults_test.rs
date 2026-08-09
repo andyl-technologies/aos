@@ -201,3 +201,81 @@ fn node_dram_geometry_accepts_only_the_live_qemu_mapping() {
         ))
     ));
 }
+
+fn node_capabilities_with_register(register: WorldNodeRegister) -> WorldNodeFaultCapabilities {
+    WorldNodeFaultCapabilities {
+        id: id("node-capabilities"),
+        node: id("vm-a"),
+        architecture: WorldNodeArchitecture::X86_64,
+        cpu_model: "crucible-x86-64-v1".to_owned(),
+        register_schema: ContentHash::default(),
+        registers: vec![register],
+        address_spaces: vec![WorldNodeAddressSpace {
+            id: id("guest-ram"),
+            start_address: 0,
+            length_bytes: 4096,
+        }],
+        page_bytes: 4096,
+        dram_geometry: WorldNodeDramGeometry::qemu_v1(),
+        interrupts: Vec::new(),
+        clock_sources: Vec::new(),
+        accelerators: Vec::new(),
+        semantic_version: 1,
+    }
+}
+
+#[test]
+fn node_register_manifest_distinguishes_writable_and_reference_only_rows() {
+    let reference_only = WorldNodeRegister {
+        id: id("implementation-status"),
+        name: "implementation-status".to_owned(),
+        numeric_id: 1,
+        group: WorldNodeRegisterGroup::System,
+        width_bits: 8,
+        per_vcpu: true,
+        model_phases: Vec::new(),
+        side_effects: Vec::new(),
+        impulse: false,
+        persistent: false,
+        vmstate: false,
+        writable_mask_hex: "00".to_owned(),
+        reserved_mask_hex: "00".to_owned(),
+        ignored_mask_hex: "00".to_owned(),
+        read_only_mask_hex: "ff".to_owned(),
+    };
+    node_capabilities_with_register(reference_only.clone())
+        .validate()
+        .unwrap_or_else(|error| panic!("reference-only register should validate: {error}"));
+
+    let mut falsely_mutable = reference_only;
+    falsely_mutable.impulse = true;
+    assert!(matches!(
+        node_capabilities_with_register(falsely_mutable).validate(),
+        Err(WorldFaultTopologyError::Invalid(
+            "node register mask partition"
+        ))
+    ));
+
+    let writable = WorldNodeRegister {
+        id: id("rax"),
+        name: "rax".to_owned(),
+        numeric_id: 2,
+        group: WorldNodeRegisterGroup::GeneralPurpose,
+        width_bits: 8,
+        per_vcpu: true,
+        model_phases: vec![FaultPhase::BeforeInstruction],
+        side_effects: Vec::new(),
+        impulse: true,
+        persistent: false,
+        vmstate: true,
+        writable_mask_hex: "0f".to_owned(),
+        reserved_mask_hex: "30".to_owned(),
+        ignored_mask_hex: "40".to_owned(),
+        read_only_mask_hex: "80".to_owned(),
+    };
+    assert!(writable.range_is_writable(0, 4));
+    assert!(!writable.range_is_writable(3, 2));
+    node_capabilities_with_register(writable)
+        .validate()
+        .unwrap_or_else(|error| panic!("writable register should validate: {error}"));
+}

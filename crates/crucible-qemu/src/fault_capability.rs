@@ -4,12 +4,22 @@
 //! must advertise before the boot barrier is released. Its digest is part of
 //! launch identity and is reused unchanged for admission and replay.
 
+use crucible::model::{
+    FaultPhase, WorldNodeArchitecture, WorldNodeFaultCapabilities, WorldNodeRegisterGroup,
+    WorldNodeRegisterSideEffect,
+};
 use crucible_shmem::{
     DEFAULT_FAULT_COMMAND_CAPACITY, FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS,
     FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION, FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
-    FAULT_COMMAND_SEMANTIC_VERSION, FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError,
-    FaultBoundaryPhase, FaultCapabilityRowV1, FaultCapabilityScope, FaultCommandKind,
-    FaultRegisterCapabilityManifestV1, HARD_FAULT_PAYLOAD_BYTES, fault_capability_manifest_digest,
+    FAULT_COMMAND_SEMANTIC_VERSION, FAULT_REGISTER_CAPABILITY_IMPULSE,
+    FAULT_REGISTER_CAPABILITY_PERSISTENT, FAULT_REGISTER_CAPABILITY_VMSTATE,
+    FAULT_REGISTER_SIDE_EFFECT_CONTROL_FLOW, FAULT_REGISTER_SIDE_EFFECT_CPU_FLAGS,
+    FAULT_REGISTER_SIDE_EFFECT_INTERRUPT, FAULT_REGISTER_SIDE_EFFECT_TB_FLUSH,
+    FAULT_REGISTER_SIDE_EFFECT_TIMER, FAULT_REGISTER_SIDE_EFFECT_TLB_FLUSH,
+    FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
+    FaultCapabilityScope, FaultCommandKind, FaultRegisterCapabilityManifestV1,
+    FaultRegisterCapabilityRowV1, FaultRegisterGroupV1, HARD_FAULT_PAYLOAD_BYTES,
+    fault_capability_manifest_digest,
 };
 
 use crate::LivePluginGuestArchitecture;
@@ -27,6 +37,7 @@ pub struct QemuFaultCapabilityRequirement {
 pub struct QemuTargetManifestRequirement {
     architecture: FaultCapabilityScope,
     cpu_model: String,
+    exact_manifest: Option<FaultRegisterCapabilityManifestV1>,
 }
 
 impl QemuTargetManifestRequirement {
@@ -170,8 +181,122 @@ impl QemuFaultCapabilityRequirement {
             target_manifest: Some(QemuTargetManifestRequirement {
                 architecture: scope,
                 cpu_model: cpu_model.into(),
+                exact_manifest: None,
             }),
         }
+    }
+
+    /// Builds the production requirement from one admitted world-node manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError`] if the world declaration cannot be represented
+    /// by the public target-manifest ABI or its declared schema digest does not
+    /// equal the canonical manifest bytes.
+    pub fn current_v1_for_node(node: &WorldNodeFaultCapabilities) -> Result<Self, FaultAbiError> {
+        let architecture = match node.architecture {
+            WorldNodeArchitecture::X86_64 => LivePluginGuestArchitecture::X86_64,
+            WorldNodeArchitecture::Aarch64 => LivePluginGuestArchitecture::Aarch64,
+        };
+        let scope = match node.architecture {
+            WorldNodeArchitecture::X86_64 => FaultCapabilityScope::X86_64,
+            WorldNodeArchitecture::Aarch64 => FaultCapabilityScope::Aarch64,
+        };
+        let mut rows = node
+            .registers
+            .iter()
+            .map(|row| {
+                let group = match row.group {
+                    WorldNodeRegisterGroup::GeneralPurpose => FaultRegisterGroupV1::GeneralPurpose,
+                    WorldNodeRegisterGroup::ControlFlow => FaultRegisterGroupV1::ControlFlow,
+                    WorldNodeRegisterGroup::Flags => FaultRegisterGroupV1::Flags,
+                    WorldNodeRegisterGroup::Segment => FaultRegisterGroupV1::Segment,
+                    WorldNodeRegisterGroup::Control => FaultRegisterGroupV1::Control,
+                    WorldNodeRegisterGroup::System => FaultRegisterGroupV1::System,
+                    WorldNodeRegisterGroup::Debug => FaultRegisterGroupV1::Debug,
+                    WorldNodeRegisterGroup::FloatingPoint => FaultRegisterGroupV1::FloatingPoint,
+                    WorldNodeRegisterGroup::Vector => FaultRegisterGroupV1::Vector,
+                    WorldNodeRegisterGroup::Error => FaultRegisterGroupV1::Error,
+                };
+                let model_phase_mask = row.model_phases.iter().fold(0_u64, |mask, phase| {
+                    let tag = match phase {
+                        FaultPhase::BeforeInstruction => 11,
+                        FaultPhase::AfterInstruction => 12,
+                        _ => 0,
+                    };
+                    if tag == 0 {
+                        mask
+                    } else {
+                        mask | (1_u64 << (tag - 1))
+                    }
+                });
+                let side_effects = row.side_effects.iter().fold(0_u32, |mask, effect| {
+                    mask | match effect {
+                        WorldNodeRegisterSideEffect::TlbFlush => {
+                            FAULT_REGISTER_SIDE_EFFECT_TLB_FLUSH
+                        }
+                        WorldNodeRegisterSideEffect::TranslationBlockFlush => {
+                            FAULT_REGISTER_SIDE_EFFECT_TB_FLUSH
+                        }
+                        WorldNodeRegisterSideEffect::FlagsRecompute => {
+                            FAULT_REGISTER_SIDE_EFFECT_CPU_FLAGS
+                        }
+                        WorldNodeRegisterSideEffect::InterruptReevaluate => {
+                            FAULT_REGISTER_SIDE_EFFECT_INTERRUPT
+                        }
+                        WorldNodeRegisterSideEffect::TimerRearm => FAULT_REGISTER_SIDE_EFFECT_TIMER,
+                        WorldNodeRegisterSideEffect::ControlFlowSynchronize => {
+                            FAULT_REGISTER_SIDE_EFFECT_CONTROL_FLOW
+                        }
+                    }
+                });
+                let capabilities = (if row.impulse {
+                    FAULT_REGISTER_CAPABILITY_IMPULSE
+                } else {
+                    0
+                }) | (if row.persistent {
+                    FAULT_REGISTER_CAPABILITY_PERSISTENT
+                } else {
+                    0
+                }) | (if row.vmstate {
+                    FAULT_REGISTER_CAPABILITY_VMSTATE
+                } else {
+                    0
+                });
+                Ok(FaultRegisterCapabilityRowV1 {
+                    numeric_id: row.numeric_id,
+                    name: row.name.clone(),
+                    width_bits: row.width_bits,
+                    group,
+                    model_phase_mask,
+                    side_effects,
+                    capabilities,
+                    writable_mask: decode_lower_hex(&row.writable_mask_hex)?,
+                    reserved_mask: decode_lower_hex(&row.reserved_mask_hex)?,
+                    ignored_mask: decode_lower_hex(&row.ignored_mask_hex)?,
+                    read_only_mask: decode_lower_hex(&row.read_only_mask_hex)?,
+                })
+            })
+            .collect::<Result<Vec<_>, FaultAbiError>>()?;
+        rows.sort_by_key(|row| row.numeric_id);
+        let manifest = FaultRegisterCapabilityManifestV1 {
+            architecture: scope,
+            cpu_model: node.cpu_model.clone(),
+            rows,
+        };
+        let encoded = manifest.encode()?;
+        if *blake3::hash(&encoded).as_bytes() != node.register_schema.bytes {
+            return Err(FaultAbiError::CapabilityInvariant);
+        }
+        let mut requirement = Self::current_v1(architecture, node.cpu_model.clone());
+        let target = requirement
+            .target_manifest
+            .as_mut()
+            .ok_or(FaultAbiError::CapabilityInvariant)?;
+        target.exact_manifest = Some(manifest.clone());
+        requirement.rows = requirement.rows_for_manifest(Some(&manifest))?;
+        requirement.digest = fault_capability_manifest_digest(&requirement.rows)?;
+        Ok(requirement)
     }
 
     /// Returns the exact 0047-0048 capability set before mutation patches.
@@ -258,6 +383,10 @@ impl QemuFaultCapabilityRequirement {
         let manifest = manifest.ok_or(FaultAbiError::CapabilityInvariant)?;
         if manifest.architecture != required_target.architecture
             || manifest.cpu_model != required_target.realized_cpu_type()
+            || required_target
+                .exact_manifest
+                .as_ref()
+                .is_some_and(|required| required != manifest)
         {
             return Err(FaultAbiError::CapabilityInvariant);
         }
@@ -285,6 +414,29 @@ impl QemuFaultCapabilityRequirement {
         });
         fault_capability_manifest_digest(&rows)?;
         Ok(rows)
+    }
+}
+
+fn decode_lower_hex(value: &str) -> Result<Vec<u8>, FaultAbiError> {
+    if value.len() % 2 != 0 {
+        return Err(FaultAbiError::CapabilityInvariant);
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = hex_nibble(pair[0]).ok_or(FaultAbiError::CapabilityInvariant)?;
+            let low = hex_nibble(pair[1]).ok_or(FaultAbiError::CapabilityInvariant)?;
+            Ok((high << 4) | low)
+        })
+        .collect()
+}
+
+const fn hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
     }
 }
 
@@ -352,6 +504,50 @@ fn capability_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crucible::model::{ContentHash, SignalId, WorldNodeDramGeometry, WorldNodeRegister};
+
+    fn world_node_for_manifest(
+        manifest: &FaultRegisterCapabilityManifestV1,
+    ) -> WorldNodeFaultCapabilities {
+        let encoded = manifest
+            .encode()
+            .unwrap_or_else(|error| panic!("test manifest should encode: {error}"));
+        let id = |value: &str| {
+            SignalId::parse(value)
+                .unwrap_or_else(|error| panic!("test signal ID should be canonical: {error}"))
+        };
+        WorldNodeFaultCapabilities {
+            id: id("node-capabilities"),
+            node: id("vm-a"),
+            architecture: WorldNodeArchitecture::X86_64,
+            cpu_model: manifest.cpu_model.clone(),
+            register_schema: ContentHash::from_bytes(&encoded),
+            registers: vec![WorldNodeRegister {
+                id: id("rax"),
+                name: "rax".to_owned(),
+                numeric_id: 1,
+                group: WorldNodeRegisterGroup::GeneralPurpose,
+                width_bits: 8,
+                per_vcpu: true,
+                model_phases: vec![FaultPhase::BeforeInstruction],
+                side_effects: Vec::new(),
+                impulse: true,
+                persistent: false,
+                vmstate: true,
+                writable_mask_hex: "0f".to_owned(),
+                reserved_mask_hex: "30".to_owned(),
+                ignored_mask_hex: "40".to_owned(),
+                read_only_mask_hex: "80".to_owned(),
+            }],
+            address_spaces: Vec::new(),
+            page_bytes: 4096,
+            dram_geometry: WorldNodeDramGeometry::qemu_v1(),
+            interrupts: Vec::new(),
+            clock_sources: Vec::new(),
+            accelerators: Vec::new(),
+            semantic_version: 1,
+        }
+    }
 
     #[test]
     fn current_manifest_is_exact_for_each_architecture() {
@@ -379,7 +575,7 @@ mod tests {
                 register.command_kind,
                 FaultCommandKind::CpuRegisterTransform
             );
-            assert_eq!(register.scope, FaultCapabilityScope::All);
+            assert_eq!(register.scope, scope);
             assert_eq!(
                 register.required_feature_bits,
                 FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION
@@ -425,5 +621,64 @@ mod tests {
 
         assert_ne!(x86.rows()[4], arm.rows()[4]);
         assert_ne!(x86.digest(), arm.digest());
+    }
+
+    #[test]
+    fn world_node_binds_the_exact_register_manifest_into_launch_identity() {
+        let manifest = FaultRegisterCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            cpu_model: "crucible-x86-64-v1-x86_64-cpu".to_owned(),
+            rows: vec![FaultRegisterCapabilityRowV1 {
+                numeric_id: 1,
+                name: "rax".to_owned(),
+                width_bits: 8,
+                group: FaultRegisterGroupV1::GeneralPurpose,
+                model_phase_mask: 1 << (11 - 1),
+                side_effects: 0,
+                capabilities: FAULT_REGISTER_CAPABILITY_IMPULSE | FAULT_REGISTER_CAPABILITY_VMSTATE,
+                writable_mask: vec![0x0f],
+                reserved_mask: vec![0x30],
+                ignored_mask: vec![0x40],
+                read_only_mask: vec![0x80],
+            }],
+        };
+        let node = world_node_for_manifest(&manifest);
+        let requirement = QemuFaultCapabilityRequirement::current_v1_for_node(&node)
+            .unwrap_or_else(|error| panic!("world manifest should bind: {error}"));
+
+        assert!(requirement.rows_for_manifest(Some(&manifest)).is_ok());
+        let mut changed = manifest.clone();
+        changed.rows[0].name = "rbx".to_owned();
+        assert_eq!(
+            requirement.rows_for_manifest(Some(&changed)),
+            Err(FaultAbiError::CapabilityInvariant)
+        );
+    }
+
+    #[test]
+    fn world_node_rejects_a_register_schema_digest_mismatch() {
+        let manifest = FaultRegisterCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            cpu_model: "crucible-x86-64-v1-x86_64-cpu".to_owned(),
+            rows: vec![FaultRegisterCapabilityRowV1 {
+                numeric_id: 1,
+                name: "rax".to_owned(),
+                width_bits: 8,
+                group: FaultRegisterGroupV1::GeneralPurpose,
+                model_phase_mask: 1 << (11 - 1),
+                side_effects: 0,
+                capabilities: FAULT_REGISTER_CAPABILITY_IMPULSE | FAULT_REGISTER_CAPABILITY_VMSTATE,
+                writable_mask: vec![0x0f],
+                reserved_mask: vec![0x30],
+                ignored_mask: vec![0x40],
+                read_only_mask: vec![0x80],
+            }],
+        };
+        let mut node = world_node_for_manifest(&manifest);
+        node.register_schema = ContentHash::default();
+        assert!(matches!(
+            QemuFaultCapabilityRequirement::current_v1_for_node(&node),
+            Err(FaultAbiError::CapabilityInvariant)
+        ));
     }
 }

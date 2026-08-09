@@ -2424,7 +2424,8 @@ fn resolve_authored_target(
                 .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
             if architecture.as_str() != capabilities.architecture.selector_id()
                 || vcpu >= u32::from(vm.smp_vcpus)
-                || end > row.width_bits
+                || u32::from(end) > row.width_bits
+                || !row.range_is_writable(u32::from(first_bit), u32::from(bit_count))
                 || (!row.per_vcpu && vcpu != 0)
             {
                 return Err(FaultSignalAuthoringError::InvalidSelector);
