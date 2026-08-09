@@ -1,32 +1,3 @@
-From afd44d0b175fd77b2a835ebd2d94e15a13d8f3ef Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Sun, 9 Aug 2026 09:50:10 -0700
-Subject: [PATCH] crucible: add architecture register fault mutations
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- accel/tcg/cpu-exec-common.c       |   3 +-
- accel/tcg/cpu-exec.c              |  28 +-
- gdbstub/gdbstub.c                 |   1 -
- include/hw/core/cpu.h             |  40 ++
- include/qemu/crucible-fault.h     |  15 +
- include/qemu/qemu-plugin.h        |  28 ++
- plugins/crucible-fault-node.c     |  30 +-
- plugins/crucible-fault-register.c | 664 ++++++++++++++++++++++++++++++
- plugins/meson.build               |   3 +-
- target/arm/cpu.h                  |  12 +
- target/arm/cpu64.c                |   7 +
- target/arm/crucible-register.c    | 424 +++++++++++++++++++
- target/arm/meson.build            |   1 +
- target/i386/cpu.c                 |  10 +
- target/i386/cpu.h                 |  11 +
- target/i386/crucible-register.c   | 532 ++++++++++++++++++++++++
- target/i386/meson.build           |   1 +
- 17 files changed, 1803 insertions(+), 7 deletions(-)
- create mode 100644 plugins/crucible-fault-register.c
- create mode 100644 target/arm/crucible-register.c
- create mode 100644 target/i386/crucible-register.c
-
 diff --git a/accel/tcg/cpu-exec-common.c b/accel/tcg/cpu-exec-common.c
 index d752ee4..fab8b1c 100644
 --- a/accel/tcg/cpu-exec-common.c
@@ -42,7 +13,7 @@ index d752ee4..fab8b1c 100644
      }
  
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index dc1fe90..0c5e74c 100644
+index dc1fe90..777ccac 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
 @@ -501,7 +501,8 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
@@ -51,7 +22,7 @@ index dc1fe90..0c5e74c 100644
  
 -    if (unlikely(qemu_crucible_fault_memory_fetch_rules_active())) {
 +    if (unlikely(qemu_crucible_fault_memory_fetch_rules_active() ||
-+                 qemu_crucible_fault_register_rules_active())) {
++                 qemu_crucible_fault_register_boundaries_active())) {
          tb_phys_invalidate(itb, -1);
      }
  
@@ -67,7 +38,7 @@ index dc1fe90..0c5e74c 100644
          cpu->running = true;
  
          do {
-+            if (unlikely(qemu_crucible_fault_register_rules_active())) {
++            if (unlikely(qemu_crucible_fault_register_boundaries_active())) {
 +                qemu_crucible_fault_register_instruction_boundary(
 +                    cpu, QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION,
 +                    qemu_crucible_fault_observed_icount());
@@ -79,7 +50,7 @@ index dc1fe90..0c5e74c 100644
          } while (qemu_crucible_fault_memory_fetch_service_apply(cpu));
  
          cpu_exec_enter(cpu);
-+        if (unlikely(qemu_crucible_fault_register_rules_active())) {
++        if (unlikely(qemu_crucible_fault_register_boundaries_active())) {
 +            qemu_crucible_fault_register_execution_begin(cpu);
 +        }
          /* execute the generated code */
@@ -89,11 +60,11 @@ index dc1fe90..0c5e74c 100644
          cpu_exec_exit(cpu);
          qemu_crucible_fault_memory_service_apply(cpu);
      } else {
-@@ -909,9 +920,14 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
+@@ -909,9 +920,15 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
                                      int *tb_exit)
  {
      trace_exec_tb(tb, pc);
-+    if (unlikely(qemu_crucible_fault_register_rules_active())) {
++    if (unlikely(qemu_crucible_fault_register_boundaries_active())) {
 +        qemu_crucible_fault_register_execution_begin(cpu);
 +    }
      tb = cpu_tb_exec(cpu, tb, tb_exit);
@@ -101,15 +72,16 @@ index dc1fe90..0c5e74c 100644
      if (*tb_exit != TB_EXIT_REQUESTED) {
 -        *last_tb = qemu_crucible_fault_memory_fetch_rules_active() ? NULL : tb;
 +        *last_tb = (qemu_crucible_fault_memory_fetch_rules_active() ||
-+                    qemu_crucible_fault_register_rules_active()) ? NULL : tb;
++                    qemu_crucible_fault_register_boundaries_active()) ?
++            NULL : tb;
          return;
      }
  
-@@ -968,6 +984,11 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+@@ -968,6 +985,11 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
              uint64_t cs_base;
              uint32_t flags, cflags;
  
-+            if (unlikely(qemu_crucible_fault_register_rules_active())) {
++            if (unlikely(qemu_crucible_fault_register_boundaries_active())) {
 +                qemu_crucible_fault_register_instruction_boundary(
 +                    cpu, QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION,
 +                    qemu_crucible_fault_observed_icount());
@@ -117,13 +89,13 @@ index dc1fe90..0c5e74c 100644
              cpu_get_tb_cpu_state(cpu_env(cpu), &pc, &cs_base, &flags);
  
              /*
-@@ -988,7 +1009,8 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+@@ -988,7 +1010,8 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                  break;
              }
  
 -            if (unlikely(qemu_crucible_fault_memory_fetch_rules_active())) {
 +            if (unlikely(qemu_crucible_fault_memory_fetch_rules_active() ||
-+                         qemu_crucible_fault_register_rules_active())) {
++                         qemu_crucible_fault_register_boundaries_active())) {
                  cflags &= ~CF_COUNT_MASK;
                  cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
                  last_tb = NULL;
@@ -209,7 +181,7 @@ index 310314c..cbd275c 100644
      sigjmp_buf jmp_env;
  
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index a9b6bb3..483f8c0 100644
+index a9b6bb3..1622d08 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -17,6 +17,9 @@
@@ -240,12 +212,14 @@ index a9b6bb3..483f8c0 100644
  void qemu_crucible_fault_rule_event(const QemuCrucibleFaultRule *rule,
                                      uint16_t outcome,
                                      uint64_t observed_icount,
-@@ -112,6 +119,14 @@ void qemu_crucible_fault_rule_event(const QemuCrucibleFaultRule *rule,
+@@ -112,6 +119,16 @@ void qemu_crucible_fault_rule_event(const QemuCrucibleFaultRule *rule,
                                      const uint8_t *evidence,
                                      size_t evidence_len);
  
 +int qemu_crucible_fault_register_validate(const QemuCrucibleFaultRule *rule);
++bool qemu_crucible_fault_register_ensure_registered(void);
 +bool qemu_crucible_fault_register_rules_active(void);
++bool qemu_crucible_fault_register_boundaries_active(void);
 +void qemu_crucible_fault_register_instruction_boundary(CPUState *cpu,
 +                                                        uint16_t model_phase,
 +                                                        uint64_t icount);
@@ -256,10 +230,10 @@ index a9b6bb3..483f8c0 100644
      QEMU_CRUCIBLE_MEMORY_FETCH = 0x01,
      QEMU_CRUCIBLE_MEMORY_CPU_LOAD = 0x02,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 4f866e5..caf4f2b 100644
+index 4f866e5..63c6619 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1688,6 +1688,34 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+@@ -1688,6 +1688,43 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
                                              struct qemu_plugin_register *handle,
                                              GByteArray *buf);
  
@@ -286,19 +260,51 @@ index 4f866e5..caf4f2b 100644
 +    struct qemu_plugin_crucible_fault_register_capability *out,
 +    size_t capacity, uint16_t *architecture, const char **cpu_model);
 +
-+/** Seal one public register-name identity to its process-private numeric ID. */
++/** Bind the public architecture identity used by every register target. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_register_bind_architecture(
++    const uint8_t identity[32]);
++
++/** Bind one public register-name identity to its process-private numeric ID. */
 +QEMU_PLUGIN_API
 +int qemu_plugin_crucible_fault_register_bind(const uint8_t identity[32],
 +                                             uint32_t numeric_id);
++
++/** Seal the complete one-to-one architecture and register identity mapping. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_register_bindings_seal(void);
 +
  /**
   * qemu_plugin_read_vcpu_regs() - read canonical register bytes for a vCPU
   * @vcpu_index: the vCPU index to inspect
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 3d7d502..f775e84 100644
+index 3d7d502..7af3a9a 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
-@@ -3122,6 +3122,16 @@ static int node_prepare(
+@@ -2719,6 +2719,22 @@ static int node_parse(const struct qemu_plugin_crucible_fault_command *command,
+         !node_target_schema_for(rule->target_kind, &targets, &target_count)) {
+         return -EINVAL;
+     }
++    if (rule->command_kind ==
++        CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM) {
++        if ((rule->operation == CRUCIBLE_NODE_FAULT_OPERATION_APPLY &&
++             !((command->phase ==
++                    CRUCIBLE_FAULT_PHASE_BEFORE_INSTRUCTION &&
++                rule->model_phase ==
++                    QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION) ||
++               (command->phase ==
++                    CRUCIBLE_FAULT_PHASE_AFTER_INSTRUCTION &&
++                rule->model_phase ==
++                    QEMU_CRUCIBLE_MODEL_PHASE_AFTER_INSTRUCTION))) ||
++            (rule->operation != CRUCIBLE_NODE_FAULT_OPERATION_APPLY &&
++             command->phase != CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY)) {
++            return -EINVAL;
++        }
++    }
+     rule->payload = g_memdup2(payload, payload_len);
+     rule->payload_len = payload_len;
+     offset = CRUCIBLE_NODE_FAULT_PAYLOAD_HEADER_V1_BYTES;
+@@ -3122,6 +3138,16 @@ static int node_prepare(
              return -ENOSPC;
          }
      }
@@ -315,7 +321,19 @@ index 3d7d502..f775e84 100644
      node_sha256(payload, payload_len, staging->request_hash);
      node_rules_digest_with(NULL, false, staging->before_hash);
      if (command->command_flags & CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) {
-@@ -3334,6 +3344,10 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
+@@ -3312,6 +3338,11 @@ static void node_commit(
+                            staging->before_hash, staging->after_hash,
+                            staging->impulse_evidence->data,
+                            staging->impulse_evidence->len);
++        g_byte_array_set_size(result_payload, 0);
++        g_byte_array_append(result_payload, staging->impulse_evidence->data,
++                            staging->impulse_evidence->len);
++        node_sha256(result_payload->data, result_payload->len,
++                    result->evidence_hash);
+         memcpy(result->after_hash, staging->after_hash, 32);
+     }
+     result->status = CRUCIBLE_FAULT_STATUS_APPLIED;
+@@ -3334,6 +3365,10 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
      handler->capability.maximum_pending_commands =
          CRUCIBLE_FAULT_DEFAULT_COMMAND_CAPACITY;
      switch (command_kind) {
@@ -326,7 +344,7 @@ index 3d7d502..f775e84 100644
      case CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM:
      case CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE:
      case CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE:
-@@ -3346,6 +3360,8 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
+@@ -3346,6 +3381,8 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
      }
      handler->capability.name = name;
      handler->capability.payload_schema = command_kind ==
@@ -335,7 +353,7 @@ index 3d7d502..f775e84 100644
          CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE ?
          "crucible.node-fault-payload.v1;dram=2c2r16b64;"
          "page-table-walk=x86_64,aarch64" :
-@@ -3353,7 +3369,7 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
+@@ -3353,7 +3390,7 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
           "crucible.node-fault-payload.v1;atomic-widths=1,2,4,8,16;"
           "page-table-walk=x86_64,aarch64" :
           "crucible.node-fault-payload.v1;"
@@ -344,7 +362,7 @@ index 3d7d502..f775e84 100644
      handler->validate = node_validate;
      handler->arm = node_arm;
      handler->prepare = node_prepare;
-@@ -3382,6 +3398,12 @@ uint64_t qemu_crucible_fault_rule_generation(const QemuCrucibleFaultRule *rule)
+@@ -3382,6 +3419,12 @@ uint64_t qemu_crucible_fault_rule_generation(const QemuCrucibleFaultRule *rule)
      return rule->generation;
  }
  
@@ -357,7 +375,7 @@ index 3d7d502..f775e84 100644
  uint64_t qemu_crucible_fault_rule_command_sequence(
      const QemuCrucibleFaultRule *rule)
  {
-@@ -4444,6 +4466,12 @@ static bool node_rule_occurs(QemuCrucibleFaultRule *rule, uint16_t tag)
+@@ -4444,6 +4487,12 @@ static bool node_rule_occurs(QemuCrucibleFaultRule *rule, uint16_t tag)
      return false;
  }
  
@@ -372,10 +390,10 @@ index 3d7d502..f775e84 100644
  {
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
 new file mode 100644
-index 0000000..63478a5
+index 0000000..8ac46bc
 --- /dev/null
 +++ b/plugins/crucible-fault-register.c
-@@ -0,0 +1,664 @@
+@@ -0,0 +1,775 @@
 +/*
 + * Crucible architecture register fault targets
 + *
@@ -388,14 +406,12 @@ index 0000000..63478a5
 +#include "hw/core/cpu.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
-+#include "qemu/module.h"
 +#include "qemu/qemu-plugin.h"
 +
 +#define CRUCIBLE_REGISTER_CAP_IMPULSE (1U << 0)
 +#define CRUCIBLE_REGISTER_CAP_PERSISTENT (1U << 1)
 +#define CRUCIBLE_REGISTER_SCOPE_X86_64 2
 +#define CRUCIBLE_REGISTER_SCOPE_AARCH64 3
-+#define CRUCIBLE_REGISTER_SCOPE_ALL 1
 +
 +typedef struct qemu_plugin_crucible_fault_register_capability
 +    CrucibleRegisterCapability;
@@ -428,7 +444,12 @@ index 0000000..63478a5
 +static GArray *crucible_register_manifest;
 +static GArray *crucible_register_targets;
 +static GHashTable *crucible_register_bindings;
++static GHashTable *crucible_register_numeric_bindings;
 +static uint16_t crucible_register_scope;
++static uint8_t crucible_register_architecture_identity[32];
++static bool crucible_register_architecture_bound;
++static bool crucible_register_bindings_sealed;
++static bool crucible_register_handler_registered;
 +
 +static bool crucible_register_mask_test(const uint8_t *mask, uint32_t bit)
 +{
@@ -609,7 +630,7 @@ index 0000000..63478a5
 +{
 +    GBytes *key;
 +
-+    if (!identity || numeric_id == 0 ||
++    if (!identity || crucible_register_bindings_sealed || numeric_id == 0 ||
 +        !crucible_register_manifest_init() ||
 +        numeric_id > crucible_register_manifest->len) {
 +        return -EINVAL;
@@ -618,14 +639,51 @@ index 0000000..63478a5
 +        crucible_register_bindings = g_hash_table_new_full(
 +            g_bytes_hash, g_bytes_equal,
 +            (GDestroyNotify)g_bytes_unref, NULL);
++        crucible_register_numeric_bindings = g_hash_table_new(
++            g_direct_hash, g_direct_equal);
 +    }
 +    key = g_bytes_new(identity, 32);
-+    if (g_hash_table_contains(crucible_register_bindings, key)) {
++    if (g_hash_table_contains(crucible_register_bindings, key) ||
++        g_hash_table_contains(crucible_register_numeric_bindings,
++                              GUINT_TO_POINTER(numeric_id))) {
 +        g_bytes_unref(key);
 +        return -EEXIST;
 +    }
 +    g_hash_table_insert(crucible_register_bindings, key,
 +                        GUINT_TO_POINTER(numeric_id));
++    g_hash_table_insert(crucible_register_numeric_bindings,
++                        GUINT_TO_POINTER(numeric_id), key);
++    return 0;
++}
++
++int qemu_plugin_crucible_fault_register_bind_architecture(
++    const uint8_t identity[32])
++{
++    uint8_t zero[32] = { 0 };
++
++    if (!identity || crucible_register_bindings_sealed ||
++        crucible_register_architecture_bound ||
++        memcmp(identity, zero, sizeof(zero)) == 0 ||
++        !crucible_register_manifest_init()) {
++        return -EINVAL;
++    }
++    memcpy(crucible_register_architecture_identity, identity, 32);
++    crucible_register_architecture_bound = true;
++    return 0;
++}
++
++int qemu_plugin_crucible_fault_register_bindings_seal(void)
++{
++    if (crucible_register_bindings_sealed ||
++        !crucible_register_architecture_bound ||
++        !crucible_register_bindings || !crucible_register_numeric_bindings ||
++        g_hash_table_size(crucible_register_bindings) !=
++            crucible_register_manifest->len ||
++        g_hash_table_size(crucible_register_numeric_bindings) !=
++            crucible_register_manifest->len) {
++        return -EINVAL;
++    }
++    crucible_register_bindings_sealed = true;
 +    return 0;
 +}
 +
@@ -680,17 +738,38 @@ index 0000000..63478a5
 +                                     CrucibleRegisterApply *apply)
 +{
 +    const uint8_t *identity;
++    const uint8_t *architecture_identity;
++    const uint8_t *action_identity;
 +    uint32_t identity_len;
++    uint32_t architecture_identity_len;
++    uint32_t action_identity_len;
 +    uint32_t vcpu;
++    uint32_t target_first_bit;
++    uint32_t target_bit_count;
 +    const uint8_t *present;
 +    uint32_t present_len;
 +
-+    if (!crucible_register_field_u32(
++    if (!crucible_register_bindings_sealed ||
++        !crucible_register_field_u32(
 +            rule, CRUCIBLE_NODE_FAULT_FIELD_T1, &vcpu) ||
++        !crucible_register_field(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_T2,
++            CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++            &architecture_identity, &architecture_identity_len) ||
++        architecture_identity_len != 32 ||
 +        !crucible_register_field(
 +            rule, CRUCIBLE_NODE_FAULT_FIELD_T3,
 +            CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
 +            &identity, &identity_len) || identity_len != 32 ||
++        !crucible_register_field_u32(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_T4, &target_first_bit) ||
++        !crucible_register_field_u32(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_T5, &target_bit_count) ||
++        !crucible_register_field(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P1,
++            CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++            &action_identity, &action_identity_len) ||
++        action_identity_len != 32 ||
 +        !crucible_register_field_u32(
 +            rule, CRUCIBLE_NODE_FAULT_FIELD_P2, &apply->first_bit) ||
 +        !crucible_register_field_u32(
@@ -714,6 +793,11 @@ index 0000000..63478a5
 +    apply->cpu = qemu_get_cpu(vcpu);
 +    apply->target = crucible_register_target(identity, &apply->capability);
 +    if (!apply->cpu || !apply->target ||
++        memcmp(architecture_identity,
++               crucible_register_architecture_identity, 32) != 0 ||
++        memcmp(action_identity, identity, 32) != 0 ||
++        target_first_bit != apply->first_bit ||
++        target_bit_count != apply->bit_count ||
 +        apply->bit_count == 0 ||
 +        apply->first_bit > apply->target->width_bits ||
 +        apply->bit_count > apply->target->width_bits - apply->first_bit ||
@@ -755,10 +839,12 @@ index 0000000..63478a5
 +    }
 +    uint16_t phase = qemu_crucible_fault_rule_model_phase(rule);
 +
-+    if ((operation == CRUCIBLE_NODE_FAULT_OPERATION_APPLY &&
++    if (phase == 0 || phase > 64 ||
++        !(apply.capability->model_phase_mask & (UINT64_C(1) << (phase - 1))) ||
++        (operation == CRUCIBLE_NODE_FAULT_OPERATION_APPLY &&
 +         !(apply.capability->capabilities & CRUCIBLE_REGISTER_CAP_IMPULSE)) ||
 +        (operation == CRUCIBLE_NODE_FAULT_OPERATION_UPSERT &&
-+         (phase == 0 || phase > 64 ||
++         (apply.mutation_kind != 2 ||
 +          !(apply.capability->capabilities &
 +            CRUCIBLE_REGISTER_CAP_PERSISTENT) ||
 +          !(apply.capability->model_phase_mask &
@@ -862,9 +948,14 @@ index 0000000..63478a5
 +    uint8_t fingerprint[32];
 +    uint8_t header[128] = { 0 };
 +    uint32_t performed_side_effects = 0;
++    uint32_t rollback_side_effects = 0;
 +    size_t bytes = DIV_ROUND_UP(apply->target->width_bits, 8);
 +    CPUClass *cc = CPU_GET_CLASS(apply->cpu);
 +
++    if (qemu_plugin_rr_cursor(&rr) != 0 ||
++        rr.current_vcpu != apply->cpu->cpu_index) {
++        return -EXDEV;
++    }
 +    g_byte_array_set_size(before, bytes);
 +    g_byte_array_set_size(after, bytes);
 +    if (cc->crucible_register_read(
@@ -884,15 +975,13 @@ index 0000000..63478a5
 +            apply->cpu, apply->target->numeric_id,
 +            after->data, bytes) != bytes ||
 +        memcmp(after->data, desired, bytes) != 0) {
-+        return -EIO;
++        goto rollback;
 +    }
 +    crucible_register_sha256(before->data, before->len, before_hash);
 +    crucible_register_sha256(after->data, after->len, after_hash);
-+    if (qemu_plugin_rr_cursor(&rr) != 0 ||
-+        rr.current_vcpu != apply->cpu->cpu_index ||
-+        crucible_register_execution_fingerprint(
++    if (crucible_register_execution_fingerprint(
 +            icount, &rr, fingerprint) != 0) {
-+        return -EIO;
++        goto rollback;
 +    }
 +    memcpy(header, "CRUCQRW1", 8);
 +    stw_le_p(header + 8, 1);
@@ -907,15 +996,33 @@ index 0000000..63478a5
 +    stl_le_p(header + 40, apply->bit_count);
 +    stl_le_p(header + 44, before->len);
 +    stl_le_p(header + 48, after->len);
++    stl_le_p(header + 52, apply->mask_len);
 +    stq_le_p(header + 56, icount);
 +    stq_le_p(header + 64, rr.current_vcpu);
 +    stq_le_p(header + 72, rr.cursor_position);
 +    stq_le_p(header + 80, rr.rr_switch_quantum);
 +    memcpy(header + 88, fingerprint, sizeof(fingerprint));
++    stl_le_p(header + 120, apply->value_len);
 +    g_byte_array_append(evidence, header, sizeof(header));
 +    g_byte_array_append(evidence, before->data, before->len);
 +    g_byte_array_append(evidence, after->data, after->len);
++    g_byte_array_append(evidence, apply->mask, apply->mask_len);
++    g_byte_array_append(evidence, apply->value, apply->value_len);
 +    return 0;
++
++rollback:
++    if (cc->crucible_register_write(
++            apply->cpu, apply->target->numeric_id, before->data, bytes,
++            &rollback_side_effects) != bytes ||
++        rollback_side_effects != apply->capability->side_effects ||
++        cc->crucible_register_read(
++            apply->cpu, apply->target->numeric_id,
++            after->data, bytes) != bytes ||
++        memcmp(after->data, before->data, bytes) != 0) {
++        error_report("Crucible register mutation rollback failed");
++        abort();
++    }
++    return -EIO;
 +}
 +
 +static int crucible_register_impulse(
@@ -985,6 +1092,15 @@ index 0000000..63478a5
 +    return active;
 +}
 +
++bool qemu_crucible_fault_register_boundaries_active(void)
++{
++    return qemu_crucible_fault_register_rules_active() ||
++        qemu_crucible_fault_next_icount(
++            CRUCIBLE_FAULT_PHASE_BEFORE_INSTRUCTION) != UINT64_MAX ||
++        qemu_crucible_fault_next_icount(
++            CRUCIBLE_FAULT_PHASE_AFTER_INSTRUCTION) != UINT64_MAX;
++}
++
 +void qemu_crucible_fault_register_instruction_boundary(
 +    CPUState *cpu, uint16_t model_phase, uint64_t icount)
 +{
@@ -994,6 +1110,11 @@ index 0000000..63478a5
 +        .icount = icount,
 +    };
 +
++    qemu_crucible_fault_dispatch_boundary(
++        model_phase == QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION ?
++        CRUCIBLE_FAULT_PHASE_BEFORE_INSTRUCTION :
++        CRUCIBLE_FAULT_PHASE_AFTER_INSTRUCTION,
++        icount);
 +    qemu_crucible_fault_rule_foreach(
 +        CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM,
 +        crucible_register_persistent_visit, &visit);
@@ -1028,18 +1149,40 @@ index 0000000..63478a5
 +        cpu, QEMU_CRUCIBLE_MODEL_PHASE_AFTER_INSTRUCTION, after_icount);
 +}
 +
-+static void crucible_register_faults_register(void)
++bool qemu_crucible_fault_register_ensure_registered(void)
 +{
 +    const uint32_t boundary =
-+        1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1);
-+    uint16_t scope = CRUCIBLE_REGISTER_SCOPE_ALL;
++        (1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1)) |
++        (1U << (CRUCIBLE_FAULT_PHASE_BEFORE_INSTRUCTION - 1)) |
++        (1U << (CRUCIBLE_FAULT_PHASE_AFTER_INSTRUCTION - 1));
++    if (crucible_register_handler_registered) {
++        return true;
++    }
++    if (!crucible_register_manifest_init()) {
++        return false;
++    }
 +    qemu_crucible_fault_node_register(
-+        CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM, scope, boundary,
++        CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM,
++        crucible_register_scope, boundary,
 +        "qemu.register.mutate.v1",
 +        crucible_register_impulse);
++    crucible_register_handler_registered = true;
++    return true;
 +}
-+
-+type_init(crucible_register_faults_register)
+diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
+index 333af60..6e96e52 100644
+--- a/plugins/crucible-fault.c
++++ b/plugins/crucible-fault.c
+@@ -323,6 +323,9 @@ size_t qemu_plugin_crucible_fault_capabilities(
+     size_t required;
+     size_t i;
+ 
++    if (!qemu_crucible_fault_register_ensure_registered()) {
++        return 0;
++    }
+     qemu_crucible_fault_registry_seal();
+     g_mutex_lock(&crucible_fault_lock);
+     required = crucible_fault_handlers->len;
 diff --git a/plugins/meson.build b/plugins/meson.build
 index dffdd97..550ed0d 100644
 --- a/plugins/meson.build
@@ -1053,6 +1196,32 @@ index dffdd97..550ed0d 100644
 +                    'crucible-fault-register.c'))
  
  common_ss.add(files('loader.c', 'api.c', 'core.c'))
+diff --git a/system/vl.c b/system/vl.c
+index 9d56aeb..c06dd6f 100644
+--- a/system/vl.c
++++ b/system/vl.c
+@@ -2707,12 +2707,18 @@ static void qemu_init_board(void)
+ {
+     MachineClass *machine_class = MACHINE_GET_CLASS(current_machine);
+ 
+-    /* process plugin before CPUs are created, but once -smp has been parsed */
+-    qemu_plugin_load_list(&plugin_list, &error_fatal);
+-
+     /* From here on we enter MACHINE_PHASE_INITIALIZED.  */
+     machine_run_board_init(current_machine, mem_path, &error_fatal);
+ 
++    /*
++     * Crucible plugins attest the realized CPU model and its architecture-
++     * owned fault manifest during installation.  CPU plugin-init work was
++     * queued by cpu_exec_realizefn() and cannot run until vCPU threads start,
++     * so loading here still precedes every plugin callback while making the
++     * immutable realized CPU state available to plugin installation.
++     */
++    qemu_plugin_load_list(&plugin_list, &error_fatal);
++
+     if (machine_class->auto_create_sdcard) {
+         bool ambigous;
+ 
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
 index 83b3596..0217236 100644
 --- a/target/arm/cpu.h
@@ -1096,10 +1265,10 @@ index 8188ede..f1d7235 100644
  
 diff --git a/target/arm/crucible-register.c b/target/arm/crucible-register.c
 new file mode 100644
-index 0000000..f6a31a3
+index 0000000..7f8620d
 --- /dev/null
 +++ b/target/arm/crucible-register.c
-@@ -0,0 +1,424 @@
+@@ -0,0 +1,532 @@
 +/*
 + * Crucible AArch64 architecture register fault targets
 + *
@@ -1213,6 +1382,48 @@ index 0000000..f6a31a3
 +    return cpu_isar_feature(aa64_sve, cpu) && cpu->sve_max_vq != 0;
 +}
 +
++static size_t a64_crucible_exception_count(CPUARMState *env)
++{
++    return 2 + (arm_feature(env, ARM_FEATURE_EL2) ? 2 : 0) +
++        (arm_feature(env, ARM_FEATURE_EL3) ? 2 : 0);
++}
++
++static bool a64_crucible_exception_register(
++    ARMCPU *cpu, uint32_t id, unsigned int *el, bool *is_spsr)
++{
++    CPUARMState *env = &cpu->env;
++    uint32_t relative;
++
++    if (id <= A64_CRUCIBLE_BASE_COUNT ||
++        id > A64_CRUCIBLE_BASE_COUNT + a64_crucible_exception_count(env)) {
++        return false;
++    }
++    relative = id - A64_CRUCIBLE_BASE_COUNT - 1;
++    if (relative < 2) {
++        *el = 1;
++    } else if (arm_feature(env, ARM_FEATURE_EL2) && relative < 4) {
++        *el = 2;
++        relative -= 2;
++    } else {
++        *el = 3;
++        relative -= arm_feature(env, ARM_FEATURE_EL2) ? 4 : 2;
++    }
++    *is_spsr = relative == 1;
++    return true;
++}
++
++static bool a64_crucible_is_explicit_exception_sysreg(
++    const ARMCPRegInfo *ri)
++{
++    return ri->name &&
++        (g_str_equal(ri->name, "ELR_EL1") ||
++         g_str_equal(ri->name, "SPSR_EL1") ||
++         g_str_equal(ri->name, "ELR_EL2") ||
++         g_str_equal(ri->name, "SPSR_EL2") ||
++         g_str_equal(ri->name, "ELR_EL3") ||
++         g_str_equal(ri->name, "SPSR_EL3"));
++}
++
 +static gint a64_crucible_compare_key(gconstpointer a, gconstpointer b)
 +{
 +    uint32_t left = *(const uint32_t *)a;
@@ -1234,7 +1445,8 @@ index 0000000..f6a31a3
 +        uint32_t key = (uintptr_t)raw_key;
 +
 +        if (ri->state == ARM_CP_STATE_AA64 &&
-+            !(ri->type & (ARM_CP_NO_RAW | ARM_CP_NO_GDB))) {
++            !(ri->type & (ARM_CP_NO_RAW | ARM_CP_NO_GDB)) &&
++            !a64_crucible_is_explicit_exception_sysreg(ri)) {
 +            g_array_append_val(keys, key);
 +        }
 +    }
@@ -1245,6 +1457,7 @@ index 0000000..f6a31a3
 +static size_t a64_crucible_fixed_count(ARMCPU *cpu)
 +{
 +    return A64_CRUCIBLE_BASE_COUNT +
++        a64_crucible_exception_count(&cpu->env) +
 +        (a64_crucible_has_sve(cpu) ? A64_CRUCIBLE_SVE_COUNT : 0);
 +}
 +
@@ -1293,6 +1506,9 @@ index 0000000..f6a31a3
 +    bool sve = a64_crucible_has_sve(cpu);
 +    uint32_t id = index + 1;
 +    size_t fixed = a64_crucible_fixed_count(cpu);
++    size_t exception_count = a64_crucible_exception_count(&cpu->env);
++    unsigned int exception_el;
++    bool exception_spsr;
 +
 +    if (!capability || id > aarch64_crucible_register_count(cs)) {
 +        return false;
@@ -1334,8 +1550,28 @@ index 0000000..f6a31a3
 +        capability->side_effects = CRUCIBLE_REG_SIDE_FLAGS;
 +        a64_crucible_writable(capability, id == A64_CRUCIBLE_FPSR ?
 +                               FPSCR_FPSR_MASK : FPSCR_FPCR_MASK);
++    } else if (a64_crucible_exception_register(
++                   cpu, id, &exception_el, &exception_spsr)) {
++        capability->name = g_strdup_printf(
++            "%s-el%u", exception_spsr ? "spsr" : "elr", exception_el);
++        capability->width_bits = 64;
++        capability->group = exception_spsr ? CRUCIBLE_REG_GROUP_FLAGS :
++            CRUCIBLE_REG_GROUP_CONTROL_FLOW;
++        capability->side_effects = CRUCIBLE_REG_SIDE_TB |
++            CRUCIBLE_REG_SIDE_CONTROL_FLOW |
++            (exception_spsr ? CRUCIBLE_REG_SIDE_FLAGS |
++             CRUCIBLE_REG_SIDE_INTERRUPT : 0);
++        if (exception_spsr) {
++            a64_crucible_writable(
++                capability, PSTATE_NZCV | PSTATE_DAIF | PSTATE_BTYPE |
++                PSTATE_SSBS | PSTATE_IL | PSTATE_SS | PSTATE_PAN |
++                PSTATE_UAO | PSTATE_DIT | PSTATE_TCO | PSTATE_M);
++        } else {
++            a64_crucible_all_writable(capability);
++        }
 +    } else if (sve && id <= fixed) {
-+        uint32_t relative = id - A64_CRUCIBLE_BASE_COUNT - 1;
++        uint32_t relative = id - A64_CRUCIBLE_BASE_COUNT -
++            exception_count - 1;
 +
 +        capability->group = CRUCIBLE_REG_GROUP_VECTOR;
 +        if (relative < A64_CRUCIBLE_SVE_Z_COUNT) {
@@ -1368,6 +1604,9 @@ index 0000000..f6a31a3
 +static int a64_crucible_width(ARMCPU *cpu, uint32_t id)
 +{
 +    size_t fixed = a64_crucible_fixed_count(cpu);
++    size_t exception_count = a64_crucible_exception_count(&cpu->env);
++    unsigned int exception_el;
++    bool exception_spsr;
 +
 +    if (id >= A64_CRUCIBLE_X_FIRST && id <= A64_CRUCIBLE_PC) {
 +        return 8;
@@ -1379,9 +1618,15 @@ index 0000000..f6a31a3
 +    if (id >= A64_CRUCIBLE_V_FIRST && id <= A64_CRUCIBLE_V_LAST) {
 +        return 16;
 +    }
-+    if (a64_crucible_has_sve(cpu) && id > A64_CRUCIBLE_BASE_COUNT &&
++    if (a64_crucible_exception_register(
++            cpu, id, &exception_el, &exception_spsr)) {
++        return 8;
++    }
++    if (a64_crucible_has_sve(cpu) &&
++        id > A64_CRUCIBLE_BASE_COUNT + exception_count &&
 +        id <= fixed) {
-+        uint32_t relative = id - A64_CRUCIBLE_BASE_COUNT - 1;
++        uint32_t relative = id - A64_CRUCIBLE_BASE_COUNT -
++            exception_count - 1;
 +        return relative < A64_CRUCIBLE_SVE_Z_COUNT ?
 +            cpu->sve_max_vq * 16 : cpu->sve_max_vq * 2;
 +    }
@@ -1396,6 +1641,8 @@ index 0000000..f6a31a3
 +    CPUARMState *env = &cpu->env;
 +    int expected = a64_crucible_width(cpu, id);
 +    uint64_t scalar = 0;
++    unsigned int exception_el;
++    bool exception_spsr;
 +
 +    if (!value || expected < 0 || value_len != expected) {
 +        return -EINVAL;
@@ -1417,10 +1664,17 @@ index 0000000..f6a31a3
 +        scalar = vfp_get_fpsr(env);
 +    } else if (id == A64_CRUCIBLE_FPCR) {
 +        scalar = vfp_get_fpcr(env);
++    } else if (a64_crucible_exception_register(
++                   cpu, id, &exception_el, &exception_spsr)) {
++        scalar = exception_spsr ?
++            env->banked_spsr[aarch64_banked_spsr_index(exception_el)] :
++            env->elr_el[exception_el];
 +    } else if (a64_crucible_has_sve(cpu) &&
-+               id > A64_CRUCIBLE_BASE_COUNT &&
++               id > A64_CRUCIBLE_BASE_COUNT +
++                    a64_crucible_exception_count(env) &&
 +               id <= a64_crucible_fixed_count(cpu)) {
-+        uint32_t relative = id - A64_CRUCIBLE_BASE_COUNT - 1;
++        uint32_t relative = id - A64_CRUCIBLE_BASE_COUNT -
++            a64_crucible_exception_count(env) - 1;
 +
 +        if (relative < A64_CRUCIBLE_SVE_Z_COUNT) {
 +            for (int vq = 0; vq < cpu->sve_max_vq; vq++) {
@@ -1461,6 +1715,8 @@ index 0000000..f6a31a3
 +    int expected = a64_crucible_width(cpu, id);
 +    uint64_t scalar;
 +    uint32_t effects = 0;
++    unsigned int exception_el;
++    bool exception_spsr;
 +
 +    if (!value || !performed_side_effects || expected < 0 ||
 +        value_len != expected || id > a64_crucible_fixed_count(cpu)) {
@@ -1491,10 +1747,31 @@ index 0000000..f6a31a3
 +    } else if (id == A64_CRUCIBLE_FPCR) {
 +        vfp_set_fpcr(env, scalar);
 +        effects = CRUCIBLE_REG_SIDE_FLAGS;
++    } else if (a64_crucible_exception_register(
++                   cpu, id, &exception_el, &exception_spsr)) {
++        if (exception_spsr) {
++            const uint64_t writable = PSTATE_NZCV | PSTATE_DAIF |
++                PSTATE_BTYPE | PSTATE_SSBS | PSTATE_IL | PSTATE_SS |
++                PSTATE_PAN | PSTATE_UAO | PSTATE_DIT | PSTATE_TCO |
++                PSTATE_M;
++            uint64_t *spsr = &env->banked_spsr[
++                aarch64_banked_spsr_index(exception_el)];
++
++            *spsr = (*spsr & ~writable) | (scalar & writable);
++            effects = CRUCIBLE_REG_SIDE_TB |
++                CRUCIBLE_REG_SIDE_CONTROL_FLOW | CRUCIBLE_REG_SIDE_FLAGS |
++                CRUCIBLE_REG_SIDE_INTERRUPT;
++        } else {
++            env->elr_el[exception_el] = scalar;
++            effects = CRUCIBLE_REG_SIDE_TB |
++                CRUCIBLE_REG_SIDE_CONTROL_FLOW;
++        }
 +    } else if (a64_crucible_has_sve(cpu) &&
-+               id > A64_CRUCIBLE_BASE_COUNT &&
++               id > A64_CRUCIBLE_BASE_COUNT +
++                    a64_crucible_exception_count(env) &&
 +               id <= a64_crucible_fixed_count(cpu)) {
-+        uint32_t relative = id - A64_CRUCIBLE_BASE_COUNT - 1;
++        uint32_t relative = id - A64_CRUCIBLE_BASE_COUNT -
++            a64_crucible_exception_count(env) - 1;
 +
 +        if (relative < A64_CRUCIBLE_SVE_Z_COUNT) {
 +            for (int vq = 0; vq < cpu->sve_max_vq; vq++) {
@@ -1588,10 +1865,10 @@ index 1ada85b..6859b31 100644
  void x86_cpu_list(void);
 diff --git a/target/i386/crucible-register.c b/target/i386/crucible-register.c
 new file mode 100644
-index 0000000..5719f83
+index 0000000..be67d74
 --- /dev/null
 +++ b/target/i386/crucible-register.c
-@@ -0,0 +1,532 @@
+@@ -0,0 +1,915 @@
 +/*
 + * Crucible x86-64 architecture register fault targets
 + *
@@ -1605,6 +1882,7 @@ index 0000000..5719f83
 +#include "exec/cputlb.h"
 +#include "exec/tb-flush.h"
 +#include "hw/i386/apic.h"
++#include "qemu/main-loop.h"
 +#include "tcg/helper-tcg.h"
 +
 +#define CRUCIBLE_REG_GROUP_GPR 1
@@ -1656,8 +1934,31 @@ index 0000000..5719f83
 +    X86_CRUCIBLE_XMM_FIRST = 80,
 +    X86_CRUCIBLE_XMM_LAST = 95,
 +    X86_CRUCIBLE_MXCSR = 96,
-+    X86_CRUCIBLE_REGISTER_COUNT = X86_CRUCIBLE_MXCSR,
++    X86_CRUCIBLE_BASE_COUNT = X86_CRUCIBLE_MXCSR,
 +};
++
++typedef enum X86CrucibleOptionalRegisterKind {
++    X86_CRUCIBLE_OPTIONAL_NONE,
++    X86_CRUCIBLE_OPTIONAL_SYSENTER_CS,
++    X86_CRUCIBLE_OPTIONAL_SYSENTER_ESP,
++    X86_CRUCIBLE_OPTIONAL_SYSENTER_EIP,
++    X86_CRUCIBLE_OPTIONAL_STAR,
++    X86_CRUCIBLE_OPTIONAL_LSTAR,
++    X86_CRUCIBLE_OPTIONAL_CSTAR,
++    X86_CRUCIBLE_OPTIONAL_FMASK,
++    X86_CRUCIBLE_OPTIONAL_PAT,
++    X86_CRUCIBLE_OPTIONAL_TSC_AUX,
++    X86_CRUCIBLE_OPTIONAL_YMM_UPPER,
++    X86_CRUCIBLE_OPTIONAL_ZMM_UPPER,
++    X86_CRUCIBLE_OPTIONAL_ZMM_HIGH,
++    X86_CRUCIBLE_OPTIONAL_OPMASK,
++    X86_CRUCIBLE_OPTIONAL_PKRU,
++} X86CrucibleOptionalRegisterKind;
++
++typedef struct X86CrucibleOptionalRegister {
++    X86CrucibleOptionalRegisterKind kind;
++    uint32_t index;
++} X86CrucibleOptionalRegister;
 +
 +static const int x86_crucible_gpr_map[16] = {
 +    R_EAX, R_EBX, R_ECX, R_EDX, R_ESI, R_EDI, R_EBP, R_ESP,
@@ -1676,6 +1977,122 @@ index 0000000..5719f83
 +static const X86Seg x86_crucible_segment_map[6] = {
 +    R_CS, R_SS, R_DS, R_ES, R_FS, R_GS,
 +};
++
++static bool x86_crucible_has_avx(CPUX86State *env)
++{
++    return env->features[FEAT_1_ECX] & CPUID_EXT_AVX;
++}
++
++static bool x86_crucible_has_avx512(CPUX86State *env)
++{
++    return env->features[FEAT_7_0_EBX] & CPUID_7_0_EBX_AVX512F;
++}
++
++static bool x86_crucible_has_pku(CPUX86State *env)
++{
++    return env->features[FEAT_7_0_ECX] & CPUID_7_0_ECX_PKU;
++}
++
++static bool x86_crucible_has_syscall(CPUX86State *env)
++{
++    return env->features[FEAT_8000_0001_EDX] & CPUID_EXT2_SYSCALL;
++}
++
++static size_t x86_crucible_register_count_for_env(CPUX86State *env)
++{
++    size_t count = X86_CRUCIBLE_BASE_COUNT;
++
++    if (env->features[FEAT_1_EDX] & CPUID_SEP) {
++        count += 3;
++    }
++    if (x86_crucible_has_syscall(env)) {
++        count += 4;
++    }
++    if (env->features[FEAT_1_EDX] & CPUID_PAT) {
++        count++;
++    }
++    if (env->features[FEAT_8000_0001_EDX] & CPUID_EXT2_RDTSCP) {
++        count++;
++    }
++    if (x86_crucible_has_avx(env)) {
++        count += 16;
++    }
++    if (x86_crucible_has_avx512(env)) {
++        count += 16 + 16 + NB_OPMASK_REGS;
++    }
++    if (x86_crucible_has_pku(env)) {
++        count++;
++    }
++    return count;
++}
++
++static X86CrucibleOptionalRegister x86_crucible_optional_register(
++    CPUX86State *env, uint32_t id)
++{
++    uint32_t first = X86_CRUCIBLE_BASE_COUNT + 1;
++    X86CrucibleOptionalRegister result = { 0 };
++
++    if (env->features[FEAT_1_EDX] & CPUID_SEP) {
++        if (id >= first && id < first + 3) {
++            result.kind = X86_CRUCIBLE_OPTIONAL_SYSENTER_CS + id - first;
++            return result;
++        }
++        first += 3;
++    }
++    if (x86_crucible_has_syscall(env)) {
++        if (id >= first && id < first + 4) {
++            result.kind = X86_CRUCIBLE_OPTIONAL_STAR + id - first;
++            return result;
++        }
++        first += 4;
++    }
++    if (env->features[FEAT_1_EDX] & CPUID_PAT) {
++        if (id == first) {
++            result.kind = X86_CRUCIBLE_OPTIONAL_PAT;
++            return result;
++        }
++        first++;
++    }
++    if (env->features[FEAT_8000_0001_EDX] & CPUID_EXT2_RDTSCP) {
++        if (id == first) {
++            result.kind = X86_CRUCIBLE_OPTIONAL_TSC_AUX;
++            return result;
++        }
++        first++;
++    }
++    if (x86_crucible_has_avx(env)) {
++        if (id >= first && id < first + 16) {
++            result.kind = X86_CRUCIBLE_OPTIONAL_YMM_UPPER;
++            result.index = id - first;
++            return result;
++        }
++        first += 16;
++    }
++    if (x86_crucible_has_avx512(env)) {
++        if (id >= first && id < first + 16) {
++            result.kind = X86_CRUCIBLE_OPTIONAL_ZMM_UPPER;
++            result.index = id - first;
++            return result;
++        }
++        first += 16;
++        if (id >= first && id < first + 16) {
++            result.kind = X86_CRUCIBLE_OPTIONAL_ZMM_HIGH;
++            result.index = id - first + 16;
++            return result;
++        }
++        first += 16;
++        if (id >= first && id < first + NB_OPMASK_REGS) {
++            result.kind = X86_CRUCIBLE_OPTIONAL_OPMASK;
++            result.index = id - first;
++            return result;
++        }
++        first += NB_OPMASK_REGS;
++    }
++    if (x86_crucible_has_pku(env) && id == first) {
++        result.kind = X86_CRUCIBLE_OPTIONAL_PKRU;
++    }
++    return result;
++}
 +
 +static void x86_crucible_masks(CrucibleCPURegisterCapability *capability,
 +                               uint64_t writable)
@@ -1741,7 +2158,8 @@ index 0000000..5719f83
 +
 +size_t x86_crucible_register_count(CPUState *cs)
 +{
-+    return X86_CPU(cs) ? X86_CRUCIBLE_REGISTER_COUNT : 0;
++    return X86_CPU(cs) ?
++        x86_crucible_register_count_for_env(&X86_CPU(cs)->env) : 0;
 +}
 +
 +bool x86_crucible_register_describe(
@@ -1750,8 +2168,11 @@ index 0000000..5719f83
 +{
 +    CPUX86State *env = &X86_CPU(cs)->env;
 +    uint32_t id = index + 1;
++    X86CrucibleOptionalRegister optional =
++        x86_crucible_optional_register(env, id);
 +
-+    if (!X86_CPU(cs) || !capability || id > X86_CRUCIBLE_REGISTER_COUNT) {
++    if (!X86_CPU(cs) || !capability ||
++        id > x86_crucible_register_count_for_env(env)) {
 +        return false;
 +    }
 +    *capability = (CrucibleCPURegisterCapability) {
@@ -1771,7 +2192,7 @@ index 0000000..5719f83
 +        x86_crucible_all_writable(capability);
 +    } else if (id == X86_CRUCIBLE_RFLAGS) {
 +        capability->name = g_strdup("rflags");
-+        capability->width_bits = 64;
++        capability->width_bits = 32;
 +        capability->group = CRUCIBLE_REG_GROUP_FLAGS;
 +        capability->side_effects = CRUCIBLE_REG_SIDE_TB |
 +            CRUCIBLE_REG_SIDE_FLAGS | CRUCIBLE_REG_SIDE_INTERRUPT;
@@ -1791,15 +2212,10 @@ index 0000000..5719f83
 +        capability->width_bits = field == 0 ? 16 :
 +            ((field == 2 || field == 3) ? 32 : 64);
 +        capability->group = CRUCIBLE_REG_GROUP_SEGMENT;
-+        if (field == 0) {
-+            capability->side_effects = CRUCIBLE_REG_SIDE_TLB |
-+                CRUCIBLE_REG_SIDE_TB | CRUCIBLE_REG_SIDE_FLAGS |
-+                CRUCIBLE_REG_SIDE_INTERRUPT;
-+            x86_crucible_all_writable(capability);
-+        } else {
-+            /* Hidden cache fields are diagnostic-only fault references. */
-+            x86_crucible_read_only(capability);
-+        }
++        capability->side_effects = CRUCIBLE_REG_SIDE_TLB |
++            CRUCIBLE_REG_SIDE_TB | CRUCIBLE_REG_SIDE_FLAGS |
++            CRUCIBLE_REG_SIDE_INTERRUPT;
++        x86_crucible_all_writable(capability);
 +    } else if (id == X86_CRUCIBLE_KERNEL_GS_BASE) {
 +        capability->name = g_strdup("kernel-gs-base");
 +        capability->width_bits = 64;
@@ -1839,6 +2255,9 @@ index 0000000..5719f83
 +                CR0_NW_MASK | CR0_CD_MASK | CR0_PG_MASK;
 +        } else if (id == X86_CRUCIBLE_CR4) {
 +            writable = ~cr4_reserved_bits(env);
++        } else if (id == X86_CRUCIBLE_CR3) {
++            writable = X86_CPU(cs)->phys_bits >= 64 ? UINT64_MAX :
++                (UINT64_C(1) << X86_CPU(cs)->phys_bits) - 1;
 +        } else if (id == X86_CRUCIBLE_CR8) {
 +            writable = 0x0f;
 +        } else if (id == X86_CRUCIBLE_EFER) {
@@ -1854,7 +2273,27 @@ index 0000000..5719f83
 +        capability->name = g_strdup_printf("dr%u", id - X86_CRUCIBLE_DR_FIRST);
 +        capability->width_bits = 64;
 +        capability->group = CRUCIBLE_REG_GROUP_DEBUG;
-+        x86_crucible_read_only(capability);
++        capability->side_effects = CRUCIBLE_REG_SIDE_TB |
++            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
++        if (id <= X86_CRUCIBLE_DR_FIRST + 3) {
++            x86_crucible_all_writable(capability);
++        } else if (id == X86_CRUCIBLE_DR_FIRST + 6) {
++            x86_crucible_writable(capability,
++                                  UINT32_MAX & ~DR6_FIXED_1);
++            capability->read_only_mask[1] |= (DR6_FIXED_1 >> 8) & 0xff;
++            capability->read_only_mask[2] |= (DR6_FIXED_1 >> 16) & 0xff;
++            capability->read_only_mask[3] |= (DR6_FIXED_1 >> 24) & 0xff;
++            capability->reserved_mask[1] &= ~((DR6_FIXED_1 >> 8) & 0xff);
++            capability->reserved_mask[2] &= ~((DR6_FIXED_1 >> 16) & 0xff);
++            capability->reserved_mask[3] &= ~((DR6_FIXED_1 >> 24) & 0xff);
++        } else if (id == X86_CRUCIBLE_DR_FIRST + 7) {
++            x86_crucible_writable(capability,
++                                  UINT32_MAX & ~DR7_FIXED_1);
++            capability->read_only_mask[1] |= (DR7_FIXED_1 >> 8) & 0xff;
++            capability->reserved_mask[1] &= ~((DR7_FIXED_1 >> 8) & 0xff);
++        } else {
++            x86_crucible_read_only(capability);
++        }
 +    } else if (id >= X86_CRUCIBLE_ST_FIRST && id <= X86_CRUCIBLE_ST_LAST) {
 +        capability->name = g_strdup_printf("st%u", id - X86_CRUCIBLE_ST_FIRST);
 +        capability->width_bits = 80;
@@ -1896,12 +2335,67 @@ index 0000000..5719f83
 +        capability->group = CRUCIBLE_REG_GROUP_FLOAT;
 +        capability->side_effects = CRUCIBLE_REG_SIDE_FLAGS;
 +        x86_crucible_writable(capability, 0x0000ffff);
++    } else if (optional.kind >= X86_CRUCIBLE_OPTIONAL_SYSENTER_CS &&
++               optional.kind <= X86_CRUCIBLE_OPTIONAL_TSC_AUX) {
++        static const char * const names[] = {
++            "sysenter-cs", "sysenter-esp", "sysenter-eip", "star", "lstar",
++            "cstar", "fmask", "pat", "tsc-aux",
++        };
++        uint32_t relative = optional.kind -
++            X86_CRUCIBLE_OPTIONAL_SYSENTER_CS;
++
++        capability->name = g_strdup(names[relative]);
++        capability->width_bits =
++            optional.kind == X86_CRUCIBLE_OPTIONAL_SYSENTER_CS ||
++            optional.kind == X86_CRUCIBLE_OPTIONAL_TSC_AUX ? 32 : 64;
++        capability->group = CRUCIBLE_REG_GROUP_SYSTEM;
++        capability->side_effects =
++            optional.kind == X86_CRUCIBLE_OPTIONAL_PAT ?
++            CRUCIBLE_REG_SIDE_TLB :
++            (optional.kind == X86_CRUCIBLE_OPTIONAL_TSC_AUX ? 0 :
++             CRUCIBLE_REG_SIDE_TB | CRUCIBLE_REG_SIDE_CONTROL_FLOW);
++        if (optional.kind == X86_CRUCIBLE_OPTIONAL_SYSENTER_CS) {
++            x86_crucible_writable(capability, UINT16_MAX);
++        } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_PAT) {
++            x86_crucible_writable(capability, UINT64_C(0x0707070707070707));
++        } else {
++            x86_crucible_all_writable(capability);
++        }
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_YMM_UPPER) {
++        capability->name = g_strdup_printf("ymm%u-upper-128", optional.index);
++        capability->width_bits = 128;
++        capability->group = CRUCIBLE_REG_GROUP_VECTOR;
++        x86_crucible_all_writable(capability);
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_ZMM_UPPER) {
++        capability->name = g_strdup_printf("zmm%u-upper-256", optional.index);
++        capability->width_bits = 256;
++        capability->group = CRUCIBLE_REG_GROUP_VECTOR;
++        x86_crucible_all_writable(capability);
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_ZMM_HIGH) {
++        capability->name = g_strdup_printf("zmm%u", optional.index);
++        capability->width_bits = 512;
++        capability->group = CRUCIBLE_REG_GROUP_VECTOR;
++        x86_crucible_all_writable(capability);
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_OPMASK) {
++        capability->name = g_strdup_printf("k%u", optional.index);
++        capability->width_bits = 64;
++        capability->group = CRUCIBLE_REG_GROUP_VECTOR;
++        x86_crucible_all_writable(capability);
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_PKRU) {
++        capability->name = g_strdup("pkru");
++        capability->width_bits = 32;
++        capability->group = CRUCIBLE_REG_GROUP_SYSTEM;
++        capability->side_effects = CRUCIBLE_REG_SIDE_TLB;
++        x86_crucible_all_writable(capability);
 +    }
 +    return capability->name != NULL;
 +}
 +
-+static int x86_crucible_exact_length(uint32_t id)
++static int x86_crucible_exact_length(CPUX86State *env, uint32_t id)
 +{
++    X86CrucibleOptionalRegister optional =
++        x86_crucible_optional_register(env, id);
++
 +    if (id >= X86_CRUCIBLE_ST_FIRST && id <= X86_CRUCIBLE_ST_LAST) {
 +        return 10;
 +    }
@@ -1924,6 +2418,24 @@ index 0000000..5719f83
 +    if (id == X86_CRUCIBLE_MXCSR) {
 +        return 4;
 +    }
++    if (id == X86_CRUCIBLE_RFLAGS) {
++        return 4;
++    }
++    switch (optional.kind) {
++    case X86_CRUCIBLE_OPTIONAL_SYSENTER_CS:
++    case X86_CRUCIBLE_OPTIONAL_TSC_AUX:
++        return 4;
++    case X86_CRUCIBLE_OPTIONAL_YMM_UPPER:
++        return 16;
++    case X86_CRUCIBLE_OPTIONAL_ZMM_UPPER:
++        return 32;
++    case X86_CRUCIBLE_OPTIONAL_ZMM_HIGH:
++        return 64;
++    case X86_CRUCIBLE_OPTIONAL_PKRU:
++        return 4;
++    default:
++        break;
++    }
 +    return 8;
 +}
 +
@@ -1932,10 +2444,13 @@ index 0000000..5719f83
 +{
 +    X86CPU *cpu = X86_CPU(cs);
 +    CPUX86State *env = &cpu->env;
-+    int expected = x86_crucible_exact_length(id);
++    int expected = x86_crucible_exact_length(env, id);
 +    uint64_t result = 0;
++    X86CrucibleOptionalRegister optional =
++        x86_crucible_optional_register(env, id);
 +
-+    if (!value || id == 0 || id > X86_CRUCIBLE_REGISTER_COUNT ||
++    if (!value || id == 0 ||
++        id > x86_crucible_register_count_for_env(env) ||
 +        value_len != expected) {
 +        return -EINVAL;
 +    }
@@ -1944,7 +2459,7 @@ index 0000000..5719f83
 +    } else if (id == X86_CRUCIBLE_RIP) {
 +        result = env->eip;
 +    } else if (id == X86_CRUCIBLE_RFLAGS) {
-+        result = env->eflags;
++        result = cpu_compute_eflags(env);
 +    } else if (id >= X86_CRUCIBLE_SEG_FIRST && id <= X86_CRUCIBLE_SEG_LAST) {
 +        uint32_t relative = id - X86_CRUCIBLE_SEG_FIRST;
 +        SegmentCache *segment = &env->segs[x86_crucible_segment_map[relative / 4]];
@@ -1996,6 +2511,45 @@ index 0000000..5719f83
 +    } else if (id == X86_CRUCIBLE_MXCSR) {
 +        update_mxcsr_from_sse_status(env);
 +        result = env->mxcsr;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_SYSENTER_CS) {
++        result = env->sysenter_cs;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_SYSENTER_ESP) {
++        result = env->sysenter_esp;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_SYSENTER_EIP) {
++        result = env->sysenter_eip;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_STAR) {
++        result = env->star;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_LSTAR) {
++        result = env->lstar;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_CSTAR) {
++        result = env->cstar;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_FMASK) {
++        result = env->fmask;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_PAT) {
++        result = env->pat;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_TSC_AUX) {
++        result = env->tsc_aux;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_YMM_UPPER) {
++        ZMMReg *reg = &env->xmm_regs[optional.index];
++        stq_le_p(value, reg->ZMM_Q(2));
++        stq_le_p(value + 8, reg->ZMM_Q(3));
++        return expected;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_ZMM_UPPER) {
++        ZMMReg *reg = &env->xmm_regs[optional.index];
++        for (size_t q = 0; q < 4; q++) {
++            stq_le_p(value + q * 8, reg->ZMM_Q(q + 4));
++        }
++        return expected;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_ZMM_HIGH) {
++        ZMMReg *reg = &env->xmm_regs[optional.index];
++        for (size_t q = 0; q < 8; q++) {
++            stq_le_p(value + q * 8, reg->ZMM_Q(q));
++        }
++        return expected;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_OPMASK) {
++        result = env->opmask_regs[optional.index];
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_PKRU) {
++        result = env->pkru;
 +    }
 +    if (expected == 1) {
 +        value[0] = result;
@@ -2015,15 +2569,17 @@ index 0000000..5719f83
 +{
 +    X86CPU *cpu = X86_CPU(cs);
 +    CPUX86State *env = &cpu->env;
-+    int expected = x86_crucible_exact_length(id);
++    int expected = x86_crucible_exact_length(env, id);
 +    uint64_t input;
 +    uint32_t effects = 0;
++    X86CrucibleOptionalRegister optional =
++        x86_crucible_optional_register(env, id);
 +
 +    if (!value || !performed_side_effects || id == 0 ||
-+        id > X86_CRUCIBLE_REGISTER_COUNT || value_len != expected ||
-+        (id >= X86_CRUCIBLE_DR_FIRST && id <= X86_CRUCIBLE_DR_LAST) ||
-+        (id >= X86_CRUCIBLE_SEG_FIRST && id <= X86_CRUCIBLE_SEG_LAST &&
-+         (id - X86_CRUCIBLE_SEG_FIRST) % 4 != 0)) {
++        id > x86_crucible_register_count_for_env(env) ||
++        value_len != expected ||
++        (id >= X86_CRUCIBLE_DR_FIRST + 4 &&
++         id <= X86_CRUCIBLE_DR_FIRST + 5)) {
 +        return -EINVAL;
 +    }
 +    input = expected == 1 ? value[0] :
@@ -2057,8 +2613,11 @@ index 0000000..5719f83
 +        env->kernelgsbase = input;
 +        effects = CRUCIBLE_REG_SIDE_TLB | CRUCIBLE_REG_SIDE_TB;
 +    } else if (id == X86_CRUCIBLE_CR0) {
-+        if (!(env->cr[0] & CR0_PG_MASK) && (input & CR0_PG_MASK) &&
-+            (env->efer & MSR_EFER_LME) && !(env->cr[4] & CR4_PAE_MASK)) {
++        if (((input & CR0_PG_MASK) && !(input & CR0_PE_MASK)) ||
++            ((input & CR0_NW_MASK) && !(input & CR0_CD_MASK)) ||
++            (!(env->cr[0] & CR0_PG_MASK) && (input & CR0_PG_MASK) &&
++             (env->efer & MSR_EFER_LME) &&
++             !(env->cr[4] & CR4_PAE_MASK))) {
 +            return -EINVAL;
 +        }
 +        cpu_x86_update_cr0(env, input);
@@ -2067,19 +2626,63 @@ index 0000000..5719f83
 +    } else if (id == X86_CRUCIBLE_CR2) {
 +        env->cr[2] = input;
 +    } else if (id == X86_CRUCIBLE_CR3) {
++        if (((env->efer & MSR_EFER_LMA) && X86_CPU(cs)->phys_bits < 64 &&
++             (input >> X86_CPU(cs)->phys_bits) != 0) ||
++            (!(env->efer & MSR_EFER_LMA) && input > UINT32_MAX) ||
++            (!(env->cr[4] & CR4_PCIDE_MASK) &&
++             (input & UINT64_C(0xfe7)) != 0)) {
++            return -EINVAL;
++        }
 +        cpu_x86_update_cr3(env, input);
 +        effects = CRUCIBLE_REG_SIDE_TLB;
 +    } else if (id == X86_CRUCIBLE_CR4) {
++        if (((input ^ env->cr[4]) & CR4_LA57_MASK) &&
++            (env->hflags & HF_CS64_MASK)) {
++            return -EINVAL;
++        }
 +        cpu_x86_update_cr4(env, input);
 +        effects = CRUCIBLE_REG_SIDE_TLB | CRUCIBLE_REG_SIDE_TB |
 +            CRUCIBLE_REG_SIDE_FLAGS;
 +    } else if (id == X86_CRUCIBLE_CR8) {
-+        cpu_set_apic_tpr(cpu->apic_state, input);
++        if (!(env->hflags2 & HF2_VINTR_MASK)) {
++            bql_lock();
++            cpu_set_apic_tpr(cpu->apic_state, input);
++            bql_unlock();
++        }
++        env->int_ctl = (env->int_ctl & ~V_TPR_MASK) | (input & V_TPR_MASK);
++        if (ctl_has_irq(env)) {
++            cpu_interrupt(cs, CPU_INTERRUPT_VIRQ);
++        } else {
++            cpu_reset_interrupt(cs, CPU_INTERRUPT_VIRQ);
++        }
 +        effects = CRUCIBLE_REG_SIDE_INTERRUPT;
 +    } else if (id == X86_CRUCIBLE_EFER) {
++        if (((input ^ env->efer) & MSR_EFER_LME) &&
++            (env->cr[0] & CR0_PG_MASK)) {
++            return -EINVAL;
++        }
 +        cpu_load_efer(env, input);
 +        effects = CRUCIBLE_REG_SIDE_TLB | CRUCIBLE_REG_SIDE_TB |
 +            CRUCIBLE_REG_SIDE_FLAGS;
++    } else if (id >= X86_CRUCIBLE_DR_FIRST &&
++               id <= X86_CRUCIBLE_DR_FIRST + 3) {
++        uint32_t reg = id - X86_CRUCIBLE_DR_FIRST;
++        uint32_t enable_mask = 3U << (reg * 2);
++        uint32_t old_dr7 = env->dr[7];
++
++        cpu_x86_update_dr7(env, old_dr7 & ~enable_mask);
++        env->dr[reg] = input;
++        cpu_x86_update_dr7(env, old_dr7);
++        effects = CRUCIBLE_REG_SIDE_TB |
++            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
++    } else if (id == X86_CRUCIBLE_DR_FIRST + 6) {
++        env->dr[6] = input | DR6_FIXED_1;
++        effects = CRUCIBLE_REG_SIDE_TB |
++            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
++    } else if (id == X86_CRUCIBLE_DR_FIRST + 7) {
++        cpu_x86_update_dr7(env, input);
++        effects = CRUCIBLE_REG_SIDE_TB |
++            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
 +    } else if (id >= X86_CRUCIBLE_ST_FIRST && id <= X86_CRUCIBLE_ST_LAST) {
 +        floatx80 *fp = &env->fpregs[(id - X86_CRUCIBLE_ST_FIRST +
 +                                     env->fpstt) % 8].d;
@@ -2112,6 +2715,63 @@ index 0000000..5719f83
 +    } else if (id == X86_CRUCIBLE_MXCSR) {
 +        cpu_set_mxcsr(env, input);
 +        effects = CRUCIBLE_REG_SIDE_FLAGS;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_SYSENTER_CS) {
++        env->sysenter_cs = input & UINT16_MAX;
++        effects = CRUCIBLE_REG_SIDE_TB |
++            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_SYSENTER_ESP) {
++        env->sysenter_esp = input;
++        effects = CRUCIBLE_REG_SIDE_TB |
++            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_SYSENTER_EIP) {
++        env->sysenter_eip = input;
++        effects = CRUCIBLE_REG_SIDE_TB |
++            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_STAR) {
++        env->star = input;
++        effects = CRUCIBLE_REG_SIDE_TB |
++            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_LSTAR) {
++        env->lstar = input;
++        effects = CRUCIBLE_REG_SIDE_TB |
++            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_CSTAR) {
++        env->cstar = input;
++        effects = CRUCIBLE_REG_SIDE_TB |
++            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_FMASK) {
++        env->fmask = input;
++        effects = CRUCIBLE_REG_SIDE_TB |
++            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_PAT) {
++        for (size_t entry = 0; entry < 8; entry++) {
++            if (((input >> (entry * 8)) & 0xf8) != 0) {
++                return -EINVAL;
++            }
++        }
++        env->pat = input;
++        effects = CRUCIBLE_REG_SIDE_TLB;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_TSC_AUX) {
++        env->tsc_aux = input;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_YMM_UPPER) {
++        ZMMReg *reg = &env->xmm_regs[optional.index];
++        reg->ZMM_Q(2) = ldq_le_p(value);
++        reg->ZMM_Q(3) = ldq_le_p(value + 8);
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_ZMM_UPPER) {
++        ZMMReg *reg = &env->xmm_regs[optional.index];
++        for (size_t q = 0; q < 4; q++) {
++            reg->ZMM_Q(q + 4) = ldq_le_p(value + q * 8);
++        }
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_ZMM_HIGH) {
++        ZMMReg *reg = &env->xmm_regs[optional.index];
++        for (size_t q = 0; q < 8; q++) {
++            reg->ZMM_Q(q) = ldq_le_p(value + q * 8);
++        }
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_OPMASK) {
++        env->opmask_regs[optional.index] = input;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_PKRU) {
++        env->pkru = input;
++        effects = CRUCIBLE_REG_SIDE_TLB;
 +    } else {
 +        return -EINVAL;
 +    }
@@ -2136,5 +2796,3 @@ index 2e9c472..1257e54 100644
    'machine.c',
    'monitor.c',
    'cpu-apic.c',
--- 
-2.54.0
