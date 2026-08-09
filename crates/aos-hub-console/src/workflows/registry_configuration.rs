@@ -216,11 +216,28 @@ fn GitDiffInspector(client: ApiClient, registry_id: String) -> impl IntoView {
 #[component]
 fn Changesets(client: ApiClient, registry_id: String) -> impl IntoView {
     let list_client = client.clone();
-    let list_scope = registry_id.clone();
     let changesets = LocalResource::new(move || {
         let client = list_client.clone();
-        let scope = list_scope.clone();
+        let slug = registry_id.clone();
         async move {
+            let registry = client
+                .call::<_, aos_proto_types::GetRegistryResponse>(
+                    aos_proto_types::REGISTRY_SERVICE_GET_REGISTRY_PATH,
+                    &aos_proto_types::GetRegistryRequest { slug },
+                )
+                .await?
+                .registry
+                .ok_or_else(|| {
+                    crate::transport::TransportError::Response(
+                        "the Hub omitted the registry".to_string(),
+                    )
+                })?;
+            if registry.authorization_scope_key.is_empty() {
+                return Err(crate::transport::TransportError::Response(
+                    "the Hub omitted the registry authorization scope".to_string(),
+                ));
+            }
+            let scope = registry.authorization_scope_key;
             client
                 .collect_pages::<_, aos_proto_types::ListChangesetsResponse, _, _, _>(
                     aos_proto_types::REGISTRY_CONFIGURATION_SERVICE_LIST_CHANGESETS_PATH,

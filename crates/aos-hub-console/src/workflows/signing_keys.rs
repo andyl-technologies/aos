@@ -712,7 +712,9 @@ fn SigningUsageEditor(
             </div>
         })}
         {(active.is_empty()).then(|| view! {
-            <InlineError detail="No active compatible signing key is available.".to_string()/>
+            <p class="muted">
+                "Enroll an active compatible signing key before attaching this usage."
+            </p>
         })}
         {(!active.is_empty()).then(|| view! {
             <form class="editor-form" on:submit=on_plan>
