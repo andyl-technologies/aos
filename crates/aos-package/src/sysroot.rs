@@ -2034,6 +2034,7 @@ fn select_image_default_with<F>(
 where
     F: FnOnce(&str) -> Result<()>,
 {
+    let stable_entry_id = stable_uki_entry_id(entry_id)?;
     let intent_path = profile.join(IMAGE_TRANSITION_INTENT);
     if intent_path.is_file() {
         let existing: ImageTransitionIntent = serde_json::from_slice(&std::fs::read(&intent_path)?)
@@ -2066,7 +2067,10 @@ where
     )?;
     *state = prepared;
 
-    select(entry_id)?;
+    // sd-boot renames counted entries before launching them (for example,
+    // `image+3.efi` becomes `image+2-1.efi`). Its durable default must use the
+    // stable entry ID so the selection continues to match across that rename.
+    select(&stable_entry_id)?;
     let mut committed = state.clone();
     committed.default = target;
     write_atomic_durable(
@@ -5345,7 +5349,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(selected, "aos-2+3.efi");
+        assert_eq!(selected, "aos-2.efi");
         assert_eq!(state.default, 2);
         assert_eq!(state.pending, Some(2));
         assert!(!tmp.path().join(IMAGE_TRANSITION_INTENT).exists());
@@ -5411,6 +5415,18 @@ mod tests {
                 "unexpectedly accepted {unsafe_path:?}"
             );
         }
+    }
+
+    #[test]
+    fn durable_default_uses_the_stable_counted_uki_identity() {
+        assert_eq!(
+            stable_uki_entry_id("aos-1.0+build+3.efi").unwrap(),
+            "aos-1.0+build.efi"
+        );
+        assert_eq!(
+            stable_uki_entry_id("aos-1.0+build.efi").unwrap(),
+            "aos-1.0+build.efi"
+        );
     }
 
     fn generation_state_for_commit() -> ConfigGenerationState {
