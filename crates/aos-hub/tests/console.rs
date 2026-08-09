@@ -324,6 +324,7 @@ async fn browser_console_assets_have_explicit_types_and_cache_identity() {
             assert!(source.contains(&console_js_name()));
             assert!(source.contains(&console_wasm_name()));
             assert!(source.contains("import init, { mount }"));
+            assert!(source.contains("init({ module_or_path:"));
             assert!(source.contains("mount();"));
         }
     }
