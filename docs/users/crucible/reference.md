@@ -44,6 +44,7 @@ Global options may appear before or after the subcommand.
 | `--seed <u64\|hex>` | Unsigned decimal, `0x` hexadecimal, or canonical seed text; otherwise `CRUCIBLE_SEED`, then scenario seed | Override the root entropy. | [Seed resolution](running.md#seed-resolution) |
 | `--backend <auto\|qemu>` | `auto` (default), `qemu` | Select or discover the local backend. Production builds expose QEMU only. | [Backend discovery](running.md#backend-discovery) |
 | `--daemon <addr>` | Host/port or HTTP endpoint | Send a supported lifecycle operation to a daemon instead of running locally. | [Daemon operation](daemon.md) |
+| `--trusted-unauthenticated-daemon` | Required for cleartext daemon access | Explicitly acknowledge an unauthenticated endpoint on a trusted network. Conflicts with daemon mutual TLS. | [Daemon operation](daemon.md) |
 | `--qemu <path>` | Discovered when omitted | Override the packaged patched-QEMU executable. Must be paired with `--plugin`. | [Backend discovery](running.md#backend-discovery) |
 | `--plugin <path>` | Discovered when omitted | Override the matching QEMU plugin. Must be paired with `--qemu`. | [Backend discovery](running.md#backend-discovery) |
 | `--store <path>` | Command-specific default below `--artifact-dir` | Set the content-addressed store root. | [Artifacts and store](running.md#artifacts-and-store-layout) |
@@ -85,7 +86,7 @@ Output-format values:
 | `search` | Explore a bounded schedule space. | [State-space search](exploration.md#state-space-search) |
 | `fuzz` | Sample a scenario family using basic-block coverage. | [Coverage-guided fuzzing](exploration.md#coverage-guided-fuzzing) |
 | `triage` | Cluster, deduplicate, compare, and minimize findings. | [Findings and triage](exploration.md#findings-and-triage) |
-| `debug` | Inspect a recorded or running execution at a coordinate. | [Debugging](debugging.md#debug-command) |
+| `debug` | Inspect a live daemon session at a coordinate; local artifact/savepoint execution currently fails closed. | [Debugging](debugging.md#debug-command) |
 | `serve` | Run the remote lifecycle API. | [Daemon operation](daemon.md) |
 | `completions` | Generate shell completion definitions. | [Shell completions](running.md#shell-completions) |
 
@@ -96,7 +97,7 @@ Output-format values:
 | `SCENARIO` | Required | Canonical scenario TOML path or content hash. |
 | `--until <quiescence\|virtual-time\|property\|stopped>` | Default `quiescence` | Select the terminal condition; see [terminal values](#terminal-and-save-boundary-values). |
 | `--max-virtual-time <dur>` | Required with `--until virtual-time` | Stop with timeout after this virtual-time budget. |
-| `--max-quanta <n>` | Optional | Add an independent scheduler-quantum timeout. |
+| `--max-quanta <n>` | Optional | Stop at an exact scheduler-quantum boundary unless another terminal condition occurs first. |
 | `--interactive` | Off | Pause at genesis and read interactive commands from standard input. |
 | `--save-on <fail\|always\|never>` | Default `never` | Materialize an outcome savepoint only on failure, for every outcome, or never. |
 | `--watch` | Off | Collect live session-status updates alongside run evidence. |
@@ -119,7 +120,7 @@ Exactly one of `SCENARIO` and `--compare` is required.
 | `--runs <n>` | Default `2` | Number of executions to compare. |
 | `--adversarial` | Off | Run under the hostile host-condition matrix. |
 | `--bisect` | Off | On divergence, run deterministic divergence bisection and print its report. |
-| `--compare <a> <b>` | Alternative to `SCENARIO` | Compare two existing reproduction artifacts without executing a scenario. |
+| `--compare <a> <b>` | Alternative to `SCENARIO` | Compare two existing reproduction artifacts using their embedded identities, without executing a scenario or generating a seed. |
 
 ### `selftest`
 
@@ -131,6 +132,9 @@ Exactly one of `SCENARIO` and `--compare` is required.
 Test-double builds also compile a test-only `--corpus <path>` fixture-manifest
 option; it is not part of the shipped production interface.
 
+Self-test honors the global `--format`, `--trace`, and `--quiet` options. JSONL
+uses `selftest_gate`, `selftest_scenario`, and terminal `final_outcome` records.
+
 ### `save`
 
 | Argument or option | Required/default | Meaning |
@@ -138,10 +142,21 @@ option; it is not part of the shipped production interface.
 | `SCENARIO` | Required | Scenario path or content hash. |
 | `--at <virtual-time\|quiescence\|property\|marker>` | Required | Select the save boundary; see [boundary values](#terminal-and-save-boundary-values). |
 | `--label <name>` | Optional | Add a human-readable savepoint label. |
-| `--max-virtual-time <dur>` | Required with `--at virtual-time` | Virtual-time coordinate at which to save. |
-| `--property <assertion>` | Required with `--at property` | Assertion ID whose verdict supplies the boundary. |
+| `--max-virtual-time <dur>` | Required with `--at virtual-time` | Exact virtual-time coordinate at which to save; stagnation and overshoot fail closed. |
+| `--property <assertion>` | Required with `--at property` | Assertion ID whose violated phase supplies the boundary. |
 | `--marker <name>` | Required with `--at marker` | Guest-marker ID whose observation supplies the boundary. |
 | `--out <path>` | Default below `--artifact-dir` | Select the exported savepoint-handle path. |
+
+Savepoint handle schema v3 records the selected property violation or guest
+marker, its exact boundary proof, and a content-addressed canonical predicate
+payload. The reader rejects mismatched selectors, predicates, terminal
+conditions, frontiers, and undeclared property identities. The canonical trace
+exposes the same proof as `save_boundary_proof`, with percent-encoded selector
+values. Older v2 handles remain readable but lack selector provenance.
+
+A property or marker miss returns exit 3 without a handle. An explicit
+`--trace` is still honored and ends with `save_boundary_failure`, preserving the
+partial control trail for diagnosis.
 
 ### `resume`
 
@@ -158,7 +173,7 @@ option; it is not part of the shipped production interface.
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
 | `SAVEPOINT` | Required | Savepoint-handle path or checkpoint content hash. |
-| `--override <decision=value>` | Repeatable; conflicts with global `--seed` | Override a recorded decision at or after the fork point. Keys and values depend on the recorded decision. |
+| `--override <decision=value>` | Repeatable; conflicts with global `--seed` | Pin a scheduler-recorded live World-network choice. The percent-encoded point starts with `live-world-network/`; the value uses the canonical loss/duplicate/corrupt choice vocabulary. |
 | `--until <quiescence\|virtual-time\|property\|stopped>` | Default `quiescence` | Select the child branch's terminal condition. |
 | `--max-virtual-time <dur>` | Required with `--until virtual-time` | Stop with timeout after this virtual-time budget. |
 | `--label <name>` | Optional | Label the forked branch. |
@@ -188,7 +203,7 @@ timing can be reproduced.
 | `--max-depth <n>` | Optional | Bound decision depth. |
 | `--max-states <n>` | Default `1` | Bound materialized states. Set this explicitly for useful campaigns. |
 | `--on-violation <stop\|collect>` | Engine default `stop` when omitted | Stop at the first property/timeout finding or continue within the supplied budget. |
-| `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Override the signed findings-ledger output path. |
+| `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Write the signed findings ledger here, including an empty ledger when no finding is retained. |
 | `--schedule-named-truths <path>` | Optional | Load schedule-named assertion truth data. |
 | `--retained-evidence <path>` | Hidden/internal | Load backend-retained assertion evidence for gate workflows. |
 
@@ -214,7 +229,7 @@ Supply the family either positionally or with `--family`, never both.
 | `--coverage <basic-block>` | Default `basic-block` | Select the coverage feedback signal. |
 | `--corpus <path>` | Optional | Seed and regression corpus directory. |
 | `--on-violation <stop\|collect>` | Default `stop` | Stop at the first property/timeout finding or retain findings through the run budget. |
-| `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Override the signed findings-ledger output path. |
+| `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Write the signed findings ledger here, including an empty ledger when no finding is retained. |
 
 ### `triage`
 
@@ -247,7 +262,7 @@ The four coordinate selectors are mutually exclusive.
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
 | `ARTIFACT\|SAVEPOINT` | Alternative to `--session` | Attach to a retained artifact or savepoint. |
-| `--session <addr>` | Alternative to positional target | Attach to a running session. |
+| `--session <id:epoch:seed>` | Alternative to positional target | Attach to a running daemon session. The seed is exactly 64 lowercase hexadecimal digits. |
 | `--at <coord>` | Optional coordinate | Open at a virtual-time or node-icount coordinate. |
 | `--at-event <seq>` | Optional coordinate | Open at an event-log sequence. |
 | `--at-failure` | Optional coordinate | Open at the recorded failure point. |
@@ -257,15 +272,21 @@ The four coordinate selectors are mutually exclusive.
 | `--read-only` | Off; conflicts with `--allow-mutate` | Preserve the canonical run and prohibit mutation. |
 | `--allow-mutate` | Off | Fork a non-canonical debug branch for mutation. |
 | `--checkpoint-stride <n>` | Optional | Bound reverse-step replay distance with opportunistic checkpoints. |
+| `--record-transcript <path>` | Off | Exclusively create a bounded branch-local guest-channel transcript. |
+| `--guest-idle-timeout <dur>` | `30s` | Fail and clean up when a guest agent produces no response for this duration. |
 
 Debugger verbs:
 
 | Verb | Arguments | Meaning |
 | --- | --- | --- |
 | `attach-gdb` | None | Open the mediated gdbstub channel. |
+| `fork-debug` | None | Create the explicit non-canonical whole-world branch required for guest introspection. |
 | `goto` | `<coord>` | Move to another accepted debug coordinate. |
 | `reverse-step` | `instruction`, `quantum`, `event`, `assertion`, or `timer` | Step backward by one deterministic grain. |
 | `reverse-continue` | `<condition>` | Continue backward to a matching condition. |
+| `exec` | `-- <argv...>` | Execute argv directly through the forked guest agent. |
+| `pty` | `[--columns <n>] [--rows <n>] -- <argv...>` | Bridge a local terminal to a guest PTY. |
+| `ssh` | None | Bridge bytes to the SSH server configured in the guest agent. |
 
 ### `serve`
 
@@ -293,7 +314,7 @@ Debugger verbs:
 | --- | --- | --- |
 | `quiescence` | `run --until`, `resume --until`, `fork --until`, `save --at` | Stop when the scheduler has no immediately runnable work. This is the default terminal condition. |
 | `virtual-time` | `--until`, `save --at` | Stop at the positive `--max-virtual-time` duration. |
-| `property` | `--until`, `save --at` | Stop on a property verdict; `save` also requires `--property`. |
+| `property` | `--until`, `save --at` | Stop on a property verdict; `save` requires `--property` and selects that assertion's violated phase. |
 | `stopped` | `--until` only | Stop only after an explicit stopped state. |
 | `marker` | `save --at` only | Save after observing the named `--marker`. |
 

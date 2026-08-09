@@ -1106,6 +1106,11 @@ fn serializable_scenario_form_round_trips_and_rejects_host_paths() {
         &format!("id = \"blake3:{}\"", wrong_hash.to_hex()),
         1,
     );
+    let malformed_id_toml = toml.replacen(
+        &format!("id = \"blake3:{}\"", form.id().to_hex()),
+        "id = \"operator-supplied-id\"",
+        1,
+    );
     let empty_world = World::from_nodes_and_links(Vec::new(), Vec::new())
         .unwrap_or_else(|error| panic!("empty world should serialize: {error}"));
     let empty_world_toml = empty_world
@@ -1181,6 +1186,17 @@ fn serializable_scenario_form_round_trips_and_rejects_host_paths() {
         Err(EngineError::ScenarioSerializedIdMismatch { component, .. })
             if component == "scenario"
     ));
+    let wrong_id_error = match ScenarioDefForm::from_canonical_toml(&wrong_id_toml) {
+        Ok(_) => panic!("wrong scenario id must be rejected"),
+        Err(error) => error.to_string(),
+    };
+    assert!(wrong_id_error.contains(&format!("blake3:{}", wrong_hash.to_hex())));
+    assert!(wrong_id_error.contains(&format!("blake3:{}", form.id().to_hex())));
+    let malformed_id_error = match ScenarioDefForm::from_canonical_toml(&malformed_id_toml) {
+        Ok(_) => panic!("non-content-addressed scenario id must be rejected"),
+        Err(error) => error.to_string(),
+    };
+    assert!(malformed_id_error.contains("scenario.id content hash reference"));
     assert!(matches!(
         World::from_canonical_toml(&wrong_empty_world_toml),
         Err(EngineError::ScenarioSerializedIdMismatch { component, .. })
@@ -2928,54 +2944,8 @@ fn temporal_graph_rejects_mismatched_or_thin_baked_genesis() {
     ));
 }
 
-#[test]
-fn backend_trait_is_object_safe() {
-    struct StubBackend;
-
-    impl Backend for StubBackend {
-        fn advance_to_horizon(
-            &mut self,
-            _horizon: ExecutionHorizon,
-        ) -> Result<AdvanceOutcome, BackendError> {
-            Ok(AdvanceOutcome::ReachedHorizon)
-        }
-
-        fn fingerprint(&mut self) -> Result<ExecutionFingerprint, BackendError> {
-            Ok(ExecutionFingerprint {
-                hash: ContentHash::default(),
-            })
-        }
-
-        fn deliver_input(&mut self, _input: BackendInput) -> Result<(), BackendError> {
-            Ok(())
-        }
-
-        fn snapshot(&mut self) -> Result<Checkpoint, BackendError> {
-            Ok(Checkpoint::new(
-                ContentHash::default(),
-                ContentHash::default(),
-                CheckpointKind::Fat,
-            ))
-        }
-
-        fn restore(&mut self, _checkpoint: &Checkpoint) -> Result<(), BackendError> {
-            Ok(())
-        }
-
-        fn shutdown(&mut self) -> Result<(), BackendError> {
-            Ok(())
-        }
-    }
-
-    let mut backend = StubBackend;
-    let object: &mut dyn Backend = &mut backend;
-    let advanced = object.advance_to_horizon(ExecutionHorizon {
-        icount: Icount { retired: 10 },
-    });
-
-    assert_eq!(advanced, Ok(AdvanceOutcome::ReachedHorizon));
-}
-
+#[path = "world_validation/backend_contract.rs"]
+mod backend_contract;
 #[test]
 fn engine_and_backend_errors_render_all_variants_deterministically() {
     let engine = EngineError::NotImplemented {

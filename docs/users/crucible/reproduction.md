@@ -38,6 +38,12 @@ To compare two existing artifacts without running the scenario again:
 ./result/bin/crucible verify --compare run-a.crucible run-b.crucible
 ```
 
+Artifact comparison uses the identities embedded in those artifacts. It does
+not select or execute the locally available backend. The two producer identities
+must match each other, so repeated comparisons of unchanged inputs produce
+stable evidence even when the comparison host does not have that producer
+backend installed.
+
 ## Failure artifacts
 
 A non-passing `run`, `search`, or `fuzz` result normally writes a self-contained
@@ -51,6 +57,18 @@ both divergent reductions carry producer provenance. It records:
 - the recorded decision schedule;
 - canonical log and fingerprint evidence; and
 - embedded model-reproduction material where the producer supplied it.
+
+Streamed event summaries retained in run evidence identify the event's original
+sequence, virtual-time and instruction-count coordinate, source, causal class,
+and a bounded set of diagnostic attributes. Fault summaries include their kind,
+tag, targets, and description; assertion summaries include their assertion id
+and state. Each production VM emits an initial `Started` lifecycle observation
+at the initial admitted scheduler boundary before the first assertion
+evaluation, so an invalid `Always` predicate can produce an immediate violation
+instead of remaining unknown. A terminal verdict at that boundary does not
+advance a guest. Guest byte payloads remain redacted and are represented only by their
+length. These coordinates distinguish repeated scheduler boundaries and make a
+fault or violated assertion findable without exposing console or channel data.
 
 In table mode, the failure footer prints copy-pasteable `replay` and `debug`
 commands. JSON/JSONL records the artifact digest in the final outcome but does
@@ -82,6 +100,9 @@ backend, reapplies recorded branch, fault, and network inputs, executes the
 recorded non-interactive startup and initial controls, and
 requires the terminal tuple, event stream, and fingerprint stream to match the
 producer byte-for-byte. There is no production model-only success path.
+Virtual-time- and quantum-bounded runs advance through exact paused quantum
+boundaries, so frontend polling latency cannot change the recorded terminal
+quantum between production and replay.
 
 Interactive failure-artifact capture is not supported yet. Crucible rejects it
 instead of recording command names without the exact decision/frontier timing
@@ -135,6 +156,11 @@ Save at virtual time:
   --label before-election
 ```
 
+Virtual-time saves pause after each scheduler quantum and export only at the
+exact requested coordinate. A backend that cannot advance virtual time or that
+steps past the coordinate fails the command instead of exporting an ambiguous
+handle. Zero-time boot quanta are allowed within a bounded progress window.
+
 Other boundaries are:
 
 ```sh
@@ -142,6 +168,37 @@ Other boundaries are:
 --at property --property <assertion-name>
 --at marker --marker <guest-marker-name>
 ```
+
+Quiescence, property, and marker saves continue across scheduler quanta until a
+one-shot suspending breakpoint observes the requested evidence. A property
+selector stops on the named assertion's violated phase. Marker and property
+selectors also stop at quiescence and fail without exporting a handle when the
+requested evidence never appeared. `--max-virtual-time` is accepted only with
+`--at virtual-time`; combining it with another boundary is a usage error. Live
+QEMU boundary observation can wait for the backend's production completion
+window and is not limited by the control stream's short acknowledgement poll.
+
+New savepoint handles use schema `crucible.savepoint-handle.v3`. They include a
+`selector` line naming the property violation or guest marker (or `none`) and a
+`boundary-proof` line with the exact breakpoint or virtual-time coordinate.
+Breakpoint proofs use positional fields `breakpoint`, ID, `suspend`, frontier,
+and quantum, followed by a `boundary-predicate` line containing the predicate's
+content address and canonical payload. Coordinate proofs use `coordinate`,
+frontier, and quantum with `boundary-predicate none`. The canonical trace
+contains a matching `save_boundary_proof` entry; selector names there are
+percent-encoded so spaces and punctuation cannot resemble additional fields.
+This lets an agent audit which selector fired and where, instead of inferring it
+from generic `set-breakpoint` acknowledgements. Crucible still reads v2 handles
+created by older builds; those handles do not contain selector provenance.
+
+If a selector does not fire before quiescence, Crucible creates no handle and
+returns exit 3. With `--trace <path>`, it still writes the commands and state
+updates observed before rejection, followed by `save_boundary_failure` and an
+error `final_outcome`. This is useful for confirming that the selector and guard
+were installed and driven; it is not a savepoint or reproduction artifact.
+`planned_session_command` and `planned_api_call` rows describe the declared
+workflow, while `interactive_ack` rows identify commands actually accepted.
+Marker failures label their boundary mode `marker (quiescence-guarded)`.
 
 Use `--out <path>` to choose the handle path. Otherwise it is written below
 `--artifact-dir`. Crucible does not export a handle if replay-oracle validation
@@ -159,9 +216,15 @@ Resume accepts a savepoint handle or a direct `blake3:<checkpoint>` reference:
 Direct checkpoint hashes require the same `--store` used when the checkpoint
 was created. A savepoint handle carries scenario and schedule evidence, but its
 referenced store objects must still be resolvable when they were not embedded.
+If deterministic execution advanced without making a causal schedule decision,
+the saved configuration can still have genesis identity. Resume uses the fat
+checkpoint frontier as the runtime boundary and replays to that exact coordinate;
+it does not mistake the savepoint for the zero-time baked genesis.
 
 `resume` supports the same `--until`, `--max-virtual-time`, `--interactive`, and
-`--watch` controls as `run`.
+`--watch` controls as `run`. In interactive mode, `query` prints both its
+acceptance line and `interactive-query\tstate=<state>`, including when resume is
+running through the local QEMU control plane or a daemon.
 
 ## Fork
 
@@ -174,29 +237,67 @@ Fork creates an independent child from a validated execution prefix:
   --label alternate-seed
 ```
 
-Alternatively, override recorded decisions with repeatable
-`--override decision=value` arguments:
+Alternatively, pin scheduler-recorded live World-network choices with
+repeatable `--override decision=value` arguments:
 
 ```sh
 ./result/bin/crucible \
   fork savepoint.crucible-savepoint \
-  --override 'delivery-order=db-3-first' \
+  --override 'live-world-network/link_endpoint_a_len%3D4%0Alink_endpoint_a%3Ddb-1%0Alink_endpoint_b_len%3D4%0Alink_endpoint_b%3Ddb-2/a-to-b/42/7=loss-fire' \
   --label alternate-delivery
 ```
 
-An explicit fork seed and decision overrides are mutually exclusive. Override
-keys and values are interpreted by the decision being replaced; inspect the
-recorded schedule before constructing them.
+An explicit fork seed and decision overrides are mutually exclusive. Copy the
+exact point and choice from exploration evidence; override points are not
+free-form labels. Crucible rejects unknown namespaces and choice names before
+launch, and a live run fails if the exact scheduler point is never reached.
+The fork checks scheduler-owned pending-choice state before session cleanup, so
+an unreachable point returns an artifact error instead of wedging shutdown.
+Successful fork output and canonical traces include every recorded point and
+choice. Point and choice components use RFC 3986 percent escapes, so the encoded
+point printed by Crucible can be copied directly even when its canonical link
+identity contains `=` or newline bytes. Without an explicit `--seed`, the fork
+inherits the savepoint's seed and does not generate a second run identity.
 
-Fork writes a child `.crucible` artifact below `--artifact-dir`. It is currently
-a local workflow; remote daemon fork is not implemented. An unchanged fork
-records an explicit resume recipe from the retained base. Reseeded and override
-forks record their branch coordinates, and replay forces only decisions owned by
-the post-branch suffix.
+Non-interactive fork writes a child `.crucible` artifact below `--artifact-dir`.
+It is currently a local workflow; remote daemon fork is not implemented. An
+unchanged fork records an explicit resume recipe from the retained base.
+Reseeded and override forks record their branch coordinates, and replay forces
+only decisions owned by the post-branch suffix.
+
+An interactive live-QEMU fork is a transient inspection session. A passing or
+explicitly stopped session can complete with its terminal checkpoint and
+replay-oracle evidence without a post-run artifact-capture error, but emits
+`fork-artifact\tstatus=not-captured` because the current artifact schema cannot
+bind interactive commands to exact decision/frontier coordinates. Failed,
+crashed, and timed-out sessions retain their normal nonzero outcome exits. Use
+a non-interactive fork when a replayable child artifact is required. The CLI
+does not claim that a partial interactive recipe is replayable.
+
+Replaying any of these fork artifacts reconstructs the retained checkpoint and
+uses the same resume lifecycle as the original fork. The replay therefore
+checks the fork's exact control acknowledgements as well as its terminal
+configuration, event bytes, and terminal fingerprints. A fork artifact is not
+reinterpreted as a new run from genesis.
+
+A successful live replay reports `validation=passed` separately from
+`reproduced_status` and `reproduced_outcome`. The command exits zero when the
+recorded failure or timeout was reproduced and validated; it does not recast
+that recorded outcome as a passing scenario.
+
+For `fork --until virtual-time`, the target is measured from the savepoint's
+restored global scheduler frontier. Crucible continues across internal branch
+admission and per-node events until that cross-node frontier reaches the target;
+one node reaching the timestamp is not sufficient. If a backend cannot reach an
+exact requested boundary, the command reports the last state, frontier, quanta,
+and outcome in its error.
 
 ## Artifact portability
 
 Reproduction deliberately fails on a build-identity mismatch. Move the matching
 Crucible package closure with an artifact, or rebuild the exact revision that
 produced it. A newer binary is not automatically a valid replay consumer even
-when its artifact schema is compatible.
+when its artifact schema is compatible. Initial production lifecycle
+observations are part of harness engine ABI v2; artifacts carrying the earlier
+engine ABI are rejected as identity mismatches rather than compared against the
+new event stream.

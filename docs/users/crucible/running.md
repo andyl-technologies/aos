@@ -86,7 +86,9 @@ No suffix means ticks. Fractional durations are not accepted.
   --max-quanta 10000
 ```
 
-Budget exhaustion is a timeout, not a property failure.
+Budget exhaustion is a timeout, not a property failure. A bounded run stops at
+exactly the requested scheduler-quantum boundary unless it reaches another
+terminal condition first; observer polling does not add extra quanta.
 
 Ordinary local QEMU lifecycle operations admit up to 40 billion retired
 instructions per node and allow 300 wall-clock seconds for each node step.
@@ -97,8 +99,10 @@ exploration bounds.
 `run --save-on <fail|always|never>` controls terminal checkpoint
 materialization. The default is `never`. `fail` materializes only a non-passing
 outcome; `always` materializes every outcome. The resulting checkpoint reference
-is reported and stored in the DAG store. Use the dedicated `save` command when
-you need an exported `.crucible-savepoint` handle at a chosen boundary.
+is reported only after its replayable closure and lookup index are stored in the
+DAG store. The `run-store` output row records their content hashes and store
+path. Use the dedicated `save` command when you need an exported
+`.crucible-savepoint` handle at a chosen boundary.
 
 ## Output formats
 
@@ -110,8 +114,11 @@ entries as one document. `table` emits human-oriented summaries.
 An explicit `--format` always wins. Use one in scripts whose output contract
 must not depend on their execution environment.
 
-`--trace` does not select a separate diagnostic trace. It writes the same
-canonical event-log rendering selected by `--format`:
+`--trace` does not select a separate diagnostic trace. For backend runs, it
+writes the canonical event-log rendering selected by `--format` without the
+invocation-local `final_outcome` porcelain record that is appended to
+machine-readable standard output. This makes a JSONL trace directly consumable
+by `replay --check`:
 
 ```sh
 ./result/bin/crucible \
@@ -123,6 +130,19 @@ canonical event-log rendering selected by `--format`:
 
 With `--quiet`, the trace file is still written. For automation, prefer JSONL
 plus exit codes instead of scraping table output.
+
+`--format` and `--trace` apply to commands that produce canonical event or
+report records. `serve` produces no canonical event stream of its own, so it
+does not create a trace file; its startup endpoint is a human diagnostic that
+`--quiet` suppresses. `completions` always writes the requested shell definition
+to standard output and likewise has no trace stream. Completion generation only
+reads the command schema; it does not resolve or validate unrelated runtime
+globals such as `--seed`, `--daemon`, or backend discovery inputs.
+
+State-transition notifications are a monotone live view: if an observer falls
+behind during a long run, Crucible coalesces superseded states and continues from
+the retained tail. Canonical event-log frames are never coalesced; losing one is
+a hard streaming error so a trace cannot silently omit replay evidence.
 
 ## Artifacts and store layout
 
@@ -190,6 +210,11 @@ To select gates explicitly, pass a comma-separated list:
 
 Other gates are exercised by repository checks; they are not all runnable from
 the packaged production CLI.
+
+Self-test results use the global output contract. `--format jsonl` emits
+`selftest_gate` and `selftest_scenario` records followed by `final_outcome`;
+`--trace <path>` writes the same rendering, and `--quiet` suppresses standard
+output without suppressing that trace file.
 
 ## Shell completions
 

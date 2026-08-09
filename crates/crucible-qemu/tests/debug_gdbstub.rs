@@ -50,7 +50,7 @@ fn artifact(domain: &str, path: &str) -> QemuLaunchArtifact {
 }
 
 #[test]
-fn debug_gdbstub_is_fourth_out_of_band_launch_channel() {
+fn debug_gdbstub_launch_does_not_expose_guest_activation_device() {
     let gdbstub = QemuGdbstubChannelConfig::new("tcp:127.0.0.1:9001", "127.0.0.1:9000")
         .unwrap_or_else(|error| panic!("gdbstub config should be valid: {error}"));
     let command = QemuLaunchCommandBuilder::new(
@@ -72,6 +72,11 @@ fn debug_gdbstub_is_fourth_out_of_band_launch_channel() {
     assert!(command.args().windows(2).any(|window| {
         window[0] == "-plugin" && window[1].contains("simfd=3,slot=0,shmemfd=4,wakefd=5")
     }));
+    assert!(!command.args().iter().any(|argument| {
+        argument.contains("crucible-debug-activation")
+            || argument.contains("crucible-debug-serial")
+            || argument.contains("org.aos.crucible.debug")
+    }));
     assert!(!command.args().iter().any(|arg| arg == "127.0.0.1:9000"));
     assert_eq!(command.gdbstub_channel(), Some(&gdbstub));
     assert_eq!(
@@ -90,6 +95,48 @@ fn debug_gdbstub_is_fourth_out_of_band_launch_channel() {
     assert!(gdbstub.out_of_band());
     assert!(!gdbstub.carries_per_quantum_timing());
     assert!(!gdbstub.carries_frame_data());
+}
+
+#[test]
+fn debug_guest_activation_endpoint_is_fixed_and_inert() {
+    let command = QemuLaunchCommandBuilder::new(
+        default_profile(),
+        default_vm_config(),
+        default_qemu_binary(),
+        default_plugin_config(),
+    )
+    .with_debug_guest_activation_endpoint()
+    .build()
+    .unwrap_or_else(|error| panic!("debug launch command should build: {error}"));
+
+    assert!(command.args().windows(2).any(|window| {
+        window
+            == [
+                "-device",
+                "virtio-serial-pci,id=crucible-debug-serial,bus=pcie.0",
+            ]
+    }));
+    assert!(command.args().windows(2).any(|window| {
+        window[0] == "-chardev"
+            && window[1].contains("socket,id=crucible-debug-activation")
+            && !window[1].contains("server=")
+    }));
+    assert!(command.args().windows(2).any(|window| {
+        window[0] == "-device"
+            && window[1].contains("virtserialport,bus=crucible-debug-serial.0")
+            && window[1].contains("name=org.aos.crucible.debug")
+    }));
+    assert!(
+        !command
+            .args()
+            .iter()
+            .any(|argument| argument.contains("CRUCIBLE_DEBUG_AGENT_V1"))
+    );
+    assert!(
+        command
+            .vm_launch_hash_material()
+            .contains("debug_guest_activation_endpoint=fixed-inert-v1")
+    );
 }
 
 #[test]

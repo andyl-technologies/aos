@@ -21,13 +21,13 @@ use thiserror::Error;
 use crate::open_set::OPEN_SET_CAPABILITY_CATEGORIES;
 
 /// RPC protocol major version for wire-incompatible changes.
-pub const RPC_PROTOCOL_MAJOR: u16 = 4;
+pub const RPC_PROTOCOL_MAJOR: u16 = 5;
 /// RPC protocol minor version for backward-compatible additions.
 pub const RPC_PROTOCOL_MINOR: u16 = 0;
 /// RPC protocol patch version for compatible fixes.
 pub const RPC_PROTOCOL_PATCH: u16 = 0;
 /// RPC protocol build identifier recorded in `Hello` and `Attached`.
-pub const RPC_PROTOCOL_BUILD: &str = "crucible-rpc-abi-v4";
+pub const RPC_PROTOCOL_BUILD: &str = "crucible-rpc-abi-v5";
 
 /// Current control-plane RPC protocol version.
 pub const RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
@@ -39,10 +39,10 @@ pub const RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
 
 /// RPC protocol version for which the golden-vector corpus was generated.
 pub const GOLDEN_VECTOR_RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
-    major: 4,
+    major: 5,
     minor: 0,
     patch: 0,
-    build: "crucible-rpc-abi-v4",
+    build: "crucible-rpc-abi-v5",
 };
 
 /// Regeneration rule for the RPC golden-vector corpus.
@@ -290,7 +290,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 14] = [
             client_name: "crucible-api-golden-client",
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         },
-        bytes: b"crucible.rpc/hello-request\nversion=4.0.0+crucible-rpc-abi-v4\nclient=crucible-api-golden-client\n",
+        bytes: b"crucible.rpc/hello-request\nversion=5.0.0+crucible-rpc-abi-v5\nclient=crucible-api-golden-client\n",
     },
     RpcGoldenVector {
         name: "hello-response",
@@ -300,7 +300,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 14] = [
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
             payload_kinds: RPC_OPEN_SET_PAYLOAD_KINDS,
         },
-        bytes: b"crucible.rpc/hello-response\nversion=4.0.0+crucible-rpc-abi-v4\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+        bytes: b"crucible.rpc/hello-response\nversion=5.0.0+crucible-rpc-abi-v5\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
     },
     RpcGoldenVector {
         name: "attached",
@@ -311,7 +311,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 14] = [
             mode: RpcAttachMode::Control,
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         },
-        bytes: b"crucible.rpc/attached\nversion=4.0.0+crucible-rpc-abi-v4\nsession-id=42\nsession-epoch=7\nmode=control\n",
+        bytes: b"crucible.rpc/attached\nversion=5.0.0+crucible-rpc-abi-v5\nsession-id=42\nsession-epoch=7\nmode=control\n",
     },
     RpcGoldenVector {
         name: "attached-with-reproduction",
@@ -327,7 +327,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 14] = [
                 "7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a",
             scheduler_control: "none",
         },
-        bytes: b"crucible.rpc/attached-with-reproduction\nversion=4.0.0+crucible-rpc-abi-v4\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
+        bytes: b"crucible.rpc/attached-with-reproduction\nversion=5.0.0+crucible-rpc-abi-v5\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
     },
     RpcGoldenVector {
         name: "get-reproduction-request",

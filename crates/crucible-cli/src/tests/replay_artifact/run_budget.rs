@@ -39,6 +39,8 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
         String::from("1"),
         String::from("run"),
         scenario.display().to_string(),
+        String::from("--save-on"),
+        String::from("always"),
         String::from("--watch"),
     ]);
     let Commands::Run(pass_args) = &pass_cli.command else {
@@ -63,6 +65,11 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
 
     assert_eq!(pass_outcome.status, BackendCommandStatus::Passed);
     assert_eq!(pass_outcome.exit_code, 0);
+    let pass_checkpoint = pass_outcome
+        .terminal_savepoint
+        .expect("passing always-save run must retain its terminal checkpoint");
+    let pass_evidence = savepoint_store_evidence("run test", pass_checkpoint, temp.path())?;
+    assert_eq!(pass_evidence.configuration.id(), pass_checkpoint);
     assert!(
         pass_outcome
             .canonical_log
@@ -75,13 +82,12 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
             .iter()
             .any(|entry| entry.kind == "run_state_update" && entry.summary == "quiescent")
     );
-    assert!(
-        pass_outcome
-            .canonical_log
-            .iter()
-            .any(|entry| entry.kind == "run_stream_event"
-                && entry.summary == "crucible.event.diagnostic")
-    );
+    assert!(pass_outcome.canonical_log.iter().any(|entry| {
+        entry.kind == "run_stream_event"
+            && entry
+                .summary
+                .starts_with("crucible.event.diagnostic sequence=")
+    }));
     assert!(
         pass_outcome
             .stdout
@@ -107,6 +113,8 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
         String::from("virtual-time"),
         String::from("--max-virtual-time"),
         String::from("1ticks"),
+        String::from("--max-quanta"),
+        String::from("3"),
         String::from("--save-on"),
         String::from("fail"),
     ]);
@@ -137,6 +145,8 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
         &timeout_run,
         &[],
     ))?;
+    assert_eq!(timeout_report.final_quanta, 1);
+    assert!(timeout_report.budget_timed_out);
     let timeout_outcome = finish_run_workflow_outcome(
         &timeout_thin_plan,
         &timeout_backend_plan,
@@ -148,12 +158,92 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
     assert_eq!(timeout_outcome.status, BackendCommandStatus::Timeout);
     assert_eq!(timeout_outcome.exit_code, 2);
     assert!(timeout_outcome.reproduction_artifact.is_some());
+    let timeout_checkpoint = timeout_outcome
+        .terminal_savepoint
+        .expect("timeout save policy must retain its terminal checkpoint");
+    let timeout_evidence = savepoint_store_evidence("run test", timeout_checkpoint, temp.path())?;
+    assert_eq!(timeout_evidence.configuration.id(), timeout_checkpoint);
     assert!(
         timeout_outcome
             .stdout
             .iter()
             .any(|line| line.starts_with("run-savepoint\tpolicy=fail\tcheckpoint=blake3:"))
     );
+    assert!(
+        timeout_outcome
+            .stdout
+            .iter()
+            .any(|line| line.starts_with("run-store\tcheckpoint=blake3:"))
+    );
+
+    let virtual_time_only_cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("double"),
+        String::from("--seed"),
+        String::from("22"),
+        String::from("run"),
+        scenario.display().to_string(),
+        String::from("--until"),
+        String::from("virtual-time"),
+        String::from("--max-virtual-time"),
+        String::from("2ticks"),
+    ]);
+    let Commands::Run(virtual_time_only_args) = &virtual_time_only_cli.command else {
+        panic!("expected run command");
+    };
+    let virtual_time_only_run = plan_run_invocation(virtual_time_only_args, temp.path())?;
+    let virtual_time_only_report = runtime.block_on(run_control_client_workflow_async(
+        &client,
+        &virtual_time_only_run,
+        &[],
+    ))?;
+
+    assert_eq!(
+        virtual_time_only_report.status,
+        BackendCommandStatus::Timeout
+    );
+    assert_eq!(virtual_time_only_report.final_frontier_ticks, 2);
+    assert_eq!(virtual_time_only_report.final_quanta, 2);
+    assert!(virtual_time_only_report.budget_timed_out);
+    assert!(
+        !virtual_time_only_report
+            .acknowledged_commands
+            .contains(&SessionCommandKind::Continue)
+    );
+    assert_eq!(
+        virtual_time_only_report
+            .acknowledged_commands
+            .iter()
+            .filter(|command| **command == SessionCommandKind::StepQuantum)
+            .count(),
+        2
+    );
+
+    let quantum_timeout_cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("double"),
+        String::from("--seed"),
+        String::from("3"),
+        String::from("run"),
+        scenario.display().to_string(),
+        String::from("--max-quanta"),
+        String::from("3"),
+    ]);
+    let Commands::Run(quantum_timeout_args) = &quantum_timeout_cli.command else {
+        panic!("expected run command");
+    };
+    let quantum_timeout_run = plan_run_invocation(quantum_timeout_args, temp.path())?;
+    let quantum_timeout_report = runtime.block_on(run_control_client_workflow_async(
+        &client,
+        &quantum_timeout_run,
+        &[],
+    ))?;
+
+    assert_eq!(quantum_timeout_report.status, BackendCommandStatus::Timeout);
+    assert_eq!(quantum_timeout_report.final_quanta, 3);
+    assert!(quantum_timeout_report.budget_timed_out);
 
     let property_cli = Cli::parse_from([
         String::from("crucible"),

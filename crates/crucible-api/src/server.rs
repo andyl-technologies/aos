@@ -35,6 +35,9 @@ use tokio::sync::{Mutex, OwnedMutexGuard, watch};
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 
+use crate::debug_holders::{
+    DebugControllerHolderId, DebugControllerHolderRegistry, DebugHolderRelease,
+};
 use crate::debug_relay::{DEBUG_RELAY_CHUNK_MAX_BYTES, DebugRelayId, DebugRelayRegistry};
 use crate::event_log_stream::EventLogCursor;
 use crate::lifecycle::{
@@ -93,6 +96,7 @@ struct Http2LifecycleState<L, F> {
     mode: LifecycleServerMode,
     shutdown: watch::Receiver<bool>,
     debug_authorization: DebugAuthorizationPolicy,
+    debug_holders: Arc<Mutex<DebugControllerHolderRegistry>>,
     debug_relays: Arc<Mutex<DebugRelayRegistry>>,
 }
 
@@ -103,6 +107,7 @@ impl<L, F> Clone for Http2LifecycleState<L, F> {
             mode: self.mode,
             shutdown: self.shutdown.clone(),
             debug_authorization: self.debug_authorization.clone(),
+            debug_holders: Arc::clone(&self.debug_holders),
             debug_relays: Arc::clone(&self.debug_relays),
         }
     }
@@ -126,6 +131,24 @@ where
         Err(_) => Arc::new(Mutex::new(())),
     };
     gate.lock_owned().await
+}
+
+/// Runs an authorized actor operation while retaining its session gate after caller cancellation.
+async fn complete_debug_operation<T>(
+    guard: OwnedMutexGuard<()>,
+    operation: impl Future<Output = T> + Send + 'static,
+) -> Result<T, LifecycleApiError>
+where
+    T: Send + 'static,
+{
+    tokio::spawn(async move {
+        let _guard = guard;
+        operation.await
+    })
+    .await
+    .map_err(|error| LifecycleApiError::ActorFailed {
+        message: format!("debug operation task failed: {error}"),
+    })
 }
 
 /// Serves a [`LifecycleControlPlane`] over the Crucible HTTP/2 RPC transport.
@@ -248,6 +271,7 @@ where
         mode,
         shutdown: shutdown_receiver.clone(),
         debug_authorization,
+        debug_holders: Arc::new(Mutex::new(DebugControllerHolderRegistry::default())),
         debug_relays: Arc::new(Mutex::new(DebugRelayRegistry::default())),
     });
     axum::serve(listener, app)
@@ -290,6 +314,7 @@ where
         mode,
         shutdown: shutdown_receiver.clone(),
         debug_authorization,
+        debug_holders: Arc::new(Mutex::new(DebugControllerHolderRegistry::default())),
         debug_relays: Arc::new(Mutex::new(DebugRelayRegistry::default())),
     });
     tokio::pin!(shutdown);
@@ -469,15 +494,18 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
-    let (session, generation, node) = match parse_debug_guest_fork_request(&body) {
+    let (session, generation, holder, node) = match parse_debug_guest_fork_request(&body) {
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
-    let _operation_guard = debug_operation_guard(&state, session).await;
+    let operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease {
         client: client.clone(),
         generation,
     };
+    if let Err(response) = authorize_debug_holder(&state, session, &lease, holder).await {
+        return response;
+    }
     let dispatch = {
         let control_plane = state.control_plane.lock().await;
         for capability in [
@@ -496,9 +524,42 @@ where
             Err(error) => return lifecycle_error_response(error),
         }
     };
-    let result = dispatch.fork(node).await;
+    let result =
+        match complete_debug_operation(operation_guard, async move { dispatch.fork(node).await })
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => return lifecycle_error_response(error),
+        };
     match result {
-        Ok(_) => http2_response(StatusCode::OK, "crucible.rpc/debug-guest-fork-response\n"),
+        Ok(report) => match (
+            report.guest_introspection_features,
+            report.guest_introspection_activation_failure,
+        ) {
+            (Some(features), None) => http2_response(
+                StatusCode::OK,
+                format!(
+                    "crucible.rpc/debug-guest-fork-response\nbranch={}\nstatus=ready\nfailure=\nargv-exec={}\npty={}\nresize={}\nssh-bridge={}\nmax-channels={}\n",
+                    hex_encode(&report.branch.id.bytes),
+                    features.argv_exec(),
+                    features.pty(),
+                    features.resize(),
+                    features.ssh_bridge(),
+                    features.max_channels(),
+                ),
+            ),
+            (None, Some(failure)) => http2_response(
+                StatusCode::OK,
+                format!(
+                    "crucible.rpc/debug-guest-fork-response\nbranch={}\nstatus=failed\nfailure={}\nargv-exec=false\npty=false\nresize=false\nssh-bridge=false\nmax-channels=0\n",
+                    hex_encode(&report.branch.id.bytes),
+                    hex_encode(failure.as_bytes()),
+                ),
+            ),
+            _ => lifecycle_error_response(LifecycleApiError::ActorFailed {
+                message: String::from("debug guest fork returned inconsistent activation state"),
+            }),
+        },
         Err(error) => lifecycle_error_response(error),
     }
 }
@@ -526,16 +587,19 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
-    let (session, generation, node, channel_id, record) =
+    let (session, generation, holder, node, channel_id, record) =
         match parse_debug_guest_exchange_request(&body) {
             Ok(request) => request,
             Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
         };
-    let _operation_guard = debug_operation_guard(&state, session).await;
+    let operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease {
         client: client.clone(),
         generation,
     };
+    if let Err(response) = authorize_debug_holder(&state, session, &lease, holder).await {
+        return response;
+    }
     let dispatch = {
         let control_plane = state.control_plane.lock().await;
         if let Err(error) = control_plane.authorize_debug_controller_operation(
@@ -551,7 +615,14 @@ where
             Err(error) => return lifecycle_error_response(error),
         }
     };
-    let response = dispatch.exchange(node, channel_id, record).await;
+    let response = match complete_debug_operation(operation_guard, async move {
+        dispatch.exchange(node, channel_id, record).await
+    })
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => return lifecycle_error_response(error),
+    };
     let response = match response {
         Ok(response) => response,
         Err(error) => return lifecycle_error_response(error),
@@ -592,21 +663,33 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
-    let session =
-        match parse_debug_session_request(&body, "crucible.rpc/debug-controller-acquire-request") {
-            Ok(session) => session,
-            Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
-        };
+    let (session, holder) = match parse_debug_controller_acquire_request(&body) {
+        Ok(request) => request,
+        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
+    };
     let _operation_guard = debug_operation_guard(&state, session).await;
-    let lease = match state
-        .control_plane
-        .lock()
-        .await
-        .acquire_debug_controller(session, client, &role)
-    {
+    let stale = state.debug_relays.lock().await.remove_stale(session);
+    for (lease, holder) in stale {
+        if let Err(response) = release_debug_holder(&state, session, &lease, holder).await {
+            return response;
+        }
+    }
+    let mut control_plane = state.control_plane.lock().await;
+    let mut holders = state.debug_holders.lock().await;
+    if let Err(error) = holders.preflight_register(session, holder) {
+        return http2_response(StatusCode::CONFLICT, error.to_string());
+    }
+    let controller_preexisted = holders.has_active_session(session);
+    let lease = match control_plane.acquire_debug_controller(session, client, &role) {
         Ok(lease) => lease,
         Err(error) => return lifecycle_error_response(error),
     };
+    if let Err(error) = holders.register(session, lease.clone(), holder) {
+        if !controller_preexisted {
+            let _ = control_plane.release_debug_controller(session, &lease);
+        }
+        return http2_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+    }
     let mut output = String::from("crucible.rpc/debug-controller-acquire-response\n");
     push_wire_line(
         &mut output,
@@ -640,14 +723,18 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
-    let (session, generation, node) = match parse_debug_attach_request(&body) {
+    let (session, generation, holder, node) = match parse_debug_attach_request(&body) {
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
-    let _operation_guard = debug_operation_guard(&state, session).await;
+    let operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease { client, generation };
-    {
-        let control_plane = state.control_plane.lock().await;
+    if let Err(response) = authorize_debug_holder(&state, session, &lease, holder).await {
+        return response;
+    }
+    let operation_state = state.clone();
+    let response = complete_debug_operation(operation_guard, async move {
+        let control_plane = operation_state.control_plane.lock().await;
         if let Err(error) = control_plane.authorize_debug_controller_operation(
             session,
             &lease,
@@ -696,8 +783,13 @@ where
             }
             Err(error) => return lifecycle_error_response(error),
         }
+        http2_response(StatusCode::OK, "crucible.rpc/debug-attach-response\n")
+    })
+    .await;
+    match response {
+        Ok(response) => response,
+        Err(error) => lifecycle_error_response(error),
     }
-    http2_response(StatusCode::OK, "crucible.rpc/debug-attach-response\n")
 }
 
 async fn handle_debug_controller_release<L, F>(
@@ -723,25 +815,34 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
-    let (session, generation) = match parse_debug_controller_release_request(&body) {
+    let (session, generation, holder) = match parse_debug_controller_release_request(&body) {
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
     let _operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease { client, generation };
-    if let Err(error) = state
-        .control_plane
-        .lock()
-        .await
-        .release_debug_controller(session, &lease)
-    {
-        return lifecycle_error_response(error);
+    let stale = state.debug_relays.lock().await.remove_stale(session);
+    for (stale_lease, stale_holder) in stale {
+        if let Err(response) =
+            release_debug_holder(&state, session, &stale_lease, stale_holder).await
+        {
+            return response;
+        }
     }
-    state
+    if state
         .debug_relays
         .lock()
         .await
-        .close_for_lease(session, &lease);
+        .has_holder(session, &lease, holder)
+    {
+        return http2_response(
+            StatusCode::CONFLICT,
+            "debug controller holder is retained by a live relay; close the relay first",
+        );
+    }
+    if let Err(response) = release_debug_holder(&state, session, &lease, holder).await {
+        return response;
+    }
     http2_response(
         StatusCode::OK,
         "crucible.rpc/debug-controller-release-response\n",
@@ -771,12 +872,20 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
-    let (session, generation) = match parse_debug_relay_open_request(&body) {
+    let (session, generation, holder) = match parse_debug_relay_open_request(&body) {
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
     let _operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease { client, generation };
+    if let Err(error) = state
+        .debug_holders
+        .lock()
+        .await
+        .authorize(session, &lease, holder)
+    {
+        return http2_response(StatusCode::FORBIDDEN, error.to_string());
+    }
     let endpoint = {
         let control_plane = state.control_plane.lock().await;
         if let Err(error) = control_plane.authorize_debug_controller_operation(
@@ -800,7 +909,10 @@ where
             Err(error) => return lifecycle_error_response(error),
         }
     };
-    let existing = state.debug_relays.lock().await.existing(session, &lease);
+    let existing = {
+        let mut relays = state.debug_relays.lock().await;
+        relays.existing(session, &lease, holder)
+    };
     let id = if let Some(id) = existing {
         id
     } else {
@@ -812,7 +924,7 @@ where
             .debug_relays
             .lock()
             .await
-            .register(stream, session, lease)
+            .register(stream, session, lease, holder)
         {
             Ok(id) => id,
             Err(error) => return debug_relay_error_response(error),
@@ -846,28 +958,36 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
-    let (session, generation, id, bytes) = match parse_debug_relay_write_request(&body) {
+    let (session, generation, holder, id, bytes) = match parse_debug_relay_write_request(&body) {
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
-    let _operation_guard = debug_operation_guard(&state, session).await;
-    if let Err(response) =
-        authorize_relay_request(&state, session, &client, generation, &role).await
-    {
-        return response;
+    if let Err(response) = authorize_relay_role(&role) {
+        return *response;
     }
-    let stream = match state
+    if let Err(error) = state
         .debug_relays
         .lock()
         .await
-        .stream(id, session, &client, generation)
+        .touch(id, session, &client, generation, holder)
     {
+        return debug_relay_error_response(error);
+    }
+    let _operation_guard = debug_operation_guard(&state, session).await;
+    let stream_result = {
+        let mut relays = state.debug_relays.lock().await;
+        relays.stream(id, session, &client, generation, holder)
+    };
+    let stream = match stream_result {
         Ok(stream) => stream,
         Err(error) => return debug_relay_error_response(error),
     };
     let written = match DebugRelayRegistry::write_stream(stream, &bytes).await {
         Ok(written) => written,
-        Err(error) => return debug_relay_error_response(error),
+        Err(error) => {
+            close_failed_relay(&state, session, &client, generation, holder, id).await;
+            return debug_relay_error_response(error);
+        }
     };
     let mut output = String::from("crucible.rpc/debug-relay-write-response\n");
     push_wire_line(&mut output, "written", &written.to_string());
@@ -894,25 +1014,33 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
-    let (session, generation, id, maximum) = match parse_debug_relay_read_request(&body) {
+    let (session, generation, holder, id, maximum) = match parse_debug_relay_read_request(&body) {
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
-    let _operation_guard = debug_operation_guard(&state, session).await;
-    if let Err(response) =
-        authorize_relay_request(&state, session, &client, generation, &role).await
-    {
-        return response;
+    if let Err(response) = authorize_relay_role(&role) {
+        return *response;
     }
-    let chunk = match state
+    if let Err(error) = state
         .debug_relays
         .lock()
         .await
-        .read(id, session, &client, generation, maximum)
+        .touch(id, session, &client, generation, holder)
     {
+        return debug_relay_error_response(error);
+    }
+    let _operation_guard = debug_operation_guard(&state, session).await;
+    let chunk_result = {
+        let mut relays = state.debug_relays.lock().await;
+        relays.read(id, session, &client, generation, holder, maximum)
+    };
+    let chunk = match chunk_result {
         Ok(chunk) => chunk,
         Err(error) => return debug_relay_error_response(error),
     };
+    if chunk.eof {
+        close_failed_relay(&state, session, &client, generation, holder, id).await;
+    }
     let mut output = String::from("crucible.rpc/debug-relay-read-response\n");
     push_wire_line(&mut output, "eof", if chunk.eof { "true" } else { "false" });
     push_wire_line(&mut output, "data", &hex_encode(&chunk.bytes));
@@ -939,33 +1067,44 @@ where
         Ok(body) => body,
         Err(response) => return response,
     };
-    let (session, generation, id) = match parse_debug_relay_close_request(&body) {
+    let (session, generation, holder, id) = match parse_debug_relay_close_request(&body) {
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
+    if let Err(response) = authorize_relay_role(&role) {
+        return *response;
+    }
     let _operation_guard = debug_operation_guard(&state, session).await;
-    if let Err(response) =
-        authorize_relay_request(&state, session, &client, generation, &role).await
+    let close_result = {
+        let mut relays = state.debug_relays.lock().await;
+        relays.close(id, session, &client, generation, holder)
+    };
+    let closed = match close_result {
+        Ok(closed) => closed,
+        Err(error) => return debug_relay_error_response(error),
+    };
+    if let Err(response) = release_debug_holder(&state, session, &closed.lease, closed.holder).await
     {
         return response;
-    }
-    if let Err(error) = state
-        .debug_relays
-        .lock()
-        .await
-        .close(id, session, &client, generation)
-    {
-        return debug_relay_error_response(error);
     }
     http2_response(StatusCode::OK, "crucible.rpc/debug-relay-close-response\n")
 }
 
-async fn authorize_relay_request<L, F>(
+fn authorize_relay_role(role: &DebugRole) -> Result<(), Box<Response>> {
+    if role.allows(DebugCapability::Control) && role.allows(DebugCapability::Observe) {
+        return Ok(());
+    }
+    Err(Box::new(http2_response(
+        StatusCode::FORBIDDEN,
+        "debug relay requires observe and control capabilities",
+    )))
+}
+
+async fn release_debug_holder<L, F>(
     state: &Http2LifecycleState<L, F>,
     session: SessionRef,
-    client: &DebugClientId,
-    generation: u64,
-    role: &DebugRole,
+    lease: &DebugControllerLease,
+    holder: DebugControllerHolderId,
 ) -> Result<(), Response>
 where
     L: QuantumLoop + Send + 'static,
@@ -974,22 +1113,64 @@ where
         + Sync
         + 'static,
 {
-    let lease = DebugControllerLease {
-        client: client.clone(),
-        generation,
-    };
-    let control_plane = state.control_plane.lock().await;
-    control_plane
-        .authorize_debug_controller_operation(session, &lease, role, DebugCapability::Control)
-        .and_then(|()| {
-            control_plane.authorize_debug_controller_operation(
-                session,
-                &lease,
-                role,
-                DebugCapability::Observe,
-            )
-        })
-        .map_err(lifecycle_error_response)
+    let mut control_plane = state.control_plane.lock().await;
+    let mut holders = state.debug_holders.lock().await;
+    let release = holders
+        .release(session, lease, holder)
+        .map_err(|error| http2_response(StatusCode::FORBIDDEN, error.to_string()))?;
+    if release != DebugHolderRelease::Final {
+        return Ok(());
+    }
+    if let Err(error) = control_plane.release_debug_controller(session, lease) {
+        holders.restore(session, lease.clone(), holder);
+        return Err(lifecycle_error_response(error));
+    }
+    Ok(())
+}
+
+async fn authorize_debug_holder<L, F>(
+    state: &Http2LifecycleState<L, F>,
+    session: SessionRef,
+    lease: &DebugControllerLease,
+    holder: DebugControllerHolderId,
+) -> Result<(), Response>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    state
+        .debug_holders
+        .lock()
+        .await
+        .authorize(session, lease, holder)
+        .map_err(|error| http2_response(StatusCode::FORBIDDEN, error.to_string()))
+}
+
+async fn close_failed_relay<L, F>(
+    state: &Http2LifecycleState<L, F>,
+    session: SessionRef,
+    client: &DebugClientId,
+    generation: u64,
+    holder: DebugControllerHolderId,
+    id: DebugRelayId,
+) where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    let closed = state
+        .debug_relays
+        .lock()
+        .await
+        .close(id, session, client, generation, holder);
+    if let Ok(closed) = closed {
+        let _ = release_debug_holder(state, session, &closed.lease, closed.holder).await;
+    }
 }
 
 fn debug_principal(
@@ -1189,11 +1370,16 @@ where
         Ok(response) => response,
         Err(error) => return lifecycle_error_response(error),
     };
-    state
+    let _closed = state
         .debug_relays
         .lock()
         .await
         .close_for_session(response.session);
+    state
+        .debug_holders
+        .lock()
+        .await
+        .remove_session(response.session);
     http2_response(StatusCode::OK, encode_destroy_session_response(&response))
 }
 
@@ -1537,160 +1723,6 @@ fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, S
         request = request.with_expected_epoch(expected_epoch);
     }
     Ok(request)
-}
-
-fn parse_debug_session_request(body: &[u8], header: &'static str) -> Result<SessionRef, String> {
-    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
-    let mut lines = text.lines();
-    expect_wire_header(lines.next(), header)?;
-    let session = parse_session_ref(&mut lines)?;
-    reject_extra_line(lines.next())?;
-    Ok(session)
-}
-
-fn parse_debug_controller_release_request(body: &[u8]) -> Result<(SessionRef, u64), String> {
-    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
-    let mut lines = text.lines();
-    expect_wire_header(
-        lines.next(),
-        "crucible.rpc/debug-controller-release-request",
-    )?;
-    let session = parse_session_ref(&mut lines)?;
-    let generation = parse_u64_line(lines.next(), "generation=")?;
-    reject_extra_line(lines.next())?;
-    Ok((session, generation))
-}
-
-fn parse_debug_attach_request(body: &[u8]) -> Result<(SessionRef, u64, NodeId), String> {
-    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
-    let mut lines = text.lines();
-    expect_wire_header(lines.next(), "crucible.rpc/debug-attach-request")?;
-    let session = parse_session_ref(&mut lines)?;
-    let generation = parse_u64_line(lines.next(), "generation=")?;
-    let node = parse_hex_string_field(
-        Some(parse_wire_line(lines.next(), "node=")?),
-        "debug attach node",
-    )?;
-    if node.is_empty() {
-        return Err(String::from("debug attach node must not be empty"));
-    }
-    reject_extra_line(lines.next())?;
-    Ok((session, generation, NodeId { name: node }))
-}
-
-fn parse_debug_relay_open_request(body: &[u8]) -> Result<(SessionRef, u64), String> {
-    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
-    let mut lines = text.lines();
-    expect_wire_header(lines.next(), "crucible.rpc/debug-relay-open-request")?;
-    let session = parse_session_ref(&mut lines)?;
-    let generation = parse_u64_line(lines.next(), "generation=")?;
-    reject_extra_line(lines.next())?;
-    Ok((session, generation))
-}
-
-fn parse_debug_relay_write_request(
-    body: &[u8],
-) -> Result<(SessionRef, u64, DebugRelayId, Vec<u8>), String> {
-    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
-    let mut lines = text.lines();
-    expect_wire_header(lines.next(), "crucible.rpc/debug-relay-write-request")?;
-    let session = parse_session_ref(&mut lines)?;
-    let generation = parse_u64_line(lines.next(), "generation=")?;
-    let id = DebugRelayId(parse_u64_line(lines.next(), "relay-id=")?);
-    let bytes = parse_hex_bytes(parse_wire_line(lines.next(), "data=")?)?;
-    reject_extra_line(lines.next())?;
-    Ok((session, generation, id, bytes))
-}
-
-fn parse_debug_relay_read_request(
-    body: &[u8],
-) -> Result<(SessionRef, u64, DebugRelayId, usize), String> {
-    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
-    let mut lines = text.lines();
-    expect_wire_header(lines.next(), "crucible.rpc/debug-relay-read-request")?;
-    let session = parse_session_ref(&mut lines)?;
-    let generation = parse_u64_line(lines.next(), "generation=")?;
-    let id = DebugRelayId(parse_u64_line(lines.next(), "relay-id=")?);
-    let maximum_u64 = parse_u64_line(lines.next(), "maximum=")?;
-    let maximum = usize::try_from(maximum_u64)
-        .map_err(|_| format!("debug relay maximum {maximum_u64} does not fit usize"))?;
-    reject_extra_line(lines.next())?;
-    Ok((session, generation, id, maximum))
-}
-
-fn parse_debug_relay_close_request(body: &[u8]) -> Result<(SessionRef, u64, DebugRelayId), String> {
-    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
-    let mut lines = text.lines();
-    expect_wire_header(lines.next(), "crucible.rpc/debug-relay-close-request")?;
-    let session = parse_session_ref(&mut lines)?;
-    let generation = parse_u64_line(lines.next(), "generation=")?;
-    let id = DebugRelayId(parse_u64_line(lines.next(), "relay-id=")?);
-    reject_extra_line(lines.next())?;
-    Ok((session, generation, id))
-}
-
-fn parse_debug_guest_exchange_request(
-    body: &[u8],
-) -> Result<
-    (
-        SessionRef,
-        u64,
-        NodeId,
-        u64,
-        Option<GuestIntrospectionRecord>,
-    ),
-    String,
-> {
-    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
-    let mut lines = text.lines();
-    expect_wire_header(lines.next(), "crucible.rpc/debug-guest-exchange-request")?;
-    let session = parse_session_ref(&mut lines)?;
-    let generation = parse_u64_line(lines.next(), "generation=")?;
-    let node = parse_hex_string_field(
-        Some(parse_wire_line(lines.next(), "node=")?),
-        "debug guest node",
-    )?;
-    if node.is_empty() {
-        return Err(String::from("debug guest node must not be empty"));
-    }
-    let channel_id = parse_u64_line(lines.next(), "channel-id=")?;
-    if channel_id == 0 {
-        return Err(String::from("debug guest channel id must not be zero"));
-    }
-    let encoded = parse_wire_line(lines.next(), "record=")?;
-    let record = if encoded.is_empty() {
-        None
-    } else {
-        Some(
-            GuestIntrospectionRecord::decode(&parse_hex_bytes(encoded)?)
-                .map_err(|error| error.to_string())?,
-        )
-    };
-    reject_extra_line(lines.next())?;
-    Ok((
-        session,
-        generation,
-        NodeId { name: node },
-        channel_id,
-        record,
-    ))
-}
-
-fn parse_debug_guest_fork_request(body: &[u8]) -> Result<(SessionRef, u64, NodeId), String> {
-    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
-    let mut lines = text.lines();
-    expect_wire_header(lines.next(), "crucible.rpc/debug-guest-fork-request")?;
-    let session = parse_session_ref(&mut lines)?;
-    let generation = parse_u64_line(lines.next(), "generation=")?;
-    let node = parse_hex_string_field(
-        Some(parse_wire_line(lines.next(), "node=")?),
-        "debug guest fork node",
-    )?;
-    if node.is_empty() {
-        return Err(String::from("debug guest fork node must not be empty"));
-    }
-    reject_extra_line(lines.next())?;
-    Ok((session, generation, NodeId { name: node }))
 }
 
 fn parse_get_reproduction_request(body: &[u8]) -> Result<GetReproductionRequest, String> {
@@ -2882,90 +2914,6 @@ fn event_level_wire(level: EventLevel) -> &'static str {
     }
 }
 
-fn attribute_wire(value: &OpenSetAttributeValue) -> String {
-    match value {
-        OpenSetAttributeValue::Bool(value) => {
-            format!("bool|{}", if *value { "true" } else { "false" })
-        }
-        OpenSetAttributeValue::Int(value) => format!("int|{value}"),
-        OpenSetAttributeValue::Uint(value) => format!("uint|{value}"),
-        OpenSetAttributeValue::Uint128(value) => format!("uint128|{value}"),
-        OpenSetAttributeValue::Float64Bits(value) => format!("float64bits|{value}"),
-        OpenSetAttributeValue::String(value) => format!("string|{}", hex_encode(value.as_bytes())),
-        OpenSetAttributeValue::Bytes(value) => format!("bytes|{}", hex_encode(value)),
-    }
-}
-
-fn state_wire_name(state: LiveStateKind) -> &'static str {
-    match state {
-        LiveStateKind::Loaded => "loaded",
-        LiveStateKind::Paused => "paused",
-        LiveStateKind::Running => "running",
-        LiveStateKind::Stopped => "stopped",
-    }
-}
-
-fn lifecycle_state_wire_name(state: LifecycleStateKind) -> &'static str {
-    match state {
-        LifecycleStateKind::Loaded => "loaded",
-        LifecycleStateKind::Paused => "paused",
-        LifecycleStateKind::Running => "running",
-        LifecycleStateKind::Stopped => "stopped",
-    }
-}
-
-fn outcome_wire_name(outcome: Option<OutcomeKind>) -> &'static str {
-    match outcome {
-        Some(OutcomeKind::Passed) => "passed",
-        Some(OutcomeKind::Failed) => "failed",
-        Some(OutcomeKind::Timeout) => "timeout",
-        Some(OutcomeKind::Crashed) => "crashed",
-        Some(OutcomeKind::Stopped) => "stopped",
-        None => "none",
-    }
-}
-
-fn content_hash_option_wire(hash: Option<ContentHash>) -> String {
-    match hash {
-        Some(hash) => hash.to_hex(),
-        None => String::from("none"),
-    }
-}
-
-fn command_name(command: SessionCommandKind) -> String {
-    open_set_command_kind(command).unwrap_or_else(|| {
-        let command_name = API_COMMAND_MAPPINGS
-            .iter()
-            .find(|mapping| mapping.command_kind == command)
-            .map(|mapping| mapping.command_name)
-            .unwrap_or("unknown");
-        format!("crucible.cmd.{command_name}")
-    })
-}
-
-fn push_session_ref(output: &mut String, session: SessionRef) {
-    push_wire_line(output, "session-id", &session.id.value.to_string());
-    push_wire_line(output, "epoch", &session.epoch.to_string());
-    push_wire_line(output, "seed", &session.seed.to_hex());
-}
-
-fn push_wire_line(output: &mut String, key: &str, value: &str) {
-    output.push_str(key);
-    output.push('=');
-    output.push_str(value);
-    output.push('\n');
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    output
-}
-
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used)]
@@ -2975,6 +2923,8 @@ mod query_wire;
 
 #[path = "server/debug_reposition.rs"]
 mod debug_reposition;
+mod debug_wire;
 
 use debug_reposition::*;
+use debug_wire::*;
 use query_wire::*;

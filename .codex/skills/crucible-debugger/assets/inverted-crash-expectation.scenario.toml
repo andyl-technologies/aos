@@ -1,28 +1,79 @@
 [scenario]
-id = "blake3:60b458f8cd17175e72f6ec914e46b926cce859dcb3dc1f65cd15a327b58fa180"
+id = "blake3:3a7def56ce688d36d457fa0af222e7611bc8948dafd612697a924c64436fe197"
 seed = "0xb6de000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = 0
 
 [world]
-id = "blake3:980390cc9799d8c6dd13d12697a30343ca87859516fde145780cee7d199e2fdd"
+id = "blake3:9a458fe910f9a1951f3b91e1341acda87c15d15c99a3df392d80e324df37352a"
 
 [[world.node]]
-id = "suspect"
+id = "db-0"
 arch = "x86_64"
-memory_mib = 256
-cmdline = "console=ttyS0 quiet net.ifnames=0 port=8080 crucible.workload=httpd"
+memory_mib = 512
+cmdline = "console=ttyS0 quiet store.role=replica cluster=crucible-a3"
 smp_vcpus = 1
-icount_shift = 0
-kernel = "blake3:f3882922ce3a87f35103aabfc79230c9953f008c23d7e5107f506f3cad1d7099"
-root_image = "blake3:8875ce0b483b08381b54dcd2add3e3bfda817b60169450914ab48259ff7c189c"
-white_box = "disabled"
+icount_shift = 7
+kernel = "blake3:aae09ed6239f99d3953bd4d6ed40c40e3488798ea1afa1910d34229a05ea0b1d"
+root_image = "blake3:72f131eb667fe7780324591a3ca070b130827cc3ef9584cd8d71577ab578da51"
+white_box = "enabled"
 
 [world.node.ready_point]
-kind = "fixed_icount"
-retired = 0
+kind = "console_marker"
+marker = "ready to accept connections"
+
+[[world.node]]
+id = "db-1"
+arch = "x86_64"
+memory_mib = 512
+cmdline = "console=ttyS0 quiet store.role=replica cluster=crucible-a3"
+smp_vcpus = 1
+icount_shift = 7
+kernel = "blake3:aae09ed6239f99d3953bd4d6ed40c40e3488798ea1afa1910d34229a05ea0b1d"
+root_image = "blake3:72f131eb667fe7780324591a3ca070b130827cc3ef9584cd8d71577ab578da51"
+white_box = "enabled"
+
+[world.node.ready_point]
+kind = "console_marker"
+marker = "ready to accept connections"
+
+[[world.node]]
+id = "db-2"
+arch = "x86_64"
+memory_mib = 512
+cmdline = "console=ttyS0 quiet store.role=replica cluster=crucible-a3"
+smp_vcpus = 1
+icount_shift = 7
+kernel = "blake3:aae09ed6239f99d3953bd4d6ed40c40e3488798ea1afa1910d34229a05ea0b1d"
+root_image = "blake3:72f131eb667fe7780324591a3ca070b130827cc3ef9584cd8d71577ab578da51"
+white_box = "enabled"
+
+[world.node.ready_point]
+kind = "console_marker"
+marker = "ready to accept connections"
+
+[[world.link]]
+endpoint_a = "db-0"
+endpoint_b = "db-1"
+latency_nanos = 5000000
+jitter_nanos = 1000000
+loss_millionths = 0
+
+[[world.link]]
+endpoint_a = "db-0"
+endpoint_b = "db-2"
+latency_nanos = 5000000
+jitter_nanos = 1000000
+loss_millionths = 0
+
+[[world.link]]
+endpoint_a = "db-1"
+endpoint_b = "db-2"
+latency_nanos = 5000000
+jitter_nanos = 1000000
+loss_millionths = 0
 
 [plan]
-id = "blake3:018d6a033afb9bbd7c78c7727e75212bb8ad0bb833236c3b0f9dc4420c2974f9"
+id = "blake3:32af2309e24175bd365f2e888390c83747d32b5eb9f38f6d17e2d21d71f447d3"
 kind = "event_graph"
 
 [[plan.event]]
@@ -36,19 +87,19 @@ state = "violated"
 
 [plan.event.action]
 kind = "fail"
-reason = "the suspect VM did not crash"
+reason = "db-0 did not crash"
 
 [properties]
-id = "blake3:581f109299fe28293b1480057e0d998a4063d4c472cbf9e812b27492d1c4f2c6"
+id = "blake3:39cbc5ccc4f7453af7df7416a1579107b25dbd9106b55d5d235651f7f47e0e90"
 
 [[properties.assertion]]
 id = "suspect-must-crash"
-message = "the suspect VM must remain crashed"
+message = "db-0 must remain crashed"
 
 [properties.assertion.property]
 kind = "always"
 
 [properties.assertion.property.predicate]
 kind = "node_state"
-node = "suspect"
+node = "db-0"
 state = "crashed"

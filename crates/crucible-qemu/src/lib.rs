@@ -134,6 +134,8 @@ pub use launch::{
     GuestEntropySeedFile, IcountShiftSetting, InputPolicy, LaunchProfileCandidate,
     LaunchProfileError, LivePluginGuestArchitecture, MachineResetMode, NodeClockSkewDeclaration,
     NodeIcountShift, QEMU_CONSOLE_CHARDEV_ID, QEMU_CONSOLE_SOCKET_FILE_NAME,
+    QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID, QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME,
+    QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID,
     QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD, QemuGdbstubChannelConfig,
     QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
     QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
@@ -175,13 +177,14 @@ pub use node_factory::{
 };
 pub use node_set::QemuNodeSet;
 pub use qmp::{
-    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT, QMP_JOB_QUERY_INTERVAL,
-    QMP_JOB_QUERY_LIMIT, QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_JOBS_COMMAND,
-    QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND,
-    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuQmpVmStateControlChannel,
-    QmpClient, QmpCommandComplete, QmpCommandKind, QmpCpuTopology, QmpError, QmpGreeting,
-    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunState, QmpRunStateKind, QmpSnapshotTag,
-    QmpTimeoutStream,
+    QMP_CAPABILITIES_COMMAND, QMP_CHARDEV_ADD_COMMAND, QMP_COMMAND_TIMEOUT,
+    QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QMP_DEVICE_ADD_COMMAND, QMP_GREETING_TIMEOUT,
+    QMP_JOB_QUERY_INTERVAL, QMP_JOB_QUERY_LIMIT, QMP_QUERY_CPUS_FAST_COMMAND,
+    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
+    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE,
+    QemuQmpVmStateControlChannel, QmpClient, QmpCommandComplete, QmpCommandKind, QmpCpuTopology,
+    QmpError, QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunState, QmpRunStateKind,
+    QmpSnapshotTag, QmpTimeoutStream,
 };
 pub use quantum::{
     QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuDueInboundFrame, QemuInboundFrame,
