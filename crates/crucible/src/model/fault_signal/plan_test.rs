@@ -66,7 +66,7 @@ fn network_effect_policy_references_are_typed_and_world_owned() {
     )
     .unwrap_or_else(|error| panic!("policy test binding: {error}"));
     let plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![program], vec![binding])
+        FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
             .unwrap_or_else(|error| panic!("policy test plan: {error}")),
     );
     let world = test_world();
@@ -280,6 +280,7 @@ fn shared_medium_binding_matches_world_policy_channels_and_participants() {
     let valid = FaultSignalPlan::new(
         vec![program.clone()],
         vec![make_binding(vec![object_id("left"), object_id("right")])],
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("shared-medium plan: {error}"));
     valid
@@ -289,6 +290,7 @@ fn shared_medium_binding_matches_world_policy_channels_and_participants() {
     let invalid = FaultSignalPlan::new(
         vec![program.clone()],
         vec![make_binding(vec![object_id("left")])],
+        FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("mismatched shared-medium plan: {error}"));
     assert!(matches!(
@@ -359,7 +361,7 @@ fn rf_channel_rejects_ambiguous_service_profile_inputs() {
         &registry,
     )
     .unwrap_or_else(|error| panic!("RF binding: {error}"));
-    let plan = FaultSignalPlan::new(vec![program], vec![binding])
+    let plan = FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("RF plan: {error}"));
 
     assert!(matches!(
@@ -639,11 +641,19 @@ fn one_plan_level_graph_is_required_and_duplicates_fail_closed() {
     let first = program(false);
     let second = program(true);
     assert!(matches!(
-        FaultSignalPlan::new(vec![second, first.clone()], Vec::new()),
+        FaultSignalPlan::new(
+            vec![second, first.clone()],
+            Vec::new(),
+            FaultResourceLimits::default()
+        ),
         Err(FaultSignalPlanError::TooManyPrograms { hard: 1, .. })
     ));
     assert!(matches!(
-        FaultSignalPlan::new(vec![first.clone(), first], Vec::new()),
+        FaultSignalPlan::new(
+            vec![first.clone(), first],
+            Vec::new(),
+            FaultResourceLimits::default()
+        ),
         Err(FaultSignalPlanError::DuplicateProgram)
     ));
 }
@@ -651,7 +661,7 @@ fn one_plan_level_graph_is_required_and_duplicates_fail_closed() {
 #[test]
 fn outer_plan_identity_commits_to_the_complete_fault_layer() {
     let program = program(true);
-    let faults = FaultSignalPlan::new(vec![program], Vec::new())
+    let faults = FaultSignalPlan::new(vec![program], Vec::new(), FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan admission failed: {error}"));
     let baseline = Plan::empty();
     let plan = baseline.clone().with_fault_signals(faults.clone());
@@ -668,7 +678,7 @@ fn outer_plan_identity_commits_to_the_complete_fault_layer() {
 #[test]
 fn plan_toml_round_trips_an_admitted_signal_program() {
     let program = program(true);
-    let faults = FaultSignalPlan::new(vec![program], Vec::new())
+    let faults = FaultSignalPlan::new(vec![program], Vec::new(), FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan admission failed: {error}"));
     let plan = Plan::empty().with_fault_signals(faults);
     let encoded = plan
@@ -680,9 +690,9 @@ fn plan_toml_round_trips_an_admitted_signal_program() {
     assert_eq!(decoded, plan);
     assert!(encoded.contains("[[signal]]"));
     assert!(!encoded.contains("signal_program"));
-    assert!(encoded.contains("fault_signal_semantic_version = 1"));
+    assert!(encoded.contains("fault_signal_semantic_version = 2"));
 
-    let without_version = encoded.replace("fault_signal_semantic_version = 1\n", "");
+    let without_version = encoded.replace("fault_signal_semantic_version = 2\n", "");
     assert!(Plan::from_canonical_toml_for_world(&test_world(), &without_version,).is_err());
 }
 
@@ -690,7 +700,7 @@ fn plan_toml_round_trips_an_admitted_signal_program() {
 fn plan_toml_round_trips_a_complete_binding_contract() {
     let program = program(true);
     let binding = binding(&program);
-    let faults = FaultSignalPlan::new(vec![program], vec![binding])
+    let faults = FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan admission failed: {error}"));
     let plan = Plan::empty().with_fault_signals(faults);
     let encoded = plan
@@ -711,8 +721,12 @@ fn world_resolves_fault_domains_and_dynamic_paths_without_authored_caches() {
     let base_program = program(true);
     let binding = binding(&base_program);
     let plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![base_program], vec![binding])
-            .unwrap_or_else(|error| panic!("binding plan: {error}")),
+        FaultSignalPlan::new(
+            vec![base_program],
+            vec![binding],
+            FaultResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("binding plan: {error}")),
     );
     let canonical = plan
         .to_canonical_toml()
@@ -749,8 +763,12 @@ fn world_resolves_fault_domains_and_dynamic_paths_without_authored_caches() {
         let expected_binding =
             binding_with_selector(&expected_program, BindingSampling::AtBoundary, selector);
         let expected = Plan::empty().with_fault_signals(
-            FaultSignalPlan::new(vec![expected_program], vec![expected_binding])
-                .unwrap_or_else(|error| panic!("expected selector plan: {error}")),
+            FaultSignalPlan::new(
+                vec![expected_program],
+                vec![expected_binding],
+                FaultResourceLimits::default(),
+            )
+            .unwrap_or_else(|error| panic!("expected selector plan: {error}")),
         );
         let mut value: toml::Value = toml::from_str(&canonical)
             .unwrap_or_else(|error| panic!("parse canonical plan: {error}"));
@@ -786,7 +804,7 @@ fn world_resolves_fault_domains_and_dynamic_paths_without_authored_caches() {
             .to_canonical_toml()
             .unwrap_or_else(|error| panic!("emit {expected_kind}: {error}"));
         assert!(emitted.contains(&format!("kind = \"{expected_kind}\"")));
-        assert!(!emitted.contains("resolved_targets"));
+        assert!(!emitted.contains("resolved_targets ="));
         assert!(!emitted.contains("initial_targets"));
     }
 }
@@ -820,7 +838,7 @@ fn singleton_signal_alias_canonicalizes_and_closed_tables_reject_unknowns() {
     let program = program(true);
     let binding = binding(&program);
     let plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![program], vec![binding])
+        FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
             .unwrap_or_else(|error| panic!("binding plan: {error}")),
     );
     let canonical = plan
@@ -881,8 +899,12 @@ fn mobile_truth_trajectory_requires_an_exact_exported_position_contract() {
         SignalValue::I64(0),
     ]);
     let valid = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![trajectory_program(shape, value)], Vec::new())
-            .unwrap_or_else(|error| panic!("trajectory fault layer: {error}")),
+        FaultSignalPlan::new(
+            vec![trajectory_program(shape, value)],
+            Vec::new(),
+            FaultResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("trajectory fault layer: {error}")),
     );
     valid
         .validate_for_world(&world)
@@ -903,6 +925,7 @@ fn mobile_truth_trajectory_requires_an_exact_exported_position_contract() {
         FaultSignalPlan::new(
             vec![trajectory_program(wrong_shape, wrong_value)],
             Vec::new(),
+            FaultResourceLimits::default(),
         )
         .unwrap_or_else(|error| panic!("invalid trajectory fault layer: {error}")),
     );
@@ -933,8 +956,12 @@ fn fault_segments_must_cover_the_world_link_topology_exactly() {
 #[test]
 fn plan_toml_round_trips_flat_analytic_source_fields() {
     let plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![periodic_pulse_program()], Vec::new())
-            .unwrap_or_else(|error| panic!("pulse plan: {error}")),
+        FaultSignalPlan::new(
+            vec![periodic_pulse_program()],
+            Vec::new(),
+            FaultResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("pulse plan: {error}")),
     );
     let encoded = plan
         .to_canonical_toml()
@@ -951,8 +978,12 @@ fn plan_toml_round_trips_flat_analytic_source_fields() {
 #[test]
 fn plan_toml_round_trips_flat_trace_arithmetic_and_boundaries() {
     let plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![trace_program()], Vec::new())
-            .unwrap_or_else(|error| panic!("trace plan: {error}")),
+        FaultSignalPlan::new(
+            vec![trace_program()],
+            Vec::new(),
+            FaultResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("trace plan: {error}")),
     );
     let encoded = plan
         .to_canonical_toml()
@@ -973,7 +1004,7 @@ fn plan_toml_round_trips_flat_trace_arithmetic_and_boundaries() {
 fn plan_binary_round_trips_a_complete_binding_contract() {
     let program = program(true);
     let binding = binding(&program);
-    let faults = FaultSignalPlan::new(vec![program], vec![binding])
+    let faults = FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan admission failed: {error}"));
     let plan = Plan::empty().with_fault_signals(faults);
     let encoded = plan.to_compact_binary();
@@ -981,9 +1012,9 @@ fn plan_binary_round_trips_a_complete_binding_contract() {
         .unwrap_or_else(|error| panic!("decode fault signal plan: {error}"));
 
     assert_eq!(decoded, plan);
-    assert!(encoded.starts_with(b"crucible.plan.v4\0"));
+    assert!(encoded.starts_with(b"crucible.plan.v5\0"));
     let mut old_magic = encoded.clone();
-    old_magic[..b"crucible.plan.v3\0".len()].copy_from_slice(b"crucible.plan.v3\0");
+    old_magic[..b"crucible.plan.v4\0".len()].copy_from_slice(b"crucible.plan.v4\0");
     assert!(Plan::from_compact_binary_for_world(&test_world(), &old_magic,).is_err());
 }
 
@@ -1013,7 +1044,7 @@ fn wire_decode_reenters_identity_scalar_and_selector_validation() {
 fn wire_admission_rejects_versions_missing_programs_and_duplicate_contracts() {
     let program = program(true);
     let binding = binding(&program);
-    let plan = FaultSignalPlan::new(vec![program], vec![binding])
+    let plan = FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan admission failed: {error}"));
 
     let mut wrong_version = FaultSignalPlanWire::from_plan(&plan);
@@ -1117,8 +1148,12 @@ fn reproduction_scenario_envelope_contains_a_maximum_fault_wire_layer() {
 fn toml_round_trips_full_range_u64_values_without_narrowing() {
     let numeric_program = u64_program(u64::MAX);
     let numeric_plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![numeric_program], Vec::new())
-            .unwrap_or_else(|error| panic!("numeric plan: {error}")),
+        FaultSignalPlan::new(
+            vec![numeric_program],
+            Vec::new(),
+            FaultResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("numeric plan: {error}")),
     );
     let numeric_toml = numeric_plan
         .to_canonical_toml()
@@ -1139,7 +1174,7 @@ fn toml_round_trips_full_range_u64_values_without_narrowing() {
         ),
     );
     let cadence_plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![program], vec![binding])
+        FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
             .unwrap_or_else(|error| panic!("cadence plan: {error}")),
     );
     let cadence_toml = cadence_plan
@@ -1161,7 +1196,7 @@ fn world_validation_rejects_unrepresentable_binding_wakeups() {
             PositiveU64::new("cadence_nanos", 6).unwrap_or_else(|error| panic!("cadence: {error}")),
         ),
     );
-    let plan = FaultSignalPlan::new(vec![program], vec![binding])
+    let plan = FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan: {error}"));
 
     let error = match plan.validate_for_world(&test_world_with_shift(2)) {
@@ -1207,7 +1242,7 @@ fn compact_plan_rejects_resolved_targets_absent_from_decode_world() {
     let program = program(true);
     let binding = binding(&program);
     let plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![program], vec![binding])
+        FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
             .unwrap_or_else(|error| panic!("binding plan: {error}")),
     );
     let world_without_targets = test_world()

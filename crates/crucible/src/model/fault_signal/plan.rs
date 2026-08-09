@@ -34,6 +34,7 @@ pub const HARD_FAULT_SIGNAL_PLAN_WIRE_BYTES: usize = 256 * 1024 * 1024;
 pub struct FaultSignalPlan {
     programs: Vec<SignalProgram>,
     bindings: Vec<FaultBinding>,
+    resource_limits: FaultResourceLimits,
     id: ContentHash,
     wire_bytes: Vec<u8>,
 }
@@ -48,15 +49,22 @@ impl FaultSignalPlan {
     /// Builds the empty fault layer.
     #[must_use]
     pub fn empty() -> Self {
+        let resource_limits = FaultResourceLimits::default();
+        let material = format!(
+            "{}programs=0\nbindings=0",
+            resource_limits.canonical_material()
+        );
+        let wire_bytes = format!(
+            "{{\"semantic_version\":2,\"resource_limits\":{},\"signal_program\":[],\"fault_binding\":[]}}",
+            resource_limits.canonical_json_object()
+        )
+        .into_bytes();
         Self {
             programs: Vec::new(),
             bindings: Vec::new(),
-            id: ContentHash::from_canonical_material(
-                "crucible.fault-signal-plan.v1",
-                "programs=0\nbindings=0",
-            ),
-            wire_bytes: b"{\"semantic_version\":1,\"signal_program\":[],\"fault_binding\":[]}"
-                .to_vec(),
+            resource_limits,
+            id: ContentHash::from_canonical_material("crucible.fault-signal-plan.v2", &material),
+            wire_bytes,
         }
     }
 
@@ -70,7 +78,14 @@ impl FaultSignalPlan {
     pub fn new(
         mut programs: Vec<SignalProgram>,
         mut bindings: Vec<FaultBinding>,
+        resource_limits: FaultResourceLimits,
     ) -> Result<Self, FaultSignalPlanError> {
+        resource_limits
+            .validate()
+            .map_err(FaultSignalPlanError::ResourceLimit)?;
+        let signal_limits = resource_limits
+            .signal_limits()
+            .map_err(FaultSignalPlanError::ResourceLimit)?;
         programs.sort_by_key(SignalProgram::id);
         if programs.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
             return Err(FaultSignalPlanError::DuplicateProgram);
@@ -87,9 +102,100 @@ impl FaultSignalPlan {
                 hard: HARD_FAULT_BINDING_LIMIT,
             });
         }
+        let binding_count = u64::try_from(bindings.len()).map_err(|_| {
+            FaultSignalPlanError::ResourceLimit(FaultResourceLimitError::UsageOverflow {
+                field: "bindings",
+                current: 0,
+                requested: u64::MAX,
+                configured: resource_limits.bindings,
+                hard: u64::try_from(HARD_FAULT_BINDING_LIMIT).unwrap_or(u64::MAX),
+            })
+        })?;
+        resource_limits
+            .reserve("bindings", 0, binding_count)
+            .map_err(FaultSignalPlanError::ResourceLimit)?;
+        if let Some(program) = programs
+            .iter()
+            .find(|program| program.limits() != signal_limits)
+        {
+            return Err(FaultSignalPlanError::ProgramLimitsMismatch {
+                program: program.id(),
+            });
+        }
         bindings.sort_by(|left, right| left.id().cmp(right.id()));
         if bindings.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
             return Err(FaultSignalPlanError::DuplicateBinding);
+        }
+        let mut active_by_target = BTreeMap::<ResolvedFaultTarget, u64>::new();
+        let mut trace_windows = 0_u64;
+        let mut mapping_points = 0_u64;
+        for binding in &bindings {
+            reserve_usize(
+                resource_limits,
+                "signals_per_binding",
+                0,
+                binding.signals().len(),
+            )?;
+            reserve_usize(
+                resource_limits,
+                "resolved_targets_per_binding",
+                0,
+                binding.selector().resolved().targets().len(),
+            )?;
+            reserve_usize(
+                resource_limits,
+                "search_candidates_per_choice",
+                0,
+                binding.search().candidate_count(),
+            )?;
+            resource_limits
+                .reserve(
+                    "trace_mutation_windows",
+                    trace_windows,
+                    binding.search().trace_mutation_windows(),
+                )
+                .map_err(FaultSignalPlanError::ResourceLimit)?;
+            trace_windows = trace_windows
+                .checked_add(binding.search().trace_mutation_windows())
+                .ok_or_else(|| {
+                    FaultSignalPlanError::ResourceLimit(FaultResourceLimitError::UsageOverflow {
+                        field: "trace_mutation_windows",
+                        current: trace_windows,
+                        requested: binding.search().trace_mutation_windows(),
+                        configured: resource_limits.trace_mutation_windows,
+                        hard: 262_144,
+                    })
+                })?;
+            resource_limits
+                .reserve(
+                    "mapping_mutation_points",
+                    mapping_points,
+                    binding.search().mapping_mutation_points(),
+                )
+                .map_err(FaultSignalPlanError::ResourceLimit)?;
+            mapping_points = mapping_points
+                .checked_add(binding.search().mapping_mutation_points())
+                .ok_or_else(|| {
+                    FaultSignalPlanError::ResourceLimit(FaultResourceLimitError::UsageOverflow {
+                        field: "mapping_mutation_points",
+                        current: mapping_points,
+                        requested: binding.search().mapping_mutation_points(),
+                        configured: resource_limits.mapping_mutation_points,
+                        hard: 262_144,
+                    })
+                })?;
+            if matches!(
+                binding.effect().lifetime(),
+                EffectLifetime::Persistent | EffectLifetime::StateMachine
+            ) {
+                for target in binding.selector().resolved().targets() {
+                    let current = active_by_target.get(target).copied().unwrap_or(0);
+                    resource_limits
+                        .reserve("active_contributions_per_target", current, 1)
+                        .map_err(FaultSignalPlanError::ResourceLimit)?;
+                    active_by_target.insert(target.clone(), current + 1);
+                }
+            }
         }
         let program_ids = programs
             .iter()
@@ -104,7 +210,12 @@ impl FaultSignalPlan {
                 program: binding.program(),
             });
         }
-        let mut material = format!("programs={}\nbindings={}", programs.len(), bindings.len());
+        let mut material = resource_limits.canonical_material();
+        material.push_str(&format!(
+            "programs={}\nbindings={}",
+            programs.len(),
+            bindings.len()
+        ));
         for program in &programs {
             material.push_str("\nprogram=");
             material.push_str(&program.id().to_hex());
@@ -121,7 +232,8 @@ impl FaultSignalPlan {
         let mut plan = Self {
             programs,
             bindings,
-            id: ContentHash::from_canonical_material("crucible.fault-signal-plan.v1", &material),
+            resource_limits,
+            id: ContentHash::from_canonical_material("crucible.fault-signal-plan.v2", &material),
             wire_bytes: Vec::new(),
         };
         plan.wire_bytes = encode_wire_bounded(
@@ -148,6 +260,12 @@ impl FaultSignalPlan {
     #[must_use]
     pub fn bindings(&self) -> &[FaultBinding] {
         &self.bindings
+    }
+
+    /// Returns the complete scenario-owned resource contract.
+    #[must_use]
+    pub const fn resource_limits(&self) -> FaultResourceLimits {
+        self.resource_limits
     }
 
     /// Returns the versioned deterministic persistence bytes.
@@ -270,6 +388,29 @@ impl FaultSignalPlan {
             })
             .collect()
     }
+}
+
+fn reserve_usize(
+    limits: FaultResourceLimits,
+    field: &'static str,
+    current: usize,
+    requested: usize,
+) -> Result<(), FaultSignalPlanError> {
+    let current = u64::try_from(current).map_err(|_| {
+        FaultSignalPlanError::ResourceLimit(FaultResourceLimitError::Representation {
+            field,
+            value: u64::MAX,
+        })
+    })?;
+    let requested = u64::try_from(requested).map_err(|_| {
+        FaultSignalPlanError::ResourceLimit(FaultResourceLimitError::Representation {
+            field,
+            value: u64::MAX,
+        })
+    })?;
+    limits
+        .reserve(field, current, requested)
+        .map_err(FaultSignalPlanError::ResourceLimit)
 }
 
 fn validate_storage_effect_policy_references(
@@ -1994,6 +2135,13 @@ impl Hash for FaultSignalPlan {
 /// Failure to admit a scenario's complete signal-driven fault layer.
 #[derive(Debug)]
 pub enum FaultSignalPlanError {
+    /// The complete plan resource contract is invalid or exceeded.
+    ResourceLimit(FaultResourceLimitError),
+    /// A signal graph was admitted with limits different from its owning plan.
+    ProgramLimitsMismatch {
+        /// Mismatched graph identity.
+        program: ContentHash,
+    },
     /// Program count exceeds the implementation-owned hard ceiling.
     TooManyPrograms {
         /// Submitted count.
@@ -2036,6 +2184,7 @@ impl fmt::Display for FaultSignalPlanError {
 impl Error for FaultSignalPlanError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::ResourceLimit(error) => Some(error),
             Self::BindingCodec(error) => Some(error),
             Self::WireCodec(error) => Some(error),
             Self::Capability(error) => Some(error),

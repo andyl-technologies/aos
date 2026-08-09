@@ -137,7 +137,7 @@ fn event_graph_plan_round_trips_through_toml_and_binary() {
     assert_eq!(
         plan.content_hash(),
         ContentHash::from_canonical_material(
-            "crucible.model.plan.v4",
+            "crucible.model.plan.v5",
             &String::from_utf8(plan.canonical_bytes())
                 .expect("plan canonical bytes should be UTF-8"),
         )
@@ -146,7 +146,7 @@ fn event_graph_plan_round_trips_through_toml_and_binary() {
     let toml = plan
         .to_canonical_toml()
         .expect("graph plan TOML should serialize");
-    assert!(toml.contains("fault_signal_semantic_version = 1"));
+    assert!(toml.contains("fault_signal_semantic_version = 2"));
     assert!(toml.contains("[[event]]"));
     assert!(!toml.contains("[[entry]]"));
 
@@ -209,7 +209,7 @@ fn graph_plan_is_the_scenario_plan_component() {
         .to_canonical_toml()
         .expect("scenario TOML should serialize");
     assert!(scenario_toml.contains("[[plan.event]]"));
-    assert!(scenario_toml.contains("fault_signal_semantic_version = 1"));
+    assert!(scenario_toml.contains("fault_signal_semantic_version = 2"));
     let parsed_toml =
         ScenarioDefForm::from_canonical_toml(&scenario_toml).expect("scenario TOML should parse");
     assert_eq!(parsed_toml, form);

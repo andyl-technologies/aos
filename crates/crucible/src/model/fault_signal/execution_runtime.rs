@@ -734,7 +734,7 @@ mod tests {
             &program,
         )
         .unwrap_or_else(|error| panic!("test binding: {error}"));
-        FaultSignalPlan::new(vec![program], vec![binding])
+        FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
             .unwrap_or_else(|error| panic!("test plan: {error}"))
     }
 

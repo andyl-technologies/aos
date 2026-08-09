@@ -809,6 +809,38 @@ pub enum BindingSearchPolicy {
 }
 
 impl BindingSearchPolicy {
+    /// Returns the largest finite candidate set admitted by this policy.
+    #[must_use]
+    pub fn candidate_count(&self) -> usize {
+        match self {
+            Self::BranchTransition { candidates } => candidates.len(),
+            Self::BranchParameter { candidates, .. } => candidates.len(),
+            Self::MutateMapping { point_indices, .. } => point_indices.len(),
+            Self::Fixed | Self::BranchOutcome { .. } | Self::MutateTraceWindow { .. } => 0,
+        }
+    }
+
+    /// Returns the maximum trace windows retained by this policy.
+    #[must_use]
+    pub const fn trace_mutation_windows(&self) -> u64 {
+        if matches!(self, Self::MutateTraceWindow { .. }) {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Returns the maximum mapping points mutated by this policy.
+    #[must_use]
+    pub const fn mapping_mutation_points(&self) -> u64 {
+        match self {
+            Self::MutateMapping {
+                maximum_mutations, ..
+            } => maximum_mutations.get(),
+            _ => 0,
+        }
+    }
+
     fn validate(
         &mut self,
         mapping: &BindingMapping,

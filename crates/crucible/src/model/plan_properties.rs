@@ -231,7 +231,7 @@ impl Plan {
     fn from_canonical_parts(graph: EventGraph, fault_signals: FaultSignalPlan) -> Self {
         let material = plan_parts_material(&graph, &fault_signals);
         Self {
-            id: ContentHash::from_canonical_material("crucible.model.plan.v4", &material),
+            id: ContentHash::from_canonical_material("crucible.model.plan.v5", &material),
             graph,
             fault_signals,
         }

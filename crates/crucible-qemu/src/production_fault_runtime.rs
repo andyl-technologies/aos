@@ -938,7 +938,7 @@ mod tests {
             &program,
         )
         .unwrap_or_else(|error| panic!("test binding should be valid: {error}"));
-        FaultSignalPlan::new(vec![program], vec![binding])
+        FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
             .unwrap_or_else(|error| panic!("test plan should be valid: {error}"))
     }
 
@@ -1223,8 +1223,9 @@ mod tests {
             &mapping_registry,
         )
         .unwrap_or_else(|error| panic!("test binding should be valid: {error}"));
-        let plan = FaultSignalPlan::new(vec![program], vec![binding])
-            .unwrap_or_else(|error| panic!("test plan should be valid: {error}"));
+        let plan =
+            FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
+                .unwrap_or_else(|error| panic!("test plan should be valid: {error}"));
         let artifacts: Arc<dyn SignalArtifactProvider> = Arc::new(NoArtifacts);
         let mut nodes = QemuNodeSet::new();
         let seed = ContentHash::from_bytes(b"storage-recovery-event-test");

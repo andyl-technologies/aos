@@ -239,8 +239,12 @@ fn down_plan_with_policies(
         &program,
     )
     .unwrap_or_else(|error| panic!("test binding should be valid: {error}"));
-    crucible::model::FaultSignalPlan::new(vec![program], vec![binding])
-        .unwrap_or_else(|error| panic!("test plan should be valid: {error}"))
+    crucible::model::FaultSignalPlan::new(
+        vec![program],
+        vec![binding],
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("test plan should be valid: {error}"))
 }
 
 #[test]

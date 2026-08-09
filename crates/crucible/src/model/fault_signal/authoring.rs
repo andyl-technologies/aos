@@ -27,7 +27,7 @@ pub(crate) struct FaultSignalAuthoringRows {
     /// Exact signal semantic version.
     pub(crate) semantic_version: u16,
     /// One scenario-owned resource declaration for the flat signal graph.
-    pub(crate) resource_limits: SignalResourceLimits,
+    pub(crate) resource_limits: FaultResourceLimits,
     /// Flat signal rows in canonical graph order.
     pub(crate) signals: Vec<toml::Value>,
     /// Flat binding rows in canonical binding-ID order.
@@ -44,12 +44,11 @@ impl FaultSignalAuthoringRows {
     /// programs. Public scenario TOML owns one flat graph; multi-program wire
     /// layouts remain valid only as an internal persistence representation.
     pub(crate) fn from_plan(plan: &FaultSignalPlan) -> Result<Self, FaultSignalAuthoringError> {
-        let (nodes, exports, limits) = match plan.programs() {
-            [] => (Vec::new(), BTreeSet::new(), SignalResourceLimits::default()),
+        let (nodes, exports) = match plan.programs() {
+            [] => (Vec::new(), BTreeSet::new()),
             [program] => (
                 program.nodes().to_vec(),
                 program.exported_outputs().iter().cloned().collect(),
-                program.limits(),
             ),
             programs => {
                 return Err(FaultSignalAuthoringError::MultiplePrograms {
@@ -59,7 +58,7 @@ impl FaultSignalAuthoringRows {
         };
         Ok(Self {
             semantic_version: FAULT_SIGNAL_PLAN_WIRE_VERSION,
-            resource_limits: limits,
+            resource_limits: plan.resource_limits(),
             signals: nodes
                 .iter()
                 .map(|node| signal_to_toml(node, exports.contains(&node.id)))
@@ -89,10 +88,8 @@ impl FaultSignalAuthoringRows {
         validate_authoring_row_bounds(&self.signals, &self.bindings, self.resource_limits)?;
         if self.signals.is_empty() {
             if self.bindings.is_empty() {
-                if self.resource_limits != SignalResourceLimits::default() {
-                    return Err(FaultSignalAuthoringError::NonCanonicalEmptyLimits);
-                }
-                let plan = FaultSignalPlan::empty();
+                let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), self.resource_limits)
+                    .map_err(FaultSignalAuthoringError::Plan)?;
                 plan.validate_for_world(world)?;
                 return Ok(plan);
             }
@@ -114,14 +111,18 @@ impl FaultSignalAuthoringRows {
             .unzip();
         let exports = exports.into_iter().flatten().collect();
         validate_world_signal_references(&nodes, world)?;
-        let program = SignalProgram::new(nodes, exports, self.resource_limits)
+        let signal_limits = self
+            .resource_limits
+            .signal_limits()
+            .map_err(FaultSignalAuthoringError::ResourceLimit)?;
+        let program = SignalProgram::new(nodes, exports, signal_limits)
             .map_err(FaultSignalAuthoringError::Program)?;
         let bindings = self
             .bindings
             .into_iter()
             .map(|row| binding_from_toml(row, &program, world))
             .collect::<Result<Vec<_>, _>>()?;
-        let plan = FaultSignalPlan::new(vec![program], bindings)
+        let plan = FaultSignalPlan::new(vec![program], bindings, self.resource_limits)
             .map_err(FaultSignalAuthoringError::Plan)?;
         plan.validate_for_world(world)?;
         Ok(plan)
@@ -288,9 +289,12 @@ fn validate_adapter_target(
 fn validate_authoring_row_bounds(
     signals: &[toml::Value],
     bindings: &[toml::Value],
-    limits: SignalResourceLimits,
+    limits: FaultResourceLimits,
 ) -> Result<(), FaultSignalAuthoringError> {
-    let signal_limit = usize::try_from(limits.nodes)
+    limits
+        .validate()
+        .map_err(FaultSignalAuthoringError::ResourceLimit)?;
+    let signal_limit = usize::try_from(limits.signal_nodes)
         .unwrap_or(usize::MAX)
         .min(HARD_SIGNAL_NODE_LIMIT as usize);
     if signals.len() > signal_limit {
@@ -300,11 +304,14 @@ fn validate_authoring_row_bounds(
             limit: signal_limit,
         });
     }
-    if bindings.len() > HARD_FAULT_BINDING_LIMIT {
+    let binding_limit = usize::try_from(limits.bindings)
+        .unwrap_or(usize::MAX)
+        .min(HARD_FAULT_BINDING_LIMIT);
+    if bindings.len() > binding_limit {
         return Err(FaultSignalAuthoringError::CollectionLimit {
             field: "fault_binding",
             actual: bindings.len(),
-            limit: HARD_FAULT_BINDING_LIMIT,
+            limit: binding_limit,
         });
     }
     for signal in signals {
@@ -314,7 +321,9 @@ fn validate_authoring_row_bounds(
         check_array_bound(
             row,
             "inputs",
-            usize::from(limits.inputs_per_node).min(usize::from(HARD_SIGNAL_INPUTS_PER_NODE_LIMIT)),
+            usize::try_from(limits.signal_inputs_per_node)
+                .unwrap_or(usize::MAX)
+                .min(usize::from(HARD_SIGNAL_INPUTS_PER_NODE_LIMIT)),
         )?;
         for field in ["points", "events", "entries", "transitions", "states"] {
             check_array_bound(
@@ -330,7 +339,13 @@ fn validate_authoring_row_bounds(
         let row = binding
             .as_table()
             .ok_or(FaultSignalAuthoringError::ExpectedTable("fault binding"))?;
-        check_array_bound(row, "signals", HARD_BINDING_SIGNAL_INPUT_LIMIT)?;
+        check_array_bound(
+            row,
+            "signals",
+            usize::try_from(limits.signals_per_binding)
+                .unwrap_or(usize::MAX)
+                .min(HARD_BINDING_SIGNAL_INPUT_LIMIT),
+        )?;
         for table_field in [
             "selector",
             "mapping",
@@ -348,9 +363,13 @@ fn validate_authoring_row_bounds(
                     "transition",
                 ] {
                     let limit = if matches!(field, "candidates" | "point_indices") {
-                        HARD_SEARCH_CANDIDATE_LIMIT
+                        usize::try_from(limits.search_candidates_per_choice)
+                            .unwrap_or(usize::MAX)
+                            .min(HARD_SEARCH_CANDIDATE_LIMIT)
                     } else {
-                        HARD_BINDING_TARGET_LIMIT
+                        usize::try_from(limits.resolved_targets_per_binding)
+                            .unwrap_or(usize::MAX)
+                            .min(HARD_BINDING_TARGET_LIMIT)
                     };
                     check_array_bound(table, field, limit)?;
                 }

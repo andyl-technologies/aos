@@ -22,8 +22,6 @@ pub(crate) enum FaultSignalAuthoringError {
     },
     /// Bindings were authored without a signal graph.
     BindingsWithoutSignals,
-    /// An empty graph attempted to assign unused non-default resource limits.
-    NonCanonicalEmptyLimits,
     /// A required field was omitted.
     MissingField(&'static str),
     /// A field had the wrong TOML representation.
@@ -153,6 +151,8 @@ pub(crate) enum FaultSignalAuthoringError {
     UnknownSignal(String),
     /// JSON/TOML exact-integer conversion failed.
     Toml(FaultSignalTomlWireError),
+    /// Plan-owned resource validation failed.
+    ResourceLimit(FaultResourceLimitError),
     /// An identity failed its closed grammar.
     Contract(FaultContractError),
     /// Signal graph admission failed.
@@ -176,9 +176,6 @@ impl fmt::Display for FaultSignalAuthoringError {
                 "semantic version {actual} does not match implemented version {expected}"
             ),
             Self::BindingsWithoutSignals => formatter.write_str("bindings require signals"),
-            Self::NonCanonicalEmptyLimits => {
-                formatter.write_str("an empty signal graph requires default resource limits")
-            }
             Self::MissingField(field) => write!(formatter, "missing required field `{field}`"),
             Self::InvalidField(field) => write!(formatter, "invalid field `{field}`"),
             Self::UnexpectedField(field) => write!(formatter, "unexpected field `{field}`"),
@@ -283,6 +280,7 @@ impl fmt::Display for FaultSignalAuthoringError {
             Self::DuplicateSignalId(id) => write!(formatter, "duplicate signal ID `{id}`"),
             Self::UnknownSignal(id) => write!(formatter, "unknown signal ID `{id}`"),
             Self::Toml(error) => error.fmt(formatter),
+            Self::ResourceLimit(error) => error.fmt(formatter),
             Self::Contract(error) => error.fmt(formatter),
             Self::Program(error) => error.fmt(formatter),
             Self::Wire(error) => error.fmt(formatter),
@@ -295,6 +293,7 @@ impl Error for FaultSignalAuthoringError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Toml(error) => Some(error),
+            Self::ResourceLimit(error) => Some(error),
             Self::Contract(error) => Some(error),
             Self::Program(error) => Some(error),
             Self::Wire(error) => Some(error),

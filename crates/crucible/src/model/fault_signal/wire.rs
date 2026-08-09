@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::*;
 
 /// Exact semantic version of the persisted fault-signal plan contract.
-pub(crate) const FAULT_SIGNAL_PLAN_WIRE_VERSION: u16 = 1;
+pub(crate) const FAULT_SIGNAL_PLAN_WIRE_VERSION: u16 = 2;
 
 /// Authored wire form for one complete fault-signal layer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +22,8 @@ pub(crate) const FAULT_SIGNAL_PLAN_WIRE_VERSION: u16 = 1;
 pub(crate) struct FaultSignalPlanWire {
     /// Exact wire semantic version.
     pub(crate) semantic_version: u16,
+    /// Complete scenario-owned resource contract.
+    pub(crate) resource_limits: FaultResourceLimits,
     /// Authored signal programs.
     pub(crate) signal_program: Vec<SignalProgramWire>,
     /// Authored signal-to-effect bindings.
@@ -36,8 +38,6 @@ pub(crate) struct SignalProgramWire {
     pub(crate) node: Vec<SignalNode>,
     /// Explicit exported node identities.
     pub(crate) exported_output: Vec<SignalId>,
-    /// Scenario-owned resource ceilings.
-    pub(crate) limits: SignalResourceLimits,
 }
 
 /// Authored wire form for one validated effect request.
@@ -117,6 +117,7 @@ impl FaultSignalPlanWire {
     pub(crate) fn from_plan(plan: &FaultSignalPlan) -> Self {
         Self {
             semantic_version: FAULT_SIGNAL_PLAN_WIRE_VERSION,
+            resource_limits: plan.resource_limits(),
             signal_program: plan
                 .programs()
                 .iter()
@@ -144,10 +145,14 @@ impl FaultSignalPlanWire {
                 actual: self.semantic_version,
             });
         }
+        let signal_limits = self
+            .resource_limits
+            .signal_limits()
+            .map_err(FaultSignalWireError::ResourceLimit)?;
         let programs = self
             .signal_program
             .into_iter()
-            .map(SignalProgramWire::admit)
+            .map(|program| program.admit(signal_limits))
             .collect::<Result<Vec<_>, _>>()?;
         let by_id = programs
             .iter()
@@ -166,7 +171,8 @@ impl FaultSignalPlanWire {
                 binding.admit(program)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        FaultSignalPlan::new(programs, bindings).map_err(FaultSignalWireError::Plan)
+        FaultSignalPlan::new(programs, bindings, self.resource_limits)
+            .map_err(FaultSignalWireError::Plan)
     }
 }
 
@@ -371,12 +377,11 @@ impl SignalProgramWire {
         Self {
             node: program.nodes().to_vec(),
             exported_output: program.exported_outputs().to_vec(),
-            limits: program.limits(),
         }
     }
 
-    fn admit(self) -> Result<SignalProgram, FaultSignalWireError> {
-        SignalProgram::new(self.node, self.exported_output, self.limits)
+    fn admit(self, limits: SignalResourceLimits) -> Result<SignalProgram, FaultSignalWireError> {
+        SignalProgram::new(self.node, self.exported_output, limits)
             .map_err(FaultSignalWireError::Program)
     }
 }
@@ -572,6 +577,8 @@ pub(crate) enum FaultSignalWireError {
         /// Persisted version.
         actual: u16,
     },
+    /// The plan-owned resource contract failed validation.
+    ResourceLimit(FaultResourceLimitError),
     /// A signal graph failed admission.
     Program(SignalProgramError),
     /// A binding names a signal program absent from the same wire layer.
@@ -646,6 +653,9 @@ impl fmt::Display for FaultSignalWireError {
                 actual.as_str()
             ),
             Self::Program(error) => write!(formatter, "signal program admission failed: {error}"),
+            Self::ResourceLimit(error) => {
+                write!(formatter, "fault resource limit admission failed: {error}")
+            }
             Self::Effect(error) => write!(formatter, "effect admission failed: {error}"),
             Self::Binding(error) => write!(formatter, "fault binding admission failed: {error}"),
             Self::Plan(error) => write!(formatter, "fault signal plan admission failed: {error}"),
@@ -656,6 +666,7 @@ impl fmt::Display for FaultSignalWireError {
 impl Error for FaultSignalWireError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::ResourceLimit(error) => Some(error),
             Self::Program(error) => Some(error),
             Self::Effect(error) => Some(error),
             Self::Binding(error) => Some(error),

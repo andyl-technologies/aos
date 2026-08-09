@@ -10,11 +10,11 @@ schema unless explicitly marked `specification-only`.
 Every scenario using this system declares:
 
 ```toml
-schema = "crucible.scenario.v2"
+schema = "crucible.scenario.v5"
 
 [plan]
 kind = "event_graph"
-fault_model = "signal_bindings_v1"
+fault_model = "signal_bindings_v2"
 seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
 

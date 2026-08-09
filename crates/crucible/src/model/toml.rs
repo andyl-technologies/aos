@@ -27,12 +27,12 @@ pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError>
     Ok(())
 }
 
-pub(super) const SCENARIO_FORM_BINARY_MAGIC_V4: &[u8] = b"crucible.scenario-def-form.v4\0";
-pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V4: &[u8] =
-    b"crucible.reproduction-artifact.v4\0";
+pub(super) const SCENARIO_FORM_BINARY_MAGIC_V5: &[u8] = b"crucible.scenario-def-form.v5\0";
+pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5: &[u8] =
+    b"crucible.reproduction-artifact.v5\0";
 pub(super) const SCHEDULE_BINARY_MAGIC: &[u8] = b"crucible.schedule.v1\0";
 pub(super) const WORLD_BINARY_MAGIC_V4: &[u8] = b"crucible.world.v4\0";
-pub(super) const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v4\0";
+pub(super) const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v5\0";
 pub(super) const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v1\0";
 pub(super) const PREDICATE_BINARY_MAGIC: &[u8] = b"crucible.predicate.v1\0";
 pub(super) const ACTION_BINARY_MAGIC: &[u8] = b"crucible.action.v1\0";
@@ -69,7 +69,7 @@ pub(super) struct ScenarioDefToml {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ScenarioSchemaToml {
-    V4,
+    V5,
 }
 
 impl Serialize for ScenarioSchemaToml {
@@ -77,7 +77,7 @@ impl Serialize for ScenarioSchemaToml {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str("crucible.scenario.v4")
+        serializer.serialize_str("crucible.scenario.v5")
     }
 }
 
@@ -88,14 +88,15 @@ impl<'de> Deserialize<'de> for ScenarioSchemaToml {
     {
         let schema = String::deserialize(deserializer)?;
         match schema.as_str() {
-            "crucible.scenario.v4" => Ok(Self::V4),
-            "crucible.scenario.v1" | "crucible.scenario.v2" | "crucible.scenario.v3" => {
-                Err(de::Error::custom(
-                    "legacy Crucible scenarios are not supported; rewrite the scenario using the signal-driven fault schema `crucible.scenario.v4`",
-                ))
-            }
+            "crucible.scenario.v5" => Ok(Self::V5),
+            "crucible.scenario.v1"
+            | "crucible.scenario.v2"
+            | "crucible.scenario.v3"
+            | "crucible.scenario.v4" => Err(de::Error::custom(
+                "legacy Crucible scenarios are not supported; rewrite the scenario using the exhaustive signal-driven fault schema `crucible.scenario.v5`",
+            )),
             _ => Err(de::Error::custom(format!(
-                "unsupported Crucible scenario schema `{schema}`; expected `crucible.scenario.v4`"
+                "unsupported Crucible scenario schema `{schema}`; expected `crucible.scenario.v5`"
             ))),
         }
     }
@@ -259,7 +260,7 @@ pub(super) struct PlanToml {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) fault_binding: Vec<toml::Value>,
     #[serde(default)]
-    pub(super) resource_limits: SignalResourceLimits,
+    pub(super) resource_limits: FaultResourceLimits,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) event: Vec<EventToml>,
 }
@@ -267,7 +268,7 @@ pub(super) struct PlanToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum FaultModelToml {
-    SignalBindingsV1,
+    SignalBindingsV2,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -642,7 +643,7 @@ pub(super) fn scenario_form_to_toml(
     form: &ScenarioDefForm,
 ) -> Result<ScenarioDefToml, EngineError> {
     Ok(ScenarioDefToml {
-        schema: ScenarioSchemaToml::V4,
+        schema: ScenarioSchemaToml::V5,
         scenario: ScenarioHeaderToml {
             id: format_content_hash_ref(form.id()),
             seed: format_seed_ref(form.seed),
@@ -975,7 +976,7 @@ pub(super) fn plan_to_toml(plan: &Plan) -> Result<PlanToml, EngineError> {
         .map_err(|error| scenario_serialization_error(error.to_string()))?;
     Ok(PlanToml {
         id: format_content_hash_ref(plan.content_hash()),
-        fault_model: FaultModelToml::SignalBindingsV1,
+        fault_model: FaultModelToml::SignalBindingsV2,
         fault_signal_semantic_version: fault_signals.semantic_version,
         signal: fault_signals.signals,
         fault_binding: fault_signals.bindings,
