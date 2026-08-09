@@ -15,11 +15,11 @@
 
   # GCC 8's AArch64 cc1 deterministically crashes in the
   # printf-return-value pass while compiling opcodes/aarch64-opc.c at -O2.
-  # Keep the rest of the normal optimization pipeline while omitting that one
-  # transformation for this old native compiler/assembler pairing.
+  # Its gate also considers the format overflow and truncation warnings, so
+  # disable all three gate inputs while preserving every unrelated -O2 pass.
   optimizationFlags =
     if hostPlatform.config == "aarch64-unknown-linux-gnu"
-    then "-O2 -fno-printf-return-value"
+    then "-O2 -fno-printf-return-value -Wno-format-overflow -Wno-format-truncation"
     else "-O2";
 in
   builtins.derivation {
