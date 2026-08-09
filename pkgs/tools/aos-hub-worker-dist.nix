@@ -343,6 +343,11 @@ in
             ${aos-hub-console-dist}/hub-console_bg.wasm \
             ${aos-hub-console-dist}/hub-console.css \
             > "$TMPDIR/hub-console-version-input"
+          # The generated bootstrap is immutable under the same content key.
+          # Include its API contract revision so template-only changes cannot
+          # leave browsers pinned to an older initializer.
+          printf 'bootstrap-api=object-v1\n' \
+            >> "$TMPDIR/hub-console-version-input"
           sha256sum "$TMPDIR/hub-console-version-input" \
             > "$TMPDIR/hub-console-version-hash"
           cut -c1-8 "$TMPDIR/hub-console-version-hash" \
