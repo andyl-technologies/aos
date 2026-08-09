@@ -15,11 +15,11 @@
 
   # GCC 8's AArch64 cc1 deterministically crashes in the
   # printf-return-value pass while compiling opcodes/aarch64-opc.c at -O2.
-  # This tier exists to bootstrap newer tools, so prefer the stable -O1 path
-  # for this old native compiler/assembler pairing.
+  # Keep the rest of the normal optimization pipeline while omitting that one
+  # transformation for this old native compiler/assembler pairing.
   optimizationFlags =
     if hostPlatform.config == "aarch64-unknown-linux-gnu"
-    then "-O1"
+    then "-O2 -fno-printf-return-value"
     else "-O2";
 in
   builtins.derivation {
