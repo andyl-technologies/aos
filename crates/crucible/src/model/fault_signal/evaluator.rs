@@ -24,8 +24,6 @@ pub(super) use math::*;
 pub const HARD_SIGNAL_EVENT_BYTES: usize = HARD_TRACE_VALUE_BYTES;
 /// Hard maximum retained history entries across one evaluator.
 pub const HARD_SIGNAL_HISTORY_ENTRIES: usize = 4_194_304;
-/// Hard maximum bytes in one evaluator checkpoint.
-pub const HARD_SIGNAL_EVALUATOR_CHECKPOINT_BYTES: usize = 268_435_456;
 /// Maximum serialized bytes retained for one signal node.
 pub const HARD_SIGNAL_NODE_RUNTIME_BYTES: usize = 16_777_216;
 /// Hard maximum delayed telemetry fields or pending emitted events.
@@ -33,7 +31,7 @@ pub const HARD_SIGNAL_BOUNDARY_ITEMS: usize = 262_144;
 const EVALUATOR_CHECKPOINT_MAGIC: &[u8; 8] = b"CREVAL01";
 
 /// Immutable canonical evaluator checkpoint bytes and content identity.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SignalEvaluatorCheckpoint {
     bytes: Vec<u8>,
     content: ContentHash,
@@ -51,12 +49,13 @@ impl SignalEvaluatorCheckpoint {
         bytes: Vec<u8>,
         program: &SignalProgram,
         artifacts: &dyn SignalArtifactProvider,
+        resource_limits: FaultResourceLimits,
     ) -> Result<Self, SignalEvaluationError> {
         let checkpoint = Self {
             content: ContentHash::from_bytes(&bytes),
             bytes,
         };
-        let _ = SignalEvaluator::restore(program, artifacts, &checkpoint)?;
+        let _ = SignalEvaluator::restore(program, artifacts, &checkpoint, resource_limits)?;
         Ok(checkpoint)
     }
 
@@ -82,10 +81,18 @@ impl SignalEvaluatorCheckpoint {
     pub fn validate_for_program(
         &self,
         program: &SignalProgram,
+        resource_limits: FaultResourceLimits,
     ) -> Result<(), SignalEvaluationError> {
-        if self.bytes.len() > HARD_SIGNAL_EVALUATOR_CHECKPOINT_BYTES
-            || ContentHash::from_bytes(&self.bytes) != self.content
-        {
+        let bytes = u64::try_from(self.bytes.len()).map_err(|_| {
+            SignalEvaluationError::PlanResourceLimit(FaultResourceLimitError::Representation {
+                field: "fat_checkpoint_bytes",
+                value: u64::MAX,
+            })
+        })?;
+        resource_limits
+            .reserve("fat_checkpoint_bytes", 0, bytes)
+            .map_err(SignalEvaluationError::PlanResourceLimit)?;
+        if ContentHash::from_bytes(&self.bytes) != self.content {
             return Err(SignalEvaluationError::CheckpointContentMismatch);
         }
         let mut reader = EvaluatorReader::new(&self.bytes);
@@ -162,7 +169,7 @@ pub struct SignalBoundarySnapshot {
 }
 
 /// One side-band event emitted by a stateful node transition.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct StatefulSignalEvent {
     /// Emitting node.
     pub node: SignalId,
@@ -206,6 +213,7 @@ pub trait SignalArtifactProvider: Send + Sync {
         same_coordinate_sequence: u64,
         choice: &SignalChoiceContext,
         inputs: &[EvaluatedSignal],
+        resource_limits: FaultResourceLimits,
     ) -> Result<EvaluatedSignal, SignalEvaluationError>;
 }
 
@@ -249,6 +257,7 @@ impl SignalArtifactProvider for DagSignalArtifactProvider<'_> {
         same_coordinate_sequence: u64,
         choice: &SignalChoiceContext,
         inputs: &[EvaluatedSignal],
+        resource_limits: FaultResourceLimits,
     ) -> Result<EvaluatedSignal, SignalEvaluationError> {
         match source {
             SignalSourceSpecification::Trace {
@@ -276,6 +285,7 @@ impl SignalArtifactProvider for DagSignalArtifactProvider<'_> {
                 time_mapping.as_ref(),
                 coordinate,
                 same_coordinate_sequence,
+                resource_limits,
             ),
             SignalSourceSpecification::SeededField {
                 field_seed_domain,
@@ -343,6 +353,7 @@ impl SignalArtifactProvider for OwnedDagSignalArtifactProvider {
         same_coordinate_sequence: u64,
         choice: &SignalChoiceContext,
         inputs: &[EvaluatedSignal],
+        resource_limits: FaultResourceLimits,
     ) -> Result<EvaluatedSignal, SignalEvaluationError> {
         DagSignalArtifactProvider::new(self.store.as_ref()).evaluate_artifact_source(
             node,
@@ -351,6 +362,7 @@ impl SignalArtifactProvider for OwnedDagSignalArtifactProvider {
             same_coordinate_sequence,
             choice,
             inputs,
+            resource_limits,
         )
     }
 }
@@ -382,9 +394,13 @@ impl DagSignalArtifactProvider<'_> {
         mapping: Option<&TraceTimeMapping>,
         coordinate: &SignalCoordinate,
         same_coordinate_sequence: u64,
+        resource_limits: FaultResourceLimits,
     ) -> Result<EvaluatedSignal, SignalEvaluationError> {
-        let manifest = SignalTraceManifest::decode(&self.get(&artifact)?)
-            .map_err(SignalEvaluationError::Trace)?;
+        let chunk_limit = usize::try_from(resource_limits.trace_chunks_total)
+            .map_err(|_| SignalEvaluationError::ResourceLimit)?;
+        let manifest =
+            SignalTraceManifest::decode_with_chunk_limit(&self.get(&artifact)?, chunk_limit)
+                .map_err(SignalEvaluationError::Trace)?;
         if manifest.content != artifact
             || manifest.provenance.raw_content != Some(raw_provenance)
             || !self
@@ -911,6 +927,7 @@ fn numeric_as_i128(value: &SignalValue) -> Result<i128, SignalEvaluationError> {
 pub struct SignalEvaluator<'a> {
     program: &'a SignalProgram,
     artifacts: &'a dyn SignalArtifactProvider,
+    resource_limits: FaultResourceLimits,
     boundary: SignalBoundarySnapshot,
     state: BTreeMap<SignalId, EvaluatorNodeState>,
     state_coordinates: BTreeMap<SignalId, (SignalCoordinate, u64)>,
@@ -982,7 +999,11 @@ impl<'a> SignalEvaluator<'a> {
         program: &'a SignalProgram,
         artifacts: &'a dyn SignalArtifactProvider,
         boundary: SignalBoundarySnapshot,
+        resource_limits: FaultResourceLimits,
     ) -> Result<Self, SignalEvaluationError> {
+        resource_limits
+            .validate()
+            .map_err(SignalEvaluationError::PlanResourceLimit)?;
         if boundary.telemetry.len() > HARD_SIGNAL_BOUNDARY_ITEMS {
             return Err(SignalEvaluationError::ResourceLimit);
         }
@@ -1017,6 +1038,7 @@ impl<'a> SignalEvaluator<'a> {
         Ok(Self {
             program,
             artifacts,
+            resource_limits,
             boundary,
             state,
             state_coordinates: BTreeMap::new(),
@@ -1125,9 +1147,15 @@ impl<'a> SignalEvaluator<'a> {
             writer.coordinate(&event.coordinate)?;
             writer.u64(event.same_coordinate_sequence);
         }
-        if writer.bytes.len() > HARD_SIGNAL_EVALUATOR_CHECKPOINT_BYTES {
-            return Err(SignalEvaluationError::CheckpointLimit);
-        }
+        let checkpoint_bytes = u64::try_from(writer.bytes.len()).map_err(|_| {
+            SignalEvaluationError::PlanResourceLimit(FaultResourceLimitError::Representation {
+                field: "fat_checkpoint_bytes",
+                value: u64::MAX,
+            })
+        })?;
+        self.resource_limits
+            .reserve("fat_checkpoint_bytes", 0, checkpoint_bytes)
+            .map_err(SignalEvaluationError::PlanResourceLimit)?;
         let content = ContentHash::from_bytes(&writer.bytes);
         Ok(SignalEvaluatorCheckpoint {
             bytes: writer.bytes,
@@ -1146,13 +1174,10 @@ impl<'a> SignalEvaluator<'a> {
         program: &'a SignalProgram,
         artifacts: &'a dyn SignalArtifactProvider,
         checkpoint: &SignalEvaluatorCheckpoint,
+        resource_limits: FaultResourceLimits,
     ) -> Result<Self, SignalEvaluationError> {
-        if checkpoint.bytes.len() > HARD_SIGNAL_EVALUATOR_CHECKPOINT_BYTES
-            || ContentHash::from_bytes(&checkpoint.bytes) != checkpoint.content
-        {
-            return Err(SignalEvaluationError::CheckpointContentMismatch);
-        }
-        decode_evaluator_checkpoint(program, artifacts, checkpoint)
+        checkpoint.validate_for_program(program, resource_limits)?;
+        decode_evaluator_checkpoint(program, artifacts, checkpoint, resource_limits)
     }
 
     /// Evaluates one exported output at one explicit coordinate.
@@ -1505,6 +1530,7 @@ impl<'a> SignalEvaluator<'a> {
                     request.same_coordinate_sequence,
                     &request.choice,
                     inputs,
+                    self.resource_limits,
                 )
             }
         }
@@ -1693,6 +1719,7 @@ impl<'a> SignalEvaluator<'a> {
                 .get_mut(&node.id)
                 .ok_or_else(|| SignalEvaluationError::MissingState(node.id.clone()))?,
             &mut self.emitted_events,
+            self.resource_limits,
         )?;
         self.state_coordinates.insert(node.id.clone(), current);
         Ok(output)
@@ -1808,6 +1835,8 @@ pub enum SignalEvaluationError {
     NonDeterministicRepeat,
     /// A compiled evaluator resource ceiling was exceeded.
     ResourceLimit,
+    /// A scenario-owned evaluator resource reservation was rejected.
+    PlanResourceLimit(FaultResourceLimitError),
     /// A stateful operator needed more authored catch-up steps than permitted.
     CatchUpLimitExceeded {
         /// Number of cadence transitions required at this evaluation.
@@ -1933,6 +1962,7 @@ impl Error for SignalEvaluationError {
             Self::Trace(error) => Some(error),
             Self::Sampler(error) => Some(error),
             Self::SpatialArtifact(error) => Some(error),
+            Self::PlanResourceLimit(error) => Some(error),
             _ => None,
         }
     }

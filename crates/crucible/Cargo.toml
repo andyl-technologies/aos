@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 blake3 = { workspace = true }
+ciborium = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
 crucible-device = { path = "../crucible-device" }
 crucible-shmem = { path = "../crucible-shmem", optional = true }

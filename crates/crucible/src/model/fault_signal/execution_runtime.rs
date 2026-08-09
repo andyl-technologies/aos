@@ -14,12 +14,15 @@ use super::*;
 
 /// The complete live signal-driven fault engine for one non-empty plan.
 pub struct FaultExecutionRuntime<'a> {
+    fault_plan: ContentHash,
+    resource_limits: FaultResourceLimits,
     program: &'a SignalProgram,
     bindings: Vec<FaultBinding>,
     scenario_seed: ContentHash,
     binding_runtime: FaultBindingRuntime<'a>,
     adapters: TransactionalFaultAdapters,
     replay: Option<ResolvedEffectTrace>,
+    recorded_work_items: Vec<ResolvedReplayWorkItem>,
     retained_effects: BTreeSet<ContentHash>,
     branch_parent: Option<ContentHash>,
 }
@@ -40,6 +43,7 @@ impl<'a> FaultExecutionRuntime<'a> {
         manifests: FaultAdapterManifests,
     ) -> Result<Self, FaultExecutionError> {
         let program = sole_program(plan)?;
+        let resource_limits = plan.resource_limits();
         admit_manifests(plan.bindings(), &manifests)?;
         let bindings = plan.bindings().to_vec();
         let binding_runtime = FaultBindingRuntime::new(
@@ -48,15 +52,19 @@ impl<'a> FaultExecutionRuntime<'a> {
             artifacts,
             boundary,
             scenario_seed,
+            resource_limits,
         )?;
-        let adapters = TransactionalFaultAdapters::new(manifests)?;
+        let adapters = TransactionalFaultAdapters::new(manifests, resource_limits)?;
         Ok(Self {
+            fault_plan: plan.id(),
+            resource_limits,
             program,
             bindings,
             scenario_seed,
             binding_runtime,
             adapters,
             replay: None,
+            recorded_work_items: Vec::new(),
             retained_effects: BTreeSet::new(),
             branch_parent: None,
         })
@@ -76,7 +84,7 @@ impl<'a> FaultExecutionRuntime<'a> {
         checkpoint: &FaultRuntimeCheckpoint,
     ) -> Result<Self, FaultExecutionError> {
         let program = sole_program(plan)?;
-        checkpoint.validate(program, plan.bindings(), scenario_seed)?;
+        checkpoint.validate(plan, scenario_seed)?;
         if checkpoint.poisoned {
             return Err(FaultExecutionError::Poisoned);
         }
@@ -87,17 +95,25 @@ impl<'a> FaultExecutionRuntime<'a> {
             bindings.clone(),
             artifacts,
             scenario_seed,
+            plan.resource_limits(),
             &checkpoint.binding_runtime,
         )?;
-        let adapters = TransactionalFaultAdapters::restore(manifests, checkpoint.adapters.clone())?;
+        let adapters = TransactionalFaultAdapters::restore(
+            manifests,
+            checkpoint.adapters.clone(),
+            plan.resource_limits(),
+        )?;
         validate_contribution_mirror(binding_runtime.active(), &adapters)?;
         Ok(Self {
+            fault_plan: plan.id(),
+            resource_limits: plan.resource_limits(),
             program,
             bindings,
             scenario_seed,
             binding_runtime,
             adapters,
             replay: checkpoint.replay.clone(),
+            recorded_work_items: checkpoint.recorded_work_items.clone(),
             retained_effects: checkpoint.retained_effects.clone(),
             branch_parent: checkpoint.branch_parent,
         })
@@ -114,10 +130,12 @@ impl<'a> FaultExecutionRuntime<'a> {
         coordinate: FaultCoordinate,
         same_coordinate_sequence: u64,
     ) -> Result<BindingEvaluation, FaultExecutionError> {
-        Ok(self.binding_runtime.evaluate_boundary(
+        Ok(self.binding_runtime.evaluate_boundary_traced(
             coordinate,
             same_coordinate_sequence,
             &mut self.adapters,
+            self.replay.as_mut(),
+            &mut self.recorded_work_items,
         )?)
     }
 
@@ -131,7 +149,7 @@ impl<'a> FaultExecutionRuntime<'a> {
     ///
     /// Returns [`FaultExecutionError`] if evaluation fails, either participant
     /// rejects the batch, their action identities differ, or rollback fails.
-    pub fn evaluate_boundary_with_backend<B>(
+    pub(crate) fn evaluate_boundary_with_backend<B>(
         &mut self,
         coordinate: FaultCoordinate,
         same_coordinate_sequence: u64,
@@ -141,10 +159,12 @@ impl<'a> FaultExecutionRuntime<'a> {
         B: FaultActionSink,
     {
         let mut sink = MirroredFaultActionSink::new(&mut self.adapters, backend);
-        Ok(self.binding_runtime.evaluate_boundary(
+        Ok(self.binding_runtime.evaluate_boundary_traced(
             coordinate,
             same_coordinate_sequence,
             &mut sink,
+            self.replay.as_mut(),
+            &mut self.recorded_work_items,
         )?)
     }
 
@@ -159,10 +179,12 @@ impl<'a> FaultExecutionRuntime<'a> {
         opportunity: &FaultOpportunity,
         same_coordinate_sequence: u64,
     ) -> Result<BindingEvaluation, FaultExecutionError> {
-        Ok(self.binding_runtime.evaluate_opportunity(
+        Ok(self.binding_runtime.evaluate_opportunity_traced(
             opportunity,
             same_coordinate_sequence,
             &mut self.adapters,
+            self.replay.as_mut(),
+            &mut self.recorded_work_items,
         )?)
     }
 
@@ -173,7 +195,7 @@ impl<'a> FaultExecutionRuntime<'a> {
     /// Returns [`FaultExecutionError`] under the same conditions as
     /// [`Self::evaluate_boundary_with_backend`], plus invalid opportunity
     /// identity, target, or phase.
-    pub fn evaluate_opportunity_with_backend<B>(
+    pub(crate) fn evaluate_opportunity_with_backend<B>(
         &mut self,
         opportunity: &FaultOpportunity,
         same_coordinate_sequence: u64,
@@ -183,11 +205,104 @@ impl<'a> FaultExecutionRuntime<'a> {
         B: FaultActionSink,
     {
         let mut sink = MirroredFaultActionSink::new(&mut self.adapters, backend);
-        Ok(self.binding_runtime.evaluate_opportunity(
+        Ok(self.binding_runtime.evaluate_opportunity_traced(
             opportunity,
             same_coordinate_sequence,
             &mut sink,
+            self.replay.as_mut(),
+            &mut self.recorded_work_items,
         )?)
+    }
+
+    fn preview_boundary(
+        &mut self,
+        coordinate: FaultCoordinate,
+        same_coordinate_sequence: u64,
+    ) -> Result<BindingEvaluation, FaultExecutionError> {
+        Ok(self.binding_runtime.preview_boundary_traced(
+            coordinate,
+            same_coordinate_sequence,
+            &mut self.adapters,
+            self.replay.as_mut(),
+        )?)
+    }
+
+    fn preview_opportunity(
+        &mut self,
+        opportunity: &FaultOpportunity,
+        same_coordinate_sequence: u64,
+    ) -> Result<BindingEvaluation, FaultExecutionError> {
+        Ok(self.binding_runtime.preview_opportunity_traced(
+            opportunity,
+            same_coordinate_sequence,
+            &mut self.adapters,
+            self.replay.as_mut(),
+        )?)
+    }
+
+    /// Installs an unconsumed authoritative replay trace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when the trace is malformed, oversized,
+    /// already consumed, or incompatible with outcome-only network replay.
+    pub fn install_replay(
+        &mut self,
+        trace: ResolvedEffectTrace,
+    ) -> Result<(), FaultExecutionError> {
+        trace.validate(self.resource_limits)?;
+        if trace.cursor != 0 {
+            return Err(FaultRuntimeError::InvalidReplayTrace.into());
+        }
+        let previous = self.replay.replace(trace);
+        if let Err(error) = self.checkpoint() {
+            self.replay = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Requires the installed replay trace to be completely consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when no replay is installed or records remain.
+    pub fn verify_replay_exhausted(&self) -> Result<(), FaultExecutionError> {
+        self.replay
+            .as_ref()
+            .ok_or(FaultRuntimeError::InvalidReplayTrace)?
+            .require_exhausted()
+            .map_err(FaultExecutionError::from)
+    }
+
+    /// Returns every committed effect as a fresh replay trace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] if the retained recording violates the
+    /// selected replay mode or the plan's resolved-record limit.
+    pub fn recorded_trace(
+        &self,
+        mode: FaultReplayMode,
+    ) -> Result<ResolvedEffectTrace, FaultExecutionError> {
+        let work_items = match mode {
+            FaultReplayMode::OutcomeOnlyNetwork(_) => self
+                .recorded_work_items
+                .iter()
+                .filter(|item| item.network_frame_key.is_some())
+                .cloned()
+                .collect(),
+            FaultReplayMode::RecomputedCause | FaultReplayMode::LockedEffect => {
+                self.recorded_work_items.clone()
+            }
+        };
+        let trace = ResolvedEffectTrace {
+            mode,
+            work_items,
+            cursor: 0,
+        };
+        trace.validate(self.resource_limits)?;
+        Ok(trace)
     }
 
     /// Replaces one-boundary-delayed production telemetry.
@@ -217,15 +332,20 @@ impl<'a> FaultExecutionRuntime<'a> {
     /// Returns [`FaultExecutionError`] if canonical state cannot be encoded or
     /// if a transaction is still in flight.
     pub fn checkpoint(&self) -> Result<FaultRuntimeCheckpoint, FaultExecutionError> {
-        Ok(FaultRuntimeCheckpoint {
+        let checkpoint = FaultRuntimeCheckpoint {
             semantic_version: FAULT_RUNTIME_STATE_VERSION,
+            fault_plan: self.fault_plan,
+            resource_limits: self.resource_limits,
             binding_runtime: self.binding_runtime.checkpoint()?,
             adapters: self.adapters.checkpoints()?,
             replay: self.replay.clone(),
+            recorded_work_items: self.recorded_work_items.clone(),
             retained_effects: self.retained_effects.clone(),
             branch_parent: self.branch_parent,
             poisoned: false,
-        })
+        };
+        let _ = checkpoint.canonical_bytes()?;
+        Ok(checkpoint)
     }
 
     /// Returns the exact program identity owned by this continuation.
@@ -308,8 +428,7 @@ impl OwnedFaultExecutionRuntime {
         checkpoint: FaultRuntimeCheckpoint,
     ) -> Result<Self, FaultExecutionError> {
         if checkpoint.poisoned {
-            let program = sole_program(&plan)?;
-            checkpoint.validate(program, plan.bindings(), scenario_seed)?;
+            checkpoint.validate(&plan, scenario_seed)?;
             admit_manifests(plan.bindings(), &manifests)?;
             return Ok(Self {
                 plan,
@@ -354,6 +473,7 @@ impl OwnedFaultExecutionRuntime {
     where
         B: FaultActionSink,
     {
+        self.preflight_checkpoint_capacity(coordinate, same_coordinate_sequence, None)?;
         let mut runtime = FaultExecutionRuntime::restore(
             &self.plan,
             self.artifacts.as_ref(),
@@ -383,6 +503,28 @@ impl OwnedFaultExecutionRuntime {
         };
         self.checkpoint = checkpoint;
         Ok(evaluation)
+    }
+
+    /// Evaluates one boundary against the canonical production adapter ledger
+    /// without changing this continuation or an external backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when the current checkpoint cannot be
+    /// restored or the deterministic evaluation is rejected.
+    pub fn preview_boundary(
+        &self,
+        coordinate: FaultCoordinate,
+        same_coordinate_sequence: u64,
+    ) -> Result<BindingEvaluation, FaultExecutionError> {
+        let mut runtime = FaultExecutionRuntime::restore(
+            &self.plan,
+            self.artifacts.as_ref(),
+            self.scenario_seed,
+            self.manifests.clone(),
+            &self.checkpoint,
+        )?;
+        runtime.preview_boundary(coordinate, same_coordinate_sequence)
     }
 
     /// Replaces the one-boundary-delayed production telemetry snapshot.
@@ -423,6 +565,11 @@ impl OwnedFaultExecutionRuntime {
     where
         B: FaultActionSink,
     {
+        self.preflight_checkpoint_capacity(
+            opportunity.coordinate(),
+            same_coordinate_sequence,
+            Some(opportunity),
+        )?;
         let mut runtime = FaultExecutionRuntime::restore(
             &self.plan,
             self.artifacts.as_ref(),
@@ -454,10 +601,147 @@ impl OwnedFaultExecutionRuntime {
         Ok(evaluation)
     }
 
+    fn preflight_checkpoint_capacity(
+        &self,
+        coordinate: FaultCoordinate,
+        same_coordinate_sequence: u64,
+        opportunity: Option<&FaultOpportunity>,
+    ) -> Result<(), FaultExecutionError> {
+        let mut runtime = FaultExecutionRuntime::restore(
+            &self.plan,
+            self.artifacts.as_ref(),
+            self.scenario_seed,
+            self.manifests.clone(),
+            &self.checkpoint,
+        )?;
+        let evaluation = match opportunity {
+            Some(opportunity) => {
+                runtime.preview_opportunity(opportunity, same_coordinate_sequence)?
+            }
+            None => runtime.preview_boundary(coordinate, same_coordinate_sequence)?,
+        };
+        let mut candidate = runtime.checkpoint()?;
+        let derivation = ContentHash::from_bytes(b"checkpoint-capacity-preflight-derivation");
+        let precondition = ContentHash::from_bytes(b"checkpoint-capacity-preflight-before");
+        let evidence = ContentHash::from_bytes(b"checkpoint-capacity-preflight-evidence");
+        let mut records = Vec::with_capacity(evaluation.actions.len());
+        for action in &evaluation.actions {
+            records.push(
+                ResolvedEffectRecord::from_committed_action(
+                    action,
+                    opportunity,
+                    same_coordinate_sequence,
+                    derivation,
+                    Some(precondition),
+                    evidence,
+                )
+                .map_err(FaultRuntimeError::Contract)?,
+            );
+        }
+        candidate
+            .recorded_work_items
+            .push(ResolvedReplayWorkItem::new(
+                coordinate,
+                same_coordinate_sequence,
+                opportunity,
+                derivation,
+                records,
+            )?);
+        let _ = candidate.canonical_bytes()?;
+        Ok(())
+    }
+
+    /// Evaluates one opportunity against the canonical production adapter
+    /// ledger without changing this continuation or an external backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when the current checkpoint cannot be
+    /// restored or the deterministic evaluation is rejected.
+    pub fn preview_opportunity(
+        &self,
+        opportunity: &FaultOpportunity,
+        same_coordinate_sequence: u64,
+    ) -> Result<BindingEvaluation, FaultExecutionError> {
+        let mut runtime = FaultExecutionRuntime::restore(
+            &self.plan,
+            self.artifacts.as_ref(),
+            self.scenario_seed,
+            self.manifests.clone(),
+            &self.checkpoint,
+        )?;
+        runtime.preview_opportunity(opportunity, same_coordinate_sequence)
+    }
+
     /// Returns the current authenticated continuation.
     #[must_use]
     pub const fn checkpoint(&self) -> &FaultRuntimeCheckpoint {
         &self.checkpoint
+    }
+
+    /// Installs a fresh authoritative replay trace into this continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when the trace is invalid or the updated
+    /// complete checkpoint exceeds its resource contract.
+    pub fn install_replay(
+        &mut self,
+        trace: ResolvedEffectTrace,
+    ) -> Result<(), FaultExecutionError> {
+        trace.validate(self.plan.resource_limits())?;
+        if trace.cursor != 0 {
+            return Err(FaultRuntimeError::InvalidReplayTrace.into());
+        }
+        let mut candidate = self.checkpoint.clone();
+        candidate.replay = Some(trace);
+        let _ = candidate.canonical_bytes()?;
+        self.checkpoint = candidate;
+        Ok(())
+    }
+
+    /// Requires all installed replay records to have been consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when no trace is installed or records remain.
+    pub fn verify_replay_exhausted(&self) -> Result<(), FaultExecutionError> {
+        self.checkpoint
+            .replay
+            .as_ref()
+            .ok_or(FaultRuntimeError::InvalidReplayTrace)?
+            .require_exhausted()
+            .map_err(FaultExecutionError::from)
+    }
+
+    /// Returns all committed effects as an unconsumed replay trace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when the selected mode rejects a record.
+    pub fn recorded_trace(
+        &self,
+        mode: FaultReplayMode,
+    ) -> Result<ResolvedEffectTrace, FaultExecutionError> {
+        let work_items = match mode {
+            FaultReplayMode::OutcomeOnlyNetwork(_) => self
+                .checkpoint
+                .recorded_work_items
+                .iter()
+                .filter(|item| item.network_frame_key.is_some())
+                .cloned()
+                .collect(),
+            FaultReplayMode::RecomputedCause | FaultReplayMode::LockedEffect => {
+                self.checkpoint.recorded_work_items.clone()
+            }
+        };
+        let trace = ResolvedEffectTrace {
+            mode,
+            work_items,
+            cursor: 0,
+        };
+        trace.validate(self.plan.resource_limits())?;
+        Ok(trace)
     }
 
     /// Returns whether backend visibility became ambiguous and execution ended.
@@ -637,6 +921,7 @@ mod tests {
             _same_coordinate_sequence: u64,
             _choice: &SignalChoiceContext,
             _inputs: &[EvaluatedSignal],
+            _resource_limits: FaultResourceLimits,
         ) -> Result<EvaluatedSignal, SignalEvaluationError> {
             Err(SignalEvaluationError::ArtifactSourceRequired(
                 node.id.clone(),
@@ -738,6 +1023,112 @@ mod tests {
             .unwrap_or_else(|error| panic!("test plan: {error}"))
     }
 
+    fn network_outcome_plan() -> FaultSignalPlan {
+        let output = signal_id("frame-effect");
+        let program = SignalProgram::new(
+            vec![SignalNode {
+                id: output.clone(),
+                domain: SignalDomain::VirtualTime,
+                output: SignalShape::new(
+                    SignalValueType::ProbabilityMillionths,
+                    SignalUnit::ProbabilityMillionths,
+                    0,
+                )
+                .unwrap_or_else(|error| panic!("test shape: {error}")),
+                inputs: Vec::new(),
+                kind: SignalNodeKind::Constant {
+                    value: SignalValue::ProbabilityMillionths(1_000_000),
+                },
+            }],
+            vec![output.clone()],
+            SignalResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("test program: {error}"));
+        let targets = ResolvedTargetSet::new(
+            vec![ResolvedFaultTarget::NetworkSegment {
+                segment: object_id("segment-a"),
+                direction: FaultDirection::AToB,
+            }],
+            false,
+        )
+        .unwrap_or_else(|error| panic!("test targets: {error}"));
+        let effect = EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Opportunity,
+            EffectSpecification::Network(NetworkEffectSpecification::Jitter {
+                maximum_nanos: PositiveU64::new("maximum_nanos", 5)
+                    .unwrap_or_else(|error| panic!("test jitter: {error}")),
+                distribution: NetworkDistribution::Uniform,
+                distribution_lookup: None,
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test effect: {error}"));
+        let binding = FaultBinding::new(
+            object_id("frame-delay"),
+            vec![output],
+            BindingSampling::AtOpportunity,
+            BindingMapping::Hazard,
+            TargetSelector::Exact(targets),
+            BTreeSet::from([FaultPhase::Resolve]),
+            effect,
+            Some(OpportunityFilter {
+                adapter: FaultAdapter::Network,
+                operations: OperationSet::new(vec![FaultOperation::NetworkTraverse])
+                    .unwrap_or_else(|error| panic!("test operation filter: {error}")),
+                phases: BTreeSet::from([FaultPhase::Resolve]),
+                target_kinds: BTreeSet::from([FaultTargetKind::NetworkSegment]),
+            }),
+            BindingSearchPolicy::Fixed,
+            BindingObservabilityPolicy {
+                samples: SampleObservation::ChangesAndEffects,
+                record_inactive_opportunities: false,
+                retain_mapped_values: true,
+            },
+            &program,
+        )
+        .unwrap_or_else(|error| panic!("test binding: {error}"));
+        FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
+            .unwrap_or_else(|error| panic!("test plan: {error}"))
+    }
+
+    fn frame_opportunity(coordinate: FaultCoordinate, producer_sequence: u64) -> FaultOpportunity {
+        frame_opportunity_with_operation(
+            coordinate,
+            producer_sequence,
+            FaultOperation::NetworkTraverse,
+        )
+    }
+
+    fn frame_opportunity_with_operation(
+        coordinate: FaultCoordinate,
+        producer_sequence: u64,
+        operation: FaultOperation,
+    ) -> FaultOpportunity {
+        FaultOpportunity::new(
+            ResolvedFaultTarget::NetworkSegment {
+                segment: object_id("segment-a"),
+                direction: FaultDirection::AToB,
+            },
+            operation,
+            FaultPhase::Resolve,
+            coordinate,
+            producer_sequence,
+            Some(FaultDirection::AToB),
+            OpportunityPayload::NetworkFrame {
+                producer: object_id("sender"),
+                destination: object_id("receiver"),
+                producer_sequence,
+                protocol_expansion_path: Vec::new(),
+                generated_response_depth: 0,
+                generated_response_cause: None,
+                forwarding_mutation_path: Vec::new(),
+                length_bytes: 128,
+                payload_digest: ContentHash::from_bytes(b"captured-frame"),
+            },
+        )
+        .unwrap_or_else(|error| panic!("test opportunity: {error}"))
+    }
+
     #[test]
     fn execution_checkpoint_restores_the_same_adapter_contributions() {
         let plan = test_plan();
@@ -769,6 +1160,431 @@ mod tests {
         assert_eq!(
             restored.adapter(FaultAdapter::Network).composition_groups(),
             runtime.adapter(FaultAdapter::Network).composition_groups()
+        );
+    }
+
+    #[test]
+    fn recorded_effects_execute_in_every_network_replay_mode() {
+        let plan = test_plan();
+        let seed = ContentHash::from_bytes(b"replay-seed");
+        let coordinate = FaultCoordinate {
+            virtual_nanos: 0,
+            retired_instructions: None,
+        };
+        let mut recorder = FaultExecutionRuntime::new(
+            &plan,
+            &NoArtifacts,
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("recording runtime: {error}"));
+        recorder
+            .evaluate_boundary(coordinate, 0)
+            .unwrap_or_else(|error| panic!("recording boundary: {error}"));
+
+        for mode in [
+            FaultReplayMode::RecomputedCause,
+            FaultReplayMode::LockedEffect,
+        ] {
+            let trace = recorder
+                .recorded_trace(mode)
+                .unwrap_or_else(|error| panic!("recorded trace: {error}"));
+            let mut replay = FaultExecutionRuntime::new(
+                &plan,
+                &NoArtifacts,
+                SignalBoundarySnapshot::default(),
+                seed,
+                manifests(),
+            )
+            .unwrap_or_else(|error| panic!("replay runtime: {error}"));
+            replay
+                .install_replay(trace)
+                .unwrap_or_else(|error| panic!("install replay: {error}"));
+            let evaluation = replay
+                .evaluate_boundary(coordinate, 0)
+                .unwrap_or_else(|error| panic!("replay boundary: {error}"));
+            assert_eq!(evaluation.actions.len(), 1);
+            replay
+                .verify_replay_exhausted()
+                .unwrap_or_else(|error| panic!("replay exhaustion: {error}"));
+            replay
+                .checkpoint()
+                .unwrap_or_else(|error| panic!("replay checkpoint: {error}"));
+        }
+    }
+
+    #[test]
+    fn outcome_replay_aligns_a_frame_without_rederiving_its_model() {
+        let plan = network_outcome_plan();
+        let seed = ContentHash::from_bytes(b"network-outcome-replay");
+        let coordinate = FaultCoordinate {
+            virtual_nanos: 10,
+            retired_instructions: None,
+        };
+        let opportunity = frame_opportunity(coordinate, 7);
+        let mut recorder = FaultExecutionRuntime::new(
+            &plan,
+            &NoArtifacts,
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("recording runtime: {error}"));
+        recorder
+            .evaluate_boundary(coordinate, 0)
+            .unwrap_or_else(|error| panic!("recording boundary: {error}"));
+        let pass = frame_opportunity_with_operation(coordinate, 6, FaultOperation::NetworkReceive);
+        let passed = recorder
+            .evaluate_opportunity(&pass, 1)
+            .unwrap_or_else(|error| panic!("recording pass opportunity: {error}"));
+        assert!(passed.actions.is_empty());
+        let recorded = recorder
+            .evaluate_opportunity(&opportunity, 2)
+            .unwrap_or_else(|error| panic!("recording opportunity: {error}"));
+        assert_eq!(recorded.actions.len(), 1);
+        for alignment in [
+            NetworkOutcomeAlignment::ExactFrameKey,
+            NetworkOutcomeAlignment::ProducerDirectionSequence,
+            NetworkOutcomeAlignment::ExactEventCoordinate,
+            NetworkOutcomeAlignment::OrderedTimeBucket { width_nanos: 100 },
+        ] {
+            let trace = recorder
+                .recorded_trace(FaultReplayMode::OutcomeOnlyNetwork(alignment))
+                .unwrap_or_else(|error| panic!("outcome trace: {error}"));
+            assert_eq!(trace.work_items.len(), 2);
+            assert!(trace.work_items[0].records.is_empty());
+            let replay_coordinate = if alignment == NetworkOutcomeAlignment::ExactEventCoordinate {
+                coordinate
+            } else {
+                FaultCoordinate {
+                    virtual_nanos: 20,
+                    retired_instructions: None,
+                }
+            };
+            let replay_opportunity = frame_opportunity(replay_coordinate, 7);
+            let mut replay = FaultExecutionRuntime::new(
+                &plan,
+                &NoArtifacts,
+                SignalBoundarySnapshot::default(),
+                seed,
+                manifests(),
+            )
+            .unwrap_or_else(|error| panic!("replay runtime: {error}"));
+            replay
+                .install_replay(trace)
+                .unwrap_or_else(|error| panic!("install replay: {error}"));
+            replay
+                .evaluate_boundary(replay_coordinate, 0)
+                .unwrap_or_else(|error| panic!("replay boundary: {error}"));
+            let replay_pass = frame_opportunity_with_operation(
+                replay_coordinate,
+                6,
+                FaultOperation::NetworkReceive,
+            );
+            let passed = replay
+                .evaluate_opportunity(&replay_pass, 1)
+                .unwrap_or_else(|error| panic!("replay pass opportunity: {error}"));
+            assert!(passed.actions.is_empty());
+            let outcome = replay
+                .evaluate_opportunity(&replay_opportunity, 2)
+                .unwrap_or_else(|error| panic!("replay opportunity: {error}"));
+            assert_eq!(outcome.actions.len(), 1);
+            assert_eq!(outcome.actions[0].effect, recorded.actions[0].effect);
+            assert_eq!(
+                outcome.actions[0].mapping_output,
+                recorded.actions[0].mapping_output
+            );
+            assert_eq!(outcome.actions[0].coordinate, replay_coordinate);
+            replay
+                .verify_replay_exhausted()
+                .unwrap_or_else(|error| panic!("replay exhaustion: {error}"));
+        }
+    }
+
+    #[test]
+    fn recomputed_replay_rejects_a_derivation_continuation_mismatch() {
+        let plan = test_plan();
+        let seed = ContentHash::from_bytes(b"recomputed-derivation-mismatch");
+        let coordinate = FaultCoordinate {
+            virtual_nanos: 0,
+            retired_instructions: None,
+        };
+        let mut recorder = FaultExecutionRuntime::new(
+            &plan,
+            &NoArtifacts,
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("recorder: {error}"));
+        recorder
+            .evaluate_boundary(coordinate, 0)
+            .unwrap_or_else(|error| panic!("recording boundary: {error}"));
+        let mut trace = recorder
+            .recorded_trace(FaultReplayMode::RecomputedCause)
+            .unwrap_or_else(|error| panic!("trace: {error}"));
+        let tampered = ContentHash::from_bytes(b"tampered");
+        trace.work_items[0].derivation_fingerprint = tampered;
+        for record in &mut trace.work_items[0].records {
+            record.derivation_fingerprint = tampered;
+        }
+        let mut replay = FaultExecutionRuntime::new(
+            &plan,
+            &NoArtifacts,
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("replay: {error}"));
+        replay
+            .install_replay(trace)
+            .unwrap_or_else(|error| panic!("install: {error}"));
+        assert!(matches!(
+            replay.evaluate_boundary(coordinate, 0),
+            Err(FaultExecutionError::Binding(BindingRuntimeError::Runtime(
+                FaultRuntimeError::ReplayMismatch { .. }
+            )))
+        ));
+        assert_eq!(replay.replay.as_ref().map(|trace| trace.cursor), Some(0));
+    }
+
+    #[test]
+    fn recomputed_replay_authenticates_a_zero_action_work_item() {
+        let plan = network_outcome_plan();
+        let seed = ContentHash::from_bytes(b"zero-action-recomputed-replay");
+        let coordinate = FaultCoordinate {
+            virtual_nanos: 0,
+            retired_instructions: None,
+        };
+        let mut recorder = FaultExecutionRuntime::new(
+            &plan,
+            &NoArtifacts,
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("recorder: {error}"));
+        let evaluation = recorder
+            .evaluate_boundary(coordinate, 0)
+            .unwrap_or_else(|error| panic!("zero-action boundary: {error}"));
+        assert!(evaluation.actions.is_empty());
+        let mut trace = recorder
+            .recorded_trace(FaultReplayMode::RecomputedCause)
+            .unwrap_or_else(|error| panic!("trace: {error}"));
+        assert_eq!(trace.work_items.len(), 1);
+        assert!(trace.work_items[0].records.is_empty());
+        trace.work_items[0].derivation_fingerprint = ContentHash::from_bytes(b"tampered");
+
+        let mut replay = FaultExecutionRuntime::new(
+            &plan,
+            &NoArtifacts,
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("replay: {error}"));
+        replay
+            .install_replay(trace)
+            .unwrap_or_else(|error| panic!("install: {error}"));
+        assert!(matches!(
+            replay.evaluate_boundary(coordinate, 0),
+            Err(FaultExecutionError::Binding(BindingRuntimeError::Runtime(
+                FaultRuntimeError::ReplayMismatch { .. }
+            )))
+        ));
+    }
+
+    #[test]
+    fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
+        let plan = test_plan();
+        let seed = ContentHash::from_bytes(b"checkpoint-identity-seed");
+        let mut runtime = FaultExecutionRuntime::new(
+            &plan,
+            &NoArtifacts,
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("runtime: {error}"));
+        runtime
+            .evaluate_boundary(
+                FaultCoordinate {
+                    virtual_nanos: 0,
+                    retired_instructions: None,
+                },
+                0,
+            )
+            .unwrap_or_else(|error| panic!("boundary: {error}"));
+        let checkpoint = runtime
+            .checkpoint()
+            .unwrap_or_else(|error| panic!("checkpoint: {error}"));
+        let identity = checkpoint
+            .content_id()
+            .unwrap_or_else(|error| panic!("identity: {error}"));
+
+        let mut mutated = checkpoint.clone();
+        mutated.poisoned = true;
+        assert_ne!(
+            mutated
+                .content_id()
+                .unwrap_or_else(|error| panic!("mutated identity: {error}")),
+            identity
+        );
+        let mut mutated = checkpoint.clone();
+        mutated.binding_runtime.scheduler_cursor = Some(FaultSchedulerCursor {
+            virtual_nanos: 1,
+            same_coordinate_sequence: 0,
+        });
+        assert_ne!(
+            mutated
+                .content_id()
+                .unwrap_or_else(|error| panic!("mutated identity: {error}")),
+            identity
+        );
+        let mut mutated = checkpoint.clone();
+        mutated.recorded_work_items[0].records[0].evidence_digest =
+            ContentHash::from_bytes(b"changed");
+        assert_ne!(
+            mutated
+                .content_id()
+                .unwrap_or_else(|error| panic!("mutated identity: {error}")),
+            identity
+        );
+        let mut mutated = checkpoint;
+        mutated.resource_limits.fat_checkpoint_bytes = 1;
+        assert!(matches!(
+            mutated.canonical_bytes(),
+            Err(FaultRuntimeError::ResourceLimit(_))
+        ));
+    }
+
+    #[test]
+    fn failed_replay_installation_leaves_the_owned_continuation_unchanged() {
+        let base = test_plan();
+        let seed = ContentHash::from_bytes(b"atomic-replay-install");
+        let initial = OwnedFaultExecutionRuntime::new(
+            base.clone(),
+            Arc::new(NoArtifacts),
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("initial owner: {error}"));
+        let initial_size = initial
+            .checkpoint()
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("initial bytes: {error}"))
+            .len();
+        let mut limits = FaultResourceLimits::default();
+        limits.fat_checkpoint_bytes = u64::try_from(initial_size + 256)
+            .unwrap_or_else(|error| panic!("test checkpoint size: {error}"));
+        let plan = FaultSignalPlan::new(base.programs().to_vec(), base.bindings().to_vec(), limits)
+            .unwrap_or_else(|error| panic!("limited plan: {error}"));
+        let mut owner = OwnedFaultExecutionRuntime::new(
+            plan,
+            Arc::new(NoArtifacts),
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("limited owner: {error}"));
+        let before = owner
+            .checkpoint()
+            .content_id()
+            .unwrap_or_else(|error| panic!("before identity: {error}"));
+        let mut recorder = FaultExecutionRuntime::new(
+            &base,
+            &NoArtifacts,
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("recorder: {error}"));
+        recorder
+            .evaluate_boundary(
+                FaultCoordinate {
+                    virtual_nanos: 0,
+                    retired_instructions: None,
+                },
+                0,
+            )
+            .unwrap_or_else(|error| panic!("recording boundary: {error}"));
+        let work_item = recorder
+            .recorded_work_items
+            .first()
+            .cloned()
+            .unwrap_or_else(|| panic!("recording must contain one action"));
+        let trace = ResolvedEffectTrace {
+            mode: FaultReplayMode::LockedEffect,
+            work_items: vec![work_item; 8],
+            cursor: 0,
+        };
+        assert!(owner.install_replay(trace).is_err());
+        assert!(owner.checkpoint().replay.is_none());
+        assert_eq!(
+            owner
+                .checkpoint()
+                .content_id()
+                .unwrap_or_else(|error| panic!("after identity: {error}")),
+            before
+        );
+    }
+
+    #[test]
+    fn checkpoint_growth_is_rejected_before_the_live_backend_commits() {
+        let base = test_plan();
+        let seed = ContentHash::from_bytes(b"precommit-checkpoint-capacity");
+        let initial = OwnedFaultExecutionRuntime::new(
+            base.clone(),
+            Arc::new(NoArtifacts),
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("initial owner: {error}"));
+        let initial_size = initial
+            .checkpoint()
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("initial bytes: {error}"))
+            .len();
+        let mut limits = FaultResourceLimits::default();
+        limits.fat_checkpoint_bytes = u64::try_from(initial_size + 64)
+            .unwrap_or_else(|error| panic!("test checkpoint size: {error}"));
+        let plan = FaultSignalPlan::new(base.programs().to_vec(), base.bindings().to_vec(), limits)
+            .unwrap_or_else(|error| panic!("limited plan: {error}"));
+        let mut owner = OwnedFaultExecutionRuntime::new(
+            plan,
+            Arc::new(NoArtifacts),
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("limited owner: {error}"));
+        let before = owner
+            .checkpoint()
+            .content_id()
+            .unwrap_or_else(|error| panic!("before identity: {error}"));
+        let mut backend = HostFaultActionSink::new(limits);
+        assert!(
+            owner
+                .evaluate_boundary_with_backend(
+                    FaultCoordinate {
+                        virtual_nanos: 0,
+                        retired_instructions: None,
+                    },
+                    0,
+                    &mut backend,
+                )
+                .is_err()
+        );
+        assert!(backend.state().is_empty());
+        assert_eq!(
+            owner
+                .checkpoint()
+                .content_id()
+                .unwrap_or_else(|error| panic!("after identity: {error}")),
+            before
         );
     }
 }

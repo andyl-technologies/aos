@@ -1042,6 +1042,7 @@ mod tests {
                     retired_instructions: Some(1),
                 },
                 cause: BindingActionCause::Signal,
+                expected_precondition: None,
             };
             let encoded = encode_node_action(&action, [3; 32])
                 .unwrap_or_else(|error| panic!("{kind:?} must translate: {error}"));

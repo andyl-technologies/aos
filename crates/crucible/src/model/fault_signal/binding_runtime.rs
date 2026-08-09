@@ -12,15 +12,14 @@ use std::sync::Arc;
 use super::*;
 
 mod error;
+mod mapping_codec;
+mod replay;
+mod transaction;
 
 pub use error::BindingRuntimeError;
-
-/// Maximum aggregate canonical dynamic parameter bytes for one action.
-pub const HARD_MAPPED_EFFECT_BYTES: usize = 16 * 1024 * 1024;
-/// Maximum prepared adapter actions emitted by one scheduler boundary.
-pub const HARD_ACTIONS_PER_BOUNDARY: usize = 262_144;
-/// Maximum retained canonical sample payload bytes per boundary.
-pub const HARD_RETAINED_SAMPLE_BYTES: usize = 256 * 1024 * 1024;
+use mapping_codec::{mapped_values_digest, resolved_mapping_output_digest};
+use replay::{resolved_replay_work_item, verify_replay_results};
+use transaction::prepare_and_commit;
 
 /// One mutation requested of the owning production adapter.
 #[derive(
@@ -81,6 +80,8 @@ pub struct ResolvedBindingAction {
     pub coordinate: FaultCoordinate,
     /// Exact transition identity that caused this action.
     pub cause: BindingActionCause,
+    /// Locked-replay before-state digest that the live backend must verify.
+    pub expected_precondition: Option<ContentHash>,
 }
 
 impl ResolvedBindingAction {
@@ -112,7 +113,7 @@ impl ResolvedBindingAction {
             .retired_instructions
             .map_or_else(|| String::from("none"), |value| value.to_string());
         let mut material = format!(
-            "kind={kind};binding={};phase={};effect={};mapped={};transition={};opportunity={};virtual_nanos={};retired={retired};cause={cause};target=",
+            "kind={kind};binding={};phase={};effect={};mapped={};transition={};opportunity={};virtual_nanos={};retired={retired};cause={cause};precondition={};target=",
             self.binding.as_str(),
             self.phase.as_str(),
             self.effect.kind().as_str(),
@@ -121,6 +122,8 @@ impl ResolvedBindingAction {
             self.opportunity
                 .map_or_else(|| String::from("none"), |value| value.to_hex()),
             self.coordinate.virtual_nanos,
+            self.expected_precondition
+                .map_or_else(|| String::from("none"), |value| value.to_hex()),
         );
         self.target.append_canonical(&mut material);
         ContentHash::from_canonical_material("crucible.resolved-binding-action.v1", &material)
@@ -132,6 +135,8 @@ impl ResolvedBindingAction {
 pub struct PreparedActionResult {
     /// Exact prepared action identity.
     pub action: ContentHash,
+    /// Backend-observed state digest immediately before application.
+    pub precondition: Option<ContentHash>,
     /// Adapter-owned successful application evidence.
     pub observation: FaultObservation,
 }
@@ -164,7 +169,8 @@ pub struct BindingEvaluation {
     pub next_wakeup_nanos: Option<u64>,
     /// Referenced exported event signals emitted at this boundary.
     pub emitted_events: Vec<ReferencedSignalEvent>,
-    retained_sample_bytes: usize,
+    /// State-machine transition events emitted at this boundary.
+    pub state_machine_events: Vec<StatefulSignalEvent>,
 }
 
 /// One emitted event explicitly referenced by an admitted effect contract.
@@ -222,10 +228,11 @@ impl BindingRuntimeCheckpoint {
         program: &SignalProgram,
         bindings: &[FaultBinding],
         scenario_seed: ContentHash,
+        resource_limits: FaultResourceLimits,
     ) -> Result<(), BindingRuntimeError> {
         let mut bindings = bindings.to_vec();
         bindings.sort_by(|left, right| left.id().cmp(right.id()));
-        validate_binding_checkpoint(program, &bindings, scenario_seed, self)
+        validate_binding_checkpoint(program, &bindings, scenario_seed, resource_limits, self)
     }
 }
 
@@ -297,6 +304,7 @@ pub struct FaultBindingRuntime<'a> {
     evaluator: SignalEvaluator<'a>,
     artifacts: &'a dyn SignalArtifactProvider,
     scenario_seed: ContentHash,
+    resource_limits: FaultResourceLimits,
     states: BTreeMap<FaultObjectId, BindingRuntimeState>,
     active: ActiveContributionTable,
     dynamic_membership: BTreeMap<FaultObjectId, DynamicMembershipState>,
@@ -321,6 +329,7 @@ impl<'a> FaultBindingRuntime<'a> {
         artifacts: &'a dyn SignalArtifactProvider,
         boundary: SignalBoundarySnapshot,
         scenario_seed: ContentHash,
+        resource_limits: FaultResourceLimits,
     ) -> Result<Self, BindingRuntimeError> {
         Self::new_with_search_overrides(
             program,
@@ -328,6 +337,7 @@ impl<'a> FaultBindingRuntime<'a> {
             artifacts,
             boundary,
             scenario_seed,
+            resource_limits,
             BTreeMap::new(),
         )
     }
@@ -344,15 +354,20 @@ impl<'a> FaultBindingRuntime<'a> {
         artifacts: &'a dyn SignalArtifactProvider,
         boundary: SignalBoundarySnapshot,
         scenario_seed: ContentHash,
+        resource_limits: FaultResourceLimits,
         search_overrides: BTreeMap<SearchChoiceId, SearchOverride>,
     ) -> Result<Self, BindingRuntimeError> {
-        if search_overrides.len() > HARD_SEARCH_OVERRIDES {
-            return Err(BindingRuntimeError::SearchOverrideLimit);
-        }
+        resource_limits
+            .validate()
+            .map_err(BindingRuntimeError::ResourceLimit)?;
+        reserve_usize_runtime(
+            resource_limits,
+            "search_choices_per_state",
+            0,
+            search_overrides.len(),
+        )?;
         bindings.sort_by(|left, right| left.id().cmp(right.id()));
-        if bindings.len() > HARD_FAULT_BINDING_LIMIT {
-            return Err(BindingRuntimeError::BindingLimit);
-        }
+        reserve_usize_runtime(resource_limits, "bindings", 0, bindings.len())?;
         if bindings.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
             return Err(BindingRuntimeError::DuplicateBinding);
         }
@@ -398,10 +413,11 @@ impl<'a> FaultBindingRuntime<'a> {
         Ok(Self {
             program,
             bindings,
-            evaluator: SignalEvaluator::new(program, artifacts, boundary)
+            evaluator: SignalEvaluator::new(program, artifacts, boundary, resource_limits)
                 .map_err(BindingRuntimeError::Evaluation)?,
             artifacts,
             scenario_seed,
+            resource_limits,
             states,
             active: ActiveContributionTable::default(),
             dynamic_membership,
@@ -491,6 +507,12 @@ impl<'a> FaultBindingRuntime<'a> {
             return Err(BindingRuntimeError::DynamicTransitionIdentity);
         }
         let targets = &transition.targets;
+        reserve_usize_runtime(
+            self.resource_limits,
+            "resolved_targets_per_binding",
+            0,
+            targets.targets().len(),
+        )?;
         if targets.allow_empty() != admitted.selector().resolved().allow_empty()
             || targets.targets().is_empty() && !admitted.selector().resolved().allow_empty()
         {
@@ -525,20 +547,6 @@ impl<'a> FaultBindingRuntime<'a> {
                 .mapped_parameters
                 .ok_or_else(|| BindingRuntimeError::MissingMappedValues(binding.clone()))?;
             let phases = binding_phases(&admitted);
-            let changed_targets = previous
-                .targets()
-                .iter()
-                .filter(|target| !targets.targets().contains(target))
-                .count()
-                .checked_add(
-                    targets
-                        .targets()
-                        .iter()
-                        .filter(|target| !previous.targets().contains(target))
-                        .count(),
-                )
-                .ok_or(BindingRuntimeError::ActionLimit)?;
-            ensure_action_capacity(evaluation.actions.len(), changed_targets, phases.len())?;
             for target in previous
                 .targets()
                 .iter()
@@ -598,7 +606,9 @@ impl<'a> FaultBindingRuntime<'a> {
             }
         }
         match prepare_and_commit(sink, &evaluation.actions) {
-            Ok(observations) => evaluation.observations.extend(observations),
+            Ok(results) => evaluation
+                .observations
+                .extend(results.into_iter().map(|result| result.observation)),
             Err(error) => {
                 if matches!(
                     error,
@@ -721,7 +731,34 @@ impl<'a> FaultBindingRuntime<'a> {
         same_coordinate_sequence: u64,
         sink: &mut dyn FaultActionSink,
     ) -> Result<BindingEvaluation, BindingRuntimeError> {
-        self.evaluate_matching(coordinate, same_coordinate_sequence, None, sink)
+        self.evaluate_matching(
+            coordinate,
+            same_coordinate_sequence,
+            None,
+            sink,
+            None,
+            None,
+            true,
+        )
+    }
+
+    pub(crate) fn evaluate_boundary_traced(
+        &mut self,
+        coordinate: FaultCoordinate,
+        same_coordinate_sequence: u64,
+        sink: &mut dyn FaultActionSink,
+        replay: Option<&mut ResolvedEffectTrace>,
+        recorded: &mut Vec<ResolvedReplayWorkItem>,
+    ) -> Result<BindingEvaluation, BindingRuntimeError> {
+        self.evaluate_matching(
+            coordinate,
+            same_coordinate_sequence,
+            None,
+            sink,
+            replay,
+            Some(recorded),
+            true,
+        )
     }
 
     /// Samples every matching opportunity binding at one exact adapter phase.
@@ -741,6 +778,64 @@ impl<'a> FaultBindingRuntime<'a> {
             same_coordinate_sequence,
             Some(opportunity),
             sink,
+            None,
+            None,
+            true,
+        )
+    }
+
+    pub(crate) fn evaluate_opportunity_traced(
+        &mut self,
+        opportunity: &FaultOpportunity,
+        same_coordinate_sequence: u64,
+        sink: &mut dyn FaultActionSink,
+        replay: Option<&mut ResolvedEffectTrace>,
+        recorded: &mut Vec<ResolvedReplayWorkItem>,
+    ) -> Result<BindingEvaluation, BindingRuntimeError> {
+        self.evaluate_matching(
+            opportunity.coordinate(),
+            same_coordinate_sequence,
+            Some(opportunity),
+            sink,
+            replay,
+            Some(recorded),
+            true,
+        )
+    }
+
+    pub(crate) fn preview_boundary_traced(
+        &mut self,
+        coordinate: FaultCoordinate,
+        same_coordinate_sequence: u64,
+        sink: &mut dyn FaultActionSink,
+        replay: Option<&mut ResolvedEffectTrace>,
+    ) -> Result<BindingEvaluation, BindingRuntimeError> {
+        self.evaluate_matching(
+            coordinate,
+            same_coordinate_sequence,
+            None,
+            sink,
+            replay,
+            None,
+            false,
+        )
+    }
+
+    pub(crate) fn preview_opportunity_traced(
+        &mut self,
+        opportunity: &FaultOpportunity,
+        same_coordinate_sequence: u64,
+        sink: &mut dyn FaultActionSink,
+        replay: Option<&mut ResolvedEffectTrace>,
+    ) -> Result<BindingEvaluation, BindingRuntimeError> {
+        self.evaluate_matching(
+            opportunity.coordinate(),
+            same_coordinate_sequence,
+            Some(opportunity),
+            sink,
+            replay,
+            None,
+            false,
         )
     }
 
@@ -780,6 +875,7 @@ impl<'a> FaultBindingRuntime<'a> {
             semantic_version: FAULT_RUNTIME_STATE_VERSION,
             signal_program: self.program.id(),
             scenario_seed: self.scenario_seed,
+            resource_limits: self.resource_limits,
             evaluator: self.evaluator_checkpoint()?,
             bindings: self.states.clone(),
             binding_contracts: self.bindings.clone(),
@@ -825,17 +921,30 @@ impl<'a> FaultBindingRuntime<'a> {
         mut bindings: Vec<FaultBinding>,
         artifacts: &'a dyn SignalArtifactProvider,
         scenario_seed: ContentHash,
+        resource_limits: FaultResourceLimits,
         checkpoint: &BindingRuntimeCheckpoint,
     ) -> Result<Self, BindingRuntimeError> {
         bindings.sort_by(|left, right| left.id().cmp(right.id()));
-        validate_binding_checkpoint(program, &bindings, scenario_seed, checkpoint)?;
+        validate_binding_checkpoint(
+            program,
+            &bindings,
+            scenario_seed,
+            resource_limits,
+            checkpoint,
+        )?;
         Ok(Self {
             program,
             bindings,
-            evaluator: SignalEvaluator::restore(program, artifacts, &checkpoint.evaluator)
-                .map_err(BindingRuntimeError::Evaluation)?,
+            evaluator: SignalEvaluator::restore(
+                program,
+                artifacts,
+                &checkpoint.evaluator,
+                resource_limits,
+            )
+            .map_err(BindingRuntimeError::Evaluation)?,
             artifacts,
             scenario_seed: checkpoint.scenario_seed,
+            resource_limits,
             states: checkpoint.bindings.clone(),
             active: checkpoint.active.clone(),
             dynamic_membership: checkpoint.dynamic_membership.clone(),
@@ -854,6 +963,9 @@ impl<'a> FaultBindingRuntime<'a> {
         same_coordinate_sequence: u64,
         opportunity: Option<&FaultOpportunity>,
         sink: &mut dyn FaultActionSink,
+        mut replay: Option<&mut ResolvedEffectTrace>,
+        mut recorded: Option<&mut Vec<ResolvedReplayWorkItem>>,
+        verify_replay_outcomes: bool,
     ) -> Result<BindingEvaluation, BindingRuntimeError> {
         self.ensure_usable()?;
         let cursor = FaultSchedulerCursor {
@@ -882,51 +994,111 @@ impl<'a> FaultBindingRuntime<'a> {
         let active = self.active.clone();
         let consumed_opportunities = self.consumed_opportunities.clone();
         let consumed_search_overrides = self.consumed_search_overrides.clone();
-        match self.evaluate_matching_inner(coordinate, same_coordinate_sequence, opportunity) {
-            Ok(mut evaluation) => match prepare_and_commit(sink, &evaluation.actions) {
-                Ok(observations) => {
-                    evaluation.observations.extend(observations);
-                    self.scheduler_cursor = Some(cursor);
-                    if opportunity.is_none() {
-                        self.boundary_completed_cursor = Some(cursor);
-                    }
-                    Ok(evaluation)
+        let replay_before = replay.as_deref().cloned();
+        let recorded_before = recorded.as_deref().map_or(0, Vec::len);
+        let authoritative_replay = replay
+            .as_deref()
+            .is_some_and(|trace| !matches!(trace.mode, FaultReplayMode::RecomputedCause));
+        let mut model_evaluation = if authoritative_replay {
+            Ok(BindingEvaluation::default())
+        } else {
+            self.evaluate_matching_inner(coordinate, same_coordinate_sequence, opportunity)
+        };
+        if let Ok(evaluation) = &mut model_evaluation
+            && !authoritative_replay
+        {
+            evaluation.state_machine_events = self.evaluator.take_emitted_events();
+        }
+        let outcome = match model_evaluation {
+            Ok(mut evaluation) => (|| {
+                let derivation_fingerprint = self.derivation_fingerprint(&evaluation)?;
+                if let Some(trace) = replay.as_deref() {
+                    evaluation.actions = self.resolve_replay_actions(
+                        &evaluation.actions,
+                        &states,
+                        &active,
+                        coordinate,
+                        same_coordinate_sequence,
+                        opportunity,
+                        derivation_fingerprint,
+                        trace,
+                    )?;
                 }
-                Err(error) => {
-                    if matches!(
-                        error,
-                        BindingRuntimeError::AdapterAbort(_)
-                            | BindingRuntimeError::AdapterCommit(_)
-                    ) {
-                        self.poisoned = true;
-                    }
-                    self.states = states;
-                    self.active = active;
-                    self.consumed_opportunities = consumed_opportunities;
-                    self.consumed_search_overrides = consumed_search_overrides;
-                    self.evaluator = match SignalEvaluator::restore(
-                        self.program,
-                        self.artifacts,
-                        &evaluator_checkpoint,
-                    ) {
-                        Ok(evaluator) => evaluator,
-                        Err(error) => {
-                            self.poisoned = true;
-                            return Err(BindingRuntimeError::Rollback(error));
-                        }
-                    };
-                    Err(error)
+                if let Some(work_items) = recorded.as_deref() {
+                    reserve_usize_runtime(
+                        self.resource_limits,
+                        "thin_replay_events",
+                        work_items.len(),
+                        1,
+                    )?;
+                    reserve_usize_runtime(
+                        self.resource_limits,
+                        "resolved_effect_records",
+                        recorded_effect_count(work_items)?,
+                        evaluation.actions.len(),
+                    )?;
                 }
-            },
+                let results = prepare_and_commit(sink, &evaluation.actions)?;
+                if verify_replay_outcomes {
+                    if let Some(trace) = replay.as_deref_mut() {
+                        verify_replay_results(
+                            trace,
+                            &evaluation.actions,
+                            &results,
+                            coordinate,
+                            same_coordinate_sequence,
+                            opportunity,
+                        )?;
+                    }
+                }
+                if let Some(work_items) = recorded.as_deref_mut() {
+                    work_items.push(resolved_replay_work_item(
+                        &evaluation.actions,
+                        &results,
+                        coordinate,
+                        opportunity,
+                        same_coordinate_sequence,
+                        derivation_fingerprint,
+                    )?);
+                }
+                evaluation
+                    .observations
+                    .extend(results.into_iter().map(|result| result.observation));
+                Ok(evaluation)
+            })(),
+            Err(error) => Err(error),
+        };
+        match outcome {
+            Ok(evaluation) => {
+                self.scheduler_cursor = Some(cursor);
+                if opportunity.is_none() {
+                    self.boundary_completed_cursor = Some(cursor);
+                }
+                Ok(evaluation)
+            }
             Err(error) => {
+                if matches!(
+                    error,
+                    BindingRuntimeError::AdapterAbort(_) | BindingRuntimeError::AdapterCommit(_)
+                ) {
+                    self.poisoned = true;
+                }
                 self.states = states;
                 self.active = active;
                 self.consumed_opportunities = consumed_opportunities;
                 self.consumed_search_overrides = consumed_search_overrides;
+                if let (Some(trace), Some(before)) = (replay.as_deref_mut(), replay_before.as_ref())
+                {
+                    *trace = before.clone();
+                }
+                if let Some(records) = recorded.as_deref_mut() {
+                    records.truncate(recorded_before);
+                }
                 self.evaluator = match SignalEvaluator::restore(
                     self.program,
                     self.artifacts,
                     &evaluator_checkpoint,
+                    self.resource_limits,
                 ) {
                     Ok(evaluator) => evaluator,
                     Err(rollback_error) => {
@@ -956,6 +1128,21 @@ impl<'a> FaultBindingRuntime<'a> {
         } else {
             Ok(())
         }
+    }
+
+    fn derivation_fingerprint(
+        &self,
+        evaluation: &BindingEvaluation,
+    ) -> Result<ContentHash, BindingRuntimeError> {
+        let checkpoint = self.checkpoint()?;
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&checkpoint, &mut encoded).map_err(|_error| {
+            BindingRuntimeError::Runtime(FaultRuntimeError::CheckpointEncoding)
+        })?;
+        ciborium::ser::into_writer(&evaluation.state_machine_events, &mut encoded).map_err(
+            |_error| BindingRuntimeError::Runtime(FaultRuntimeError::CheckpointEncoding),
+        )?;
+        Ok(ContentHash::from_bytes(&encoded))
     }
 
     fn evaluate_matching_inner(
@@ -1009,7 +1196,7 @@ impl<'a> FaultBindingRuntime<'a> {
                 continue;
             };
             let raw_values = sampled_values;
-            let value_digest = mapped_values_digest(&raw_values)?;
+            let value_digest = mapped_values_digest(&raw_values, self.resource_limits)?;
             let sample_identity = sample_identity_digest(
                 &binding,
                 &raw_values,
@@ -1035,6 +1222,7 @@ impl<'a> FaultBindingRuntime<'a> {
                 opportunity,
                 false,
                 &mut evaluation,
+                self.resource_limits,
             )?;
             if matches!(binding.sampling(), BindingSampling::AtChange)
                 && state.last_sample_identity == Some(sample_identity)
@@ -1076,6 +1264,7 @@ impl<'a> FaultBindingRuntime<'a> {
                 &mut self.consumed_search_overrides,
                 coordinate,
                 &mut evaluation,
+                self.resource_limits,
             )?;
             let mut mapping_output = resolved_mapping_output(&binding, &values, activation_value)?;
             if let ResolvedMappingOutput::StateTransition {
@@ -1092,7 +1281,7 @@ impl<'a> FaultBindingRuntime<'a> {
                 } else {
                     values.clone()
                 };
-            let digest = resolved_mapping_output_digest(&mapping_output)?;
+            let digest = resolved_mapping_output_digest(&mapping_output, self.resource_limits)?;
             let action_count = evaluation.actions.len();
             self.apply_decision(
                 &binding,
@@ -1118,6 +1307,7 @@ impl<'a> FaultBindingRuntime<'a> {
                     coordinate,
                     opportunity,
                     &mut evaluation,
+                    self.resource_limits,
                 )?;
             }
             if matches!(binding.mapping(), BindingMapping::Hazard)
@@ -1265,10 +1455,13 @@ impl<'a> FaultBindingRuntime<'a> {
             phase: opportunity.phase(),
             operation: opportunity.operation(),
         };
-        if !self.consumed_opportunities.contains_key(&key)
-            && self.consumed_opportunities.len() == HARD_CONSUMED_OPPORTUNITY_SCOPES
-        {
-            return Err(BindingRuntimeError::OpportunityStateLimit);
+        if !self.consumed_opportunities.contains_key(&key) {
+            reserve_usize_runtime(
+                self.resource_limits,
+                "resolved_effect_records",
+                self.consumed_opportunities.len(),
+                1,
+            )?;
         }
         self.consumed_opportunities.insert(
             key,
@@ -1431,7 +1624,7 @@ impl<'a> FaultBindingRuntime<'a> {
         let mut mapped_values = state.mapped_values.clone();
         if matches!(mapping_output, ResolvedMappingOutput::Activation { .. }) {
             mapping_output = ResolvedMappingOutput::Activation { active: false };
-            mapped_digest = resolved_mapping_output_digest(&mapping_output)?;
+            mapped_digest = resolved_mapping_output_digest(&mapping_output, self.resource_limits)?;
             mapped_values.clear();
         }
         let transition_sequence = state
@@ -1445,11 +1638,6 @@ impl<'a> FaultBindingRuntime<'a> {
         let first_action = evaluation.actions.len();
         let shared_effect = Arc::new(binding.effect().clone());
         let shared_mapping_output = Arc::new(mapping_output);
-        ensure_action_capacity(
-            evaluation.actions.len(),
-            selected_targets.len(),
-            binding_phases(binding).len(),
-        )?;
         for target in selected_targets {
             append_membership_actions(
                 binding,
@@ -1528,11 +1716,6 @@ impl<'a> FaultBindingRuntime<'a> {
                 .map_or_else(Vec::new, |filter| filter.phases.iter().copied().collect()),
             _ => binding_phases(binding),
         };
-        ensure_action_capacity(
-            evaluation.actions.len(),
-            selected_targets.len(),
-            phases.len(),
-        )?;
         let shared_effect = Arc::new(binding.effect().clone());
         let shared_mapping_output = Arc::new(mapping_output);
         for target in selected_targets {
@@ -1551,6 +1734,7 @@ impl<'a> FaultBindingRuntime<'a> {
                     cause: opportunity.map_or(BindingActionCause::Signal, |value| {
                         BindingActionCause::Opportunity(value.id())
                     }),
+                    expected_precondition: None,
                 };
                 self.update_active(&action)?;
                 evaluation.actions.push(action);
@@ -1577,6 +1761,7 @@ impl<'a> FaultBindingRuntime<'a> {
                             mapping_output: action.mapping_output.clone(),
                             transition_sequence: action.transition_sequence,
                         },
+                        self.resource_limits,
                     )
                     .map_err(BindingRuntimeError::Runtime)?;
             }
@@ -1614,6 +1799,7 @@ fn apply_search_policy(
     consumed_overrides: &mut std::collections::BTreeSet<SearchChoiceId>,
     coordinate: FaultCoordinate,
     evaluation: &mut BindingEvaluation,
+    resource_limits: FaultResourceLimits,
 ) -> Result<SearchResolution, BindingRuntimeError> {
     let (candidates_digest, candidate_count, mut selected_index) = match binding.search() {
         BindingSearchPolicy::Fixed
@@ -1638,7 +1824,7 @@ fn apply_search_policy(
             None,
         ),
         BindingSearchPolicy::BranchParameter { candidates, .. } => (
-            mapped_values_digest(candidates)?,
+            mapped_values_digest(candidates, resource_limits)?,
             u32::try_from(candidates.len()).map_err(|_| BindingRuntimeError::SearchChoice)?,
             values.first().and_then(|value| {
                 candidates
@@ -1648,6 +1834,13 @@ fn apply_search_policy(
             }),
         ),
     };
+    resource_limits
+        .reserve(
+            "search_candidates_per_choice",
+            0,
+            u64::from(candidate_count),
+        )
+        .map_err(BindingRuntimeError::ResourceLimit)?;
     let id = SearchChoiceId::new(
         program,
         binding.id(),
@@ -1693,9 +1886,9 @@ fn apply_search_policy(
     } else {
         false
     };
-    if state.search_choice_count >= HARD_SEARCH_CHOICES_PER_STATE {
-        return Err(BindingRuntimeError::SearchChoiceLimit);
-    }
+    resource_limits
+        .reserve("search_choices_per_state", state.search_choice_count, 1)
+        .map_err(BindingRuntimeError::ResourceLimit)?;
     state.search_choice_count = state
         .search_choice_count
         .checked_add(1)
@@ -1749,6 +1942,7 @@ fn record_sample(
     opportunity: Option<&FaultOpportunity>,
     force: bool,
     evaluation: &mut BindingEvaluation,
+    resource_limits: FaultResourceLimits,
 ) -> Result<bool, BindingRuntimeError> {
     let changed = state.last_sample_identity != Some(sample_identity);
     state.sample_count = state
@@ -1780,6 +1974,7 @@ fn record_sample(
             coordinate,
             opportunity,
             evaluation,
+            resource_limits,
         )?;
     }
     Ok(retain)
@@ -1794,6 +1989,7 @@ fn push_sample_observation(
     coordinate: FaultCoordinate,
     opportunity: Option<&FaultOpportunity>,
     evaluation: &mut BindingEvaluation,
+    resource_limits: FaultResourceLimits,
 ) -> Result<(), BindingRuntimeError> {
     evaluation.observations.push(FaultObservation {
         semantic_version: FAULT_RUNTIME_STATE_VERSION,
@@ -1810,11 +2006,7 @@ fn push_sample_observation(
     });
     if binding.observability().retain_mapped_values {
         let bytes = encoded_values_len(values)?;
-        evaluation.retained_sample_bytes = evaluation
-            .retained_sample_bytes
-            .checked_add(bytes)
-            .filter(|total| *total <= HARD_RETAINED_SAMPLE_BYTES)
-            .ok_or(BindingRuntimeError::RetainedSampleLimit)?;
+        reserve_usize_runtime(resource_limits, "effect_payload_bytes", 0, bytes)?;
         evaluation.retained_samples.push(RetainedBindingSample {
             binding: binding.id().clone(),
             coordinate,
@@ -1832,7 +2024,7 @@ fn encoded_values_len(values: &[SignalValue]) -> Result<usize, BindingRuntimeErr
         total
             .checked_add(4)
             .and_then(|length| length.checked_add(encoded.len()))
-            .ok_or(BindingRuntimeError::RetainedSampleLimit)
+            .ok_or(BindingRuntimeError::CountOverflow("effect_payload_bytes"))
     })
 }
 
@@ -1913,107 +2105,30 @@ fn membership_digest(path: &FaultObjectId, targets: &ResolvedTargetSet) -> Conte
     ContentHash::from_canonical_material("crucible.dynamic-membership.v1", &material)
 }
 
-fn ensure_action_capacity(
+fn reserve_usize_runtime(
+    resource_limits: FaultResourceLimits,
+    field: &'static str,
     current: usize,
-    target_count: usize,
-    phase_count: usize,
+    requested: usize,
 ) -> Result<(), BindingRuntimeError> {
-    let additional = target_count
-        .checked_mul(phase_count)
-        .ok_or(BindingRuntimeError::ActionLimit)?;
-    if current
-        .checked_add(additional)
-        .is_none_or(|total| total > HARD_ACTIONS_PER_BOUNDARY)
-    {
-        return Err(BindingRuntimeError::ActionLimit);
-    }
-    Ok(())
+    let current = u64::try_from(current).map_err(|_| BindingRuntimeError::CountOverflow(field))?;
+    let requested =
+        u64::try_from(requested).map_err(|_| BindingRuntimeError::CountOverflow(field))?;
+    resource_limits
+        .reserve(field, current, requested)
+        .map_err(BindingRuntimeError::ResourceLimit)
 }
 
-fn validate_prepared_batch(
-    actions: &[ResolvedBindingAction],
-    batch: PreparedActionBatch,
-) -> Result<Vec<FaultObservation>, BindingRuntimeError> {
-    if batch.transaction == ContentHash::default() || actions.len() != batch.results.len() {
-        return Err(BindingRuntimeError::AdapterResult);
-    }
-    let mut observations = Vec::with_capacity(batch.results.len());
-    for (action, result) in actions.iter().zip(batch.results) {
-        let expected_kind = match action.kind {
-            BindingActionKind::UpsertPersistent => FaultObservationKind::BindingActivation,
-            BindingActionKind::RemovePersistent => FaultObservationKind::BindingDeactivation,
-            BindingActionKind::Apply => FaultObservationKind::EffectApplied,
-        };
-        let observation = result.observation;
-        if result.action != action.id()
-            || observation.semantic_version != FAULT_RUNTIME_STATE_VERSION
-            || observation.kind != expected_kind
-            || observation.binding.as_ref() != Some(&action.binding)
-            || observation.target.as_ref() != Some(&action.target)
-            || observation.opportunity != action.opportunity
-            || observation.coordinate != action.coordinate
-            || observation.evidence == ContentHash::default()
-        {
-            return Err(BindingRuntimeError::AdapterResult);
-        }
-        observations.push(observation);
-    }
-    Ok(observations)
-}
-
-fn prepare_and_commit(
-    sink: &mut dyn FaultActionSink,
-    actions: &[ResolvedBindingAction],
-) -> Result<Vec<FaultObservation>, BindingRuntimeError> {
-    if actions.is_empty() {
-        return Ok(Vec::new());
-    }
-    let prepared = match sink.prepare_batch(actions) {
-        Ok(prepared) => prepared,
-        Err(rejected) => {
-            if validate_rejected_batch(actions, &rejected) {
-                return Err(BindingRuntimeError::AdapterRejected(rejected));
-            }
-            return Err(BindingRuntimeError::AdapterResult);
-        }
-    };
-    let transaction = prepared.transaction;
-    match sink.commit_batch(transaction) {
-        Ok(committed) if committed.transaction == transaction => {
-            validate_prepared_batch(actions, committed).map_err(|_error| {
-                BindingRuntimeError::AdapterCommit(FaultRuntimeError::IncompleteAdapterState)
-            })
-        }
-        Ok(_) => Err(BindingRuntimeError::AdapterCommit(
-            FaultRuntimeError::IncompleteAdapterState,
-        )),
-        Err(FaultActionCommitError::Rejected(rejected))
-            if validate_rejected_batch(actions, &rejected) =>
-        {
-            Err(BindingRuntimeError::AdapterRejected(rejected))
-        }
-        Err(FaultActionCommitError::Rejected(_)) => Err(BindingRuntimeError::AdapterResult),
-        Err(FaultActionCommitError::Fatal(error)) => Err(BindingRuntimeError::AdapterCommit(error)),
-    }
-}
-
-fn validate_rejected_batch(actions: &[ResolvedBindingAction], batch: &RejectedActionBatch) -> bool {
-    let Some(rejected) = batch.rejected_action else {
-        return false;
-    };
-    let Some(action) = actions.iter().find(|action| action.id() == rejected) else {
-        return false;
-    };
-    batch.observations.len() == 1
-        && batch.observations.iter().all(|observation| {
-            observation.semantic_version == FAULT_RUNTIME_STATE_VERSION
-                && observation.kind == FaultObservationKind::EffectRejected
-                && observation.binding.as_ref() == Some(&action.binding)
-                && observation.target.as_ref() == Some(&action.target)
-                && observation.opportunity == action.opportunity
-                && observation.coordinate == action.coordinate
-                && observation.evidence != ContentHash::default()
-        })
+fn recorded_effect_count(
+    work_items: &[ResolvedReplayWorkItem],
+) -> Result<usize, BindingRuntimeError> {
+    work_items.iter().try_fold(0_usize, |total, item| {
+        total
+            .checked_add(item.records.len())
+            .ok_or(BindingRuntimeError::CountOverflow(
+                "resolved_effect_records",
+            ))
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2044,6 +2159,7 @@ fn append_membership_actions(
             opportunity: None,
             coordinate,
             cause: cause.clone(),
+            expected_precondition: None,
         }));
 }
 
@@ -2396,31 +2512,6 @@ fn threshold_matches(
     })
 }
 
-fn mapped_values_digest(values: &[SignalValue]) -> Result<ContentHash, BindingRuntimeError> {
-    let mut bytes = Vec::new();
-    for value in values {
-        let encoded = encode_signal_value(value).map_err(BindingRuntimeError::Trace)?;
-        if bytes
-            .len()
-            .checked_add(4)
-            .and_then(|length| length.checked_add(encoded.len()))
-            .is_none_or(|length| length > HARD_MAPPED_EFFECT_BYTES)
-        {
-            return Err(BindingRuntimeError::MappedValueLimit);
-        }
-        bytes.extend_from_slice(
-            &u32::try_from(encoded.len())
-                .map_err(|_| BindingRuntimeError::MappedValueLimit)?
-                .to_be_bytes(),
-        );
-        bytes.extend_from_slice(&encoded);
-    }
-    Ok(ContentHash::from_canonical_material(
-        "crucible.binding-mapped-values.v1",
-        &hex_bytes(&bytes),
-    ))
-}
-
 fn sample_identity_digest(
     binding: &FaultBinding,
     values: &[SignalValue],
@@ -2472,97 +2563,21 @@ fn search_decision_identity(
     )
 }
 
-fn resolved_mapping_output_digest(
-    output: &ResolvedMappingOutput,
-) -> Result<ContentHash, BindingRuntimeError> {
-    let material = match output {
-        ResolvedMappingOutput::Activation { active } => format!("activation={active}"),
-        ResolvedMappingOutput::Parameter { parameter, value } => format!(
-            "parameter={};value={}",
-            mapped_parameter_name(*parameter),
-            encoded_value_material(value)?,
-        ),
-        ResolvedMappingOutput::Hazard {
-            probability_millionths,
-        } => format!("hazard={probability_millionths}"),
-        ResolvedMappingOutput::Impulse { event } => {
-            format!("impulse={}", encoded_value_material(event)?)
-        }
-        ResolvedMappingOutput::StateTransition {
-            transition_table,
-            request,
-            selected_transition,
-        } => format!(
-            "state_transition={};selected={};request={}",
-            transition_table.as_str(),
-            selected_transition.as_str(),
-            encoded_value_material(request)?,
-        ),
-        ResolvedMappingOutput::ServiceProfile {
-            service_profile,
-            input_contracts,
-            inputs,
-        } => format!(
-            "service_profile={};contracts={};inputs={}",
-            service_profile.as_str(),
-            mapped_service_inputs_digest(input_contracts)?.to_hex(),
-            mapped_values_digest(inputs)?.to_hex(),
-        ),
-    };
-    Ok(ContentHash::from_canonical_material(
-        "crucible.resolved-binding-output.v1",
-        &material,
-    ))
-}
-
-fn mapped_service_inputs_digest(
-    inputs: &[ServiceProfileInput],
-) -> Result<ContentHash, BindingRuntimeError> {
-    let mut material = b"crucible.resolved-binding-service-inputs.v1\0".to_vec();
-    for input in inputs {
-        let role = input.role.as_str().as_bytes();
-        let role_length =
-            u64::try_from(role.len()).map_err(|_| BindingRuntimeError::MappedValueLimit)?;
-        material.extend_from_slice(&role_length.to_be_bytes());
-        material.extend_from_slice(role);
-        let encoded = encode_signal_shape(&input.shape).map_err(BindingRuntimeError::Trace)?;
-        let length =
-            u64::try_from(encoded.len()).map_err(|_| BindingRuntimeError::MappedValueLimit)?;
-        material.extend_from_slice(&length.to_be_bytes());
-        material.extend_from_slice(&encoded);
-    }
-    Ok(ContentHash::from_bytes(&material))
-}
-
-fn encoded_value_material(value: &SignalValue) -> Result<String, BindingRuntimeError> {
-    encode_signal_value(value)
-        .map(|bytes| hex_bytes(&bytes))
-        .map_err(BindingRuntimeError::Trace)
-}
-
-const fn mapped_parameter_name(parameter: MappedEffectParameter) -> &'static str {
-    match parameter {
-        MappedEffectParameter::Probability => "probability",
-        MappedEffectParameter::DurationNanos => "duration_nanos",
-        MappedEffectParameter::BitsPerSecond => "bits_per_second",
-        MappedEffectParameter::BytesPerSecond => "bytes_per_second",
-        MappedEffectParameter::OperationsPerSecond => "operations_per_second",
-        MappedEffectParameter::CapacityRatio => "capacity_ratio",
-        MappedEffectParameter::SignedOffset => "signed_offset",
-        MappedEffectParameter::UnsignedCount => "unsigned_count",
-    }
-}
-
 fn validate_binding_checkpoint(
     program: &SignalProgram,
     bindings: &[FaultBinding],
     scenario_seed: ContentHash,
+    resource_limits: FaultResourceLimits,
     checkpoint: &BindingRuntimeCheckpoint,
 ) -> Result<(), BindingRuntimeError> {
+    resource_limits
+        .validate()
+        .map_err(BindingRuntimeError::ResourceLimit)?;
+    reserve_usize_runtime(resource_limits, "bindings", 0, bindings.len())?;
     if checkpoint.semantic_version != FAULT_RUNTIME_STATE_VERSION
         || checkpoint.signal_program != program.id()
         || checkpoint.scenario_seed != scenario_seed
-        || bindings.len() > HARD_FAULT_BINDING_LIMIT
+        || checkpoint.resource_limits != resource_limits
         || bindings.windows(2).any(|pair| pair[0].id() == pair[1].id())
         || bindings
             .iter()
@@ -2580,7 +2595,7 @@ fn validate_binding_checkpoint(
     }
     checkpoint
         .evaluator
-        .validate_for_program(program)
+        .validate_for_program(program, resource_limits)
         .map_err(|_| BindingRuntimeError::CheckpointState)?;
     if checkpoint.boundary_completed_cursor > checkpoint.scheduler_cursor
         || checkpoint.boundary_completed_cursor.is_some() && checkpoint.scheduler_cursor.is_none()
@@ -2604,13 +2619,23 @@ fn validate_binding_checkpoint(
         .filter(|binding| matches!(binding.selector(), TargetSelector::DynamicPath { .. }))
         .map(FaultBinding::id)
         .collect::<std::collections::BTreeSet<_>>();
+    reserve_usize_runtime(
+        resource_limits,
+        "resolved_effect_records",
+        0,
+        checkpoint.consumed_opportunities.len(),
+    )?;
+    reserve_usize_runtime(
+        resource_limits,
+        "search_choices_per_state",
+        0,
+        checkpoint.search_overrides.len(),
+    )?;
     if checkpoint
         .dynamic_membership
         .keys()
         .collect::<std::collections::BTreeSet<_>>()
         != dynamic_ids
-        || checkpoint.consumed_opportunities.len() > HARD_CONSUMED_OPPORTUNITY_SCOPES
-        || checkpoint.search_overrides.len() > HARD_SEARCH_OVERRIDES
         || !checkpoint.consumed_search_overrides.is_subset(
             &checkpoint
                 .search_overrides
@@ -2645,10 +2670,12 @@ fn validate_binding_checkpoint(
                     || state.active
                     || state.transition_sequence != 0
                     || state.search_choice_count != 0)
-            || state.search_choice_count > HARD_SEARCH_CHOICES_PER_STATE
         {
             return Err(BindingRuntimeError::CheckpointState);
         }
+        resource_limits
+            .reserve("search_choices_per_state", 0, state.search_choice_count)
+            .map_err(BindingRuntimeError::ResourceLimit)?;
         if let BindingSearchPolicy::BranchOutcome { maximum_branches } = binding.search()
             && state.search_choice_count > maximum_branches.get()
         {
@@ -2661,7 +2688,7 @@ fn validate_binding_checkpoint(
                     &resolved_mapping_output(binding, &state.mapped_values, state.active)?,
                     output,
                     binding.search(),
-                ) && resolved_mapping_output_digest(output)? == *digest => {}
+                ) && resolved_mapping_output_digest(output, resource_limits)? == *digest => {}
             (None, None) if state.mapped_values.is_empty() => {}
             _ => return Err(BindingRuntimeError::CheckpointState),
         }
@@ -2689,6 +2716,14 @@ fn validate_binding_checkpoint(
                 || membership.evidence == ContentHash::default())
         {
             return Err(BindingRuntimeError::CheckpointState);
+        }
+        if let Some(membership) = checkpoint.dynamic_membership.get(binding.id()) {
+            reserve_usize_runtime(
+                resource_limits,
+                "resolved_targets_per_binding",
+                0,
+                membership.targets.targets().len(),
+            )?;
         }
     }
     let binding_by_id = bindings
@@ -2777,6 +2812,23 @@ fn validate_binding_checkpoint(
         {
             return Err(BindingRuntimeError::CheckpointState);
         }
+    }
+    let mut active_by_target = BTreeMap::<&ResolvedFaultTarget, usize>::new();
+    for key in checkpoint.active.entries().keys() {
+        let current = active_by_target.entry(&key.target).or_default();
+        *current = current
+            .checked_add(1)
+            .ok_or(BindingRuntimeError::CountOverflow(
+                "active_contributions_per_target",
+            ))?;
+    }
+    for active in active_by_target.values() {
+        reserve_usize_runtime(
+            resource_limits,
+            "active_contributions_per_target",
+            0,
+            *active,
+        )?;
     }
     Ok(())
 }

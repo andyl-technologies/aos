@@ -74,11 +74,15 @@ fn ramp_and_ratio_arithmetic_are_exact() {
     };
     let store = MemoryDagStore::new();
     let provider = DagSignalArtifactProvider::new(&store);
-    let mut evaluator =
-        match SignalEvaluator::new(&program, &provider, SignalBoundarySnapshot::default()) {
-            Ok(value) => value,
-            Err(error) => panic!("test evaluator must initialize: {error}"),
-        };
+    let mut evaluator = match SignalEvaluator::new(
+        &program,
+        &provider,
+        SignalBoundarySnapshot::default(),
+        FaultResourceLimits::default(),
+    ) {
+        Ok(value) => value,
+        Err(error) => panic!("test evaluator must initialize: {error}"),
+    };
     let result = evaluator.evaluate(&SignalEvaluationRequest {
         output: id("scaled"),
         coordinate: SignalCoordinate::VirtualTime { nanos: 7 },
@@ -128,11 +132,15 @@ fn ratio_division_preserves_a_negative_divisor() {
     };
     let store = MemoryDagStore::new();
     let provider = DagSignalArtifactProvider::new(&store);
-    let mut evaluator =
-        match SignalEvaluator::new(&program, &provider, SignalBoundarySnapshot::default()) {
-            Ok(value) => value,
-            Err(error) => panic!("test evaluator must initialize: {error}"),
-        };
+    let mut evaluator = match SignalEvaluator::new(
+        &program,
+        &provider,
+        SignalBoundarySnapshot::default(),
+        FaultResourceLimits::default(),
+    ) {
+        Ok(value) => value,
+        Err(error) => panic!("test evaluator must initialize: {error}"),
+    };
     assert!(matches!(
         evaluator.evaluate(&SignalEvaluationRequest {
             output: id("divided"),
@@ -210,11 +218,15 @@ fn field_sample_uses_content_addressed_grid_and_explicit_position() {
         Err(error) => panic!("test program must be valid: {error}"),
     };
     let provider = DagSignalArtifactProvider::new(&store);
-    let mut evaluator =
-        match SignalEvaluator::new(&program, &provider, SignalBoundarySnapshot::default()) {
-            Ok(value) => value,
-            Err(error) => panic!("test evaluator must initialize: {error}"),
-        };
+    let mut evaluator = match SignalEvaluator::new(
+        &program,
+        &provider,
+        SignalBoundarySnapshot::default(),
+        FaultResourceLimits::default(),
+    ) {
+        Ok(value) => value,
+        Err(error) => panic!("test evaluator must initialize: {error}"),
+    };
     let result = evaluator.evaluate(&SignalEvaluationRequest {
         output: id("sample"),
         coordinate: SignalCoordinate::VirtualTime { nanos: 1 },
@@ -284,11 +296,15 @@ fn checkpoint_restore_preserves_stateful_continuation() {
     };
     let store = MemoryDagStore::new();
     let provider = DagSignalArtifactProvider::new(&store);
-    let mut uninterrupted =
-        match SignalEvaluator::new(&program, &provider, SignalBoundarySnapshot::default()) {
-            Ok(value) => value,
-            Err(error) => panic!("test evaluator must initialize: {error}"),
-        };
+    let mut uninterrupted = match SignalEvaluator::new(
+        &program,
+        &provider,
+        SignalBoundarySnapshot::default(),
+        FaultResourceLimits::default(),
+    ) {
+        Ok(value) => value,
+        Err(error) => panic!("test evaluator must initialize: {error}"),
+    };
     let first = SignalEvaluationRequest {
         output: id("counter"),
         coordinate: SignalCoordinate::VirtualTime { nanos: 1 },
@@ -303,7 +319,12 @@ fn checkpoint_restore_preserves_stateful_continuation() {
         Ok(value) => value,
         Err(error) => panic!("test checkpoint must encode: {error}"),
     };
-    let mut restored = match SignalEvaluator::restore(&program, &provider, &checkpoint) {
+    let mut restored = match SignalEvaluator::restore(
+        &program,
+        &provider,
+        &checkpoint,
+        FaultResourceLimits::default(),
+    ) {
         Ok(value) => value,
         Err(error) => panic!("test checkpoint must restore: {error}"),
     };
@@ -362,11 +383,15 @@ fn event_merge_maps_global_sequence_to_source_then_local_sequence() {
     };
     let store = MemoryDagStore::new();
     let provider = DagSignalArtifactProvider::new(&store);
-    let mut evaluator =
-        match SignalEvaluator::new(&program, &provider, SignalBoundarySnapshot::default()) {
-            Ok(value) => value,
-            Err(error) => panic!("test evaluator must initialize: {error}"),
-        };
+    let mut evaluator = match SignalEvaluator::new(
+        &program,
+        &provider,
+        SignalBoundarySnapshot::default(),
+        FaultResourceLimits::default(),
+    ) {
+        Ok(value) => value,
+        Err(error) => panic!("test evaluator must initialize: {error}"),
+    };
     let evaluate = |evaluator: &mut SignalEvaluator<'_>, sequence| {
         evaluator.evaluate(&SignalEvaluationRequest {
             output: id("merge"),
@@ -461,6 +486,7 @@ fn cadence_integrator_commits_prior_input_at_boundaries() {
             &[EvaluatedSignal::Value(SignalValue::I64(input))],
             &mut state,
             &mut emitted,
+            FaultResourceLimits::default(),
         )
     };
 
@@ -520,6 +546,7 @@ fn leaky_integrator_rejects_excess_catch_up_before_mutation() {
         &[EvaluatedSignal::Value(SignalValue::I64(10))],
         &mut state,
         &mut emitted,
+        FaultResourceLimits::default(),
     );
     assert!(first.is_ok());
     let before = state.clone();
@@ -535,6 +562,7 @@ fn leaky_integrator_rejects_excess_catch_up_before_mutation() {
         &[EvaluatedSignal::Value(SignalValue::I64(10))],
         &mut state,
         &mut emitted,
+        FaultResourceLimits::default(),
     );
     assert!(matches!(
         result,

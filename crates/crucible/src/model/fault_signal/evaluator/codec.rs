@@ -515,6 +515,7 @@ pub(super) fn decode_evaluator_checkpoint<'a>(
     program: &'a SignalProgram,
     artifacts: &'a dyn SignalArtifactProvider,
     checkpoint: &SignalEvaluatorCheckpoint,
+    resource_limits: FaultResourceLimits,
 ) -> Result<SignalEvaluator<'a>, SignalEvaluationError> {
     let mut reader = EvaluatorReader::new(&checkpoint.bytes);
     if reader.take(EVALUATOR_CHECKPOINT_MAGIC.len())? != EVALUATOR_CHECKPOINT_MAGIC
@@ -630,7 +631,9 @@ pub(super) fn decode_evaluator_checkpoint<'a>(
             return Err(SignalEvaluationError::MalformedCheckpoint);
         }
     }
-    let emitted_count = reader.count(HARD_SIGNAL_BOUNDARY_ITEMS)?;
+    // Boundary evaluation consumes state-machine emissions before checkpointing;
+    // retained pending history is therefore not part of the continuation.
+    let emitted_count = reader.count(0)?;
     let mut emitted_events = Vec::with_capacity(emitted_count);
     for _ in 0..emitted_count {
         let node = reader.id()?;
@@ -655,6 +658,7 @@ pub(super) fn decode_evaluator_checkpoint<'a>(
         history_limits: limits,
         retained_history,
         emitted_events,
+        resource_limits,
     };
     if evaluator.checkpoint()?.bytes != checkpoint.bytes {
         return Err(SignalEvaluationError::NonCanonicalCheckpoint);

@@ -608,6 +608,7 @@ pub struct QemuNode {
     fault_capabilities: Vec<FaultCapabilityRowV1>,
     next_fault_command_sequence: u64,
     next_fault_event_sequence: u64,
+    fault_event_terminal_failure: Option<String>,
 }
 
 impl QemuNode {
@@ -733,6 +734,7 @@ impl QemuNode {
             // query before a live node can be constructed.
             next_fault_command_sequence: 2,
             next_fault_event_sequence: 1,
+            fault_event_terminal_failure: None,
         }
     }
 
@@ -806,6 +808,7 @@ impl QemuNode {
             ));
         }
         self.next_fault_event_sequence = sequence;
+        self.fault_event_terminal_failure = None;
         Ok(())
     }
 
@@ -842,8 +845,13 @@ impl QemuNode {
     ///
     /// Returns [`QemuNodeError`] when transport authentication fails or the
     /// per-node event sequence has a gap, duplicate, or overflow.
-    pub fn drain_fault_events(&mut self) -> Result<Vec<DequeuedFaultEvent>, QemuNodeError> {
-        let mut events = Vec::new();
+    pub fn drain_fault_events(
+        &mut self,
+        events: &mut Vec<DequeuedFaultEvent>,
+    ) -> Result<(), QemuNodeError> {
+        if let Some(message) = &self.fault_event_terminal_failure {
+            return Err(QemuNodeError::fault_command(message.clone()));
+        }
         while let Some(event) =
             self.channels
                 .shmem_hot_path
@@ -852,19 +860,26 @@ impl QemuNode {
                     QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
                 })?
         {
-            if event.header.event_sequence != self.next_fault_event_sequence {
-                return Err(QemuNodeError::fault_command(format!(
-                    "fault event sequence mismatch: expected {}, observed {}",
-                    self.next_fault_event_sequence, event.header.event_sequence
-                )));
-            }
-            self.next_fault_event_sequence = self
-                .next_fault_event_sequence
-                .checked_add(1)
-                .ok_or_else(|| QemuNodeError::fault_command("fault event sequence is exhausted"))?;
+            let event_sequence = event.header.event_sequence;
             events.push(event);
+            if event_sequence != self.next_fault_event_sequence {
+                let message = format!(
+                    "fault event sequence mismatch: expected {}, observed {}",
+                    self.next_fault_event_sequence, event_sequence
+                );
+                self.fault_event_terminal_failure = Some(message.clone());
+                return Err(QemuNodeError::fault_command(message));
+            }
+            self.next_fault_event_sequence = match self.next_fault_event_sequence.checked_add(1) {
+                Some(sequence) => sequence,
+                None => {
+                    let message = String::from("fault event sequence is exhausted");
+                    self.fault_event_terminal_failure = Some(message.clone());
+                    return Err(QemuNodeError::fault_command(message));
+                }
+            };
         }
-        Ok(events)
+        Ok(())
     }
 
     /// Reports whether a QEMU event still awaits runtime admission.
@@ -873,6 +888,9 @@ impl QemuNode {
     ///
     /// Returns [`QemuNodeError`] when the event transport is invalid.
     pub fn fault_event_pending(&mut self) -> Result<bool, QemuNodeError> {
+        if let Some(message) = &self.fault_event_terminal_failure {
+            return Err(QemuNodeError::fault_command(message.clone()));
+        }
         self.channels
             .shmem_hot_path
             .fault_event_pending()
@@ -1265,6 +1283,11 @@ impl QemuNode {
                 "exact snapshot capture is forbidden while a debugger proxy is active",
             ));
         }
+        if let Some(message) = &self.fault_event_terminal_failure {
+            return Err(QemuNodeError::checkpoint(format!(
+                "fault-event transport is terminally invalid: {message}"
+            )));
+        }
         let expected_icount = checkpoint.node_icounts.get(node).ok_or_else(|| {
             QemuNodeError::checkpoint(format!(
                 "checkpoint has no instruction counter for QEMU node `{}`",
@@ -1429,6 +1452,7 @@ impl QemuNode {
         self.pending_network_outputs = checkpoint.pending_network_outputs.clone();
         self.next_fault_command_sequence = checkpoint.next_fault_command_sequence;
         self.next_fault_event_sequence = checkpoint.next_fault_event_sequence;
+        self.fault_event_terminal_failure = None;
         Ok(())
     }
 

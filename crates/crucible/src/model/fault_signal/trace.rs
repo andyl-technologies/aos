@@ -18,6 +18,8 @@ pub const TRACE_ENTRIES_PER_CHUNK: usize = 4_096;
 pub const HARD_TRACE_CHANNELS_PER_ARTIFACT: usize = 16_384;
 /// Hard maximum bytes in one trace value payload.
 pub const HARD_TRACE_VALUE_BYTES: usize = 67_108_864;
+/// Compiled maximum chunk references across one trace manifest.
+pub const HARD_TRACE_CHUNKS_TOTAL: usize = 16_777_216;
 /// Binary manifest magic.
 const MANIFEST_MAGIC: &[u8; 8] = b"CRTRMAN1";
 /// Binary chunk magic.
@@ -367,6 +369,7 @@ impl SignalTraceManifest {
         for channel in &channels {
             channel.validate()?;
         }
+        validate_chunk_total(&channels, HARD_TRACE_CHUNKS_TOTAL)?;
         let mut value = Self {
             semantic_version,
             time_basis,
@@ -434,6 +437,16 @@ impl SignalTraceManifest {
     /// Returns [`TraceError`] for malformed, noncanonical, unsupported, or
     /// trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, TraceError> {
+        Self::decode_with_chunk_limit(bytes, HARD_TRACE_CHUNKS_TOTAL)
+    }
+
+    /// Decodes a manifest under one scenario-owned total chunk limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraceError`] for malformed, noncanonical, unsupported, or
+    /// trailing bytes, or when all channel indexes together exceed `limit`.
+    pub fn decode_with_chunk_limit(bytes: &[u8], limit: usize) -> Result<Self, TraceError> {
         let mut reader = Reader::new(bytes);
         reader.expect_magic(MANIFEST_MAGIC)?;
         let semantic_version = reader.u16()?;
@@ -463,11 +476,15 @@ impl SignalTraceManifest {
         let redaction = reader.redaction()?;
         let channel_count = reader.count(HARD_TRACE_CHANNELS_PER_ARTIFACT)?;
         let mut channels = Vec::with_capacity(channel_count);
+        let mut total_chunks = 0_usize;
         for _ in 0..channel_count {
             let id = SignalId::parse(reader.text()?).map_err(TraceError::Signal)?;
             let shape = reader.shape()?;
             let event_channel = reader.boolean()?;
-            let chunk_count = reader.count(HARD_RESOLVED_EFFECT_RECORDS)?;
+            let chunk_count = reader.count(limit.saturating_sub(total_chunks))?;
+            total_chunks = total_chunks
+                .checked_add(chunk_count)
+                .ok_or(TraceError::MalformedCodec)?;
             let mut chunks = Vec::with_capacity(chunk_count);
             for _ in 0..chunk_count {
                 chunks.push(TraceChunkReference {
@@ -521,6 +538,17 @@ impl SignalTraceManifest {
             dependencies.insert(raw);
         }
         dependencies
+    }
+}
+
+fn validate_chunk_total(channels: &[TraceChannel], limit: usize) -> Result<(), TraceError> {
+    let chunk_total = channels.iter().try_fold(0_usize, |total, channel| {
+        total.checked_add(channel.chunks.len())
+    });
+    if chunk_total.is_none_or(|total| total > limit) {
+        Err(TraceError::ChunkTotalLimit)
+    } else {
+        Ok(())
     }
 }
 
@@ -1253,6 +1281,8 @@ pub enum TraceError {
     InvalidChunkIndex,
     /// Chunk entry count is empty or oversized.
     ChunkEntryLimit,
+    /// Aggregate chunk references exceed the compiled manifest ceiling.
+    ChunkTotalLimit,
     /// Event sequence presence contradicts the channel kind.
     InvalidEventSequence,
     /// Entry coordinates or event sequences are not strictly ordered.
@@ -1378,6 +1408,30 @@ mod tests {
         assert_eq!(
             channel.seek(10).map(|chunk| chunk.content),
             Some(ContentHash::from_bytes(b"first"))
+        );
+    }
+
+    #[test]
+    fn manifest_construction_enforces_the_aggregate_chunk_ceiling() {
+        let channel = TraceChannel {
+            id: signal_id("samples"),
+            shape: SignalShape::new(
+                SignalValueType::DurationNanos,
+                SignalUnit::VirtualNanoseconds,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("test shape: {error}")),
+            event_channel: false,
+            chunks: vec![TraceChunkReference {
+                first_coordinate: 1,
+                last_coordinate: 1,
+                entry_count: 1,
+                content: ContentHash::from_bytes(b"chunk"),
+            }],
+        };
+        assert_eq!(
+            validate_chunk_total(&[channel], 0),
+            Err(TraceError::ChunkTotalLimit)
         );
     }
 

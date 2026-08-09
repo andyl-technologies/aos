@@ -9,9 +9,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 
-/// Maximum unconsumed impulse actions retained by the host adapter.
-pub const HARD_HOST_FAULT_IMPULSES: usize = HARD_ACTIONS_PER_BOUNDARY;
-
 /// Committed live state for host-owned network and storage effects.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostFaultActionState {
@@ -133,26 +130,35 @@ struct PreparedHostFaultBatch {
 }
 
 /// Atomic production sink for the host network and storage device families.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct HostFaultActionSink {
     state: HostFaultActionState,
     prepared: Option<PreparedHostFaultBatch>,
+    resource_limits: FaultResourceLimits,
 }
 
 impl HostFaultActionSink {
     /// Creates an empty host adapter state.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(resource_limits: FaultResourceLimits) -> Self {
+        Self {
+            state: HostFaultActionState::default(),
+            prepared: None,
+            resource_limits,
+        }
     }
 
     /// Restores previously committed host adapter state.
     #[must_use]
-    pub fn from_state(mut state: HostFaultActionState) -> Self {
+    pub fn from_state(
+        mut state: HostFaultActionState,
+        resource_limits: FaultResourceLimits,
+    ) -> Self {
         state.recompute_digest();
         Self {
             state,
             prepared: None,
+            resource_limits,
         }
     }
 
@@ -201,6 +207,20 @@ impl FaultActionSink for HostFaultActionSink {
         if !self.state.impulses.is_empty() {
             return Err(self.reject(None, FaultRuntimeError::IncompleteAdapterState));
         }
+        for action in actions {
+            if let Some(expected) = action.expected_precondition {
+                if expected != self.state.digest {
+                    return Err(self.reject(
+                        Some(action),
+                        FaultRuntimeError::ReplayPreconditionMismatch {
+                            action: action.id(),
+                            expected,
+                            observed: self.state.digest,
+                        },
+                    ));
+                }
+            }
+        }
         let mut next = self.state.clone();
         let mut seen = BTreeSet::new();
         for action in actions {
@@ -227,19 +247,26 @@ impl FaultActionSink for HostFaultActionSink {
                     next.active.remove(&key);
                 }
                 BindingActionKind::Apply => {
-                    if next.impulses.len() == HARD_HOST_FAULT_IMPULSES {
-                        return Err(self.reject(
-                            Some(action),
-                            FaultRuntimeError::StateLimit {
-                                field: "host_fault_impulses",
-                                actual: u64::try_from(next.impulses.len() + 1).unwrap_or(u64::MAX),
-                                configured: u64::try_from(HARD_HOST_FAULT_IMPULSES)
-                                    .unwrap_or(u64::MAX),
-                            },
-                        ));
-                    }
                     next.impulses.push(action.clone());
                 }
+            }
+        }
+        let mut active_per_target = BTreeMap::<ResolvedFaultTarget, u64>::new();
+        for key in next.active.keys() {
+            let count = active_per_target.entry(key.target.clone()).or_default();
+            *count = count.checked_add(1).ok_or_else(|| {
+                self.reject(
+                    None,
+                    FaultRuntimeError::CountOverflow("active_contributions_per_target"),
+                )
+            })?;
+        }
+        for count in active_per_target.values().copied() {
+            if let Err(error) =
+                self.resource_limits
+                    .reserve("active_contributions_per_target", 0, count)
+            {
+                return Err(self.reject(None, FaultRuntimeError::ResourceLimit(error)));
             }
         }
         next.recompute_digest();
@@ -248,6 +275,7 @@ impl FaultActionSink for HostFaultActionSink {
             .iter()
             .map(|action| PreparedActionResult {
                 action: action.id(),
+                precondition: Some(self.state.digest),
                 observation: observation(action, FaultObservationKind::EffectApplied, next.digest),
             })
             .collect::<Vec<_>>();

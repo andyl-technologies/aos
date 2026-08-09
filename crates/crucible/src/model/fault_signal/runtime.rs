@@ -12,20 +12,10 @@ use std::sync::Arc;
 use super::*;
 
 /// Semantic version of runtime/checkpoint state.
-pub const FAULT_RUNTIME_STATE_VERSION: u16 = 1;
-/// Maximum active contributions in one run.
-pub const HARD_ACTIVE_CONTRIBUTIONS: usize = 262_144;
-/// Maximum keyed search overrides in one run.
-pub const HARD_SEARCH_OVERRIDES: usize = 262_144;
-/// Maximum resolved records retained directly by one replay trace.
-pub const HARD_RESOLVED_EFFECT_RECORDS: usize = 4_194_304;
-/// Maximum bytes in one adapter checkpoint payload.
-pub const HARD_ADAPTER_CHECKPOINT_BYTES: usize = 268_435_456;
-/// Maximum consumed opportunity scopes retained by one run.
-pub const HARD_CONSUMED_OPPORTUNITY_SCOPES: usize = 4_194_304;
+pub const FAULT_RUNTIME_STATE_VERSION: u16 = 2;
 
 /// Mutable activation state for one binding.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct BindingRuntimeState {
     /// Whether a persistent contribution is currently active.
     pub active: bool,
@@ -56,7 +46,7 @@ pub struct BindingRuntimeState {
 }
 
 /// Stable scope for monotone adapter opportunity delivery.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct ConsumedOpportunityKey {
     /// Binding consuming the adapter opportunities.
     pub binding: FaultObjectId,
@@ -69,7 +59,7 @@ pub struct ConsumedOpportunityKey {
 }
 
 /// Last accepted opportunity identity in one stable scope.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ConsumedOpportunityState {
     /// Monotone adapter-owned sequence.
     pub sequence: u64,
@@ -82,7 +72,7 @@ pub struct ConsumedOpportunityState {
 }
 
 /// Last committed global scheduler boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct FaultSchedulerCursor {
     /// Global virtual time in nanoseconds.
     pub virtual_nanos: u64,
@@ -106,7 +96,7 @@ pub struct DynamicMembershipTransition {
 }
 
 /// Last accepted state of one dynamic selector.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct DynamicMembershipState {
     /// Authored dynamic path identity.
     pub path: FaultObjectId,
@@ -121,7 +111,7 @@ pub struct DynamicMembershipState {
 }
 
 /// Complete mutable state owned by [`FaultBindingRuntime`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct BindingRuntimeCheckpoint {
     /// Exact runtime codec semantic version.
     pub semantic_version: u16,
@@ -129,6 +119,8 @@ pub struct BindingRuntimeCheckpoint {
     pub signal_program: ContentHash,
     /// Scenario-wide deterministic seed.
     pub scenario_seed: ContentHash,
+    /// Exact scenario-owned resource contract used by this continuation.
+    pub resource_limits: FaultResourceLimits,
     /// Complete canonical evaluator continuation.
     pub evaluator: SignalEvaluatorCheckpoint,
     /// Complete per-binding state.
@@ -202,7 +194,7 @@ pub struct ActiveContributionKey {
 }
 
 /// One active typed effect contribution.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ActiveEffectContribution {
     /// Typed validated request.
     pub request: Arc<EffectRequest>,
@@ -215,7 +207,7 @@ pub struct ActiveEffectContribution {
 }
 
 /// Canonical active-contribution table.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ActiveContributionTable {
     entries: BTreeMap<ActiveContributionKey, ActiveEffectContribution>,
 }
@@ -231,19 +223,23 @@ impl ActiveContributionTable {
         &mut self,
         key: ActiveContributionKey,
         contribution: ActiveEffectContribution,
+        resource_limits: FaultResourceLimits,
     ) -> Result<Option<ActiveEffectContribution>, FaultRuntimeError> {
         if contribution.request.lifetime() != EffectLifetime::Persistent {
             return Err(FaultRuntimeError::NonPersistentActivation);
         }
         validate_contribution_key(&key, contribution.request.kind())?;
-        if !self.entries.contains_key(&key) && self.entries.len() == HARD_ACTIVE_CONTRIBUTIONS {
-            return Err(FaultRuntimeError::StateLimit {
-                field: "active_contributions",
-                actual: u64::try_from(self.entries.len() + 1)
-                    .map_err(|_| FaultRuntimeError::CountOverflow("active_contributions"))?,
-                configured: u64::try_from(HARD_ACTIVE_CONTRIBUTIONS)
-                    .map_err(|_| FaultRuntimeError::CountOverflow("active_contributions"))?,
-            });
+        if !self.entries.contains_key(&key) {
+            let current = u64::try_from(
+                self.entries
+                    .keys()
+                    .filter(|entry| entry.target == key.target)
+                    .count(),
+            )
+            .map_err(|_| FaultRuntimeError::CountOverflow("active_contributions_per_target"))?;
+            resource_limits
+                .reserve("active_contributions_per_target", current, 1)
+                .map_err(FaultRuntimeError::ResourceLimit)?;
         }
         Ok(self.entries.insert(key, contribution))
     }
@@ -403,7 +399,7 @@ impl FaultCapabilityManifest {
 }
 
 /// Identity of one finite search decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct SearchChoiceId(ContentHash);
 
 impl SearchChoiceId {
@@ -438,7 +434,7 @@ impl SearchChoiceId {
 }
 
 /// Concrete explorer result retained for ordinary locked replay.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SearchOverride {
     /// Chosen zero-based candidate index.
     pub candidate_index: u32,
@@ -449,87 +445,291 @@ pub struct SearchOverride {
 }
 
 /// Authoritative replay behavior.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(tag = "mode", content = "alignment", rename_all = "snake_case")]
 pub enum FaultReplayMode {
     /// Reevaluates causes and verifies every resolved record.
     RecomputedCause,
     /// Uses exact resolved effects after strict context verification.
     LockedEffect,
     /// Uses an exact or explicitly bucketed network outcome stream.
-    OutcomeOnlyNetwork,
+    OutcomeOnlyNetwork(NetworkOutcomeAlignment),
 }
 
-/// Ordered resolved-effect trace and its replay cursor.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResolvedEffectTrace {
-    /// Replay mode encoded in the reproduction artifact.
-    pub mode: FaultReplayMode,
-    /// Exact ordered effect records.
+/// Deterministic alignment contract for captured network frame outcomes.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
+pub enum NetworkOutcomeAlignment {
+    /// Matches immutable producer, destination, ancestry, sequence, and bytes.
+    ExactFrameKey,
+    /// Matches the producer-owned sequence independently for each direction.
+    ProducerDirectionSequence,
+    /// Matches the exact scheduler coordinate and same-coordinate sequence.
+    ExactEventCoordinate,
+    /// Matches ordered compatible frames within the same positive time bucket.
+    OrderedTimeBucket {
+        /// Width of one alignment bucket in virtual nanoseconds.
+        width_nanos: u64,
+    },
+}
+
+/// One scheduler work item and every resolved effect committed for it.
+///
+/// Empty `records` is meaningful: it proves that the observed boundary or
+/// opportunity passed without an adapter mutation while still authenticating
+/// the complete post-derivation continuation.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedReplayWorkItem {
+    /// Scheduler coordinate at which the work item was evaluated.
+    pub coordinate: FaultCoordinate,
+    /// Stable order among scheduler work at the same coordinate.
+    pub same_coordinate_sequence: u64,
+    /// Exact opportunity identity, or `None` for a scheduler boundary.
+    pub opportunity: Option<ContentHash>,
+    /// Concrete opportunity target, when present.
+    pub target: Option<ResolvedFaultTarget>,
+    /// Exact adapter operation, when present.
+    pub operation: Option<FaultOperation>,
+    /// Exact directional context, when present.
+    pub direction: Option<FaultDirection>,
+    /// Exact adapter application phase, when present.
+    pub phase: Option<FaultPhase>,
+    /// Coordinate-independent immutable network-frame identity.
+    pub network_frame_key: Option<ContentHash>,
+    /// Stable producer/direction/sequence network alignment identity.
+    pub network_producer_direction_key: Option<ContentHash>,
+    /// Complete post-derivation signal and binding continuation fingerprint.
+    pub derivation_fingerprint: ContentHash,
+    /// Ordered effects committed for this work item; an empty list records pass.
     pub records: Vec<ResolvedEffectRecord>,
-    /// Next record to consume.
-    pub cursor: usize,
 }
 
-impl ResolvedEffectTrace {
-    /// Validates trace bounds and every replay record.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultRuntimeError`] for an oversized trace, invalid cursor,
-    /// invalid record, or non-network record in outcome-only network mode.
-    pub fn validate(&self) -> Result<(), FaultRuntimeError> {
-        if self.records.len() > HARD_RESOLVED_EFFECT_RECORDS || self.cursor > self.records.len() {
+impl ResolvedReplayWorkItem {
+    pub(crate) fn new(
+        coordinate: FaultCoordinate,
+        same_coordinate_sequence: u64,
+        opportunity: Option<&FaultOpportunity>,
+        derivation_fingerprint: ContentHash,
+        records: Vec<ResolvedEffectRecord>,
+    ) -> Result<Self, FaultRuntimeError> {
+        let item = Self {
+            coordinate,
+            same_coordinate_sequence,
+            opportunity: opportunity.map(FaultOpportunity::id),
+            target: opportunity.map(|value| value.target().clone()),
+            operation: opportunity.map(FaultOpportunity::operation),
+            direction: opportunity.and_then(FaultOpportunity::direction),
+            phase: opportunity.map(FaultOpportunity::phase),
+            network_frame_key: opportunity.and_then(FaultOpportunity::network_frame_key),
+            network_producer_direction_key: opportunity
+                .and_then(FaultOpportunity::network_producer_direction_key),
+            derivation_fingerprint,
+            records,
+        };
+        item.validate()?;
+        Ok(item)
+    }
+
+    fn validate(&self) -> Result<(), FaultRuntimeError> {
+        let opportunity_fields = [
+            self.target.is_some(),
+            self.operation.is_some(),
+            self.phase.is_some(),
+        ];
+        if opportunity_fields
+            .into_iter()
+            .any(|present| present != self.opportunity.is_some())
+            || self.network_frame_key.is_some() != self.network_producer_direction_key.is_some()
+            || self.network_frame_key.is_some() && self.opportunity.is_none()
+            || self.network_frame_key.is_some()
+                && self
+                    .operation
+                    .is_none_or(|operation| operation.adapter() != FaultAdapter::Network)
+        {
             return Err(FaultRuntimeError::InvalidReplayTrace);
         }
         for record in &self.records {
             record.validate().map_err(FaultRuntimeError::Contract)?;
-            if self.mode == FaultReplayMode::OutcomeOnlyNetwork
-                && record.effect.descriptor().adapter != FaultAdapter::Network
+            if record.coordinate != self.coordinate
+                || record.same_coordinate_sequence != self.same_coordinate_sequence
+                || record.opportunity != self.opportunity
+                || record.derivation_fingerprint != self.derivation_fingerprint
+                || self.target.as_ref() != Some(&record.target) && self.opportunity.is_some()
+                || record.operation != self.operation
+                || record.direction != self.direction
+                || self.phase.is_some_and(|phase| phase != record.phase)
+                || record.network_frame_key != self.network_frame_key
+                || record.network_producer_direction_key != self.network_producer_direction_key
             {
                 return Err(FaultRuntimeError::InvalidReplayTrace);
             }
         }
         Ok(())
     }
+}
 
-    /// Consumes the next record only if exact opportunity context matches.
+/// Ordered replay work-item trace and its next-item cursor.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedEffectTrace {
+    /// Replay mode encoded in the reproduction artifact.
+    pub mode: FaultReplayMode,
+    /// Exact ordered boundaries and opportunities, including pass outcomes.
+    pub work_items: Vec<ResolvedReplayWorkItem>,
+    /// Next work item to consume.
+    pub cursor: usize,
+}
+
+impl ResolvedEffectTrace {
+    /// Validates trace bounds and every replay work item.
     ///
     /// # Errors
     ///
-    /// Returns [`FaultRuntimeError::ReplayExhausted`] at end of trace or
-    /// [`FaultRuntimeError::ReplayMismatch`] without advancing on mismatch.
-    pub fn consume(
-        &mut self,
-        opportunity: &FaultOpportunity,
-        effect: EffectKind,
-        capability: &FaultCapabilityId,
-        precondition: Option<ContentHash>,
-    ) -> Result<&ResolvedEffectRecord, FaultRuntimeError> {
-        let record = self
-            .records
-            .get(self.cursor)
-            .ok_or(FaultRuntimeError::ReplayExhausted)?;
-        let matches = record.effect == effect
-            && record.target == *opportunity.target()
-            && record.opportunity == Some(opportunity.id())
-            && record.coordinate == opportunity.coordinate()
-            && record.phase == opportunity.phase()
-            && record.capability == *capability
-            && record.precondition_digest == precondition;
+    /// Returns [`FaultRuntimeError`] for an oversized trace, invalid cursor,
+    /// invalid work item, or non-network item in outcome-only network mode.
+    pub fn validate(&self, resource_limits: FaultResourceLimits) -> Result<(), FaultRuntimeError> {
+        if self.cursor > self.work_items.len() {
+            return Err(FaultRuntimeError::InvalidReplayTrace);
+        }
+        let work_items = u64::try_from(self.work_items.len())
+            .map_err(|_| FaultRuntimeError::CountOverflow("thin_replay_events"))?;
+        resource_limits
+            .reserve("thin_replay_events", 0, work_items)
+            .map_err(FaultRuntimeError::ResourceLimit)?;
+        let mut records = 0_u64;
+        for item in &self.work_items {
+            item.validate()?;
+            let additional = u64::try_from(item.records.len())
+                .map_err(|_| FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
+            records = records
+                .checked_add(additional)
+                .ok_or(FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
+            resource_limits
+                .reserve("resolved_effect_records", 0, records)
+                .map_err(FaultRuntimeError::ResourceLimit)?;
+            if let FaultReplayMode::OutcomeOnlyNetwork(alignment) = self.mode {
+                if item.network_frame_key.is_none()
+                    || matches!(
+                        alignment,
+                        NetworkOutcomeAlignment::OrderedTimeBucket { width_nanos: 0 }
+                    )
+                    || item
+                        .records
+                        .iter()
+                        .any(|record| record.effect.descriptor().adapter != FaultAdapter::Network)
+                {
+                    return Err(FaultRuntimeError::InvalidReplayTrace);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the next work item after enforcing its selected alignment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultRuntimeError::ReplayMismatch`] when the next recorded
+    /// context does not align with the observed work item.
+    pub fn work_item_for_context(
+        &self,
+        coordinate: FaultCoordinate,
+        same_coordinate_sequence: u64,
+        opportunity: Option<&FaultOpportunity>,
+    ) -> Result<Option<&ResolvedReplayWorkItem>, FaultRuntimeError> {
+        if matches!(self.mode, FaultReplayMode::OutcomeOnlyNetwork(_))
+            && opportunity
+                .and_then(FaultOpportunity::network_frame_key)
+                .is_none()
+        {
+            return Ok(None);
+        }
+        let Some(first) = self.work_items.get(self.cursor) else {
+            return Err(FaultRuntimeError::ReplayExhausted);
+        };
+        let observed = opportunity.map(FaultOpportunity::id).unwrap_or_default();
+        let matches = match self.mode {
+            FaultReplayMode::RecomputedCause | FaultReplayMode::LockedEffect => {
+                first.coordinate == coordinate
+                    && first.same_coordinate_sequence == same_coordinate_sequence
+                    && first.opportunity == opportunity.map(FaultOpportunity::id)
+            }
+            FaultReplayMode::OutcomeOnlyNetwork(alignment) => {
+                let opportunity = opportunity.ok_or(FaultRuntimeError::InvalidReplayTrace)?;
+                let compatible = first.target.as_ref() == Some(opportunity.target())
+                    && first.operation == Some(opportunity.operation())
+                    && first.phase == Some(opportunity.phase())
+                    && first.direction == opportunity.direction();
+                compatible
+                    && match alignment {
+                        NetworkOutcomeAlignment::ExactFrameKey => {
+                            first.network_frame_key == opportunity.network_frame_key()
+                        }
+                        NetworkOutcomeAlignment::ProducerDirectionSequence => {
+                            first.network_producer_direction_key
+                                == opportunity.network_producer_direction_key()
+                        }
+                        NetworkOutcomeAlignment::ExactEventCoordinate => {
+                            first.coordinate == coordinate
+                                && first.same_coordinate_sequence == same_coordinate_sequence
+                        }
+                        NetworkOutcomeAlignment::OrderedTimeBucket { width_nanos } => {
+                            width_nanos != 0
+                                && first.coordinate.virtual_nanos / width_nanos
+                                    == coordinate.virtual_nanos / width_nanos
+                        }
+                    }
+            }
+        };
         if !matches {
             return Err(FaultRuntimeError::ReplayMismatch {
                 index: self.cursor,
-                expected: record.opportunity,
-                observed: opportunity.id(),
+                expected: first.opportunity,
+                observed,
             });
         }
-        self.cursor += 1;
-        Ok(record)
+        Ok(Some(first))
+    }
+
+    /// Advances after one fully verified work item.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultRuntimeError::ReplayExhausted`] at the end of the trace.
+    pub fn advance(&mut self) -> Result<(), FaultRuntimeError> {
+        self.cursor = self
+            .cursor
+            .checked_add(1)
+            .filter(|cursor| *cursor <= self.work_items.len())
+            .ok_or(FaultRuntimeError::ReplayExhausted)?;
+        Ok(())
+    }
+
+    /// Requires every replay work item to have been consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultRuntimeError::ReplayMismatch`] when work items remain.
+    pub fn require_exhausted(&self) -> Result<(), FaultRuntimeError> {
+        if self.cursor == self.work_items.len() {
+            Ok(())
+        } else {
+            Err(FaultRuntimeError::ReplayMismatch {
+                index: self.cursor,
+                expected: self.work_items[self.cursor].opportunity,
+                observed: ContentHash::default(),
+            })
+        }
     }
 }
 
 /// Canonical adapter-owned checkpoint payload.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct AdapterCheckpointState {
     /// Exact adapter state semantic version.
     pub semantic_version: u16,
@@ -545,16 +745,16 @@ impl AdapterCheckpointState {
     /// # Errors
     ///
     /// Returns [`FaultRuntimeError`] when bytes exceed the hard payload limit.
-    pub fn new(semantic_version: u16, bytes: Vec<u8>) -> Result<Self, FaultRuntimeError> {
-        if bytes.len() > HARD_ADAPTER_CHECKPOINT_BYTES {
-            return Err(FaultRuntimeError::StateLimit {
-                field: "adapter_checkpoint_bytes",
-                actual: u64::try_from(bytes.len())
-                    .map_err(|_| FaultRuntimeError::CountOverflow("adapter_checkpoint_bytes"))?,
-                configured: u64::try_from(HARD_ADAPTER_CHECKPOINT_BYTES)
-                    .map_err(|_| FaultRuntimeError::CountOverflow("adapter_checkpoint_bytes"))?,
-            });
-        }
+    pub fn new(
+        semantic_version: u16,
+        bytes: Vec<u8>,
+        resource_limits: FaultResourceLimits,
+    ) -> Result<Self, FaultRuntimeError> {
+        let bytes_len = u64::try_from(bytes.len())
+            .map_err(|_| FaultRuntimeError::CountOverflow("fat_checkpoint_bytes"))?;
+        resource_limits
+            .reserve("fat_checkpoint_bytes", 0, bytes_len)
+            .map_err(FaultRuntimeError::ResourceLimit)?;
         let digest = ContentHash::from_bytes(&bytes);
         Ok(Self {
             semantic_version,
@@ -569,16 +769,12 @@ impl AdapterCheckpointState {
     ///
     /// Returns [`FaultRuntimeError`] when bytes exceed the hard limit or the
     /// stored digest does not authenticate the bytes.
-    pub fn validate(&self) -> Result<(), FaultRuntimeError> {
-        if self.bytes.len() > HARD_ADAPTER_CHECKPOINT_BYTES {
-            return Err(FaultRuntimeError::StateLimit {
-                field: "adapter_checkpoint_bytes",
-                actual: u64::try_from(self.bytes.len())
-                    .map_err(|_| FaultRuntimeError::CountOverflow("adapter_checkpoint_bytes"))?,
-                configured: u64::try_from(HARD_ADAPTER_CHECKPOINT_BYTES)
-                    .map_err(|_| FaultRuntimeError::CountOverflow("adapter_checkpoint_bytes"))?,
-            });
-        }
+    pub fn validate(&self, resource_limits: FaultResourceLimits) -> Result<(), FaultRuntimeError> {
+        let bytes_len = u64::try_from(self.bytes.len())
+            .map_err(|_| FaultRuntimeError::CountOverflow("fat_checkpoint_bytes"))?;
+        resource_limits
+            .reserve("fat_checkpoint_bytes", 0, bytes_len)
+            .map_err(FaultRuntimeError::ResourceLimit)?;
         if self.digest != ContentHash::from_bytes(&self.bytes) {
             return Err(FaultRuntimeError::AdapterCheckpointDigest);
         }
@@ -587,16 +783,22 @@ impl AdapterCheckpointState {
 }
 
 /// Complete mutable state required by a fat fault-runtime checkpoint.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct FaultRuntimeCheckpoint {
     /// Exact runtime codec semantic version.
     pub semantic_version: u16,
+    /// Exact admitted fault-plan identity.
+    pub fault_plan: ContentHash,
+    /// Exact scenario-owned resource contract.
+    pub resource_limits: FaultResourceLimits,
     /// Sole complete signal/binding runtime continuation.
     pub binding_runtime: BindingRuntimeCheckpoint,
     /// Production-adapter mutable state.
     pub adapters: BTreeMap<FaultAdapter, AdapterCheckpointState>,
     /// Replay trace and cursor, when replaying.
     pub replay: Option<ResolvedEffectTrace>,
+    /// Complete evaluated work items and their resolved effects.
+    pub recorded_work_items: Vec<ResolvedReplayWorkItem>,
     /// Resolved-effect objects retained as checkpoint dependencies.
     pub retained_effects: BTreeSet<ContentHash>,
     /// Parent branch provenance for debugger edits.
@@ -606,6 +808,38 @@ pub struct FaultRuntimeCheckpoint {
 }
 
 impl FaultRuntimeCheckpoint {
+    /// Encodes the complete continuation as deterministic CBOR.
+    ///
+    /// This is the authoritative aggregate representation for the checkpoint
+    /// byte limit and content identity. Every nested mutable field participates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultRuntimeError`] when serialization fails, the byte count
+    /// is not representable, or the complete checkpoint exceeds the plan's
+    /// `fat_checkpoint_bytes` limit.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaultRuntimeError> {
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(self, &mut bytes)
+            .map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
+        let byte_count = u64::try_from(bytes.len())
+            .map_err(|_| FaultRuntimeError::CountOverflow("fat_checkpoint_bytes"))?;
+        self.resource_limits
+            .reserve("fat_checkpoint_bytes", 0, byte_count)
+            .map_err(FaultRuntimeError::ResourceLimit)?;
+        Ok(bytes)
+    }
+
+    /// Returns the content identity of the complete mutable continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultRuntimeError`] under the same conditions as
+    /// [`Self::canonical_bytes`].
+    pub fn content_id(&self) -> Result<ContentHash, FaultRuntimeError> {
+        Ok(ContentHash::from_bytes(&self.canonical_bytes()?))
+    }
+
     /// Validates versions, all nested state, and hard collection limits.
     ///
     /// # Errors
@@ -614,40 +848,42 @@ impl FaultRuntimeCheckpoint {
     /// or exceeds a compiled bound.
     pub fn validate(
         &self,
-        program: &SignalProgram,
-        bindings: &[FaultBinding],
+        plan: &FaultSignalPlan,
         scenario_seed: ContentHash,
     ) -> Result<(), FaultRuntimeError> {
+        let _ = self.canonical_bytes()?;
+        let [program] = plan.programs() else {
+            return Err(FaultRuntimeError::VersionOrIdentityMismatch);
+        };
+        let bindings = plan.bindings();
         if self.semantic_version != FAULT_RUNTIME_STATE_VERSION
+            || self.fault_plan != plan.id()
+            || self.resource_limits != plan.resource_limits()
             || self.binding_runtime.semantic_version != FAULT_RUNTIME_STATE_VERSION
             || self.binding_runtime.signal_program != program.id()
+            || self.binding_runtime.resource_limits != self.resource_limits
             || self.binding_runtime.binding_contracts != bindings
         {
             return Err(FaultRuntimeError::VersionOrIdentityMismatch);
         }
-        self.binding_runtime
-            .validate(program, bindings, scenario_seed)
-            .map_err(|_| FaultRuntimeError::VersionOrIdentityMismatch)?;
-        if self.binding_runtime.active.entries().len() > HARD_ACTIVE_CONTRIBUTIONS
-            || self.binding_runtime.search_overrides.len() > HARD_SEARCH_OVERRIDES
+        match self
+            .binding_runtime
+            .validate(program, bindings, scenario_seed, self.resource_limits)
         {
-            return Err(FaultRuntimeError::StateLimit {
-                field: "runtime_collections",
-                actual: u64::try_from(
-                    self.binding_runtime
-                        .active
-                        .entries()
-                        .len()
-                        .max(self.binding_runtime.search_overrides.len()),
-                )
-                .map_err(|_| FaultRuntimeError::CountOverflow("runtime_collections"))?,
-                configured: u64::try_from(HARD_ACTIVE_CONTRIBUTIONS.max(HARD_SEARCH_OVERRIDES))
-                    .map_err(|_| FaultRuntimeError::CountOverflow("runtime_collections"))?,
-            });
+            Ok(()) => {}
+            Err(BindingRuntimeError::ResourceLimit(error)) => {
+                return Err(FaultRuntimeError::ResourceLimit(error));
+            }
+            Err(_) => return Err(FaultRuntimeError::VersionOrIdentityMismatch),
         }
+        let search_overrides = u64::try_from(self.binding_runtime.search_overrides.len())
+            .map_err(|_| FaultRuntimeError::CountOverflow("search_choices_per_state"))?;
+        self.resource_limits
+            .reserve("search_choices_per_state", 0, search_overrides)
+            .map_err(FaultRuntimeError::ResourceLimit)?;
         self.binding_runtime
             .evaluator
-            .validate_for_program(program)
+            .validate_for_program(program, self.resource_limits)
             .map_err(|_| FaultRuntimeError::InvalidEvaluatorCheckpoint)?;
         let required_bindings = bindings
             .iter()
@@ -672,7 +908,7 @@ impl FaultRuntimeCheckpoint {
             return Err(FaultRuntimeError::IncompleteAdapterState);
         }
         for state in self.adapters.values() {
-            state.validate()?;
+            state.validate(self.resource_limits)?;
         }
         for (key, contribution) in self.binding_runtime.active.entries() {
             validate_contribution_key(key, contribution.request.kind())?;
@@ -686,7 +922,24 @@ impl FaultRuntimeCheckpoint {
             }
         }
         if let Some(replay) = &self.replay {
-            replay.validate()?;
+            replay.validate(self.resource_limits)?;
+        }
+        let recorded_work_items = u64::try_from(self.recorded_work_items.len())
+            .map_err(|_| FaultRuntimeError::CountOverflow("thin_replay_events"))?;
+        self.resource_limits
+            .reserve("thin_replay_events", 0, recorded_work_items)
+            .map_err(FaultRuntimeError::ResourceLimit)?;
+        let mut recorded_effects = 0_u64;
+        for item in &self.recorded_work_items {
+            item.validate()?;
+            let additional = u64::try_from(item.records.len())
+                .map_err(|_| FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
+            recorded_effects = recorded_effects
+                .checked_add(additional)
+                .ok_or(FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
+            self.resource_limits
+                .reserve("resolved_effect_records", 0, recorded_effects)
+                .map_err(FaultRuntimeError::ResourceLimit)?;
         }
         Ok(())
     }
@@ -819,15 +1072,8 @@ pub enum FaultRuntimeError {
     AdapterTransactionRollback,
     /// A collection count could not fit the canonical counter.
     CountOverflow(&'static str),
-    /// Bounded mutable state exceeded its limit.
-    StateLimit {
-        /// Limit field.
-        field: &'static str,
-        /// Observed usage.
-        actual: u64,
-        /// Effective maximum.
-        configured: u64,
-    },
+    /// A scenario-owned resource reservation failed.
+    ResourceLimit(FaultResourceLimitError),
     /// Canonical evaluator checkpoint failed version, identity, or content validation.
     InvalidEvaluatorCheckpoint,
     /// Checkpoint omitted, duplicated, or added binding state.
@@ -838,6 +1084,8 @@ pub enum FaultRuntimeError {
     AdapterCheckpointDigest,
     /// Adapter checkpoint bytes are not the exact supported canonical schema.
     AdapterCheckpointCodec,
+    /// The complete runtime checkpoint could not be encoded canonically.
+    CheckpointEncoding,
     /// A monotone runtime sequence overflowed.
     SequenceOverflow(&'static str),
     /// A non-persistent effect entered the active table.
@@ -863,6 +1111,15 @@ pub enum FaultRuntimeError {
         /// Observed opportunity identity.
         observed: ContentHash,
     },
+    /// Locked replay encountered a different live before-state digest.
+    ReplayPreconditionMismatch {
+        /// Exact resolved action identity.
+        action: ContentHash,
+        /// Digest retained by the replay record.
+        expected: ContentHash,
+        /// Digest observed by the live backend before mutation.
+        observed: ContentHash,
+    },
     /// Runtime semantic version or program identity differs.
     VersionOrIdentityMismatch,
 }
@@ -873,7 +1130,15 @@ impl fmt::Display for FaultRuntimeError {
     }
 }
 
-impl Error for FaultRuntimeError {}
+impl Error for FaultRuntimeError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ResourceLimit(error) => Some(error),
+            Self::Contract(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -919,6 +1184,7 @@ mod tests {
                     mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
                     transition_sequence: 1,
                 },
+                FaultResourceLimits::default(),
             );
             assert!(result.is_ok());
         }
@@ -934,14 +1200,70 @@ mod tests {
     }
 
     #[test]
-    fn adapter_checkpoint_digest_is_revalidated() {
-        let mut state = match AdapterCheckpointState::new(1, vec![1, 2, 3]) {
-            Ok(value) => value,
-            Err(error) => panic!("test adapter state must be valid: {error}"),
+    fn active_contributions_obey_the_plan_owned_per_target_limit() {
+        let target = ResolvedFaultTarget::NetworkSegment {
+            segment: object_id("segment-limited"),
+            direction: FaultDirection::AToB,
         };
+        let request = EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Persistent,
+            EffectSpecification::Network(NetworkEffectSpecification::Availability {
+                state: NetworkAvailabilityState::Down,
+                queued_policy: NetworkInFlightPolicy::Drop,
+                in_flight_policy: NetworkInFlightPolicy::Drop,
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test request must be valid: {error}"));
+        let mut limits = FaultResourceLimits::default();
+        limits.active_contributions_per_target = 1;
+        let mut table = ActiveContributionTable::default();
+        for name in ["binding-first", "binding-rejected"] {
+            let result = table.activate(
+                ActiveContributionKey {
+                    target: target.clone(),
+                    phase: FaultPhase::Admit,
+                    effect: EffectKind::NetworkAvailability,
+                    binding: object_id(name),
+                },
+                ActiveEffectContribution {
+                    request: Arc::new(request.clone()),
+                    mapped_parameters: ContentHash::from_bytes(name.as_bytes()),
+                    mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
+                    transition_sequence: 1,
+                },
+                limits,
+            );
+            if name == "binding-first" {
+                assert!(result.is_ok());
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(FaultRuntimeError::ResourceLimit(
+                        FaultResourceLimitError::Exceeded {
+                            field: "active_contributions_per_target",
+                            current: 1,
+                            requested: 1,
+                            configured: 1,
+                            ..
+                        }
+                    ))
+                ));
+            }
+        }
+        assert_eq!(table.entries().len(), 1);
+    }
+
+    #[test]
+    fn adapter_checkpoint_digest_is_revalidated() {
+        let mut state =
+            match AdapterCheckpointState::new(1, vec![1, 2, 3], FaultResourceLimits::default()) {
+                Ok(value) => value,
+                Err(error) => panic!("test adapter state must be valid: {error}"),
+            };
         state.bytes.push(4);
         assert_eq!(
-            state.validate(),
+            state.validate(FaultResourceLimits::default()),
             Err(FaultRuntimeError::AdapterCheckpointDigest)
         );
     }
