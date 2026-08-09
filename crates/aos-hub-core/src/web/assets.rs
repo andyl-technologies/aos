@@ -121,7 +121,7 @@ pub async fn console_asset(Path(asset): Path<String>) -> Response {
     }
     if asset == console_bootstrap_name() {
         let source = format!(
-            "import init, {{ mount }} from './{}';\n\nawait init(new URL('./{}', import.meta.url));\nmount();\n",
+            "import init, {{ mount }} from './{}';\n\nawait init({{ module_or_path: new URL('./{}', import.meta.url) }});\nmount();\n",
             console_js_name(),
             console_wasm_name(),
         );
