@@ -31,6 +31,7 @@ mod network_effect;
 mod node_effect;
 mod opportunity;
 mod plan;
+mod resource_limits;
 mod runtime;
 mod sampler;
 mod search_materialization;
@@ -59,6 +60,7 @@ pub use network_effect::*;
 pub use node_effect::*;
 pub use opportunity::*;
 pub use plan::*;
+pub use resource_limits::*;
 pub use runtime::*;
 pub use sampler::*;
 pub use search_materialization::*;
@@ -88,7 +90,7 @@ pub const HARD_SIGNAL_GRAPH_DEPTH_LIMIT: u16 = 4_096;
 pub const HARD_SIGNAL_STATE_BYTES_LIMIT: u64 = 268_435_456;
 
 /// Hard maximum encoded authored parameters retained by one signal program.
-pub const HARD_SIGNAL_AUTHORED_PAYLOAD_BYTES_LIMIT: u64 = 67_108_864;
+pub const HARD_SIGNAL_AUTHORED_PAYLOAD_BYTES_LIMIT: u64 = 16_777_216;
 
 /// Hard maximum opaque bytes carried by one literal value.
 pub const HARD_SIGNAL_LITERAL_BYTES_PER_VALUE: usize = 16_777_216;
@@ -134,7 +136,7 @@ impl Default for SignalResourceLimits {
             inputs_per_node: 64,
             graph_depth: HARD_SIGNAL_GRAPH_DEPTH_LIMIT,
             state_bytes: 67_108_864,
-            authored_payload_bytes: 16_777_216,
+            authored_payload_bytes: 1_048_576,
             states_per_node: 4_096,
             transitions_per_node: 16_384,
             lookup_points_per_node: 65_536,

@@ -79,3 +79,11 @@ fn nginx_fixture_is_canonical() -> Result<(), EngineError> {
     assert_eq!(scenario.to_canonical_toml()?, text);
     Ok(())
 }
+
+#[test]
+fn happy_path_fixture_is_canonical() -> Result<(), EngineError> {
+    let text = include_str!("../../../tests/crucible/fixtures/happy-path.scenario.toml");
+    let scenario = ScenarioDefForm::from_canonical_toml(text)?;
+    assert_eq!(scenario.to_canonical_toml()?, text);
+    Ok(())
+}
