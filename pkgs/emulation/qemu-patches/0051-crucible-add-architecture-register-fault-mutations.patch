@@ -395,10 +395,10 @@ index 3d7d502..6c36ed5 100644
  {
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
 new file mode 100644
-index 0000000..bb687f8
+index 0000000..bb3c449
 --- /dev/null
 +++ b/plugins/crucible-fault-register.c
-@@ -0,0 +1,803 @@
+@@ -0,0 +1,826 @@
 +/*
 + * Crucible architecture register fault targets
 + *
@@ -979,9 +979,22 @@ index 0000000..bb687f8
 +    uint32_t rollback_side_effects = 0;
 +    size_t bytes = DIV_ROUND_UP(apply->target->width_bits, 8);
 +    CPUClass *cc = CPU_GET_CLASS(apply->cpu);
++    const char *failure_stage = NULL;
 +
-+    if (qemu_plugin_rr_cursor(&rr) != 0 ||
-+        rr.current_vcpu != apply->cpu->cpu_index) {
++    if (qemu_plugin_rr_cursor(&rr) != 0 &&
++        model_phase == QEMU_CRUCIBLE_MODEL_PHASE_AFTER_INSTRUCTION) {
++        rr.current_vcpu = qemu_plugin_crucible_rr_current_vcpu();
++        rr.cursor_position = qemu_plugin_crucible_rr_cursor_position();
++        rr.rr_switch_quantum = qemu_plugin_crucible_rr_switch_quantum();
++    }
++    if (rr.current_vcpu != apply->cpu->cpu_index ||
++        rr.rr_switch_quantum == 0 ||
++        rr.cursor_position > rr.rr_switch_quantum ||
++        (rr.cursor_position == rr.rr_switch_quantum &&
++         model_phase != QEMU_CRUCIBLE_MODEL_PHASE_AFTER_INSTRUCTION)) {
++        error_report("Crucible register mutation lost RR cursor ownership "
++                     "for register %u at phase %u icount %" PRIu64,
++                     apply->target->numeric_id, model_phase, icount);
 +        return -EXDEV;
 +    }
 +    g_byte_array_set_size(before, bytes);
@@ -989,6 +1002,8 @@ index 0000000..bb687f8
 +    if (cc->crucible_register_read(
 +            apply->cpu, apply->target->numeric_id,
 +            before->data, bytes) != bytes) {
++        error_report("Crucible register mutation could not read register %u",
++                     apply->target->numeric_id);
 +        return -EIO;
 +    }
 +    desired = g_memdup2(before->data, bytes);
@@ -996,11 +1011,15 @@ index 0000000..bb687f8
 +    if (cc->crucible_register_validate_write(
 +            apply->cpu, apply->target->numeric_id,
 +            desired, bytes) != bytes) {
++        error_report("Crucible register mutation became invalid for register %u",
++                     apply->target->numeric_id);
 +        return -EINVAL;
 +    }
 +    if (cc->crucible_register_write(
 +            apply->cpu, apply->target->numeric_id, desired, bytes,
 +            &performed_side_effects) != bytes) {
++        error_report("Crucible register mutation could not write register %u",
++                     apply->target->numeric_id);
 +        return -EIO;
 +    }
 +    if (performed_side_effects != apply->capability->side_effects ||
@@ -1008,12 +1027,14 @@ index 0000000..bb687f8
 +            apply->cpu, apply->target->numeric_id,
 +            after->data, bytes) != bytes ||
 +        memcmp(after->data, desired, bytes) != 0) {
++        failure_stage = "architectural readback";
 +        goto rollback;
 +    }
 +    crucible_register_sha256(before->data, before->len, before_hash);
 +    crucible_register_sha256(after->data, after->len, after_hash);
 +    if (crucible_register_execution_fingerprint(
 +            icount, &rr, fingerprint) != 0) {
++        failure_stage = "execution fingerprint";
 +        goto rollback;
 +    }
 +    memcpy(header, "CRUCQRW1", 8);
@@ -1044,6 +1065,8 @@ index 0000000..bb687f8
 +    return 0;
 +
 +rollback:
++    error_report("Crucible register mutation failed %s for register %u",
++                 failure_stage, apply->target->numeric_id);
 +    if (cc->crucible_register_write(
 +            apply->cpu, apply->target->numeric_id, before->data, bytes,
 +            &rollback_side_effects) != bytes ||
@@ -2923,10 +2946,10 @@ index 2e9c472..1257e54 100644
    'cpu-apic.c',
 diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
 new file mode 100644
-index 0000000..19a816a
+index 0000000..30b9819
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-register.c
-@@ -0,0 +1,690 @@
+@@ -0,0 +1,765 @@
 +/*
 + * Live Crucible architecture-register mutation test plugin
 + *
@@ -2944,6 +2967,7 @@ index 0000000..19a816a
 +
 +#define TEST_REGISTER_EVIDENCE_HEADER_BYTES 128
 +#define TEST_MODEL_PHASE_BEFORE_INSTRUCTION 11
++#define TEST_MODEL_PHASE_AFTER_INSTRUCTION 12
 +
 +typedef enum TestMode {
 +    TEST_MODE_IMPULSE,
@@ -2953,9 +2977,17 @@ index 0000000..19a816a
 +
 +static TestMode test_mode;
 +static uint16_t test_architecture;
++static uint16_t test_model_phase;
++static uint16_t test_command_phase;
 +static uint32_t test_numeric_id;
++static uint16_t test_group;
 +static uint32_t test_first_bit;
 +static uint32_t test_side_effects;
++static const char *test_register_name;
++static uint64_t test_result_address;
++static bool test_guest_observation_required;
++static bool test_guest_observed;
++static bool test_terminal_cursor_required;
 +static uint8_t test_architecture_identity[32];
 +static uint8_t test_register_identity[32];
 +static uint8_t test_action_hash[32];
@@ -3184,7 +3216,7 @@ index 0000000..19a816a
 +    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_TARGET_KIND_OFFSET,
 +                 CRUCIBLE_NODE_FAULT_TARGET_REGISTER);
 +    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_MODEL_PHASE_OFFSET,
-+                 TEST_MODEL_PHASE_BEFORE_INSTRUCTION);
++                 test_model_phase);
 +    test_put_u64(header + CRUCIBLE_NODE_FAULT_PAYLOAD_GENERATION_OFFSET, 1);
 +    memcpy(header + CRUCIBLE_NODE_FAULT_PAYLOAD_ACTION_HASH_OFFSET,
 +           test_action_hash, sizeof(test_action_hash));
@@ -3242,6 +3274,8 @@ index 0000000..19a816a
 +    uint8_t before_bit;
 +    uint8_t after_bit;
 +    uint8_t digest[32];
++    uint64_t cursor_position = test_get_u64(evidence + 72);
++    uint64_t rr_switch_quantum = test_get_u64(evidence + 80);
 +    uint32_t expected_mutation = test_mode == TEST_MODE_IMPULSE ?
 +        CRUCIBLE_FAULT_REGISTER_MUTATION_BIT_FLIP :
 +        CRUCIBLE_FAULT_REGISTER_MUTATION_STUCK;
@@ -3250,8 +3284,7 @@ index 0000000..19a816a
 +        memcmp(evidence, "CRUCQRW1", 8) != 0 ||
 +        test_get_u16(evidence + 8) != 1 ||
 +        test_get_u16(evidence + 10) != test_architecture ||
-+        test_get_u16(evidence + 12) !=
-+            TEST_MODEL_PHASE_BEFORE_INSTRUCTION ||
++        test_get_u16(evidence + 12) != test_model_phase ||
 +        test_get_u16(evidence + 14) != 0 ||
 +        test_get_u32(evidence + 16) != 0 ||
 +        test_get_u32(evidence + 20) != test_numeric_id ||
@@ -3262,9 +3295,25 @@ index 0000000..19a816a
 +        test_get_u32(evidence + 40) != 1 ||
 +        test_get_u64(evidence + 56) != expected_icount ||
 +        test_get_u64(evidence + 64) != 0 ||
-+        test_get_u64(evidence + 80) == 0 ||
++        rr_switch_quantum == 0 ||
++        cursor_position > rr_switch_quantum ||
++        (cursor_position == rr_switch_quantum &&
++         test_model_phase != TEST_MODEL_PHASE_AFTER_INSTRUCTION) ||
++        (test_terminal_cursor_required &&
++         cursor_position != rr_switch_quantum) ||
 +        !test_bytes_nonzero(evidence + 88, 32) ||
 +        test_get_u32(evidence + 124) != 0) {
++        g_printerr("register evidence debug phase=%u vcpu=%u numeric=%u "
++                   "icount=%" G_GUINT64_FORMAT " current=%" G_GUINT64_FORMAT
++                   " cursor=%" G_GUINT64_FORMAT " quantum=%" G_GUINT64_FORMAT
++                   " terminal=%s\n",
++                   test_get_u16(evidence + 12),
++                   test_get_u32(evidence + 16),
++                   test_get_u32(evidence + 20),
++                   test_get_u64(evidence + 56),
++                   test_get_u64(evidence + 64), cursor_position,
++                   rr_switch_quantum,
++                   test_terminal_cursor_required ? "true" : "false");
 +        test_fail("register evidence identity or scheduler framing is wrong");
 +    }
 +    before_len = test_get_u32(evidence + 44);
@@ -3322,7 +3371,20 @@ index 0000000..19a816a
 +    }
 +    test_command.command_flags = 0;
 +    test_command.command_sequence = 2;
-+    test_command.target_icount = prepared->observed_icount + 16;
++    if (test_terminal_cursor_required) {
++        uint64_t quantum = qemu_plugin_crucible_rr_switch_quantum();
++        uint64_t current_icount = qemu_plugin_crucible_icount();
++
++        if (quantum == 0 || current_icount < prepared->observed_icount) {
++            test_fail("terminal-cursor test has no valid RR quantum");
++        }
++        if (current_icount > UINT64_MAX - quantum) {
++            test_fail("terminal-cursor target overflows node icount");
++        }
++        test_command.target_icount = current_icount + quantum;
++    } else {
++        test_command.target_icount = prepared->observed_icount + 16;
++    }
 +    test_command.authorization_ceiling_icount = test_command.target_icount;
 +    memcpy(test_command.expected_precondition_hash,
 +           prepared->before_hash, 32);
@@ -3350,7 +3412,7 @@ index 0000000..19a816a
 +        }
 +        if (status == 1 && event.command_kind ==
 +                CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM) {
-+            if (event.model_phase != TEST_MODEL_PHASE_BEFORE_INSTRUCTION ||
++            if (event.model_phase != test_model_phase ||
 +                event.outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
 +                event.target_kind != CRUCIBLE_NODE_FAULT_TARGET_REGISTER ||
 +                event.reserved != 0 || event.event_sequence == 0 ||
@@ -3379,34 +3441,39 @@ index 0000000..19a816a
 +        (test_mode == TEST_MODE_PERSISTENT ? "persistent" :
 +         "reject-invalid");
 +
-+    if (!test_validated || test_finished) {
++    if (!test_validated ||
++        (test_guest_observation_required && !test_guest_observed) ||
++        test_finished) {
 +        return;
 +    }
 +    test_finished = true;
-+    g_printerr("CRUCIBLE_REGISTER_MUTATION_LIVE_PASS architecture=%u mode=%s register=%u\n",
-+               test_architecture, mode, test_numeric_id);
++    g_printerr("CRUCIBLE_REGISTER_MUTATION_LIVE_PASS architecture=%u mode=%s register=%s register_id=%u group=%u phase=%s guest_observed=%s terminal_cursor=%s\n",
++               test_architecture, mode, test_register_name, test_numeric_id,
++               test_group,
++               test_model_phase == TEST_MODEL_PHASE_BEFORE_INSTRUCTION ?
++               "before" : "after",
++               test_guest_observed ? "true" : "false",
++               test_terminal_cursor_required ? "true" : "false");
 +    qemu_plugin_request_shutdown(0);
 +}
 +
-+static void test_instruction_exec(unsigned int cpu_index, void *opaque)
++static void test_tcg_exec(unsigned int cpu_index, uint64_t icount,
++                          void *opaque)
 +{
 +    (void)cpu_index;
++    (void)icount;
 +    (void)opaque;
 +    if (test_mode == TEST_MODE_PERSISTENT && test_rule_installed) {
++        g_autoptr(GByteArray) observed = g_byte_array_new();
++
 +        test_poll_events();
++        if (test_guest_observation_required &&
++            qemu_plugin_read_memory_vaddr(
++                test_result_address, observed, 1) &&
++            observed->len == 1 && observed->data[0] == 1) {
++            test_guest_observed = true;
++        }
 +        test_finish_if_validated();
-+    }
-+}
-+
-+static void test_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
-+{
-+    size_t count = qemu_plugin_tb_n_insns(tb);
-+
-+    (void)id;
-+    for (size_t i = 0; i < count; i++) {
-+        qemu_plugin_register_vcpu_insn_exec_cb(
-+            qemu_plugin_tb_get_insn(tb, i), test_instruction_exec,
-+            QEMU_PLUGIN_CB_NO_REGS, NULL);
 +    }
 +}
 +
@@ -3490,12 +3557,8 @@ index 0000000..19a816a
 +    const struct qemu_plugin_crucible_fault_register_capability *rows,
 +    size_t count)
 +{
-+    const char *wanted = test_mode == TEST_MODE_REJECT_INVALID ? "cr3" :
-+        (test_architecture == QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 ?
-+         "r15" : "x28");
-+
 +    for (size_t i = 0; i < count; i++) {
-+        if (strcmp(rows[i].name, wanted) == 0 &&
++        if (strcmp(rows[i].name, test_register_name) == 0 &&
 +            (rows[i].capabilities & 1) != 0 &&
 +            (test_mode != TEST_MODE_PERSISTENT ||
 +             (rows[i].capabilities & 2) != 0)) {
@@ -3518,9 +3581,15 @@ index 0000000..19a816a
 +    size_t capability_count;
 +
 +    (void)info;
-+    if (argc != 2 || !g_str_has_prefix(argv[0], "architecture=") ||
-+        !g_str_has_prefix(argv[1], "mode=")) {
-+        test_fail("architecture and mode arguments are required");
++    if ((argc != 4 && argc != 5) ||
++        !g_str_has_prefix(argv[0], "architecture=") ||
++        !g_str_has_prefix(argv[1], "mode=") ||
++        !g_str_has_prefix(argv[2], "register=") ||
++        !g_str_has_prefix(argv[3], "phase=") ||
++        (argc == 5 &&
++         !g_str_has_prefix(argv[4], "result-address=") &&
++         strcmp(argv[4], "terminal-cursor=true") != 0)) {
++        test_fail("architecture, mode, register, phase, and optional result-address or terminal-cursor argument are required");
 +    }
 +    test_architecture = g_ascii_strtoull(argv[0] + 13, NULL, 10);
 +    if (strcmp(argv[1] + 5, "impulse") == 0) {
@@ -3531,6 +3600,35 @@ index 0000000..19a816a
 +        test_mode = TEST_MODE_REJECT_INVALID;
 +    } else {
 +        test_fail("mode must be impulse, persistent, or reject-invalid");
++    }
++    test_register_name = argv[2] + 9;
++    if (!*test_register_name) {
++        test_fail("register must name one manifest row");
++    }
++    if (strcmp(argv[3] + 6, "before") == 0) {
++        test_model_phase = TEST_MODEL_PHASE_BEFORE_INSTRUCTION;
++        test_command_phase = CRUCIBLE_FAULT_PHASE_BEFORE_INSTRUCTION;
++    } else if (strcmp(argv[3] + 6, "after") == 0) {
++        test_model_phase = TEST_MODEL_PHASE_AFTER_INSTRUCTION;
++        test_command_phase = CRUCIBLE_FAULT_PHASE_AFTER_INSTRUCTION;
++    } else {
++        test_fail("phase must be before or after");
++    }
++    if (argc == 5 && g_str_has_prefix(argv[4], "result-address=")) {
++        test_result_address = g_ascii_strtoull(argv[4] + 15, NULL, 0);
++        test_guest_observation_required = true;
++        if (test_mode != TEST_MODE_PERSISTENT || test_result_address == 0) {
++            test_fail("result-address is valid only for a persistent guest-observation test");
++        }
++    } else if (test_mode == TEST_MODE_PERSISTENT) {
++        test_fail("persistent mode requires result-address");
++    }
++    if (argc == 5 && strcmp(argv[4], "terminal-cursor=true") == 0) {
++        if (test_mode != TEST_MODE_IMPULSE ||
++            test_model_phase != TEST_MODEL_PHASE_AFTER_INSTRUCTION) {
++            test_fail("terminal-cursor mode requires an after-instruction impulse");
++        }
++        test_terminal_cursor_required = true;
 +    }
 +    capability_count = qemu_plugin_crucible_fault_capabilities(
 +        &capability, 1);
@@ -3572,6 +3670,7 @@ index 0000000..19a816a
 +        test_fail("the safe live-test register is not writable");
 +    }
 +    test_numeric_id = selected->numeric_id;
++    test_group = selected->group;
 +    test_side_effects = selected->side_effects;
 +    if (test_mode == TEST_MODE_REJECT_INVALID) {
 +        if (test_architecture != QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64) {
@@ -3599,8 +3698,7 @@ index 0000000..19a816a
 +        CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM;
 +    test_command.command_flags = CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY;
 +    test_command.phase = test_mode != TEST_MODE_PERSISTENT ?
-+        CRUCIBLE_FAULT_PHASE_BEFORE_INSTRUCTION :
-+        CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY;
++        test_command_phase : CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY;
 +    test_command.semantic_version = CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION;
 +    test_command.command_sequence = 1;
 +    memset(test_command.target_node_hash, 0x11, 32);
@@ -3609,7 +3707,7 @@ index 0000000..19a816a
 +    memset(test_command.binding_hash, 0x21, 32);
 +    test_payload = test_build_payload(&test_payload_len);
 +    qemu_plugin_register_crucible_fault_completion_cb(test_completion, NULL);
-+    qemu_plugin_register_vcpu_tb_trans_cb(id, test_tb_trans);
++    qemu_plugin_register_tcg_exec_cb(test_tcg_exec, NULL);
 +    qemu_plugin_register_atexit_cb(id, test_exit, NULL);
 +    if (qemu_plugin_crucible_fault_submit(
 +            &test_command, test_payload, test_payload_len) != 0) {

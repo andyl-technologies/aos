@@ -684,6 +684,7 @@ struct RegisterEvidenceIdentity {
 
 #[derive(Clone)]
 struct RegisterMutationExpectation {
+    vcpu_index: u32,
     numeric_id: u32,
     model_phase: u16,
     mutation_kind: FaultRegisterMutationKindV1,
@@ -1643,6 +1644,7 @@ fn register_command_expectation(
         operation: decoded.operation,
         binding_hash,
         mutation: Some(RegisterMutationExpectation {
+            vcpu_index: u32_field(node_fault_field::T1)?,
             numeric_id: row.numeric_id,
             model_phase: decoded.model_phase,
             mutation_kind,
@@ -1759,7 +1761,9 @@ fn translate_register_evidence(
     {
         return Err(FaultCommandBridgeError::RegisterEvidence);
     }
-    if numeric_id != expectation.numeric_id
+    if raw_u32(raw, 16)? != expectation.vcpu_index
+        || raw_u64(raw, 64)? != u64::from(expectation.vcpu_index)
+        || numeric_id != expectation.numeric_id
         || first_bit != expectation.first_bit
         || bit_count != expectation.bit_count
         || raw[mask_start..value_start] != expectation.mask
@@ -2344,5 +2348,131 @@ mod tests {
             }
         }
         assert!(saw_pending_result);
+    }
+
+    #[test]
+    fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
+        use sha2::{Digest as _, Sha256};
+
+        const HEADER: usize = 128;
+        let before = [0_u8; 8];
+        let mut after = before;
+        after[0] = 1;
+        let expected_before: [u8; 32] = Sha256::digest(before).into();
+        let expected_after: [u8; 32] = Sha256::digest(after).into();
+        let identity = RegisterEvidenceIdentity {
+            architecture: FaultCapabilityScope::X86_64,
+            manifest_digest: [1; 32],
+            cpu_model_digest: [2; 32],
+            rows: vec![FaultRegisterCapabilityRowV1 {
+                numeric_id: 1,
+                name: "rax".to_owned(),
+                width_bits: 64,
+                group: FaultRegisterGroupV1::GeneralPurpose,
+                model_phase_mask: (1_u64 << 10) | (1_u64 << 11),
+                side_effects: 0,
+                capabilities: FAULT_REGISTER_CAPABILITY_IMPULSE
+                    | crucible_shmem::FAULT_REGISTER_CAPABILITY_VMSTATE,
+                writable_mask: vec![0xff; 8],
+                reserved_mask: vec![0; 8],
+                ignored_mask: vec![0; 8],
+                read_only_mask: vec![0; 8],
+            }],
+        };
+        let mut expectation = RegisterMutationExpectation {
+            vcpu_index: 0,
+            numeric_id: 1,
+            model_phase: 12,
+            mutation_kind: FaultRegisterMutationKindV1::BitFlip,
+            first_bit: 0,
+            bit_count: 1,
+            mask: vec![1],
+            value: vec![0],
+        };
+        let mut raw = vec![0_u8; HEADER + before.len() + after.len() + 2];
+        raw[..8].copy_from_slice(b"CRUCQRW1");
+        raw[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        raw[10..12].copy_from_slice(&(FaultCapabilityScope::X86_64 as u16).to_le_bytes());
+        raw[12..14].copy_from_slice(&12_u16.to_le_bytes());
+        raw[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        raw[24..28].copy_from_slice(&(FaultRegisterMutationKindV1::BitFlip as u32).to_le_bytes());
+        raw[36..40].copy_from_slice(&0_u32.to_le_bytes());
+        raw[40..44].copy_from_slice(&1_u32.to_le_bytes());
+        raw[44..48].copy_from_slice(&8_u32.to_le_bytes());
+        raw[48..52].copy_from_slice(&8_u32.to_le_bytes());
+        raw[52..56].copy_from_slice(&1_u32.to_le_bytes());
+        raw[56..64].copy_from_slice(&256_u64.to_le_bytes());
+        raw[72..80].copy_from_slice(&256_u64.to_le_bytes());
+        raw[80..88].copy_from_slice(&256_u64.to_le_bytes());
+        raw[88..120].fill(3);
+        raw[120..124].copy_from_slice(&1_u32.to_le_bytes());
+        raw[HEADER..HEADER + before.len()].copy_from_slice(&before);
+        raw[HEADER + before.len()..HEADER + before.len() + after.len()].copy_from_slice(&after);
+        raw[HEADER + before.len() + after.len()] = 1;
+
+        assert!(
+            translate_register_evidence(
+                &raw,
+                &identity,
+                0,
+                256,
+                Some(12),
+                expected_before,
+                expected_after,
+                &expectation,
+            )
+            .is_ok()
+        );
+
+        raw[16..20].copy_from_slice(&1_u32.to_le_bytes());
+        raw[64..72].copy_from_slice(&1_u64.to_le_bytes());
+        assert!(matches!(
+            translate_register_evidence(
+                &raw,
+                &identity,
+                0,
+                256,
+                Some(12),
+                expected_before,
+                expected_after,
+                &expectation,
+            ),
+            Err(FaultCommandBridgeError::RegisterEvidence)
+        ));
+
+        raw[16..20].fill(0);
+        raw[64..72].fill(0);
+        raw[12..14].copy_from_slice(&11_u16.to_le_bytes());
+        expectation.model_phase = 11;
+        assert!(matches!(
+            translate_register_evidence(
+                &raw,
+                &identity,
+                0,
+                256,
+                Some(11),
+                expected_before,
+                expected_after,
+                &expectation,
+            ),
+            Err(FaultCommandBridgeError::RegisterEvidence)
+        ));
+
+        raw[12..14].copy_from_slice(&12_u16.to_le_bytes());
+        raw[72..80].copy_from_slice(&257_u64.to_le_bytes());
+        expectation.model_phase = 12;
+        assert!(matches!(
+            translate_register_evidence(
+                &raw,
+                &identity,
+                0,
+                256,
+                Some(12),
+                expected_before,
+                expected_after,
+                &expectation,
+            ),
+            Err(FaultCommandBridgeError::RegisterEvidence)
+        ));
     }
 }

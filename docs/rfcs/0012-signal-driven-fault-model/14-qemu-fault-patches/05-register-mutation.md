@@ -178,6 +178,12 @@ followed by `before`, `after`, `mask`, and `value` byte strings in that order:
 | 120 | 4 | `value` byte length |
 | 124 | 4 | reserved, zero |
 
+`RR cursor position` is normally strictly less than `RR switch quantum`.
+After-instruction evidence may carry the terminal position equal to the
+quantum: QEMU captures that boundary after the final instruction retires and
+before the RR scheduler rotates to its next slice. No other model phase may
+use the terminal position, and values greater than the quantum are invalid.
+
 The Apache bridge does not trust this private row ID in isolation. It resolves
 the submitted public register-name hash through the exact admitted manifest,
 then requires the returned architecture, row ID, phase, range, mutation kind,
