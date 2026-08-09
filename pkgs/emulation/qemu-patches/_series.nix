@@ -461,8 +461,8 @@ let
     {
       file = "0050-crucible-memory-access-faults.patch";
       branchSubject = "crucible: add memory access fault rules";
-      branchCommit = "2b22a7eb9ae8c73c71e20718002c0c14765c8c59";
-      branchTree = "defe7bc5136137c7d061e50066917f4a904406ba";
+      branchCommit = "9fec24f886b9ab75ac01d342b2b4bcae14524617";
+      branchTree = "c0aca267c5b2d362b6c3f59862b8c48c197a54c0";
       catalogName = "crucible-memory-access-faults";
       class = "D";
       enforces = "QFP-MEMA-1,QFP-MEMA-2,FAULT-ORDER";

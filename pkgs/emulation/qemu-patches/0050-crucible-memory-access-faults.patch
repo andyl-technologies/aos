@@ -1,4 +1,4 @@
-From 2b22a7eb9ae8c73c71e20718002c0c14765c8c59 Mon Sep 17 00:00:00 2001
+From 9fec24f886b9ab75ac01d342b2b4bcae14524617 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Sat, 8 Aug 2026 11:44:15 -0700
 Subject: [PATCH] crucible: add memory access fault rules
@@ -7,26 +7,30 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
 ---
  accel/tcg/atomic_template.h                |  118 +-
  accel/tcg/cpu-exec-common.c                |    4 +
- accel/tcg/cpu-exec.c                       |   13 +-
+ accel/tcg/cpu-exec.c                       |   62 +-
  accel/tcg/cputlb.c                         |  624 +-
+ accel/tcg/icount-common.c                  |   37 +-
  accel/tcg/internal-common.h                |    3 +
- accel/tcg/translate-all.c                  |   24 +
- accel/tcg/translator.c                     |  122 +-
+ accel/tcg/translate-all.c                  |   31 +
+ accel/tcg/translator.c                     |  128 +-
+ hw/core/cpu-common.c                       |    3 +
  hw/core/cpu-system.c                       |   44 +-
  hw/intc/apic.c                             |    4 +-
  hw/virtio/virtio.c                         |   78 +-
  include/exec/memory.h                      |   62 +-
  include/exec/memory_ldst_cached.h.inc      |   69 +
  include/exec/translator.h                  |    5 +
- include/hw/core/cpu.h                      |   33 +-
+ include/hw/core/cpu.h                      |   42 +-
  include/hw/core/sysemu-cpu-ops.h           |    9 +
  include/hw/virtio/virtio.h                 |    1 +
- include/qemu/crucible-fault.h              |  128 +
+ include/qemu/crucible-fault.h              |  134 +
  include/qemu/qemu-plugin.h                 |   51 +
+ include/system/cpu-timers.h                |    3 +
  include/system/dma.h                       |   61 +-
- plugins/api-system.c                       |   12 +
+ plugins/api-system.c                       |   19 +-
+ plugins/api.c                              |    8 +-
  plugins/crucible-fault-memory.c            |    3 +-
- plugins/crucible-fault-node.c              | 7639 ++++++++++++++++++++
+ plugins/crucible-fault-node.c              | 9429 ++++++++++++++++++++
  plugins/crucible-fault.c                   |   82 +-
  plugins/meson.build                        |    2 +-
  system/physmem.c                           |  448 +-
@@ -38,10 +42,10 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  target/i386/cpu.c                          |    3 +
  target/i386/cpu.h                          |    8 +
  target/i386/tcg/system/excp_helper.c       |   55 +-
- tests/tcg/plugins/crucible-memory-access.c |  798 ++
- tests/tcg/plugins/crucible-memory-dma.c    |  433 ++
+ tests/tcg/plugins/crucible-memory-access.c |  836 ++
+ tests/tcg/plugins/crucible-memory-dma.c    |  433 +
  tests/tcg/plugins/meson.build              |    4 +-
- 36 files changed, 10878 insertions(+), 138 deletions(-)
+ 40 files changed, 12820 insertions(+), 159 deletions(-)
  create mode 100644 plugins/crucible-fault-node.c
  create mode 100644 tests/tcg/plugins/crucible-memory-access.c
  create mode 100644 tests/tcg/plugins/crucible-memory-dma.c
@@ -341,7 +345,7 @@ index c5c513f..d752ee4 100644
      return cflags;
  }
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index 5eeef83..b7fdc50 100644
+index 5eeef83..dc1fe90 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
 @@ -33,6 +33,7 @@
@@ -363,7 +367,70 @@ index 5eeef83..b7fdc50 100644
      return last_tb;
  }
  
-@@ -901,7 +906,7 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
+@@ -526,6 +531,7 @@ static void cpu_exec_longjmp_cleanup(CPUState *cpu)
+ {
+     /* Non-buggy compilers preserve this; assert the correct value. */
+     g_assert(cpu == current_cpu);
++    qemu_crucible_fault_memory_fetch_stage_discard(cpu);
+ 
+ #ifdef CONFIG_USER_ONLY
+     clear_helper_retaddr();
+@@ -574,32 +580,36 @@ void cpu_exec_step_atomic(CPUState *cpu)
+         g_assert(!cpu->running);
+         cpu->running = true;
+ 
+-        cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
++        do {
++            cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+ 
+-        cflags = curr_cflags(cpu);
+-        /* Execute in a serial context. */
+-        cflags &= ~CF_PARALLEL;
+-        /* After 1 insn, return and release the exclusive lock. */
+-        cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
+-        /*
+-         * No need to check_for_breakpoints here.
+-         * We only arrive in cpu_exec_step_atomic after beginning execution
+-         * of an insn that includes an atomic operation we can't handle.
+-         * Any breakpoint for this insn will have been recognized earlier.
+-         */
++            cflags = curr_cflags(cpu);
++            /* Execute in a serial context. */
++            cflags &= ~CF_PARALLEL;
++            /* After 1 insn, return and release the exclusive lock. */
++            cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
++            /*
++             * No need to check_for_breakpoints here.
++             * We only arrive in cpu_exec_step_atomic after beginning
++             * execution of an insn that includes an atomic operation we
++             * can't handle.  Any breakpoint for this insn will have been
++             * recognized earlier.
++             */
+ 
+-        tb = tb_lookup(cpu, pc, cs_base, flags, cflags);
+-        if (tb == NULL) {
+-            mmap_lock();
+-            tb = tb_gen_code(cpu, pc, cs_base, flags, cflags);
+-            mmap_unlock();
+-        }
++            tb = tb_lookup(cpu, pc, cs_base, flags, cflags);
++            if (tb == NULL) {
++                mmap_lock();
++                tb = tb_gen_code(cpu, pc, cs_base, flags, cflags);
++                mmap_unlock();
++            }
++        } while (qemu_crucible_fault_memory_fetch_service_apply(cpu));
+ 
+         cpu_exec_enter(cpu);
+         /* execute the generated code */
+         trace_exec_tb(tb, pc);
+         cpu_tb_exec(cpu, tb, &tb_exit);
+         cpu_exec_exit(cpu);
++        qemu_crucible_fault_memory_service_apply(cpu);
+     } else {
+         cpu_exec_longjmp_cleanup(cpu);
+     }
+@@ -901,7 +911,7 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
      trace_exec_tb(tb, pc);
      tb = cpu_tb_exec(cpu, tb, tb_exit);
      if (*tb_exit != TB_EXIT_REQUESTED) {
@@ -372,7 +439,7 @@ index 5eeef83..b7fdc50 100644
          return;
      }
  
-@@ -978,6 +983,12 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+@@ -978,6 +988,12 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                  break;
              }
  
@@ -385,6 +452,27 @@ index 5eeef83..b7fdc50 100644
              tb = tb_lookup(cpu, pc, cs_base, flags, cflags);
              if (tb == NULL) {
                  CPUJumpCache *jc;
+@@ -1013,12 +1029,20 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+                 last_tb = NULL;
+             }
+ #endif
++            if (qemu_crucible_fault_memory_fetch_service_apply(cpu)) {
++                last_tb = NULL;
++                continue;
++            }
++
+             /* See if we can patch the calling TB. */
+             if (last_tb) {
+                 tb_add_jump(last_tb, tb_exit, tb);
+             }
+ 
+             cpu_loop_exec_tb(cpu, tb, pc, &last_tb, &tb_exit);
++            if (qemu_crucible_fault_memory_service_apply(cpu)) {
++                last_tb = NULL;
++            }
+ 
+             /* Try to align the host and virtual clocks
+                if the guest is in advance */
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
 index fb22048..40c17f0 100644
 --- a/accel/tcg/cputlb.c
@@ -1393,6 +1481,61 @@ index fb22048..40c17f0 100644
  /* Code access functions.  */
  
  uint32_t cpu_ldub_code(CPUArchState *env, abi_ptr addr)
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index 67dc558..285d361 100644
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -192,6 +192,40 @@ int64_t icount_get_raw_observed(void)
+     return icount;
+ }
+ 
++int64_t icount_get_observed(void)
++{
++    CPUState *cpu = current_cpu;
++    int64_t bias;
++    int64_t executed;
++    int64_t icount;
++    int shift;
++    unsigned start;
++
++    do {
++        executed = 0;
++        start = seqlock_read_begin(&timers_state.vm_clock_seqlock);
++        icount = qatomic_read_i64(&timers_state.qemu_icount);
++        bias = qatomic_read_i64(&timers_state.qemu_icount_bias);
++        shift = qatomic_read(&timers_state.icount_time_shift);
++        if (cpu && cpu->running) {
++            executed = icount_get_executed(cpu);
++        }
++    } while (seqlock_read_retry(&timers_state.vm_clock_seqlock, start));
++
++    if (icount < 0 || executed < 0 || icount > INT64_MAX - executed) {
++        return -1;
++    }
++    icount += executed;
++    if (shift < 0 || shift >= 63 || icount > (INT64_MAX >> shift)) {
++        return -1;
++    }
++    icount <<= shift;
++    if (bias > INT64_MAX - icount) {
++        return -1;
++    }
++    return bias + icount;
++}
++
+ /* Return the virtual CPU time, based on the instruction counter.  */
+ int64_t icount_get(void)
+ {
+@@ -422,7 +456,8 @@ void icount_start_warp_timer(void)
+ 
+     if (strcmp(current_accel_name(), "sim") == 0 &&
+         crucible_sim_observer_registered() &&
+-        icount_get_raw() >= crucible_sim_observer_max_advance_icount()) {
++        icount_get_raw_observed() >=
++            crucible_sim_observer_max_advance_icount()) {
+         /*
+          * The sim guest is clamped at the observer's max-advance boundary
+          * (the terminal target icount): it cannot retire instructions, so
 diff --git a/accel/tcg/internal-common.h b/accel/tcg/internal-common.h
 index c243eda..98cd2d9 100644
 --- a/accel/tcg/internal-common.h
@@ -1408,10 +1551,18 @@ index c243eda..98cd2d9 100644
  /**
   * tlb_init - initialize a CPU's TLB
 diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
-index 82bc16b..4d94ff3 100644
+index 82bc16b..87e597d 100644
 --- a/accel/tcg/translate-all.c
 +++ b/accel/tcg/translate-all.c
-@@ -196,6 +196,30 @@ static int cpu_unwind_data_from_tb(TranslationBlock *tb, uintptr_t host_pc,
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-fault.h"
+ 
+ #include "trace.h"
+ #include "disas/disas.h"
+@@ -196,6 +197,30 @@ static int cpu_unwind_data_from_tb(TranslationBlock *tb, uintptr_t host_pc,
      return -1;
  }
  
@@ -1442,8 +1593,51 @@ index 82bc16b..4d94ff3 100644
  /*
   * The cpu state corresponding to 'host_pc' is restored in
   * preparation for exiting the TB.
+@@ -316,6 +341,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
+     QEMU_BUILD_BUG_ON(CF_COUNT_MASK + 1 != TCG_MAX_INSNS);
+ 
+  buffer_overflow:
++    qemu_crucible_fault_memory_fetch_stage_discard(cpu);
+     assert_no_pages_locked();
+     tb = tcg_tb_alloc(tcg_ctx);
+     if (unlikely(!tb)) {
+@@ -405,6 +431,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
+                 tb_unlock_page1(phys_pc, phys_p2);
+                 tb_set_page_addr1(tb, -1);
+             }
++            qemu_crucible_fault_memory_fetch_stage_discard(cpu);
+             goto restart_translate;
+ 
+         case -3:
+@@ -416,6 +443,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
+              */
+             qemu_log_mask(CPU_LOG_TB_OP | CPU_LOG_TB_OP_OPT,
+                           "Restarting code generation with re-locked pages");
++            qemu_crucible_fault_memory_fetch_stage_discard(cpu);
+             goto restart_translate;
+ 
+         default:
+@@ -553,6 +581,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
+      */
+     if (tb_page_addr0(tb) == -1) {
+         assert_no_pages_locked();
++        qemu_crucible_fault_memory_fetch_stage_commit(cpu);
+         return tb;
+     }
+ 
+@@ -570,8 +599,10 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
+         orig_aligned -= ROUND_UP(sizeof(*tb), qemu_icache_linesize);
+         qatomic_set(&tcg_ctx->code_gen_ptr, (void *)orig_aligned);
+         tcg_tb_remove(tb);
++        qemu_crucible_fault_memory_fetch_stage_discard(cpu);
+         return existing_tb;
+     }
++    qemu_crucible_fault_memory_fetch_stage_commit(cpu);
+     return tb;
+ }
+ 
 diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
-index ef1538b..ee03d45 100644
+index ef1538b..d56305f 100644
 --- a/accel/tcg/translator.c
 +++ b/accel/tcg/translator.c
 @@ -10,6 +10,7 @@
@@ -1454,7 +1648,16 @@ index ef1538b..ee03d45 100644
  #include "exec/exec-all.h"
  #include "exec/translator.h"
  #include "exec/cpu_ldst.h"
-@@ -167,6 +168,19 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+@@ -156,6 +157,8 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+ 
+     while (true) {
+         *max_insns = ++db->num_insns;
++        TCGOp *crucible_fetch_start_op = tcg_last_op();
++
+         ops->insn_start(db, cpu);
+         db->insn_start = tcg_last_op();
+         if (first_insn_start == NULL) {
+@@ -167,6 +170,19 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
              plugin_gen_insn_start(cpu, db);
          }
  
@@ -1474,19 +1677,42 @@ index ef1538b..ee03d45 100644
          /*
           * Disassemble one instruction.  The translate_insn hook should
           * update db->pc_next and db->is_jmp to indicate what should be
-@@ -175,6 +189,11 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+@@ -175,6 +191,34 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
           */
          ops->translate_insn(db, cpu);
  
 +        if (db->crucible_fetch_active) {
-+            qemu_crucible_fault_memory_transaction_end();
++            bool committed =
++                qemu_crucible_fault_memory_fetch_transaction_finish();
++            bool faulted = db->crucible_fetch_faulted || !committed ||
++                qemu_crucible_fault_memory_transaction_failed();
++            CPUFaultException exception;
++            bool has_exception = faulted &&
++                qemu_crucible_fault_memory_transaction_exception(
++                    &exception);
++
 +            db->crucible_fetch_active = false;
++            if (faulted) {
++                qemu_crucible_fault_memory_transaction_end();
++                if (plugin_enabled) {
++                    plugin_gen_insn_end();
++                }
++                tcg_remove_ops_after(crucible_fetch_start_op);
++                if (has_exception) {
++                    cpu_inject_fault_exception(cpu, &exception, 0);
++                }
++                cpu_inject_fault_access_error(
++                    cpu, db->crucible_fetch_start, 1,
++                    MMU_INST_FETCH, 0);
++            } else {
++                qemu_crucible_fault_memory_fetch_transaction_stage(cpu);
++            }
 +        }
 +
          /*
           * We can't instrument after instructions that change control
           * flow although this only really affects post-load operations.
-@@ -245,6 +264,100 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+@@ -245,6 +289,81 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
      }
  }
  
@@ -1500,6 +1726,9 @@ index ef1538b..ee03d45 100644
 +    size_t offset;
 +
 +    if (!db->crucible_fetch_active) {
++        return true;
++    }
++    if (db->crucible_fetch_faulted) {
 +        return true;
 +    }
 +    if (len == 0 || pc < db->crucible_fetch_start ||
@@ -1541,19 +1770,8 @@ index ef1538b..ee03d45 100644
 +        }
 +        if (!qemu_crucible_fault_memory_fetch_transaction_extend(
 +                current, translation.physical_address, part)) {
-+            CPUFaultException exception;
-+            bool has_exception =
-+                qemu_crucible_fault_memory_transaction_exception(
-+                    &exception);
-+
-+            qemu_crucible_fault_memory_transaction_end();
-+            db->crucible_fetch_active = false;
 +            db->crucible_fetch_faulted = true;
-+            if (has_exception) {
-+                cpu_inject_fault_exception(cpu, &exception, 0);
-+            }
-+            cpu_inject_fault_access_error(
-+                cpu, current, part, MMU_INST_FETCH, 0);
++            return true;
 +        }
 +        memcpy(db->crucible_fetch_bytes + request_offset + offset,
 +               before + offset, part);
@@ -1563,19 +1781,8 @@ index ef1538b..ee03d45 100644
 +            db->crucible_fetch_bytes + request_offset + offset, part, false,
 +            qemu_crucible_fault_observed_icount());
 +        if (result.access_error) {
-+            CPUFaultException exception;
-+            bool has_exception =
-+                qemu_crucible_fault_memory_transaction_exception(
-+                    &exception);
-+
-+            qemu_crucible_fault_memory_transaction_end();
-+            db->crucible_fetch_active = false;
 +            db->crucible_fetch_faulted = true;
-+            if (has_exception) {
-+                cpu_inject_fault_exception(cpu, &exception, 0);
-+            }
-+            cpu_inject_fault_access_error(
-+                cpu, current, part, MMU_INST_FETCH, 0);
++            return true;
 +        }
 +        memset(db->crucible_fetch_valid + request_offset + offset, 1, part);
 +        offset += part;
@@ -1587,7 +1794,7 @@ index ef1538b..ee03d45 100644
  static bool translator_ld(CPUArchState *env, DisasContextBase *db,
                            void *dest, vaddr pc, size_t len)
  {
-@@ -252,6 +365,9 @@ static bool translator_ld(CPUArchState *env, DisasContextBase *db,
+@@ -252,6 +371,9 @@ static bool translator_ld(CPUArchState *env, DisasContextBase *db,
      vaddr last = pc + len - 1;
      void *host;
      vaddr base;
@@ -1597,7 +1804,7 @@ index ef1538b..ee03d45 100644
  
      /* Use slow path if first page is MMIO. */
      if (unlikely(tb_page_addr0(tb) == -1)) {
-@@ -266,7 +382,8 @@ static bool translator_ld(CPUArchState *env, DisasContextBase *db,
+@@ -266,7 +388,8 @@ static bool translator_ld(CPUArchState *env, DisasContextBase *db,
      if (likely(((base ^ last) & TARGET_PAGE_MASK) == 0)) {
          /* Entire read is from the first page. */
          memcpy(dest, host + (pc - base), len);
@@ -1607,7 +1814,7 @@ index ef1538b..ee03d45 100644
      }
  
      if (unlikely(((base ^ pc) & TARGET_PAGE_MASK) == 0)) {
-@@ -330,7 +447,8 @@ static bool translator_ld(CPUArchState *env, DisasContextBase *db,
+@@ -330,7 +453,8 @@ static bool translator_ld(CPUArchState *env, DisasContextBase *db,
      }
  
      memcpy(dest, host + (pc - base), len);
@@ -1617,6 +1824,20 @@ index ef1538b..ee03d45 100644
  }
  
  static void record_save(DisasContextBase *db, vaddr pc,
+diff --git a/hw/core/cpu-common.c b/hw/core/cpu-common.c
+index 9064dd2..9ceb785 100644
+--- a/hw/core/cpu-common.c
++++ b/hw/core/cpu-common.c
+@@ -125,6 +125,9 @@ static void cpu_common_reset_hold(Object *obj, ResetType type)
+     cpu->halted = cpu->start_powered_off;
+     cpu->mem_io_pc = 0;
+     cpu->icount_extra = 0;
++    cpu->crucible_fetch_service_nanos = 0;
++    cpu->crucible_memory_service_nanos = 0;
++    g_assert(cpu->crucible_fetch_transaction == NULL);
+     qatomic_set(&cpu->neg.icount_decr.u32, 0);
+     cpu->neg.can_do_io = true;
+     cpu->exception_index = -1;
 diff --git a/hw/core/cpu-system.c b/hw/core/cpu-system.c
 index 6d1775e..c1aa5a3 100644
 --- a/hw/core/cpu-system.c
@@ -2128,10 +2349,33 @@ index d70942a..545fcff 100644
  
  /**
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index 0258271..c66163e 100644
+index 0258271..5958803 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
-@@ -724,10 +724,33 @@ typedef struct CPUFaultTranslation {
+@@ -424,6 +424,12 @@ struct qemu_work_item;
+  * @crash_occurred: Indicates the OS reported a crash (panic) for this CPU
+  * @singlestep_enabled: Flags for single-stepping.
+  * @icount_extra: Instructions until next timer event.
++ * @crucible_fetch_service_nanos: Service delay staged by instruction fetch
++ * @crucible_memory_service_nanos: Service delay staged until translated code
++ *     has returned to the accelerator loop
++ *   translation for application before the generated TB executes.
++ * @crucible_fetch_transaction: Opaque fetch transaction staged until TB
++ *   generation succeeds or is discarded.
+  * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
+  *            AddressSpaces this CPU has)
+  * @num_ases: number of CPUAddressSpaces in @cpu_ases
+@@ -492,6 +498,9 @@ struct CPUState {
+     int singlestep_enabled;
+     int64_t icount_budget;
+     int64_t icount_extra;
++    uint64_t crucible_fetch_service_nanos;
++    uint64_t crucible_memory_service_nanos;
++    void *crucible_fetch_transaction;
+     uint64_t random_seed;
+     sigjmp_buf jmp_env;
+ 
+@@ -724,10 +733,33 @@ typedef struct CPUFaultTranslation {
      bool user;
  } CPUFaultTranslation;
  
@@ -2165,7 +2409,7 @@ index 0258271..c66163e 100644
   * @result: Receives the exact translation and effective permissions.
   *
   * Performs an architecture page-table walk without updating accessed, dirty,
-@@ -735,10 +758,18 @@ typedef struct CPUFaultTranslation {
+@@ -735,10 +767,18 @@ typedef struct CPUFaultTranslation {
   * fault injection at a stopped safe boundary, not for debugger access.
   *
   * Returns: %true on success, or %false when translation is unsupported or the
@@ -2219,7 +2463,7 @@ index 6386910..006d49b 100644
      QTAILQ_ENTRY(VirtIODevice) next;
      /**
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index bbe9daa..8dd0de3 100644
+index bbe9daa..b22829d 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -10,9 +10,12 @@
@@ -2243,7 +2487,7 @@ index bbe9daa..8dd0de3 100644
  void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
                                             uint64_t observed_icount);
  bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount);
-@@ -58,4 +62,128 @@ int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
+@@ -58,4 +62,134 @@ int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
                                           uint64_t current_icount,
                                           int64_t budget);
  
@@ -2336,6 +2580,12 @@ index bbe9daa..8dd0de3 100644
 +    uint64_t instruction_pc, uint32_t instruction_ordinal);
 +bool qemu_crucible_fault_memory_fetch_transaction_extend(
 +    uint64_t vaddr, uint64_t gpa, size_t length);
++bool qemu_crucible_fault_memory_fetch_transaction_finish(void);
++void qemu_crucible_fault_memory_fetch_transaction_stage(CPUState *cpu);
++void qemu_crucible_fault_memory_fetch_stage_commit(CPUState *cpu);
++void qemu_crucible_fault_memory_fetch_stage_discard(CPUState *cpu);
++bool qemu_crucible_fault_memory_fetch_service_apply(CPUState *cpu);
++bool qemu_crucible_fault_memory_service_apply(CPUState *cpu);
 +void qemu_crucible_fault_memory_transaction_end(void);
 +bool qemu_crucible_fault_memory_transaction_failed(void);
 +bool qemu_crucible_fault_memory_transaction_active(
@@ -2441,6 +2691,20 @@ index a837a4e..4f866e5 100644
  /**
   * qemu_plugin_register_crucible_fault_completion_cb() - register completion
   * @cb: callback invoked after each boundary-dispatched result, or NULL to clear
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+index ed2d445..8c62f98 100644
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -49,6 +49,9 @@ int64_t icount_get_raw(void);
+ /* observe raw icount without committing the current vCPU's executed count */
+ int64_t icount_get_raw_observed(void);
+ 
++/* observe virtual CPU time without committing the current vCPU's icount */
++int64_t icount_get_observed(void);
++
+ /* return the virtual CPU time in ns, based on the instruction counter. */
+ int64_t icount_get(void);
+ /*
 diff --git a/include/system/dma.h b/include/system/dma.h
 index e142f7e..64ca041 100644
 --- a/include/system/dma.h
@@ -2546,7 +2810,7 @@ index e142f7e..64ca041 100644
  
  #define DEFINE_LDST_DMA(_lname, _sname, _bits, _end) \
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index df9ebab..d37e8de 100644
+index df9ebab..39e92ce 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -24,6 +24,7 @@
@@ -2557,7 +2821,20 @@ index df9ebab..d37e8de 100644
  #include "system/cpu-timers.h"
  #include "system/crucible-sim-preemption.h"
  
-@@ -291,6 +292,17 @@ uint64_t qemu_plugin_icount_raw(void)
+@@ -284,13 +285,29 @@ uint64_t qemu_plugin_icount_raw(void)
+         return 0;
+     }
+ 
+-    raw_icount = icount_get_raw();
++    /*
++     * Plugin callbacks can run while translated code has temporarily made
++     * I/O unsafe.  Observe the committed count plus the current CPU's local
++     * execution instead of forcing an icount commit from that context.
++     */
++    raw_icount = icount_get_raw_observed();
+     if (raw_icount < 0) {
+         return 0;
+     }
      return (uint64_t)raw_icount;
  }
  
@@ -2575,6 +2852,25 @@ index df9ebab..d37e8de 100644
  int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,
                                     uint64_t *entry_icount)
  {
+diff --git a/plugins/api.c b/plugins/api.c
+index 964a40a..5fa29d6 100644
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -1514,7 +1514,13 @@ int qemu_plugin_crucible_process_argv_attestation(
+ 
+ uint64_t qemu_plugin_crucible_icount(void)
+ {
+-    return qemu_plugin_icount_raw();
++    int64_t observed;
++
++    if (!icount_enabled()) {
++        return 0;
++    }
++    observed = icount_get_raw_observed();
++    return observed < 0 ? 0 : observed;
+ }
+ 
+ bool qemu_plugin_crucible_vm_non_running(void)
 diff --git a/plugins/crucible-fault-memory.c b/plugins/crucible-fault-memory.c
 index b1422b8..6e6c2b3 100644
 --- a/plugins/crucible-fault-memory.c
@@ -2591,10 +2887,10 @@ index b1422b8..6e6c2b3 100644
              return -EFAULT;
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000..2b3943c
+index 0000000..2fbc4e6
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,7639 @@
+@@ -0,0 +1,9429 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -2795,6 +3091,7 @@ index 0000000..2b3943c
 +static uint64_t crucible_memory_match_groups[16];
 +static bool crucible_memory_matches_in_use;
 +static bool crucible_memory_preflight_collecting;
++static bool crucible_memory_resource_planning;
 +static uint64_t crucible_memory_access_sequence;
 +static uint64_t crucible_memory_current_access;
 +static GChecksum *crucible_memory_checksum;
@@ -2822,8 +3119,15 @@ index 0000000..2b3943c
 +    MemoryRegion *mr;
 +} CrucibleMemoryMutationFragment;
 +
++typedef struct CrucibleMemoryFetchFragment {
++    uint64_t vaddr;
++    uint64_t gpa;
++    uint64_t length;
++} CrucibleMemoryFetchFragment;
++
 +typedef struct CrucibleMemoryTransaction {
 +    bool active;
++    bool lock_held;
 +    enum QemuCrucibleMemoryAccessClass access_class;
 +    uint32_t actor;
 +    uint32_t fragment_ordinal;
@@ -2833,6 +3137,9 @@ index 0000000..2b3943c
 +    bool poisoned;
 +    bool poison_reported;
 +    bool has_exception;
++    bool resources_preflighted;
++    bool resource_failed;
++    bool poison_preflighted;
 +    CPUFaultException exception;
 +    uint32_t instruction_ordinal;
 +    uint64_t address;
@@ -2846,6 +3153,16 @@ index 0000000..2b3943c
 +    GPtrArray *rule_snapshot;
 +    GArray *dma_fragments;
 +    GArray *dma_mutation_fragments;
++    GArray *fetch_fragments;
++    GArray *rule_reservations;
++    GArray *row_reservations;
++    GArray *retention_reservations;
++    GArray *ledger_reservations;
++    uint64_t virtual_time_reservation;
++    GHashTable *shadow_rules;
++    GHashTable *shadow_originals;
++    GArray *shadow_writes;
++    GPtrArray *staged_events;
 +} CrucibleMemoryTransaction;
 +
 +typedef struct CrucibleMemoryRetryKey {
@@ -2873,6 +3190,8 @@ index 0000000..2b3943c
 +    GHashTable *state_applied;
 +    GArray *service_plan;
 +    GHashTable *service_plan_index;
++    GArray *pending_services;
++    GHashTable *pending_service_index;
 +    size_t reserved_events;
 +};
 +
@@ -2880,6 +3199,69 @@ index 0000000..2b3943c
 +    QemuCrucibleFaultRule *rule;
 +    uint64_t bytes;
 +} CrucibleMemoryServicePlan;
++
++typedef struct CrucibleMemoryRowResourcePlan {
++    GHashTable *coordinates;
++    uint64_t new_counters;
++} CrucibleMemoryRowResourcePlan;
++
++typedef struct CrucibleMemoryRetentionResourcePlan {
++    GHashTable *offsets;
++    uint64_t new_cells;
++} CrucibleMemoryRetentionResourcePlan;
++
++typedef struct CrucibleMemoryRuleReservation {
++    QemuCrucibleFaultRule *rule;
++    bool opportunity;
++    bool applied;
++} CrucibleMemoryRuleReservation;
++
++typedef struct CrucibleMemoryRowReservation {
++    QemuCrucibleFaultRule *rule;
++    CrucibleDramCoordinate coordinate;
++    bool active;
++} CrucibleMemoryRowReservation;
++
++typedef struct CrucibleMemoryRetentionReservation {
++    QemuCrucibleFaultRule *rule;
++    uint64_t offset;
++    bool active;
++} CrucibleMemoryRetentionReservation;
++
++typedef struct CrucibleMemoryLedgerReservation {
++    CrucibleMemoryServiceLedger *ledger;
++    uint64_t demand;
++} CrucibleMemoryLedgerReservation;
++
++typedef struct CrucibleMemoryReservedCounters {
++    uint64_t opportunities;
++    uint64_t applied;
++} CrucibleMemoryReservedCounters;
++
++typedef struct CrucibleMemoryReservedRows {
++    GHashTable *coordinates;
++} CrucibleMemoryReservedRows;
++
++typedef struct CrucibleMemoryReservedRetention {
++    GHashTable *offsets;
++} CrucibleMemoryReservedRetention;
++
++typedef struct CrucibleMemoryShadowWrite {
++    uint64_t gpa;
++    uint64_t mr_addr;
++    MemoryRegion *mr;
++    GByteArray *value;
++} CrucibleMemoryShadowWrite;
++
++typedef struct CrucibleMemoryStagedEvent {
++    QemuCrucibleFaultRule *rule;
++    uint16_t outcome;
++    uint64_t observed_icount;
++    uint8_t opportunity_hash[32];
++    uint8_t before_hash[32];
++    uint8_t after_hash[32];
++    GByteArray *evidence;
++} CrucibleMemoryStagedEvent;
 +
 +typedef struct CruciblePendingMemoryService {
 +    QemuCrucibleFaultRule *rule;
@@ -2909,6 +3291,7 @@ index 0000000..2b3943c
 +} CruciblePendingServiceLedger;
 +
 +static CrucibleMemoryTransaction crucible_memory_transaction;
++static QemuMutex crucible_memory_transaction_lock;
 +static GHashTable *crucible_memory_retry_states;
 +static uint32_t crucible_memory_current_fragment;
 +static GArray *crucible_memory_pending_services;
@@ -2920,6 +3303,11 @@ index 0000000..2b3943c
 +static GHashTable *crucible_memory_transaction_state_applied;
 +static GArray *crucible_memory_service_plan;
 +static GHashTable *crucible_memory_service_plan_index;
++static GHashTable *crucible_memory_reserved_counters;
++static GHashTable *crucible_memory_reserved_rows;
++static GHashTable *crucible_memory_reserved_retention;
++static GHashTable *crucible_memory_reserved_ledgers;
++static uint64_t crucible_memory_reserved_virtual_time;
 +
 +typedef struct CrucibleMemoryPostState {
 +    bool active;
@@ -2946,6 +3334,8 @@ index 0000000..2b3943c
 +static bool node_rule_occurs(QemuCrucibleFaultRule *rule, uint16_t tag);
 +static bool node_memory_rule_occurs(QemuCrucibleFaultRule *rule,
 +                                    uint16_t tag);
++static void node_memory_state_opportunity(QemuCrucibleFaultRule *rule);
++static void node_memory_state_applied(QemuCrucibleFaultRule *rule);
 +static void node_memory_event_span(size_t offset, size_t length);
 +static void node_memory_event(QemuCrucibleFaultRule *rule, uint16_t outcome,
 +                              enum QemuCrucibleMemoryAccessClass access_class,
@@ -2964,6 +3354,25 @@ index 0000000..2b3943c
 +static void node_memory_apply_service(uint64_t delay);
 +static bool node_memory_service_ledger_acquire(QemuCrucibleFaultRule *rule);
 +static uint64_t node_virtual_now(void);
++static guint node_dram_coordinate_hash(gconstpointer opaque);
++static gboolean node_dram_coordinate_equal(gconstpointer left,
++                                            gconstpointer right);
++static uint64_t node_memory_reserved_ledger(
++    CrucibleMemoryServiceLedger *ledger);
++static bool node_memory_rule_resources_ready(
++    QemuCrucibleFaultRule *rule);
++static CrucibleMemoryReservedRows *node_memory_reserved_row_set(
++    QemuCrucibleFaultRule *rule, bool create);
++static uint64_t node_memory_reserved_row_count(
++    QemuCrucibleFaultRule *rule,
++    const CrucibleDramCoordinate *coordinate);
++static CrucibleMemoryReservedRetention *
++node_memory_reserved_retention_set(QemuCrucibleFaultRule *rule,
++                                   bool create);
++static uint64_t node_memory_reserved_retention_count(
++    QemuCrucibleFaultRule *rule, uint64_t offset);
++static void node_memory_rule_reservation_consume(
++    QemuCrucibleFaultRule *rule, bool opportunity);
 +static CrucibleNodeField *node_field(QemuCrucibleFaultRule *rule,
 +                                     uint16_t tag);
 +static bool node_field_u32(QemuCrucibleFaultRule *rule, uint16_t tag,
@@ -3100,10 +3509,180 @@ index 0000000..2b3943c
 +        g_array_ref(source->row_counts) : NULL;
 +    copy->translations = source->translations ?
 +        g_array_ref(source->translations) : NULL;
++    copy->retention_cells = source->retention_cells ?
++        g_hash_table_ref(source->retention_cells) : NULL;
++    copy->row_counters = source->row_counters ?
++        g_hash_table_ref(source->row_counters) : NULL;
 +    copy->service_ledger = NULL;
 +    copy->evidence_mutation_records = NULL;
 +    copy->evidence_counter_records = NULL;
 +    return copy;
++}
++
++static GHashTable *node_memory_retention_cells_copy(GHashTable *source)
++{
++    GHashTable *copy;
++    GHashTableIter iter;
++    gpointer key;
++    gpointer value;
++
++    if (!source) {
++        return NULL;
++    }
++    copy = g_hash_table_new_full(
++        g_int64_hash, g_int64_equal, g_free, g_free);
++    g_hash_table_iter_init(&iter, source);
++    while (g_hash_table_iter_next(&iter, &key, &value)) {
++        g_hash_table_insert(copy, g_memdup2(key, sizeof(uint64_t)),
++                            g_memdup2(value, sizeof(CrucibleRetentionCell)));
++    }
++    return copy;
++}
++
++static GHashTable *node_memory_row_counters_copy(GHashTable *source)
++{
++    GHashTable *copy;
++    GHashTableIter iter;
++    gpointer key;
++    gpointer value;
++
++    if (!source) {
++        return NULL;
++    }
++    copy = g_hash_table_new_full(
++        node_dram_coordinate_hash, node_dram_coordinate_equal,
++        g_free, g_free);
++    g_hash_table_iter_init(&iter, source);
++    while (g_hash_table_iter_next(&iter, &key, &value)) {
++        g_hash_table_insert(
++            copy, g_memdup2(key, sizeof(CrucibleDramCoordinate)),
++            g_memdup2(value, sizeof(uint64_t)));
++    }
++    return copy;
++}
++
++static QemuCrucibleFaultRule *
++node_memory_shadow_rule_copy(const QemuCrucibleFaultRule *source)
++{
++    QemuCrucibleFaultRule *copy = node_rule_copy(source);
++
++    g_clear_pointer(&copy->retention_cells, g_hash_table_unref);
++    g_clear_pointer(&copy->row_counters, g_hash_table_unref);
++    copy->retention_cells = node_memory_retention_cells_copy(
++        source->retention_cells);
++    copy->row_counters = node_memory_row_counters_copy(
++        source->row_counters);
++    if (source->evidence_mutation_records) {
++        copy->evidence_mutation_records = g_byte_array_sized_new(
++            source->evidence_mutation_records->len);
++        g_byte_array_append(copy->evidence_mutation_records,
++                            source->evidence_mutation_records->data,
++                            source->evidence_mutation_records->len);
++    }
++    if (source->evidence_counter_records) {
++        copy->evidence_counter_records = g_byte_array_sized_new(
++            source->evidence_counter_records->len);
++        g_byte_array_append(copy->evidence_counter_records,
++                            source->evidence_counter_records->data,
++                            source->evidence_counter_records->len);
++    }
++    if (source->service_ledger) {
++        g_assert(source->service_ledger->references != UINT32_MAX);
++        source->service_ledger->references++;
++        copy->service_ledger = source->service_ledger;
++    }
++    return copy;
++}
++
++static QemuCrucibleFaultRule *node_memory_shadow_original(
++    QemuCrucibleFaultRule *rule)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++    QemuCrucibleFaultRule *original;
++
++    if (!transaction->streaming || !transaction->shadow_originals) {
++        return rule;
++    }
++    original = g_hash_table_lookup(transaction->shadow_originals, rule);
++    return original ? original : rule;
++}
++
++static QemuCrucibleFaultRule *node_memory_shadow_rule(
++    QemuCrucibleFaultRule *original)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++    QemuCrucibleFaultRule *shadow;
++
++    g_assert(transaction->streaming);
++    if (!transaction->shadow_rules) {
++        transaction->shadow_rules = g_hash_table_new_full(
++            g_direct_hash, g_direct_equal, NULL,
++            (GDestroyNotify)node_rule_unref);
++        transaction->shadow_originals = g_hash_table_new(
++            g_direct_hash, g_direct_equal);
++    }
++    shadow = g_hash_table_lookup(transaction->shadow_rules, original);
++    if (!shadow) {
++        shadow = node_memory_shadow_rule_copy(original);
++        g_hash_table_insert(transaction->shadow_rules, original, shadow);
++        g_hash_table_insert(transaction->shadow_originals, shadow, original);
++    }
++    return shadow;
++}
++
++static void node_memory_shadow_write_clear(gpointer opaque)
++{
++    CrucibleMemoryShadowWrite *write = opaque;
++
++    if (write->mr) {
++        memory_region_unref(write->mr);
++    }
++    g_clear_pointer(&write->value, g_byte_array_unref);
++}
++
++static void node_memory_staged_event_free(gpointer opaque)
++{
++    CrucibleMemoryStagedEvent *event = opaque;
++
++    g_byte_array_unref(event->evidence);
++    g_free(event);
++}
++
++static void node_memory_shadow_state_commit(
++    QemuCrucibleFaultRule *original, QemuCrucibleFaultRule *shadow)
++{
++    original->opportunity_count = shadow->opportunity_count;
++    original->applied_count = shadow->applied_count;
++    original->last_exposure_ns = shadow->last_exposure_ns;
++    original->retention_next_ns = shadow->retention_next_ns;
++    original->exposure_initialized = shadow->exposure_initialized;
++    original->retention_scheduled = shadow->retention_scheduled;
++    original->translation_error_reported =
++        shadow->translation_error_reported;
++    original->evidence_mutation_count = shadow->evidence_mutation_count;
++    original->evidence_mutation_bytes = shadow->evidence_mutation_bytes;
++    memcpy(original->evidence_mutation_hash,
++           shadow->evidence_mutation_hash,
++           sizeof(original->evidence_mutation_hash));
++    original->evidence_aggressor = shadow->evidence_aggressor;
++    original->evidence_counter_before = shadow->evidence_counter_before;
++    original->evidence_counter_after = shadow->evidence_counter_after;
++    original->evidence_victim_rows = shadow->evidence_victim_rows;
++
++    g_clear_pointer(&original->retention_cells, g_hash_table_unref);
++    original->retention_cells = shadow->retention_cells;
++    shadow->retention_cells = NULL;
++    g_clear_pointer(&original->row_counters, g_hash_table_unref);
++    original->row_counters = shadow->row_counters;
++    shadow->row_counters = NULL;
++    g_clear_pointer(&original->evidence_mutation_records,
++                    g_byte_array_unref);
++    original->evidence_mutation_records = shadow->evidence_mutation_records;
++    shadow->evidence_mutation_records = NULL;
++    g_clear_pointer(&original->evidence_counter_records,
++                    g_byte_array_unref);
++    original->evidence_counter_records = shadow->evidence_counter_records;
++    shadow->evidence_counter_records = NULL;
 +}
 +
 +static void node_rules_ensure(void)
@@ -6235,6 +6814,13 @@ index 0000000..2b3943c
 +                          crucible_memory_current_match_hash, &digest_len);
 +    g_assert(digest_len == sizeof(crucible_memory_current_match_hash));
 +    crucible_memory_current_match_count = count;
++    if (crucible_memory_transaction.streaming &&
++        !crucible_memory_preflight_collecting) {
++        for (size_t i = 0; i < count; i++) {
++            crucible_memory_matches[i] = node_memory_shadow_rule(
++                crucible_memory_matches[i]);
++        }
++    }
 +    return count;
 +}
 +
@@ -6283,6 +6869,13 @@ index 0000000..2b3943c
 +                          crucible_memory_current_match_hash, &digest_len);
 +    g_assert(digest_len == sizeof(crucible_memory_current_match_hash));
 +    crucible_memory_current_match_count = count;
++    if (crucible_memory_transaction.streaming &&
++        !crucible_memory_resource_planning) {
++        for (size_t i = 0; i < count; i++) {
++            crucible_memory_matches[i] = node_memory_shadow_rule(
++                crucible_memory_matches[i]);
++        }
++    }
 +    return count;
 +}
 +
@@ -6318,8 +6911,9 @@ index 0000000..2b3943c
 +    crucible_memory_matches_in_use = true;
 +    crucible_memory_current_access = access_sequence;
 +    if (crucible_memory_transaction.active &&
-+        !crucible_memory_preflight_collecting &&
-+        crucible_memory_transaction.rule_snapshot) {
++        crucible_memory_transaction.rule_snapshot &&
++        (!crucible_memory_preflight_collecting ||
++         crucible_memory_resource_planning)) {
 +        return node_memory_snapshot_materialize(vcpu, vaddr, gpa, length);
 +    }
 +    if (!crucible_memory_gpa_index || length == 0 ||
@@ -6420,6 +7014,17 @@ index 0000000..2b3943c
 +                gpointer evaluated = g_hash_table_lookup(
 +                    crucible_memory_transaction_poison, rule);
 +
++                if (!evaluated &&
++                    crucible_memory_transaction.streaming) {
++                    bool occurs = node_memory_rule_occurs(
++                        rule, CRUCIBLE_NODE_FAULT_FIELD_P7);
++
++                    evaluated = GUINT_TO_POINTER(occurs ? 2 : 1);
++                    g_hash_table_insert(
++                        crucible_memory_transaction_poison,
++                        rule, evaluated);
++                }
++
 +                crucible_memory_poison_occurs[i] =
 +                    GPOINTER_TO_UINT(evaluated) == 2;
 +            } else {
@@ -6433,7 +7038,28 @@ index 0000000..2b3943c
 +            poison = qobject_to(QDict, poison_field->json);
 +            poison_kind = qdict_get_try_str(poison, "kind");
 +            if (strcmp(poison_kind, "corrected") != 0) {
++                if (crucible_memory_transaction.streaming &&
++                    strcmp(poison_kind, "exception") == 0) {
++                    CPUFaultException exception;
++
++                    g_assert(node_exception_decode(
++                        qdict_get(
++                            qdict_get_qdict(poison, "parameters"),
++                            "exception"), &exception));
++                    if (crucible_memory_transaction.has_exception &&
++                        memcmp(&crucible_memory_transaction.exception,
++                               &exception, sizeof(exception)) != 0) {
++                        error_report(
++                            "Conflicting Crucible fetch exceptions escaped staging");
++                        abort();
++                    }
++                    crucible_memory_transaction.has_exception = true;
++                    crucible_memory_transaction.exception = exception;
++                }
 +                failed = true;
++                if (crucible_memory_transaction.streaming) {
++                    crucible_memory_transaction.poisoned = true;
++                }
 +                node_memory_event(rule, CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR,
 +                                  access_classes, vcpu, vaddr, gpa, before,
 +                                  value, length, observed_icount);
@@ -6459,6 +7085,37 @@ index 0000000..2b3943c
 +            policy = qdict_get_qdict(parameters, "policy");
 +            policy_kind = qdict_get_str(policy, "kind");
 +            if (strcmp(policy_kind, "corrected") != 0) {
++                if (crucible_memory_transaction.streaming) {
++                    gpointer evaluated = g_hash_table_lookup(
++                        crucible_memory_transaction_poison, rule);
++
++                    if (evaluated) {
++                        continue;
++                    }
++                    g_hash_table_insert(
++                        crucible_memory_transaction_poison, rule,
++                        GUINT_TO_POINTER(2));
++                    node_memory_state_opportunity(rule);
++                    node_memory_state_applied(rule);
++                    if (strcmp(policy_kind, "exception") == 0) {
++                        CPUFaultException exception;
++
++                        g_assert(node_exception_decode(
++                            qdict_get(
++                                qdict_get_qdict(policy, "parameters"),
++                                "exception"), &exception));
++                        if (crucible_memory_transaction.has_exception &&
++                            memcmp(&crucible_memory_transaction.exception,
++                                   &exception, sizeof(exception)) != 0) {
++                            error_report(
++                                "Conflicting Crucible fetch exceptions escaped staging");
++                            abort();
++                        }
++                        crucible_memory_transaction.has_exception = true;
++                        crucible_memory_transaction.exception = exception;
++                    }
++                    crucible_memory_transaction.poisoned = true;
++                }
 +                failed = true;
 +                node_memory_event_span(offset, selected);
 +                node_memory_event(rule, CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR,
@@ -6480,11 +7137,10 @@ index 0000000..2b3943c
 +    crucible_memory_current_event_length = length;
 +}
 +
-+static bool node_rule_memory_overlap(QemuCrucibleFaultRule *rule,
-+                                     uint32_t vcpu, uint64_t vaddr,
-+                                     uint64_t gpa, size_t length,
-+                                     size_t *offset, size_t *selected,
-+                                     uint64_t *rule_offset)
++static bool node_rule_memory_overlap_internal(
++    QemuCrucibleFaultRule *rule, uint32_t vcpu, uint64_t vaddr,
++    uint64_t gpa, size_t length, size_t *offset, size_t *selected,
++    uint64_t *rule_offset, bool mark_stale)
 +{
 +    uint64_t start, range_length, access, access_end, range_end;
 +    uint32_t target_vcpu;
@@ -6515,7 +7171,9 @@ index 0000000..2b3943c
 +        CPUState *cpu = qemu_get_cpu(target_vcpu);
 +
 +        if (!cpu) {
-+            rule->translation_stale = true;
++            if (mark_stale) {
++                rule->translation_stale = true;
++            }
 +            return false;
 +        }
 +
@@ -6542,7 +7200,9 @@ index 0000000..2b3943c
 +                current.writable != translation->writable ||
 +                current.executable != translation->executable ||
 +                current.user != translation->user) {
-+                rule->translation_stale = true;
++                if (mark_stale) {
++                    rule->translation_stale = true;
++                }
 +                return false;
 +            }
 +            logical += part;
@@ -6550,11 +7210,24 @@ index 0000000..2b3943c
 +            remaining -= part;
 +        }
 +        if (remaining != 0) {
-+            rule->translation_stale = true;
++            if (mark_stale) {
++                rule->translation_stale = true;
++            }
 +            return false;
 +        }
 +    }
 +    return true;
++}
++
++static bool node_rule_memory_overlap(QemuCrucibleFaultRule *rule,
++                                     uint32_t vcpu, uint64_t vaddr,
++                                     uint64_t gpa, size_t length,
++                                     size_t *offset, size_t *selected,
++                                     uint64_t *rule_offset)
++{
++    return node_rule_memory_overlap_internal(
++        rule, vcpu, vaddr, gpa, length, offset, selected,
++        rule_offset, true);
 +}
 +
 +static bool node_rule_occurs(QemuCrucibleFaultRule *rule, uint16_t tag)
@@ -6578,11 +7251,21 @@ index 0000000..2b3943c
 +        error_report("Crucible rule opportunity counter overflow");
 +        abort();
 +    }
++    if (crucible_memory_transaction.active &&
++        crucible_memory_transaction.resources_preflighted &&
++        !crucible_memory_transaction.streaming) {
++        node_memory_rule_reservation_consume(rule, true);
++    }
 +    rule->opportunity_count++;
 +    if (strcmp(kind, "every") == 0) {
 +        if (rule->applied_count == UINT64_MAX) {
 +            error_report("Crucible rule applied counter overflow");
 +            abort();
++        }
++        if (crucible_memory_transaction.active &&
++            crucible_memory_transaction.resources_preflighted &&
++            !crucible_memory_transaction.streaming) {
++            node_memory_rule_reservation_consume(rule, false);
 +        }
 +        rule->applied_count++;
 +        return true;
@@ -6602,6 +7285,11 @@ index 0000000..2b3943c
 +        if (rule->applied_count == UINT64_MAX) {
 +            error_report("Crucible rule applied counter overflow");
 +            abort();
++        }
++        if (crucible_memory_transaction.active &&
++            crucible_memory_transaction.resources_preflighted &&
++            !crucible_memory_transaction.streaming) {
++            node_memory_rule_reservation_consume(rule, false);
 +        }
 +        rule->applied_count++;
 +        return true;
@@ -6657,6 +7345,10 @@ index 0000000..2b3943c
 +            error_report("Crucible memory state opportunity counter overflow");
 +            abort();
 +        }
++        if (crucible_memory_transaction.resources_preflighted &&
++            !crucible_memory_transaction.streaming) {
++            node_memory_rule_reservation_consume(rule, true);
++        }
 +        rule->opportunity_count++;
 +    }
 +}
@@ -6668,6 +7360,10 @@ index 0000000..2b3943c
 +        if (rule->applied_count == UINT64_MAX) {
 +            error_report("Crucible memory state applied counter overflow");
 +            abort();
++        }
++        if (crucible_memory_transaction.resources_preflighted &&
++            !crucible_memory_transaction.streaming) {
++            node_memory_rule_reservation_consume(rule, false);
 +        }
 +        rule->applied_count++;
 +    }
@@ -6874,10 +7570,31 @@ index 0000000..2b3943c
 +                            rule->evidence_counter_records->len);
 +    }
 +    g_assert(evidence->len <= CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES);
-+    qemu_crucible_fault_rule_event(rule, outcome, observed_icount,
-+                                   opportunity_hash, before_hash, after_hash,
-+                                   evidence->data, evidence->len);
-+    qemu_crucible_fault_notify_events();
++    if (crucible_memory_transaction.active &&
++        crucible_memory_transaction.streaming &&
++        !crucible_memory_preflight_collecting) {
++        CrucibleMemoryStagedEvent *staged = g_new0(
++            CrucibleMemoryStagedEvent, 1);
++
++        if (!crucible_memory_transaction.staged_events) {
++            crucible_memory_transaction.staged_events =
++                g_ptr_array_new_with_free_func(
++                    node_memory_staged_event_free);
++        }
++        staged->rule = node_memory_shadow_original(rule);
++        staged->outcome = outcome;
++        staged->observed_icount = observed_icount;
++        memcpy(staged->opportunity_hash, opportunity_hash, 32);
++        memcpy(staged->before_hash, before_hash, 32);
++        memcpy(staged->after_hash, after_hash, 32);
++        staged->evidence = g_byte_array_ref(evidence);
++        g_ptr_array_add(crucible_memory_transaction.staged_events, staged);
++    } else {
++        qemu_crucible_fault_rule_event(
++            rule, outcome, observed_icount, opportunity_hash,
++            before_hash, after_hash, evidence->data, evidence->len);
++        qemu_crucible_fault_notify_events();
++    }
 +}
 +
 +static bool node_memory_event_capacity(
@@ -6997,7 +7714,8 @@ index 0000000..2b3943c
 +
 +static uint64_t node_virtual_now(void)
 +{
-+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    int64_t now = icount_enabled() == ICOUNT_PRECISE ?
++        icount_get_observed() : qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 +
 +    if (now < 0) {
 +        error_report("Crucible fault model observed negative virtual time");
@@ -7173,13 +7891,15 @@ index 0000000..2b3943c
 +    g_autoptr(GHashTable) demand_by_ledger = NULL;
 +    uint64_t fixed_latency = 0;
 +    uint64_t queue_delay = 0;
-+    int64_t signed_now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    int64_t signed_now;
 +    uint64_t now;
 +
 +    if (!crucible_memory_service_plan ||
 +        crucible_memory_service_plan->len == 0) {
 +        return true;
 +    }
++    signed_now = icount_enabled() == ICOUNT_PRECISE ?
++        icount_get_observed() : qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 +    if (signed_now < 0) {
 +        node_memory_resource_terminal_metadata(
 +            CRUCIBLE_NODE_RESOURCE_VIRTUAL_TIME, 0, 0,
@@ -7226,14 +7946,17 @@ index 0000000..2b3943c
 +        CrucibleMemoryServiceLedger *ledger = ledger_key;
 +        uint64_t demand = *(uint64_t *)demand_value;
 +        uint64_t ready = MAX(now, ledger->ready_ns);
++        uint64_t reserved = node_memory_reserved_ledger(ledger);
 +
-+        if (ready > UINT64_MAX - demand) {
++        if (ready > UINT64_MAX - reserved ||
++            ready + reserved > UINT64_MAX - demand) {
 +            node_memory_resource_terminal_metadata(
-+                CRUCIBLE_NODE_RESOURCE_VIRTUAL_TIME, ready, demand,
++                CRUCIBLE_NODE_RESOURCE_VIRTUAL_TIME, ready,
++                reserved + demand,
 +                UINT64_MAX, UINT64_MAX);
 +            return false;
 +        }
-+        ready += demand;
++        ready += reserved + demand;
 +        queue_delay = MAX(queue_delay, ready - now);
 +    }
 +    if (fixed_latency > UINT64_MAX - queue_delay) {
@@ -7242,9 +7965,13 @@ index 0000000..2b3943c
 +            queue_delay, UINT64_MAX, UINT64_MAX);
 +        return false;
 +    }
-+    if (fixed_latency + queue_delay > INT64_MAX - now) {
++    if (crucible_memory_reserved_virtual_time > INT64_MAX - now ||
++        fixed_latency + queue_delay >
++            INT64_MAX - now - crucible_memory_reserved_virtual_time) {
 +        node_memory_resource_terminal_metadata(
-+            CRUCIBLE_NODE_RESOURCE_VIRTUAL_TIME, now,
++            CRUCIBLE_NODE_RESOURCE_VIRTUAL_TIME,
++            now + MIN(crucible_memory_reserved_virtual_time,
++                      INT64_MAX - now),
 +            fixed_latency + queue_delay, INT64_MAX, INT64_MAX);
 +        return false;
 +    }
@@ -7415,13 +8142,14 @@ index 0000000..2b3943c
 +           sizeof(pending->match_chain));
 +    node_memory_sha256(identity, sizeof(identity), opportunity_hash);
 +    qemu_crucible_fault_rule_event(
-+        pending->rule, CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED,
++        node_memory_shadow_original(pending->rule),
++        CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED,
 +        pending->observed_icount, opportunity_hash, pending->before_chain,
 +        pending->after_chain, evidence, sizeof(evidence));
 +    qemu_crucible_fault_notify_events();
 +}
 +
-+static void node_memory_service_finish_transaction(void)
++static uint64_t node_memory_service_finish_transaction(void)
 +{
 +    g_autoptr(GArray) ledgers = NULL;
 +    g_autoptr(GHashTable) ledger_index = NULL;
@@ -7431,7 +8159,7 @@ index 0000000..2b3943c
 +
 +    if (!crucible_memory_pending_services ||
 +        crucible_memory_pending_services->len == 0) {
-+        return;
++        return 0;
 +    }
 +    ledgers = g_array_new(false, false,
 +                          sizeof(CruciblePendingServiceLedger));
@@ -7489,7 +8217,16 @@ index 0000000..2b3943c
 +        error_report("Crucible transaction service composition overflow");
 +        abort();
 +    }
-+    node_memory_apply_service(fixed_latency + queue_delay);
++    if (crucible_memory_transaction.streaming) {
++        CPUState *cpu = qemu_get_cpu(crucible_memory_transaction.actor);
++        uint64_t delay = fixed_latency + queue_delay;
++
++        if (!cpu || cpu->crucible_fetch_service_nanos > UINT64_MAX - delay) {
++            error_report("Crucible fetch service staging overflow");
++            abort();
++        }
++        cpu->crucible_fetch_service_nanos += delay;
++    }
 +    for (guint i = 0; i < crucible_memory_pending_services->len; i++) {
 +        CruciblePendingMemoryService *pending = &g_array_index(
 +            crucible_memory_pending_services, CruciblePendingMemoryService,
@@ -7507,6 +8244,8 @@ index 0000000..2b3943c
 +
 +        node_memory_service_transaction_event(pending);
 +    }
++    return crucible_memory_transaction.streaming ? 0 :
++           fixed_latency + queue_delay;
 +}
 +
 +static void node_memory_apply_service(uint64_t delay)
@@ -7522,6 +8261,32 @@ index 0000000..2b3943c
 +        abort();
 +    }
 +    icount_advance_virtual_time_to_ns(now + delay);
++}
++
++bool qemu_crucible_fault_memory_fetch_service_apply(CPUState *cpu)
++{
++    uint64_t delay;
++
++    if (!cpu) {
++        return false;
++    }
++    delay = cpu->crucible_fetch_service_nanos;
++    cpu->crucible_fetch_service_nanos = 0;
++    node_memory_apply_service(delay);
++    return delay != 0;
++}
++
++bool qemu_crucible_fault_memory_service_apply(CPUState *cpu)
++{
++    uint64_t delay;
++
++    if (!cpu) {
++        return false;
++    }
++    delay = cpu->crucible_memory_service_nanos;
++    cpu->crucible_memory_service_nanos = 0;
++    node_memory_apply_service(delay);
++    return delay != 0;
 +}
 +
 +static bool node_rule_physical_span(QemuCrucibleFaultRule *rule,
@@ -7672,6 +8437,49 @@ index 0000000..2b3943c
 +    return NULL;
 +}
 +
++static void node_memory_shadow_read(uint64_t gpa, uint8_t *value,
++                                    size_t length)
++{
++    GArray *writes = crucible_memory_transaction.shadow_writes;
++
++    for (guint i = 0; writes && i < writes->len; i++) {
++        CrucibleMemoryShadowWrite *write = &g_array_index(
++            writes, CrucibleMemoryShadowWrite, i);
++        uint64_t start = MAX(gpa, write->gpa);
++        uint64_t end = MIN(gpa + length,
++                           write->gpa + write->value->len);
++
++        if (start < end) {
++            memcpy(value + (start - gpa),
++                   write->value->data + (start - write->gpa),
++                   end - start);
++        }
++    }
++}
++
++static void node_memory_shadow_write(MemoryRegion *mr, uint64_t mr_addr,
++                                     uint64_t gpa, const uint8_t *value,
++                                     size_t length)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++    CrucibleMemoryShadowWrite write = {
++        .gpa = gpa,
++        .mr_addr = mr_addr,
++        .mr = mr,
++        .value = g_byte_array_sized_new(length),
++    };
++
++    if (!transaction->shadow_writes) {
++        transaction->shadow_writes = g_array_new(
++            false, false, sizeof(CrucibleMemoryShadowWrite));
++        g_array_set_clear_func(transaction->shadow_writes,
++                               node_memory_shadow_write_clear);
++    }
++    memory_region_ref(mr);
++    g_byte_array_append(write.value, value, length);
++    g_array_append_val(transaction->shadow_writes, write);
++}
++
 +static void node_memory_mutate_range(QemuCrucibleFaultRule *rule,
 +                                     uint64_t rule_offset, uint64_t length,
 +                                     const char *mask, bool clear)
@@ -7719,6 +8527,10 @@ index 0000000..2b3943c
 +        }
 +        part = MIN((uint64_t)sizeof(buffer), (uint64_t)region_available);
 +        memcpy(buffer, memory_region_get_ram_ptr(region) + mr_offset, part);
++        if (crucible_memory_transaction.active &&
++            crucible_memory_transaction.streaming) {
++            node_memory_shadow_read(physical, buffer, part);
++        }
 +        uint8_t before[sizeof(buffer)];
 +
 +        memcpy(before, buffer, part);
@@ -7735,38 +8547,15 @@ index 0000000..2b3943c
 +        }
 +        node_memory_mutation_evidence_add(
 +            rule, physical, rule_offset, before, buffer, part, clear);
-+        memory_region_fault_commit_ram(region, mr_offset, buffer, part);
++        if (crucible_memory_transaction.active &&
++            crucible_memory_transaction.streaming) {
++            node_memory_shadow_write(region, mr_offset, physical,
++                                     buffer, part);
++        } else {
++            memory_region_fault_commit_ram(region, mr_offset, buffer, part);
++        }
 +        rule_offset += part;
 +        length -= part;
-+    }
-+}
-+
-+static void node_memory_commit_mask(uint64_t gpa, const uint8_t *before,
-+                                    const uint8_t *value,
-+                                    const uint8_t *commit_mask,
-+                                    size_t length)
-+{
-+    for (size_t byte = 0; byte < length; byte++) {
-+        hwaddr translated;
-+        hwaddr available = 1;
-+        MemoryRegion *region;
-+        uint8_t committed;
-+
-+        if (commit_mask[byte] == 0) {
-+            continue;
-+        }
-+        region = address_space_translate(
-+            &address_space_memory, gpa + byte, &translated, &available,
-+            true, MEMTXATTRS_UNSPECIFIED);
-+        if (!region || available == 0 || !memory_region_is_ram(region) ||
-+            memory_region_is_ram_device(region) ||
-+            memory_region_is_rom(region)) {
-+            error_report("Crucible torn write target is no longer RAM");
-+            abort();
-+        }
-+        committed = (before[byte] & ~commit_mask[byte]) |
-+                    (value[byte] & commit_mask[byte]);
-+        memory_region_fault_commit_ram(region, translated, &committed, 1);
 +    }
 +}
 +
@@ -7940,6 +8729,9 @@ index 0000000..2b3943c
 +typedef struct CrucibleRetentionBoundaryCount {
 +    QemuCrucibleFaultRule *first;
 +    QemuCrucibleFaultRule *counter_exhausted;
++    QemuCrucibleFaultRule *cells_exhausted;
++    uint64_t cells_current;
++    uint64_t cells_requested;
 +    size_t events;
 +    uint64_t now;
 +} CrucibleRetentionBoundaryCount;
@@ -7968,9 +8760,29 @@ index 0000000..2b3943c
 +    QemuCrucibleFaultRule *rule = (QemuCrucibleFaultRule *)const_rule;
 +    QDict *parameters;
 +    uint64_t start, length, offset = 0, chunks = 0;
++    uint64_t existing;
++    uint64_t reserved_new = 0;
++    uint64_t new_cells = 0;
 +
 +    if (!node_memory_retention_rule(rule, &start, &length, &parameters)) {
 +        return;
++    }
++    existing = rule->retention_cells ?
++        g_hash_table_size(rule->retention_cells) : 0;
++    CrucibleMemoryReservedRetention *reserved_retention =
++        node_memory_reserved_retention_set(rule, false);
++
++    if (reserved_retention) {
++        GHashTableIter iter;
++        gpointer offset_key;
++
++        g_hash_table_iter_init(&iter, reserved_retention->offsets);
++        while (g_hash_table_iter_next(&iter, &offset_key, NULL)) {
++            if (!rule->retention_cells ||
++                !g_hash_table_contains(rule->retention_cells, offset_key)) {
++                reserved_new++;
++            }
++        }
 +    }
 +    while (offset != length) {
 +        uint64_t physical, available;
@@ -7985,6 +8797,19 @@ index 0000000..2b3943c
 +        if (node_memory_retention_chunk_due(
 +                rule, parameters, offset, part, count->now)) {
 +            chunks++;
++            for (uint64_t byte = 0; byte < part; byte++) {
++                uint64_t cell_offset = offset + byte;
++
++                if ((!rule->retention_cells ||
++                     !g_hash_table_contains(rule->retention_cells,
++                                            &cell_offset)) &&
++                    node_memory_reserved_retention_count(
++                        rule, cell_offset) == 0 &&
++                    node_memory_retention_chunk_due(
++                        rule, parameters, cell_offset, 1, count->now)) {
++                    new_cells++;
++                }
++            }
 +        }
 +        offset += part;
 +    }
@@ -7996,9 +8821,18 @@ index 0000000..2b3943c
 +        return;
 +    }
 +    if (!count->counter_exhausted &&
-+        (rule->opportunity_count == UINT64_MAX ||
-+         rule->applied_count == UINT64_MAX)) {
++        !node_memory_rule_resources_ready(rule)) {
 +        count->counter_exhausted = rule;
++    }
++    if (!count->cells_exhausted &&
++        (reserved_new > CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing ||
++         new_cells > CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing -
++             MIN(reserved_new,
++                 CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing))) {
++        count->cells_exhausted = rule;
++        count->cells_current = existing + MIN(
++            reserved_new, CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing);
++        count->cells_requested = new_cells;
 +    }
 +    if (!count->first) {
 +        count->first = rule;
@@ -8122,6 +8956,22 @@ index 0000000..2b3943c
 +                                   crucible_memory_access_sequence);
 +        node_memory_resource_terminal(
 +            count.counter_exhausted, QEMU_CRUCIBLE_MEMORY_BOUNDARY,
++            UINT32_MAX, start, start, length, observed_icount);
++        node_memory_boundary_match_done();
++        return;
++    }
++    if (count.cells_exhausted) {
++        node_memory_resource_terminal_metadata(
++            CRUCIBLE_NODE_RESOURCE_PERSISTENT_CELLS,
++            count.cells_current, count.cells_requested,
++            CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT,
++            CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT);
++        g_assert(node_memory_retention_rule(
++            count.cells_exhausted, &start, &length, &parameters));
++        node_memory_boundary_match(count.cells_exhausted,
++                                   crucible_memory_access_sequence);
++        node_memory_resource_terminal(
++            count.cells_exhausted, QEMU_CRUCIBLE_MEMORY_BOUNDARY,
 +            UINT32_MAX, start, start, length, observed_icount);
 +        node_memory_boundary_match_done();
 +        return;
@@ -8488,8 +9338,23 @@ index 0000000..2b3943c
 +    uint64_t new_counters = 0;
 +    uint64_t existing = rule->row_counters ?
 +        g_hash_table_size(rule->row_counters) : 0;
++    CrucibleMemoryReservedRows *reserved_rows =
++        node_memory_reserved_row_set(rule, false);
++    uint64_t reserved_new = 0;
 +
 +    g_assert(existing <= CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT);
++    if (reserved_rows) {
++        GHashTableIter reserved_iter;
++        gpointer reserved_key;
++
++        g_hash_table_iter_init(&reserved_iter, reserved_rows->coordinates);
++        while (g_hash_table_iter_next(&reserved_iter, &reserved_key, NULL)) {
++            if (!rule->row_counters ||
++                !g_hash_table_contains(rule->row_counters, reserved_key)) {
++                reserved_new++;
++            }
++        }
++    }
 +    g_assert(node_json_u64(qdict_get(parameters, "row_bytes"),
 +                           &row_bytes));
 +    if (crucible_memory_transaction.active &&
@@ -8521,24 +9386,662 @@ index 0000000..2b3943c
 +            counter = rule->row_counters ?
 +                g_hash_table_lookup(rule->row_counters, &coordinate) :
 +                NULL;
-+            if (counter) {
-+                if (*counter == UINT64_MAX) {
-+                    node_memory_counter_terminal_metadata(*counter);
-+                    return false;
-+                }
-+            } else {
++            uint64_t reserved = node_memory_reserved_row_count(
++                rule, &coordinate);
++            uint64_t current = counter ? *counter : 0;
++
++            if (reserved == UINT64_MAX ||
++                current > UINT64_MAX - reserved - 1) {
++                node_memory_counter_terminal_metadata(current + reserved);
++                return false;
++            }
++            if (!counter && reserved == 0) {
 +                new_counters++;
 +            }
 +        }
 +        current += part;
 +        remaining -= part;
 +    }
-+    if (new_counters > CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing) {
++    if (reserved_new > CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing ||
++        new_counters > CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing -
++            reserved_new) {
 +        node_memory_resource_terminal_metadata(
-+            CRUCIBLE_NODE_RESOURCE_PERSISTENT_CELLS, existing,
++            CRUCIBLE_NODE_RESOURCE_PERSISTENT_CELLS,
++            existing + MIN(reserved_new,
++                           CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing),
 +            new_counters, CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT,
 +            CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT);
 +        return false;
++    }
++    return true;
++}
++
++static void node_memory_row_resource_plan_free(gpointer opaque)
++{
++    CrucibleMemoryRowResourcePlan *plan = opaque;
++
++    g_hash_table_unref(plan->coordinates);
++    g_free(plan);
++}
++
++static void node_memory_retention_resource_plan_free(gpointer opaque)
++{
++    CrucibleMemoryRetentionResourcePlan *plan = opaque;
++
++    g_hash_table_unref(plan->offsets);
++    g_free(plan);
++}
++
++static void node_memory_reserved_rows_free(gpointer opaque)
++{
++    CrucibleMemoryReservedRows *rows = opaque;
++
++    g_hash_table_unref(rows->coordinates);
++    g_free(rows);
++}
++
++static void node_memory_reserved_retention_free(gpointer opaque)
++{
++    CrucibleMemoryReservedRetention *retention = opaque;
++
++    g_hash_table_unref(retention->offsets);
++    g_free(retention);
++}
++
++static CrucibleMemoryReservedCounters *node_memory_reserved_counter(
++    QemuCrucibleFaultRule *rule, bool create)
++{
++    CrucibleMemoryReservedCounters *reserved;
++
++    if (!crucible_memory_reserved_counters) {
++        if (!create) {
++            return NULL;
++        }
++        crucible_memory_reserved_counters = g_hash_table_new_full(
++            g_direct_hash, g_direct_equal, NULL, g_free);
++    }
++    reserved = g_hash_table_lookup(crucible_memory_reserved_counters, rule);
++    if (!reserved && create) {
++        reserved = g_new0(CrucibleMemoryReservedCounters, 1);
++        g_hash_table_insert(crucible_memory_reserved_counters,
++                            rule, reserved);
++    }
++    return reserved;
++}
++
++static CrucibleMemoryReservedRows *node_memory_reserved_row_set(
++    QemuCrucibleFaultRule *rule, bool create)
++{
++    CrucibleMemoryReservedRows *rows;
++
++    if (!crucible_memory_reserved_rows) {
++        if (!create) {
++            return NULL;
++        }
++        crucible_memory_reserved_rows = g_hash_table_new_full(
++            g_direct_hash, g_direct_equal, NULL,
++            node_memory_reserved_rows_free);
++    }
++    rows = g_hash_table_lookup(crucible_memory_reserved_rows, rule);
++    if (!rows && create) {
++        rows = g_new0(CrucibleMemoryReservedRows, 1);
++        rows->coordinates = g_hash_table_new_full(
++            node_dram_coordinate_hash, node_dram_coordinate_equal,
++            g_free, g_free);
++        g_hash_table_insert(crucible_memory_reserved_rows, rule, rows);
++    }
++    return rows;
++}
++
++static uint64_t node_memory_reserved_row_count(
++    QemuCrucibleFaultRule *rule,
++    const CrucibleDramCoordinate *coordinate)
++{
++    CrucibleMemoryReservedRows *rows = node_memory_reserved_row_set(
++        rule, false);
++    uint64_t *count = rows ?
++        g_hash_table_lookup(rows->coordinates, coordinate) : NULL;
++
++    return count ? *count : 0;
++}
++
++static CrucibleMemoryReservedRetention *
++node_memory_reserved_retention_set(QemuCrucibleFaultRule *rule,
++                                   bool create)
++{
++    CrucibleMemoryReservedRetention *retention;
++
++    if (!crucible_memory_reserved_retention) {
++        if (!create) {
++            return NULL;
++        }
++        crucible_memory_reserved_retention = g_hash_table_new_full(
++            g_direct_hash, g_direct_equal, NULL,
++            node_memory_reserved_retention_free);
++    }
++    retention = g_hash_table_lookup(
++        crucible_memory_reserved_retention, rule);
++    if (!retention && create) {
++        retention = g_new0(CrucibleMemoryReservedRetention, 1);
++        retention->offsets = g_hash_table_new_full(
++            g_int64_hash, g_int64_equal, g_free, g_free);
++        g_hash_table_insert(crucible_memory_reserved_retention,
++                            rule, retention);
++    }
++    return retention;
++}
++
++static uint64_t node_memory_reserved_retention_count(
++    QemuCrucibleFaultRule *rule, uint64_t offset)
++{
++    CrucibleMemoryReservedRetention *retention =
++        node_memory_reserved_retention_set(rule, false);
++    uint64_t *count = retention ?
++        g_hash_table_lookup(retention->offsets, &offset) : NULL;
++
++    return count ? *count : 0;
++}
++
++static uint64_t node_memory_reserved_ledger(
++    CrucibleMemoryServiceLedger *ledger)
++{
++    uint64_t *reserved = crucible_memory_reserved_ledgers ?
++        g_hash_table_lookup(crucible_memory_reserved_ledgers, ledger) : NULL;
++
++    return reserved ? *reserved : 0;
++}
++
++static bool node_memory_rule_resources_ready(
++    QemuCrucibleFaultRule *rule)
++{
++    CrucibleMemoryReservedCounters *reserved =
++        node_memory_reserved_counter(rule, false);
++    uint64_t opportunities = reserved ? reserved->opportunities : 0;
++    uint64_t applied = reserved ? reserved->applied : 0;
++
++    return opportunities != UINT64_MAX && applied != UINT64_MAX &&
++           rule->opportunity_count <= UINT64_MAX - opportunities - 1 &&
++           rule->applied_count <= UINT64_MAX - applied - 1;
++}
++
++static void node_memory_rule_reservation_release(
++    CrucibleMemoryRuleReservation *reservation, bool opportunity)
++{
++    CrucibleMemoryReservedCounters *reserved;
++    bool *active = opportunity ? &reservation->opportunity :
++                                 &reservation->applied;
++    uint64_t *count;
++
++    if (!*active) {
++        return;
++    }
++    reserved = node_memory_reserved_counter(reservation->rule, false);
++    g_assert(reserved);
++    count = opportunity ? &reserved->opportunities : &reserved->applied;
++    g_assert(*count != 0);
++    (*count)--;
++    *active = false;
++    if (reserved->opportunities == 0 && reserved->applied == 0) {
++        g_hash_table_remove(crucible_memory_reserved_counters,
++                            reservation->rule);
++    }
++}
++
++static void node_memory_rule_reservation_consume(
++    QemuCrucibleFaultRule *rule, bool opportunity)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++    QemuCrucibleFaultRule *original = node_memory_shadow_original(rule);
++
++    for (guint i = 0;
++         transaction->rule_reservations &&
++         i < transaction->rule_reservations->len; i++) {
++        CrucibleMemoryRuleReservation *reservation = &g_array_index(
++            transaction->rule_reservations,
++            CrucibleMemoryRuleReservation, i);
++
++        if (reservation->rule == original) {
++            node_memory_rule_reservation_release(
++                reservation, opportunity);
++            return;
++        }
++    }
++    if (transaction->resources_preflighted) {
++        error_report("Crucible rule reservation is incomplete");
++        abort();
++    }
++}
++
++static void node_memory_reservations_release(
++    CrucibleMemoryTransaction *transaction)
++{
++    for (guint i = 0;
++         transaction->rule_reservations &&
++         i < transaction->rule_reservations->len; i++) {
++        CrucibleMemoryRuleReservation *reservation = &g_array_index(
++            transaction->rule_reservations,
++            CrucibleMemoryRuleReservation, i);
++
++        node_memory_rule_reservation_release(reservation, true);
++        node_memory_rule_reservation_release(reservation, false);
++    }
++    for (guint i = 0;
++         transaction->row_reservations &&
++         i < transaction->row_reservations->len; i++) {
++        CrucibleMemoryRowReservation *reservation = &g_array_index(
++            transaction->row_reservations,
++            CrucibleMemoryRowReservation, i);
++
++        if (reservation->active) {
++            CrucibleMemoryReservedRows *rows =
++                node_memory_reserved_row_set(reservation->rule, false);
++            uint64_t *count;
++
++            g_assert(rows);
++            count = g_hash_table_lookup(
++                rows->coordinates, &reservation->coordinate);
++            g_assert(count && *count != 0);
++            (*count)--;
++            if (*count == 0) {
++                g_hash_table_remove(rows->coordinates,
++                                    &reservation->coordinate);
++            }
++            if (g_hash_table_size(rows->coordinates) == 0) {
++                g_hash_table_remove(crucible_memory_reserved_rows,
++                                    reservation->rule);
++            }
++            reservation->active = false;
++        }
++    }
++    for (guint i = 0;
++         transaction->retention_reservations &&
++         i < transaction->retention_reservations->len; i++) {
++        CrucibleMemoryRetentionReservation *reservation = &g_array_index(
++            transaction->retention_reservations,
++            CrucibleMemoryRetentionReservation, i);
++
++        if (reservation->active) {
++            CrucibleMemoryReservedRetention *retention =
++                node_memory_reserved_retention_set(
++                    reservation->rule, false);
++            uint64_t *count;
++
++            g_assert(retention);
++            count = g_hash_table_lookup(retention->offsets,
++                                        &reservation->offset);
++            g_assert(count && *count != 0);
++            (*count)--;
++            if (*count == 0) {
++                g_hash_table_remove(retention->offsets,
++                                    &reservation->offset);
++            }
++            if (g_hash_table_size(retention->offsets) == 0) {
++                g_hash_table_remove(
++                    crucible_memory_reserved_retention,
++                    reservation->rule);
++            }
++            reservation->active = false;
++        }
++    }
++    for (guint i = 0;
++         transaction->ledger_reservations &&
++         i < transaction->ledger_reservations->len; i++) {
++        CrucibleMemoryLedgerReservation *reservation = &g_array_index(
++            transaction->ledger_reservations,
++            CrucibleMemoryLedgerReservation, i);
++        uint64_t *reserved = g_hash_table_lookup(
++            crucible_memory_reserved_ledgers, reservation->ledger);
++
++        g_assert(reserved && *reserved >= reservation->demand);
++        *reserved -= reservation->demand;
++        if (*reserved == 0) {
++            g_hash_table_remove(crucible_memory_reserved_ledgers,
++                                reservation->ledger);
++        }
++        reservation->demand = 0;
++    }
++    g_assert(crucible_memory_reserved_virtual_time >=
++             transaction->virtual_time_reservation);
++    crucible_memory_reserved_virtual_time -=
++        transaction->virtual_time_reservation;
++    transaction->virtual_time_reservation = 0;
++}
++
++static void node_memory_resources_reserve(
++    GHashTable *counter_rules, GHashTable *row_plans,
++    GHashTable *retention_plans)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++    GHashTableIter iter;
++    gpointer key;
++    gpointer value;
++    g_autoptr(GHashTable) demand_by_ledger = g_hash_table_new_full(
++        g_direct_hash, g_direct_equal, NULL, g_free);
++    uint64_t fixed_latency = 0;
++    uint64_t queue_delay = 0;
++    uint64_t now = node_virtual_now();
++
++    transaction->rule_reservations = g_array_new(
++        false, false, sizeof(CrucibleMemoryRuleReservation));
++    g_hash_table_iter_init(&iter, counter_rules);
++    while (g_hash_table_iter_next(&iter, &key, NULL)) {
++        QemuCrucibleFaultRule *rule = key;
++        CrucibleMemoryReservedCounters *reserved =
++            node_memory_reserved_counter(rule, true);
++        CrucibleMemoryRuleReservation reservation = {
++            .rule = rule,
++            .opportunity = true,
++            .applied = true,
++        };
++
++        g_assert(reserved->opportunities != UINT64_MAX &&
++                 reserved->applied != UINT64_MAX);
++        reserved->opportunities++;
++        reserved->applied++;
++        g_array_append_val(transaction->rule_reservations, reservation);
++    }
++
++    transaction->row_reservations = g_array_new(
++        false, false, sizeof(CrucibleMemoryRowReservation));
++    g_hash_table_iter_init(&iter, row_plans);
++    while (g_hash_table_iter_next(&iter, &key, &value)) {
++        QemuCrucibleFaultRule *rule = key;
++        CrucibleMemoryRowResourcePlan *plan = value;
++        GHashTableIter coordinate_iter;
++        gpointer coordinate_key;
++        CrucibleMemoryReservedRows *rows =
++            node_memory_reserved_row_set(rule, true);
++
++        g_hash_table_iter_init(&coordinate_iter, plan->coordinates);
++        while (g_hash_table_iter_next(
++                   &coordinate_iter, &coordinate_key, NULL)) {
++            uint64_t *count = g_hash_table_lookup(
++                rows->coordinates, coordinate_key);
++            CrucibleMemoryRowReservation reservation = {
++                .rule = rule,
++                .coordinate = *(CrucibleDramCoordinate *)coordinate_key,
++                .active = true,
++            };
++
++            if (!count) {
++                count = g_new0(uint64_t, 1);
++                g_hash_table_insert(
++                    rows->coordinates,
++                    g_memdup2(coordinate_key,
++                              sizeof(CrucibleDramCoordinate)), count);
++            }
++            g_assert(*count != UINT64_MAX);
++            (*count)++;
++            g_array_append_val(transaction->row_reservations, reservation);
++        }
++    }
++
++    transaction->retention_reservations = g_array_new(
++        false, false, sizeof(CrucibleMemoryRetentionReservation));
++    g_hash_table_iter_init(&iter, retention_plans);
++    while (g_hash_table_iter_next(&iter, &key, &value)) {
++        QemuCrucibleFaultRule *rule = key;
++        CrucibleMemoryRetentionResourcePlan *plan = value;
++        GHashTableIter offset_iter;
++        gpointer offset_key;
++        CrucibleMemoryReservedRetention *retention =
++            node_memory_reserved_retention_set(rule, true);
++
++        g_hash_table_iter_init(&offset_iter, plan->offsets);
++        while (g_hash_table_iter_next(&offset_iter, &offset_key, NULL)) {
++            uint64_t *count = g_hash_table_lookup(
++                retention->offsets, offset_key);
++            CrucibleMemoryRetentionReservation reservation = {
++                .rule = rule,
++                .offset = *(uint64_t *)offset_key,
++                .active = true,
++            };
++
++            if (!count) {
++                count = g_new0(uint64_t, 1);
++                g_hash_table_insert(
++                    retention->offsets,
++                    g_memdup2(offset_key, sizeof(uint64_t)), count);
++            }
++            g_assert(*count != UINT64_MAX);
++            (*count)++;
++            g_array_append_val(transaction->retention_reservations,
++                               reservation);
++        }
++    }
++
++    transaction->ledger_reservations = g_array_new(
++        false, false, sizeof(CrucibleMemoryLedgerReservation));
++    for (guint i = 0;
++         crucible_memory_service_plan &&
++         i < crucible_memory_service_plan->len; i++) {
++        CrucibleMemoryServicePlan *plan = &g_array_index(
++            crucible_memory_service_plan, CrucibleMemoryServicePlan, i);
++        uint64_t latency, demand;
++        uint64_t *stored;
++
++        g_assert(node_memory_service_demand_checked(
++            plan->rule, plan->bytes, &latency, &demand));
++        g_assert(fixed_latency <= UINT64_MAX - latency);
++        fixed_latency += latency;
++        stored = g_hash_table_lookup(
++            demand_by_ledger, plan->rule->service_ledger);
++        if (!stored) {
++            stored = g_new0(uint64_t, 1);
++            g_hash_table_insert(demand_by_ledger,
++                                plan->rule->service_ledger, stored);
++        }
++        *stored = MAX(*stored, demand);
++    }
++    g_hash_table_iter_init(&iter, demand_by_ledger);
++    while (g_hash_table_iter_next(&iter, &key, &value)) {
++        CrucibleMemoryServiceLedger *ledger = key;
++        uint64_t demand = *(uint64_t *)value;
++        uint64_t prior = node_memory_reserved_ledger(ledger);
++        uint64_t ready = MAX(now, ledger->ready_ns) + prior;
++        uint64_t *reserved;
++        CrucibleMemoryLedgerReservation reservation = {
++            .ledger = ledger,
++            .demand = demand,
++        };
++
++        g_assert(ready <= UINT64_MAX - demand);
++        queue_delay = MAX(queue_delay, ready + demand - now);
++        if (!crucible_memory_reserved_ledgers) {
++            crucible_memory_reserved_ledgers = g_hash_table_new_full(
++                g_direct_hash, g_direct_equal, NULL, g_free);
++        }
++        reserved = g_hash_table_lookup(
++            crucible_memory_reserved_ledgers, ledger);
++        if (!reserved) {
++            reserved = g_new0(uint64_t, 1);
++            g_hash_table_insert(crucible_memory_reserved_ledgers,
++                                ledger, reserved);
++        }
++        g_assert(*reserved <= UINT64_MAX - demand);
++        *reserved += demand;
++        g_array_append_val(transaction->ledger_reservations, reservation);
++    }
++    g_assert(fixed_latency <= UINT64_MAX - queue_delay);
++    transaction->virtual_time_reservation = fixed_latency + queue_delay;
++    g_assert(crucible_memory_reserved_virtual_time <=
++             UINT64_MAX - transaction->virtual_time_reservation);
++    crucible_memory_reserved_virtual_time +=
++        transaction->virtual_time_reservation;
++}
++
++static bool node_memory_rowhammer_resources_plan(
++    QemuCrucibleFaultRule *rule, QDict *parameters,
++    uint64_t rule_offset, size_t selected, GHashTable *plans)
++{
++    CrucibleMemoryRowResourcePlan *plan =
++        g_hash_table_lookup(plans, rule);
++    uint64_t row_bytes;
++    uint64_t current = rule_offset;
++    uint64_t remaining = selected;
++    uint64_t existing = rule->row_counters ?
++        g_hash_table_size(rule->row_counters) : 0;
++    CrucibleMemoryReservedRows *reserved_rows =
++        node_memory_reserved_row_set(rule, false);
++    uint64_t reserved_new = 0;
++
++    g_assert(existing <= CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT);
++    if (reserved_rows) {
++        GHashTableIter reserved_iter;
++        gpointer reserved_key;
++
++        g_hash_table_iter_init(&reserved_iter, reserved_rows->coordinates);
++        while (g_hash_table_iter_next(&reserved_iter, &reserved_key, NULL)) {
++            if (!rule->row_counters ||
++                !g_hash_table_contains(rule->row_counters, reserved_key)) {
++                reserved_new++;
++            }
++        }
++    }
++    g_assert(reserved_new <=
++             CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing);
++    g_assert(node_json_u64(qdict_get(parameters, "row_bytes"),
++                           &row_bytes));
++    if (!plan) {
++        plan = g_new0(CrucibleMemoryRowResourcePlan, 1);
++        plan->coordinates = g_hash_table_new_full(
++            node_dram_coordinate_hash, node_dram_coordinate_equal,
++            g_free, NULL);
++        g_hash_table_insert(plans, rule, plan);
++    }
++    while (remaining != 0) {
++        uint64_t physical, available;
++        uint64_t part;
++
++        g_assert(node_rule_physical_span(rule, current, &physical,
++                                         &available));
++        part = MIN(remaining, available);
++        for (uint64_t byte = 0; byte < part; byte++) {
++            CrucibleDramCoordinate coordinate = node_dram_coordinate(
++                physical + byte, row_bytes);
++            uint64_t *counter;
++
++            if (g_hash_table_contains(plan->coordinates, &coordinate)) {
++                continue;
++            }
++            counter = rule->row_counters ?
++                g_hash_table_lookup(rule->row_counters, &coordinate) :
++                NULL;
++            uint64_t reserved = node_memory_reserved_row_count(
++                rule, &coordinate);
++
++            if (reserved == UINT64_MAX || (counter ? *counter : 0) >
++                UINT64_MAX - reserved - 1) {
++                node_memory_counter_terminal_metadata(
++                    (counter ? *counter : 0) + reserved);
++                return false;
++            }
++            if (!counter && reserved == 0) {
++                if (plan->new_counters ==
++                    CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing -
++                    reserved_new) {
++                    node_memory_resource_terminal_metadata(
++                        CRUCIBLE_NODE_RESOURCE_PERSISTENT_CELLS,
++                        existing + reserved_new,
++                        plan->new_counters + 1,
++                        CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT,
++                        CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT);
++                    return false;
++                }
++                plan->new_counters++;
++            }
++            g_hash_table_add(
++                plan->coordinates,
++                g_memdup2(&coordinate, sizeof(coordinate)));
++        }
++        current += part;
++        remaining -= part;
++    }
++    return true;
++}
++
++static bool node_memory_retention_resources_plan(
++    QemuCrucibleFaultRule *rule, QDict *parameters,
++    uint32_t access_class, uint64_t rule_offset, size_t selected,
++    GHashTable *plans)
++{
++    CrucibleMemoryRetentionResourcePlan *plan =
++        g_hash_table_lookup(plans, rule);
++    CrucibleMemoryReservedRetention *reserved_retention =
++        node_memory_reserved_retention_set(rule, false);
++    uint64_t existing = rule->retention_cells ?
++        g_hash_table_size(rule->retention_cells) : 0;
++    uint64_t reserved_new = 0;
++    uint64_t interval;
++    const char *mask;
++    size_t mask_length;
++    bool write_access =
++        (access_class & (QEMU_CRUCIBLE_MEMORY_CPU_STORE |
++                         QEMU_CRUCIBLE_MEMORY_DMA_WRITE)) != 0;
++    uint64_t now = node_virtual_now();
++
++    if (reserved_retention) {
++        GHashTableIter iter;
++        gpointer offset_key;
++
++        g_hash_table_iter_init(&iter, reserved_retention->offsets);
++        while (g_hash_table_iter_next(&iter, &offset_key, NULL)) {
++            if (!rule->retention_cells ||
++                !g_hash_table_contains(rule->retention_cells, offset_key)) {
++                reserved_new++;
++            }
++        }
++    }
++    g_assert(existing <= CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT &&
++             reserved_new <=
++                CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing);
++    g_assert(node_json_u64(qdict_get(parameters, "interval_nanos"),
++                           &interval));
++    mask = qdict_get_str(parameters, "decay_mask");
++    mask_length = strlen(mask) / 2;
++    if (!plan) {
++        plan = g_new0(CrucibleMemoryRetentionResourcePlan, 1);
++        plan->offsets = g_hash_table_new_full(
++            g_int64_hash, g_int64_equal, g_free, NULL);
++        g_hash_table_insert(plans, rule, plan);
++    }
++    for (size_t byte = 0; byte < selected; byte++) {
++        uint64_t offset = rule_offset + byte;
++        uint64_t reserved;
++        unsigned parsed;
++        bool creates = write_access;
++
++        if (g_hash_table_contains(plan->offsets, &offset)) {
++            continue;
++        }
++        if (!creates && rule->exposure_initialized &&
++            now >= rule->last_exposure_ns &&
++            now - rule->last_exposure_ns >= interval) {
++            g_assert(sscanf(mask + (offset % mask_length) * 2,
++                            "%2x", &parsed) == 1);
++            creates = parsed != 0;
++        }
++        if (!creates || (rule->retention_cells &&
++                         g_hash_table_contains(rule->retention_cells,
++                                               &offset))) {
++            continue;
++        }
++        reserved = node_memory_reserved_retention_count(rule, offset);
++        if (reserved == 0) {
++            if (plan->new_cells ==
++                CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing -
++                reserved_new) {
++                node_memory_resource_terminal_metadata(
++                    CRUCIBLE_NODE_RESOURCE_PERSISTENT_CELLS,
++                    existing + reserved_new, plan->new_cells + 1,
++                    CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT,
++                    CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT);
++                return false;
++            }
++            plan->new_cells++;
++        }
++        g_hash_table_add(plan->offsets,
++                         g_memdup2(&offset, sizeof(offset)));
 +    }
 +    return true;
 +}
@@ -8753,7 +10256,8 @@ index 0000000..2b3943c
 +        abort();
 +    }
 +    transaction->event_budget += match_count;
-+    if (match_count != 0 && !node_memory_event_capacity(
++    if (!transaction->streaming && match_count != 0 &&
++        !node_memory_event_capacity(
 +            crucible_memory_matches[0], transaction->event_budget,
 +            access_class, vcpu, vaddr, gpa, length,
 +            transaction->observed_icount)) {
@@ -8765,10 +10269,159 @@ index 0000000..2b3943c
 +    return true;
 +}
 +
++static bool node_memory_transaction_resources_segment(
++    uint32_t access_class, uint32_t vcpu, uint64_t vaddr, uint64_t gpa,
++    size_t length, bool include_gva, uint64_t identity,
++    GHashTable *counter_rules, GHashTable *row_plans,
++    GHashTable *retention_plans)
++{
++    size_t match_count;
++
++    crucible_memory_preflight_collecting = true;
++    crucible_memory_resource_planning = true;
++    match_count = node_memory_matching_rules_at(
++        vcpu, vaddr, gpa, length, include_gva, identity);
++
++    for (size_t i = 0; i < match_count; i++) {
++        QemuCrucibleFaultRule *rule = crucible_memory_matches[i];
++        size_t offset, selected;
++        uint64_t rule_offset;
++
++        if (!node_rule_memory_overlap_internal(
++                rule, vcpu, vaddr, gpa, length, &offset, &selected,
++                &rule_offset, false)) {
++            continue;
++        }
++        if (rule->command_kind ==
++            CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM) {
++            uint32_t classes;
++
++            g_assert(node_field_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P8,
++                                    &classes));
++            if ((classes & access_class) == 0) {
++                continue;
++            }
++        }
++        if (!g_hash_table_contains(counter_rules, rule)) {
++            if (!node_memory_rule_resources_ready(rule)) {
++                node_memory_counter_terminal_metadata(UINT64_MAX);
++                node_memory_resource_terminal(
++                    rule, access_class, vcpu, vaddr + offset,
++                    gpa + offset, selected,
++                    crucible_memory_transaction.observed_icount);
++                crucible_memory_preflight_collecting = false;
++                crucible_memory_resource_planning = false;
++                node_memory_matching_rules_done();
++                return false;
++            }
++            g_hash_table_add(counter_rules, rule);
++        }
++        if (rule->command_kind ==
++            CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE) {
++            uint32_t kind;
++
++            g_assert(node_field_u32(rule,
++                                    CRUCIBLE_NODE_FAULT_FIELD_P3,
++                                    &kind));
++            if (kind == 2) {
++                QDict *process = qobject_to(
++                    QDict, node_field(rule,
++                        CRUCIBLE_NODE_FAULT_FIELD_P4)->json);
++                QDict *parameters = qdict_get_qdict(
++                    process, "parameters");
++
++                if (!node_memory_retention_resources_plan(
++                        rule, parameters, access_class, rule_offset,
++                        selected, retention_plans)) {
++                    node_memory_resource_terminal(
++                        rule, access_class, vcpu, vaddr + offset,
++                        gpa + offset, selected,
++                        crucible_memory_transaction.observed_icount);
++                    crucible_memory_preflight_collecting = false;
++                    crucible_memory_resource_planning = false;
++                    node_memory_matching_rules_done();
++                    return false;
++                }
++            } else if (kind == 3) {
++                QDict *process = qobject_to(
++                    QDict, node_field(rule,
++                        CRUCIBLE_NODE_FAULT_FIELD_P4)->json);
++                QDict *parameters = qdict_get_qdict(
++                    process, "parameters");
++
++                if (!node_memory_rowhammer_resources_plan(
++                        rule, parameters, rule_offset, selected,
++                        row_plans)) {
++                    node_memory_resource_terminal(
++                        rule, access_class, vcpu, vaddr + offset,
++                        gpa + offset, selected,
++                        crucible_memory_transaction.observed_icount);
++                    crucible_memory_preflight_collecting = false;
++                    crucible_memory_resource_planning = false;
++                    node_memory_matching_rules_done();
++                    return false;
++                }
++            }
++        }
++        if (rule->command_kind == CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE &&
++            !node_memory_service_plan_add(rule, selected)) {
++            node_memory_resource_terminal(
++                rule, access_class, vcpu, vaddr + offset, gpa + offset,
++                selected, crucible_memory_transaction.observed_icount);
++            crucible_memory_preflight_collecting = false;
++            crucible_memory_resource_planning = false;
++            node_memory_matching_rules_done();
++            return false;
++        }
++    }
++    crucible_memory_preflight_collecting = false;
++    crucible_memory_resource_planning = false;
++    node_memory_matching_rules_done();
++    return true;
++}
++
++static bool node_memory_transaction_resources_finish(
++    GHashTable *counter_rules, GHashTable *row_plans,
++    GHashTable *retention_plans)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++
++    if (!node_memory_service_plan_valid()) {
++        CrucibleMemoryServicePlan *plan = &g_array_index(
++            crucible_memory_service_plan, CrucibleMemoryServicePlan, 0);
++
++        crucible_memory_preflight_collecting = true;
++        node_memory_boundary_match(plan->rule, transaction->identity);
++        node_memory_resource_terminal(
++            plan->rule, transaction->access_class, transaction->actor,
++            transaction->address, transaction->address,
++            transaction->length, transaction->observed_icount);
++        node_memory_boundary_match_done();
++        crucible_memory_preflight_collecting = false;
++        transaction->poisoned = true;
++        transaction->resource_failed = true;
++        transaction->has_exception = false;
++        return false;
++    }
++    node_memory_resources_reserve(
++        counter_rules, row_plans, retention_plans);
++    transaction->resources_preflighted = true;
++    return true;
++}
++
 +static void node_memory_transaction_preflight(
 +    enum QemuCrucibleMemoryAccessClass access_class, uint32_t actor,
 +    uint64_t address, size_t length, uint64_t identity)
 +{
++    g_autoptr(GHashTable) counter_rules = g_hash_table_new(
++        g_direct_hash, g_direct_equal);
++    g_autoptr(GHashTable) row_plans = g_hash_table_new_full(
++        g_direct_hash, g_direct_equal, NULL,
++        node_memory_row_resource_plan_free);
++    g_autoptr(GHashTable) retention_plans = g_hash_table_new_full(
++        g_direct_hash, g_direct_equal, NULL,
++        node_memory_retention_resource_plan_free);
++
 +    if (!crucible_memory_transaction_poison) {
 +        crucible_memory_transaction_poison = g_hash_table_new(
 +            g_direct_hash, g_direct_equal);
@@ -8810,6 +10463,39 @@ index 0000000..2b3943c
 +        }
 +        current += part;
 +        remaining -= part;
++    }
++    current = address;
++    remaining = length;
++    while (remaining != 0) {
++        CPUFaultTranslation translation;
++        uint64_t page_offset;
++        size_t part;
++        MMUAccessType mmu_access = access_class ==
++                QEMU_CRUCIBLE_MEMORY_FETCH ? MMU_INST_FETCH :
++            access_class == QEMU_CRUCIBLE_MEMORY_CPU_STORE ?
++                MMU_DATA_STORE : MMU_DATA_LOAD;
++
++        if (!cpu_get_fault_translation(cpu, current, mmu_access,
++                                       &translation) ||
++            translation.page_size == 0) {
++            crucible_memory_transaction.poisoned = true;
++            return;
++        }
++        page_offset = current % translation.page_size;
++        part = MIN(remaining, translation.page_size - page_offset);
++        if (!node_memory_transaction_resources_segment(
++                access_class, actor, current,
++                translation.physical_address, part, true, identity,
++                counter_rules, row_plans, retention_plans)) {
++            crucible_memory_transaction.poisoned = true;
++            return;
++        }
++        current += part;
++        remaining -= part;
++    }
++    if (!node_memory_transaction_resources_finish(
++            counter_rules, row_plans, retention_plans)) {
++        return;
 +    }
 +    current = address;
 +    remaining = length;
@@ -8936,6 +10622,14 @@ index 0000000..2b3943c
 +    AddressSpace *as, uint64_t iova, size_t length, MemTxAttrs attrs,
 +    uint64_t identity)
 +{
++    g_autoptr(GHashTable) counter_rules = g_hash_table_new(
++        g_direct_hash, g_direct_equal);
++    g_autoptr(GHashTable) row_plans = g_hash_table_new_full(
++        g_direct_hash, g_direct_equal, NULL,
++        node_memory_row_resource_plan_free);
++    g_autoptr(GHashTable) retention_plans = g_hash_table_new_full(
++        g_direct_hash, g_direct_equal, NULL,
++        node_memory_retention_resource_plan_free);
 +    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
 +    uint64_t current = iova;
 +    size_t remaining = length;
@@ -8990,6 +10684,22 @@ index 0000000..2b3943c
 +                return;
 +            }
 +        }
++        for (guint i = 0; i < transaction->dma_fragments->len; i++) {
++            CrucibleMemoryDmaFragment *fragment = &g_array_index(
++                transaction->dma_fragments, CrucibleMemoryDmaFragment, i);
++
++            if (!node_memory_transaction_resources_segment(
++                    access_class, actor, fragment->gpa, fragment->gpa,
++                    fragment->length, false, identity,
++                    counter_rules, row_plans, retention_plans)) {
++                transaction->poisoned = true;
++                return;
++            }
++        }
++        if (!node_memory_transaction_resources_finish(
++                counter_rules, row_plans, retention_plans)) {
++            return;
++        }
 +        if (!node_memory_mutation_plan_capture()) {
 +            transaction->poisoned = true;
 +            return;
@@ -9001,8 +10711,40 @@ index 0000000..2b3943c
 +            node_memory_transaction_preflight_segment(
 +                access_class, actor, fragment->gpa, fragment->gpa,
 +                fragment->length, false, identity);
++            if (transaction->poisoned) {
++                return;
++            }
 +        }
++        transaction->poison_preflighted = true;
 +    }
++}
++
++static void node_memory_transaction_preflight_dma_poison(void)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++    uint64_t remaining = transaction->length;
++
++    if (transaction->poison_preflighted || transaction->poisoned) {
++        return;
++    }
++    transaction->poison_preflighted = true;
++    for (guint i = 0;
++         transaction->dma_fragments &&
++         i < transaction->dma_fragments->len && remaining != 0; i++) {
++        CrucibleMemoryDmaFragment *fragment = &g_array_index(
++            transaction->dma_fragments, CrucibleMemoryDmaFragment, i);
++        uint64_t part = MIN(remaining, fragment->length);
++
++        node_memory_transaction_preflight_segment(
++            transaction->access_class, transaction->actor,
++            fragment->gpa, fragment->gpa, part, false,
++            transaction->identity);
++        if (transaction->poisoned) {
++            return;
++        }
++        remaining -= part;
++    }
++    g_assert(remaining == 0);
 +}
 +
 +static guint node_memory_retry_key_hash(gconstpointer opaque)
@@ -9124,6 +10866,7 @@ index 0000000..2b3943c
 +    if (!qemu_crucible_fault_memory_rules_active()) {
 +        return;
 +    }
++    qemu_mutex_lock(&crucible_memory_transaction_lock);
 +    if (transaction->active) {
 +        error_report("Nested Crucible memory transaction is ambiguous");
 +        abort();
@@ -9142,6 +10885,12 @@ index 0000000..2b3943c
 +        g_array_set_size(crucible_memory_pending_services, 0);
 +        g_hash_table_remove_all(crucible_memory_pending_service_index);
 +    }
++    if (!crucible_memory_transaction_poison) {
++        crucible_memory_transaction_poison = g_hash_table_new(
++            g_direct_hash, g_direct_equal);
++    } else {
++        g_hash_table_remove_all(crucible_memory_transaction_poison);
++    }
 +    node_memory_service_plan_reset();
 +    if (crucible_memory_transaction_occurrences) {
 +        g_hash_table_remove_all(crucible_memory_transaction_occurrences);
@@ -9157,6 +10906,7 @@ index 0000000..2b3943c
 +        g_hash_table_remove_all(crucible_memory_transaction_state_applied);
 +    }
 +    transaction->active = true;
++    transaction->lock_held = true;
 +    transaction->access_class = access_class;
 +    transaction->actor = actor;
 +    transaction->address = address;
@@ -9183,7 +10933,6 @@ index 0000000..2b3943c
 +            abort();
 +        }
 +        transaction->retry_ordinal = retry_state->retry_ordinal + 1;
-+        retry_state->last_access_sequence = transaction->identity;
 +    }
 +    if (!streaming && automatic_preflight) {
 +        node_memory_transaction_preflight(access_class, actor, address,
@@ -9247,15 +10996,24 @@ index 0000000..2b3943c
 +    end = vaddr + length;
 +    transaction->length = MAX(transaction->length,
 +                              end - transaction->address);
++    transaction->preflight_length = transaction->length;
++    if (!transaction->fetch_fragments) {
++        transaction->fetch_fragments = g_array_new(
++            false, false, sizeof(CrucibleMemoryFetchFragment));
++    }
++    CrucibleMemoryFetchFragment fragment = {
++        .vaddr = vaddr,
++        .gpa = gpa,
++        .length = length,
++    };
++
++    g_array_append_val(transaction->fetch_fragments, fragment);
 +    if (!node_memory_transaction_count_segment(
 +            QEMU_CRUCIBLE_MEMORY_FETCH, transaction->actor, vaddr, gpa,
 +            length, true, transaction->identity)) {
 +        return false;
 +    }
-+    node_memory_transaction_preflight_segment(
-+        QEMU_CRUCIBLE_MEMORY_FETCH, transaction->actor, vaddr, gpa,
-+        length, true, transaction->identity);
-+    return !transaction->poisoned;
++    return true;
 +}
 +
 +bool qemu_crucible_fault_memory_transaction_failed(void)
@@ -9293,7 +11051,8 @@ index 0000000..2b3943c
 +    if (!crucible_memory_transaction.active) {
 +        return NULL;
 +    }
-+    if (crucible_memory_pending_services &&
++    if (!crucible_memory_transaction.streaming &&
++        crucible_memory_pending_services &&
 +        crucible_memory_pending_services->len != 0) {
 +        error_report("Cannot detach a partially applied Crucible transaction");
 +        abort();
@@ -9315,6 +11074,10 @@ index 0000000..2b3943c
 +    token->service_plan_index = crucible_memory_service_plan_index;
 +    crucible_memory_service_plan = NULL;
 +    crucible_memory_service_plan_index = NULL;
++    token->pending_services = crucible_memory_pending_services;
++    token->pending_service_index = crucible_memory_pending_service_index;
++    crucible_memory_pending_services = NULL;
++    crucible_memory_pending_service_index = NULL;
 +    emitted = crucible_node_event_count -
 +              token->transaction.event_count_start;
 +    emitted = MIN(emitted, token->transaction.event_budget);
@@ -9326,13 +11089,25 @@ index 0000000..2b3943c
 +    crucible_node_event_reserved += token->reserved_events;
 +    memset(&crucible_memory_transaction, 0,
 +           sizeof(crucible_memory_transaction));
++    if (!token->transaction.streaming) {
++        token->transaction.lock_held = false;
++        qemu_mutex_unlock(&crucible_memory_transaction_lock);
++    }
 +    return token;
 +}
 +
 +void qemu_crucible_fault_memory_transaction_resume(
 +    QemuCrucibleMemoryTransactionToken *token)
 +{
-+    if (!token || crucible_memory_transaction.active ||
++    if (!token) {
++        error_report("Crucible detached transaction cannot be resumed");
++        abort();
++    }
++    if (!token->transaction.lock_held) {
++        qemu_mutex_lock(&crucible_memory_transaction_lock);
++        token->transaction.lock_held = true;
++    }
++    if (crucible_memory_transaction.active ||
 +        crucible_node_event_reserved < token->reserved_events) {
 +        error_report("Crucible detached transaction cannot be resumed");
 +        abort();
@@ -9352,6 +11127,9 @@ index 0000000..2b3943c
 +    g_clear_pointer(&crucible_memory_service_plan, g_array_unref);
 +    g_clear_pointer(&crucible_memory_service_plan_index,
 +                    g_hash_table_unref);
++    g_clear_pointer(&crucible_memory_pending_services, g_array_unref);
++    g_clear_pointer(&crucible_memory_pending_service_index,
++                    g_hash_table_unref);
 +    crucible_memory_transaction_poison = token->poison;
 +    token->poison = NULL;
 +    crucible_memory_transaction_occurrences = token->occurrences;
@@ -9367,30 +11145,27 @@ index 0000000..2b3943c
 +    token->service_plan = NULL;
 +    crucible_memory_service_plan_index = token->service_plan_index;
 +    token->service_plan_index = NULL;
++    crucible_memory_pending_services = token->pending_services;
++    token->pending_services = NULL;
++    crucible_memory_pending_service_index = token->pending_service_index;
++    token->pending_service_index = NULL;
 +    crucible_memory_transaction = token->transaction;
 +    g_free(token);
-+    if (!node_memory_service_plan_valid()) {
-+        CrucibleMemoryServicePlan *plan = &g_array_index(
-+            crucible_memory_service_plan, CrucibleMemoryServicePlan, 0);
-+
-+        node_memory_boundary_match(
-+            plan->rule, crucible_memory_transaction.identity);
-+        node_memory_resource_terminal(
-+            plan->rule, crucible_memory_transaction.access_class,
-+            crucible_memory_transaction.actor,
-+            crucible_memory_transaction.address,
-+            crucible_memory_transaction.address,
-+            crucible_memory_transaction.length,
-+            crucible_memory_transaction.observed_icount);
-+        node_memory_boundary_match_done();
-+        crucible_memory_transaction.poisoned = true;
-+    }
 +}
 +
 +void qemu_crucible_fault_memory_transaction_discard(
 +    QemuCrucibleMemoryTransactionToken *token)
 +{
-+    if (!token || crucible_node_event_reserved < token->reserved_events) {
++    if (!token) {
++        error_report("Crucible detached transaction cannot be discarded");
++        abort();
++    }
++    if (!token->transaction.lock_held) {
++        qemu_mutex_lock(&crucible_memory_transaction_lock);
++        token->transaction.lock_held = true;
++    }
++    if (crucible_memory_transaction.active ||
++        crucible_node_event_reserved < token->reserved_events) {
 +        error_report("Crucible detached transaction cannot be discarded");
 +        abort();
 +    }
@@ -9402,12 +11177,29 @@ index 0000000..2b3943c
 +    g_clear_pointer(&token->rows, g_hash_table_unref);
 +    g_clear_pointer(&token->state_opportunities, g_hash_table_unref);
 +    g_clear_pointer(&token->state_applied, g_hash_table_unref);
++    node_memory_reservations_release(&token->transaction);
 +    g_clear_pointer(&token->transaction.rule_snapshot, g_ptr_array_unref);
 +    g_clear_pointer(&token->transaction.dma_fragments, g_array_unref);
 +    g_clear_pointer(&token->transaction.dma_mutation_fragments,
 +                    g_array_unref);
++    g_clear_pointer(&token->transaction.fetch_fragments, g_array_unref);
++    g_clear_pointer(&token->transaction.rule_reservations, g_array_unref);
++    g_clear_pointer(&token->transaction.row_reservations, g_array_unref);
++    g_clear_pointer(&token->transaction.retention_reservations,
++                    g_array_unref);
++    g_clear_pointer(&token->transaction.ledger_reservations, g_array_unref);
++    g_clear_pointer(&token->transaction.shadow_originals,
++                    g_hash_table_unref);
++    g_clear_pointer(&token->transaction.shadow_rules, g_hash_table_unref);
++    g_clear_pointer(&token->transaction.shadow_writes, g_array_unref);
++    g_clear_pointer(&token->transaction.staged_events, g_ptr_array_unref);
 +    g_clear_pointer(&token->service_plan, g_array_unref);
 +    g_clear_pointer(&token->service_plan_index, g_hash_table_unref);
++    g_clear_pointer(&token->pending_services, g_array_unref);
++    g_clear_pointer(&token->pending_service_index, g_hash_table_unref);
++    if (token->transaction.lock_held) {
++        qemu_mutex_unlock(&crucible_memory_transaction_lock);
++    }
 +    g_free(token);
 +}
 +
@@ -9424,7 +11216,220 @@ index 0000000..2b3943c
 +        abort();
 +    }
 +    transaction->length = length;
++    if (length == transaction->preflight_length) {
++        return;
++    }
++    node_memory_reservations_release(transaction);
++    g_clear_pointer(&transaction->rule_reservations, g_array_unref);
++    g_clear_pointer(&transaction->row_reservations, g_array_unref);
++    g_clear_pointer(&transaction->retention_reservations, g_array_unref);
++    g_clear_pointer(&transaction->ledger_reservations, g_array_unref);
++    transaction->resources_preflighted = false;
 +    node_memory_service_plan_reset();
++    if (length == 0) {
++        return;
++    }
++
++    g_autoptr(GHashTable) counter_rules = g_hash_table_new(
++        g_direct_hash, g_direct_equal);
++    g_autoptr(GHashTable) row_plans = g_hash_table_new_full(
++        g_direct_hash, g_direct_equal, NULL,
++        node_memory_row_resource_plan_free);
++    g_autoptr(GHashTable) retention_plans = g_hash_table_new_full(
++        g_direct_hash, g_direct_equal, NULL,
++        node_memory_retention_resource_plan_free);
++    uint64_t plan_offset = 0;
++    uint64_t remaining = length;
++
++    for (guint i = 0;
++         transaction->dma_fragments &&
++         i < transaction->dma_fragments->len && remaining != 0; i++) {
++        CrucibleMemoryDmaFragment *fragment = &g_array_index(
++            transaction->dma_fragments, CrucibleMemoryDmaFragment, i);
++        uint64_t part = MIN(remaining, fragment->length);
++
++        if (!node_memory_transaction_resources_segment(
++                transaction->access_class, transaction->actor,
++                fragment->gpa, fragment->gpa, part, false,
++                transaction->identity, counter_rules, row_plans,
++                retention_plans)) {
++            error_report(
++                "Crucible reduced DMA reservation unexpectedly failed");
++            abort();
++        }
++        plan_offset += part;
++        remaining -= part;
++    }
++    g_assert(plan_offset == length && remaining == 0);
++    if (!node_memory_transaction_resources_finish(
++            counter_rules, row_plans, retention_plans)) {
++        error_report("Crucible reduced DMA resource commit failed");
++        abort();
++    }
++}
++
++static void node_memory_fetch_transaction_commit(void)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++
++    g_assert(transaction->active && transaction->streaming &&
++             !transaction->poisoned);
++    if (transaction->shadow_rules) {
++        GHashTableIter iter;
++        gpointer original;
++        gpointer shadow;
++
++        g_hash_table_iter_init(&iter, transaction->shadow_rules);
++        while (g_hash_table_iter_next(&iter, &original, &shadow)) {
++            node_memory_shadow_state_commit(original, shadow);
++        }
++    }
++    for (guint i = 0;
++         transaction->shadow_writes &&
++         i < transaction->shadow_writes->len; i++) {
++        CrucibleMemoryShadowWrite *write = &g_array_index(
++            transaction->shadow_writes, CrucibleMemoryShadowWrite, i);
++
++        memory_region_fault_commit_ram(
++            write->mr, write->mr_addr, write->value->data,
++            write->value->len);
++    }
++    for (guint i = 0;
++         transaction->staged_events &&
++         i < transaction->staged_events->len; i++) {
++        CrucibleMemoryStagedEvent *event = g_ptr_array_index(
++            transaction->staged_events, i);
++
++        qemu_crucible_fault_rule_event(
++            event->rule, event->outcome, event->observed_icount,
++            event->opportunity_hash, event->before_hash,
++            event->after_hash, event->evidence->data,
++            event->evidence->len);
++        qemu_crucible_fault_notify_events();
++    }
++}
++
++bool qemu_crucible_fault_memory_fetch_transaction_finish(void)
++{
++    CrucibleMemoryTransaction *transaction = &crucible_memory_transaction;
++    g_autoptr(GHashTable) counter_rules = g_hash_table_new(
++        g_direct_hash, g_direct_equal);
++    g_autoptr(GHashTable) row_plans = g_hash_table_new_full(
++        g_direct_hash, g_direct_equal, NULL,
++        node_memory_row_resource_plan_free);
++    g_autoptr(GHashTable) retention_plans = g_hash_table_new_full(
++        g_direct_hash, g_direct_equal, NULL,
++        node_memory_retention_resource_plan_free);
++    size_t staged_count = transaction->staged_events ?
++        transaction->staged_events->len : 0;
++    size_t service_count = crucible_memory_pending_services ?
++        crucible_memory_pending_services->len : 0;
++
++    if (!transaction->active) {
++        return true;
++    }
++    if (!transaction->streaming) {
++        error_report("Crucible fetch finish used outside a fetch transaction");
++        abort();
++    }
++    if (staged_count > SIZE_MAX - service_count) {
++        error_report("Crucible fetch event count overflow");
++        abort();
++    }
++    if (staged_count + service_count != 0) {
++        QemuCrucibleFaultRule *rule = transaction->rule_snapshot &&
++            transaction->rule_snapshot->len != 0 ?
++            g_ptr_array_index(transaction->rule_snapshot, 0) : NULL;
++
++        g_assert(rule);
++        node_memory_boundary_match(rule, transaction->identity);
++        crucible_memory_preflight_collecting = true;
++        bool available = node_memory_event_capacity(
++            rule, staged_count + service_count,
++            QEMU_CRUCIBLE_MEMORY_FETCH, transaction->actor,
++            transaction->address, transaction->address,
++            transaction->length, transaction->observed_icount);
++        crucible_memory_preflight_collecting = false;
++        node_memory_boundary_match_done();
++        if (!available) {
++            transaction->poisoned = true;
++            transaction->resource_failed = true;
++            transaction->has_exception = false;
++            return false;
++        }
++    }
++    node_memory_service_plan_reset();
++    for (guint i = 0;
++         transaction->fetch_fragments &&
++         i < transaction->fetch_fragments->len; i++) {
++        CrucibleMemoryFetchFragment *fragment = &g_array_index(
++            transaction->fetch_fragments, CrucibleMemoryFetchFragment, i);
++
++        if (!node_memory_transaction_resources_segment(
++                QEMU_CRUCIBLE_MEMORY_FETCH, transaction->actor,
++                fragment->vaddr, fragment->gpa, fragment->length, true,
++                transaction->identity, counter_rules, row_plans,
++                retention_plans)) {
++            transaction->poisoned = true;
++            transaction->resource_failed = true;
++            transaction->has_exception = false;
++            return false;
++        }
++    }
++    if (!node_memory_transaction_resources_finish(
++            counter_rules, row_plans, retention_plans)) {
++        return false;
++    }
++
++    transaction->resources_preflighted = true;
++    return true;
++}
++
++void qemu_crucible_fault_memory_fetch_transaction_stage(CPUState *cpu)
++{
++    if (!cpu || cpu->crucible_fetch_transaction ||
++        !crucible_memory_transaction.active ||
++        !crucible_memory_transaction.streaming ||
++        crucible_memory_transaction.poisoned) {
++        error_report("Invalid Crucible fetch transaction staging");
++        abort();
++    }
++    cpu->crucible_fetch_transaction =
++        qemu_crucible_fault_memory_transaction_detach();
++    g_assert(cpu->crucible_fetch_transaction);
++}
++
++void qemu_crucible_fault_memory_fetch_stage_commit(CPUState *cpu)
++{
++    QemuCrucibleMemoryTransactionToken *token;
++
++    if (!cpu || !cpu->crucible_fetch_transaction) {
++        return;
++    }
++    token = cpu->crucible_fetch_transaction;
++    cpu->crucible_fetch_transaction = NULL;
++    qemu_crucible_fault_memory_transaction_resume(token);
++    node_memory_fetch_transaction_commit();
++    qemu_crucible_fault_memory_transaction_end();
++}
++
++void qemu_crucible_fault_memory_fetch_stage_discard(CPUState *cpu)
++{
++    QemuCrucibleMemoryTransactionToken *token;
++
++    if (!cpu || !cpu->crucible_fetch_transaction) {
++        return;
++    }
++    token = cpu->crucible_fetch_transaction;
++    cpu->crucible_fetch_transaction = NULL;
++    if (!token->transaction.streaming ||
++        token->transaction.identity == 0 ||
++        crucible_memory_access_sequence != token->transaction.identity) {
++        error_report("Invalid Crucible fetch transaction rollback");
++        abort();
++    }
++    crucible_memory_access_sequence--;
++    qemu_crucible_fault_memory_transaction_discard(token);
 +}
 +
 +void qemu_crucible_fault_memory_transaction_end(void)
@@ -9432,12 +11437,23 @@ index 0000000..2b3943c
 +    GPtrArray *snapshot;
 +    GArray *dma_fragments;
 +    GArray *dma_mutation_fragments;
++    GArray *rule_reservations;
++    GArray *row_reservations;
++    GArray *retention_reservations;
++    GArray *ledger_reservations;
++    GArray *fetch_fragments;
++    GHashTable *shadow_rules;
++    GHashTable *shadow_originals;
++    GArray *shadow_writes;
++    GPtrArray *staged_events;
++    uint64_t service_delay = 0;
++    bool lock_held;
 +
 +    if (!crucible_memory_transaction.active) {
 +        return;
 +    }
 +    if (!crucible_memory_transaction.poisoned) {
-+        node_memory_service_finish_transaction();
++        service_delay = node_memory_service_finish_transaction();
 +    }
 +    snapshot = crucible_memory_transaction.rule_snapshot;
 +    crucible_memory_transaction.rule_snapshot = NULL;
@@ -9446,13 +11462,59 @@ index 0000000..2b3943c
 +    dma_mutation_fragments =
 +        crucible_memory_transaction.dma_mutation_fragments;
 +    crucible_memory_transaction.dma_mutation_fragments = NULL;
++    node_memory_reservations_release(&crucible_memory_transaction);
++    rule_reservations = crucible_memory_transaction.rule_reservations;
++    crucible_memory_transaction.rule_reservations = NULL;
++    row_reservations = crucible_memory_transaction.row_reservations;
++    crucible_memory_transaction.row_reservations = NULL;
++    retention_reservations =
++        crucible_memory_transaction.retention_reservations;
++    crucible_memory_transaction.retention_reservations = NULL;
++    ledger_reservations =
++        crucible_memory_transaction.ledger_reservations;
++    crucible_memory_transaction.ledger_reservations = NULL;
++    fetch_fragments = crucible_memory_transaction.fetch_fragments;
++    crucible_memory_transaction.fetch_fragments = NULL;
++    shadow_rules = crucible_memory_transaction.shadow_rules;
++    crucible_memory_transaction.shadow_rules = NULL;
++    shadow_originals = crucible_memory_transaction.shadow_originals;
++    crucible_memory_transaction.shadow_originals = NULL;
++    shadow_writes = crucible_memory_transaction.shadow_writes;
++    crucible_memory_transaction.shadow_writes = NULL;
++    staged_events = crucible_memory_transaction.staged_events;
++    crucible_memory_transaction.staged_events = NULL;
++    lock_held = crucible_memory_transaction.lock_held;
 +    node_memory_retry_finish(&crucible_memory_transaction);
 +    node_memory_service_plan_reset();
 +    g_clear_pointer(&snapshot, g_ptr_array_unref);
 +    g_clear_pointer(&dma_fragments, g_array_unref);
 +    g_clear_pointer(&dma_mutation_fragments, g_array_unref);
++    g_clear_pointer(&rule_reservations, g_array_unref);
++    g_clear_pointer(&row_reservations, g_array_unref);
++    g_clear_pointer(&retention_reservations, g_array_unref);
++    g_clear_pointer(&ledger_reservations, g_array_unref);
++    g_clear_pointer(&fetch_fragments, g_array_unref);
++    g_clear_pointer(&shadow_originals, g_hash_table_unref);
++    g_clear_pointer(&shadow_rules, g_hash_table_unref);
++    g_clear_pointer(&shadow_writes, g_array_unref);
++    g_clear_pointer(&staged_events, g_ptr_array_unref);
 +    memset(&crucible_memory_transaction, 0,
 +           sizeof(crucible_memory_transaction));
++    if (lock_held) {
++        qemu_mutex_unlock(&crucible_memory_transaction_lock);
++    }
++    if (service_delay != 0 && current_cpu && current_cpu->running &&
++        !current_cpu->neg.can_do_io) {
++        if (current_cpu->crucible_memory_service_nanos >
++            UINT64_MAX - service_delay) {
++            error_report("Crucible memory service staging overflow");
++            abort();
++        }
++        current_cpu->crucible_memory_service_nanos += service_delay;
++        qatomic_set_mb(&current_cpu->exit_request, 1);
++    } else {
++        node_memory_apply_service(service_delay);
++    }
 +}
 +
 +static bool node_memory_runtime_resources_ready(
@@ -9464,6 +11526,14 @@ index 0000000..2b3943c
 +    if (crucible_memory_transaction.active &&
 +        crucible_memory_transaction.poisoned) {
 +        return false;
++    }
++    if (crucible_memory_transaction.active &&
++        crucible_memory_transaction.streaming) {
++        return true;
++    }
++    if (crucible_memory_transaction.active &&
++        crucible_memory_transaction.resources_preflighted) {
++        return true;
 +    }
 +    if (!crucible_memory_transaction.active) {
 +        node_memory_service_plan_reset();
@@ -9487,8 +11557,7 @@ index 0000000..2b3943c
 +                continue;
 +            }
 +        }
-+        if (rule->opportunity_count == UINT64_MAX ||
-+            rule->applied_count == UINT64_MAX) {
++        if (!node_memory_rule_resources_ready(rule)) {
 +            node_memory_counter_terminal_metadata(UINT64_MAX);
 +            node_memory_resource_terminal(
 +                rule, access_class, vcpu, vaddr + offset, gpa + offset,
@@ -9545,10 +11614,14 @@ index 0000000..2b3943c
 +    uint64_t plan_offset = 0;
 +
 +    if (!mr || !mr_addr || !gpa || !length || *length == 0 ||
-+        !transaction->active || transaction->poisoned ||
++        !transaction->active ||
 +        (transaction->access_class != QEMU_CRUCIBLE_MEMORY_DMA_READ &&
 +         transaction->access_class != QEMU_CRUCIBLE_MEMORY_DMA_WRITE) ||
 +        !transaction->dma_fragments || offset >= transaction->length) {
++        return false;
++    }
++    node_memory_transaction_preflight_dma_poison();
++    if (transaction->poisoned) {
 +        return false;
 +    }
 +    for (guint i = 0; i < transaction->dma_fragments->len; i++) {
@@ -9593,6 +11666,7 @@ index 0000000..2b3943c
 +    uint64_t service_queue = 0;
 +    size_t match_count;
 +    uint8_t commit_mask[4096];
++    uint8_t shadow_before[4096];
 +    bool write_access = access_class == QEMU_CRUCIBLE_MEMORY_CPU_STORE ||
 +                        access_class == QEMU_CRUCIBLE_MEMORY_DMA_WRITE;
 +
@@ -9608,6 +11682,14 @@ index 0000000..2b3943c
 +    }
 +    if (write_access) {
 +        memset(commit_mask, UINT8_MAX, length);
++    }
++    if (crucible_memory_transaction.active &&
++        crucible_memory_transaction.streaming) {
++        g_assert(access_class == QEMU_CRUCIBLE_MEMORY_FETCH);
++        memcpy(shadow_before, before, length);
++        node_memory_shadow_read(gpa, shadow_before, length);
++        memcpy(value, shadow_before, length);
++        before = shadow_before;
 +    }
 +    match_count = node_memory_matching_rules(
 +        vcpu, vaddr, gpa, length,
@@ -10197,9 +12279,11 @@ index 0000000..2b3943c
 +            partial |= commit_mask[byte] != UINT8_MAX;
 +        }
 +        if (partial) {
-+            node_memory_commit_mask(gpa, before, committed, commit_mask,
-+                                    length);
-+            result.suppress_write = true;
++            for (size_t byte = 0; byte < length; byte++) {
++                committed[byte] =
++                    (before[byte] & ~commit_mask[byte]) |
++                    (committed[byte] & commit_mask[byte]);
++            }
 +        }
 +    }
 +    if (service_latency > UINT64_MAX - service_queue) {
@@ -10216,6 +12300,8 @@ index 0000000..2b3943c
 +{
 +    const uint32_t boundary =
 +        1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1);
++
++    qemu_mutex_init(&crucible_memory_transaction_lock);
 +
 +    qemu_crucible_fault_node_register(
 +        CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM,
@@ -11302,10 +13388,10 @@ index f7e2288..06ea3c7 100644
                        bool probe, uintptr_t retaddr)
 diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
 new file mode 100644
-index 0000000..646bd2c
+index 0000000..a8daa96
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-access.c
-@@ -0,0 +1,798 @@
+@@ -0,0 +1,836 @@
 +/*
 + * Live Crucible memory-access fault test plugin
 + *
@@ -11350,6 +13436,7 @@ index 0000000..646bd2c
 +static bool test_installed;
 +static bool test_submitted;
 +static bool test_event_seen;
++static bool test_deferred_submission = true;
 +static bool test_complete;
 +static uint16_t test_expected_rejection;
 +static bool test_retry_scenario;
@@ -11544,20 +13631,20 @@ index 0000000..646bd2c
 +
 +    test_payload_begin(CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM, 16);
 +    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P1, test_address);
-+    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P2, 1);
++    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P2, test_length);
 +    test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_P3, 5);
 +    test_field(CRUCIBLE_NODE_FAULT_FIELD_P4,
 +               CRUCIBLE_NODE_FAULT_FIELD_TYPE_BYTES, &zero, 1);
 +    test_field_bool(CRUCIBLE_NODE_FAULT_FIELD_P5, true);
 +    test_field_policy(CRUCIBLE_NODE_FAULT_FIELD_P6, policy);
 +    test_field_policy(CRUCIBLE_NODE_FAULT_FIELD_P7, occurrence);
-+    test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_P8, 2);
++    test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_P8, test_classes);
 +    test_field_bool(CRUCIBLE_NODE_FAULT_FIELD_P9, false);
 +    test_field_bool(10, false);
 +    test_field(11,
 +               CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
 +               no_device, sizeof(no_device));
-+    test_payload_target(test_address, 1, false);
++    test_payload_target(test_address, test_length, false);
 +}
 +
 +static void test_build_poison(const char *policy)
@@ -11576,7 +13663,7 @@ index 0000000..646bd2c
 +    test_payload_target(address, length, true);
 +}
 +
-+static void test_build_service(void)
++static void test_build_service(bool virtual_address)
 +{
 +    test_payload_begin(CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE, 11);
 +    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P1, 1000);
@@ -11585,7 +13672,7 @@ index 0000000..646bd2c
 +    test_field_bool(CRUCIBLE_NODE_FAULT_FIELD_P4, true);
 +    test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P5, 1000000);
 +    test_field_policy(CRUCIBLE_NODE_FAULT_FIELD_P6, "{\"kind\":\"range\"}");
-+    test_payload_target(test_address, 1, true);
++    test_payload_target(test_address, 1, virtual_address);
 +}
 +
 +static void test_build_scenario(const char *scenario)
@@ -11598,6 +13685,16 @@ index 0000000..646bd2c
 +        test_kind = 5;
 +        test_build_poison(
 +            "{\"kind\":\"corrected\",\"parameters\":{\"xor_mask\":\"ff\"}}");
++    } else if (strcmp(scenario, "fetch-poison-corrected-x86") == 0) {
++        test_deferred_submission = false;
++        test_kind = 5;
++        test_build_poison(
++            "{\"kind\":\"corrected\",\"parameters\":{\"xor_mask\":\"ff\"}}");
++    } else if (strcmp(scenario, "fetch-poison-corrected-aarch64") == 0) {
++        test_deferred_submission = false;
++        test_kind = 5;
++        test_build_poison(
++            "{\"kind\":\"corrected\",\"parameters\":{\"xor_mask\":\"e01f\"}}");
 +    } else if (strcmp(scenario, "poison-access-error") == 0) {
 +        test_kind = 5;
 +        test_build_poison("{\"kind\":\"access_error\"}");
@@ -11636,7 +13733,10 @@ index 0000000..646bd2c
 +            "{\"kind\":\"rowhammer\",\"parameters\":{\"flip_mask\":\"ff\",\"row_bytes\":64,\"threshold\":1,\"victim_distance\":1}}");
 +    } else if (strcmp(scenario, "service") == 0) {
 +        test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE;
-+        test_build_service();
++        test_build_service(true);
++    } else if (strcmp(scenario, "fetch-service") == 0) {
++        test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE;
++        test_build_service(false);
 +    } else if (strcmp(scenario, "retry-x86") == 0) {
 +        test_retry_scenario = true;
 +        test_kind = 5;
@@ -11714,6 +13814,10 @@ index 0000000..646bd2c
 +            test_fail("occurrence evidence is incomplete");
 +        }
 +        if (test_command_kind == CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE) {
++            if (strcmp(test_scenario, "fetch-service") == 0 &&
++                test_event_seen) {
++                test_fail("fetch service was committed more than once");
++            }
 +            if (length != 576 || memcmp(test_evidence + 368, "CRUCSVC1", 8) ||
 +                test_get_u32(test_evidence + 376) != 1 ||
 +                test_get_u64(test_evidence + 400) <
@@ -11727,6 +13831,24 @@ index 0000000..646bd2c
 +                test_get_u32(test_evidence + 464) != 3 ||
 +                test_get_u32(test_evidence + 468) !=
 +                    CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED) {
++                g_printerr(
++                    "service length=%zu version=%u ready=%" PRIu64
++                    "/%" PRIu64 " fixed=%" PRIu64 " demand=%" PRIu64
++                    " queue=%" PRIu64 " completion=%" PRIu64
++                    " configured=%" PRIu64 "/%" PRIu64 "/%" PRIu64
++                    " flags=%u outcome=%u\n",
++                    length, test_get_u32(test_evidence + 376),
++                    test_get_u64(test_evidence + 392),
++                    test_get_u64(test_evidence + 400),
++                    test_get_u64(test_evidence + 408),
++                    test_get_u64(test_evidence + 416),
++                    test_get_u64(test_evidence + 424),
++                    test_get_u64(test_evidence + 432),
++                    test_get_u64(test_evidence + 440),
++                    test_get_u64(test_evidence + 448),
++                    test_get_u64(test_evidence + 456),
++                    test_get_u32(test_evidence + 464),
++                    test_get_u32(test_evidence + 468));
 +                test_fail("service evidence is incomplete");
 +            }
 +        } else {
@@ -11801,7 +13923,9 @@ index 0000000..646bd2c
 +                event_length == 0 || event_length > access_length ||
 +                event_offset > access_length - event_length ||
 +                access_address > UINT64_MAX - event_offset ||
-+                (strcmp(test_scenario, "poison-corrected") == 0 &&
++                ((strcmp(test_scenario, "poison-corrected") == 0 ||
++                  g_str_has_prefix(test_scenario,
++                                    "fetch-poison-corrected-")) &&
 +                 outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_CORRECTED) ||
 +                ((strcmp(test_scenario, "poison-access-error") == 0 ||
 +                  g_str_has_prefix(test_scenario, "poison-exception-") ||
@@ -12091,7 +14215,7 @@ index 0000000..646bd2c
 +    test_command.authorization_ceiling_icount = 32;
 +    memset(test_command.target_node_hash, 0x11, 32);
 +    memset(test_command.binding_hash, 0x31, 32);
-+    if (argc != 10) {
++    if (argc != 10 || !test_deferred_submission) {
 +        if (qemu_plugin_crucible_fault_submit(
 +                &test_command, test_payload->data, test_payload->len) != 0) {
 +            test_fail("rule preparation could not be submitted");

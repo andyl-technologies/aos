@@ -111,7 +111,7 @@ in
               ${pluginSource}/crucible-memory-dma.c \
               -o crucible-memory-dma.so \
               $(pkg-config --libs glib-2.0)
-            for mode in $(seq 1 18); do
+            for mode in $(seq 1 19); do
               ${pkgs.llvm}/bin/clang --target=i386-none-elf \
                 -c -Wa,-defsym,TEST_MODE=$mode \
                 ${./phase2-qemu-memory-access-guest.S} \
@@ -226,16 +226,23 @@ in
               mode="$2"
               scenario="$3"
               expected="$4"
+              classes="''${5:-2}"
+              length="''${6:-1}"
               should_run "$architecture-advanced-$scenario" || return 0
               case "$architecture" in
                 x86_64)
                   binary=${qemuPackage}/bin/qemu-system-x86_64
                   machine='-machine pc -cpu max -m 64M'
                   guest="guest-x86-$mode.elf"
-                  address=0x102000
+                  if test "$mode" -eq 7 || test "$mode" -eq 19; then
+                    address=0x109001
+                    result=0x103400
+                  else
+                    address=0x102000
+                  fi
                   if test "$mode" -eq 1; then
                     result=0x102100
-                  else
+                  elif test "$mode" -ne 7 && test "$mode" -ne 19; then
                     result=0x108000
                   fi
                   ;;
@@ -243,20 +250,35 @@ in
                   binary=${qemuPackage}/bin/qemu-system-aarch64
                   machine='-machine virt -cpu max -m 64M'
                   guest="guest-aarch64-$mode.elf"
-                  address=0x40300000
+                  if test "$mode" -eq 7 || test "$mode" -eq 19; then
+                    address=0x40210000
+                    result=0x40301400
+                  else
+                    address=0x40300000
+                  fi
                   if test "$mode" -eq 1; then
                     result=0x40300100
-                  else
+                  elif test "$mode" -ne 7 && test "$mode" -ne 19; then
                     result=0x40310000
                   fi
                   ;;
                 *) exit 1 ;;
               esac
+              accel='-accel sim'
+              if test "$scenario" = fetch-service; then
+                accel='-accel sim,tb-size=1'
+              fi
+              mask=ff
+              replacement=a5
+              if test "$length" -eq 2; then
+                mask=ffff
+                replacement=a014
+              fi
               set +e
-              timeout 120 $binary $machine -accel sim -icount shift=0 \
+              timeout 120 $binary $machine $accel -icount shift=0 \
                 -smp 1 -nographic -no-reboot -serial none -monitor none \
                 -kernel "$guest" \
-                -plugin "$PWD/crucible-memory-access.so,address=$address,result=$result,expected=$expected,kind=1,classes=2,length=1,mask=ff,replacement=a5,atomic=0,scenario=$scenario" \
+                -plugin "$PWD/crucible-memory-access.so,address=$address,result=$result,expected=$expected,kind=1,classes=$classes,length=$length,mask=$mask,replacement=$replacement,atomic=0,scenario=$scenario" \
                 >"logs/$architecture-advanced-$scenario.log" 2>&1
               case_status=$?
               set -e
@@ -279,6 +301,14 @@ in
                 *) exit 1 ;;
               esac
               run_advanced_case "$architecture" 17 poison-corrected a5
+              if test "$architecture" = x86_64; then
+                run_advanced_case "$architecture" 7 \
+                  fetch-poison-corrected-x86 a5 1 1
+              else
+                run_advanced_case "$architecture" 7 \
+                  fetch-poison-corrected-aarch64 a5 1 2
+              fi
+              run_advanced_case "$architecture" 19 fetch-service 5a 1 1
               run_advanced_case "$architecture" 14 poison-access-error e1
               run_advanced_case "$architecture" 14 \
                 "$exception_scenario" e1
@@ -374,7 +404,7 @@ in
               printf 'architectures=x86_64,aarch64\n'
               printf 'cpu_access_matrix=fetch,aligned,unaligned,cross-page,load,store,atomic-1-2-4-8-16,cmpxchg-success-failure\n'
               printf 'transform_matrix=stuck,read-corrupt,lost-write,torn-write\n'
-              printf 'advanced_matrix=corrected-poison,access-error,architectural-exception,failed-region,retention,rowhammer,service\n'
+              printf 'advanced_matrix=corrected-poison,fetch-corrected-poison,access-error,architectural-exception,failed-region,retention,rowhammer,service\n'
               printf 'dma_backend=actual-device-scoped-virtio-blk-read-write\n'
               printf 'dma_translation=frozen-direct-and-virtio-iommu-iova-to-gpa\n'
             } >"$out/result"
