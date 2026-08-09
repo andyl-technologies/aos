@@ -104,6 +104,12 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^ssh_license=BSD-2-Clause$' \
               ${packages.crucible}/nix-support/crucible-build-info
+            ${lib.optionalString (pkgs.stdenv.hostPlatform.system == "x86_64-linux") ''
+              grep -q '^debugger_live_matrix_architectures=x86_64,aarch64$' \
+                ${packages.crucible}/nix-support/crucible-build-info
+              grep -q '^debugger_live_matrix_external_architectures=$' \
+                ${packages.crucible}/nix-support/crucible-build-info
+            ''}
             grep -q '^boundary_crates=crucible-protocol,crucible-shmem$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^boundary_crates_license=MIT$' \

@@ -2,6 +2,7 @@
 {
   lib,
   stdenv,
+  guestPackageSets ? {},
   mkDerivation,
   mkCargoPackage,
   fetchCargoDeps,
@@ -30,9 +31,21 @@
     }.${stdenv.hostPlatform.system}
     or (throw "crucible: unsupported native QEMU system '${stdenv.hostPlatform.system}'");
   nativeQemuPath = "${qemu-crucible}/bin/${nativeQemuSystemBinary}";
+  aarch64Guests = guestPackageSets."aarch64-linux" or null;
+  aarch64Linux =
+    if aarch64Guests != null
+    then aarch64Guests.linux-crucible
+    else null;
+  aarch64Fixtures =
+    if aarch64Guests != null
+    then aarch64Guests.crucible-fixtures
+    else null;
   liveDebuggerMatrixArchitectures =
     if stdenv.hostPlatform.system == "x86_64-linux"
-    then "x86_64"
+    then
+      if aarch64Guests != null
+      then "x86_64,aarch64"
+      else "x86_64"
     else "aarch64";
   cargoDepsHash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   liveDebuggerMatrixScript = ../../../examples/codex-skills/crucible-debugger/scripts/live-matrix.sh;
@@ -289,7 +302,9 @@
     inherit version;
     src = null;
     buildDeps = [bash];
-    runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux];
+    runtimeDeps =
+      [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]
+      ++ lib.optionals (aarch64Guests != null) [aarch64Linux aarch64Fixtures];
     propagatedDeps = [];
     phases = [
       {
@@ -319,11 +334,19 @@
             : "''${CRUCIBLE_ROOT_IMAGE_AARCH64:=$CRUCIBLE_ROOT_IMAGE}"
             : "''${CRUCIBLE_KERNEL_CMDLINE_AARCH64:=$CRUCIBLE_KERNEL_CMDLINE}"
           ''}
+          ${lib.optionalString (aarch64Guests != null) ''
+            : "''${CRUCIBLE_KERNEL_AARCH64:=${aarch64Linux}/boot/vmlinuz-${aarch64Linux.version}}"
+            : "''${CRUCIBLE_ROOT_IMAGE_AARCH64:=${aarch64Fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4}"
+            : "''${CRUCIBLE_KERNEL_CMDLINE_AARCH64:=${aarch64Linux.passthru.crucibleFixtureKernelCmdline} init=/init}"
+          ''}
           export CRUCIBLE_QEMU CRUCIBLE_NATIVE_GUEST_ARCHITECTURE CRUCIBLE_PLUGIN CRUCIBLE_DEBUG_GATEWAY CRUCIBLE_KERNEL CRUCIBLE_ROOT_IMAGE CRUCIBLE_KERNEL_CMDLINE
           ${lib.optionalString (stdenv.hostPlatform.system == "x86_64-linux") ''
             export CRUCIBLE_KERNEL_X86_64 CRUCIBLE_ROOT_IMAGE_X86_64 CRUCIBLE_KERNEL_CMDLINE_X86_64
           ''}
           ${lib.optionalString (stdenv.hostPlatform.system == "aarch64-linux") ''
+            export CRUCIBLE_KERNEL_AARCH64 CRUCIBLE_ROOT_IMAGE_AARCH64 CRUCIBLE_KERNEL_CMDLINE_AARCH64
+          ''}
+          ${lib.optionalString (aarch64Guests != null) ''
             export CRUCIBLE_KERNEL_AARCH64 CRUCIBLE_ROOT_IMAGE_AARCH64 CRUCIBLE_KERNEL_CMDLINE_AARCH64
           ''}
           exec ${controller}/bin/crucible "$@"
@@ -357,6 +380,10 @@
           ${lib.optionalString (stdenv.hostPlatform.system == "aarch64-linux") ''
             export CRUCIBLE_MATRIX_KERNEL_AARCH64="${linux-crucible}/boot/vmlinuz-${linux-crucible.version}"
             export CRUCIBLE_MATRIX_ROOT_IMAGE_AARCH64="${crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4"
+          ''}
+          ${lib.optionalString (aarch64Guests != null) ''
+            export CRUCIBLE_MATRIX_KERNEL_AARCH64="${aarch64Linux}/boot/vmlinuz-${aarch64Linux.version}"
+            export CRUCIBLE_MATRIX_ROOT_IMAGE_AARCH64="${aarch64Fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4"
           ''}
           export PATH="${coreutils}/bin:${grep}/bin:${sed}/bin:${util-linux}/bin:${bash}/bin"
           exec ${bash}/bin/bash "$out/share/aos/crucible/debugger-live-matrix.sh" "\$@"
@@ -407,7 +434,11 @@
           debugger_fixture_generator_path=${controller}/bin/crucible-debugger-live-fixture
           debugger_live_matrix_path=bin/crucible-debugger-live-matrix
           debugger_live_matrix_architectures=${liveDebuggerMatrixArchitectures}
-          debugger_live_matrix_external_architectures=aarch64
+          debugger_live_matrix_external_architectures=${
+            if aarch64Guests != null || stdenv.hostPlatform.system == "aarch64-linux"
+            then ""
+            else "aarch64"
+          }
           qemu_corresponding_source_package=qemu-crucible-source
           qemu_corresponding_source_path=${qemu-crucible-source}
           qemu_corresponding_source_build_id=${qemu-crucible-source.passthru.qemuBuildIdentity}

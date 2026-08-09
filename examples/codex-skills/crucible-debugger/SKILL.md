@@ -25,9 +25,10 @@ For the complete packaged production matrix, run
 `crucible-debugger-live-matrix --architecture all`. It retains a new evidence
 directory and refuses to overwrite an existing one. The command clears external
 backend/asset overrides and binds generated scenarios to the packaged kernel and
-root-image digests. Use `--output NEW-DIR` when the evidence location must be
-stable; check `--help` before requesting `all` on a suite that may retain only
-its native guest architecture.
+root-image digests. The x86_64 suite retains both its native guest assets and the
+cross-built AArch64 kernel/root image with the fork-activated guest agent. Use
+`--output NEW-DIR` when the evidence location must be stable; check `--help`
+before requesting `all` on any independently assembled suite.
 
 ## Reproduce before changing anything
 

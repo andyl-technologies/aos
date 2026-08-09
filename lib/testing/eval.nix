@@ -543,6 +543,20 @@
     else if schedulingSystemOnly.success
     then throw "meta.execute must not be checked against the Nix scheduling system"
     else "ok";
+
+  crucibleRetainsAarch64GuestPackageSet =
+    if lib.system != "x86_64-linux"
+    then "not-applicable"
+    else let
+      guests = pkgs.guestPackageSets."aarch64-linux" or null;
+    in
+      if guests == null
+      then throw "x86_64 Crucible package set must retain AArch64 guest packages"
+      else if guests.stdenv.hostPlatform.constraints.cpu != "aarch64"
+      then throw "retained Crucible guest package set must target AArch64"
+      else if !(guests ? linux-crucible) || !(guests ? crucible-fixtures)
+      then throw "retained AArch64 package set must provide Crucible kernel and root image"
+      else "ok";
 in
   # Use a raw derivation with AOS bash so we don't pull in host tools. The
   # builtins.toJSON calls still force the system config at instantiation time;
@@ -659,6 +673,7 @@ in
         echo "systemd gate:   $security_units workload services under threshold $security_threshold; $security_skipped allowlisted unconfined package(s) skipped: ''${security_skipped_names:-none}"
         echo "package policy: baked profile (${packagePolicyModule}), preset requires bundle (${packagePolicyRejectsPresetWithoutBundle}), target mismatch (${packagePolicyRejectsWrongTarget})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
+        echo "crucible:       retained AArch64 guest packages (${crucibleRetainsAarch64GuestPackageSet})"
 
         # Force the build attributes to ensure they evaluate
         echo "toplevel:       ${system.config.system.build.toplevel.name}"
