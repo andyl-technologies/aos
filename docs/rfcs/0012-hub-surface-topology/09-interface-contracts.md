@@ -726,6 +726,12 @@ aos hub route enable|disable|remove <route>
 aos hub route canonical <route> --audience git|cache|web
 ```
 
+Topology-default reads are total for every existing writable scope. Before the
+first `set`, the API returns that scope key with empty optional references and
+an empty resource version; it does not turn ordinary unset state into a 404.
+The first plan therefore carries no expected resource version, while later
+updates remain version checked.
+
 Endpoint and gateway refs resolve to exact immutable generations in every
 plan; apply rejects a changed desired generation. A direct route has no
 independent base-path option: its path is derived as
@@ -834,6 +840,12 @@ posture, and the Nix protocol defaults `nix_priority`, `compression`, and
 population, and garbage collection remain separate command families below.
 List and show render `BinaryCache` resources even though the user-facing CLI
 noun remains the concise `cache`.
+
+Every `<cache>` locator accepts either the canonical qualified slug
+(`organization/cache`) or the immutable `cache:` stable ID. Stable IDs remain
+the relationship and persistence key; canonical slugs are the human-facing Web
+and CLI path. Reads return the stable ID so automation can pin subsequent
+operations without depending on presentation paths.
 
 ### Upstream registry mirror
 
