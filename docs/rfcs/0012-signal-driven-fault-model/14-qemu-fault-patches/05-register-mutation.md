@@ -212,6 +212,18 @@ manifest hash and CPU model.
 5. Save/restore after each group and compare uninterrupted execution.
 6. Revert patch and fail live mutation gate; prove non-sim inertness.
 
+The rejection gate distinguishes inconsistent command framing from
+architectural validation. Different register identities in the action and
+target fields make the command internally inconsistent and are rejected
+synchronously as `MALFORMED_COMMAND`. A consistently encoded but unbound
+register identity, reserved or read-only bits, an out-of-range slice, a
+mismatched architecture identity, and a nonexistent vCPU decode as a node
+request but fail register validation as `INVALID_TARGET`. An invalid state
+transition such as a misaligned x86 CR3 value is also `INVALID_TARGET`.
+A commit whose prepared ruleset hash no longer matches is
+`PRECONDITION_MISMATCH`. Every case must prove zero mutation and zero emitted
+fault events; merely observing a non-applied status is insufficient.
+
 ## Licensing checklist
 
 Architecture/QEMU CPU changes and plugin calls remain GPL-side. The host sees

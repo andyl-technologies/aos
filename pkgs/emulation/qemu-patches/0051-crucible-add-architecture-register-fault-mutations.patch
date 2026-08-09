@@ -2946,10 +2946,10 @@ index 2e9c472..1257e54 100644
    'cpu-apic.c',
 diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
 new file mode 100644
-index 0000000..30b9819
+index 0000000..57f4bd6
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-register.c
-@@ -0,0 +1,765 @@
+@@ -0,0 +1,946 @@
 +/*
 + * Live Crucible architecture-register mutation test plugin
 + *
@@ -2973,6 +2973,14 @@ index 0000000..30b9819
 +    TEST_MODE_IMPULSE,
 +    TEST_MODE_PERSISTENT,
 +    TEST_MODE_REJECT_INVALID,
++    TEST_MODE_REJECT_RESERVED,
++    TEST_MODE_REJECT_READ_ONLY,
++    TEST_MODE_REJECT_OUT_OF_RANGE,
++    TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY,
++    TEST_MODE_REJECT_UNKNOWN_REGISTER_IDENTITY,
++    TEST_MODE_REJECT_ARCHITECTURE_IDENTITY,
++    TEST_MODE_REJECT_VCPU,
++    TEST_MODE_REJECT_PRECONDITION,
 +} TestMode;
 +
 +static TestMode test_mode;
@@ -2999,8 +3007,35 @@ index 0000000..30b9819
 +static bool test_rule_installed;
 +static bool test_validated;
 +static bool test_finished;
-+static uint8_t test_initial_register[64];
++static uint8_t *test_initial_registers;
 +static size_t test_initial_register_len;
++static uint8_t test_initial_target[64];
++static size_t test_initial_target_len;
++static bool test_submit_atomic_verified;
++
++static bool test_mode_rejects(void)
++{
++    return test_mode >= TEST_MODE_REJECT_INVALID;
++}
++
++static const char *test_mode_name(void)
++{
++    static const char * const names[] = {
++        "impulse",
++        "persistent",
++        "reject-invalid",
++        "reject-reserved",
++        "reject-read-only",
++        "reject-out-of-range",
++        "reject-mismatched-register-identity",
++        "reject-unknown-register-identity",
++        "reject-architecture-identity",
++        "reject-vcpu",
++        "reject-precondition",
++    };
++
++    return names[test_mode];
++}
 +
 +static uint16_t test_get_u16(const uint8_t *bytes)
 +{
@@ -3157,6 +3192,33 @@ index 0000000..30b9819
 +    return 0;
 +}
 +
++static const char *test_export_register_name(void)
++{
++    if (test_architecture == QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 &&
++        strcmp(test_register_name, "rflags") == 0) {
++        return "eflags";
++    }
++    return test_register_name;
++}
++
++static uint8_t *test_read_all_registers(size_t *length)
++{
++    uint8_t *registers;
++    uint64_t ignored_icount;
++
++    if (qemu_plugin_read_vcpu_regs(0, NULL, 0, length,
++                                   &ignored_icount) == 0 || *length == 0) {
++        test_fail("canonical register export did not report its size");
++    }
++    registers = g_try_malloc(*length);
++    if (!registers || qemu_plugin_read_vcpu_regs(
++            0, registers, *length, length, &ignored_icount) != 0) {
++        g_free(registers);
++        test_fail("canonical register export could not be captured");
++    }
++    return registers;
++}
++
 +static void test_identity(uint8_t output[32], uint8_t domain, uint32_t value)
 +{
 +    memset(output, 0, 32);
@@ -3196,6 +3258,10 @@ index 0000000..30b9819
 +    uint8_t value = test_mode == TEST_MODE_PERSISTENT ? 1 : 0;
 +    uint8_t has_value = test_mode == TEST_MODE_PERSISTENT;
 +    uint8_t schema_hash[32];
++    uint8_t architecture_identity[32];
++    uint8_t action_register_identity[32];
++    uint8_t register_identity[32];
++    uint32_t vcpu = test_mode == TEST_MODE_REJECT_VCPU ? 1 : 0;
 +    uint32_t mutation = test_mode != TEST_MODE_PERSISTENT ?
 +        CRUCIBLE_FAULT_REGISTER_MUTATION_BIT_FLIP :
 +        CRUCIBLE_FAULT_REGISTER_MUTATION_STUCK;
@@ -3203,6 +3269,19 @@ index 0000000..30b9819
 +    test_identity(test_action_hash, 0xa1, test_numeric_id);
 +    test_identity(test_target_hash, 0xa2, test_numeric_id);
 +    test_identity(schema_hash, 0xa3, 1);
++    memcpy(architecture_identity, test_architecture_identity, 32);
++    memcpy(action_register_identity, test_register_identity, 32);
++    memcpy(register_identity, test_register_identity, 32);
++    if (test_mode == TEST_MODE_REJECT_ARCHITECTURE_IDENTITY) {
++        architecture_identity[31] ^= 1;
++    }
++    if (test_mode == TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY) {
++        register_identity[31] ^= 1;
++    }
++    if (test_mode == TEST_MODE_REJECT_UNKNOWN_REGISTER_IDENTITY) {
++        action_register_identity[31] ^= 1;
++        register_identity[31] ^= 1;
++    }
 +    memcpy(header + CRUCIBLE_NODE_FAULT_PAYLOAD_MAGIC_OFFSET,
 +           "CRUCNOD1", 8);
 +    test_put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_VERSION_OFFSET,
@@ -3229,7 +3308,7 @@ index 0000000..30b9819
 +
 +    test_append_field(payload, CRUCIBLE_NODE_FAULT_FIELD_P1,
 +                      CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
-+                      test_register_identity, 32);
++                      action_register_identity, 32);
 +    test_append_u32(payload, CRUCIBLE_NODE_FAULT_FIELD_P2, test_first_bit);
 +    test_append_u32(payload, CRUCIBLE_NODE_FAULT_FIELD_P3, 1);
 +    test_append_u32(payload, CRUCIBLE_NODE_FAULT_FIELD_P4, mutation);
@@ -3242,13 +3321,13 @@ index 0000000..30b9819
 +    test_append_field(payload, CRUCIBLE_NODE_FAULT_FIELD_P8,
 +                      CRUCIBLE_NODE_FAULT_FIELD_TYPE_BYTES,
 +                      policy, sizeof(policy) - 1);
-+    test_append_u32(payload, CRUCIBLE_NODE_FAULT_FIELD_T1, 0);
++    test_append_u32(payload, CRUCIBLE_NODE_FAULT_FIELD_T1, vcpu);
 +    test_append_field(payload, CRUCIBLE_NODE_FAULT_FIELD_T2,
 +                      CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
-+                      test_architecture_identity, 32);
++                      architecture_identity, 32);
 +    test_append_field(payload, CRUCIBLE_NODE_FAULT_FIELD_T3,
 +                      CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
-+                      test_register_identity, 32);
++                      register_identity, 32);
 +    test_append_u32(payload, CRUCIBLE_NODE_FAULT_FIELD_T4, test_first_bit);
 +    test_append_u32(payload, CRUCIBLE_NODE_FAULT_FIELD_T5, 1);
 +    *payload_len = payload->len;
@@ -3388,6 +3467,11 @@ index 0000000..30b9819
 +    test_command.authorization_ceiling_icount = test_command.target_icount;
 +    memcpy(test_command.expected_precondition_hash,
 +           prepared->before_hash, 32);
++    if (test_mode == TEST_MODE_REJECT_PRECONDITION) {
++        test_initial_target_len = test_read_named_register(
++            test_export_register_name(), test_initial_target);
++        test_command.expected_precondition_hash[0] ^= 1;
++    }
 +    if (qemu_plugin_crucible_fault_submit(
 +            &test_command, test_payload, test_payload_len) != 0) {
 +        test_fail("QEMU rejected the prepared register commit");
@@ -3405,10 +3489,14 @@ index 0000000..30b9819
 +
 +    do {
 +        memset(&event, 0, sizeof(event));
++        evidence_len = 0;
 +        status = qemu_plugin_crucible_fault_event_poll(
 +            &event, evidence, sizeof(evidence), &evidence_len);
 +        if (status < 0) {
 +            test_fail("register event polling failed");
++        }
++        if (status == 1 && test_mode_rejects()) {
++            test_fail("a rejected register command emitted an event");
 +        }
 +        if (status == 1 && event.command_kind ==
 +                CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM) {
@@ -3437,9 +3525,7 @@ index 0000000..30b9819
 +
 +static void test_finish_if_validated(void)
 +{
-+    const char *mode = test_mode == TEST_MODE_IMPULSE ? "impulse" :
-+        (test_mode == TEST_MODE_PERSISTENT ? "persistent" :
-+         "reject-invalid");
++    const char *mode = test_mode_name();
 +
 +    if (!test_validated ||
 +        (test_guest_observation_required && !test_guest_observed) ||
@@ -3463,6 +3549,19 @@ index 0000000..30b9819
 +    (void)cpu_index;
 +    (void)icount;
 +    (void)opaque;
++    if (test_mode_rejects() &&
++        test_mode != TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY &&
++        test_mode != TEST_MODE_REJECT_PRECONDITION &&
++        test_initial_target_len == 0) {
++        uint64_t current_icount = qemu_plugin_crucible_icount();
++
++        if (current_icount == 0 ||
++            current_icount >= test_command.target_icount) {
++            test_fail("rejection target was not sampled before dispatch");
++        }
++        test_initial_target_len = test_read_named_register(
++            test_export_register_name(), test_initial_target);
++    }
 +    if (test_mode == TEST_MODE_PERSISTENT && test_rule_installed) {
 +        g_autoptr(GByteArray) observed = g_byte_array_new();
 +
@@ -3487,6 +3586,7 @@ index 0000000..30b9819
 +    (void)opaque;
 +    do {
 +        memset(&result, 0, sizeof(result));
++        evidence_len = 0;
 +        status = qemu_plugin_crucible_fault_poll(
 +            &result, evidence, sizeof(evidence), &evidence_len);
 +        if (status < 0) {
@@ -3496,21 +3596,55 @@ index 0000000..30b9819
 +                CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM) {
 +            continue;
 +        }
-+        if (result.command_sequence == 1) {
-+            if (test_mode == TEST_MODE_REJECT_INVALID) {
-+                uint8_t current[64];
-+                size_t current_len = test_read_named_register("cr3", current);
++        if (test_mode_rejects() &&
++            result.command_sequence ==
++                (test_mode == TEST_MODE_REJECT_PRECONDITION ? 2 : 1)) {
++            uint8_t current[64];
++            size_t current_len = 0;
++            bool delayed = test_mode !=
++                TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY;
++            uint16_t expected_status =
++                test_mode == TEST_MODE_REJECT_PRECONDITION ?
++                 CRUCIBLE_FAULT_STATUS_PRECONDITION_MISMATCH :
++                (test_mode ==
++                     TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY ?
++                 CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND :
++                 CRUCIBLE_FAULT_STATUS_INVALID_TARGET);
 +
-+                if (result.status != CRUCIBLE_FAULT_STATUS_INVALID_TARGET ||
-+                    result.applied_icount != 0 ||
-+                    current_len != test_initial_register_len ||
-+                    memcmp(current, test_initial_register, current_len) != 0) {
-+                    test_fail("invalid register transition was not rejected atomically");
-+                }
-+                test_validated = true;
-+                test_finish_if_validated();
-+                continue;
++            if (delayed) {
++                current_len = test_read_named_register(
++                    test_export_register_name(), current);
 +            }
++            if (result.status != expected_status ||
++                result.applied_icount != 0 || evidence_len != 0 ||
++                (delayed &&
++                 (result.reserved != 0 ||
++                  result.phase != test_command.phase ||
++                  result.semantic_version !=
++                      CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION ||
++                  result.capability_version != 1 ||
++                  result.observed_icount != test_command.target_icount)) ||
++                (delayed &&
++                 (test_initial_target_len == 0 ||
++                  current_len != test_initial_target_len ||
++                  memcmp(current, test_initial_target, current_len) != 0)) ||
++                (!delayed && !test_submit_atomic_verified)) {
++                g_printerr("rejection debug mode=%s status=%u expected=%u "
++                           "applied=%" G_GUINT64_FORMAT
++                           " evidence=%zu before-bytes=%zu after-bytes=%zu "
++                           "submit-atomic=%s\n",
++                           test_mode_name(), result.status, expected_status,
++                           result.applied_icount, evidence_len,
++                           test_initial_target_len, current_len,
++                           test_submit_atomic_verified ? "true" : "false");
++                test_fail("register rejection was not exact and atomic");
++            }
++            test_poll_events();
++            test_validated = true;
++            test_finish_if_validated();
++            continue;
++        }
++        if (result.command_sequence == 1) {
 +            if (test_commit_submitted) {
 +                test_fail("register prepare completed more than once");
 +            }
@@ -3549,6 +3683,7 @@ index 0000000..30b9819
 +    if (!test_validated) {
 +        test_fail("register mutation was not validated before process exit");
 +    }
++    g_free(test_initial_registers);
 +    g_free(test_payload);
 +}
 +
@@ -3598,8 +3733,27 @@ index 0000000..30b9819
 +        test_mode = TEST_MODE_PERSISTENT;
 +    } else if (strcmp(argv[1] + 5, "reject-invalid") == 0) {
 +        test_mode = TEST_MODE_REJECT_INVALID;
++    } else if (strcmp(argv[1] + 5, "reject-reserved") == 0) {
++        test_mode = TEST_MODE_REJECT_RESERVED;
++    } else if (strcmp(argv[1] + 5, "reject-read-only") == 0) {
++        test_mode = TEST_MODE_REJECT_READ_ONLY;
++    } else if (strcmp(argv[1] + 5, "reject-out-of-range") == 0) {
++        test_mode = TEST_MODE_REJECT_OUT_OF_RANGE;
++    } else if (strcmp(argv[1] + 5,
++                      "reject-mismatched-register-identity") == 0) {
++        test_mode = TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY;
++    } else if (strcmp(argv[1] + 5,
++                      "reject-unknown-register-identity") == 0) {
++        test_mode = TEST_MODE_REJECT_UNKNOWN_REGISTER_IDENTITY;
++    } else if (strcmp(argv[1] + 5,
++                      "reject-architecture-identity") == 0) {
++        test_mode = TEST_MODE_REJECT_ARCHITECTURE_IDENTITY;
++    } else if (strcmp(argv[1] + 5, "reject-vcpu") == 0) {
++        test_mode = TEST_MODE_REJECT_VCPU;
++    } else if (strcmp(argv[1] + 5, "reject-precondition") == 0) {
++        test_mode = TEST_MODE_REJECT_PRECONDITION;
 +    } else {
-+        test_fail("mode must be impulse, persistent, or reject-invalid");
++        test_fail("mode is not a supported register mutation scenario");
 +    }
 +    test_register_name = argv[2] + 9;
 +    if (!*test_register_name) {
@@ -3672,22 +3826,32 @@ index 0000000..30b9819
 +    test_numeric_id = selected->numeric_id;
 +    test_group = selected->group;
 +    test_side_effects = selected->side_effects;
-+    if (test_mode == TEST_MODE_REJECT_INVALID) {
++    if (test_mode_rejects()) {
 +        if (test_architecture != QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64) {
-+            test_fail("invalid-transition mode requires x86_64");
++            test_fail("register rejection modes require x86_64");
 +        }
-+        test_initial_register_len = test_read_named_register(
-+            "cr3", test_initial_register);
 +    }
 +    test_identity(test_register_identity, 0xb2, test_numeric_id);
-+    for (test_first_bit = 0; test_first_bit < selected->width_bits;
-+         test_first_bit++) {
-+        if (test_mask_bit(selected->writable_mask, test_first_bit)) {
-+            break;
++    if (test_mode == TEST_MODE_REJECT_OUT_OF_RANGE) {
++        test_first_bit = selected->width_bits;
++    } else {
++        const uint8_t *wanted_mask =
++            test_mode == TEST_MODE_REJECT_RESERVED ?
++            selected->reserved_mask :
++            (test_mode == TEST_MODE_REJECT_READ_ONLY ?
++             selected->read_only_mask : selected->writable_mask);
++
++        for (test_first_bit = 0; test_first_bit < selected->width_bits;
++             test_first_bit++) {
++            if (test_mask_bit(wanted_mask, test_first_bit)) {
++                break;
++            }
 +        }
 +    }
 +    if (test_first_bit == selected->width_bits) {
-+        test_fail("the selected register has no writable bit");
++        if (test_mode != TEST_MODE_REJECT_OUT_OF_RANGE) {
++            test_fail("the selected register lacks the requested bit class");
++        }
 +    }
 +    g_free(rows);
 +
@@ -3702,16 +3866,33 @@ index 0000000..30b9819
 +    test_command.semantic_version = CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION;
 +    test_command.command_sequence = 1;
 +    memset(test_command.target_node_hash, 0x11, 32);
-+    test_command.target_icount = 64;
-+    test_command.authorization_ceiling_icount = 64;
++    test_command.target_icount = test_mode_rejects() ? 512 : 64;
++    test_command.authorization_ceiling_icount = test_command.target_icount;
 +    memset(test_command.binding_hash, 0x21, 32);
 +    test_payload = test_build_payload(&test_payload_len);
 +    qemu_plugin_register_crucible_fault_completion_cb(test_completion, NULL);
 +    qemu_plugin_register_tcg_exec_cb(test_tcg_exec, NULL);
 +    qemu_plugin_register_atexit_cb(id, test_exit, NULL);
++    if (test_mode_rejects() &&
++        test_mode == TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY) {
++        test_initial_registers = test_read_all_registers(
++            &test_initial_register_len);
++        /* A synchronous rejection may invoke completion reentrantly. */
++        test_submit_atomic_verified = true;
++    }
 +    if (qemu_plugin_crucible_fault_submit(
 +            &test_command, test_payload, test_payload_len) != 0) {
 +        test_fail("QEMU rejected the register mutation preparation");
++    }
++    if (test_initial_registers) {
++        g_autofree uint8_t *after = NULL;
++        size_t after_len;
++
++        after = test_read_all_registers(&after_len);
++        if (after_len != test_initial_register_len ||
++            memcmp(after, test_initial_registers, after_len) != 0) {
++            test_fail("rejected submit changed canonical register state");
++        }
 +    }
 +    return 0;
 +}
