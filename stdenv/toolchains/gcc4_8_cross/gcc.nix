@@ -133,6 +133,14 @@ in
                 "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = ${crossGlibc}/include|" \
                 gcc/Makefile
 
+              # GCC 4.8 builds these optional LTO binutils wrappers even when
+              # plugins are disabled. They require target libstdc++ headers,
+              # which cannot exist until this target-native compiler does.
+              ${prev.sed}/bin/sed -i \
+                -e 's/[[:space:]]*gcc-ar$(exeext) gcc-nm$(exeext) gcc-ranlib$(exeext)//' \
+                -e 's/[[:space:]]*install-gcc-ar//' \
+                gcc/Makefile
+
               # Canadian cross: xgcc is target-arch and can't run on x86_64 build machine,
               # so build only gcc (not target libraries like libgcc).
               make -j"$NIX_BUILD_CORES" all-gcc \
