@@ -512,6 +512,37 @@
     if forced.success
     then throw "aos.packages must reject policy names that do not match the package target"
     else "ok";
+
+  derivationLibForExecutionCompatibility = import ../derivations.nix {
+    system = "x86_64-linux";
+  };
+  executionCompatibilityUsesBuildExecutionSystem = let
+    compatible = builtins.tryEval (
+      derivationLibForExecutionCompatibility.mkDerivation {
+        pname = "execution-compatible-with-build-system";
+        buildExecutionSystem = "aarch64-linux";
+        meta.execute = {
+          cpu = "aarch64";
+          os = "linux";
+        };
+      }
+    );
+    schedulingSystemOnly = builtins.tryEval (
+      derivationLibForExecutionCompatibility.mkDerivation {
+        pname = "execution-compatible-only-with-scheduling-system";
+        buildExecutionSystem = "aarch64-linux";
+        meta.execute = {
+          cpu = "x86_64";
+          os = "linux";
+        };
+      }
+    );
+  in
+    if !compatible.success
+    then throw "meta.execute must be checked against buildExecutionSystem"
+    else if schedulingSystemOnly.success
+    then throw "meta.execute must not be checked against the Nix scheduling system"
+    else "ok";
 in
   # Use a raw derivation with AOS bash so we don't pull in host tools. The
   # builtins.toJSON calls still force the system config at instantiation time;
@@ -627,6 +658,7 @@ in
         echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"
         echo "systemd gate:   $security_units workload services under threshold $security_threshold; $security_skipped allowlisted unconfined package(s) skipped: ''${security_skipped_names:-none}"
         echo "package policy: baked profile (${packagePolicyModule}), preset requires bundle (${packagePolicyRejectsPresetWithoutBundle}), target mismatch (${packagePolicyRejectsWrongTarget})"
+        echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
 
         # Force the build attributes to ensure they evaluate
         echo "toplevel:       ${system.config.system.build.toplevel.name}"

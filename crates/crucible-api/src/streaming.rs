@@ -14,10 +14,10 @@ use crucible::{
 };
 use crucible_session::{
     BreakpointId, CommandReply, LifecycleStateKind, LifecycleTransition, LiveQueryKind,
-    LiveSnapshot, LiveStateKind, QueryResult, SavepointInfo, SessionCommand, SessionCommandKind,
-    SessionError, SessionEventLogStream, SessionHandle, SessionReproductionLog,
+    LiveSnapshot, LiveSnapshotView, LiveStateKind, QueryResult, SavepointInfo, SessionCommand,
+    SessionCommandKind, SessionError, SessionEventLogStream, SessionHandle, SessionReproductionLog,
     SessionStateTransitionBus, SessionStateTransitionFrame, SessionStateTransitionStream,
-    SessionStateTransitionStreamError, lifecycle_transition,
+    lifecycle_transition,
 };
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
@@ -36,85 +36,9 @@ use crate::session_mapping::{
 /// Default actor-yield budget used while waiting for command state updates.
 pub const STREAMING_COMMAND_MAX_ACTOR_YIELDS: u64 = 128;
 
-/// One command kind advertised by a streaming command path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct StreamingCommandCapability {
-    /// Programmatic command name accepted by the API.
-    pub command_name: &'static str,
-    /// Existing session command kind reached by that name.
-    pub command_kind: SessionCommandKind,
-}
-
-/// Command capabilities advertised by one streaming command path.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StreamingCapabilitySet {
-    /// Command kinds accepted by the path.
-    pub commands: Vec<StreamingCommandCapability>,
-    /// Whether `Attached` carries a log-derived snapshot summary.
-    pub snapshot_on_attach: bool,
-}
-
-impl StreamingCapabilitySet {
-    /// Builds the current command capability set from the thin mapping table.
-    #[must_use]
-    pub fn current() -> Self {
-        Self {
-            commands: API_COMMAND_MAPPINGS
-                .iter()
-                .map(|mapping| StreamingCommandCapability {
-                    command_name: mapping.command_name,
-                    command_kind: mapping.command_kind,
-                })
-                .collect(),
-            snapshot_on_attach: true,
-        }
-    }
-
-    /// Returns whether `command` is advertised by this capability set.
-    #[must_use]
-    pub fn contains(&self, command: SessionCommandKind) -> bool {
-        self.commands
-            .iter()
-            .any(|capability| capability.command_kind == command)
-    }
-}
-
-/// Successful evidence that `Control` and `Watch`+`Send` expose the same command set.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StreamingEquivalenceReport {
-    /// Number of command kinds exposed by each command path.
-    pub command_count: usize,
-    /// Capabilities advertised by the bidirectional `Control` stream.
-    pub control_capabilities: StreamingCapabilitySet,
-    /// Capabilities advertised by unary `Send`.
-    pub send_capabilities: StreamingCapabilitySet,
-}
-
-/// Error returned when `Control` and `Watch`+`Send` are not equivalent.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum StreamingEquivalenceError {
-    /// A required API method is not present in the thin mapping table.
-    #[error("streaming method {method:?} is missing from the API mapping table")]
-    MissingMethod {
-        /// Missing method.
-        method: ApiMethod,
-    },
-    /// A required API method has the wrong dispatch class.
-    #[error("streaming method {method:?} has an unexpected dispatch mapping")]
-    UnexpectedDispatch {
-        /// Misconfigured method.
-        method: ApiMethod,
-    },
-    /// A session command kind is not advertised by both command paths.
-    #[error("streaming command capability {command:?} is missing")]
-    MissingCommandCapability {
-        /// Missing command kind.
-        command: SessionCommandKind,
-    },
-    /// The bidirectional and unary command capability sets differ.
-    #[error("Control and Send command capability sets differ")]
-    CapabilityMismatch,
-}
+#[path = "streaming/equivalence.rs"]
+mod equivalence;
+pub use equivalence::*;
 
 /// Validates that `Control` and `Watch`+`Send` expose equivalent command capabilities.
 ///
@@ -403,7 +327,8 @@ pub struct SendResponse {
     pub result: CommandResult,
     /// State update observed for commands that changed run-state.
     pub state_update: Option<StateUpdate>,
-    /// Query payload returned by accepted read-only commands, when exposed.
+    /// Query payload returned by accepted read-only commands or by a lifecycle
+    /// `Stop` that captures its terminal snapshot before cleanup.
     pub query_result: Option<QueryResult>,
     /// Breakpoint identifier returned by accepted breakpoint commands on typed transports.
     pub breakpoint_id: Option<BreakpointId>,
@@ -525,7 +450,10 @@ pub enum StreamingApiError {
         /// Number of skipped frames reported by the event-log stream.
         skipped: u64,
     },
-    /// The subscriber fell behind the bounded state-update tail.
+    /// A legacy peer reported state-update lag instead of coalescing it.
+    ///
+    /// Current in-process and RPC receivers retain this variant for wire and
+    /// source compatibility but recover to their newest available state.
     #[error("streaming state-update subscriber lagged by {skipped} frames")]
     StateUpdateStreamLagged {
         /// Number of skipped frames reported by the state-transition stream.
@@ -659,7 +587,7 @@ impl InProcessStreamingSession {
         StreamingApiError,
     > {
         self.validate_session(request.session, request.expected_epoch)?;
-        let state_updates = self.state_transitions.subscribe();
+        let mut state_updates = self.state_transitions.subscribe();
         let (attach_tail, events) = self.event_log.subscribe_with_replay_tail(request.from);
         let reproduction = self
             .reproduction_log
@@ -673,6 +601,7 @@ impl InProcessStreamingSession {
             reproduction,
         );
         let live = self.live.read();
+        state_updates.set_sequence_floor(live.state_transition_sequence);
         Ok((
             Attached {
                 session: self.session,
@@ -746,10 +675,13 @@ impl ControlStream {
 
     /// Receives the next live run-state update.
     ///
+    /// Superseded updates may be coalesced when the subscriber falls behind the
+    /// bounded state-update tail. The returned sequence remains monotone.
+    ///
     /// # Errors
     ///
-    /// Returns [`StreamingApiError::StateUpdateStreamLagged`] if the subscriber
-    /// falls behind the bounded state-update tail.
+    /// This method currently has no recoverable error condition. Its result
+    /// remains fallible for compatibility with the combined streaming API.
     pub async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
@@ -760,7 +692,8 @@ impl ControlStream {
     ///
     /// # Errors
     ///
-    /// Returns [`StreamingApiError`] if either underlying stream reports lag.
+    /// Returns [`StreamingApiError::EventStreamLagged`] if the canonical event
+    /// subscriber falls behind. Superseded state updates are coalesced.
     pub async fn recv_frame(&mut self) -> Result<Option<StreamingFrame>, StreamingApiError> {
         recv_api_frame(self.session, &mut self.events, &mut self.state_updates).await
     }
@@ -821,10 +754,13 @@ impl WatchStream {
 
     /// Receives the next live run-state update.
     ///
+    /// Superseded updates may be coalesced when the subscriber falls behind the
+    /// bounded state-update tail. The returned sequence remains monotone.
+    ///
     /// # Errors
     ///
-    /// Returns [`StreamingApiError::StateUpdateStreamLagged`] if the subscriber
-    /// falls behind the bounded state-update tail.
+    /// This method currently has no recoverable error condition. Its result
+    /// remains fallible for compatibility with the combined streaming API.
     pub async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
@@ -835,7 +771,8 @@ impl WatchStream {
     ///
     /// # Errors
     ///
-    /// Returns [`StreamingApiError`] if either underlying stream reports lag.
+    /// Returns [`StreamingApiError::EventStreamLagged`] if the canonical event
+    /// subscriber falls behind. Superseded state updates are coalesced.
     pub async fn recv_frame(&mut self) -> Result<Option<StreamingFrame>, StreamingApiError> {
         recv_api_frame(self.session, &mut self.events, &mut self.state_updates).await
     }
@@ -1000,11 +937,16 @@ fn session_error_rejection_kind(error: &SessionError) -> CommandRejectionKind {
         | SessionError::DebugAttachRequired { .. }
         | SessionError::DebugNonCanonicalBranchRequired { .. }
         | SessionError::GuestIntrospectionNotAuthorized { .. }
+        | SessionError::GuestIntrospectionActivation { .. }
+        | SessionError::GuestIntrospectionChannelLimit { .. }
         | SessionError::DebugHistoryUnavailable { .. } => CommandRejectionKind::InvalidState,
         SessionError::BreakpointNotFound { .. } => CommandRejectionKind::NotFound,
         SessionError::BreakpointConditionPrefix { .. } => CommandRejectionKind::InvalidArgument,
         SessionError::UnsupportedBreakpointAction { .. }
-        | SessionError::UnsupportedBreakpointFault { .. } => CommandRejectionKind::Unsupported,
+        | SessionError::UnsupportedBreakpointFault { .. }
+        | SessionError::GuestIntrospectionCapabilityUnavailable { .. } => {
+            CommandRejectionKind::Unsupported
+        }
         SessionError::Engine(error) => engine_error_rejection_kind(error),
         SessionError::Scheduler(error) => scheduler_error_rejection_kind(error),
         SessionError::ChannelClosed
@@ -1076,11 +1018,10 @@ async fn recv_api_state_update(
     session: SessionRef,
     state_updates: &mut SessionStateTransitionStream,
 ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
-    state_updates
-        .recv()
+    Ok(state_updates
+        .recv_latest()
         .await
-        .map(|frame| frame.map(|frame| state_update_frame(session, frame)))
-        .map_err(state_update_stream_error)
+        .map(|frame| state_update_frame(session, frame)))
 }
 
 async fn recv_api_frame(
@@ -1110,14 +1051,6 @@ fn state_update_frame(
     }
 }
 
-fn state_update_stream_error(error: SessionStateTransitionStreamError) -> StreamingApiError {
-    match error {
-        SessionStateTransitionStreamError::Lagged { skipped } => {
-            StreamingApiError::StateUpdateStreamLagged { skipped }
-        }
-    }
-}
-
 async fn dispatch_command(
     session: SessionRef,
     sender: &mpsc::Sender<SessionCommand>,
@@ -1126,9 +1059,10 @@ async fn dispatch_command(
     command_id: u64,
     command: SessionCommand,
 ) -> Result<SendResponse, StreamingApiError> {
-    let before = live.read().state_kind;
+    let before = live.read();
+    let before_state = before.state_kind;
     let command_kind = SessionCommandKind::from(&command);
-    let transition = lifecycle_transition(lifecycle_state(before), command_kind);
+    let transition = lifecycle_transition(lifecycle_state(before_state), command_kind);
     if let LifecycleTransition::Rejected = transition {
         return Ok(SendResponse {
             result: CommandResult {
@@ -1167,11 +1101,18 @@ async fn dispatch_command(
     let state_update = match (transition, result.status) {
         (LifecycleTransition::Accepted { to }, CommandResultStatus::Accepted) => {
             let expected = live_state(to);
-            if expected == before {
+            if expected == before_state {
                 None
             } else {
                 let state = if command_requires_stable_state_ack(command_kind) {
-                    wait_for_streaming_state(live, command_kind, expected, max_actor_yields).await?
+                    wait_for_streaming_state(
+                        live,
+                        command_kind,
+                        expected,
+                        before.state_transition_sequence,
+                        max_actor_yields,
+                    )
+                    .await?
                 } else {
                     expected
                 };
@@ -1181,7 +1122,6 @@ async fn dispatch_command(
         (LifecycleTransition::Rejected, _) => None,
         (_, CommandResultStatus::Rejected { .. }) => None,
     };
-
     Ok(SendResponse {
         result,
         state_update,
@@ -1195,17 +1135,18 @@ async fn wait_for_streaming_state(
     live: &LiveSnapshot,
     command: SessionCommandKind,
     expected: LiveStateKind,
+    before_transition_sequence: u64,
     max_actor_yields: u64,
 ) -> Result<LiveStateKind, StreamingApiError> {
-    let observed = live.read().state_kind;
-    if streaming_state_satisfies_ack(command, expected, observed) {
-        return Ok(observed);
+    let observed = live.read();
+    if streaming_state_satisfies_ack(command, expected, &observed, before_transition_sequence) {
+        return Ok(observed.state_kind);
     }
     for _ in 0..max_actor_yields {
         tokio::task::yield_now().await;
-        let observed = live.read().state_kind;
-        if streaming_state_satisfies_ack(command, expected, observed) {
-            return Ok(observed);
+        let observed = live.read();
+        if streaming_state_satisfies_ack(command, expected, &observed, before_transition_sequence) {
+            return Ok(observed.state_kind);
         }
     }
     Err(StreamingApiError::StateDidNotAdvance { command, expected })
@@ -1214,17 +1155,18 @@ async fn wait_for_streaming_state(
 fn streaming_state_satisfies_ack(
     command: SessionCommandKind,
     expected: LiveStateKind,
-    observed: LiveStateKind,
+    observed: &LiveSnapshotView,
+    before_transition_sequence: u64,
 ) -> bool {
-    observed == expected
-        || matches!(
-            (command, expected, observed),
+    observed.state_kind == expected
+        || (matches!(
+            (command, expected, observed.state_kind),
             (
                 SessionCommandKind::Continue,
                 LiveStateKind::Running,
-                LiveStateKind::Stopped
+                LiveStateKind::Paused | LiveStateKind::Stopped
             )
-        )
+        ) && observed.state_transition_sequence > before_transition_sequence)
 }
 
 const fn command_requires_stable_state_ack(command: SessionCommandKind) -> bool {
@@ -1295,5 +1237,38 @@ fn require_send_mapping() -> Result<(), StreamingEquivalenceError> {
         None => Err(StreamingEquivalenceError::MissingMethod {
             method: ApiMethod::Send,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn continue_acknowledges_an_immediate_breakpoint_pause() {
+        let mut observed = LiveSnapshotView {
+            state_kind: LiveStateKind::Paused,
+            outcome: None,
+            terminal_savepoint: None,
+            configuration: crucible::ContentHash::default(),
+            virtual_time: crucible::VirtualTime::default(),
+            event_log_len: 0,
+            quanta_stepped: 0,
+            control_acknowledgements: 0,
+            state_transition_sequence: 7,
+        };
+        assert!(!streaming_state_satisfies_ack(
+            SessionCommandKind::Continue,
+            LiveStateKind::Running,
+            &observed,
+            7,
+        ));
+        observed.state_transition_sequence = 9;
+        assert!(streaming_state_satisfies_ack(
+            SessionCommandKind::Continue,
+            LiveStateKind::Running,
+            &observed,
+            7,
+        ));
     }
 }

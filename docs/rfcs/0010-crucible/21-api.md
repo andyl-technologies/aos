@@ -201,8 +201,12 @@ command set; none invents control semantics ([API-2]).
   (because a run-state transition is not itself an event-log entry — 20 §2 — a
   `Watch`-only client could not otherwise observe it). Events *caused* by the
   command MUST flow through the per-session broadcast and be visible to `Watch`
-  ([SESS-24], [OBS-31]). *Gate:* `gate:control-responsive`. *Spec:* §21.2; cross-ref
-  20 §9, 19 §19.6.5.
+  ([SESS-24], [OBS-31]). An accepted lifecycle-owned `Stop` MUST remove and join
+  the actor, preserve its exact terminal snapshot in the `SendResponse` query
+  payload, and leave the registry entry absent before the caller receives the
+  response. A rejected `Stop` MUST return no terminal snapshot and MUST leave the
+  session registered. *Gate:* `gate:control-responsive`,
+  `gate:abi-conformance`. *Spec:* §21.2; cross-ref 20 §9, 19 §19.6.5.
 
 - **[API-10]** `Watch` and `Send` MUST together be capability-equivalent to the
   `Control` bidi stream for any single client: a client that opens `Watch` (to
@@ -658,10 +662,13 @@ ran in-process against the double or over the wire against QEMU.
   `crucible-api::streaming` defines shared attach metadata, `ControlStream`,
   `WatchStream`, unary `SendRequest`/`SendResponse`, typed `CommandResult`, and
   optional `StateUpdate`. `ControlClient`/`RpcControlClient` expose transport
-  paths for `Control` attach/send, `Watch` attach, and unary `Send`; all command
-  paths advertise the same command capability set from the thin API mapping
-  table, dispatch accepted commands through the same session actor mailbox
-  helper, use the session lifecycle transition model for invalid-state command
+  paths for `Control` attach/send, `Watch` attach, and unary `Send`; accepted
+  lifecycle stops preserve the joined actor's exact terminal snapshot in the
+  response after registry cleanup, while rejected stops retain the session and
+  return no snapshot; all command paths advertise the same command capability
+  set from the thin API mapping table, dispatch accepted commands through the
+  same session actor mailbox helper, use the session lifecycle transition model
+  for invalid-state command
   results, and now share monotonic live `StateUpdate` streaming via T-API-7.
 - [x] **T-API-5** Implement the open-set payload model (dotted `kind` + typed
   attribute map) for commands/events/faults/breakpoints, reusing the event-log
@@ -699,14 +706,20 @@ ran in-process against the double or over the wire against QEMU.
   `crucible-api::streaming` now subscribes each `Control`/`Watch` attach to the
   session actor's state-transition bus, exposes monotone
   `StreamingStateUpdateFrame` delivery separately from event-log frames, and
-  maps state-transition lag to a distinct streaming error. The RPC client reads
-  one framed stream and demultiplexes event and state-update frames on demand so
-  a state-only receiver cannot be starved behind undrained event frames. The
+  recovers a lagged state observer at the retained monotone tail because a newer
+  state supersedes every skipped state. The lock-free live snapshot carries the
+  actor's matching transition sequence, and attach installs it as the stream
+  floor so a queued pre-snapshot transition cannot regress `Attached.state`.
+  The RPC client reads one framed stream,
+  demultiplexes event and state-update frames on demand, and coalesces pending
+  states to the highest sequence so a state-only receiver cannot be starved
+  behind undrained event frames. Event-frame overflow remains a fail-closed lag
+  error because canonical evidence is not supersedable. The
   HTTP/2 gate emits framed `state-update-frame` messages beside event frames.
   The state-update gate proves a Watch-only client advances Loaded -> Paused ->
   Running -> Paused -> Stopped from `SendResponse` plus `StateUpdate` frames,
-  verifies monotone state-update sequence numbers, and asserts those updates do
-  not appear as event-log frames.
+  verifies monotone state-update sequence numbers and lag recovery, and asserts
+  those updates do not appear as event-log frames.
 - [x] **T-API-8** Implement epoch guards: server-monotonic `session_epoch` on
   `SessionRef`, `expected_epoch` on attach/lifecycle/command RPCs, fast-fail with
   FailedPrecondition / SessionClosed(EPOCH_MISMATCH) on a recycled id; prove the

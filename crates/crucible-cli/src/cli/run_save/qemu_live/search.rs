@@ -441,7 +441,7 @@ async fn qemu_search_realize(
                     )
             },
             "bounded live QEMU search step",
-            RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+            Duration::from_millis(RUN_INTERACTIVE_ACK_QUANTA_BOUND),
         )
         .await
         {

@@ -683,6 +683,7 @@ pub(super) fn spawn_save_recording_lifecycle_server() -> Result<String, Box<dyn 
                     SaveRecordingLifecycleLoop::new(SaveRecordingSources::from_scenario_form(
                         scenario_form,
                     ))
+                    .with_selector_delay_quanta(2)
                 },
             );
             let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
@@ -1008,6 +1009,27 @@ pub(super) fn write_savepoint_handle_fixture(
     );
     artifact_line(&mut text, &["frontier", &frontier_ticks.to_string()]);
     artifact_line(&mut text, &["at", "quiescence"]);
+    artifact_line(&mut text, &["selector", "none"]);
+    artifact_line(
+        &mut text,
+        &[
+            "boundary-proof",
+            "breakpoint",
+            "1",
+            "suspend",
+            &frontier_ticks.to_string(),
+            &schedule.len().to_string(),
+        ],
+    );
+    let boundary_predicate = crucible::Predicate::quiescent().to_compact_binary();
+    artifact_line(
+        &mut text,
+        &[
+            "boundary-predicate",
+            &content_address_bytes(&boundary_predicate),
+            &hex_bytes(&boundary_predicate),
+        ],
+    );
     artifact_line(&mut text, &["terminal-condition", "quiescence"]);
     artifact_line(&mut text, &["materialization", "create-savepoint", "reply"]);
     artifact_line(&mut text, &["oracle", "fat==thin-passed"]);
@@ -1513,7 +1535,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "save_on",
                 "watch",
             ][..],
-            "about=Run a scenario to completion (local or via a daemon)\nusage=Usage: crucible run [OPTIONS] <SCENARIO>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nuntil=Terminal condition. Default: quiescence\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\nmax_quanta=Stop with Timeout past this many scheduler quanta\ninteractive=Pause at genesis and drive the session interactively\nsave_on=Materialize a savepoint at the outcome. Default: never\nwatch=Stream the live status line (20 §9) alongside the trace\n",
+            "about=Run a scenario to completion (local or via a daemon)\nusage=Usage: crucible run [OPTIONS] <SCENARIO>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nuntil=Terminal condition. Default: quiescence\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\nmax_quanta=Stop with Timeout at this scheduler-quantum boundary\ninteractive=Pause at genesis and drive the session interactively\nsave_on=Materialize a savepoint at the outcome. Default: never\nwatch=Stream the live status line (20 §9) alongside the trace\n",
         ),
         (
             "verify",
@@ -1599,6 +1621,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "listen",
                 "max_sessions",
                 "production_qemu",
+                "qemu_rendezvous_icount",
                 "read_only",
                 "tls_cert",
                 "tls_key",
@@ -1606,7 +1629,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "trusted_unauthenticated_bind",
                 "debug_role",
             ][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\n",
+            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\n",
         ),
         (
             "debug",
@@ -1623,8 +1646,9 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "allow_mutate",
                 "checkpoint_stride",
                 "record_transcript",
+                "guest_idle_timeout",
             ][..],
-            "about=Open the time-travel debugger\nusage=Usage: crucible debug [OPTIONS] <ARTIFACT|SAVEPOINT|--session <ADDR>> [COMMAND]\ntarget=Attach to this artifact or savepoint\nsession=Attach to a running session\nat=Open at a virtual-time or node-icount coordinate\nat_event=Open at this event-log sequence\nat_failure=Open at the recorded failure point\nat_checkpoint=Open at this checkpoint content address\nnode=Attach this node's gdbstub\ngdb_listen=Listen for gdb-protocol clients here\nread_only=Keep the canonical run read-only\nallow_mutate=Authorize an explicit non-canonical debug fork\ncheckpoint_stride=Bound reverse-step replay distance\nrecord_transcript=Record the non-canonical guest channel to a new transcript file\ncommand.attach-gdb=Open the mediated gdbstub channel\ncommand.fork-debug=Explicitly fork a non-canonical whole-world debug branch\ncommand.goto=Move to another debug coordinate\ncommand.reverse-step=Step backward by one deterministic grain\ncommand.reverse-continue=Continue backward to a matching condition\ncommand.exec=Execute an argv-based command through the guest debug agent\ncommand.pty=Open an interactive command on a guest PTY\ncommand.ssh=Bridge stdin/stdout to the guest agent's configured SSH server\n",
+            "about=Open the time-travel debugger\nusage=Usage: crucible debug [OPTIONS] <ARTIFACT|SAVEPOINT|--session <SESSION>> [COMMAND]\ntarget=Attach to this artifact or savepoint\nsession=Attach to a running daemon session by id:epoch:64-lowercase-hex-seed\nat=Open at a virtual-time or node-icount coordinate\nat_event=Open at this event-log sequence\nat_failure=Open at the recorded failure point\nat_checkpoint=Open at this checkpoint content address\nnode=Attach this node's gdbstub\ngdb_listen=Listen for gdb-protocol clients here\nread_only=Keep the canonical run read-only\nallow_mutate=Authorize an explicit non-canonical debug fork\ncheckpoint_stride=Bound reverse-step replay distance\nrecord_transcript=Record the non-canonical guest channel to a new transcript file\nguest_idle_timeout=Fail when the guest agent produces no response for this duration\ncommand.attach-gdb=Open the mediated gdbstub channel\ncommand.fork-debug=Explicitly fork a non-canonical whole-world debug branch\ncommand.goto=Move to another debug coordinate\ncommand.reverse-step=Step backward by one deterministic grain\ncommand.reverse-continue=Continue backward to a matching condition\ncommand.exec=Execute an argv-based command through the guest debug agent\ncommand.pty=Open an interactive command on a guest PTY\ncommand.ssh=Bridge stdin/stdout to the guest agent's configured SSH server\n",
         ),
     ];
 
@@ -1768,8 +1792,38 @@ pub(super) fn cli_parser_enforces_every_normatively_required_input() {
     assert!(Cli::try_parse_from(["crucible", "verify", "--compare", "left", "right"]).is_ok());
     assert!(Cli::try_parse_from(["crucible", "fuzz", "family.toml"]).is_ok());
     assert!(Cli::try_parse_from(["crucible", "fuzz", "--family", "blake3:family"]).is_ok());
-    assert!(Cli::try_parse_from(["crucible", "debug", "--session", "127.0.0.1:9000"]).is_ok());
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "--daemon",
+            "127.0.0.1:9000",
+            "debug",
+            "--session",
+            "7:12:1111111111111111111111111111111111111111111111111111111111111111",
+        ])
+        .is_ok()
+    );
     assert!(Cli::try_parse_from(["crucible", "serve", "--listen", "127.0.0.1:9000"]).is_ok());
+}
+
+#[test]
+pub(super) fn cli_parser_requires_daemon_for_remote_transport_options() {
+    for option in ["--daemon-ca", "--daemon-cert", "--daemon-key"] {
+        let error = Cli::try_parse_from(["crucible", option, "credential.pem", "run", "case.toml"])
+            .expect_err("daemon credential without --daemon must be rejected");
+        assert_eq!(cli_parse_error_exit_code(&error), 64);
+        assert!(error.to_string().contains("--daemon"));
+    }
+
+    let error = Cli::try_parse_from([
+        "crucible",
+        "--trusted-unauthenticated-daemon",
+        "run",
+        "case.toml",
+    ])
+    .expect_err("daemon trust override without --daemon must be rejected");
+    assert_eq!(cli_parse_error_exit_code(&error), 64);
+    assert!(error.to_string().contains("--daemon"));
 }
 
 #[test]
@@ -2149,104 +2203,6 @@ pub(super) fn cli_thin_wrapper_rejects_canonical_state_or_extra_control_capabili
 }
 
 #[test]
-pub(super) fn cli_qemu_debug_executes_live_admission_before_delegating()
--> Result<(), Box<dyn Error>> {
-    struct StaticProbe(LiveQemuProbeEvidence);
-
-    impl LiveQemuProbeRunner for StaticProbe {
-        fn run_probe(
-            &mut self,
-            _backend: &ResolvedLocalBackend,
-        ) -> Result<LiveQemuProbeEvidence, CliError> {
-            Ok(self.0.clone())
-        }
-    }
-
-    let backend = ResolvedLocalBackend::Qemu {
-        qemu: PathBuf::from("/test/qemu"),
-        plugin: PathBuf::from("/test/plugin"),
-        qemu_build_id: String::from("test-build"),
-        qemu_patch_series_hash: String::from("test-patches"),
-        plugin_abi: String::from("test-plugin-abi"),
-        shmem_abi_version: String::from("test-shmem-abi"),
-        qemu_source: QemuDiscoverySource::Flag,
-        plugin_source: QemuDiscoverySource::Flag,
-    };
-    let cli = Cli::parse_from([
-        "crucible",
-        "--backend",
-        "qemu",
-        "debug",
-        "--session",
-        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    ]);
-    let Commands::Debug(args) = &cli.command else {
-        panic!("debug command should parse");
-    };
-    let plan = plan_debug_invocation(&cli, args)?;
-    let mut probe = StaticProbe(LiveQemuProbeEvidence {
-        qemu_build_id: String::from("test-build"),
-        plugin_abi: String::from("test-plugin-abi"),
-        completed_icount: 42,
-        execution_fingerprint: String::from("blake3:test-fingerprint"),
-    });
-    let lines = run_local_qemu_debug_workflow_with_probe(&backend, &plan, &mut probe)?;
-    assert!(lines[0].contains("operation=debug-admission"));
-    assert!(lines[0].contains("icount=42"));
-    assert!(lines[1].contains("target=session:7:12:"));
-    assert!(lines[1].contains("execution=planned-only"));
-    assert!(lines[1].contains("requested_operation=attach-gdb"));
-    assert!(lines[1].contains("coordinate=current"));
-    assert!(lines[1].contains("node=auto"));
-    assert!(lines[1].contains("read_only=true"));
-    assert!(lines[1].contains("raw_gdb_single_step=false"));
-    Ok(())
-}
-
-#[test]
-pub(super) fn cli_qemu_debug_rejects_missing_artifact_before_live_probe()
--> Result<(), Box<dyn Error>> {
-    struct ForbiddenProbe;
-
-    impl LiveQemuProbeRunner for ForbiddenProbe {
-        fn run_probe(
-            &mut self,
-            _backend: &ResolvedLocalBackend,
-        ) -> Result<LiveQemuProbeEvidence, CliError> {
-            panic!("artifact validation must precede the live QEMU probe");
-        }
-    }
-
-    let backend = ResolvedLocalBackend::Qemu {
-        qemu: PathBuf::from("/test/qemu"),
-        plugin: PathBuf::from("/test/plugin"),
-        qemu_build_id: String::from("test-build"),
-        qemu_patch_series_hash: String::from("test-patches"),
-        plugin_abi: String::from("test-plugin-abi"),
-        shmem_abi_version: String::from("test-shmem-abi"),
-        qemu_source: QemuDiscoverySource::Flag,
-        plugin_source: QemuDiscoverySource::Flag,
-    };
-    let missing = TempDir::new()?.path().join("missing.crucible");
-    let cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--backend"),
-        String::from("qemu"),
-        String::from("debug"),
-        missing.display().to_string(),
-    ]);
-    let Commands::Debug(args) = &cli.command else {
-        panic!("debug command should parse");
-    };
-    let plan = plan_debug_invocation(&cli, args)?;
-    let error = run_local_qemu_debug_workflow_with_probe(&backend, &plan, &mut ForbiddenProbe)
-        .expect_err("a missing artifact must fail before live probing");
-
-    assert!(matches!(error, CliError::Artifact(_)));
-    Ok(())
-}
-
-#[test]
 pub(super) fn cli_hermetic_qemu_discovery_prefers_flags_then_env_then_aos_package_set()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
@@ -2620,10 +2576,32 @@ pub(super) fn cli_save_workflow_plans_quiescence_and_virtual_time_savepoints()
     assert_eq!(plan.at, SaveAtArg::Quiescence);
     assert_eq!(plan.label, "release-candidate");
     assert_eq!(plan.output, SaveOutputTarget::Explicit(out));
-    assert_eq!(plan.run_plan.save_policy, RunSavePolicy::Always);
+    assert_eq!(plan.run_plan.save_policy, RunSavePolicy::Never);
     assert_eq!(
         plan.run_plan.terminal_condition,
         RunTerminalCondition::Quiescence
+    );
+
+    let quiescence_with_time = Cli::parse_from([
+        String::from("crucible"),
+        String::from("save"),
+        scenario.display().to_string(),
+        String::from("--at"),
+        String::from("quiescence"),
+        String::from("--max-virtual-time"),
+        String::from("2ticks"),
+    ]);
+    let Commands::Save(args) = &quiescence_with_time.command else {
+        panic!("expected save command");
+    };
+    let error = plan_save_invocation(args, temp.path(), temp.path())
+        .expect_err("quiescence save must reject a virtual-time coordinate");
+    assert!(matches!(error, CliError::Usage(_)));
+    assert_eq!(error.exit_code(), 64);
+    assert!(
+        error
+            .to_string()
+            .contains("does not accept --max-virtual-time")
     );
 
     let virtual_time = Cli::parse_from([
@@ -2765,3 +2743,5 @@ pub(super) fn cli_save_workflow_plans_quiescence_and_virtual_time_savepoints()
 }
 #[path = "surface/backend_selection.rs"]
 mod backend_selection;
+#[path = "surface/debug_execution.rs"]
+mod debug_execution;

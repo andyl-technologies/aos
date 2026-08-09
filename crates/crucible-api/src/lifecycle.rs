@@ -45,6 +45,45 @@ pub const LIFECYCLE_SESSION_MAILBOX_CAPACITY: usize = 16;
 /// Default actor-yield budget for lifecycle startup commands.
 pub const LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS: u64 = 128;
 
+#[path = "lifecycle/debug_dispatch.rs"]
+mod debug_dispatch;
+
+/// Operator-visible evidence for the exact live runtime boundary selected by a debugger reposition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DebugLandedRuntimeCoordinate {
+    /// Coordinate selector resolved by the session actor.
+    pub requested_coordinate: String,
+    /// Content address of the landed configuration.
+    pub configuration: String,
+    /// Content address of the production-bound runtime state.
+    pub runtime_state: String,
+    /// Scheduler virtual time at the landed boundary.
+    pub virtual_time_ticks: u64,
+    /// Number of schedule decisions in the landed prefix.
+    pub schedule_prefix_len: usize,
+    /// Content address of the landed event-log prefix.
+    pub event_log_prefix: String,
+    /// Byte offset of the landed event-log cursor.
+    pub event_log_bytes: u64,
+    /// Event count of the landed event-log cursor.
+    pub event_log_events: u64,
+    /// Per-node retired instruction counters at the landed boundary.
+    pub node_icounts: BTreeMap<String, u64>,
+    /// Gateway generation committed for the selected production backend.
+    pub gateway_generation: u64,
+    /// Stable description of the retired world's observed cleanup state.
+    pub retired_world_cleanup: String,
+}
+
+/// Result returned to a remote debugger after a live reposition operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DebugRepositionResult {
+    /// Exact production-bound runtime coordinate reached by the operation.
+    pub landed: DebugLandedRuntimeCoordinate,
+    /// Matched event sequence for reverse operations, when applicable.
+    pub target_event_sequence: Option<u64>,
+}
+
 /// Authorized actor dispatch handle captured without retaining the global registry lock.
 #[derive(Clone)]
 pub struct GuestIntrospectionDispatch {
@@ -57,217 +96,6 @@ pub struct GuestIntrospectionDispatch {
 pub struct DebugRepositionDispatch {
     sender: mpsc::Sender<SessionCommand>,
     session_id: SessionId,
-}
-
-impl DebugRepositionDispatch {
-    async fn current_configuration(&self) -> Result<Configuration, LifecycleApiError> {
-        let (reply, receiver) = CommandReply::channel();
-        self.sender
-            .send(SessionCommand::Query {
-                kind: QueryKind::Snapshot,
-                reply,
-            })
-            .await
-            .map_err(|_| LifecycleApiError::CommandChannelClosed {
-                session_id: self.session_id,
-            })?;
-        let result = receiver
-            .await
-            .map_err(|error| LifecycleApiError::ActorFailed {
-                message: format!("debug reposition snapshot reply closed: {error}"),
-            })?
-            .map_err(session_command_rejection)?;
-        match result {
-            QueryResult::Snapshot(snapshot) => Ok(snapshot.configuration),
-            _ => Err(LifecycleApiError::ActorFailed {
-                message: String::from(
-                    "debug reposition snapshot query returned an unexpected result",
-                ),
-            }),
-        }
-    }
-
-    /// Moves the attached debugger to `target` through actor-owned restore and replay.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when actor communication, target resolution,
-    /// replay validation, or live-runtime replacement fails.
-    pub async fn goto(
-        &self,
-        target: crucible::DebugCoordinate,
-    ) -> Result<crucible::DebugGotoReport, LifecycleApiError> {
-        let current = self.current_configuration().await?;
-        let (reply, receiver) = CommandReply::channel();
-        self.sender
-            .send(SessionCommand::DebugGoto {
-                request: crucible::DebugGotoRequest::new(current, target),
-                reply,
-            })
-            .await
-            .map_err(|_| LifecycleApiError::CommandChannelClosed {
-                session_id: self.session_id,
-            })?;
-        receiver
-            .await
-            .map_err(|error| LifecycleApiError::ActorFailed {
-                message: format!("debug goto reply closed: {error}"),
-            })?
-            .map_err(session_command_rejection)
-    }
-
-    /// Reverse-steps the attached debugger by one scheduler-defined grain.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when actor communication, reverse-target
-    /// resolution, replay validation, or live-runtime replacement fails.
-    pub async fn reverse_step(
-        &self,
-        grain: crucible::DebugReverseStepGrain,
-    ) -> Result<crucible::DebugReverseStepReport, LifecycleApiError> {
-        let current = self.current_configuration().await?;
-        let (reply, receiver) = CommandReply::channel();
-        self.sender
-            .send(SessionCommand::DebugReverseStep {
-                request: crucible::DebugReverseStepRequest::new(current, grain, Vec::new()),
-                reply,
-            })
-            .await
-            .map_err(|_| LifecycleApiError::CommandChannelClosed {
-                session_id: self.session_id,
-            })?;
-        receiver
-            .await
-            .map_err(|error| LifecycleApiError::ActorFailed {
-                message: format!("debug reverse-step reply closed: {error}"),
-            })?
-            .map_err(session_command_rejection)
-    }
-
-    /// Reverse-continues to the latest actor-owned event prefix matching `condition`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when actor communication, condition
-    /// evaluation, replay validation, or live-runtime replacement fails.
-    pub async fn reverse_continue(
-        &self,
-        condition: crucible::Condition,
-    ) -> Result<crucible::DebugReverseContinueReport, LifecycleApiError> {
-        let current = self.current_configuration().await?;
-        let (reply, receiver) = CommandReply::channel();
-        self.sender
-            .send(SessionCommand::DebugReverseContinue {
-                request: crucible::DebugReverseContinueRequest::new(current, condition, Vec::new()),
-                reply,
-            })
-            .await
-            .map_err(|_| LifecycleApiError::CommandChannelClosed {
-                session_id: self.session_id,
-            })?;
-        receiver
-            .await
-            .map_err(|error| LifecycleApiError::ActorFailed {
-                message: format!("debug reverse-continue reply closed: {error}"),
-            })?
-            .map_err(session_command_rejection)
-    }
-}
-
-impl GuestIntrospectionDispatch {
-    /// Exchanges one channel-addressed record with the session actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when the actor is unavailable or rejects
-    /// the fork gate, channel envelope, or backend operation.
-    pub async fn exchange(
-        &self,
-        node: NodeId,
-        channel_id: u64,
-        request: Option<crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
-    ) -> Result<
-        Option<crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
-        LifecycleApiError,
-    > {
-        let (reply, receiver) = CommandReply::channel();
-        self.sender
-            .send(SessionCommand::GuestIntrospection {
-                node,
-                channel_id,
-                request,
-                reply,
-            })
-            .await
-            .map_err(|_| LifecycleApiError::CommandChannelClosed {
-                session_id: self.session_id,
-            })?;
-        receiver
-            .await
-            .map_err(|error| LifecycleApiError::ActorFailed {
-                message: format!("guest-introspection reply closed: {error}"),
-            })?
-            .map_err(session_command_rejection)
-    }
-
-    /// Forks the attached debugger for a guest-introspection action.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when actor communication, attachment, or
-    /// non-canonical branch admission fails.
-    pub async fn fork(
-        &self,
-        node: NodeId,
-    ) -> Result<crucible::DebugNonCanonicalBranchReport, LifecycleApiError> {
-        let (query_reply, query_receiver) = CommandReply::channel();
-        self.sender
-            .send(SessionCommand::Query {
-                kind: QueryKind::Snapshot,
-                reply: query_reply,
-            })
-            .await
-            .map_err(|_| LifecycleApiError::CommandChannelClosed {
-                session_id: self.session_id,
-            })?;
-        let snapshot = query_receiver
-            .await
-            .map_err(|error| LifecycleApiError::ActorFailed {
-                message: format!("debug fork snapshot reply closed: {error}"),
-            })?
-            .map_err(session_command_rejection)?;
-        let QueryResult::Snapshot(snapshot) = snapshot else {
-            return Err(LifecycleApiError::ActorFailed {
-                message: String::from("debug fork snapshot query returned an unexpected result"),
-            });
-        };
-        let request = crucible::DebugNonCanonicalBranchRequest::new(
-            snapshot.configuration.clone(),
-            snapshot.frontier,
-            crucible::DebugNonCanonicalBranchTrigger::GuestIntrospection,
-        )
-        .with_action(crucible::DebugNonCanonicalBranchAction::guest_introspection(node));
-        let (reply, receiver) = CommandReply::channel();
-        self.sender
-            .send(SessionCommand::DebugForkNonCanonical { request, reply })
-            .await
-            .map_err(|_| LifecycleApiError::CommandChannelClosed {
-                session_id: self.session_id,
-            })?;
-        receiver
-            .await
-            .map_err(|error| LifecycleApiError::ActorFailed {
-                message: format!("debug guest fork reply closed: {error}"),
-            })?
-            .map_err(session_command_rejection)
-    }
-}
-
-fn session_command_rejection(error: SessionError) -> LifecycleApiError {
-    LifecycleApiError::SessionCommandRejected {
-        message: error.to_string(),
-    }
 }
 
 /// Minimal delegated quantum loop used by the in-process CLI double.
@@ -387,7 +215,7 @@ impl SessionId {
 }
 
 /// Epoch-guarded reference to a live or recently-absent session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionRef {
     /// Stable session identifier.
     pub id: SessionId,
@@ -1391,7 +1219,11 @@ where
             def: scenario.clone(),
             schedule: request.schedule.clone(),
         };
-        validate_resume_checkpoint_closure(&configuration, &request.checkpoint)?;
+        validate_resume_checkpoint_closure(
+            &configuration,
+            &request.checkpoint,
+            ResumeCheckpointValidation::DirectLoad,
+        )?;
 
         let mut graph = graph_with_baked_genesis(&scenario)?;
         if !configuration.is_genesis() {
@@ -1508,11 +1340,32 @@ where
                 session_id: request.session.id,
             },
         )?;
-        if runtime.sender.send(actor_shutdown_command()).await.is_err() {
+        let (reply, receiver) = CommandReply::channel();
+        let shutdown = SessionCommand::Acknowledge {
+            command: Box::new(SessionCommand::Stop),
+            reply,
+        };
+        if runtime.sender.send(shutdown).await.is_err() {
             join_actor(runtime.actor_task).await?;
             return Err(LifecycleApiError::CommandChannelClosed {
                 session_id: request.session.id,
             });
+        }
+        match receiver.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                runtime.actor_task.abort();
+                let _ = runtime.actor_task.await;
+                return Err(LifecycleApiError::ActorFailed {
+                    message: format!("session shutdown was rejected: {error}"),
+                });
+            }
+            Err(_) => {
+                join_actor(runtime.actor_task).await?;
+                return Err(LifecycleApiError::CommandChannelClosed {
+                    session_id: request.session.id,
+                });
+            }
         }
         join_actor(runtime.actor_task).await?;
         Ok(DestroySessionResponse {
@@ -1919,7 +1772,7 @@ where
         let session = request.session;
         let command_kind = SessionCommandKind::from(&request.command);
         let streaming_session = self.streaming_session(session)?;
-        let response = match streaming_session.send(request).await {
+        let mut response = match streaming_session.send(request).await {
             Ok(response) => response,
             Err(error @ StreamingApiError::CommandChannelClosed { .. }) => {
                 if let Some(runtime) = self.sessions.remove(&session.id)
@@ -1935,7 +1788,8 @@ where
         if command_kind == SessionCommandKind::Stop
             && response.result.status == CommandResultStatus::Accepted
         {
-            self.cleanup_accepted_streaming_stop(session).await?;
+            let report = self.cleanup_accepted_streaming_stop(session).await?;
+            response.query_result = Some(QueryResult::Snapshot(Box::new(report.final_snapshot)));
         }
 
         Ok(response)
@@ -1944,12 +1798,12 @@ where
     async fn cleanup_accepted_streaming_stop(
         &mut self,
         session: SessionRef,
-    ) -> Result<(), ControlClientError> {
-        if let Some(runtime) = self.sessions.remove(&session.id) {
-            let _ = runtime.sender.send(actor_shutdown_command()).await;
-            join_actor(runtime.actor_task).await?;
-        }
-        Ok(())
+    ) -> Result<SessionRunReport, ControlClientError> {
+        let Some(runtime) = self.sessions.remove(&session.id) else {
+            return Err(StreamingApiError::SessionNotFound { session }.into());
+        };
+        let _ = runtime.sender.send(actor_shutdown_command()).await;
+        join_actor(runtime.actor_task).await.map_err(Into::into)
     }
 }
 
@@ -2247,6 +2101,7 @@ async fn join_actor(
 fn validate_resume_checkpoint_closure(
     configuration: &Configuration,
     checkpoint: &Checkpoint,
+    validation: ResumeCheckpointValidation,
 ) -> Result<(), LifecycleApiError> {
     let configuration_id = configuration.id();
     if checkpoint.id != configuration_id {
@@ -2276,8 +2131,15 @@ fn validate_resume_checkpoint_closure(
             ),
         });
     }
+    if validation == ResumeCheckpointValidation::DirectLoad
+        && checkpoint.kind != CheckpointKind::Fat
+    {
+        return Err(LifecycleApiError::ResumeCheckpoint {
+            message: String::from("resume checkpoint must contain fat materialized state"),
+        });
+    }
     if configuration.is_genesis() {
-        let expected = Checkpoint::from_recorded_configuration(
+        let baked = Checkpoint::from_recorded_configuration(
             configuration,
             None,
             VirtualTime::default(),
@@ -2286,14 +2148,20 @@ fn validate_resume_checkpoint_closure(
             BTreeMap::new(),
         )
         .map_err(resume_checkpoint_error)?;
-        if checkpoint != &expected {
+        // A direct-load graph has one checkpoint slot per configuration id, so
+        // replacing its baked root with a later runtime-only snapshot would
+        // erase the true zero-time genesis. Thin replay never registers the
+        // supplied material: it may use a nonzero frontier to reconstruct a
+        // deterministic runtime whose causal schedule is still empty.
+        let requires_baked_genesis = validation == ResumeCheckpointValidation::DirectLoad
+            || checkpoint.virtual_time == VirtualTime::default();
+        if requires_baked_genesis && checkpoint != &baked {
             return Err(LifecycleApiError::ResumeCheckpoint {
                 message: String::from(
                     "genesis checkpoint material did not match the baked genesis checkpoint",
                 ),
             });
         }
-        return Ok(());
     }
 
     let parent = if configuration.schedule.is_empty() {
@@ -2333,6 +2201,12 @@ fn validate_resume_checkpoint_closure(
         });
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResumeCheckpointValidation {
+    DirectLoad,
+    ThinReplay,
 }
 
 fn graph_with_baked_genesis(scenario: &ScenarioDef) -> Result<TemporalGraph, LifecycleApiError> {

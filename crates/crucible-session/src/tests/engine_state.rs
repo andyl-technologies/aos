@@ -2,101 +2,8 @@
 
 use super::*;
 
-struct GuestBrokerLoop {
-    responses: VecDeque<GuestIntrospectionRecord>,
-}
-
-impl QuantumLoop for GuestBrokerLoop {
-    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        StubLoop.drive_quantum(request)
-    }
-
-    fn send_guest_introspection(
-        &mut self,
-        _node: NodeId,
-        _record: GuestIntrospectionRecord,
-    ) -> Result<(), SchedulerError> {
-        Ok(())
-    }
-
-    fn receive_guest_introspection(
-        &mut self,
-        _node: NodeId,
-    ) -> Result<Option<GuestIntrospectionRecord>, SchedulerError> {
-        Ok(self.responses.pop_front())
-    }
-}
-
-#[tokio::test]
-async fn guest_response_broker_does_not_lose_other_channel_records() {
-    let scenario = generated_scenario(221);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let response = |channel_id, byte| {
-        GuestIntrospectionRecord::new(
-            channel_id,
-            GuestIntrospectionMessage::Output {
-                stream: crucible_protocol::guest_introspection::GuestOutputStream::Stdout,
-                bytes: vec![byte],
-            },
-        )
-        .unwrap_or_else(|error| panic!("guest response fixture must be valid: {error}"))
-    };
-    let mut engine = Engine::new(
-        config.clone(),
-        graph,
-        GuestBrokerLoop {
-            responses: VecDeque::from([response(2, b'b'), response(1, b'a')]),
-        },
-    )
-    .with_white_box_policies([(node_id("node-a"), WhiteBoxPolicy::Enabled)]);
-    engine
-        .apply_command(SessionCommand::Start)
-        .unwrap_or_else(|error| panic!("engine must start: {error}"));
-    engine.debug_coordinator.forked_non_canonical(config.id());
-
-    let poll = |channel_id, reply| SessionCommand::GuestIntrospection {
-        node: NodeId {
-            name: String::from("node-a"),
-        },
-        channel_id,
-        request: None,
-        reply,
-    };
-    let (first_reply, first_receiver) = CommandReply::channel();
-    engine
-        .apply_command(poll(1, first_reply))
-        .unwrap_or_else(|error| panic!("channel one poll must succeed: {error}"));
-    assert_eq!(receive_reply(first_receiver).await, Some(response(1, b'a')));
-
-    let (second_reply, second_receiver) = CommandReply::channel();
-    engine
-        .apply_command(poll(2, second_reply))
-        .unwrap_or_else(|error| panic!("buffered channel two poll must succeed: {error}"));
-    assert_eq!(
-        receive_reply(second_receiver).await,
-        Some(response(2, b'b'))
-    );
-
-    let node = NodeId {
-        name: String::from("node-a"),
-    };
-    engine.guest_channels.insert((node.clone(), 3));
-    engine.close_guest_channels_for_reposition();
-    engine.debug_coordinator.repositioned_canonical(config.id());
-    let (closed_reply, closed_receiver) = CommandReply::channel();
-    engine
-        .apply_command(poll(3, closed_reply))
-        .unwrap_or_else(|error| panic!("typed reposition closure must remain pollable: {error}"));
-    let closed = receive_reply(closed_receiver).await;
-    assert!(matches!(
-        closed.as_ref().map(GuestIntrospectionRecord::message),
-        Some(GuestIntrospectionMessage::Error {
-            code: GuestIntrospectionFailureCode::ClosedChannel,
-            ..
-        })
-    ));
-}
+#[path = "engine_state/guest_introspection.rs"]
+mod guest_introspection;
 
 #[test]
 fn step_modes_cover_forward_vocabulary_and_reverse_grains() {
@@ -217,6 +124,42 @@ fn engine_step_modes_complete_from_quantum_outcomes() {
     for (seed, mode, quantum_loop) in cases {
         assert_engine_step_completes_after_second_quantum(seed, mode, quantum_loop);
     }
+}
+
+#[test]
+fn duration_step_uses_global_frontier_instead_of_event_timestamp() {
+    let scenario = generated_scenario(225);
+    let configuration = Configuration::genesis(scenario);
+    let target = VirtualTime { ticks: 8 };
+    let event = crucible::test_support::condition_boundary_entry_for_test(
+        0,
+        target,
+        crucible::SchedulerEvaluationBoundaryKind::Quantum,
+    );
+    let outcome = QuantumOutcome {
+        configuration,
+        frontier: VirtualTime { ticks: 4 },
+        advanced_node: None,
+        resolved_events: Vec::new(),
+        decisions: Vec::new(),
+        event_log_entries: vec![event],
+        event_log_segment_bytes: Vec::new(),
+        event_log_segment_text: String::new(),
+        event_log_segment_hash: None,
+        event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 1),
+        scheduler_quiescence: None,
+    };
+    let step = ActiveStep::new(
+        StepMode::Duration(SimDuration { nanos: 8 }),
+        VirtualTime::default(),
+    );
+
+    assert_eq!(step.target_frontier, Some(target));
+    assert!(
+        !step
+            .is_complete(&outcome, 0)
+            .unwrap_or_else(|error| panic!("duration completion should evaluate: {error}"))
+    );
 }
 
 #[test]
@@ -709,11 +652,11 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
     let branch_request = DebugNonCanonicalBranchRequest::new(
         first.clone(),
         engine.frontier(),
-        DebugNonCanonicalBranchTrigger::OperatorContinue,
+        DebugNonCanonicalBranchTrigger::GuestIntrospection,
     )
-    .with_action(DebugNonCanonicalBranchAction::operator_control(
-        DebugOperatorControlKind::Continue,
-    ));
+    .with_action(DebugNonCanonicalBranchAction::guest_introspection(node_id(
+        "node-a",
+    )));
     let (branch_reply, branch_receiver) = CommandReply::channel();
     if let Err(error) = engine.apply_command(SessionCommand::DebugForkNonCanonical {
         request: branch_request,
@@ -723,6 +666,11 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
     }
     let branch = receive_reply(branch_receiver).await;
     assert!(branch.proves_non_canonical_debug_branch());
+    assert!(
+        branch
+            .guest_introspection_features
+            .is_some_and(GuestIntrospectionFeatures::ssh_bridge)
+    );
     assert!(!engine.debug_branch_required());
     let branch_entries = engine.drain_event_log_entries();
     assert_eq!(branch_entries.len(), 1);
@@ -866,7 +814,15 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
 #[tokio::test]
 async fn rejected_debug_runtime_reposition_preserves_session_transaction() {
     let (_root, first, second, graph) = debug_time_travel_fixture();
-    let mut engine = Engine::new(second.clone(), graph, RejectingDebugRepositionLoop);
+    let mut engine = Engine::new(
+        second.clone(),
+        graph,
+        RejectingDebugRepositionLoop {
+            scheduler_run_active: false,
+            acquire_attempts: 0,
+            release_attempts: 0,
+        },
+    );
 
     if let Err(error) = engine.apply_command(SessionCommand::Start) {
         panic!("debug fixture should instantiate: {error}");
@@ -881,6 +837,11 @@ async fn rejected_debug_runtime_reposition_preserves_session_transaction() {
         panic!("attach-gdb should use the loop gdbstub capability: {error}");
     }
     let _attach = receive_reply(attach_receiver).await;
+    let active_guest_channel = (node_id("guest-a"), 41);
+    engine
+        .begin_guest_channel_run()
+        .unwrap_or_else(|error| panic!("guest channel run should start: {error}"));
+    engine.guest_channels.insert(active_guest_channel.clone());
 
     let before_snapshot = engine.snapshot();
     let before_runtime = engine.runtime.clone();
@@ -902,6 +863,11 @@ async fn rejected_debug_runtime_reposition_preserves_session_transaction() {
     assert_eq!(engine.debug_attach, before_attach);
     assert_eq!(engine.graph, before_graph);
     assert!(!engine.debug_branch_required());
+    assert!(engine.guest_channels.contains(&active_guest_channel));
+    assert!(!engine.guest_responses.contains_key(&active_guest_channel));
+    assert!(engine.quantum_loop.scheduler_run_active);
+    assert_eq!(engine.quantum_loop.release_attempts, 1);
+    assert_eq!(engine.quantum_loop.acquire_attempts, 2);
 }
 
 #[tokio::test]
@@ -1114,7 +1080,25 @@ fn actor_debug_history_indexes_each_emitted_decision_prefix() {
     assert_eq!(actor.debug_event_coordinates.get(&1), Some(&first));
     assert_eq!(actor.debug_event_coordinates.get(&2), Some(&second));
     assert_eq!(actor.debug_event_coordinates.get(&3), Some(&second));
-    assert_eq!(actor.debug_current_event_limit(&second), Some(2));
+    assert_eq!(actor.debug_current_event_limit(&second), Some(4));
+}
+
+#[test]
+fn actor_non_advancing_command_preserves_future_coordinate_indexes() {
+    let (_root, _first, second, graph) = debug_time_travel_fixture();
+    let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
+    let (_sender, receiver) = mpsc::channel(4);
+    let mut actor = SessionActor::new(engine, receiver);
+    actor.condition_event_log = vec![test_event_log_entry(0), test_event_log_entry(1)];
+    actor.debug_event_coordinates = BTreeMap::from([(0, second.clone()), (1, second)]);
+    actor.engine.event_log_len = 1;
+
+    actor
+        .append_event_log_entries(&[])
+        .unwrap_or_else(|error| panic!("empty command boundary must preserve history: {error}"));
+
+    assert_eq!(actor.condition_event_log.len(), 2);
+    assert!(actor.debug_event_coordinates.contains_key(&1));
 }
 
 #[tokio::test]
@@ -2895,61 +2879,7 @@ async fn no_entry_breakpoint_after_prior_event_uses_current_boundary() {
     );
 }
 
-#[test]
-fn session_driver_delegates_to_quantum_loop() {
-    let config = Configuration::genesis(ScenarioDef::from_canonical_material(
-        "crucible.test.session.quantum-loop",
-        "scenario=stub",
-    ));
-    let request = QuantumRequest {
-        configuration: config.clone(),
-        control: Vec::new(),
-    };
-    let mut driver = SessionDriver::new(StubLoop);
-
-    let outcome = driver.drive_quantum(request);
-
-    assert_eq!(
-        outcome.as_ref().map(|outcome| &outcome.configuration),
-        Ok(&config)
-    );
-}
-
-#[test]
-fn engine_start_instantiates_runtime_and_pauses() {
-    let scenario = generated_scenario(11);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(config.clone(), graph, StubLoop);
-
-    let snapshot = match engine.apply_command(SessionCommand::Start) {
-        Ok(snapshot) => snapshot,
-        Err(error) => panic!("start should instantiate runtime: {error}"),
-    };
-
-    assert_eq!(
-        snapshot.state,
-        EngineState::Paused {
-            reason: PauseReason::Instantiated
-        }
-    );
-    assert_eq!(
-        engine.runtime().map(|runtime| runtime.configuration),
-        Some(config.id())
-    );
-}
-
-#[test]
-fn session_actor_owns_breakpoint_set_with_runtime_state() {
-    let scenario = generated_scenario(10);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let engine = Engine::new(config, graph, StubLoop);
-    let (_sender, receiver) = mpsc::channel(4);
-    let actor = SessionActor::new(engine, receiver);
-
-    assert!(actor.engine().breakpoints().is_empty());
-    assert_eq!(actor.engine().breakpoints().len(), 0);
-}
 #[path = "engine_state/budget_exhaustion.rs"]
 mod budget_exhaustion;
+#[path = "engine_state/runtime_smoke.rs"]
+mod runtime_smoke;

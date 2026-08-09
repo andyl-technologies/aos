@@ -70,6 +70,13 @@ Use the same store root as the producing command:
 For a portable handoff, prefer the exported savepoint handle or failure
 artifact over a bare checkpoint hash.
 
+### Triage input lacks discovery evidence
+
+`triage` accepts the signed findings ledger emitted by `search` or `fuzz`, not
+a directory of reproduction artifacts and not an individual `.crucible`
+artifact. Rerun the campaign with `--findings-out <path>` when automation needs
+a predictable ledger path, then pass that path to `triage`.
+
 ## Exit `3`: identity, oracle, crash, or server failure
 
 ### Reproduction build identity mismatch

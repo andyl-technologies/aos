@@ -2,6 +2,26 @@
 
 use super::*;
 
+pub(super) const fn production_guest_architecture(
+    architecture: crucible::VmArchitecture,
+) -> ProductionGuestArchitecture {
+    match architecture {
+        crucible::VmArchitecture::X86_64 => ProductionGuestArchitecture::X86_64,
+        crucible::VmArchitecture::Aarch64 => ProductionGuestArchitecture::Aarch64,
+    }
+}
+
+pub(super) fn production_qemu_executable(
+    configured: &Path,
+    architecture: crucible::VmArchitecture,
+) -> PathBuf {
+    let executable_name = match architecture {
+        crucible::VmArchitecture::X86_64 => "qemu-system-x86_64",
+        crucible::VmArchitecture::Aarch64 => "qemu-system-aarch64",
+    };
+    configured.with_file_name(executable_name)
+}
+
 pub(super) const fn production_whitebox_switch(
     policy: crucible::WhiteBoxPolicy,
 ) -> ProductionPluginSwitch {
@@ -205,6 +225,32 @@ mod tests {
         assert_eq!(
             production_whitebox_switch(crucible::WhiteBoxPolicy::Enabled),
             ProductionPluginSwitch::On
+        );
+    }
+
+    #[test]
+    fn production_guest_architecture_follows_the_authored_node_architecture() {
+        assert_eq!(
+            production_guest_architecture(crucible::VmArchitecture::X86_64),
+            ProductionGuestArchitecture::X86_64
+        );
+        assert_eq!(
+            production_guest_architecture(crucible::VmArchitecture::Aarch64),
+            ProductionGuestArchitecture::Aarch64
+        );
+    }
+
+    #[test]
+    fn production_qemu_executable_selects_the_guest_architecture_sibling() {
+        let configured = Path::new("/aos/bin/qemu-system-x86_64");
+
+        assert_eq!(
+            production_qemu_executable(configured, crucible::VmArchitecture::X86_64),
+            Path::new("/aos/bin/qemu-system-x86_64")
+        );
+        assert_eq!(
+            production_qemu_executable(configured, crucible::VmArchitecture::Aarch64),
+            Path::new("/aos/bin/qemu-system-aarch64")
         );
     }
 

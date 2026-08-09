@@ -309,6 +309,8 @@ fn replay_live_qemu_evidence(
     }
     Ok(ReplayLiveQemuProof {
         producer: contract.producer,
+        terminal_status: contract.terminal_status,
+        terminal_outcome: contract.terminal_outcome,
         terminal_configuration: contract.terminal_configuration,
         event_stream_digest: content_address_bytes(expected_events),
         fingerprint_stream_digest: content_address_bytes(expected_fingerprints),
@@ -803,7 +805,7 @@ pub(super) fn replay_bisect_error(
     divergence: &VerifyDivergenceReport,
 ) -> CliError {
     CliError::ReplayCheck(format!(
-        "replay --bisect divergence between `{}` and `{}`: mismatch={}, first_decision={}, first_fingerprint_sample={}, first_instruction={}, node={}, first_diff_byte={}, left_state={}, right_state={}",
+        "replay --bisect divergence between `{}` and `{}`: mismatch={}, first_decision={}, first_fingerprint_sample={}, first_virtual_time={}, first_virtual_time_node={}, first_instruction={}, first_instruction_node={}, first_diff_byte={}, left_state={}, right_state={}",
         left_path.display(),
         bisect.other_path.display(),
         divergence.mismatch.label(),
@@ -815,8 +817,22 @@ pub(super) fn replay_bisect_error(
             .first_different_fingerprint_sample
             .map(|sample| sample.to_string())
             .unwrap_or_else(|| String::from("unknown")),
-        divergence.first_different_instruction,
-        divergence.node.as_deref().unwrap_or("unknown"),
+        divergence
+            .first_different_virtual_time
+            .map(|ticks| ticks.to_string())
+            .unwrap_or_else(|| String::from("unknown")),
+        divergence
+            .first_different_virtual_time_node
+            .as_deref()
+            .unwrap_or("unknown"),
+        divergence
+            .first_different_instruction
+            .map(|instruction| instruction.to_string())
+            .unwrap_or_else(|| String::from("unknown")),
+        divergence
+            .first_different_instruction_node
+            .as_deref()
+            .unwrap_or("unknown"),
         divergence.first_different_byte,
         divergence.left_state_digest,
         divergence.right_state_digest
@@ -838,26 +854,7 @@ pub(super) fn replay_check_mismatch_error(
     ))
 }
 
-pub(super) fn write_failure_reproduction_artifact(
-    cli: &Cli,
-    artifact_bytes: &[u8],
-    failure_slug: &str,
-) -> Result<FailureArtifactReport, CliError> {
-    validate_replayable_reproduction_artifact(cli, artifact_bytes)?;
-    let digest = content_address_bytes(artifact_bytes);
-    fs::create_dir_all(&cli.artifact_dir)?;
-    let file_name = format!(
-        "repro-{}-{}.crucible",
-        sanitize_slug(failure_slug),
-        short_digest(&digest)
-    );
-    let path = cli.artifact_dir.join(file_name);
-    fs::write(&path, artifact_bytes)?;
-    let footer = failure_reproduction_footer(path.clone());
+#[path = "replay/artifact.rs"]
+mod artifact;
 
-    Ok(FailureArtifactReport {
-        path,
-        digest,
-        footer,
-    })
-}
+pub(super) use artifact::*;

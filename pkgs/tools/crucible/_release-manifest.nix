@@ -8,6 +8,7 @@
   pluginPackage ? null,
   debugGatewayPackage ? null,
   gdbPackage ? null,
+  sshPackage ? null,
   qemuSourcePackage ? null,
 }: let
   packages = import ./_packages.nix;
@@ -146,6 +147,12 @@
         license = "GPL-3.0-or-later";
         boundary = "operator-debugger-client";
       };
+      ssh = {
+        package = "openssh";
+        path = componentPath sshPackage;
+        license = "BSD-2-Clause";
+        boundary = "operator-guest-bridge-client";
+      };
       boundaryCrates = {
         packages = ["crucible-protocol" "crucible-shmem"];
         license = "MIT";
@@ -161,7 +168,7 @@
     };
     licensing = {
       aggregate = true;
-      licenses = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later"];
+      licenses = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause"];
       licenseSetScope = "primary-project-components";
       thirdPartyLicenseMetadata = "vendored-source-manifests";
       processBoundary = "unix-socket-control+memfd-shared-memory-data";
@@ -246,6 +253,10 @@
     gdb_path=${manifest.components.gdb.path}
     gdb_license=GPL-3.0-or-later
     gdb_boundary=operator-debugger-client
+    ssh_package=openssh
+    ssh_path=${manifest.components.ssh.path}
+    ssh_license=BSD-2-Clause
+    ssh_boundary=operator-guest-bridge-client
     boundary_crates=crucible-protocol,crucible-shmem
     boundary_crates_license=MIT
     qemu_corresponding_source_package=qemu-crucible-source
@@ -255,7 +266,7 @@
     publication_root_package=crucible
     publication_raw_qemu_allowed=false
     publication_policy=aggregate-direct-reference-pair
-    aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later
+    aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause
     aggregate_license_scope=primary-project-components
     third_party_license_metadata=vendored-source-manifests
     process_boundary=unix-socket-control+memfd-shared-memory-data

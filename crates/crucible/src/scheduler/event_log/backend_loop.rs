@@ -210,12 +210,24 @@ where
         self.loop_impl.apply_control_at_boundary(control)
     }
 
+    fn append_noncanonical_debug_event_log_entries(
+        &mut self,
+        entries: Vec<SchedulerEventLogEntry>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.loop_impl
+            .append_noncanonical_debug_event_log_entries(entries)
+    }
+
     fn open_gdbstub(
         &mut self,
         node: NodeId,
         listen: GdbListen,
     ) -> Result<GdbAttachInfo, SchedulerError> {
         self.backend.open_gdbstub(node, listen).map_err(Into::into)
+    }
+
+    fn activate_debug_guest(&mut self, node: NodeId) -> Result<(), SchedulerError> {
+        self.backend.activate_debug_guest(&node).map_err(Into::into)
     }
 
     fn send_guest_introspection(

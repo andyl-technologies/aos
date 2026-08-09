@@ -15,6 +15,26 @@ use crucible_api::{
     ControlClient, HelloRequest, RPC_PROTOCOL_VERSION, RpcControlClient, RpcEndpoint,
 };
 
+#[test]
+fn cleartext_client_requires_explicit_trust_before_connecting() -> Result<(), Box<dyn Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--daemon",
+            "http://127.0.0.1:1",
+            "run",
+            "builtin:happy-path.scn",
+        ])
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(64));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("--trusted-unauthenticated-daemon"));
+    assert!(stderr.contains("mutual-TLS"));
+    assert!(!stderr.contains("connection"));
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn serve_process_exits_zero_on_sigterm() -> Result<(), Box<dyn Error>> {
     let child = Command::new(env!("CARGO_BIN_EXE_crucible"))
