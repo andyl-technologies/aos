@@ -12,7 +12,7 @@
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
-  liveCaseCount = 34;
+  liveCaseCount = 42;
 
   failures =
     failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
@@ -119,6 +119,13 @@ in
               $(pkg-config --cflags glib-2.0) \
               ${patchedPluginSource}/crucible-register.c \
               -o crucible-register.so \
+              $(pkg-config --libs glib-2.0)
+            "$CC" -shared -fPIC \
+              -I${qemuPackage}/include/qemu \
+              -I${qemuPackage}/include \
+              $(pkg-config --cflags glib-2.0) \
+              ${./phase2-qemu-register-stock-negative.c} \
+              -o crucible-register-stock-negative.so \
               $(pkg-config --libs glib-2.0)
             as --32 ${./phase2-qemu-fault-guest.S} -o fault-guest-x86.o
             ld -m elf_i386 -T ${./phase2-qemu-fault-guest.ld} \
@@ -254,6 +261,14 @@ in
             done
             run_mutation x86_64 impulse rdi 1 after true
             run_mutation x86_64 reject-invalid cr3 5 before
+            run_mutation x86_64 reject-reserved cr0 5 before
+            run_mutation x86_64 reject-read-only cr0 5 before
+            run_mutation x86_64 reject-out-of-range cr2 5 before
+            run_mutation x86_64 reject-mismatched-register-identity rdi 1 before
+            run_mutation x86_64 reject-unknown-register-identity cr2 5 before
+            run_mutation x86_64 reject-architecture-identity cr2 5 before
+            run_mutation x86_64 reject-vcpu cr2 5 before
+            run_mutation x86_64 reject-precondition cr2 5 before
 
             set +e
             timeout 5 ${qemuPackage}/bin/qemu-system-x86_64 \
@@ -299,13 +314,16 @@ in
               -serial none \
               -monitor none \
               -kernel fault-guest-x86.elf \
-              -plugin "$PWD/crucible-register.so,architecture=2,mode=impulse,register=rdi,phase=before" \
+              -plugin "$PWD/crucible-register-stock-negative.so" \
               > logs/stock-mutation.log 2>&1
             stock_status=$?
             set -e
             cat logs/stock-mutation.log
             test "$stock_status" -ne 0
             test "$stock_status" -ne 124
+            grep -Fq \
+              'undefined symbol: qemu_plugin_crucible_fault_submit' \
+              logs/stock-mutation.log
             ! grep -q CRUCIBLE_REGISTER_MUTATION_LIVE_PASS \
               logs/stock-mutation.log
           '';
@@ -334,6 +352,7 @@ in
               echo live_x86_64_impulse_groups=1,2,3,4,5,6,7,8,9
               echo live_x86_64_persistent_guest_read_write=true
               echo live_x86_64_invalid_transition_rejected=true
+              echo live_x86_64_rejection_matrix=reserved,read-only,out-of-range,mismatched-register-identity,unknown-register-identity,architecture-identity,vcpu,precondition
               echo live_aarch64_impulse_groups=1,2,3,8,9
               echo live_aarch64_persistent_guest_read_write=true
               echo live_before_instruction=true
