@@ -24378,9 +24378,9 @@ impl RpcService {
     ///
     /// Returns [`RpcError::NotFound`] for an unknown slug,
     /// [`RpcError::PermissionDenied`] when the caller cannot read the registry,
-    /// [`RpcError::FailedPrecondition`] when the registry has no indexed HEAD
-    /// yet, [`RpcError::InvalidArgument`] for a malformed `page_token`, and
-    /// [`RpcError::Internal`] on database or surface-read failure.
+    /// [`RpcError::InvalidArgument`] for a malformed `page_token`, and
+    /// [`RpcError::Internal`] on database or surface-read failure. A registry
+    /// without an indexed HEAD returns an empty log.
     pub async fn git_log(
         &self,
         auth: Option<&str>,
@@ -24388,7 +24388,19 @@ impl RpcService {
     ) -> Result<pb::GitLogResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.slug).await?;
         self.require_read(auth, &registry).await?;
-        let head = self.head_commit(&registry).await?;
+        let Some(head) = self
+            .db
+            .index_status(registry.id)
+            .await
+            .map_err(RpcError::internal)?
+            .and_then(|status| status.last_indexed_commit)
+        else {
+            return Ok(pb::GitLogResponse {
+                commits: Vec::new(),
+                next_page_token: String::new(),
+            });
+        };
+        let head = Oid::from_hex(&head).map_err(|error| RpcError::invalid(format!("{error:#}")))?;
         let fetch = crate::placement_read::TopologySurfaceFetch::for_verified_git_objects(
             Arc::clone(&self.db),
             Arc::clone(&self.surface),
@@ -33916,6 +33928,30 @@ mod cache_upload_tests {
         assert_eq!(organization.scope_key, "org:defaults");
         assert!(organization.resource_version.is_empty());
         assert!(organization.storage_binding_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn git_log_is_empty_before_the_first_indexed_commit() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("empty-log", "Empty log").await.unwrap();
+        db.create_managed_registry(org_id, "", "packages", "public", &[], false)
+            .await
+            .unwrap();
+
+        let response = service
+            .git_log(
+                None,
+                pb::GitLogRequest {
+                    slug: "empty-log/packages".into(),
+                    page_size: 100,
+                    page_token: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(response.commits.is_empty());
+        assert!(response.next_page_token.is_empty());
     }
 
     #[tokio::test]
