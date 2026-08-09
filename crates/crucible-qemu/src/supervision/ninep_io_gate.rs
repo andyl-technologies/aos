@@ -347,14 +347,16 @@ fn run_one_scenario(
 
     let qmp_config = QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
         .map_err(|source| QemuLive9pIoGateError::LaunchCommand { source })?;
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
+    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fault_target_node(GATE_NODE);
     // QMP connects after the no-wake priming quantum releases the plugin boot
     // barrier and lets the guest park between quanta with the BQL released.
-    let command = QemuLaunchCommandBuilder::new(
+    let command = QemuLaunchCommandBuilder::new_for_live_gate(
         profile,
         vm_launch_config(config),
         path_text(&config.qemu_executable),
         plugin,
+        crate::LivePluginGuestArchitecture::X86_64,
     )
     .with_qmp(qmp_config.clone())
     .build()

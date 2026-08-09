@@ -15,6 +15,9 @@ use crucible_qemu::{
     QemuLaunchPluginConfig, QemuVmLaunchConfig,
 };
 
+#[path = "support/mod.rs"]
+mod support;
+
 fn default_profile() -> DeterministicLaunchProfile {
     DeterministicLaunchProfile::conservative_default()
         .unwrap_or_else(|error| panic!("default deterministic launch profile failed: {error}"))
@@ -25,6 +28,7 @@ fn default_plugin_config() -> QemuLaunchPluginConfig {
         "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
         0,
     )
+    .with_fault_target_node("vm-a")
 }
 
 fn default_vm_config() -> QemuVmLaunchConfig {
@@ -58,6 +62,7 @@ fn debug_gdbstub_is_fourth_out_of_band_launch_channel() {
         default_vm_config(),
         default_qemu_binary(),
         default_plugin_config(),
+        support::x86_fault_requirement("vm-a", "qemu64-x86_64-cpu"),
     )
     .with_gdbstub(gdbstub.clone())
     .build()

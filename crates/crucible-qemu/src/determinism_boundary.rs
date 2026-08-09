@@ -1511,10 +1511,11 @@ mod tests {
     }
 
     fn sim_on_observation(profile: &DeterministicLaunchProfile) -> QemuControlPlaneObservation {
-        let command = profile.qemu_launch_command(
+        let command = profile.qemu_launch_command_for_live_gate(
             default_vm_config(),
             default_qemu_binary(),
             plugin_config(QemuLaunchPluginSwitch::On),
+            crate::LivePluginGuestArchitecture::X86_64,
         );
         let command = match command {
             Ok(command) => command,
@@ -1531,6 +1532,7 @@ mod tests {
             "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
             0,
         )
+        .with_fault_target_node("vm-a")
         .with_whitebox(whitebox);
         if whitebox == QemuLaunchPluginSwitch::Off {
             return config;

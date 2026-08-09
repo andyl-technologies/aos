@@ -280,10 +280,11 @@ pub(super) fn live_node_plugin_config(
     let plugin_base = live_node_plugin_base(config).with_fault_target_node(node_name);
     let mut plugin = if config.whitebox == QemuLaunchPluginSwitch::On {
         let probe_command = profile
-            .qemu_launch_command(
+            .qemu_launch_command_for_live_gate(
                 vm.clone(),
                 path_text(&config.qemu_executable),
                 plugin_base.clone(),
+                crate::LivePluginGuestArchitecture::X86_64,
             )
             .map_err(|source| QemuLiveNodeStepGateError::LaunchCommand { source })?;
         let validation = crate::probe_x86_whitebox_setup(&probe_command, run_directory)

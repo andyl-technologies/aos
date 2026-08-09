@@ -30,6 +30,7 @@ pub struct QemuFaultCapabilityRequirement {
     rows: Vec<FaultCapabilityRowV1>,
     digest: [u8; 32],
     target_manifest: Option<QemuTargetManifestRequirement>,
+    world_bound: bool,
 }
 
 /// Launch identity that an immutable QEMU target manifest must describe.
@@ -37,6 +38,7 @@ pub struct QemuFaultCapabilityRequirement {
 pub struct QemuTargetManifestRequirement {
     architecture: FaultCapabilityScope,
     cpu_model: String,
+    node_hash: [u8; 32],
     exact_manifest: Option<FaultRegisterCapabilityManifestV1>,
 }
 
@@ -51,6 +53,18 @@ impl QemuTargetManifestRequirement {
     #[must_use]
     pub fn cpu_model(&self) -> &str {
         &self.cpu_model
+    }
+
+    /// Returns the exact scenario-node identity authenticated by QEMU.
+    #[must_use]
+    pub const fn node_hash(&self) -> [u8; 32] {
+        self.node_hash
+    }
+
+    /// Returns the exact canonical register manifest admitted by the World.
+    #[must_use]
+    pub const fn exact_manifest(&self) -> Option<&FaultRegisterCapabilityManifestV1> {
+        self.exact_manifest.as_ref()
     }
 
     /// Returns the canonical QOM typename expected for the realized CPU.
@@ -71,34 +85,12 @@ impl QemuTargetManifestRequirement {
 }
 
 impl QemuFaultCapabilityRequirement {
-    /// Builds an exact, canonically ordered capability requirement.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultAbiError`] when rows are empty, invalid, duplicated, not
-    /// in canonical `(kind, version, scope)` order, or require a target
-    /// manifest without launch-bound target identity. Use [`Self::current_v1`]
-    /// for the complete production requirement.
-    pub fn exact(rows: Vec<FaultCapabilityRowV1>) -> Result<Self, FaultAbiError> {
-        let digest = fault_capability_manifest_digest(&rows)?;
-        if rows
-            .iter()
-            .any(|row| row.command_kind == FaultCommandKind::QueryTargetManifest)
-        {
-            return Err(FaultAbiError::CapabilityInvariant);
-        }
-        Ok(Self {
-            rows,
-            digest,
-            target_manifest: None,
-        })
-    }
-
-    /// Returns the complete capability set required by the current patch stack.
+    /// Returns the complete capability set used by internal live-backend gates.
     #[must_use]
-    pub fn current_v1(
+    pub(crate) fn current_v1(
         architecture: LivePluginGuestArchitecture,
         cpu_model: impl Into<String>,
+        node_hash: [u8; 32],
     ) -> Self {
         let mut rows = Self::abi_boundary_v1().rows;
         let (scope, name, register_name): (FaultCapabilityScope, &[u8], &[u8]) = match architecture
@@ -181,9 +173,28 @@ impl QemuFaultCapabilityRequirement {
             target_manifest: Some(QemuTargetManifestRequirement {
                 architecture: scope,
                 cpu_model: cpu_model.into(),
+                node_hash,
                 exact_manifest: None,
             }),
+            world_bound: false,
         }
+    }
+
+    /// Builds a manifest-discovery requirement for a loaded-QEMU gate.
+    ///
+    /// This is crate-private so production callers cannot replace the exact
+    /// World manifest with whatever a process happens to advertise.
+    #[must_use]
+    pub(crate) fn live_gate_v1(
+        architecture: LivePluginGuestArchitecture,
+        cpu_model: impl Into<String>,
+        node_name: &str,
+    ) -> Self {
+        Self::current_v1(
+            architecture,
+            cpu_model,
+            crate::qemu_fault_target_hash(node_name),
+        )
     }
 
     /// Builds the production requirement from one admitted world-node manifest.
@@ -288,7 +299,11 @@ impl QemuFaultCapabilityRequirement {
         if *blake3::hash(&encoded).as_bytes() != node.register_schema.bytes {
             return Err(FaultAbiError::CapabilityInvariant);
         }
-        let mut requirement = Self::current_v1(architecture, node.cpu_model.clone());
+        let mut requirement = Self::current_v1(
+            architecture,
+            node.cpu_model.clone(),
+            crate::qemu_fault_target_hash(node.node.as_str()),
+        );
         let target = requirement
             .target_manifest
             .as_mut()
@@ -296,15 +311,17 @@ impl QemuFaultCapabilityRequirement {
         target.exact_manifest = Some(manifest.clone());
         requirement.rows = requirement.rows_for_manifest(Some(&manifest))?;
         requirement.digest = fault_capability_manifest_digest(&requirement.rows)?;
+        requirement.world_bound = true;
         Ok(requirement)
     }
 
     /// Returns the exact 0047-0048 capability set before mutation patches.
     ///
     /// This constructor is retained for the 0047-0048 boundary gate and its
-    /// protocol tests. Production launch builders use [`Self::current_v1`].
+    /// protocol tests. Production launch builders use
+    /// [`Self::current_v1_for_node`].
     #[must_use]
-    pub fn abi_boundary_v1() -> Self {
+    pub(crate) fn abi_boundary_v1() -> Self {
         let row = |command_kind, maximum_pending_commands, name: &[u8], schema: &[u8]| {
             let mut hasher = blake3::Hasher::new();
             hasher.update(b"crucible.qemu-fault-capability.v1\0");
@@ -345,6 +362,7 @@ impl QemuFaultCapabilityRequirement {
             rows,
             digest: *hasher.finalize().as_bytes(),
             target_manifest: None,
+            world_bound: false,
         }
     }
 
@@ -364,6 +382,12 @@ impl QemuFaultCapabilityRequirement {
     #[must_use]
     pub const fn target_manifest(&self) -> Option<&QemuTargetManifestRequirement> {
         self.target_manifest.as_ref()
+    }
+
+    /// Reports whether this requirement came from an admitted World node.
+    #[must_use]
+    pub(crate) const fn is_world_bound(&self) -> bool {
+        self.world_bound
     }
 
     /// Resolves manifest-bound capability rows for exact launch admission.
@@ -561,8 +585,11 @@ mod tests {
                 FaultCapabilityScope::Aarch64,
             ),
         ] {
-            let requirement =
-                QemuFaultCapabilityRequirement::current_v1(architecture, "crucible-cpu-v1");
+            let requirement = QemuFaultCapabilityRequirement::current_v1(
+                architecture,
+                "crucible-cpu-v1",
+                [1; 32],
+            );
             let register = &requirement.rows()[3];
             let mutation = &requirement.rows()[4];
 
@@ -613,10 +640,12 @@ mod tests {
         let x86 = QemuFaultCapabilityRequirement::current_v1(
             LivePluginGuestArchitecture::X86_64,
             "crucible-x86-64-v1",
+            [1; 32],
         );
         let arm = QemuFaultCapabilityRequirement::current_v1(
             LivePluginGuestArchitecture::Aarch64,
             "crucible-aarch64-v1",
+            [1; 32],
         );
 
         assert_ne!(x86.rows()[4], arm.rows()[4]);
@@ -646,6 +675,19 @@ mod tests {
         let requirement = QemuFaultCapabilityRequirement::current_v1_for_node(&node)
             .unwrap_or_else(|error| panic!("world manifest should bind: {error}"));
 
+        assert!(requirement.is_world_bound());
+        assert_eq!(
+            requirement
+                .target_manifest()
+                .map(QemuTargetManifestRequirement::node_hash),
+            Some(crate::qemu_fault_target_hash("vm-a"))
+        );
+        assert_eq!(
+            requirement
+                .target_manifest()
+                .and_then(QemuTargetManifestRequirement::exact_manifest),
+            Some(&manifest)
+        );
         assert!(requirement.rows_for_manifest(Some(&manifest)).is_ok());
         let mut changed = manifest.clone();
         changed.rows[0].name = "rbx".to_owned();

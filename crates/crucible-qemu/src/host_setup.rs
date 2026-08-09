@@ -250,6 +250,12 @@ pub fn complete_qemu_host_plugin_setup(
         .setup_region_bytes()
         .map_err(|source| QemuHostPluginSetupError::RegionSerialization { source })?;
     let (control_socket, shmem_fd, wake_fd, region_len, fault_node_hash) = resources.into_parts();
+    if required_capabilities
+        .target_manifest()
+        .is_some_and(|required| required.node_hash() != fault_node_hash)
+    {
+        return Err(QemuHostPluginSetupError::AdmissionTargetIdentityMismatch);
+    }
     write_shmem_setup_region(shmem_fd.as_raw_fd(), &bytes)?;
     let region = validate_setup_region_header(allocation.header().snapshot(), layout.region_size)
         .map_err(|source| QemuHostPluginSetupError::RegionValidation { source })?;
@@ -630,6 +636,9 @@ pub enum QemuHostPluginSetupError {
     /// Spawn resources were not bound to a canonical nonzero node identity.
     #[error("fault capability admission target identity is the reserved all-zero hash")]
     AdmissionTargetIdentity,
+    /// Spawn resources did not match the launch-bound World node identity.
+    #[error("fault capability admission target identity differs from the launch manifest")]
+    AdmissionTargetIdentityMismatch,
     /// The mapped region could not expose this VM's dedicated fault transport.
     #[error("fault capability admission transport access failed: {source}")]
     AdmissionAccess {
@@ -836,6 +845,30 @@ pub(crate) mod tests {
                 && layout_region_len == layout.region_size
         ));
 
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_host_plugin_setup_rejects_spawn_node_identity_mismatch_before_protocol()
+    -> Result<(), Box<dyn Error>> {
+        let config = RegionConfig::new(1, 4, 0);
+        let layout = RegionLayout::for_config(config)?;
+        let (resources, _plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let required = QemuFaultCapabilityRequirement::live_gate_v1(
+            crate::LivePluginGuestArchitecture::X86_64,
+            "qemu64",
+            "different-node",
+        );
+
+        let error =
+            complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0, &required)
+                .err()
+                .ok_or("setup should reject a mismatched launch node")?;
+
+        assert!(matches!(
+            error,
+            QemuHostPluginSetupError::AdmissionTargetIdentityMismatch
+        ));
         Ok(())
     }
 

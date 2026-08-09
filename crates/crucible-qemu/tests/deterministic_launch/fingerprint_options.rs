@@ -69,6 +69,7 @@ fn translation_prefetch_experiment_is_explicit_and_default_off() {
         default_vm_config(),
         default_qemu_binary(),
         default_plugin_config(),
+        default_fault_requirement(),
     )
     .with_translation_prefetch_experiment(true, "/tmp/translation-prefetch.report")
     .build()
@@ -93,6 +94,7 @@ fn translation_prefetch_experiment_is_explicit_and_default_off() {
                 default_vm_config(),
                 default_qemu_binary(),
                 default_plugin_config(),
+                default_fault_requirement(),
             )
             .with_translation_prefetch_experiment(true, invalid_path)
             .build(),

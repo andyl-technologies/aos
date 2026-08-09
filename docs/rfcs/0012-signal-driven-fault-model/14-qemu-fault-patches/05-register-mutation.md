@@ -102,6 +102,15 @@ that cannot fit the result arena fail launch before guest execution.
 
 Manifest hashes enter QEMU capabilities and scenario admission. CPU model or
 QEMU changes that alter the manifest require a semantic version/golden update.
+Production launch construction accepts only
+`QemuFaultCapabilityRequirement::current_v1_for_node`; the requirement binds
+the World node hash, architecture, realized QOM CPU type, complete canonical
+register manifest, and derived capability digest before process spawn. The VM
+node ID and plugin `fault_node_hash` must both equal that bound node hash.
+Generic row constructors and ABI-boundary constructors are not public launch
+paths. Loaded-backend gates have a crate-private discovery path because their
+purpose is to interrogate the real QEMU implementation; it cannot be called by
+production consumers.
 
 ## Command payload
 
@@ -140,6 +149,44 @@ Same register/phase commands apply in canonical order with intermediate values.
 Persistent rules are an ordered transform set. Evidence includes manifest/CPU
 model, vCPU/RR cursor, register/field, before/after complete register value,
 derived-state actions, phase, icount, and fingerprint.
+
+The GPL-side `CRUCQRW1` record has a fixed 128-byte little-endian header,
+followed by `before`, `after`, `mask`, and `value` byte strings in that order:
+
+| Offset | Width | Field |
+|---:|---:|---|
+| 0 | 8 | magic `CRUCQRW1` |
+| 8 | 2 | codec version `1` |
+| 10 | 2 | architecture scope |
+| 12 | 2 | model phase |
+| 14 | 2 | reserved, zero |
+| 16 | 4 | vCPU index |
+| 20 | 4 | private numeric manifest row ID |
+| 24 | 4 | closed mutation-kind tag |
+| 28 | 4 | declared side-effect mask |
+| 32 | 4 | performed side-effect mask |
+| 36 | 4 | first bit |
+| 40 | 4 | bit count |
+| 44 | 4 | `before` byte length |
+| 48 | 4 | `after` byte length |
+| 52 | 4 | `mask` byte length |
+| 56 | 8 | observed node icount |
+| 64 | 8 | RR current vCPU |
+| 72 | 8 | RR cursor position |
+| 80 | 8 | RR switch quantum |
+| 88 | 32 | execution fingerprint SHA-256 |
+| 120 | 4 | `value` byte length |
+| 124 | 4 | reserved, zero |
+
+The Apache bridge does not trust this private row ID in isolation. It resolves
+the submitted public register-name hash through the exact admitted manifest,
+then requires the returned architecture, row ID, phase, range, mutation kind,
+mask, value, widths, and side-effect declaration to match that command and row.
+It independently recomputes the selected-bit transform and both value hashes.
+Only then does it emit the canonical 256-byte-header public evidence record,
+which carries the architecture/CPU/manifest digests and the same four byte
+strings. A mismatch is a terminal bridge error, never a partially accepted
+event.
 
 ## VMState
 

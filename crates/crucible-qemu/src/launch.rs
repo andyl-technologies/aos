@@ -546,7 +546,8 @@ pub struct QemuLaunchCommandBuilder {
     qmp: Option<QemuQmpChannelConfig>,
     translation_prefetch: Option<QemuTranslationPrefetchExperiment>,
     console_capture: bool,
-    fault_capability_requirement: Option<crate::QemuFaultCapabilityRequirement>,
+    fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
+    allow_live_gate_manifest_discovery: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -556,28 +557,16 @@ struct QemuTranslationPrefetchExperiment {
 }
 
 impl QemuLaunchCommandBuilder {
-    /// Builds a command builder for the supplied profile, VM, tools, and plugin config.
+    /// Builds a command builder for an exact World-bound fault manifest.
     #[must_use]
     pub fn new(
         profile: DeterministicLaunchProfile,
         vm: QemuVmLaunchConfig,
         executable: impl Into<String>,
         plugin: QemuLaunchPluginConfig,
+        fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
     ) -> Self {
         let executable = executable.into();
-        let architecture = if executable.ends_with("qemu-system-x86_64") {
-            Some(LivePluginGuestArchitecture::X86_64)
-        } else if executable.ends_with("qemu-system-aarch64") {
-            Some(LivePluginGuestArchitecture::Aarch64)
-        } else {
-            None
-        };
-        let fault_capability_requirement = architecture.map(|architecture| {
-            crate::QemuFaultCapabilityRequirement::current_v1(
-                architecture,
-                profile.cpu_model.clone(),
-            )
-        });
         Self {
             profile,
             vm,
@@ -588,7 +577,28 @@ impl QemuLaunchCommandBuilder {
             translation_prefetch: None,
             console_capture: false,
             fault_capability_requirement,
+            allow_live_gate_manifest_discovery: false,
         }
+    }
+
+    /// Builds an internal loaded-backend gate command that discovers the live manifest.
+    #[must_use]
+    pub(crate) fn new_for_live_gate(
+        profile: DeterministicLaunchProfile,
+        vm: QemuVmLaunchConfig,
+        executable: impl Into<String>,
+        plugin: QemuLaunchPluginConfig,
+        architecture: LivePluginGuestArchitecture,
+    ) -> Self {
+        let node_name = vm.node_id.as_str();
+        let requirement = crate::QemuFaultCapabilityRequirement::live_gate_v1(
+            architecture,
+            profile.cpu_model.clone(),
+            node_name,
+        );
+        let mut builder = Self::new(profile, vm, executable, plugin, requirement);
+        builder.allow_live_gate_manifest_discovery = true;
+        builder
     }
 
     /// Returns a builder that enables the debug-session gdbstub channel.
@@ -612,16 +622,6 @@ impl QemuLaunchCommandBuilder {
     #[must_use]
     pub const fn with_console_capture(mut self) -> Self {
         self.console_capture = true;
-        self
-    }
-
-    /// Returns a builder requiring one exact launch-derived fault manifest.
-    #[must_use]
-    pub fn with_fault_capability_requirement(
-        mut self,
-        requirement: crate::QemuFaultCapabilityRequirement,
-    ) -> Self {
-        self.fault_capability_requirement = Some(requirement);
         self
     }
 
@@ -653,13 +653,56 @@ impl QemuLaunchCommandBuilder {
     /// validator.
     pub fn build(self) -> Result<QemuLaunchCommand, QemuLaunchCommandError> {
         validate_store_path("qemu_executable", &self.executable)?;
-        let fault_capability_requirement = self.fault_capability_requirement.ok_or_else(|| {
-            QemuLaunchCommandError::UnsupportedFaultCapabilityArchitecture {
-                executable: self.executable.clone(),
-            }
-        })?;
         self.vm.validate()?;
         self.plugin.validate()?;
+        let fault_capability_requirement = self.fault_capability_requirement;
+        let required_target = fault_capability_requirement
+            .target_manifest()
+            .ok_or(QemuLaunchCommandError::InvalidFaultCapabilityRequirement)?;
+        if !self.allow_live_gate_manifest_discovery
+            && (!fault_capability_requirement.is_world_bound()
+                || required_target.exact_manifest().is_none())
+        {
+            return Err(QemuLaunchCommandError::UnboundFaultCapabilityRequirement);
+        }
+        if required_target.node_hash() != crate::qemu_fault_target_hash(&self.vm.node_id)
+            || required_target.node_hash() != self.plugin.fault_node_hash()
+        {
+            return Err(QemuLaunchCommandError::FaultCapabilityNodeMismatch);
+        }
+        let executable_architecture = if self.executable.ends_with("qemu-system-x86_64") {
+            crucible_shmem::FaultCapabilityScope::X86_64
+        } else if self.executable.ends_with("qemu-system-aarch64") {
+            crucible_shmem::FaultCapabilityScope::Aarch64
+        } else {
+            return Err(
+                QemuLaunchCommandError::UnsupportedFaultCapabilityArchitecture {
+                    executable: self.executable.clone(),
+                },
+            );
+        };
+        if required_target.architecture() != executable_architecture {
+            return Err(QemuLaunchCommandError::FaultCapabilityArchitectureMismatch);
+        }
+        let configured_cpu = self
+            .profile
+            .cpu_model
+            .split(',')
+            .next()
+            .unwrap_or(&self.profile.cpu_model);
+        let expected_suffix = match required_target.architecture() {
+            crucible_shmem::FaultCapabilityScope::X86_64 => "-x86_64-cpu",
+            crucible_shmem::FaultCapabilityScope::Aarch64 => "-arm-cpu",
+            _ => return Err(QemuLaunchCommandError::InvalidFaultCapabilityRequirement),
+        };
+        let realized_cpu = if configured_cpu.ends_with(expected_suffix) {
+            configured_cpu.to_owned()
+        } else {
+            format!("{configured_cpu}{expected_suffix}")
+        };
+        if required_target.realized_cpu_type() != realized_cpu {
+            return Err(QemuLaunchCommandError::FaultCapabilityCpuModelMismatch);
+        }
         if let Some(gdbstub) = &self.gdbstub {
             gdbstub.validate()?;
         }
@@ -1244,15 +1287,40 @@ impl DeterministicLaunchProfile {
     ///
     /// # Errors
     ///
-    /// Returns [`QemuLaunchCommandError`] when command construction or final
-    /// pre-spawn validation fails.
+    /// Returns [`QemuLaunchCommandError`] when the World manifest is invalid,
+    /// any node, architecture, or CPU identity differs, command construction
+    /// fails, or final pre-spawn validation rejects the command.
     pub fn qemu_launch_command(
         &self,
         vm: QemuVmLaunchConfig,
         executable: impl Into<String>,
         plugin: QemuLaunchPluginConfig,
+        node: &crucible::model::WorldNodeFaultCapabilities,
     ) -> Result<QemuLaunchCommand, QemuLaunchCommandError> {
-        QemuLaunchCommandBuilder::new(self.clone(), vm, executable, plugin).build()
+        let requirement = crate::QemuFaultCapabilityRequirement::current_v1_for_node(node)
+            .map_err(|_source| QemuLaunchCommandError::InvalidFaultCapabilityRequirement)?;
+        QemuLaunchCommandBuilder::new(self.clone(), vm, executable, plugin, requirement).build()
+    }
+
+    /// Builds a loaded-backend gate command with live manifest discovery.
+    ///
+    /// This crate-private path exists only for gates whose purpose is to query
+    /// the real QEMU backend. Production launches use [`Self::qemu_launch_command`].
+    pub(crate) fn qemu_launch_command_for_live_gate(
+        &self,
+        vm: QemuVmLaunchConfig,
+        executable: impl Into<String>,
+        plugin: QemuLaunchPluginConfig,
+        architecture: LivePluginGuestArchitecture,
+    ) -> Result<QemuLaunchCommand, QemuLaunchCommandError> {
+        QemuLaunchCommandBuilder::new_for_live_gate(
+            self.clone(),
+            vm,
+            executable,
+            plugin,
+            architecture,
+        )
+        .build()
     }
 
     /// Returns canonical material that must be included in the scenario hash.

@@ -33,6 +33,21 @@ pub enum QemuLaunchCommandError {
         /// Executable path whose basename was unsupported.
         executable: String,
     },
+    /// The supplied capability declaration was not a canonical exact manifest.
+    #[error("QEMU launch requires an exact admitted World node fault-capability manifest")]
+    InvalidFaultCapabilityRequirement,
+    /// A production launch was not bound to an admitted World node manifest.
+    #[error("production QEMU launch capability requirement is not World-bound")]
+    UnboundFaultCapabilityRequirement,
+    /// The VM and plugin target do not match the manifest's scenario node.
+    #[error("QEMU VM, plugin, and fault-capability node identities do not match")]
+    FaultCapabilityNodeMismatch,
+    /// The QEMU system executable architecture differs from the World manifest.
+    #[error("QEMU executable architecture does not match the fault-capability manifest")]
+    FaultCapabilityArchitectureMismatch,
+    /// The launch CPU model does not match the manifest's realized CPU type.
+    #[error("QEMU launch CPU model does not match the fault-capability manifest")]
+    FaultCapabilityCpuModelMismatch,
     /// White-box mode lacked a live QEMU port-map validation.
     #[error("white-box QEMU launch requires live setup collision validation")]
     MissingWhiteboxSetupValidation,

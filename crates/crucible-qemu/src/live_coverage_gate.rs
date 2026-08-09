@@ -485,14 +485,16 @@ fn run_loaded_qemu_once(
             source,
         })?;
 
-    let plugin =
-        QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT).with_coverage(coverage);
+    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fault_target_node(GATE_NODE)
+        .with_coverage(coverage);
     let plugin_argument = plugin.qemu_plugin_argument();
     let command = profile
-        .qemu_launch_command(
+        .qemu_launch_command_for_live_gate(
             vm_launch_config(config),
             path_text(&config.qemu_executable),
             plugin,
+            crate::LivePluginGuestArchitecture::X86_64,
         )
         .map_err(|source| LoadedQemuCoverageGateError::LaunchCommand { mode, source })?;
     let trace_path = run_directory.join("independent-fingerprint.jsonl");
