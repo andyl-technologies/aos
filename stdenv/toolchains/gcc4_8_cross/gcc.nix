@@ -124,6 +124,7 @@ in
                 --disable-multilib --disable-bootstrap \
                 --disable-libssp --disable-libgomp --disable-libmudflap \
                 --disable-libsanitizer \
+                --disable-lto --disable-plugin \
                 --program-transform-name=
 
               # Patch SYSTEM_HEADER_DIR
