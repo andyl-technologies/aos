@@ -370,7 +370,18 @@ in {
     hash = "0zds26w4h65w75x3xpdi32hws3vb3idj5n4pm9zrny4mm6pk36jy";
     buildDeps = autotoolsDeps ++ [perl];
     makeInfo = "${texinfo}/bin/makeinfo";
-    configureFlags = tripletNoNls;
+    # stdbuf requires a preloadable shared library, which this static ladder
+    # package cannot produce. The final coreutils tier omits it for the same
+    # reason.
+    configureFlags = tripletNoNls ++ ["--enable-no-install-program=stdbuf"];
+    # Coreutils 8.32's removed-directory probe uses a syscall that Linux does
+    # not expose on AArch64. Apply the upstream behavior-restoration backport.
+    postUnpack =
+      if hostPlatform.config == "aarch64-unknown-linux-gnu"
+      then ''
+        patch -p1 < ${./patches/coreutils-8.32-aarch64-getdents.patch}
+      ''
+      else "";
     meta = gnuMeta "GNU core utilities (ls, cat, cp, mv, etc.), version 8.32" "https://www.gnu.org/software/coreutils/" "GPL-3.0-or-later";
   };
 
