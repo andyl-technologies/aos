@@ -17,6 +17,8 @@ use crate::{
 pub const FAULT_REGISTER_EVIDENCE_MAGIC_V1: [u8; 8] = *b"CRUCREG1";
 /// Fixed header bytes before complete before/after register values.
 pub const FAULT_REGISTER_EVIDENCE_HEADER_V1_BYTES: usize = 256;
+/// Model-phase tag for a mutation after an instruction retires.
+const AFTER_INSTRUCTION_MODEL_PHASE_V1: u16 = 12;
 
 /// Computes the identity of complete canonical register-manifest bytes.
 ///
@@ -90,7 +92,10 @@ pub struct FaultRegisterMutationEvidenceV1 {
     pub observed_icount: u64,
     /// vCPU selected by the deterministic round-robin scheduler.
     pub rr_current_vcpu: u64,
-    /// Retired-instruction position inside the current RR quantum.
+    /// Retired-instruction position in the current RR quantum.
+    ///
+    /// The terminal position equal to `rr_switch_quantum` is valid only for
+    /// after-instruction evidence captured before the scheduler rotates.
     pub rr_cursor_position: u64,
     /// Pinned RR quantum length.
     pub rr_switch_quantum: u64,
@@ -268,7 +273,9 @@ impl FaultRegisterMutationEvidenceV1 {
                 .is_none_or(|end| width_bits.is_none_or(|width| end > width))
             || self.rr_current_vcpu != u64::from(self.vcpu_index)
             || self.rr_switch_quantum == 0
-            || self.rr_cursor_position >= self.rr_switch_quantum
+            || self.rr_cursor_position > self.rr_switch_quantum
+            || (self.rr_cursor_position == self.rr_switch_quantum
+                && self.model_phase != AFTER_INSTRUCTION_MODEL_PHASE_V1)
             || self.manifest_digest == [0; 32]
             || self.cpu_model_digest == [0; 32]
             || self.execution_fingerprint_sha256 == [0; 32]
@@ -480,5 +487,39 @@ mod tests {
         let mut corrupted = encoded;
         corrupted[FAULT_REGISTER_EVIDENCE_HEADER_V1_BYTES] ^= 1;
         assert!(FaultRegisterMutationEvidenceV1::decode(&corrupted).is_err());
+    }
+
+    #[test]
+    fn only_after_instruction_evidence_accepts_the_terminal_rr_position() {
+        let before = vec![0];
+        let after = vec![1];
+        let mut evidence = FaultRegisterMutationEvidenceV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            model_phase: AFTER_INSTRUCTION_MODEL_PHASE_V1,
+            vcpu_index: 0,
+            numeric_id: 1,
+            mutation_kind: FaultRegisterMutationKindV1::BitFlip,
+            declared_side_effects: 0,
+            performed_side_effects: 0,
+            first_bit: 0,
+            bit_count: 1,
+            observed_icount: 32,
+            rr_current_vcpu: 0,
+            rr_cursor_position: 16,
+            rr_switch_quantum: 16,
+            manifest_digest: [1; 32],
+            cpu_model_digest: [2; 32],
+            before_sha256: Sha256::digest(&before).into(),
+            after_sha256: Sha256::digest(&after).into(),
+            execution_fingerprint_sha256: [3; 32],
+            before,
+            after,
+            mask: vec![1],
+            value: vec![0],
+        };
+
+        assert!(evidence.encode().is_ok());
+        evidence.model_phase = 11;
+        assert_eq!(evidence.encode(), Err(FaultAbiError::CapabilityInvariant));
     }
 }

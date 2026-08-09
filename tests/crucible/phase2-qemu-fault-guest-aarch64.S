@@ -22,7 +22,11 @@ _start:
     strb w0, [x1]
     adrp x2, mutation_execution_result
     add x2, x2, :lo12:mutation_execution_result
+    adrp x3, persistent_register_result
+    add x3, x3, :lo12:persistent_register_result
 1:
+    mov x28, #0
+    str x28, [x3]
     bl mutation_code
     strb w0, [x2]
     add w0, w0, #1
@@ -44,6 +48,10 @@ paging_ready:
 .global mutation_execution_result
 mutation_execution_result:
     .byte 0x00
+.balign 8
+.global persistent_register_result
+persistent_register_result:
+    .quad 0x0000000000000000
 
 .section .cross, "aw"
 .global mutation_cross_page

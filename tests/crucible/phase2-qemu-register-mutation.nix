@@ -12,7 +12,7 @@
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
-  liveCaseCount = 5;
+  liveCaseCount = 34;
 
   failures =
     failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
@@ -129,6 +129,18 @@ in
             ${pkgs.llvm}/bin/ld.lld \
               -T ${./phase2-qemu-fault-guest-aarch64.ld} \
               fault-guest-aarch64.o -o fault-guest-aarch64.elf
+            x86_result_address="$(${pkgs.binutils}/bin/nm -n \
+              fault-guest-x86.elf | \
+              awk '$3 == "persistent_register_result" { print $1; exit }')"
+            aarch64_result_address="$(${pkgs.binutils}/bin/nm -n \
+              fault-guest-aarch64.elf | \
+              awk '$3 == "persistent_register_result" { print $1; exit }')"
+            test -n "$x86_result_address"
+            test -n "$aarch64_result_address"
+            {
+              echo "x86_result_address=0x$x86_result_address"
+              echo "aarch64_result_address=0x$aarch64_result_address"
+            } > register-result-addresses
           '';
         }
         {
@@ -150,27 +162,43 @@ in
             grep -q 'CRUCIBLE_REGISTER_MANIFEST_LIVE_PASS architecture=3' aarch64.log
 
             mkdir -p logs
+            . ./register-result-addresses
             run_mutation() {
               architecture="$1"
               mode="$2"
+              register="$3"
+              expected_group="$4"
+              phase="$5"
+              terminal_cursor="''${6:-false}"
               case "$architecture" in
                 x86_64)
                   architecture_id=2
                   qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
                   machine_args='-machine pc -m 64M'
                   guest=fault-guest-x86.elf
+                  result_address="$x86_result_address"
                   ;;
                 aarch64)
                   architecture_id=3
                   qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
                   machine_args='-machine virt -cpu max -m 64M'
                   guest=fault-guest-aarch64.elf
+                  result_address="$aarch64_result_address"
                   ;;
                 *)
                   echo "unknown register gate architecture: $architecture" >&2
                   exit 1
                   ;;
               esac
+              plugin_args="$PWD/crucible-register.so,architecture=$architecture_id,mode=$mode,register=$register,phase=$phase"
+              case_suffix=""
+              if test "$mode" = persistent; then
+                plugin_args="$plugin_args,result-address=$result_address"
+              fi
+              if test "$terminal_cursor" = true; then
+                plugin_args="$plugin_args,terminal-cursor=true"
+                case_suffix="-terminal-cursor"
+              fi
               timeout 120 $qemu_binary \
                 $machine_args \
                 -accel sim \
@@ -181,23 +209,51 @@ in
                 -serial none \
                 -monitor none \
                 -kernel "$guest" \
-                -plugin "$PWD/crucible-register.so,architecture=$architecture_id,mode=$mode" \
-                > "logs/$architecture-$mode.log" 2>&1
-              cat "logs/$architecture-$mode.log"
+                -plugin "$plugin_args" \
+                > "logs/$architecture-$mode-$register-$phase$case_suffix.log" 2>&1
+              cat "logs/$architecture-$mode-$register-$phase$case_suffix.log"
               grep -Fq \
-                "CRUCIBLE_REGISTER_MUTATION_LIVE_PASS architecture=$architecture_id mode=$mode" \
-                "logs/$architecture-$mode.log"
+                "CRUCIBLE_REGISTER_MUTATION_LIVE_PASS architecture=$architecture_id mode=$mode register=$register" \
+                "logs/$architecture-$mode-$register-$phase$case_suffix.log"
+              grep -Fq \
+                "group=$expected_group phase=$phase" \
+                "logs/$architecture-$mode-$register-$phase$case_suffix.log"
+              if test "$mode" = persistent; then
+                grep -Fq 'guest_observed=true' \
+                  "logs/$architecture-$mode-$register-$phase$case_suffix.log"
+              fi
+              if test "$terminal_cursor" = true; then
+                grep -Fq 'terminal_cursor=true' \
+                  "logs/$architecture-$mode-$register-$phase$case_suffix.log"
+              fi
               test "$(grep -Fc CRUCIBLE_REGISTER_MUTATION_LIVE_PASS \
-                "logs/$architecture-$mode.log")" -eq 1
+                "logs/$architecture-$mode-$register-$phase$case_suffix.log")" -eq 1
               ! grep -q 'Crucible register mutation live test failed' \
-                "logs/$architecture-$mode.log"
+                "logs/$architecture-$mode-$register-$phase$case_suffix.log"
             }
 
-            run_mutation x86_64 impulse
-            run_mutation x86_64 persistent
-            run_mutation x86_64 reject-invalid
-            run_mutation aarch64 impulse
-            run_mutation aarch64 persistent
+            for phase in before after; do
+              run_mutation x86_64 impulse rdi 1 "$phase"
+              run_mutation x86_64 impulse rip 2 "$phase"
+              run_mutation x86_64 impulse rflags 3 "$phase"
+              run_mutation x86_64 impulse ds-base 4 "$phase"
+              run_mutation x86_64 impulse cr2 5 "$phase"
+              run_mutation x86_64 impulse kernel-gs-base 6 "$phase"
+              run_mutation x86_64 impulse dr0 7 "$phase"
+              run_mutation x86_64 impulse mm0 8 "$phase"
+              run_mutation x86_64 impulse xmm15 9 "$phase"
+
+              run_mutation aarch64 impulse x28 1 "$phase"
+              run_mutation aarch64 impulse pc 2 "$phase"
+              run_mutation aarch64 impulse pstate 3 "$phase"
+              run_mutation aarch64 impulse fpsr 8 "$phase"
+              run_mutation aarch64 impulse v28 9 "$phase"
+
+              run_mutation x86_64 persistent rdi 1 "$phase"
+              run_mutation aarch64 persistent x28 1 "$phase"
+            done
+            run_mutation x86_64 impulse rdi 1 after true
+            run_mutation x86_64 reject-invalid cr3 5 before
 
             set +e
             timeout 5 ${qemuPackage}/bin/qemu-system-x86_64 \
@@ -210,7 +266,7 @@ in
               -serial none \
               -monitor none \
               -kernel fault-guest-x86.elf \
-              -plugin "$PWD/crucible-register.so,architecture=2,mode=impulse" \
+              -plugin "$PWD/crucible-register.so,architecture=2,mode=impulse,register=rdi,phase=before" \
               > logs/patched-tcg-inert.log 2>&1
             patched_tcg_status=$?
             set -e
@@ -243,7 +299,7 @@ in
               -serial none \
               -monitor none \
               -kernel fault-guest-x86.elf \
-              -plugin "$PWD/crucible-register.so,architecture=2,mode=impulse" \
+              -plugin "$PWD/crucible-register.so,architecture=2,mode=impulse,register=rdi,phase=before" \
               > logs/stock-mutation.log 2>&1
             stock_status=$?
             set -e
@@ -275,11 +331,13 @@ in
               echo live_mutation_cases=${toString liveCaseCount}
               echo live_x86_64_manifest=true
               echo live_aarch64_manifest=true
-              echo live_x86_64_impulse=true
-              echo live_x86_64_persistent=true
+              echo live_x86_64_impulse_groups=1,2,3,4,5,6,7,8,9
+              echo live_x86_64_persistent_guest_read_write=true
               echo live_x86_64_invalid_transition_rejected=true
-              echo live_aarch64_impulse=true
-              echo live_aarch64_persistent=true
+              echo live_aarch64_impulse_groups=1,2,3,8,9
+              echo live_aarch64_persistent_guest_read_write=true
+              echo live_before_instruction=true
+              echo live_after_instruction=true
               echo mutation_evidence=architecture,row,phase,range,before,after,mask,value,rr,nonzero_execution_fingerprint
             } > "$out/result"
           '';

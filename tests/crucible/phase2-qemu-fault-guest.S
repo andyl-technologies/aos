@@ -19,6 +19,8 @@ _start:
     movb $0x5a, paging_ready
     mov $stack_top, %esp
 1:
+    xor %edi, %edi
+    movl %edi, persistent_register_result
     call mutation_code
     movb %al, mutation_execution_result
     add $1, %eax
@@ -34,6 +36,9 @@ paging_ready:
 .global mutation_execution_result
 mutation_execution_result:
     .byte 0x00
+.global persistent_register_result
+persistent_register_result:
+    .long 0x00000000
 
 .section .cross, "aw"
 .global mutation_cross_page
