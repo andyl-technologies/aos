@@ -371,6 +371,13 @@
       capability = "typed fetch, load, store, atomic, and identified virtio DMA memory fault rules with shared service and persistent region state";
     }
     {
+      file = "0051-crucible-add-architecture-register-fault-mutations.patch";
+      catalogName = "crucible-architecture-register-faults";
+      class = "D";
+      enforces = "QFP-REG-1,QFP-REG-2,FAULT-ORDER";
+      capability = "manifest-bound x86-64 and AArch64 register mutations at exact instruction boundaries";
+    }
+    {
       file = "0060-crucible-block-typed-errors.patch";
       catalogName = "crucible-block-typed-errors";
       class = "F";
