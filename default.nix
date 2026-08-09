@@ -988,15 +988,16 @@ in {
       inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;
     };
-    # The pure evaluator checks and the all-variant toplevel characterization
-    # are one hard gate: rendering changes cannot bypass byte-parity review.
+    # Pure evaluation and focused all-variant output contracts are one gate.
+    # Rendered store paths remain contextual Nix references rather than
+    # duplicated source snapshots.
     eval = pkgs.mkDerivation {
-      pname = "aos-eval-and-characterization-checks";
+      pname = "aos-eval-and-system-structure-checks";
       version = "0";
       src = null;
       buildDeps = [
         eval-standalone
-        system-characterization
+        system-structure
         config-eval
         config-manifest
         rfc-0011-provenance
@@ -1082,7 +1083,7 @@ in {
           package-expose
           rfc-0011-cfgsrc-gc
           rfc-0011-provenance
-          system-characterization
+          system-structure
           systemd-credentials
           systemd-generate
           systemd-lib
@@ -1103,14 +1104,14 @@ in {
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
     crucible = crucibleChecks;
-    system-characterization = let
+    system-structure = let
       variants = lib.mapAttrs (variant: system:
-        import ./lib/testing/system-characterization.nix {
+        import ./lib/testing/system-structure.nix {
           inherit pkgs lib variant system;
         })
       discoverSystems;
       check = pkgs.mkDerivation {
-        pname = "aos-system-characterization-all";
+        pname = "aos-system-structure-all";
         version = "0";
         src = null;
         buildDeps = builtins.attrValues variants;
@@ -1124,29 +1125,10 @@ in {
           }
         ];
       };
-      regenerate = pkgs.mkDerivation {
-        pname = "aos-system-characterization-regenerate-all";
-        version = "0";
-        src = null;
-        buildDeps = builtins.map (entry: entry.regenerate) (builtins.attrValues variants);
-        phases = [
-          {
-            name = "collect";
-            script = ''
-              mkdir -p $out
-              ${lib.concatStringsSep "\n" (lib.mapAttrsToList (variant: entry: ''
-                  mkdir -p "$out/${variant}"
-                  cp -r "${entry.regenerate}"/. "$out/${variant}/"
-                '')
-                variants)}
-            '';
-          }
-        ];
-      };
     in
       check
       // {
-        inherit variants regenerate;
+        inherit variants;
       };
     systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;

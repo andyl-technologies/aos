@@ -1,5 +1,0 @@
-[Unit]
-After=aos-activate.service
-Description=AOS on-host config applied
-Requires=aos-activate.service
-

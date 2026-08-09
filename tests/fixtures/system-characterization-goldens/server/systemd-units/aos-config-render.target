@@ -1,4 +1,0 @@
-[Unit]
-After=aos-fetch.target
-Description=AOS package render wing
-

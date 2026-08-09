@@ -12,12 +12,11 @@ differential oracle used by `checks.config-parity-p2`; it is not a runtime
 fallback. The earlier P1 stock-evaluator milestones are therefore recorded
 below by the production behavior that superseded them.
 
-## Characterization and pure rendering
+## Structural contracts and pure rendering
 
-- [x] Characterize every discovered system variant with
-      `checks.system-characterization`, backed by
-      `lib/testing/system-characterization.nix` and committed fixtures under
-      `tests/fixtures/system-characterization-goldens/`.
+- [x] Check every discovered system variant with `checks.system-structure`.
+      The gate verifies contextual output references and exact manifest-to-unit
+      inventory parity without committing generated system outputs.
 - [x] Keep the flat renderer as a deterministic migration oracle in
       `crates/aos-package/tests/golden_config_artifact.rs` and
       `checks.config-parity`.
@@ -194,7 +193,7 @@ nix-build -A checks.fleet.rfc-0011-all --no-out-link
 ```
 
 `checks.rfc-0011-all` is the complete non-KVM gate: it builds `pkgs.aos` and
-the evaluation, lint, module, package configuration, characterization,
+the evaluation, lint, module, package configuration, focused system-structure,
 materialization, parity, provenance, GC-root, and systemd contract checks.
 
 `checks.fleet.rfc-0011-all` is assembled in `default.nix` from every discovered
