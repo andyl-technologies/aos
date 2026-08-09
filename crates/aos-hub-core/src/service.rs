@@ -10441,10 +10441,19 @@ impl RpcService {
         }
     }
 
-    /// Resolve a registry by slug or map a miss to `NotFound`.
-    async fn registry_or_not_found(&self, slug: &str) -> Result<RegistryRecord, RpcError> {
+    /// Resolves a registry by immutable stable identity or canonical slug.
+    async fn registry_or_not_found(&self, identifier: &str) -> Result<RegistryRecord, RpcError> {
+        if let Some(registry) = self
+            .db
+            .registry_by_stable_id(identifier)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Ok(registry);
+        }
+
         self.db
-            .registry_by_slug(slug)
+            .registry_by_slug(identifier)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("registry"))
@@ -33910,6 +33919,35 @@ mod cache_upload_tests {
             .unwrap();
         let by_stable_id = service
             .binary_cache_or_not_found(&stored.stable_id)
+            .await
+            .unwrap();
+
+        assert_eq!(by_slug.stable_id, stored.stable_id);
+        assert_eq!(by_stable_id.stable_id, stored.stable_id);
+    }
+
+    #[tokio::test]
+    async fn registry_lookup_accepts_stable_identity_and_canonical_slug() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let org_id = db
+            .create_org("registry-locator", "Registry locator")
+            .await
+            .unwrap();
+        db.create_managed_registry(org_id, "", "packages", "private", &[], false)
+            .await
+            .unwrap();
+        let stored = db
+            .registry_by_slug("registry-locator/packages")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let by_slug = service
+            .registry_or_not_found("registry-locator/packages")
+            .await
+            .unwrap();
+        let by_stable_id = service
+            .registry_or_not_found(&stored.stable_id)
             .await
             .unwrap();
 

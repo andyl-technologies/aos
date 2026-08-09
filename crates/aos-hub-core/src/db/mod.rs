@@ -3408,6 +3408,23 @@ impl Database {
             .transpose()
     }
 
+    /// Looks up a registry by its immutable stable identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn registry_by_stable_id(&self, stable_id: &str) -> Result<Option<RegistryRecord>> {
+        self.backend
+            .query_opt(
+                &format!("SELECT {REGISTRY_COLUMNS} FROM registries WHERE stable_id = ?1"),
+                &vals![stable_id],
+            )
+            .await
+            .context("loading registry by stable id")?
+            .map(|row| row_to_registry(&row))
+            .transpose()
+    }
+
     /// Look up a registry by its database id.
     ///
     /// # Errors
