@@ -897,16 +897,13 @@ in rec {
   #
   # On the *build* side (off-host, where building is legitimate) this still
   # needs to produce a bootable gen-0 image. So the record also carries:
-  #   - `drv`  — a derivation that writes the body to `$out/aos-job-scripts/<key>`
-  #              (path component `aos-job-scripts` so the system golden
-  #              comparator recognizes it; see lib/testing/system-
-  #              characterization.nix `JOB_SCRIPT_MARKERS`);
+  #   - `drv`  — a derivation that writes the body to
+  #              `$out/aos-job-scripts/<key>`;
   #   - `path` — the absolute store path of that file, plugged into the
   #              *build-side* `Exec*=` so the image boots.
   # The build-side `Exec*=` therefore changes from the old
   # `…-unit-script-<name>/bin/<name>` path to `…/aos-job-scripts/<key>` —
-  # this is the single intentional ExecStart byte delta of the F2-A change
-  # (the golden normalizes both forms to the script TEXT).
+  # this preserves a stable generation-local layout for runtime materialization.
   #
   # Slot is the systemd directive the option feeds (`script=` → `ExecStart`,
   # `preStart=` → `ExecStartPre`, …); index is always 0 for option-derived
@@ -918,8 +915,8 @@ in rec {
   # sketched in decisions.md: `/bin/sh` is forbidden by CLAUDE.md outside the
   # rootfs init chain, and job scripts also run in stage-1 (initrd) services
   # where `/bin/sh` is not guaranteed. The body is byte-equal to the old
-  # `writeShellScriptBin` output modulo a trailing newline (which the golden
-  # rstrips), so the inlined script text is unchanged.
+  # `writeShellScriptBin` output modulo a trailing newline, so the inlined
+  # script text is unchanged.
   makeJobScript = {
     unit,
     slot,

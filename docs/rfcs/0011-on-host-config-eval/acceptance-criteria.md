@@ -9,9 +9,11 @@ specification.
 
 ## Pure data contract and package surface
 
-- [x] Every discovered system produces deterministic `/etc`, unit, job-script,
-      activation, and os-release characterization artifacts.
-  - Gate: `checks.system-characterization`.
+- [x] Every discovered system preserves contextual Nix references for its
+      rendered outputs, and the realized systemd tree exactly matches the pure
+      manifest inventory without committed generated snapshots.
+  - Gates: `checks.system-structure`, `checks.systemd-generate`, and
+    `checks.config-manifest`.
 - [x] Builder and runtime paths consume the same strict
       `aos.config-manifest/v1` shape, including exact base-library, evaluator,
       module, host, and fact inputs.
@@ -154,8 +156,8 @@ specification.
       login package set.
 - [x] Kernel/initrd, immutable root, dm-verity, measured boot, module ABI, and
       initial trust anchors remain image-owned.
-  - Gate: `checks.fleet.rfc-0011-runtime-role`, with characterization enforced
-    by `checks.system-characterization`.
+  - Gates: `checks.fleet.rfc-0011-runtime-role` and
+    `checks.system-structure`.
 
 ## Secrets and attestation
 
@@ -214,7 +216,7 @@ nix-build -A checks.fleet.rfc-0011-all --no-out-link
 ```
 
 `checks.rfc-0011-all` is the complete non-KVM gate: it builds `pkgs.aos` and
-the evaluation, lint, module, package configuration, characterization,
+the evaluation, lint, module, package configuration, focused system-structure,
 materialization, parity, provenance, GC-root, and systemd contract checks.
 
 `default.nix` discovers every regular `tests/fleet/*.nix` file. The fleet
