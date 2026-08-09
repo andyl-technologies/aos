@@ -94,6 +94,7 @@ in {
         pkgs.sbsigntools
         pkgs.binutils
         pkgs.git
+        pkgs.openssh
         pkgs.systemd
         abi1OnlyConfig
         abi1OnlyConfig.config
@@ -421,7 +422,9 @@ in {
           {APR} verify --registry sysreg
           git -C "$REG_DIR" add -A
           git -C "$REG_DIR" \
-            -c gpg.format=ssh -c user.signingkey="$KEY" \
+            -c gpg.format=ssh \
+            -c gpg.ssh.program='${pkgs.openssh}/bin/ssh-keygen' \
+            -c user.signingkey="$KEY" \
             commit -S -m 'publish: configuration ABI fixtures'
           mkdir -p /var/lib/sysreg-cache
           {APR} release 1.0.0 \
