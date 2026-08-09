@@ -990,7 +990,7 @@ fn baked_genesis_snapshot(world: &World) -> QemuBakedGenesisSnapshot {
 }
 
 fn launch_command_without_qmp() -> Result<QemuLaunchCommand, Box<dyn Error>> {
-    Ok(QemuLaunchCommandBuilder::new(
+    Ok(QemuLaunchCommandBuilder::new_for_live_gate(
         LaunchProfileCandidate::default().try_into_deterministic()?,
         QemuVmLaunchConfig::new(
             "vm-a",
@@ -1001,7 +1001,9 @@ fn launch_command_without_qmp() -> Result<QemuLaunchCommand, Box<dyn Error>> {
         QemuLaunchPluginConfig::new(
             "/nix/store/00000000000000000000000000000000-crucible-qemu-plugin/lib/crucible.so",
             0,
-        ),
+        )
+        .with_fault_target_node("vm-a"),
+        crate::LivePluginGuestArchitecture::X86_64,
     )
     .build()?)
 }

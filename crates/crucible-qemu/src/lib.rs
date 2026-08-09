@@ -121,7 +121,7 @@ pub use exact_snapshot_policy::{
     QemuReplayOracleValidation,
 };
 pub use fault_action_sink::QemuFaultActionSink;
-pub use fault_capability::QemuFaultCapabilityRequirement;
+pub use fault_capability::{QemuFaultCapabilityRequirement, QemuTargetManifestRequirement};
 pub use gdbstub_proxy::{
     QemuGdbstubBreakpointPolicy, QemuGdbstubProxy, QemuGdbstubProxyError, QemuGdbstubProxyListener,
     QemuGdbstubProxyServer, QemuGdbstubProxySessionReport,

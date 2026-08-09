@@ -19,6 +19,9 @@ use crucible_qemu::{
     run_single_vm_fingerprint_gate, validate_x86_whitebox_hmp_mtree,
 };
 
+#[path = "support/mod.rs"]
+mod support;
+
 #[test]
 fn gate_any_guest_launch_profile_requires_host_side_guest_operation() {
     let profile = LaunchProfileCandidate::default()
@@ -192,13 +195,16 @@ fn launch_command(whitebox: QemuLaunchPluginSwitch) -> QemuLaunchCommand {
         vm,
         "/nix/store/qemu/bin/qemu-system-x86_64",
         plugin,
+        support::x86_fault_requirement("any-guest-node", "qemu64-x86_64-cpu"),
     )
     .build()
     .unwrap_or_else(|error| panic!("launch command should build: {error}"))
 }
 
 fn whitebox_plugin_config(path: &str, whitebox: QemuLaunchPluginSwitch) -> QemuLaunchPluginConfig {
-    let config = QemuLaunchPluginConfig::new(path, 0).with_whitebox(whitebox);
+    let config = QemuLaunchPluginConfig::new(path, 0)
+        .with_fault_target_node("any-guest-node")
+        .with_whitebox(whitebox);
     if whitebox == QemuLaunchPluginSwitch::Off {
         return config;
     }

@@ -23,6 +23,9 @@ mod launch_artifacts;
 
 use fingerprint_options::validated_whitebox_setup;
 
+#[path = "support/mod.rs"]
+mod support;
+
 fn default_profile() -> DeterministicLaunchProfile {
     match DeterministicLaunchProfile::conservative_default() {
         Ok(profile) => profile,
@@ -35,6 +38,15 @@ fn default_plugin_config() -> QemuLaunchPluginConfig {
         "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
         0,
     )
+    .with_fault_target_node("vm-a")
+}
+
+fn default_fault_node() -> crucible::model::WorldNodeFaultCapabilities {
+    support::x86_fault_node("vm-a", "qemu64-x86_64-cpu")
+}
+
+fn default_fault_requirement() -> crucible_qemu::QemuFaultCapabilityRequirement {
+    support::x86_fault_requirement("vm-a", "qemu64-x86_64-cpu")
 }
 
 fn default_vm_config() -> QemuVmLaunchConfig {
@@ -79,6 +91,7 @@ fn default_launch_command() -> QemuLaunchCommand {
             default_vm_config(),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("default QEMU launch command failed: {error}"))
 }
@@ -1172,6 +1185,7 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
             "/nix/store/66666666666666666666666666666666-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
             2,
         )
+        .with_fault_target_node("vm-a")
         .with_whitebox(QemuLaunchPluginSwitch::On)
         .with_whitebox_setup(validated_whitebox_setup())
         .with_coverage(QemuLaunchPluginSwitch::On);
@@ -1181,7 +1195,12 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
     );
     assert_eq!(plugin_config.plugin_args_raw(), expected_plugin_args);
     let command = default_profile()
-        .qemu_launch_command(vm_config, default_qemu_binary(), plugin_config)
+        .qemu_launch_command(
+            vm_config,
+            default_qemu_binary(),
+            plugin_config,
+            &default_fault_node(),
+        )
         .unwrap_or_else(|error| panic!("complete plugin launch command should build: {error}"));
     assert!(command.args().windows(2).any(|window| {
         window[0] == "-plugin"
@@ -1218,7 +1237,8 @@ fn firmware_boot_omits_direct_kernel_and_has_explicit_identity() {
         .qemu_launch_command(
             firmware_boot_vm_config(),
             default_qemu_binary(),
-            default_plugin_config(),
+            default_plugin_config().with_fault_target_node("vm-firmware"),
+            &support::x86_fault_node("vm-firmware", "qemu64-x86_64-cpu"),
         )
         .unwrap_or_else(|error| panic!("firmware boot launch should build: {error}"));
 
@@ -1245,7 +1265,12 @@ fn firmware_boot_rejects_initrd_without_direct_kernel() {
         "/nix/store/55555555555555555555555555555555-crucible-initrd/initrd",
     ));
     let error = default_profile()
-        .qemu_launch_command(vm, default_qemu_binary(), default_plugin_config())
+        .qemu_launch_command(
+            vm,
+            default_qemu_binary(),
+            default_plugin_config().with_fault_target_node("vm-firmware"),
+            &support::x86_fault_node("vm-firmware", "qemu64-x86_64-cpu"),
+        )
         .unwrap_err();
 
     assert_eq!(error, QemuLaunchCommandError::InitrdWithoutKernel);
@@ -1259,6 +1284,7 @@ fn launch_command_hash_material_feeds_scenario_identity() {
             default_vm_config(),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("default launch command should build: {error}"));
     let repeated = profile
@@ -1266,6 +1292,7 @@ fn launch_command_hash_material_feeds_scenario_identity() {
             default_vm_config(),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("repeated launch command should build: {error}"));
     let changed_slot = profile
@@ -1275,7 +1302,9 @@ fn launch_command_hash_material_feeds_scenario_identity() {
             QemuLaunchPluginConfig::new(
                 "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
                 1,
-            ),
+            )
+            .with_fault_target_node("vm-a"),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("changed-slot launch command should build: {error}"));
     let changed_kernel = profile
@@ -1293,6 +1322,7 @@ fn launch_command_hash_material_feeds_scenario_identity() {
             ),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("changed-kernel launch command should build: {error}"));
     let changed_qemu = profile
@@ -1300,6 +1330,7 @@ fn launch_command_hash_material_feeds_scenario_identity() {
             default_vm_config(),
             "/nix/store/88888888888888888888888888888888-aos-qemu/bin/qemu-system-x86_64",
             default_plugin_config(),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("changed-qemu launch command should build: {error}"));
     let changed_path = profile
@@ -1309,7 +1340,9 @@ fn launch_command_hash_material_feeds_scenario_identity() {
             QemuLaunchPluginConfig::new(
                 "/nix/store/99999999999999999999999999999999-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
                 0,
-            ),
+            )
+            .with_fault_target_node("vm-a"),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("changed-path launch command should build: {error}"));
 
@@ -1352,6 +1385,42 @@ fn launch_command_hash_material_feeds_scenario_identity() {
 }
 
 #[test]
+fn launch_rejects_world_node_cpu_and_architecture_identity_mismatches() {
+    let profile = default_profile();
+    let wrong_node = support::x86_fault_node("vm-b", "qemu64-x86_64-cpu");
+    assert_eq!(
+        profile.qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config(),
+            &wrong_node,
+        ),
+        Err(QemuLaunchCommandError::FaultCapabilityNodeMismatch)
+    );
+
+    let wrong_cpu = support::x86_fault_node("vm-a", "other-x86_64-cpu");
+    assert_eq!(
+        profile.qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config(),
+            &wrong_cpu,
+        ),
+        Err(QemuLaunchCommandError::FaultCapabilityCpuModelMismatch)
+    );
+
+    assert_eq!(
+        profile.qemu_launch_command(
+            default_vm_config(),
+            "/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-aarch64",
+            default_plugin_config(),
+            &default_fault_node(),
+        ),
+        Err(QemuLaunchCommandError::FaultCapabilityArchitectureMismatch)
+    );
+}
+
+#[test]
 fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
     let profile = default_profile();
 
@@ -1361,6 +1430,7 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
             default_vm_config(),
             "",
             default_plugin_config(),
+            default_fault_requirement(),
         )
         .build(),
         Err(QemuLaunchCommandError::InvalidLaunchText {
@@ -1371,7 +1441,8 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
         profile.qemu_launch_command(
             default_vm_config(),
             "qemu-system-x86_64",
-            default_plugin_config()
+            default_plugin_config(),
+            &default_fault_node(),
         ),
         Err(QemuLaunchCommandError::InvalidStorePath {
             field: "qemu_executable",
@@ -1383,6 +1454,7 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
             default_vm_config(),
             default_qemu_binary(),
             QemuLaunchPluginConfig::new("/nix/store/bad,plugin/lib/libcrucible_qemu_plugin.so", 0,),
+            &default_fault_node(),
         ),
         Err(QemuLaunchCommandError::PluginPathContainsComma)
     );
@@ -1390,7 +1462,8 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
         profile.qemu_launch_command(
             default_vm_config(),
             default_qemu_binary(),
-            QemuLaunchPluginConfig::new("plugin.so", 0),
+            QemuLaunchPluginConfig::new("plugin.so", 0).with_fault_target_node("vm-a"),
+            &default_fault_node(),
         ),
         Err(QemuLaunchCommandError::InvalidStorePath {
             field: "plugin_path",
@@ -1409,6 +1482,7 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
             ),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         ),
         Err(QemuLaunchCommandError::InvalidStorePath {
             field: "kernel_path",
@@ -1427,6 +1501,7 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
             ),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         ),
         Err(QemuLaunchCommandError::InvalidStorePath {
             field: "kernel_path",
@@ -1438,6 +1513,7 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
             default_vm_config().with_root_overlay_file_name("../root.qcow2"),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         ),
         Err(QemuLaunchCommandError::InvalidOverlayFileName {
             file_name: String::from("../root.qcow2"),

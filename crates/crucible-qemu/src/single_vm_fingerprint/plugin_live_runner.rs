@@ -229,6 +229,7 @@ impl PluginFingerprintRunner {
         // A single production control plugin with fingerprint sampling enabled:
         // the Rust plugin is the sole time authority and the fingerprint author.
         let mut plugin = QemuLaunchPluginConfig::new(path_text(&self.config.plugin), RUNNER_SLOT)
+            .with_fault_target_node(RUNNER_NODE)
             .with_fingerprint(QemuLaunchPluginSwitch::On);
         if self.config.synchronous_oracle {
             plugin = plugin.with_fingerprint_oracle(QemuLaunchPluginSwitch::On);
@@ -267,11 +268,12 @@ impl PluginFingerprintRunner {
                 }
             }
         }
-        let mut command_builder = QemuLaunchCommandBuilder::new(
+        let mut command_builder = QemuLaunchCommandBuilder::new_for_live_gate(
             profile,
             self.vm_launch_config(),
             path_text(&self.config.qemu_executable),
             plugin,
+            crate::LivePluginGuestArchitecture::X86_64,
         );
         if let (Some(enabled), Some(path)) =
             (self.config.translation_prefetch_experiment, &report_path)

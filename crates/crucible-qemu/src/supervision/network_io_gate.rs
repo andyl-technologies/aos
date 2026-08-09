@@ -252,12 +252,14 @@ fn run_once(
 
     let qmp_config = QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
         .map_err(|source| QemuLiveNetworkIoGateError::LaunchCommand { source })?;
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
-    let command = QemuLaunchCommandBuilder::new(
+    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fault_target_node(GATE_NODE);
+    let command = QemuLaunchCommandBuilder::new_for_live_gate(
         profile,
         vm_launch_config(config),
         path_text(&config.qemu_executable),
         plugin,
+        crate::LivePluginGuestArchitecture::X86_64,
     )
     .with_qmp(qmp_config.clone())
     .build()

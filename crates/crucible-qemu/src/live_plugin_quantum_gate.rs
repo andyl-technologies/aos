@@ -468,12 +468,14 @@ fn run_one_scenario(
 
     // A single production control plugin, no observation plugin: the Rust plugin
     // is the sole sim_shmem dispatch authority for virtual-time advancement.
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
+    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fault_target_node(GATE_NODE);
     let command = profile
-        .qemu_launch_command(
+        .qemu_launch_command_for_live_gate(
             vm_launch_config(config),
             path_text(&config.qemu_executable),
             plugin,
+            crate::LivePluginGuestArchitecture::X86_64,
         )
         .map_err(|source| LivePluginQuantumGateError::LaunchCommand { source })?;
 

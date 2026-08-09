@@ -1130,9 +1130,14 @@ pub(super) fn build_live_node(
         .map_err(|source| QemuLiveNodeStepGateError::QmpChannelConfig { source })?;
     let vm = vm_launch_config(config, identity.node);
     let plugin = live_node_plugin_config(config, &profile, &vm, run_directory, identity.node)?;
-    let mut command =
-        QemuLaunchCommandBuilder::new(profile, vm, path_text(&config.qemu_executable), plugin)
-            .with_qmp(qmp_config.clone());
+    let mut command = QemuLaunchCommandBuilder::new_for_live_gate(
+        profile,
+        vm,
+        path_text(&config.qemu_executable),
+        plugin,
+        crate::LivePluginGuestArchitecture::X86_64,
+    )
+    .with_qmp(qmp_config.clone());
     if let Some(gdbstub) = &config.gdbstub {
         command = command.with_gdbstub(gdbstub.clone());
     }

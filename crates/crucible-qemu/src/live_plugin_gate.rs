@@ -282,13 +282,15 @@ pub fn run_live_plugin_install_gate(
     // is the sole sim_shmem dispatch authority for virtual-time advancement.
     let vm = vm_launch_config(config);
     let plugin_base = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fault_target_node(GATE_NODE)
         .with_fingerprint(config.fingerprint);
     let (plugin, whitebox_setup_region) = if config.whitebox == crate::QemuLaunchPluginSwitch::On {
         let probe_command = profile
-            .qemu_launch_command(
+            .qemu_launch_command_for_live_gate(
                 vm.clone(),
                 path_text(&config.qemu_executable),
                 plugin_base.clone(),
+                config.architecture,
             )
             .map_err(|source| LivePluginInstallGateError::LaunchCommand { source })?;
         let validation = match config.architecture {
@@ -314,7 +316,12 @@ pub fn run_live_plugin_install_gate(
         (plugin, None)
     };
     let command = profile
-        .qemu_launch_command(vm, path_text(&config.qemu_executable), plugin)
+        .qemu_launch_command_for_live_gate(
+            vm,
+            path_text(&config.qemu_executable),
+            plugin,
+            config.architecture,
+        )
         .map_err(|source| LivePluginInstallGateError::LaunchCommand { source })?;
 
     let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);

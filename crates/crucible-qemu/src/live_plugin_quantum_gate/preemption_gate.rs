@@ -178,12 +178,14 @@ fn run_preemption_scenario(
             source,
         })?;
     let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fault_target_node(GATE_NODE)
         .with_fingerprint(QemuLaunchPluginSwitch::On);
     let command = profile
-        .qemu_launch_command(
+        .qemu_launch_command_for_live_gate(
             vm_launch_config(config),
             path_text(&config.qemu_executable),
             plugin,
+            crate::LivePluginGuestArchitecture::X86_64,
         )
         .map_err(|source| LivePluginQuantumGateError::LaunchCommand { source })?;
     let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);

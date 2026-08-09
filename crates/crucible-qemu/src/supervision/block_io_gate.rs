@@ -415,18 +415,20 @@ fn run_one_scenario(
             source,
         })?;
 
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
+    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fault_target_node(GATE_NODE);
     // No QMP and no QemuNode here: this gate drives a raw hot path so the
     // block ring can be serviced concurrently with getting the guest off the boot
     // barrier. With a block device attached, unserviced SLOT_BLK_IO blocks the
     // guest in early boot, so the node-step priming quantum (which does not
     // service block I/O) cannot even release the boot barrier -- the node bring-up
     // is infeasible until this device-horizon behaviour is understood.
-    let mut command_builder = QemuLaunchCommandBuilder::new(
+    let mut command_builder = QemuLaunchCommandBuilder::new_for_live_gate(
         profile,
         vm_launch_config(config),
         path_text(&config.qemu_executable),
         plugin,
+        crate::LivePluginGuestArchitecture::X86_64,
     );
     if config.transport_reset_probe {
         command_builder = command_builder.with_console_capture();
