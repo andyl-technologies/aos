@@ -354,7 +354,7 @@ in
             "$out/assets/_assets/hub-console-''${console_version}_bg.wasm"
           cp ${aos-hub-console-dist}/hub-console.css \
             "$out/assets/_assets/hub-console-$console_version.css"
-          printf "import init, { mount } from './hub-console-%s.js';\n\nawait init(new URL('./hub-console-%s_bg.wasm', import.meta.url));\nmount();\n" \
+          printf "import init, { mount } from './hub-console-%s.js';\n\nawait init({ module_or_path: new URL('./hub-console-%s_bg.wasm', import.meta.url) });\nmount();\n" \
             "$console_version" "$console_version" \
             > "$out/assets/_assets/hub-console-bootstrap-$console_version.js"
           printf '/_assets/*\n  Cache-Control: public, max-age=86400\n\n/_assets/hub-console*\n  Cache-Control: public, max-age=31536000, immutable\n' \
