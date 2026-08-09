@@ -1538,7 +1538,12 @@ fn reusable_slot_uki_path(
         .iter()
         .rev()
         .find(|generation| generation.slot == slot)?;
-    let entry = resolve_installed_uki_entry(layout.boot_root, &previous.uki_path).ok()?;
+    let entry = resolve_installed_uki_entry_with(
+        layout.boot_root,
+        &previous.uki_path,
+        ExhaustedEntry::Allow,
+    )
+    .ok()?;
     let parent = Path::new(&previous.uki_path).parent().map_or_else(
         || layout.boot_root.to_path_buf(),
         |path| layout.boot_root.join(path),
@@ -1869,6 +1874,20 @@ pub async fn rollback_image_generation(
 }
 
 fn resolve_installed_uki_entry(boot_root: &Path, recorded: &str) -> Result<String> {
+    resolve_installed_uki_entry_with(boot_root, recorded, ExhaustedEntry::Reject)
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ExhaustedEntry {
+    Reject,
+    Allow,
+}
+
+fn resolve_installed_uki_entry_with(
+    boot_root: &Path,
+    recorded: &str,
+    exhausted_entry: ExhaustedEntry,
+) -> Result<String> {
     let path = Path::new(recorded);
     if path.is_absolute()
         || recorded.is_empty()
@@ -1892,7 +1911,7 @@ fn resolve_installed_uki_entry(boot_root: &Path, recorded: &str) -> Result<Strin
         .map_or_else(|| boot_root.to_path_buf(), |parent| boot_root.join(parent));
     let exact = directory.join(file);
     if exact.is_file() {
-        if entry_remaining_tries(file) == Some(0) {
+        if entry_remaining_tries(file) == Some(0) && exhausted_entry == ExhaustedEntry::Reject {
             bail!(
                 "recorded UKI {recorded:?} has exhausted its boot count; restage it before selecting it as default"
             );
@@ -1919,7 +1938,9 @@ fn resolve_installed_uki_entry(boot_root: &Path, recorded: &str) -> Result<Strin
         })
         .collect::<Vec<_>>();
     let exhausted = counted.iter().any(|(remaining, _)| *remaining == 0);
-    counted.retain(|(remaining, _)| *remaining > 0);
+    if exhausted_entry == ExhaustedEntry::Reject {
+        counted.retain(|(remaining, _)| *remaining > 0);
+    }
     counted.sort();
     if let Some((_, name)) = counted.pop() {
         return Ok(name);
@@ -5358,6 +5379,15 @@ mod tests {
         let error = resolve_installed_uki_entry(tmp.path(), "EFI/Linux/aos-server-2+3.efi")
             .expect_err("an exhausted image must not become the next boot default");
         assert!(error.to_string().contains("exhausted"));
+        assert_eq!(
+            resolve_installed_uki_entry_with(
+                tmp.path(),
+                "EFI/Linux/aos-server-2+3.efi",
+                ExhaustedEntry::Allow,
+            )
+            .unwrap(),
+            "aos-server-2+0-3.efi"
+        );
     }
 
     #[test]

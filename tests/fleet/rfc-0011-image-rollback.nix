@@ -18,7 +18,7 @@
     pkgs.jq
   ];
 
-  failurePreStart = ''read -r cmdline < /proc/cmdline; case " $cmdline " in *" systemd.verity_root_data=/dev/disk/by-partlabel/root-b "*) if [ ! -e /var/lib/aos-test/allow-eval ]; then mkdir -p /run/aos; echo invalid-boot-count-fixture > /run/aos/manifest.json; exit 1; fi ;; esac'';
+  failurePreStart = ''read -r cmdline < /proc/cmdline; case " $cmdline " in *" systemd.verity_root_data=/dev/disk/by-partlabel/root-b "*) if [ ! -e /var/lib/aos-test/allow-eval ]; then exit 1; fi ;; esac'';
   bootCommitCondition =
     "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
   candidateAgentUnit = pkgs.writeTextFile {
@@ -37,12 +37,34 @@
       Environment=PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin
     '';
   };
+  initrdControlFallback = {
+    aos.boot.initrd.extraPackages = [pkgs.aos-test-agent];
+    boot.initrd.systemd.services.aos-test-agent-initrd-fallback = {
+      description = "Expose test control for stalled initrd boots";
+      requiredBy = ["initrd-fs.target"];
+      before = ["initrd-fs.target"];
+      unitConfig.DefaultDependencies = "no";
+      environment.PATH = "${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
+      serviceConfig = {
+        Type = "simple";
+        Restart = "on-failure";
+        RestartSec = "1s";
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+      };
+      script = ''
+        echo "starting initrd test control"
+        exec ${pkgs.aos-test-agent}/share/aos-test-agent/aos-test-agent
+      '';
+    };
+  };
 
   # The candidate deliberately changes only image identity. Keeping the module
   # ABI fixed makes the reboot test isolate image selection and first-boot
   # rebinding rather than cross-ABI migration.
   candidate = mkSystem [
     ../../systems/server-verity.nix
+    initrdControlFallback
     {
       aos.system.version = "9999.0.0-rfc0011";
       # The fleet machine module bakes deterministic interface naming into the
@@ -101,6 +123,7 @@
   # transition path.
   targetSystem = mkSystem [
     ../../systems/server-verity.nix
+    initrdControlFallback
     {
       environment.systemPackages = testPackages;
     }
@@ -146,7 +169,7 @@ in {
       # Staging retains both evaluator closures before overwriting a slot and
       # concurrently holds the downloaded raw-image NAR. Give the lifecycle
       # fixture enough durable workspace to exercise that safety property.
-      imageDiskMiB = 32768;
+      imageDiskMiB = 49152;
       # Importing the multi-gigabyte raw image NAR runs the package client and
       # nix-store concurrently. Leave enough headroom for both decompression
       # pipelines so the acceptance test measures rollback behavior rather
@@ -159,7 +182,7 @@ in {
       # replaces the image-baked test identity.
       metadata."host.nix" = ''
         {
-          aos.provisioning.storage.partitions.var.sizeMin = "16G";
+          aos.provisioning.storage.partitions.var.sizeMin = "24G";
           aos.networking.hostName = "target";
           aos.networking.useDHCP = false;
           aos.networking.interfaces.eth0.address = "192.168.50.11/24";
@@ -232,6 +255,34 @@ in {
           )
 
 
+      def assert_switched_root():
+          try:
+              target.wait_until_succeeds(
+                  "test ! -e /etc/initrd-release", timeout=60
+              )
+          except Exception:
+              print(target.succeed("cat /proc/cmdline 2>&1 || true"))
+              print(target.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
+              print(target.succeed("systemctl --failed --no-pager 2>&1 || true"))
+              for unit in (
+                  "mount-var.service",
+                  "nix-overlay-setup.service",
+                  "aos-seed-profiles.service",
+                  "run-etc-setup.service",
+                  "aos-machine-id.service",
+                  "etc-overlay-setup.service",
+                  "initrd-fs.target",
+                  "initrd-switch-root.target",
+              ):
+                  print(target.succeed(
+                      f"systemctl status {unit} --no-pager 2>&1 || true"
+                  ))
+                  print(target.succeed(
+                      f"journalctl -b -u {unit} --no-pager 2>&1 || true"
+                  ))
+              raise
+
+
       def wait_for_failed_candidate_pipeline():
           target.wait_until_succeeds(
               "systemctl is-active --quiet multi-user.target", timeout=420
@@ -268,16 +319,26 @@ in {
                   ))
               print(target.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
               raise
-          target.wait_until_succeeds(
-              "systemctl is-failed --quiet aos-graph-compile.service", timeout=120
+          target.succeed("test ! -e /run/aos/manifest.json")
+          target.succeed(
+              "test \"$(systemctl show -p Result --value "
+              "aos-graph-compile.service)\" = success"
           )
           target.succeed(
-              "systemctl show -p Result --value "
-              "aos-image-boot-commit.service | grep -Fx success"
+              "test \"$(systemctl show -p ActiveState --value "
+              "aos-graph-compile.service)\" = inactive"
           )
           target.succeed(
-              "systemctl show -p ActiveState --value "
-              "aos-image-boot-commit.service | grep -Fx inactive"
+              "test \"$(systemctl show -p ConditionResult --value "
+              "aos-graph-compile.service)\" = no"
+          )
+          target.succeed(
+              "test \"$(systemctl show -p Result --value "
+              "aos-image-boot-commit.service)\" = success"
+          )
+          target.succeed(
+              "test \"$(systemctl show -p ActiveState --value "
+              "aos-image-boot-commit.service)\" = inactive"
           )
 
 
@@ -495,9 +556,9 @@ in {
 
       target.succeed(textwrap.dedent(f"""
           set -eu
-          mkdir -p /etc/apm/registries.d /var/lib/apm/registries \\
+          mkdir -p /var/etc/apm/registries.d /var/lib/apm/registries \\
             /var/lib/apm/remote /var/lib/apm/cache
-          cat > /etc/apm/registries.d/sysreg.toml <<'EOF'
+          cat > /var/etc/apm/registries.d/sysreg.toml <<'EOF'
           [registry]
           name = "sysreg"
           url = "git://registry:9418/sysreg"
@@ -569,6 +630,7 @@ in {
       ]
       for attempt, expected_entry in enumerate(expected_counted, start=1):
           target.reboot(timeout=600)
+          assert_switched_root()
           wait_for_failed_candidate_pipeline()
           attempted = image_state()
           assert attempted["running"] == 2, (attempt, attempted)
