@@ -1479,6 +1479,12 @@ complete from model-double evidence.
   icount, and reduced runtime across reverse and repeated goto. It also exposed
   and fixed coordinate evidence selection that had aliased an earlier virtual
   time to the latest boundary sharing the same schedule-empty configuration.
+  A subsequent packaged-suite pass reproduced that result outside the Nix
+  checks with 65 live events at the baseline and 64 after reverse, distinct
+  landed virtual-time and node-icount coordinates, three successful gateway
+  generations, and one stable GDB connection across reverse, repeated goto, and
+  fork. T-DBG-10 remains open only because its acceptance gate shares
+  T-DBG-14's required AArch64 parity leg.
 - [ ] **T-DBG-11** Enforce debugger identities, capability roles, one-controller
   leases, Unix peer authentication, remote HTTP/2+mTLS relay, and explicit trusted
   unauthenticated bind policy in the daemon and CLI. — satisfies [DBG-43], [DBG-44];
@@ -1633,4 +1639,10 @@ complete from model-double evidence.
   writes directly replayable canonical bytes to the trace file. The runner uses
   bounded process groups and hard TERM/KILL deadlines. This
   paragraph records the acceptance design only; T-DBG-14 remains open until the
-  runner's live x86_64 and AArch64 evidence is captured and reviewed.
+  runner's live x86_64 and AArch64 evidence is captured and reviewed. A
+  packaged-suite x86_64 execution outside the Nix checks now passes every
+  listed matrix assertion, including non-empty reverse history, landed-coordinate
+  equality, atomic replacement, scheduler run control, hardware-breakpoint
+  retention, and guest exec/PTY/SSH. No retained AArch64 kernel/root-image pair
+  was available to the suite, so that successful x86_64 evidence does not close
+  the cross-architecture task.
