@@ -240,6 +240,7 @@ SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
   crucible-fault-safe-boundary exact icount/quiescent commit      D FAULT-BOUNDARY, FAULT-AUTH, DET-1
   crucible-memory-boundary-mutate atomic GPA/GVA RAM mutation    F QFP-MEM-1, QFP-MEM-2, FAULT-ORDER
   crucible-memory-access-faults typed CPU/DMA memory rules       D QFP-MEMA-1, QFP-MEMA-2, FAULT-ORDER
+  crucible-architecture-register-faults typed CPU registers     D QFP-REG-1, QFP-REG-2, FAULT-ORDER
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse

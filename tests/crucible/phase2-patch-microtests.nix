@@ -339,6 +339,12 @@
       };
     }
     {
+      patch = "0051-crucible-add-architecture-register-fault-mutations.patch";
+      check = import ./phase2-qemu-register-mutation.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
       patch = "0060-crucible-block-typed-errors.patch";
       check = import ./phase1-qemu-block-shmem.nix {
         inherit pkgs lib qemuPackage;
