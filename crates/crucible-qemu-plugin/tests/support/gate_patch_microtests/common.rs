@@ -66,6 +66,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0047-crucible-fault-command-abi.patch",
     "0048-crucible-fault-safe-boundary.patch",
     "0049-crucible-memory-boundary-mutate.patch",
+    "0050-crucible-memory-access-faults.patch",
     "0060-crucible-block-typed-errors.patch",
     "0061-crucible-block-discard.patch",
     "0062-crucible-block-transport-reset.patch",
