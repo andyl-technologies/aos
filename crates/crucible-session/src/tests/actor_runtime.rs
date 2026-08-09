@@ -650,6 +650,48 @@ pub(super) async fn session_actor_terminalizes_mismatched_debug_runtime_evidence
 }
 
 #[tokio::test]
+pub(super) async fn rejected_direct_debug_command_does_not_terminate_the_actor() {
+    let (root, _first, _second, graph) = debug_time_travel_fixture();
+    let engine = Engine::new(root.clone(), graph, DebugGdbLoop)
+        .with_white_box_policies([(node_id("guest-a"), WhiteBoxPolicy::Enabled)]);
+    let (sender, receiver) = mpsc::channel(5);
+    let (reverse_reply, reverse_receiver) = CommandReply::channel();
+    for command in [
+        SessionCommand::Start,
+        SessionCommand::AttachGdb {
+            node: node_id("guest-a"),
+            listen: gdb_listen("127.0.0.1:9000"),
+            debug_genesis: None,
+            reply: CommandReply::discard(),
+        },
+        SessionCommand::DebugReverseStep {
+            request: DebugReverseStepRequest::new(root, DebugReverseStepGrain::Quantum, Vec::new()),
+            reply: reverse_reply,
+        },
+        SessionCommand::Stop,
+    ] {
+        sender
+            .send(command)
+            .await
+            .unwrap_or_else(|error| panic!("debug command should enqueue: {error}"));
+    }
+
+    let report = SessionActor::new(engine, receiver)
+        .run()
+        .await
+        .unwrap_or_else(|error| panic!("rejected debug command should be recoverable: {error}"));
+    let rejection = receive_reply_error::<DebugReverseStepReport>(reverse_receiver).await;
+
+    assert!(matches!(rejection, SessionError::Engine(_)));
+    assert!(matches!(
+        report.final_snapshot.state,
+        EngineState::Stopped {
+            outcome: Outcome::Stopped,
+        }
+    ));
+}
+
+#[tokio::test]
 pub(super) async fn session_actor_yields_after_command_driven_step() {
     let scenario = generated_scenario(16);
     let config = Configuration::genesis(scenario.clone());
@@ -1126,6 +1168,7 @@ pub(super) async fn session_actor_state_transition_bus_broadcasts_actor_owned_tr
     assert_eq!(stopped.from.state_kind, LiveStateKind::Paused);
     assert_eq!(stopped.to.state_kind, LiveStateKind::Stopped);
     assert_eq!(stopped.to.outcome, Some(OutcomeKind::Stopped));
+    assert_eq!(stopped.to.state_transition_sequence, stopped.sequence);
 }
 
 #[tokio::test]
@@ -1141,6 +1184,7 @@ pub(super) async fn session_state_transition_stream_reports_lag_without_backpres
         event_log_len: 0,
         quanta_stepped: 0,
         control_acknowledgements: 0,
+        state_transition_sequence: 0,
     };
 
     for sequence in 0..=usize_to_u64(SESSION_STATE_BROADCAST_CAPACITY) {
@@ -1157,6 +1201,45 @@ pub(super) async fn session_state_transition_stream_reports_lag_without_backpres
         Err(SessionStateTransitionStreamError::Lagged { skipped }) => assert!(skipped > 0),
         Ok(frame) => panic!("lagged state stream should not deliver frame {frame:?}"),
     }
+}
+
+#[tokio::test]
+pub(super) async fn state_transition_floor_suppresses_pre_snapshot_frames() {
+    let bus = SessionStateTransitionBus::new();
+    let mut stream = bus.subscribe();
+    let view = LiveSnapshotView {
+        state_kind: LiveStateKind::Paused,
+        outcome: None,
+        terminal_savepoint: None,
+        configuration: crucible::ContentHash::from_bytes(b"state-transition-floor"),
+        virtual_time: VirtualTime { ticks: 3 },
+        event_log_len: 0,
+        quanta_stepped: 3,
+        control_acknowledgements: 3,
+        state_transition_sequence: 3,
+    };
+    for sequence in 1..=3 {
+        let transition = LiveSnapshotView {
+            state_transition_sequence: sequence,
+            ..view
+        };
+        bus.publish(SessionStateTransitionFrame {
+            sequence,
+            from_state: EngineState::Loaded,
+            to_state: EngineState::Paused {
+                reason: PauseReason::UserRequested,
+            },
+            from: transition,
+            to: transition,
+        });
+    }
+
+    stream.set_sequence_floor(2);
+    let update = stream
+        .recv_latest()
+        .await
+        .unwrap_or_else(|| panic!("post-snapshot transition should remain queued"));
+    assert_eq!(update.sequence, 3);
 }
 
 #[test]
@@ -1914,126 +1997,10 @@ impl QuantumLoop for AppendingLoop {
     }
 }
 
-pub(super) struct DebugGdbLoop;
+#[path = "actor_runtime/debug_loops.rs"]
+mod debug_loops;
 
-impl QuantumLoop for DebugGdbLoop {
-    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        Ok(QuantumOutcome {
-            configuration: request.configuration,
-            frontier: VirtualTime::default(),
-            advanced_node: None,
-            resolved_events: Vec::new(),
-            decisions: Vec::new(),
-            event_log_entries: Vec::new(),
-            event_log_segment_bytes: Vec::new(),
-            event_log_segment_text: String::new(),
-            event_log_segment_hash: None,
-            event_log_offset: crucible::EventLogOffset::default(),
-            scheduler_quiescence: None,
-        })
-    }
-
-    fn open_gdbstub(
-        &mut self,
-        node: NodeId,
-        listen: GdbListen,
-    ) -> Result<GdbAttachInfo, SchedulerError> {
-        GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen).map_err(SchedulerError::from)
-    }
-
-    fn reposition_debug_runtime(
-        &mut self,
-        request: DebugRuntimeRepositionRequest,
-    ) -> Result<crucible::DebugRuntimeRepositionReport, SchedulerError> {
-        let next_endpoint = if request.current_qemu_gdbstub.as_str().ends_with(":9001") {
-            "tcp:127.0.0.1:9002"
-        } else {
-            "tcp:127.0.0.1:9001"
-        };
-        let endpoint = DebugGdbEndpoint::new("qemu_gdbstub", next_endpoint)
-            .unwrap_or_else(|error| panic!("replacement endpoint should be valid: {error}"));
-        Ok(crucible::DebugRuntimeRepositionReport::completed(
-            &request, endpoint, 1,
-        ))
-    }
-}
-
-pub(super) struct MismatchingDebugRepositionLoop;
-
-impl QuantumLoop for MismatchingDebugRepositionLoop {
-    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        Ok(QuantumOutcome {
-            configuration: request.configuration,
-            frontier: VirtualTime::default(),
-            advanced_node: None,
-            resolved_events: Vec::new(),
-            decisions: Vec::new(),
-            event_log_entries: Vec::new(),
-            event_log_segment_bytes: Vec::new(),
-            event_log_segment_text: String::new(),
-            event_log_segment_hash: None,
-            event_log_offset: crucible::EventLogOffset::default(),
-            scheduler_quiescence: None,
-        })
-    }
-
-    fn open_gdbstub(
-        &mut self,
-        node: NodeId,
-        listen: GdbListen,
-    ) -> Result<GdbAttachInfo, SchedulerError> {
-        GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen).map_err(SchedulerError::from)
-    }
-
-    fn reposition_debug_runtime(
-        &mut self,
-        request: DebugRuntimeRepositionRequest,
-    ) -> Result<crucible::DebugRuntimeRepositionReport, SchedulerError> {
-        let endpoint = DebugGdbEndpoint::new("qemu_gdbstub", "tcp:127.0.0.1:9002")
-            .unwrap_or_else(|error| panic!("replacement endpoint should be valid: {error}"));
-        let mut report = crucible::DebugRuntimeRepositionReport::completed(&request, endpoint, 1);
-        report.gateway_generation = 0;
-        Ok(report)
-    }
-}
-
-pub(super) struct RejectingDebugRepositionLoop;
-
-impl QuantumLoop for RejectingDebugRepositionLoop {
-    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        Ok(QuantumOutcome {
-            configuration: request.configuration,
-            frontier: VirtualTime::default(),
-            advanced_node: None,
-            resolved_events: Vec::new(),
-            decisions: Vec::new(),
-            event_log_entries: Vec::new(),
-            event_log_segment_bytes: Vec::new(),
-            event_log_segment_text: String::new(),
-            event_log_segment_hash: None,
-            event_log_offset: crucible::EventLogOffset::default(),
-            scheduler_quiescence: None,
-        })
-    }
-
-    fn open_gdbstub(
-        &mut self,
-        node: NodeId,
-        listen: GdbListen,
-    ) -> Result<GdbAttachInfo, SchedulerError> {
-        GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen).map_err(SchedulerError::from)
-    }
-
-    fn reposition_debug_runtime(
-        &mut self,
-        _request: DebugRuntimeRepositionRequest,
-    ) -> Result<crucible::DebugRuntimeRepositionReport, SchedulerError> {
-        Err(BackendError::Rejected {
-            message: String::from("candidate runtime verification failed"),
-        }
-        .into())
-    }
-}
+pub(super) use debug_loops::*;
 
 pub(super) fn debug_time_travel_fixture()
 -> (Configuration, Configuration, Configuration, TemporalGraph) {

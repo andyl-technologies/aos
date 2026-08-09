@@ -3,6 +3,9 @@
 use super::*;
 use std::time::Duration;
 
+#[path = "actor/terminal.rs"]
+mod terminal;
+
 /// Error returned by the session actor or engine state machine.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SessionError {
@@ -127,6 +130,30 @@ pub enum SessionError {
         /// Node whose authored policy did not enable white-box access.
         node: String,
     },
+    /// Fork-time activation did not produce a valid feature advertisement.
+    #[error("guest introspection activation failed for node `{node}`: {reason}")]
+    GuestIntrospectionActivation {
+        /// Node whose dormant agent was activated.
+        node: String,
+        /// Stable activation or negotiation failure detail.
+        reason: String,
+    },
+    /// A guest request requires a capability that the activated agent did not advertise.
+    #[error("guest introspection capability `{capability}` is unavailable for node `{node}`")]
+    GuestIntrospectionCapabilityUnavailable {
+        /// Target guest node.
+        node: String,
+        /// Stable protocol capability label.
+        capability: &'static str,
+    },
+    /// Opening another guest channel would exceed the negotiated per-node limit.
+    #[error("guest introspection channel limit {max_channels} is exhausted for node `{node}`")]
+    GuestIntrospectionChannelLimit {
+        /// Target guest node.
+        node: String,
+        /// Agent-advertised maximum concurrent channels.
+        max_channels: u16,
+    },
     /// A resumed session does not carry event history before its checkpoint boundary.
     #[error(
         "debug operation {operation} reached the resumed event-history floor at sequence {floor}"
@@ -189,106 +216,10 @@ impl fmt::Display for DebugRuntimeRepositionEvidenceMismatch {
     }
 }
 
-pub(super) fn is_recoverable_command_rejection(
-    command: &SessionCommand,
-    error: &SessionError,
-) -> bool {
-    if matches!(error, SessionError::DebugHistoryUnavailable { .. })
-        && matches!(
-            command,
-            SessionCommand::DebugReverseStep { .. } | SessionCommand::DebugReverseContinue { .. }
-        )
-    {
-        return true;
-    }
-    let SessionCommand::Acknowledge { .. } = command else {
-        return false;
-    };
-    match error {
-        SessionError::InvalidTransition { .. }
-        | SessionError::InvalidEngineState { .. }
-        | SessionError::BreakpointConditionPrefix { .. }
-        | SessionError::UnsupportedBreakpointAction { .. }
-        | SessionError::UnsupportedBreakpointFault { .. }
-        | SessionError::BreakpointNotFound { .. }
-        | SessionError::DebugAttachRequired { .. }
-        | SessionError::DebugNonCanonicalBranchRequired { .. }
-        | SessionError::GuestIntrospectionNotAuthorized { .. }
-        | SessionError::DebugHistoryUnavailable { .. } => true,
-        SessionError::Engine(error) => is_recoverable_engine_rejection(error),
-        SessionError::Scheduler(error) => is_recoverable_scheduler_rejection(error),
-        SessionError::ChannelClosed
-        | SessionError::EventLogOffsetRegression { .. }
-        | SessionError::EventLogOffsetMismatch { .. }
-        | SessionError::ControlReplayBoundaryMismatch { .. }
-        | SessionError::ControlReplayFrontierMismatch { .. }
-        | SessionError::ControlReplayBatchMismatch { .. }
-        | SessionError::ControlReplayFinalSnapshotMismatch { .. }
-        | SessionError::DebugRuntimeRepositionMismatch(_) => false,
-    }
-}
+#[path = "actor/recoverability.rs"]
+mod recoverability;
 
-/// Distinguishes engine-driven failures from rejected operator commands.
-fn is_autonomous_actor_error(error: &SessionError) -> bool {
-    matches!(
-        error,
-        SessionError::Scheduler(_)
-            | SessionError::EventLogOffsetRegression { .. }
-            | SessionError::EventLogOffsetMismatch { .. }
-            | SessionError::BreakpointConditionPrefix { .. }
-            | SessionError::UnsupportedBreakpointAction { .. }
-            | SessionError::UnsupportedBreakpointFault { .. }
-            | SessionError::DebugRuntimeRepositionMismatch(_)
-    )
-}
-
-pub(super) fn is_recoverable_engine_rejection(error: &EngineError) -> bool {
-    matches!(
-        error,
-        EngineError::CheckpointNotRecorded { .. }
-            | EngineError::MissingBakedGenesis { .. }
-            | EngineError::PlanFaultUnknownNode { .. }
-            | EngineError::PlanFaultUnknownLink { .. }
-            | EngineError::PlanFaultUnknownLinkId { .. }
-            | EngineError::PlanFaultUnknownDevice { .. }
-            | EngineError::PlanHealUnknownTag { .. }
-            | EngineError::PropertyPredicateUnknownNode { .. }
-            | EngineError::PropertyPredicateUnknownAssertion { .. }
-            | EngineError::DebugAttachUnknownNode { .. }
-            | EngineError::DebugTargetResolverFailureNotFound { .. }
-            | EngineError::DebugTimeTravelCoordinateNotFound { .. }
-            | EngineError::DebugTimeTravelUnknownNode { .. }
-            | EngineError::NotImplemented { .. }
-            | EngineError::WorldNodeUnsupportedWorkload { .. }
-            | EngineError::WorldNodeUnsupportedWorkloadConfigTree { .. }
-            | EngineError::WorldNodeUnsupportedWorkloadPattern { .. }
-            | EngineError::WorldNodeUnsupportedWorkloadSpikeMode { .. }
-            | EngineError::WorldNodeUnsupportedWorkloadTimeSource { .. }
-            | EngineError::PlanFaultUnsupportedParam { .. }
-            | EngineError::DebugBreakpointRequiresAllowMutate { .. }
-            | EngineError::EventLogReplayUnsupported { .. }
-            | EngineError::SchedulePrefix(_)
-    )
-}
-
-pub(super) const fn is_recoverable_scheduler_rejection(error: &SchedulerError) -> bool {
-    match error {
-        SchedulerError::NotImplemented { .. }
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => true,
-        SchedulerError::Backend(error) => is_recoverable_backend_rejection(error),
-    }
-}
-
-pub(super) const fn is_recoverable_backend_rejection(error: &BackendError) -> bool {
-    match error {
-        BackendError::NotImplemented { .. }
-        | BackendError::Unsupported { .. }
-        | BackendError::Rejected { .. } => true,
-    }
-}
-
+pub(super) use recoverability::*;
 /// Evidence returned when a session actor exits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionRunReport {
@@ -598,11 +529,21 @@ impl<L> SessionActor<L> {
         let before_state = self.last_published_state.clone();
         let before = self.live.read();
         let snapshot = self.engine.snapshot();
-        self.live.publish(&snapshot, self.control_acknowledgements);
-        let after = self.live.read();
         let after_state = snapshot.state.clone();
-        if before_state != after_state {
-            self.state_transition_sequence = self.state_transition_sequence.saturating_add(1);
+        let state_changed = before_state != after_state;
+        let state_transition_sequence = if state_changed {
+            self.state_transition_sequence.saturating_add(1)
+        } else {
+            self.state_transition_sequence
+        };
+        self.live.publish(
+            &snapshot,
+            self.control_acknowledgements,
+            state_transition_sequence,
+        );
+        let after = self.live.read();
+        if state_changed {
+            self.state_transition_sequence = state_transition_sequence;
             self.state_transitions.publish(SessionStateTransitionFrame {
                 sequence: self.state_transition_sequence,
                 from_state: before_state,
@@ -618,16 +559,37 @@ impl<L> SessionActor<L> {
         &mut self,
         entries: &[SchedulerEventLogEntry],
     ) -> Result<(), SessionError> {
+        self.append_event_log_entries_with_history_policy(entries, false)
+    }
+
+    pub(super) fn append_event_log_entries_preserving_debug_history(
+        &mut self,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<(), SessionError> {
+        self.append_event_log_entries_with_history_policy(entries, true)
+    }
+
+    fn append_event_log_entries_with_history_policy(
+        &mut self,
+        entries: &[SchedulerEventLogEntry],
+        preserve_debug_history: bool,
+    ) -> Result<(), SessionError> {
         let base_len = self.engine.event_log_len().saturating_sub(entries.len());
         self.event_log.truncate_to_len(base_len);
         let base_sequence = u64::try_from(base_len).unwrap_or(u64::MAX);
-        self.condition_event_log
-            .retain(|entry| entry.sequence() < base_sequence);
-        self.debug_event_coordinates
-            .retain(|sequence, _| *sequence < base_sequence);
+        if !preserve_debug_history && !entries.is_empty() {
+            self.condition_event_log
+                .retain(|entry| entry.sequence() < base_sequence);
+            self.debug_event_coordinates
+                .retain(|sequence, _| *sequence < base_sequence);
+        }
         self.event_log.append_entries(entries);
-        self.condition_event_log.extend(entries.iter().cloned());
         let current = self.engine.snapshot().configuration;
+        if preserve_debug_history {
+            self.debug_index_configuration = current;
+            return Ok(());
+        }
+        self.condition_event_log.extend(entries.iter().cloned());
         let mut coordinate = self.debug_index_configuration.clone();
         for entry in entries {
             if let SchedulerEventLogPayload::Decision(decision) = entry.payload()
@@ -657,10 +619,9 @@ impl<L> SessionActor<L> {
     }
 
     pub(super) fn debug_current_event_limit(&self, current: &Configuration) -> Option<u64> {
-        self.debug_event_coordinates
-            .iter()
-            .filter_map(|(sequence, configuration)| (configuration == current).then_some(*sequence))
-            .min()
+        let _ = current;
+        self.engine
+            .debug_event_cursor()
             .or_else(|| u64::try_from(self.engine.event_log_len()).ok())
     }
 
@@ -675,12 +636,6 @@ impl<L> SessionActor<L> {
     fn sync_reproduction_log(&self) {
         self.reproduction_log
             .sync_from_boundary_log(self.engine.boundary_control_log());
-    }
-
-    fn terminalize_actor_error(&mut self, error: &SessionError) {
-        self.engine.stop_after_actor_crash(error.to_string());
-        self.sync_reproduction_log();
-        self.publish_live_snapshot();
     }
 }
 
@@ -706,24 +661,31 @@ fn gdb_run_control_command(packet: &[u8]) -> Option<SessionCommand> {
         });
     }
     let actions = packet.strip_prefix(b"vCont;")?.split(|byte| *byte == b';');
-    let mut mode = None;
+    let mut saw_continue = false;
+    let mut saw_step = false;
     for action in actions {
-        let next = match action {
-            b"c" => b'c',
-            b"s" => b's',
-            _ => return None,
+        let operation = match action.iter().position(|byte| *byte == b':') {
+            Some(separator) if separator + 1 < action.len() => &action[..separator],
+            Some(_) => return None,
+            None => action,
         };
-        if mode.is_some_and(|mode| mode != next) {
-            return None;
+        match operation {
+            b"c" => saw_continue = true,
+            b"s" => saw_step = true,
+            _ => return None,
         }
-        mode = Some(next);
     }
-    match mode {
-        Some(b'c') => Some(SessionCommand::Continue),
-        Some(b's') => Some(SessionCommand::Step {
+    if saw_step {
+        // In all-stop mode GDB asks the selected thread to step and all other
+        // threads to continue. The deterministic scheduler implements that
+        // request as one quantum followed by a correlated all-stop reply.
+        Some(SessionCommand::Step {
             mode: StepMode::Quantum,
-        }),
-        _ => None,
+        })
+    } else if saw_continue {
+        Some(SessionCommand::Continue)
+    } else {
+        None
     }
 }
 
@@ -829,6 +791,9 @@ where
                 let _outcome = match self.engine.step_quantum() {
                     Ok(outcome) => outcome,
                     Err(SessionError::Scheduler(SchedulerError::Backend(error))) => {
+                        self.engine.fail_pending_guest_activation(format!(
+                            "backend failed while activating guest agent: {error}"
+                        ));
                         self.engine.stop_after_backend_crash(error.to_string())?;
                         self.publish_live_snapshot();
                         self.complete_pending_gdb_run_control()?;
@@ -844,6 +809,7 @@ where
                 self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&breakpoint_entries)?;
+                self.engine.poll_pending_guest_activation()?;
                 self.engine.stop_on_continuous_quiescence()?;
                 let shutdown_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&shutdown_entries)?;
@@ -892,6 +858,9 @@ where
                 let _outcome = match self.engine.step_quantum() {
                     Ok(outcome) => outcome,
                     Err(SessionError::Scheduler(SchedulerError::Backend(error))) => {
+                        self.engine.fail_pending_guest_activation(format!(
+                            "backend failed while activating guest agent: {error}"
+                        ));
                         self.engine.stop_after_backend_crash(error.to_string())?;
                         self.publish_live_snapshot();
                         self.complete_pending_gdb_run_control()?;
@@ -907,6 +876,7 @@ where
                 self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&breakpoint_entries)?;
+                self.engine.poll_pending_guest_activation()?;
                 self.engine.stop_on_continuous_quiescence()?;
                 let shutdown_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&shutdown_entries)?;
@@ -1116,8 +1086,18 @@ where
             complete_acknowledgement(acknowledgement, &Err(error.clone()));
             return Err(error);
         }
+        let preserve_debug_history = matches!(
+            command,
+            SessionCommand::DebugGoto { .. }
+                | SessionCommand::DebugReverseStep { .. }
+                | SessionCommand::DebugReverseContinue { .. }
+        );
         let entries = self.engine.drain_event_log_entries();
-        self.append_event_log_entries(&entries)?;
+        if preserve_debug_history {
+            self.append_event_log_entries_preserving_debug_history(&entries)?;
+        } else {
+            self.append_event_log_entries(&entries)?;
+        }
         self.sync_reproduction_log();
         let pending_control_after = self.engine.pending_control_len() as u64;
         if self.engine.quanta() > quanta_before && pending_control_after < pending_control_before {
@@ -1272,10 +1252,16 @@ mod gdb_run_control_tests {
     use super::*;
 
     #[test]
-    fn parser_accepts_only_exact_scheduler_semantics() {
+    fn parser_accepts_gdb_all_stop_scheduler_semantics() {
         assert!(matches!(
             gdb_run_control_command(b"c"),
             Some(SessionCommand::Continue)
+        ));
+        assert!(matches!(
+            gdb_run_control_command(b"vCont;s"),
+            Some(SessionCommand::Step {
+                mode: StepMode::Quantum
+            })
         ));
         assert!(matches!(
             gdb_run_control_command(b"vCont;s;s"),
@@ -1284,11 +1270,22 @@ mod gdb_run_control_tests {
             })
         ));
         assert!(matches!(
+            gdb_run_control_command(b"vCont;s:p1.1;c:p1.-1"),
+            Some(SessionCommand::Step {
+                mode: StepMode::Quantum
+            })
+        ));
+        assert!(matches!(
             gdb_run_control_command(&[0x03]),
             Some(SessionCommand::Pause)
         ));
-        assert!(gdb_run_control_command(b"vCont;s:1").is_none());
-        assert!(gdb_run_control_command(b"vCont;s;c").is_none());
+        assert!(matches!(
+            gdb_run_control_command(b"vCont;s:1"),
+            Some(SessionCommand::Step {
+                mode: StepMode::Quantum
+            })
+        ));
+        assert!(gdb_run_control_command(b"vCont;s:").is_none());
         assert!(gdb_run_control_command(b"vCont;c;bogus").is_none());
     }
 }

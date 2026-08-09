@@ -298,7 +298,7 @@
       }
       {
         label = "vendored cargo dependencies";
-        needle = "fetchCargoVendor";
+        needle = "fetchCargoDeps";
       }
       {
         label = "source marker";

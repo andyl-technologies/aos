@@ -82,7 +82,7 @@
       }
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = pkgs.fetchCargoVendor";
+        needle = "cargoDeps = pkgs.fetchCargoDeps";
       }
       {
         label = "frozen offline cargo gate";

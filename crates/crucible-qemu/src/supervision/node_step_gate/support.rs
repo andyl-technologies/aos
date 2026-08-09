@@ -2,6 +2,29 @@
 
 use super::*;
 
+const X86_64_MACHINE_TYPE: &str = "pc-q35-9.2";
+const X86_64_CPU_MODEL: &str = "qemu64,-rdrand,-rdseed";
+const X86_64_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet";
+const AARCH64_MACHINE_TYPE: &str = "virt-9.2";
+const AARCH64_CPU_MODEL: &str = "cortex-a57";
+const AARCH64_KERNEL_CMDLINE: &str = "console=ttyAMA0 reboot=k panic=1 quiet";
+
+/// Returns the architecture-specific deterministic launch baseline.
+pub(super) fn launch_profile_candidate(
+    architecture: LivePluginGuestArchitecture,
+) -> LaunchProfileCandidate {
+    match architecture {
+        LivePluginGuestArchitecture::X86_64 => LaunchProfileCandidate::default()
+            .with_machine_type(X86_64_MACHINE_TYPE)
+            .with_cpu_model(X86_64_CPU_MODEL)
+            .with_kernel_cmdline(X86_64_KERNEL_CMDLINE),
+        LivePluginGuestArchitecture::Aarch64 => LaunchProfileCandidate::default()
+            .with_machine_type(AARCH64_MACHINE_TYPE)
+            .with_cpu_model(AARCH64_CPU_MODEL)
+            .with_kernel_cmdline(AARCH64_KERNEL_CMDLINE),
+    }
+}
+
 /// Advances the node through each busy-window ceiling with a caller re-issue loop.
 ///
 /// [`QemuNode::advance_to_ceiling`] drives a single bounded quantum, so a step
@@ -249,8 +272,13 @@ pub(super) fn live_node_plugin_config(
                 plugin_base.clone(),
             )
             .map_err(|source| QemuLiveNodeStepGateError::LaunchCommand { source })?;
-        let validation = crate::probe_x86_whitebox_setup(&probe_command, run_directory)
-            .map_err(|source| QemuLiveNodeStepGateError::WhiteboxSetup { source })?;
+        let validation = match config.architecture {
+            LivePluginGuestArchitecture::X86_64 => {
+                crate::probe_x86_whitebox_setup(&probe_command, run_directory)
+            }
+            LivePluginGuestArchitecture::Aarch64 => crate::validate_aarch64_whitebox_setup(&[]),
+        }
+        .map_err(|source| QemuLiveNodeStepGateError::WhiteboxSetup { source })?;
         plugin_base
             .with_whitebox(config.whitebox)
             .with_whitebox_setup(validation)
@@ -435,6 +463,48 @@ mod tests {
         assert_eq!(
             basic_block_coverage_config(config.coverage),
             BasicBlockCoverageConfig::on()
+        );
+    }
+
+    #[test]
+    fn x86_64_launch_profile_pins_q35_qemu64_and_ttys0() {
+        let profile = launch_profile_candidate(LivePluginGuestArchitecture::X86_64)
+            .try_into_deterministic()
+            .unwrap_or_else(|error| panic!("x86_64 profile must validate: {error}"));
+        let args = profile.canonical_qemu_args();
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-machine", X86_64_MACHINE_TYPE])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-cpu", X86_64_CPU_MODEL])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-append", X86_64_KERNEL_CMDLINE])
+        );
+    }
+
+    #[test]
+    fn aarch64_launch_profile_pins_virt_cortex_a57_and_ttyama0() {
+        let profile = launch_profile_candidate(LivePluginGuestArchitecture::Aarch64)
+            .try_into_deterministic()
+            .unwrap_or_else(|error| panic!("aarch64 profile must validate: {error}"));
+        let args = profile.canonical_qemu_args();
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-machine", AARCH64_MACHINE_TYPE])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-cpu", AARCH64_CPU_MODEL])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-append", AARCH64_KERNEL_CMDLINE])
         );
     }
 }

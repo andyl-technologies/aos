@@ -22,6 +22,7 @@ pub(crate) struct BackendCommandOutcome {
     pub(crate) artifact_digest: String,
     pub(crate) terminal_savepoint: Option<crucible::ContentHash>,
     pub(crate) savepoint_oracle: Option<SavepointOracleProof>,
+    pub(crate) save_boundary_evidence: Option<SaveBoundaryEvidence>,
     pub(crate) reproduction_artifact: Option<Vec<u8>>,
     pub(crate) side_reproduction_artifacts: Vec<(String, Vec<u8>)>,
 }
@@ -39,6 +40,7 @@ impl BackendCommandOutcome {
             artifact_digest: self.artifact_digest.clone(),
             terminal_savepoint: self.terminal_savepoint,
             savepoint_oracle: self.savepoint_oracle.clone(),
+            save_boundary_evidence: self.save_boundary_evidence.clone(),
         }
     }
 }
@@ -95,6 +97,7 @@ pub(crate) struct BackendCommandOutcomeProjection {
     pub(crate) artifact_digest: String,
     pub(crate) terminal_savepoint: Option<crucible::ContentHash>,
     pub(crate) savepoint_oracle: Option<SavepointOracleProof>,
+    pub(crate) save_boundary_evidence: Option<SaveBoundaryEvidence>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

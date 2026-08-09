@@ -789,7 +789,7 @@ pub(super) fn scenario_form_from_toml(
         seed,
         toml.scenario.app_random_draw_cap,
     )?;
-    let expected = parse_content_hash_ref(&toml.scenario.id)?;
+    let expected = parse_content_hash_ref("scenario.id", &toml.scenario.id)?;
     validate_serialized_id("scenario", expected, form.id())?;
     Ok(form)
 }
@@ -807,7 +807,7 @@ pub(super) fn world_to_toml(world: &World) -> WorldToml {
 }
 
 pub(super) fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
-    let id = parse_content_hash_ref(&toml.id)?;
+    let id = parse_content_hash_ref("world.id", &toml.id)?;
     let topology_nodes = toml
         .node
         .into_iter()
@@ -1086,7 +1086,7 @@ pub(super) fn plan_from_toml_with_assertions(
     assertions: impl IntoIterator<Item = AssertionId>,
     toml: PlanToml,
 ) -> Result<Plan, EngineError> {
-    let id = parse_content_hash_ref(&toml.id)?;
+    let id = parse_content_hash_ref("plan.id", &toml.id)?;
     let plan = match serialized_plan_kind(&toml)? {
         SerializedPlanKind::ScheduledEntries => {
             let entries = toml
@@ -1890,7 +1890,7 @@ pub(super) fn properties_from_toml_with_plan(
 pub(super) fn properties_assertions_from_toml(
     toml: PropertiesToml,
 ) -> Result<(ContentHash, Vec<AssertionDef>), EngineError> {
-    let id = parse_content_hash_ref(&toml.id)?;
+    let id = parse_content_hash_ref("properties.id", &toml.id)?;
     let assertions = toml
         .assertion
         .into_iter()

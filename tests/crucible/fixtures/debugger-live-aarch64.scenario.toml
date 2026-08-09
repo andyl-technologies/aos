@@ -1,0 +1,81 @@
+[scenario]
+id = "blake3:be3d706913fe25281e87035c5ec1f5ddd56c466b5e96bbdeefacc628b73153b8"
+seed = "0x060d000000000000000000000000000000000000000000000000000000000000"
+app_random_draw_cap = "18446744073709551615"
+
+[world]
+id = "blake3:43fc7f2afce3001594a466bc6530fade73aa757afd786e0e5e17783236da4cff"
+
+[[world.node]]
+id = "debuggee"
+arch = "aarch64"
+memory_mib = 256
+cmdline = "quiet"
+smp_vcpus = 1
+icount_shift = 0
+kernel = "blake3:2f1a54f9235410cbbf1a50fb6ecc31be4e28482e5326bc16725a76ecf08b7d5a"
+root_image = "blake3:14f8e0abea1611ea907ba0fc0089b83c7be5bb5084ec30fa2696ecb614d27ab7"
+white_box = "enabled"
+
+[world.node.ready_point]
+kind = "fixed_icount"
+retired = 0
+
+[plan]
+id = "blake3:83baf8d0b5067c8cc1fe6e635baac05c1ae8ea80a388347cb9e807f29d2acc5f"
+kind = "event_graph"
+
+[[plan.event]]
+id = "debug-history-1"
+policy = "once"
+
+[plan.event.trigger]
+kind = "at"
+at_ticks = 4096
+
+[plan.event.action]
+kind = "log"
+level = "info"
+message = "debug history boundary 1"
+
+[[plan.event]]
+id = "debug-history-2"
+policy = "once"
+
+[plan.event.trigger]
+kind = "at"
+at_ticks = 8192
+
+[plan.event.action]
+kind = "log"
+level = "info"
+message = "debug history boundary 2"
+
+[[plan.event]]
+id = "debug-history-3"
+policy = "once"
+
+[plan.event.trigger]
+kind = "at"
+at_ticks = 12288
+
+[plan.event.action]
+kind = "log"
+level = "info"
+message = "debug history boundary 3"
+
+[[plan.event]]
+id = "debug-history-4"
+policy = "once"
+
+[plan.event.trigger]
+kind = "at"
+at_ticks = 16384
+
+[plan.event.action]
+kind = "log"
+level = "info"
+message = "debug history boundary 4"
+
+[properties]
+id = "blake3:d102dd1556b312ec5f79938e44126ab4af45eb35876073c3662e7236da4d705f"

@@ -15,6 +15,71 @@ const DEBUG_RELAY_CLOSE_RPC_PATH: &str = "/crucible.rpc/debug/relay/close";
 const DEBUG_GUEST_EXCHANGE_RPC_PATH: &str = "/crucible.rpc/debug/guest/exchange";
 const DEBUG_GUEST_FORK_RPC_PATH: &str = "/crucible.rpc/debug/guest/fork";
 
+/// Retry identity for one debugger-controller acquisition.
+///
+/// Reuse the same value when retrying an acquisition whose response may have
+/// been lost. Create distinct values for independently released lifetimes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DebugControllerAcquisition {
+    holder: uuid::Uuid,
+}
+
+impl DebugControllerAcquisition {
+    /// Creates a fresh acquisition retry identity.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            holder: uuid::Uuid::new_v4(),
+        }
+    }
+}
+
+impl Default for DebugControllerAcquisition {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One independent acquisition of a daemon debugger-controller lease.
+///
+/// The private holder identity keeps concurrent acquisitions through cloned
+/// clients independent. Pass this value to every operation in its lifetime;
+/// releasing another acquisition never invalidates it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DebugControllerAccess {
+    lease: DebugControllerLease,
+    holder: uuid::Uuid,
+}
+
+impl DebugControllerAccess {
+    /// Returns the coordinator lease represented by this acquisition.
+    #[must_use]
+    pub const fn lease(&self) -> &DebugControllerLease {
+        &self.lease
+    }
+
+    /// Returns a nonzero guest-channel identity scoped to this acquisition.
+    ///
+    /// Independently released controller acquisitions receive distinct holder
+    /// identities. Folding that identity into the protocol's 64-bit channel
+    /// field prevents delayed records from an exited CLI process from aliasing
+    /// a later guest channel.
+    #[must_use]
+    pub fn guest_channel_id(&self) -> u64 {
+        let holder = self.holder.as_u128();
+        let folded = (holder as u64) ^ ((holder >> 64) as u64);
+        if folded == 0 { 1 } else { folded }
+    }
+
+    fn generation(&self) -> u64 {
+        self.lease.generation
+    }
+
+    fn holder(&self) -> uuid::Uuid {
+        self.holder
+    }
+}
+
 impl RpcControlClient {
     /// Acquires the session's exclusive debugger controller lease.
     ///
@@ -29,17 +94,17 @@ impl RpcControlClient {
     pub async fn acquire_debug_controller(
         &self,
         session: SessionRef,
-    ) -> Result<DebugControllerLease, ControlClientError> {
+        acquisition: &DebugControllerAcquisition,
+    ) -> Result<DebugControllerAccess, ControlClientError> {
+        let holder = acquisition.holder;
         let body = self
             .post_rpc_body(
                 DEBUG_CONTROLLER_ACQUIRE_RPC_PATH,
-                encode_debug_session_request(
-                    "crucible.rpc/debug-controller-acquire-request",
-                    session,
-                ),
+                encode_debug_controller_acquire_request(session, holder),
             )
             .await?;
-        decode_debug_controller_acquire_response(&body)
+        let lease = decode_debug_controller_acquire_response(&body)?;
+        Ok(DebugControllerAccess { lease, holder })
     }
 
     /// Releases a debugger controller lease using its complete generation.
@@ -47,17 +112,21 @@ impl RpcControlClient {
     /// # Errors
     ///
     /// Returns [`ControlClientError`] when the authenticated client does not
-    /// own `lease`, its generation is stale, the session is stale, or the
+    /// own `access`, its generation is stale, the session is stale, or the
     /// transport rejects the request.
     pub async fn release_debug_controller(
         &self,
         session: SessionRef,
-        lease: &DebugControllerLease,
+        access: &DebugControllerAccess,
     ) -> Result<(), ControlClientError> {
         let body = self
             .post_rpc_body(
                 DEBUG_CONTROLLER_RELEASE_RPC_PATH,
-                encode_debug_controller_release_request(session, lease.generation),
+                encode_debug_controller_release_request(
+                    session,
+                    access.generation(),
+                    access.holder(),
+                ),
             )
             .await?;
         let text = response_text(&body)?;
@@ -83,13 +152,13 @@ impl RpcControlClient {
     pub async fn attach_debugger(
         &self,
         session: SessionRef,
-        lease: &DebugControllerLease,
+        access: &DebugControllerAccess,
         node: &NodeId,
     ) -> Result<(), ControlClientError> {
         let body = self
             .post_rpc_body(
                 DEBUG_ATTACH_RPC_PATH,
-                encode_debug_attach_request(session, lease.generation, node),
+                encode_debug_attach_request(session, access.generation(), access.holder(), node),
             )
             .await?;
         let text = response_text(&body)?;
@@ -104,23 +173,23 @@ impl RpcControlClient {
     /// # Errors
     ///
     /// Returns [`ControlClientError`] when the lease is stale, the role lacks
-    /// control capability, the coordinate is unsupported by the unary wire
-    /// format, or actor-owned restore/replay and replacement fail.
+    /// control capability, the coordinate is a configuration/checkpoint
+    /// identity unsupported by the unary wire format, or actor-owned
+    /// restore/replay and replacement fail.
     pub async fn debug_goto(
         &self,
         session: SessionRef,
-        lease: &DebugControllerLease,
+        access: &DebugControllerAccess,
         target: &crucible::DebugCoordinate,
-    ) -> Result<String, ControlClientError> {
+    ) -> Result<crate::DebugRepositionResult, ControlClientError> {
         let body = self
             .post_rpc_body(
                 DEBUG_GOTO_RPC_PATH,
-                encode_debug_goto_request(session, lease.generation, target)?,
+                encode_debug_goto_request(session, access.generation(), access.holder(), target)?,
             )
             .await?;
-        let (target, _) =
-            decode_debug_reposition_response(&body, "crucible.rpc/debug-goto-response")?;
-        target.ok_or_else(|| rpc_decode("debug goto response omitted its target configuration"))
+        decode_debug_reposition_response(&body, "crucible.rpc/debug-goto-response")?
+            .ok_or_else(|| rpc_decode("debug goto response omitted its landed runtime coordinate"))
     }
 
     /// Reverse-steps an attached debugger by one deterministic grain.
@@ -132,20 +201,24 @@ impl RpcControlClient {
     pub async fn debug_reverse_step(
         &self,
         session: SessionRef,
-        lease: &DebugControllerLease,
+        access: &DebugControllerAccess,
         grain: crucible::DebugReverseStepGrain,
-    ) -> Result<String, ControlClientError> {
+    ) -> Result<crate::DebugRepositionResult, ControlClientError> {
         let body = self
             .post_rpc_body(
                 DEBUG_REVERSE_STEP_RPC_PATH,
-                encode_debug_reverse_step_request(session, lease.generation, grain),
+                encode_debug_reverse_step_request(
+                    session,
+                    access.generation(),
+                    access.holder(),
+                    grain,
+                ),
             )
             .await?;
-        let (target, _) =
-            decode_debug_reposition_response(&body, "crucible.rpc/debug-reverse-step-response")?;
-        target.ok_or_else(|| {
-            rpc_decode("debug reverse-step response omitted its target configuration")
-        })
+        decode_debug_reposition_response(&body, "crucible.rpc/debug-reverse-step-response")?
+            .ok_or_else(|| {
+                rpc_decode("debug reverse-step response omitted its landed runtime coordinate")
+            })
     }
 
     /// Reverse-continues to the latest prior event prefix matching `condition`.
@@ -159,43 +232,39 @@ impl RpcControlClient {
     pub async fn debug_reverse_continue(
         &self,
         session: SessionRef,
-        lease: &DebugControllerLease,
+        access: &DebugControllerAccess,
         condition: &crucible::Predicate,
-    ) -> Result<Option<String>, ControlClientError> {
+    ) -> Result<Option<crate::DebugRepositionResult>, ControlClientError> {
         let body = self
             .post_rpc_body(
                 DEBUG_REVERSE_CONTINUE_RPC_PATH,
-                encode_debug_reverse_continue_request(session, lease.generation, condition),
+                encode_debug_reverse_continue_request(
+                    session,
+                    access.generation(),
+                    access.holder(),
+                    condition,
+                ),
             )
             .await?;
-        let (target, _) = decode_debug_reposition_response(
-            &body,
-            "crucible.rpc/debug-reverse-continue-response",
-        )?;
-        Ok(target)
+        decode_debug_reposition_response(&body, "crucible.rpc/debug-reverse-continue-response")
     }
 
     /// Opens a daemon-side connection to the session's stable local GDB gateway.
     ///
     /// # Errors
     ///
-    /// Returns [`ControlClientError`] when `lease` is stale or foreign, the role
+    /// Returns [`ControlClientError`] when `access` is stale or foreign, the role
     /// lacks control capability, no debugger is attached, or the daemon cannot
     /// connect to the actor-reported loopback endpoint.
     pub async fn open_debug_relay(
         &self,
         session: SessionRef,
-        lease: &DebugControllerLease,
+        access: &DebugControllerAccess,
     ) -> Result<crate::DebugRelayId, ControlClientError> {
         let body = self
             .post_rpc_body(
                 DEBUG_RELAY_OPEN_RPC_PATH,
-                encode_debug_relay_request(
-                    "crucible.rpc/debug-relay-open-request",
-                    session,
-                    lease.generation,
-                    None,
-                ),
+                encode_debug_relay_open_request(session, access.generation(), access.holder()),
             )
             .await?;
         let text = response_text(&body)?;
@@ -215,7 +284,7 @@ impl RpcControlClient {
     pub async fn write_debug_relay(
         &self,
         session: SessionRef,
-        lease: &DebugControllerLease,
+        access: &DebugControllerAccess,
         relay: crate::DebugRelayId,
         bytes: &[u8],
     ) -> Result<usize, ControlClientError> {
@@ -225,7 +294,8 @@ impl RpcControlClient {
                 encode_debug_relay_request(
                     "crucible.rpc/debug-relay-write-request",
                     session,
-                    lease.generation,
+                    access.generation(),
+                    access.holder(),
                     Some((relay, "data", hex_encode(bytes))),
                 ),
             )
@@ -252,7 +322,7 @@ impl RpcControlClient {
     pub async fn read_debug_relay(
         &self,
         session: SessionRef,
-        lease: &DebugControllerLease,
+        access: &DebugControllerAccess,
         relay: crate::DebugRelayId,
         maximum: usize,
     ) -> Result<crate::DebugRelayChunk, ControlClientError> {
@@ -262,7 +332,8 @@ impl RpcControlClient {
                 encode_debug_relay_request(
                     "crucible.rpc/debug-relay-read-request",
                     session,
-                    lease.generation,
+                    access.generation(),
+                    access.holder(),
                     Some((relay, "maximum", maximum.to_string())),
                 ),
             )
@@ -270,16 +341,16 @@ impl RpcControlClient {
         decode_debug_relay_read_response(&body)
     }
 
-    /// Closes an open GDB relay without releasing its controller lease.
+    /// Closes an open GDB relay.
     ///
     /// # Errors
     ///
-    /// Returns [`ControlClientError`] when the relay or lease is stale or the
-    /// transport rejects the request.
+    /// Returns [`ControlClientError`] when the relay capability is stale or
+    /// foreign, or the transport rejects the request.
     pub async fn close_debug_relay(
         &self,
         session: SessionRef,
-        lease: &DebugControllerLease,
+        access: &DebugControllerAccess,
         relay: crate::DebugRelayId,
     ) -> Result<(), ControlClientError> {
         let body = self
@@ -288,7 +359,8 @@ impl RpcControlClient {
                 encode_debug_relay_request(
                     "crucible.rpc/debug-relay-close-request",
                     session,
-                    lease.generation,
+                    access.generation(),
+                    access.holder(),
                     Some((relay, "close", String::new())),
                 ),
             )
@@ -313,7 +385,7 @@ impl RpcControlClient {
     pub async fn exchange_guest_introspection(
         &self,
         session: SessionRef,
-        lease: &DebugControllerLease,
+        access: &DebugControllerAccess,
         node: &NodeId,
         channel_id: u64,
         request: Option<&crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
@@ -326,7 +398,8 @@ impl RpcControlClient {
                 DEBUG_GUEST_EXCHANGE_RPC_PATH,
                 encode_debug_guest_exchange_request(
                     session,
-                    lease.generation,
+                    access.generation(),
+                    access.holder(),
                     node,
                     channel_id,
                     request,
@@ -361,179 +434,72 @@ impl RpcControlClient {
     pub async fn fork_debug_guest_introspection(
         &self,
         session: SessionRef,
-        lease: &DebugControllerLease,
+        access: &DebugControllerAccess,
         node: &NodeId,
-    ) -> Result<(), ControlClientError> {
+    ) -> Result<
+        crucible_protocol::guest_introspection::GuestIntrospectionFeatures,
+        ControlClientError,
+    > {
         let body = self
             .post_rpc_body(
                 DEBUG_GUEST_FORK_RPC_PATH,
-                encode_debug_guest_fork_request(session, lease.generation, node),
+                encode_debug_guest_fork_request(
+                    session,
+                    access.generation(),
+                    access.holder(),
+                    node,
+                ),
             )
             .await?;
         let text = response_text(&body)?;
         let mut lines = text.lines();
         expect_header(lines.next(), "crucible.rpc/debug-guest-fork-response")?;
+        let branch = parse_prefixed_line(lines.next(), "branch=")?;
+        if branch.len() != 64 || !branch.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(rpc_decode("invalid debug guest fork branch identity"));
+        }
+        let status = parse_prefixed_line(lines.next(), "status=")?;
+        let failure = parse_prefixed_line(lines.next(), "failure=")?;
+        let argv_exec = parse_debug_bool_line(lines.next(), "argv-exec=")?;
+        let pty = parse_debug_bool_line(lines.next(), "pty=")?;
+        let resize = parse_debug_bool_line(lines.next(), "resize=")?;
+        let ssh_bridge = parse_debug_bool_line(lines.next(), "ssh-bridge=")?;
+        let max_channels = parse_prefixed_line(lines.next(), "max-channels=")?
+            .parse::<u16>()
+            .map_err(|error| rpc_decode(error.to_string()))?;
+        if status == "failed" {
+            let failure = String::from_utf8(parse_hex_bytes(failure)?)
+                .map_err(|error| rpc_decode(error.to_string()))?;
+            reject_trailing(lines.next())?;
+            return Err(rpc_decode(format!(
+                "non-canonical branch {branch} committed, but guest activation failed: {failure}"
+            )));
+        }
+        if status != "ready" {
+            return Err(rpc_decode(format!(
+                "invalid debug guest fork status `{status}`"
+            )));
+        }
+        if !failure.is_empty() {
+            return Err(rpc_decode("ready debug guest fork carried a failure"));
+        }
+        if max_channels == 0 {
+            return Err(rpc_decode("max-channels must be nonzero"));
+        }
         reject_trailing(lines.next())?;
-        Ok(())
-    }
-}
-
-fn encode_debug_session_request(header: &'static str, session: SessionRef) -> Vec<u8> {
-    let mut output = String::new();
-    output.push_str(header);
-    output.push('\n');
-    push_session_ref(&mut output, session);
-    output.into_bytes()
-}
-
-fn encode_debug_controller_release_request(session: SessionRef, generation: u64) -> Vec<u8> {
-    let mut output = String::from("crucible.rpc/debug-controller-release-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    output.into_bytes()
-}
-
-fn encode_debug_goto_request(
-    session: SessionRef,
-    generation: u64,
-    target: &crucible::DebugCoordinate,
-) -> Result<Vec<u8>, ControlClientError> {
-    let coordinate = match target {
-        crucible::DebugCoordinate::VirtualTime(time) => format!("virtual-time:{}", time.ticks),
-        crucible::DebugCoordinate::NodeIcount { node, icount } => format!(
-            "node-icount:{}:{}",
-            hex_encode(node.name.as_bytes()),
-            icount.retired
-        ),
-        crucible::DebugCoordinate::Configuration(_)
-        | crucible::DebugCoordinate::Checkpoint(_)
-        | crucible::DebugCoordinate::EventSequence(_) => {
-            return Err(rpc_decode(
-                "unary remote goto accepts virtual-time or node-icount coordinates",
-            ));
-        }
-    };
-    let mut output = String::from("crucible.rpc/debug-goto-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "coordinate", &coordinate);
-    Ok(output.into_bytes())
-}
-
-fn encode_debug_reverse_step_request(
-    session: SessionRef,
-    generation: u64,
-    grain: crucible::DebugReverseStepGrain,
-) -> Vec<u8> {
-    let grain = match grain {
-        crucible::DebugReverseStepGrain::Instruction => "instruction",
-        crucible::DebugReverseStepGrain::Quantum => "quantum",
-        crucible::DebugReverseStepGrain::Event => "event",
-        crucible::DebugReverseStepGrain::Assertion => "assertion",
-        crucible::DebugReverseStepGrain::Timer => "timer",
-    };
-    let mut output = String::from("crucible.rpc/debug-reverse-step-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "grain", grain);
-    output.into_bytes()
-}
-
-fn encode_debug_reverse_continue_request(
-    session: SessionRef,
-    generation: u64,
-    condition: &crucible::Predicate,
-) -> Vec<u8> {
-    let mut output = String::from("crucible.rpc/debug-reverse-continue-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(
-        &mut output,
-        "condition",
-        &hex_encode(&condition.to_compact_binary()),
-    );
-    output.into_bytes()
-}
-
-fn decode_debug_reposition_response(
-    body: &[u8],
-    header: &'static str,
-) -> Result<(Option<String>, Option<u64>), ControlClientError> {
-    let text = response_text(body)?;
-    let mut lines = text.lines();
-    expect_header(lines.next(), header)?;
-    let target = parse_prefixed_line(lines.next(), "target-configuration=")?;
-    let target = (!target.is_empty()).then(|| target.to_owned());
-    let event = parse_prefixed_line(lines.next(), "event-sequence=")?;
-    let event = if event == "none" {
-        None
-    } else {
-        Some(
-            event
-                .parse::<u64>()
-                .map_err(|error| rpc_decode(format!("invalid event sequence: {error}")))?,
+        Ok(
+            crucible_protocol::guest_introspection::GuestIntrospectionFeatures::new(
+                argv_exec,
+                pty,
+                resize,
+                ssh_bridge,
+                max_channels,
+            ),
         )
-    };
-    reject_trailing(lines.next())?;
-    Ok((target, event))
-}
-
-fn encode_debug_attach_request(session: SessionRef, generation: u64, node: &NodeId) -> Vec<u8> {
-    let mut output = String::from("crucible.rpc/debug-attach-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "node", &hex_encode(node.name.as_bytes()));
-    output.into_bytes()
-}
-
-fn encode_debug_relay_request(
-    header: &'static str,
-    session: SessionRef,
-    generation: u64,
-    relay_tail: Option<(crate::DebugRelayId, &'static str, String)>,
-) -> Vec<u8> {
-    let mut output = String::new();
-    output.push_str(header);
-    output.push('\n');
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    if let Some((relay, field, value)) = relay_tail {
-        push_line(&mut output, "relay-id", &relay.0.to_string());
-        if field != "close" {
-            push_line(&mut output, field, &value);
-        }
     }
-    output.into_bytes()
 }
 
-fn encode_debug_guest_exchange_request(
-    session: SessionRef,
-    generation: u64,
-    node: &NodeId,
-    channel_id: u64,
-    record: Option<&crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
-) -> Result<Vec<u8>, ControlClientError> {
-    let mut output = String::from("crucible.rpc/debug-guest-exchange-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "node", &hex_encode(node.name.as_bytes()));
-    push_line(&mut output, "channel-id", &channel_id.to_string());
-    let encoded = match record {
-        Some(record) => hex_encode(
-            &record
-                .encode()
-                .map_err(|error| rpc_decode(error.to_string()))?,
-        ),
-        None => String::new(),
-    };
-    push_line(&mut output, "record", &encoded);
-    Ok(output.into_bytes())
-}
+#[path = "debug/wire.rs"]
+mod wire;
 
-fn encode_debug_guest_fork_request(session: SessionRef, generation: u64, node: &NodeId) -> Vec<u8> {
-    let mut output = String::from("crucible.rpc/debug-guest-fork-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "node", &hex_encode(node.name.as_bytes()));
-    output.into_bytes()
-}
+use wire::*;

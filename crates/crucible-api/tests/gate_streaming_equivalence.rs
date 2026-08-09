@@ -184,6 +184,54 @@ async fn watch_only_state_updates_are_monotone_and_not_event_log_entries() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn lagged_state_observer_recovers_to_a_retained_monotone_update() {
+    const STEP_COUNT: u64 = 300;
+
+    let fixture = StreamingFixture::spawn_loaded(14).await;
+    let session = fixture.session;
+    let mut watch = fixture
+        .api
+        .watch(AttachRequest::new(session).with_client_name("lagged-state-client"))
+        .unwrap_or_else(|error| panic!("Watch attach should succeed: {error}"));
+
+    fixture
+        .api
+        .send(SendRequest::new(session, 1, SessionCommand::Start))
+        .await
+        .unwrap_or_else(|error| panic!("Send Start should dispatch: {error}"));
+    for step in 0..STEP_COUNT {
+        let response = fixture
+            .api
+            .send(SendRequest::new(
+                session,
+                step + 2,
+                representative_command(SessionCommandKind::StepQuantum),
+            ))
+            .await
+            .unwrap_or_else(|error| panic!("step {step} should dispatch: {error}"));
+        assert_eq!(response.result.status, CommandResultStatus::Accepted);
+    }
+    fixture
+        .api
+        .send(SendRequest::new(
+            session,
+            STEP_COUNT + 2,
+            SessionCommand::Stop,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("Send Stop should dispatch: {error}"));
+
+    let first_retained = recv_watch_state_update(&mut watch).await;
+    assert!(
+        first_retained.sequence > STEP_COUNT,
+        "recovery should skip superseded transitions outside the retained tail"
+    );
+    assert_eq!(first_retained.update.state, LiveStateKind::Stopped);
+
+    fixture.join_stopped().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn control_and_send_drive_non_basic_command_classes() {
     for command in [
         SessionCommandKind::StepQuantum,

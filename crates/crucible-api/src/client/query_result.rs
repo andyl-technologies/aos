@@ -2,6 +2,41 @@
 
 use super::*;
 
+pub(super) fn rpc_decode(message: impl Into<String>) -> ControlClientError {
+    ControlClientError::RpcDecode {
+        message: message.into(),
+    }
+}
+
+pub(super) fn push_session_ref(output: &mut String, session: SessionRef) {
+    push_line(output, "session-id", &session.id.value.to_string());
+    push_line(output, "epoch", &session.epoch.to_string());
+    push_line(output, "seed", &session.seed.to_hex());
+}
+
+pub(super) fn push_line(output: &mut String, key: &str, value: &str) {
+    output.push_str(key);
+    output.push('=');
+    output.push_str(value);
+    output.push('\n');
+}
+
+pub(super) fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+pub(super) fn command_kind_name(command: SessionCommandKind) -> &'static str {
+    api_command_for_session_command(command)
+        .map(|mapping| mapping.command_name)
+        .unwrap_or("unknown")
+}
+
 pub(super) fn parse_query_result_line(
     line: Option<&str>,
 ) -> Result<Option<QueryResult>, ControlClientError> {

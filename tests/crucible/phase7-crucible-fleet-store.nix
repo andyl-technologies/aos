@@ -125,7 +125,7 @@
       }
       {
         label = "vendored Cargo dependencies";
-        needle = "fetchCargoVendor";
+        needle = "fetchCargoDeps";
       }
       {
         label = "crucible-cas binary build";

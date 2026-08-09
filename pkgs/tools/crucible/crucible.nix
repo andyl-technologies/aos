@@ -1,9 +1,10 @@
 ##! crucible — RFC-0010 Crucible Rust workspace and CLI
 {
   lib,
+  stdenv,
   mkDerivation,
   mkCargoPackage,
-  fetchCargoVendor,
+  fetchCargoDeps,
   rust,
   openssl,
   pkg-config,
@@ -12,12 +13,29 @@
   linux-crucible,
   crucible-fixtures,
   bash,
+  coreutils,
+  grep,
+  sed,
+  util-linux,
   qemu-crucible-source,
   gdb,
+  openssh,
   controllerOnly ? false,
 }: let
   version = "0.1.0";
-  cargoDepsHash = "sha256-byK2knHIciv8rLm+TLiOfTXNU9m/u7idWbSsvG6mIys=";
+  nativeQemuSystemBinary =
+    {
+      "x86_64-linux" = "qemu-system-x86_64";
+      "aarch64-linux" = "qemu-system-aarch64";
+    }.${stdenv.hostPlatform.system}
+    or (throw "crucible: unsupported native QEMU system '${stdenv.hostPlatform.system}'");
+  nativeQemuPath = "${qemu-crucible}/bin/${nativeQemuSystemBinary}";
+  liveDebuggerMatrixArchitectures =
+    if stdenv.hostPlatform.system == "x86_64-linux"
+    then "x86_64"
+    else "aarch64";
+  cargoDepsHash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+  liveDebuggerMatrixScript = ../../../examples/codex-skills/crucible-debugger/scripts/live-matrix.sh;
   src = import ./_source.nix {inherit lib;};
   packages = import ./_packages.nix;
   nonCrucibleWorkspacePackages = [
@@ -38,17 +56,6 @@
     "aos-hub-worker"
     "aos-profile"
     "aos-systemd"
-    "aos-nix"
-    "aos-nix-compat"
-    "aos-nix-dialect"
-    "aos-nix-syntax"
-    "ratchet-cache"
-    "ratchet-core"
-    "ratchet-dialect"
-    "ratchet-jit"
-    "ratchet-oracle"
-    "ratchet-runtime-ffi"
-    "ratchet-value"
   ];
   gplSidePackages = ["crucible-qemu-plugin" "crucible-debug-gateway"];
   controllerPackages = builtins.filter (package: !(builtins.elem package gplSidePackages)) packages;
@@ -89,7 +96,7 @@
     pname = "crucible-controller";
     inherit version src;
 
-    cargoDeps = fetchCargoVendor {
+    cargoDeps = fetchCargoDeps {
       inherit src;
       sourceRoot = "source/crates";
       hash = cargoDepsHash;
@@ -169,10 +176,19 @@
         -j$NIX_BUILD_CORES \
         -p crucible-cli \
         --bin crucible
+      cargo build \
+        --release \
+        --frozen \
+        --offline \
+        -j$NIX_BUILD_CORES \
+        -p crucible \
+        --example crucible-debugger-live-fixture
     '';
 
     postInstall = ''
       test -x "$out/bin/crucible"
+      cp target/release/examples/crucible-debugger-live-fixture \
+        "$out/bin/crucible-debugger-live-fixture"
       if "$out/bin/crucible" --help | grep -q 'auto|qemu|double'; then
         echo "installed Crucible CLI unexpectedly contains the test-only backend" >&2
         exit 1
@@ -191,7 +207,7 @@
       component=controller
       component_license=Apache-2.0
       build_system=mkCargoPackage
-      cargo_deps=fetchCargoVendor
+      cargo_deps=fetchCargoDeps
       cargo_workspace=crates
       cargo_workspace_flags=${workspaceCargoFlags}
       cargo_member_flags=${packageFlags}
@@ -222,7 +238,7 @@
     pname = "crucible-debug-gateway";
     inherit version src;
 
-    cargoDeps = fetchCargoVendor {
+    cargoDeps = fetchCargoDeps {
       inherit src;
       sourceRoot = "source/crates";
       hash = cargoDepsHash;
@@ -265,6 +281,7 @@
     pluginPackage = crucible-qemu-plugin;
     debugGatewayPackage = debugGateway;
     gdbPackage = gdb;
+    sshPackage = openssh;
     qemuSourcePackage = qemu-crucible-source;
   };
   suite = mkDerivation {
@@ -272,7 +289,7 @@
     inherit version;
     src = null;
     buildDeps = [bash];
-    runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb];
+    runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux];
     propagatedDeps = [];
     phases = [
       {
@@ -281,18 +298,70 @@
           mkdir -p "$out/bin" "$out/share/aos/crucible" "$out/share/licenses/crucible"
           cat > "$out/bin/crucible" <<'EOF'
           #!${bash}/bin/bash
-          : "''${CRUCIBLE_QEMU:=${qemu-crucible}/bin/qemu-system-x86_64}"
+          : "''${CRUCIBLE_QEMU:=${nativeQemuPath}}"
+          : "''${CRUCIBLE_NATIVE_GUEST_ARCHITECTURE:=${
+            if stdenv.hostPlatform.system == "aarch64-linux"
+            then "aarch64"
+            else "x86_64"
+          }}"
           : "''${CRUCIBLE_PLUGIN:=${crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so}"
           : "''${CRUCIBLE_DEBUG_GATEWAY:=${debugGateway}/bin/crucible-debug-gateway}"
           : "''${CRUCIBLE_KERNEL:=${linux-crucible}/boot/vmlinuz-${linux-crucible.version}}"
           : "''${CRUCIBLE_ROOT_IMAGE:=${crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4}"
           : "''${CRUCIBLE_KERNEL_CMDLINE:=${linux-crucible.passthru.crucibleFixtureKernelCmdline} init=/init}"
-          export CRUCIBLE_QEMU CRUCIBLE_PLUGIN CRUCIBLE_DEBUG_GATEWAY CRUCIBLE_KERNEL CRUCIBLE_ROOT_IMAGE CRUCIBLE_KERNEL_CMDLINE
+          ${lib.optionalString (stdenv.hostPlatform.system == "x86_64-linux") ''
+            : "''${CRUCIBLE_KERNEL_X86_64:=$CRUCIBLE_KERNEL}"
+            : "''${CRUCIBLE_ROOT_IMAGE_X86_64:=$CRUCIBLE_ROOT_IMAGE}"
+            : "''${CRUCIBLE_KERNEL_CMDLINE_X86_64:=$CRUCIBLE_KERNEL_CMDLINE}"
+          ''}
+          ${lib.optionalString (stdenv.hostPlatform.system == "aarch64-linux") ''
+            : "''${CRUCIBLE_KERNEL_AARCH64:=$CRUCIBLE_KERNEL}"
+            : "''${CRUCIBLE_ROOT_IMAGE_AARCH64:=$CRUCIBLE_ROOT_IMAGE}"
+            : "''${CRUCIBLE_KERNEL_CMDLINE_AARCH64:=$CRUCIBLE_KERNEL_CMDLINE}"
+          ''}
+          export CRUCIBLE_QEMU CRUCIBLE_NATIVE_GUEST_ARCHITECTURE CRUCIBLE_PLUGIN CRUCIBLE_DEBUG_GATEWAY CRUCIBLE_KERNEL CRUCIBLE_ROOT_IMAGE CRUCIBLE_KERNEL_CMDLINE
+          ${lib.optionalString (stdenv.hostPlatform.system == "x86_64-linux") ''
+            export CRUCIBLE_KERNEL_X86_64 CRUCIBLE_ROOT_IMAGE_X86_64 CRUCIBLE_KERNEL_CMDLINE_X86_64
+          ''}
+          ${lib.optionalString (stdenv.hostPlatform.system == "aarch64-linux") ''
+            export CRUCIBLE_KERNEL_AARCH64 CRUCIBLE_ROOT_IMAGE_AARCH64 CRUCIBLE_KERNEL_CMDLINE_AARCH64
+          ''}
           exec ${controller}/bin/crucible "$@"
           EOF
           chmod +x "$out/bin/crucible"
           ln -s ${gdb}/bin/gdb "$out/bin/gdb"
           ln -s ${gdb}/bin/gdbserver "$out/bin/gdbserver"
+          ln -s ${openssh}/bin/ssh "$out/bin/ssh"
+          ln -s ${controller}/bin/crucible-debugger-live-fixture \
+            "$out/bin/crucible-debugger-live-fixture"
+          cp ${liveDebuggerMatrixScript} "$out/share/aos/crucible/debugger-live-matrix.sh"
+          cat > "$out/bin/crucible-debugger-live-matrix" <<EOF
+          #!${bash}/bin/bash
+          unset CRUCIBLE_QEMU CRUCIBLE_PLUGIN CRUCIBLE_DEBUG_GATEWAY \
+            CRUCIBLE_NATIVE_GUEST_ARCHITECTURE CRUCIBLE_KERNEL CRUCIBLE_ROOT_IMAGE \
+            CRUCIBLE_KERNEL_CMDLINE CRUCIBLE_KERNEL_X86_64 CRUCIBLE_ROOT_IMAGE_X86_64 \
+            CRUCIBLE_KERNEL_CMDLINE_X86_64 CRUCIBLE_KERNEL_AARCH64 \
+            CRUCIBLE_ROOT_IMAGE_AARCH64 CRUCIBLE_KERNEL_CMDLINE_AARCH64 \
+            CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES
+          export CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES=1
+          export CRUCIBLE_MATRIX_CRUCIBLE="$out/bin/crucible"
+          export CRUCIBLE_MATRIX_GDB="$out/bin/gdb"
+          export CRUCIBLE_MATRIX_SSH="$out/bin/ssh"
+          export CRUCIBLE_MATRIX_FIXTURE_GENERATOR="$out/bin/crucible-debugger-live-fixture"
+          export CRUCIBLE_MATRIX_BUILD_INFO="$out/nix-support/crucible-build-info"
+          export CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES="${liveDebuggerMatrixArchitectures}"
+          ${lib.optionalString (stdenv.hostPlatform.system == "x86_64-linux") ''
+            export CRUCIBLE_MATRIX_KERNEL_X86_64="${linux-crucible}/boot/vmlinuz-${linux-crucible.version}"
+            export CRUCIBLE_MATRIX_ROOT_IMAGE_X86_64="${crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4"
+          ''}
+          ${lib.optionalString (stdenv.hostPlatform.system == "aarch64-linux") ''
+            export CRUCIBLE_MATRIX_KERNEL_AARCH64="${linux-crucible}/boot/vmlinuz-${linux-crucible.version}"
+            export CRUCIBLE_MATRIX_ROOT_IMAGE_AARCH64="${crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4"
+          ''}
+          export PATH="${coreutils}/bin:${grep}/bin:${sed}/bin:${util-linux}/bin:${bash}/bin"
+          exec ${bash}/bin/bash "$out/share/aos/crucible/debugger-live-matrix.sh" "\$@"
+          EOF
+          chmod +x "$out/bin/crucible-debugger-live-matrix"
 
           cat > "$out/share/aos/crucible/release-manifest.env" <<'CRUCIBLE_RELEASE_MANIFEST'
           ${releaseManifest.envText}
@@ -310,14 +379,14 @@
           cat > "$out/nix-support/crucible-build-info" <<'INFO'
           package=crucible
           component=suite
-          component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later
+          component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause
           boundary_crates=crucible-protocol,crucible-shmem
           boundary_crates_license=MIT
           controller_package=crucible-controller
           controller_path=${controller}
           controller_license=Apache-2.0
           qemu_package=qemu-crucible
-          qemu_path=${qemu-crucible}/bin/qemu-system-x86_64
+          qemu_path=${nativeQemuPath}
           qemu_license=GPL-2.0-only
           qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT
           qemu_combined_work_license=GPL-2.0-only
@@ -332,6 +401,13 @@
           gdb_package=gdb
           gdb_path=${gdb}/bin/gdb
           gdb_license=GPL-3.0-or-later
+          ssh_package=openssh
+          ssh_path=${openssh}/bin/ssh
+          ssh_license=BSD-2-Clause
+          debugger_fixture_generator_path=${controller}/bin/crucible-debugger-live-fixture
+          debugger_live_matrix_path=bin/crucible-debugger-live-matrix
+          debugger_live_matrix_architectures=${liveDebuggerMatrixArchitectures}
+          debugger_live_matrix_external_architectures=aarch64
           qemu_corresponding_source_package=qemu-crucible-source
           qemu_corresponding_source_path=${qemu-crucible-source}
           qemu_corresponding_source_build_id=${qemu-crucible-source.passthru.qemuBuildIdentity}
@@ -368,7 +444,7 @@
     meta = {
       description = "Crucible controller with the GPL QEMU backend";
       homepage = "https://github.com/andyl/andyl-os";
-      license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later"];
+      license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause"];
       mainProgram = "crucible";
     };
   };

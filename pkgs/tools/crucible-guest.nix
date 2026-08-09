@@ -2,7 +2,7 @@
 {
   lib,
   mkCargoPackage,
-  fetchCargoVendor,
+  fetchCargoDeps,
   patchelf,
 }: let
   version = "0.1.0";
@@ -12,10 +12,10 @@ in
     pname = "crucible-guest";
     inherit version src;
 
-    cargoDeps = fetchCargoVendor {
+    cargoDeps = fetchCargoDeps {
       inherit src;
       sourceRoot = "source/crates";
-      hash = "sha256-byK2knHIciv8rLm+TLiOfTXNU9m/u7idWbSsvG6mIys=";
+      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
     };
 
     cargoFlags = "-p crucible-guest --bin crucible-guest";
@@ -65,7 +65,7 @@ in
       cat > "$out/nix-support/crucible-guest-build-info" <<'INFO'
       package=crucible-guest
       build_system=mkCargoPackage
-      cargo_deps=fetchCargoVendor
+      cargo_deps=fetchCargoDeps
       cargo_package=crucible-guest
       cargo_binary=crucible-guest
       rustflags=-C target-feature=+crt-static

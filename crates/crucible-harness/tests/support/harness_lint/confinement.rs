@@ -208,6 +208,7 @@ fn boundary_source_allows_host_nondeterminism(
 
     match package {
         "crucible-cli" => relative_is_under(&relative, "src"),
+        "crucible-debug-gateway" => relative_is_under(&relative, "src"),
         "crucible-daemon" => {
             relative_is_under(&relative, "src/diagnostics")
                 || relative_is_under(&relative, "src/supervision")
