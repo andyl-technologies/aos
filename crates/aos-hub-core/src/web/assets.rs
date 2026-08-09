@@ -31,6 +31,9 @@ pub const CONSOLE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hub-co
 /// The browser-console stylesheet.
 pub const CONSOLE_CSS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hub-console.css"));
 
+/// Version marker for the handwritten wasm-bindgen bootstrap contract.
+const CONSOLE_BOOTSTRAP_VERSION: &[u8] = b"bootstrap-api=object-v1\n";
+
 /// Returns the short content identity used in every console asset filename.
 #[must_use]
 pub fn asset_version() -> &'static str {
@@ -44,6 +47,7 @@ pub fn asset_version() -> &'static str {
         hasher.update(CONSOLE_JS);
         hasher.update(CONSOLE_WASM);
         hasher.update(CONSOLE_CSS);
+        hasher.update(CONSOLE_BOOTSTRAP_VERSION);
         hex::encode(hasher.finalize())[..8].to_string()
     })
 }
