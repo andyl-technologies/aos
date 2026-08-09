@@ -61,24 +61,12 @@ pub(crate) fn ResourceWorkflow(route: ConsoleRoute, client: ApiClient) -> impl I
         (ConsoleScope::Registry { path }, "danger") => {
             view! { <RegistryDanger client=client slug=path.clone()/> }.into_any()
         }
-        (
-            ConsoleScope::Cache {
-                organization,
-                cache,
-            },
-            "overview",
-        ) => view! {
-            <CacheOverview client=client stable_id=format!("{organization}/{cache}")/>
+        (ConsoleScope::Cache { path }, "overview") => view! {
+            <CacheOverview client=client stable_id=path.clone()/>
         }
         .into_any(),
-        (
-            ConsoleScope::Cache {
-                organization,
-                cache,
-            },
-            "danger",
-        ) => view! {
-            <CacheDanger client=client stable_id=format!("{organization}/{cache}")/>
+        (ConsoleScope::Cache { path }, "danger") => view! {
+            <CacheDanger client=client stable_id=path.clone()/>
         }
         .into_any(),
         _ => view! { <InfrastructureWorkflow route=route client=client/> }.into_any(),
@@ -1036,6 +1024,7 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let stable_id = cache.stable_id.clone();
+    let slug = cache.slug.clone();
     let version = cache.resource_version.clone();
     let plan_client = client.clone();
     let plan_id = stable_id.clone();
@@ -1090,7 +1079,7 @@ fn CacheEditor(client: ApiClient, cache: aos_proto_types::BinaryCache) -> impl I
         });
     };
     let apply_client = client;
-    let destination = cache_path(&stable_id);
+    let destination = cache_path(&slug);
     let on_apply = Callback::new(move |()| {
         let Some(reviewed) = pending.get_untracked() else {
             return;
@@ -1238,7 +1227,7 @@ fn CacheDanger(client: ApiClient, stable_id: String) -> impl IntoView {
                 .await
         }
     });
-    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading deletion preconditions…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match resource.await.as_ref() { Ok(response) => match response.cache.clone() { Some(cache) => view! { <TopologyDelete client=client kind="binary cache" stable_id=cache.stable_id resource_version=cache.resource_version plan_path=aos_proto_types::BINARY_CACHE_SERVICE_PLAN_DELETE_BINARY_CACHE_PATH apply_path=aos_proto_types::BINARY_CACHE_SERVICE_DELETE_BINARY_CACHE_PATH return_path=format!("/-/org/{}/caches", cache.slug.split('/').next().unwrap_or_default())/> }.into_any(), None => view! { <InlineError detail="The Hub omitted the binary cache.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
+    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading deletion preconditions…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match resource.await.as_ref() { Ok(response) => match response.cache.clone() { Some(cache) => { let return_path = cache_inventory_path(&cache.slug); view! { <TopologyDelete client=client kind="binary cache" stable_id=cache.stable_id resource_version=cache.resource_version plan_path=aos_proto_types::BINARY_CACHE_SERVICE_PLAN_DELETE_BINARY_CACHE_PATH apply_path=aos_proto_types::BINARY_CACHE_SERVICE_DELETE_BINARY_CACHE_PATH return_path=return_path/> }.into_any() }, None => view! { <InlineError detail="The Hub omitted the binary cache.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
 }
 
 #[component]
@@ -1317,11 +1306,18 @@ fn navigate(path: &str) {
     }
 }
 
-fn cache_path(stable_id: &str) -> String {
-    let mut segments = stable_id.splitn(2, '/');
-    let organization = segments.next().unwrap_or_default();
-    let cache = segments.next().unwrap_or_default();
-    format!("/-/org/{organization}/caches/{cache}")
+fn cache_path(slug: &str) -> String {
+    match slug.split_once('/') {
+        Some((organization, cache)) => format!("/-/org/{organization}/caches/{cache}"),
+        None => format!("/-/caches/{slug}"),
+    }
+}
+
+fn cache_inventory_path(slug: &str) -> String {
+    match slug.split_once('/') {
+        Some((organization, _)) => format!("/-/org/{organization}/caches"),
+        None => "/-/caches".to_string(),
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -1336,5 +1332,18 @@ fn format_bytes(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cache_inventory_path, cache_path};
+
+    #[test]
+    fn cache_routes_preserve_ownership_scope() {
+        assert_eq!(cache_path("acme/main"), "/-/org/acme/caches/main");
+        assert_eq!(cache_inventory_path("acme/main"), "/-/org/acme/caches");
+        assert_eq!(cache_path("nix"), "/-/caches/nix");
+        assert_eq!(cache_inventory_path("nix"), "/-/caches");
     }
 }

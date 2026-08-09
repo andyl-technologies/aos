@@ -26,14 +26,8 @@ pub(super) fn DeliveryRouteWorkflow(route: ConsoleRoute, client: ApiClient) -> i
             <DeliveryRoutes client=client surface=registry_surface(path)/>
         }
         .into_any(),
-        (
-            ConsoleScope::Cache {
-                organization,
-                cache,
-            },
-            "delivery",
-        ) => view! {
-            <DeliveryRoutes client=client surface=cache_surface(&format!("{organization}/{cache}"))/>
+        (ConsoleScope::Cache { path }, "delivery") => view! {
+            <DeliveryRoutes client=client surface=cache_surface(path)/>
         }
         .into_any(),
         _ => view! { <CacheIntegrationWorkflow route=route client=client/> }.into_any(),

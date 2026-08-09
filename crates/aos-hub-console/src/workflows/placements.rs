@@ -24,14 +24,8 @@ pub(super) fn PlacementWorkflow(route: ConsoleRoute, client: ApiClient) -> impl 
             <Placements client=client surface=registry_surface(path)/>
         }
         .into_any(),
-        (
-            ConsoleScope::Cache {
-                organization,
-                cache,
-            },
-            "placements",
-        ) => view! {
-            <Placements client=client surface=cache_surface(&format!("{organization}/{cache}"))/>
+        (ConsoleScope::Cache { path }, "placements") => view! {
+            <Placements client=client surface=cache_surface(path)/>
         }
         .into_any(),
         _ => view! { <DeliveryRouteWorkflow route=route client=client/> }.into_any(),

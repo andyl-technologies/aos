@@ -42,6 +42,11 @@ pub fn App() -> impl IntoView {
     on_cleanup(move || popstate.remove());
     let csrf = shell_meta("aos-session-csrf").unwrap_or_default();
     let session = LocalResource::new(move || {
+        // Browser-session tokens carry permissions for one exact management
+        // route. Re-exchange them whenever pushState or popstate changes that
+        // route; server authorization remains authoritative during the brief
+        // transition.
+        let _ = route.get();
         let csrf = csrf.clone();
         async move { ApiClient::from_browser_session(&csrf).await }
     });
@@ -401,10 +406,7 @@ fn scope_title(scope: &ConsoleScope) -> String {
         ConsoleScope::Organizations => "Organizations".to_string(),
         ConsoleScope::Organization { slug } => slug.clone(),
         ConsoleScope::Registry { path } => path.clone(),
-        ConsoleScope::Cache {
-            organization,
-            cache,
-        } => format!("{organization}/{cache}"),
+        ConsoleScope::Cache { path } => path.clone(),
     }
 }
 

@@ -16,8 +16,8 @@ use crate::transport::ApiClient;
 pub(super) enum ResourceAccessSurface {
     /// Registry path locator.
     Registry(String),
-    /// Organization and cache route locators.
-    Cache { organization: String, cache: String },
+    /// Canonical binary-cache slug.
+    Cache(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,7 +30,7 @@ struct AccessContext {
     overview_href: String,
     signing_href: String,
     tokens_href: String,
-    members_href: String,
+    members_href: Option<String>,
 }
 
 /// Renders resource-local access ownership and links to single-purpose editors.
@@ -89,14 +89,10 @@ async fn resolve_access_context(
                 overview_href: base.clone(),
                 signing_href: format!("{base}/signing-keys"),
                 tokens_href: format!("{base}/tokens"),
-                members_href: format!("/-/org/{organization}/members"),
+                members_href: Some(format!("/-/org/{organization}/members")),
             }
         }
-        ResourceAccessSurface::Cache {
-            organization,
-            cache: cache_name,
-        } => {
-            let cache_id = format!("{organization}/{cache_name}");
+        ResourceAccessSurface::Cache(cache_id) => {
             let response = client
                 .call::<_, aos_proto_types::BinaryCacheResponse>(
                     aos_proto_types::BINARY_CACHE_SERVICE_GET_BINARY_CACHE_PATH,
@@ -109,7 +105,13 @@ async fn resolve_access_context(
             let cache = response
                 .cache
                 .ok_or_else(|| "the Hub omitted the binary cache".to_string())?;
-            let base = format!("/-/org/{organization}/caches/{cache_name}");
+            let (base, members_href) = match cache_id.split_once('/') {
+                Some((organization, cache_name)) => (
+                    format!("/-/org/{organization}/caches/{cache_name}"),
+                    Some(format!("/-/org/{organization}/members")),
+                ),
+                None => (format!("/-/caches/{cache_id}"), None),
+            };
             AccessContext {
                 kind: "Binary cache",
                 label: cache_id,
@@ -119,7 +121,7 @@ async fn resolve_access_context(
                 overview_href: base.clone(),
                 signing_href: format!("{base}/signing-keys"),
                 tokens_href: format!("{base}/tokens"),
-                members_href: format!("/-/org/{organization}/members"),
+                members_href,
             }
         }
     };
@@ -153,9 +155,11 @@ fn AccessOverview(context: AccessContext) -> impl IntoView {
                 </p>
             </section>
             <section class="resource-grid">
-                <a class="resource-card" href=context.members_href>
-                    <div><span class="resource-kind">"IAM"</span><h3>"Memberships"</h3><p>"Grant a user or service account a role on an exact immutable scope."</p></div>
-                </a>
+                {context.members_href.map(|href| view! {
+                    <a class="resource-card" href=href>
+                        <div><span class="resource-kind">"IAM"</span><h3>"Memberships"</h3><p>"Grant a user or service account a role on an exact immutable scope."</p></div>
+                    </a>
+                })}
                 <a class="resource-card" href=context.tokens_href>
                     <div><span class="resource-kind">"Credentials"</span><h3>"Access tokens"</h3><p>"Issue and retire scope-owned API credentials."</p></div>
                 </a>

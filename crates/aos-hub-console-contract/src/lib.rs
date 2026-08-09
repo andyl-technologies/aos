@@ -91,12 +91,11 @@ pub enum ConsoleScope {
         /// Slash-separated canonical registry path.
         path: String,
     },
-    /// One organization-owned binary cache.
+    /// One binary cache, identified by its canonical slash-separated slug.
     Cache {
-        /// Owning organization slug.
-        organization: String,
-        /// Cache slug.
-        cache: String,
+        /// An organization-owned `organization/cache` slug or a standalone
+        /// instance cache's single-segment slug.
+        path: String,
     },
 }
 
@@ -128,6 +127,17 @@ impl ConsoleRoute {
             );
         }
         if segments.starts_with(&["-", "caches"]) {
+            if segments.len() >= 3 {
+                let cache = segments[2].to_string();
+                return resolve_page(
+                    ConsoleScope::Cache {
+                        path: cache.clone(),
+                    },
+                    format!("/-/caches/{cache}"),
+                    &segments[3..],
+                    CACHE_PAGES,
+                );
+            }
             return resolve_page(
                 ConsoleScope::Caches,
                 "/-/caches".to_string(),
@@ -159,8 +169,7 @@ impl ConsoleRoute {
                 let cache = segments[4].to_string();
                 return resolve_page(
                     ConsoleScope::Cache {
-                        organization: organization.clone(),
-                        cache: cache.clone(),
+                        path: format!("{organization}/{cache}"),
                     },
                     format!("/-/org/{organization}/caches/{cache}"),
                     &segments[5..],
@@ -1008,8 +1017,24 @@ mod tests {
 
         let cache = ConsoleRoute::resolve("/-/org/acme/caches/main/retention")
             .expect("cache route must resolve");
-        assert!(matches!(cache.scope, ConsoleScope::Cache { .. }));
+        assert_eq!(
+            cache.scope,
+            ConsoleScope::Cache {
+                path: "acme/main".to_string()
+            }
+        );
         assert_eq!(cache.page.key, "retention");
+
+        let standalone = ConsoleRoute::resolve("/-/caches/nix/retention")
+            .expect("standalone cache route must resolve");
+        assert_eq!(
+            standalone.scope,
+            ConsoleScope::Cache {
+                path: "nix".to_string()
+            }
+        );
+        assert_eq!(standalone.base_path, "/-/caches/nix");
+        assert_eq!(standalone.page.key, "retention");
     }
 
     #[test]
