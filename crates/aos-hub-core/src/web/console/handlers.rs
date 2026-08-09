@@ -319,6 +319,12 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
     };
     let csrf = html_attribute(&session.csrf());
     let brand = html_attribute(&crate::web::console_render::effective_brand());
+    let chrome = crate::web::console_render::site_chrome_snapshot();
+    let tagline = html_attribute(&chrome.tagline);
+    let announcement = html_attribute(&chrome.announcement);
+    let tos_url = html_attribute(&chrome.tos_url);
+    let privacy_url = html_attribute(&chrome.privacy_url);
+    let support_url = html_attribute(&chrome.support_url);
     let css = crate::web::assets::console_css_name();
     let bootstrap = crate::web::assets::console_bootstrap_name();
     let asset_version = crate::web::assets::asset_version();
@@ -328,6 +334,11 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <meta name=\"aos-session-csrf\" content=\"{csrf}\">\n\
          <meta name=\"aos-site-brand\" content=\"{brand}\">\n\
+         <meta name=\"aos-site-tagline\" content=\"{tagline}\">\n\
+         <meta name=\"aos-site-announcement\" content=\"{announcement}\">\n\
+         <meta name=\"aos-site-tos-url\" content=\"{tos_url}\">\n\
+         <meta name=\"aos-site-privacy-url\" content=\"{privacy_url}\">\n\
+         <meta name=\"aos-site-support-url\" content=\"{support_url}\">\n\
          <title>AOS Hub</title>\n\
          <link rel=\"stylesheet\" href=\"/_assets/style.css?v={asset_version}\">\n\
          <link rel=\"stylesheet\" href=\"/_assets/{css}\">\n\

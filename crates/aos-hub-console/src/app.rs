@@ -69,25 +69,46 @@ fn ManagementShell(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
     let page_label = route.page.label;
     let workflow_route = route.clone();
     let brand = shell_meta("aos-site-brand").unwrap_or_else(|| "AOS Hub".to_string());
+    let tagline = shell_meta("aos-site-tagline").unwrap_or_default();
+    let announcement = shell_meta("aos-site-announcement").unwrap_or_default();
+    let footer_links = [
+        ("terms", shell_meta("aos-site-tos-url")),
+        ("privacy", shell_meta("aos-site-privacy-url")),
+        ("support", shell_meta("aos-site-support-url")),
+    ]
+    .into_iter()
+    .filter_map(|(label, href)| {
+        href.filter(|href| !href.is_empty())
+            .map(|href| (label, href))
+    })
+    .collect::<Vec<_>>();
 
     view! {
         <div class="app-shell">
             <a class="skip-link" href="#main-content">"Skip to content"</a>
             <header class="masthead">
                 <a class="brand" href="/">{brand}</a>
+                {(!tagline.is_empty()).then(|| view! { <span class="tagline">{tagline}</span> })}
                 <span class="crumbs">
                     <a href=route.base_path.clone()>{context.clone()}</a>
                     " / "
                     {page_label}
                 </span>
                 <span class="session">
-                    <span class="who">{principal}</span>
+                    <a href="/">"registries"</a>
+                    " · "
+                    <a href="/-/caches">"caches"</a>
+                    " · "
+                    <a href="/-/orgs">"organizations"</a>
                     " · "
                     <a href="/-/account">"account"</a>
+                    " · "
+                    <span class="who">{principal}</span>
                     " · "
                     <a href="/logout">"log out"</a>
                 </span>
             </header>
+            {(!announcement.is_empty()).then(|| view! { <div class="announce">{announcement}</div> })}
             <div class="settings">
                 <details class="settings-nav-disclosure" open>
                     <summary>"Settings navigation"</summary>
@@ -106,7 +127,17 @@ fn ManagementShell(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
                     <ResourceWorkflow route=workflow_route client=client/>
                 </main>
             </div>
-            <footer class="statline">"AOS Hub management · Connect / ProtoJSON"</footer>
+            <footer class="statline">
+                "AOS Hub management · Connect / ProtoJSON"
+                {(!footer_links.is_empty()).then(|| view! {
+                    <span class="footer-links">
+                        {footer_links.into_iter().enumerate().map(|(index, (label, href))| view! {
+                            {(index > 0).then_some(" · ")}
+                            <a href=href>{label}</a>
+                        }).collect_view()}
+                    </span>
+                })}
+            </footer>
         </div>
     }
 }
