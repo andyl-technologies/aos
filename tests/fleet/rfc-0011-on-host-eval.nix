@@ -476,6 +476,7 @@ in {
       # Reboot with the original metadata attached. Byte-identical evaluation
       # must reuse the retained content-addressed generation.
       runtime.reboot()
+      wait_for_activation(runtime)
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet aos-graph-compile.service", timeout=300
       )
@@ -485,6 +486,7 @@ in {
       # Reboot without metadata exercises the durable, hash-checked host input
       # cache. The same host policy and generation must remain live.
       runtime.reboot_without_metadata()
+      wait_for_activation(runtime)
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet aos-graph-compile.service", timeout=300
       )
