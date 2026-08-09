@@ -123,7 +123,7 @@ fn site_tagline() -> String {
 
 /// The effective masthead brand: the editable site title if set, else the
 /// deploy [`brand`].
-fn effective_brand() -> String {
+pub(crate) fn effective_brand() -> String {
     let chrome = SITE_CHROME.read().unwrap_or_else(|e| e.into_inner());
     match &chrome.title {
         Some(t) if !t.is_empty() => t.clone(),

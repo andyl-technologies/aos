@@ -318,15 +318,20 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
         Err(response) => return *response,
     };
     let csrf = html_attribute(&session.csrf());
+    let brand = html_attribute(&crate::web::console_render::effective_brand());
     let css = crate::web::assets::console_css_name();
     let bootstrap = crate::web::assets::console_bootstrap_name();
+    let asset_version = crate::web::assets::asset_version();
     let html = format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n\
          <meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <meta name=\"aos-session-csrf\" content=\"{csrf}\">\n\
+         <meta name=\"aos-site-brand\" content=\"{brand}\">\n\
          <title>AOS Hub</title>\n\
+         <link rel=\"stylesheet\" href=\"/_assets/style.css?v={asset_version}\">\n\
          <link rel=\"stylesheet\" href=\"/_assets/{css}\">\n\
+         <script src=\"/_assets/app.js?v={asset_version}\" defer></script>\n\
          <script type=\"module\" src=\"/_assets/{bootstrap}\"></script>\n\
          </head>\n<body>\n\
          <noscript>The AOS Hub management console requires JavaScript.</noscript>\n\

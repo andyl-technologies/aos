@@ -68,52 +68,45 @@ fn ManagementShell(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
     let context = scope_title(&route.scope);
     let page_label = route.page.label;
     let workflow_route = route.clone();
+    let brand = shell_meta("aos-site-brand").unwrap_or_else(|| "AOS Hub".to_string());
 
     view! {
         <div class="app-shell">
-            <header class="topbar">
-                <a class="wordmark" href="/">"ANDYL" <span>"/ AOS Hub"</span></a>
-                <div class="principal">
-                    <span class="status-dot" aria-hidden="true"></span>
-                    <span>{principal}</span>
-                    <a href="/-/account">"Account"</a>
-                </div>
+            <a class="skip-link" href="#main-content">"Skip to content"</a>
+            <header class="masthead">
+                <a class="brand" href="/">{brand}</a>
+                <span class="crumbs">
+                    <a href=route.base_path.clone()>{context.clone()}</a>
+                    " / "
+                    {page_label}
+                </span>
+                <span class="session">
+                    <span class="who">{principal}</span>
+                    " · "
+                    <a href="/-/account">"account"</a>
+                    " · "
+                    <a href="/logout">"log out"</a>
+                </span>
             </header>
-            <div class="workspace">
-                <aside class="settings-sidebar" aria-label="Settings navigation">
-                    <div class="scope-context">
-                        <span class="eyebrow">{scope_kind(&route.scope)}</span>
-                        <strong>{context.clone()}</strong>
-                    </div>
+            <div class="settings">
+                <details class="settings-nav-disclosure" open>
+                    <summary>"Settings navigation"</summary>
                     <Navigation route=route.clone() client=client.clone()/>
-                </aside>
-                <main class="content">
-                    <header class="page-heading">
-                        <div>
-                            <p class="eyebrow">{context}</p>
-                            <h1>{page_label}</h1>
-                        </div>
-                        <span class="workflow-chip">{route.page.workflow}</span>
-                    </header>
-                    <section class="panel intro-panel">
-                        <div>
-                            <p class="section-kicker">"Control plane"</p>
-                            <h2>{page_label}</h2>
-                            <p class="lede">
-                                "This canonical page uses the same typed API and reviewed mutation contract as the CLI."
-                            </p>
-                        </div>
-                        <div class="contract-card">
-                            <span>"Workflow"</span>
-                            <code>{route.page.workflow}</code>
-                            <span>"Transport"</span>
-                            <strong>"Connect / ProtoJSON"</strong>
-                        </div>
-                    </section>
+                </details>
+                <main id="main-content" class="settings-body">
+                    <h1>{page_label}</h1>
+                    <p class="management-context">
+                        <span>{scope_kind(&route.scope)}</span>
+                        " · "
+                        <strong>{context}</strong>
+                        " · "
+                        <span>{route.page.workflow}</span>
+                    </p>
+                    <ContextRail route=route.clone()/>
                     <ResourceWorkflow route=workflow_route client=client/>
                 </main>
-                <ContextRail route=route/>
             </div>
+            <footer class="statline">"AOS Hub management · Connect / ProtoJSON"</footer>
         </div>
     }
 }
@@ -125,12 +118,14 @@ fn ContextRail(route: ConsoleRoute) -> impl IntoView {
     visible.then(|| {
         let (owns, uses, used_by) = topology_context(&route);
         view! {
-            <aside class="context-rail" aria-label="Topology context">
-                <p class="section-kicker">"Topology context"</p>
-                <ContextEdges label="Owns" edges=owns/>
-                <ContextEdges label="Uses" edges=uses/>
-                <ContextEdges label="Used by" edges=used_by/>
-            </aside>
+            <details class="topology-context">
+                <summary>"Topology context"</summary>
+                <div class="topology-context-grid">
+                    <ContextEdges label="Owns" edges=owns/>
+                    <ContextEdges label="Uses" edges=uses/>
+                    <ContextEdges label="Used by" edges=used_by/>
+                </div>
+            </details>
         }
     })
 }
@@ -203,17 +198,16 @@ fn topology_context(
 fn Navigation(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
     let groups = navigation_groups(&route, &client);
     view! {
-        <nav>
+        <nav class="settings-nav" aria-label="Settings navigation">
             {groups.into_iter().map(|group| {
                 let heading = (!group.label.is_empty()).then_some(group.label);
                 view! {
-                    <div class="nav-group">
-                        {heading.map(|label| view! { <p>{label}</p> })}
+                    <div class="settings-nav-group">
+                        {heading.map(|label| view! { <span class="settings-nav-label">{label}</span> })}
                         {group.pages.into_iter().map(|page| {
                             let current = page.key == route.page.key;
-                            let class = if current { "nav-link current" } else { "nav-link" };
                             view! {
-                                <a class=class aria-current=current.then_some("page") href=route.href(page)>
+                                <a aria-current=current.then_some("page") href=route.href(page)>
                                     {page.label}
                                 </a>
                             }
@@ -360,13 +354,24 @@ mod tests {
     }
 
     #[test]
-    fn stylesheet_carries_wide_medium_and_narrow_layout_contracts() {
+    fn stylesheet_extends_the_shared_paper_design_without_replacing_it() {
         let css = include_str!("../assets/app.css");
-        assert!(css.contains(
-            "grid-template-columns: minmax(230px, 280px) minmax(0, 1fr) minmax(220px, 260px)"
-        ));
-        assert!(css.contains("@media (max-width: 1100px)"));
-        assert!(css.contains("@media (max-width: 760px)"));
-        assert!(css.contains(".settings-sidebar nav { display: flex; overflow-x: auto"));
+        assert!(css.contains("var(--paper)"));
+        assert!(css.contains("var(--rule)"));
+        assert!(css.contains("var(--form-label-col)"));
+        assert!(css.contains("@media (max-width: 48rem)"));
+        for forbidden in [
+            ":root",
+            "color-scheme:",
+            "--canvas:",
+            "font-family: system-ui",
+            "box-shadow:",
+            "backdrop-filter:",
+        ] {
+            assert!(
+                !css.contains(forbidden),
+                "supplemental console CSS redefines the shared design with {forbidden}"
+            );
+        }
     }
 }

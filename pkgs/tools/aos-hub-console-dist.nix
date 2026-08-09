@@ -88,6 +88,12 @@ in
           test -s "$out/hub-console_bg.wasm"
           test -s "$out/hub-console.css"
           grep -q 'export function mount' "$out/hub-console.js"
+          grep -q 'var(--paper)' "$out/hub-console.css"
+          grep -q 'var(--form-label-col)' "$out/hub-console.css"
+          if grep -Eq ':root|color-scheme:|--canvas:|font-family: system-ui|box-shadow:|backdrop-filter:' "$out/hub-console.css"; then
+            echo "management console CSS must extend, not replace, the shared Hub design" >&2
+            exit 1
+          fi
           printf '\0asm' > "$TMPDIR/wasm-magic"
           head -c 4 "$out/hub-console_bg.wasm" > "$TMPDIR/wasm-prefix"
           cmp "$TMPDIR/wasm-magic" "$TMPDIR/wasm-prefix"
