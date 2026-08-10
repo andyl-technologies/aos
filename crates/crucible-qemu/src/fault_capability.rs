@@ -5,21 +5,24 @@
 //! launch identity and is reused unchanged for admission and replay.
 
 use crucible::model::{
-    FaultPhase, WorldNodeArchitecture, WorldNodeFaultCapabilities, WorldNodeRegisterGroup,
-    WorldNodeRegisterSideEffect,
+    FaultPhase, WorldNodeArchitecture, WorldNodeFaultCapabilities, WorldNodeInterruptDeliveryDrop,
+    WorldNodeInterruptFamily, WorldNodeInterruptPolarity, WorldNodeInterruptTrigger,
+    WorldNodeRegisterGroup, WorldNodeRegisterSideEffect,
 };
 use crucible_shmem::{
-    DEFAULT_FAULT_COMMAND_CAPACITY, FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS,
-    FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION, FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
-    FAULT_COMMAND_SEMANTIC_VERSION, FAULT_REGISTER_CAPABILITY_IMPULSE,
-    FAULT_REGISTER_CAPABILITY_PERSISTENT, FAULT_REGISTER_CAPABILITY_VMSTATE,
-    FAULT_REGISTER_SIDE_EFFECT_CONTROL_FLOW, FAULT_REGISTER_SIDE_EFFECT_CPU_FLAGS,
-    FAULT_REGISTER_SIDE_EFFECT_INTERRUPT, FAULT_REGISTER_SIDE_EFFECT_TB_FLUSH,
-    FAULT_REGISTER_SIDE_EFFECT_TIMER, FAULT_REGISTER_SIDE_EFFECT_TLB_FLUSH,
-    FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
-    FaultCapabilityScope, FaultCommandKind, FaultRegisterCapabilityManifestV1,
-    FaultRegisterCapabilityRowV1, FaultRegisterGroupV1, HARD_FAULT_PAYLOAD_BYTES,
-    fault_capability_manifest_digest,
+    DEFAULT_FAULT_COMMAND_CAPACITY, FAULT_CAPABILITY_FEATURE_INTERRUPT,
+    FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS, FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION,
+    FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION, FAULT_COMMAND_SEMANTIC_VERSION,
+    FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_REGISTER_CAPABILITY_PERSISTENT,
+    FAULT_REGISTER_CAPABILITY_VMSTATE, FAULT_REGISTER_SIDE_EFFECT_CONTROL_FLOW,
+    FAULT_REGISTER_SIDE_EFFECT_CPU_FLAGS, FAULT_REGISTER_SIDE_EFFECT_INTERRUPT,
+    FAULT_REGISTER_SIDE_EFFECT_TB_FLUSH, FAULT_REGISTER_SIDE_EFFECT_TIMER,
+    FAULT_REGISTER_SIDE_EFFECT_TLB_FLUSH, FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError,
+    FaultBoundaryPhase, FaultCapabilityRowV1, FaultCapabilityScope, FaultCommandKind,
+    FaultInterruptCapabilityManifestV1, FaultInterruptCapabilityRowV1,
+    FaultInterruptDeliveryDropV1, FaultInterruptFamilyV1, FaultInterruptPolarityV1,
+    FaultInterruptTriggerV1, FaultRegisterCapabilityManifestV1, FaultRegisterCapabilityRowV1,
+    FaultRegisterGroupV1, HARD_FAULT_PAYLOAD_BYTES, fault_capability_manifest_digest,
 };
 
 use crate::LivePluginGuestArchitecture;
@@ -39,7 +42,8 @@ pub struct QemuTargetManifestRequirement {
     architecture: FaultCapabilityScope,
     cpu_model: String,
     node_hash: [u8; 32],
-    exact_manifest: Option<FaultRegisterCapabilityManifestV1>,
+    exact_register_manifest: Option<FaultRegisterCapabilityManifestV1>,
+    exact_interrupt_manifest: Option<FaultInterruptCapabilityManifestV1>,
 }
 
 impl QemuTargetManifestRequirement {
@@ -63,8 +67,14 @@ impl QemuTargetManifestRequirement {
 
     /// Returns the exact canonical register manifest admitted by the World.
     #[must_use]
-    pub const fn exact_manifest(&self) -> Option<&FaultRegisterCapabilityManifestV1> {
-        self.exact_manifest.as_ref()
+    pub const fn exact_register_manifest(&self) -> Option<&FaultRegisterCapabilityManifestV1> {
+        self.exact_register_manifest.as_ref()
+    }
+
+    /// Returns the exact canonical interrupt manifest admitted by the World.
+    #[must_use]
+    pub const fn exact_interrupt_manifest(&self) -> Option<&FaultInterruptCapabilityManifestV1> {
+        self.exact_interrupt_manifest.as_ref()
     }
 
     /// Returns the canonical QOM typename expected for the realized CPU.
@@ -109,8 +119,8 @@ impl QemuFaultCapabilityRequirement {
         rows.push(capability_row(
             FaultCommandKind::QueryTargetManifest,
             scope,
-            b"qemu.target-manifest.register.v1",
-            b"crucible.target-manifest-query.v1",
+            b"qemu.target-manifest.node.v1",
+            b"crucible.target-manifest-query.v1;kinds=register,interrupt",
             FAULT_TARGET_MANIFEST_QUERY_V1_BYTES as u32,
             1,
             FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
@@ -124,6 +134,36 @@ impl QemuFaultCapabilityRequirement {
             DEFAULT_FAULT_COMMAND_CAPACITY,
             FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
         ));
+        let (interrupt_name, storm_name): (&[u8], &[u8]) = match architecture {
+            LivePluginGuestArchitecture::X86_64 => (
+                b"qemu.interrupt.control.x86_64.v1",
+                b"qemu.interrupt.storm.x86_64.v1",
+            ),
+            LivePluginGuestArchitecture::Aarch64 => (
+                b"qemu.interrupt.control.aarch64.v1",
+                b"qemu.interrupt.storm.aarch64.v1",
+            ),
+        };
+        rows.extend([
+            capability_row(
+                FaultCommandKind::InterruptDisposition,
+                scope,
+                interrupt_name,
+                b"crucible.node-fault-payload.v1",
+                HARD_FAULT_PAYLOAD_BYTES,
+                DEFAULT_FAULT_COMMAND_CAPACITY,
+                FAULT_CAPABILITY_FEATURE_INTERRUPT,
+            ),
+            capability_row(
+                FaultCommandKind::InterruptStorm,
+                scope,
+                storm_name,
+                b"crucible.node-fault-payload.v1",
+                HARD_FAULT_PAYLOAD_BYTES,
+                DEFAULT_FAULT_COMMAND_CAPACITY,
+                FAULT_CAPABILITY_FEATURE_INTERRUPT,
+            ),
+        ]);
         rows.push(capability_row(
             FaultCommandKind::MemoryMutation,
             scope,
@@ -162,6 +202,13 @@ impl QemuFaultCapabilityRequirement {
                 FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS,
             ),
         ]);
+        rows.sort_by_key(|row| {
+            (
+                row.command_kind as u16,
+                row.semantic_version,
+                row.scope as u16,
+            )
+        });
         let mut manifest_hasher = blake3::Hasher::new();
         manifest_hasher.update(b"crucible.qemu-fault-capabilities.v1\0");
         for row in &rows {
@@ -174,7 +221,8 @@ impl QemuFaultCapabilityRequirement {
                 architecture: scope,
                 cpu_model: cpu_model.into(),
                 node_hash,
-                exact_manifest: None,
+                exact_register_manifest: None,
+                exact_interrupt_manifest: None,
             }),
             world_bound: false,
         }
@@ -299,6 +347,89 @@ impl QemuFaultCapabilityRequirement {
         if *blake3::hash(&encoded).as_bytes() != node.register_schema.bytes {
             return Err(FaultAbiError::CapabilityInvariant);
         }
+        let interrupt_manifest = if node.interrupts.is_empty() {
+            None
+        } else {
+            let mut rows = node
+                .interrupts
+                .iter()
+                .map(|row| {
+                    let family = match row.family {
+                        WorldNodeInterruptFamily::X86LocalApicFixed => {
+                            FaultInterruptFamilyV1::X86LocalApicFixed
+                        }
+                        WorldNodeInterruptFamily::X86Ipi => FaultInterruptFamilyV1::X86Ipi,
+                        WorldNodeInterruptFamily::X86IoApic => FaultInterruptFamilyV1::X86IoApic,
+                        WorldNodeInterruptFamily::X86Pic => FaultInterruptFamilyV1::X86Pic,
+                        WorldNodeInterruptFamily::X86Msi => FaultInterruptFamilyV1::X86Msi,
+                        WorldNodeInterruptFamily::X86MsiX => FaultInterruptFamilyV1::X86MsiX,
+                        WorldNodeInterruptFamily::X86Nmi => FaultInterruptFamilyV1::X86Nmi,
+                        WorldNodeInterruptFamily::X86Timer => FaultInterruptFamilyV1::X86Timer,
+                        WorldNodeInterruptFamily::ArmGicSgi => FaultInterruptFamilyV1::ArmGicSgi,
+                        WorldNodeInterruptFamily::ArmGicPpi => FaultInterruptFamilyV1::ArmGicPpi,
+                        WorldNodeInterruptFamily::ArmGicSpi => FaultInterruptFamilyV1::ArmGicSpi,
+                        WorldNodeInterruptFamily::ArmGicLpi => FaultInterruptFamilyV1::ArmGicLpi,
+                        WorldNodeInterruptFamily::ArmTimer => FaultInterruptFamilyV1::ArmTimer,
+                    };
+                    let trigger = match row.trigger {
+                        WorldNodeInterruptTrigger::Edge => FaultInterruptTriggerV1::Edge,
+                        WorldNodeInterruptTrigger::Level => FaultInterruptTriggerV1::Level,
+                    };
+                    let polarity = match row.polarity {
+                        WorldNodeInterruptPolarity::ActiveHigh => {
+                            FaultInterruptPolarityV1::ActiveHigh
+                        }
+                        WorldNodeInterruptPolarity::ActiveLow => {
+                            FaultInterruptPolarityV1::ActiveLow
+                        }
+                    };
+                    let delivery_drop = match row.delivery_drop {
+                        WorldNodeInterruptDeliveryDrop::ConsumeEdge => {
+                            FaultInterruptDeliveryDropV1::ConsumeEdge
+                        }
+                        WorldNodeInterruptDeliveryDrop::RependAssertedLevel => {
+                            FaultInterruptDeliveryDropV1::RependAssertedLevel
+                        }
+                    };
+                    let model_phase_mask = row.model_phases.iter().fold(0_u64, |mask, phase| {
+                        let tag = match phase {
+                            FaultPhase::Raise => 23,
+                            FaultPhase::Route => 24,
+                            FaultPhase::InterruptDeliver => 26,
+                            _ => 0,
+                        };
+                        if tag == 0 {
+                            mask
+                        } else {
+                            mask | (1_u64 << (tag - 1))
+                        }
+                    });
+                    FaultInterruptCapabilityRowV1 {
+                        id: row.id.as_str().to_owned(),
+                        controller: row.controller.as_str().to_owned(),
+                        source: row.source.as_str().to_owned(),
+                        controller_version: row.controller_version.clone(),
+                        family,
+                        vector_start: row.vector_start,
+                        vector_end: row.vector_end,
+                        replacement_vector_start: row.replacement_vector_start,
+                        replacement_vector_end: row.replacement_vector_end,
+                        trigger,
+                        polarity,
+                        target_vcpus: row.target_vcpus.clone(),
+                        model_phase_mask,
+                        priority: row.priority,
+                        delivery_drop,
+                        vmstate: row.vmstate,
+                    }
+                })
+                .collect::<Vec<_>>();
+            rows.sort_by(|left, right| left.id.cmp(&right.id));
+            Some(FaultInterruptCapabilityManifestV1 {
+                architecture: scope,
+                rows,
+            })
+        };
         let mut requirement = Self::current_v1(
             architecture,
             node.cpu_model.clone(),
@@ -308,8 +439,10 @@ impl QemuFaultCapabilityRequirement {
             .target_manifest
             .as_mut()
             .ok_or(FaultAbiError::CapabilityInvariant)?;
-        target.exact_manifest = Some(manifest.clone());
-        requirement.rows = requirement.rows_for_manifest(Some(&manifest))?;
+        target.exact_register_manifest = Some(manifest.clone());
+        target.exact_interrupt_manifest = interrupt_manifest.clone();
+        requirement.rows =
+            requirement.rows_for_manifests(Some(&manifest), interrupt_manifest.as_ref())?;
         requirement.digest = fault_capability_manifest_digest(&requirement.rows)?;
         requirement.world_bound = true;
         Ok(requirement)
@@ -397,20 +530,22 @@ impl QemuFaultCapabilityRequirement {
     /// Returns [`FaultAbiError`] when the manifest is absent or malformed for
     /// a target-aware requirement, or when the resulting rows are not a
     /// canonical capability manifest.
-    pub fn rows_for_manifest(
+    pub fn rows_for_manifests(
         &self,
-        manifest: Option<&FaultRegisterCapabilityManifestV1>,
+        register_manifest: Option<&FaultRegisterCapabilityManifestV1>,
+        interrupt_manifest: Option<&FaultInterruptCapabilityManifestV1>,
     ) -> Result<Vec<FaultCapabilityRowV1>, FaultAbiError> {
         let Some(required_target) = &self.target_manifest else {
             return Ok(self.rows.clone());
         };
-        let manifest = manifest.ok_or(FaultAbiError::CapabilityInvariant)?;
+        let manifest = register_manifest.ok_or(FaultAbiError::CapabilityInvariant)?;
         if manifest.architecture != required_target.architecture
             || manifest.cpu_model != required_target.realized_cpu_type()
             || required_target
-                .exact_manifest
+                .exact_register_manifest
                 .as_ref()
                 .is_some_and(|required| required != manifest)
+            || required_target.exact_interrupt_manifest.as_ref() != interrupt_manifest
         {
             return Err(FaultAbiError::CapabilityInvariant);
         }
@@ -428,7 +563,13 @@ impl QemuFaultCapabilityRequirement {
             .find(|row| row.command_kind == FaultCommandKind::QueryTargetManifest)
             .ok_or(FaultAbiError::CapabilityInvariant)?;
         query.scope = manifest.architecture;
-        query.capability_hash = target_manifest_capability_hash(manifest_digest);
+        query.required_feature_bits = FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION
+            | interrupt_manifest.map_or(0, |_manifest| FAULT_CAPABILITY_FEATURE_INTERRUPT);
+        let interrupt_digest = interrupt_manifest
+            .map(FaultInterruptCapabilityManifestV1::encode)
+            .transpose()?
+            .map(|payload| *blake3::hash(&payload).as_bytes());
+        query.capability_hash = target_manifest_capability_hash(manifest_digest, interrupt_digest);
         rows.sort_by_key(|row| {
             (
                 row.command_kind as u16,
@@ -464,12 +605,25 @@ const fn hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
-fn target_manifest_capability_hash(manifest_digest: [u8; 32]) -> [u8; 32] {
-    capability_hash_with_manifest(
-        b"qemu.target-manifest.register.v1",
-        b"crucible.target-manifest-query.v1",
-        manifest_digest,
-    )
+fn target_manifest_capability_hash(
+    register_manifest_digest: [u8; 32],
+    interrupt_manifest_digest: Option<[u8; 32]>,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.qemu-fault-capability.v1\0");
+    hasher.update(b"qemu.target-manifest.node.v1\0");
+    hasher.update(b"crucible.target-manifest-query.v1;kinds=register,interrupt\0");
+    hasher.update(&register_manifest_digest);
+    match interrupt_manifest_digest {
+        Some(digest) => {
+            hasher.update(&[1]);
+            hasher.update(&digest);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+    *hasher.finalize().as_bytes()
 }
 
 fn register_capability_hash(
@@ -591,9 +745,9 @@ mod tests {
                 [1; 32],
             );
             let register = &requirement.rows()[3];
-            let mutation = &requirement.rows()[4];
+            let mutation = &requirement.rows()[6];
 
-            assert_eq!(requirement.rows().len(), 8);
+            assert_eq!(requirement.rows().len(), 10);
             assert_eq!(
                 requirement.rows()[2].command_kind,
                 FaultCommandKind::QueryTargetManifest
@@ -614,7 +768,22 @@ mod tests {
                 FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION
             );
             assert_eq!(
-                requirement.rows()[5..]
+                requirement.rows()[4..6]
+                    .iter()
+                    .map(|row| row.command_kind)
+                    .collect::<Vec<_>>(),
+                [
+                    FaultCommandKind::InterruptDisposition,
+                    FaultCommandKind::InterruptStorm,
+                ]
+            );
+            assert!(
+                requirement.rows()[4..6]
+                    .iter()
+                    .all(|row| { row.required_feature_bits == FAULT_CAPABILITY_FEATURE_INTERRUPT })
+            );
+            assert_eq!(
+                requirement.rows()[7..]
                     .iter()
                     .map(|row| row.command_kind)
                     .collect::<Vec<_>>(),
@@ -624,7 +793,7 @@ mod tests {
                     FaultCommandKind::MemoryService,
                 ]
             );
-            assert!(requirement.rows()[5..].iter().all(|row| {
+            assert!(requirement.rows()[7..].iter().all(|row| {
                 row.required_feature_bits == FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS
             }));
             let digest = match fault_capability_manifest_digest(requirement.rows()) {
@@ -685,14 +854,18 @@ mod tests {
         assert_eq!(
             requirement
                 .target_manifest()
-                .and_then(QemuTargetManifestRequirement::exact_manifest),
+                .and_then(QemuTargetManifestRequirement::exact_register_manifest),
             Some(&manifest)
         );
-        assert!(requirement.rows_for_manifest(Some(&manifest)).is_ok());
+        assert!(
+            requirement
+                .rows_for_manifests(Some(&manifest), None)
+                .is_ok()
+        );
         let mut changed = manifest.clone();
         changed.rows[0].name = "rbx".to_owned();
         assert_eq!(
-            requirement.rows_for_manifest(Some(&changed)),
+            requirement.rows_for_manifests(Some(&changed), None),
             Err(FaultAbiError::CapabilityInvariant)
         );
     }

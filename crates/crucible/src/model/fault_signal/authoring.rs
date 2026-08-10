@@ -2502,7 +2502,7 @@ fn resolve_authored_target(
                     capabilities.interrupts.iter().any(|row| {
                         row.controller.as_str() == controller.as_str()
                             && row.source.as_str() == source.as_str()
-                            && row.vector == vector
+                            && (row.vector_start..=row.vector_end).contains(&vector)
                             && row.target_vcpus.contains(&target_vcpu)
                     })
                 });

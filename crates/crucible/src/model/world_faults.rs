@@ -2521,8 +2521,10 @@ pub struct WorldNodeInterrupt {
     pub controller_version: String,
     /// Architecture interrupt family.
     pub family: WorldNodeInterruptFamily,
-    /// Architecture vector or interrupt type.
-    pub vector: u32,
+    /// Inclusive first vector or INTID the source may produce at runtime.
+    pub vector_start: u32,
+    /// Inclusive last vector or INTID the source may produce at runtime.
+    pub vector_end: u32,
     /// Inclusive first vector accepted by replacement mutations.
     pub replacement_vector_start: u32,
     /// Inclusive last vector accepted by replacement mutations.
@@ -2858,11 +2860,12 @@ impl WorldNodeFaultCapabilities {
                 "node interrupt controller version",
             )?;
             require(
-                interrupt.architectural_vector_valid(interrupt.vector)
+                interrupt.architectural_vector_valid(interrupt.vector_start)
+                    && interrupt.architectural_vector_valid(interrupt.vector_end)
                     && interrupt.architectural_vector_valid(interrupt.replacement_vector_start)
                     && interrupt.architectural_vector_valid(interrupt.replacement_vector_end)
-                    && interrupt.replacement_vector_start <= interrupt.vector
-                    && interrupt.vector <= interrupt.replacement_vector_end,
+                    && interrupt.vector_start <= interrupt.vector_end
+                    && interrupt.replacement_vector_start <= interrupt.replacement_vector_end,
                 "node interrupt vector range",
             )?;
             require(

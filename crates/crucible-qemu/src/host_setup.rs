@@ -18,13 +18,13 @@ use crucible_protocol::{
 use crucible_shmem::{
     ABI_VERSION, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
     FAULT_COMMAND_SEMANTIC_VERSION, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
-    FaultCommandHeaderV1, FaultCommandKind, FaultRegisterCapabilityManifestV1, FaultResultStatus,
-    FaultTargetManifestKind, FaultTargetManifestQueryV1, FaultTransportError,
-    MappedSetupRegionAccessError, RegionAllocation, RegionConfig, RegionLayoutError,
-    RegionSerializationError, RegionSetupValidationError, SetupRegionMapError,
-    ValidatedSetupRegion, decode_fault_capability_manifest, dequeue_fault_result,
-    enqueue_fault_command, fault_capability_manifest_digest, mmap_setup_region,
-    validate_setup_region_header,
+    FaultCommandHeaderV1, FaultCommandKind, FaultInterruptCapabilityManifestV1,
+    FaultRegisterCapabilityManifestV1, FaultResultStatus, FaultTargetManifestKind,
+    FaultTargetManifestQueryV1, FaultTransportError, MappedSetupRegionAccessError,
+    RegionAllocation, RegionConfig, RegionLayoutError, RegionSerializationError,
+    RegionSetupValidationError, SetupRegionMapError, ValidatedSetupRegion,
+    decode_fault_capability_manifest, dequeue_fault_result, enqueue_fault_command,
+    fault_capability_manifest_digest, mmap_setup_region, validate_setup_region_header,
 };
 use thiserror::Error;
 
@@ -45,6 +45,7 @@ pub struct QemuHostPluginSetup {
     fault_capabilities: Vec<FaultCapabilityRowV1>,
     fault_capability_digest: [u8; 32],
     register_manifest: Option<FaultRegisterCapabilityManifestV1>,
+    interrupt_manifest: Option<FaultInterruptCapabilityManifestV1>,
 }
 
 impl QemuHostPluginSetup {
@@ -88,6 +89,12 @@ impl QemuHostPluginSetup {
     #[must_use]
     pub const fn register_manifest(&self) -> Option<&FaultRegisterCapabilityManifestV1> {
         self.register_manifest.as_ref()
+    }
+
+    /// Returns the immutable interrupt targets admitted before guest start.
+    #[must_use]
+    pub const fn interrupt_manifest(&self) -> Option<&FaultInterruptCapabilityManifestV1> {
+        self.interrupt_manifest.as_ref()
     }
 
     /// Returns the retained host shared-memory descriptor.
@@ -264,7 +271,26 @@ pub fn complete_qemu_host_plugin_setup(
         .map_err(|source| QemuHostPluginSetupError::AdmissionMap { source })?;
     enqueue_capability_query(&mut admission_region, slot_index, fault_node_hash)?;
     if required_capabilities.target_manifest().is_some() {
-        enqueue_register_manifest_query(&mut admission_region, slot_index, fault_node_hash)?;
+        enqueue_target_manifest_query(
+            &mut admission_region,
+            slot_index,
+            fault_node_hash,
+            FaultTargetManifestKind::Register,
+            2,
+        )?;
+    }
+    if required_capabilities
+        .target_manifest()
+        .and_then(crate::QemuTargetManifestRequirement::exact_interrupt_manifest)
+        .is_some()
+    {
+        enqueue_target_manifest_query(
+            &mut admission_region,
+            slot_index,
+            fault_node_hash,
+            FaultTargetManifestKind::Interrupt,
+            3,
+        )?;
     }
 
     let mut control = ControlLifecycleStream::connected_unix_stream(control_socket)
@@ -294,8 +320,21 @@ pub fn complete_qemu_host_plugin_setup(
         .target_manifest()
         .map(|required| accept_register_manifest(&mut admission_region, slot_index, required))
         .transpose()?;
+    let interrupt_manifest = required_capabilities
+        .target_manifest()
+        .and_then(crate::QemuTargetManifestRequirement::exact_interrupt_manifest)
+        .map(|_required| {
+            accept_interrupt_manifest(
+                &mut admission_region,
+                slot_index,
+                required_capabilities
+                    .target_manifest()
+                    .ok_or(QemuHostPluginSetupError::AdmissionTargetIdentity)?,
+            )
+        })
+        .transpose()?;
     let expected_capabilities = required_capabilities
-        .rows_for_manifest(register_manifest.as_ref())
+        .rows_for_manifests(register_manifest.as_ref(), interrupt_manifest.as_ref())
         .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
     if fault_capabilities != expected_capabilities {
         let observed_digest = fault_capability_manifest_digest(&fault_capabilities)
@@ -323,18 +362,18 @@ pub fn complete_qemu_host_plugin_setup(
         fault_capabilities,
         fault_capability_digest: admitted_capability_digest,
         register_manifest,
+        interrupt_manifest,
     })
 }
 
-fn enqueue_register_manifest_query(
+fn enqueue_target_manifest_query(
     region: &mut crucible_shmem::MappedSetupRegion,
     slot_index: u32,
     target_node_hash: [u8; 32],
+    kind: FaultTargetManifestKind,
+    command_sequence: u64,
 ) -> Result<(), QemuHostPluginSetupError> {
-    let payload = FaultTargetManifestQueryV1 {
-        kind: FaultTargetManifestKind::Register,
-    }
-    .encode();
+    let payload = FaultTargetManifestQueryV1 { kind }.encode();
     let transport = region
         .fault_command_transport_mut(slot_index)
         .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
@@ -355,7 +394,7 @@ fn enqueue_register_manifest_query(
             command_flags: 0,
             phase: FaultBoundaryPhase::NodeBoundary,
             semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
-            command_sequence: 2,
+            command_sequence,
             target_node_hash,
             target_icount: 0,
             authorization_ceiling_icount: 0,
@@ -526,6 +565,70 @@ fn accept_register_manifest(
             observed_architecture: manifest.architecture,
             required_cpu_model: required.realized_cpu_type(),
             observed_cpu_model: manifest.cpu_model.clone(),
+        });
+    }
+    Ok(manifest)
+}
+
+fn accept_interrupt_manifest(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+    required: &crate::QemuTargetManifestRequirement,
+) -> Result<FaultInterruptCapabilityManifestV1, QemuHostPluginSetupError> {
+    let transport = region
+        .fault_result_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let result = dequeue_fault_result(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })?
+    .ok_or(QemuHostPluginSetupError::AdmissionResultMissing)?;
+    let (header, payload) = match result {
+        DequeuedFaultResult::Valid { header, payload } => (header, payload),
+        DequeuedFaultResult::Invalid {
+            command_sequence,
+            error,
+        } => {
+            return Err(QemuHostPluginSetupError::AdmissionResultInvalid {
+                command_sequence,
+                source: error,
+            });
+        }
+    };
+    if header.command_sequence != 3
+        || header.command_kind != FaultCommandKind::QueryTargetManifest as u16
+        || header.status != FaultResultStatus::Applied
+        || header.phase != FaultBoundaryPhase::NodeBoundary
+        || header.capability_version != 1
+        || header.observed_icount != 0
+        || header.applied_icount != 0
+        || header.evidence_hash != *blake3::hash(&payload).as_bytes()
+    {
+        return Err(QemuHostPluginSetupError::AdmissionResultRejected {
+            command_sequence: header.command_sequence,
+            command_kind: header.command_kind,
+            status: header.status,
+            phase: header.phase,
+            capability_version: header.capability_version,
+            observed_icount: header.observed_icount,
+            applied_icount: header.applied_icount,
+            evidence_hash: header.evidence_hash,
+        });
+    }
+    let manifest = FaultInterruptCapabilityManifestV1::decode(&payload)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+    if manifest.architecture != required.architecture()
+        || required.exact_interrupt_manifest() != Some(&manifest)
+    {
+        return Err(QemuHostPluginSetupError::AdmissionTargetManifestMismatch {
+            required_architecture: required.architecture(),
+            observed_architecture: manifest.architecture,
+            required_cpu_model: required.realized_cpu_type(),
+            observed_cpu_model: required.realized_cpu_type(),
         });
     }
     Ok(manifest)

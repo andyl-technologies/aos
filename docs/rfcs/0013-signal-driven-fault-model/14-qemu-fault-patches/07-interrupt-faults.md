@@ -31,11 +31,16 @@ public manifest.
 
 The host declaration and QEMU-reported row use the same closed fields. All are
 required: `id`, `controller`, `source`, `controller_version`, `family`,
-`vector`, `replacement_vector_start`, `replacement_vector_end`, `trigger`,
+`vector_start`, `vector_end`, `replacement_vector_start`,
+`replacement_vector_end`, `trigger`,
 `polarity`, sorted unique nonempty `target_vcpus`, sorted unique nonempty
 `model_phases`, `priority`, `delivery_drop`, and `vmstate=true`. Admission
 compares the canonical encoded rows byte-for-byte; it never widens a range or
-fills in a controller default.
+fills in a controller default. The runtime vector is deliberately not an
+immutable manifest field: IOAPIC, MSI/MSI-X, GIC, and timer routing may be
+guest-programmed after admission. `vector_start..=vector_end` authenticates the
+complete source domain, while each opportunity and evidence record carries the
+exact observed vector or INTID.
 
 The complete family set is:
 

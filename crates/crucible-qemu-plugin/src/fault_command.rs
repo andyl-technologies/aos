@@ -12,21 +12,23 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::NonNull;
 
 use crucible_shmem::{
-    DequeuedFaultCommand, FAULT_CAPABILITY_FEATURE_INSTRUCTION,
+    DequeuedFaultCommand, FAULT_CAPABILITY_FEATURE_INSTRUCTION, FAULT_CAPABILITY_FEATURE_INTERRUPT,
     FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION, FAULT_COMMAND_SEMANTIC_VERSION,
     FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError,
     FaultBoundaryPhase, FaultCapabilityRowV1, FaultCapabilityScope, FaultCommandHeaderV1,
     FaultCommandKind, FaultCommandSlotV1, FaultEventHeaderV1, FaultEventOutcomeV1,
     FaultEventSlotV1, FaultExceptionEvidenceV1, FaultInstructionEvidenceOutcomeV1,
     FaultInstructionEvidenceV1, FaultInstructionMutationKindV1, FaultInstructionPortIoEvidenceV1,
-    FaultPayloadArenaHeader, FaultRegisterCapabilityManifestV1, FaultRegisterCapabilityRowV1,
-    FaultRegisterGroupV1, FaultRegisterMutationEvidenceV1, FaultRegisterMutationKindV1,
-    FaultResultHeaderV1, FaultResultSlotV1, FaultResultStatus, FaultTargetManifestKind,
-    FaultTargetManifestQueryV1, FaultTerminalEvidenceV1, FaultTransportError,
-    HARD_FAULT_PAYLOAD_BYTES, MappedFaultCommandTransportMut, MappedFaultEventTransportMut,
-    MappedFaultResultTransportMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    NodeFaultOperationV1, NodeFaultPayloadV1, NodeFaultTargetKindV1, RingHeader,
-    can_enqueue_fault_event, can_enqueue_fault_result, dequeue_fault_command,
+    FaultInterruptCapabilityManifestV1, FaultInterruptCapabilityRowV1,
+    FaultInterruptDeliveryDropV1, FaultInterruptFamilyV1, FaultInterruptPolarityV1,
+    FaultInterruptTriggerV1, FaultPayloadArenaHeader, FaultRegisterCapabilityManifestV1,
+    FaultRegisterCapabilityRowV1, FaultRegisterGroupV1, FaultRegisterMutationEvidenceV1,
+    FaultRegisterMutationKindV1, FaultResultHeaderV1, FaultResultSlotV1, FaultResultStatus,
+    FaultTargetManifestKind, FaultTargetManifestQueryV1, FaultTerminalEvidenceV1,
+    FaultTransportError, HARD_FAULT_PAYLOAD_BYTES, MappedFaultCommandTransportMut,
+    MappedFaultEventTransportMut, MappedFaultResultTransportMut, MappedSetupRegion,
+    MappedSetupRegionAccessError, NodeFaultOperationV1, NodeFaultPayloadV1, NodeFaultTargetKindV1,
+    RingHeader, can_enqueue_fault_event, can_enqueue_fault_result, dequeue_fault_command,
     encode_fault_capability_manifest, enqueue_fault_event, enqueue_fault_result,
     fault_capability_manifest_digest, fault_register_cpu_model_digest_v1,
     fault_register_manifest_digest_v1, node_fault_field,
@@ -66,6 +68,15 @@ pub const QEMU_PLUGIN_CRUCIBLE_FAULT_REGISTER_BINDINGS_SEAL_SYMBOL: &str =
 /// QEMU symbol that copies the immutable instruction decoder manifest.
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_INSTRUCTION_MANIFEST_SYMBOL: &str =
     "qemu_plugin_crucible_fault_instruction_manifest";
+/// QEMU symbol that copies architecture-owned interrupt target rows.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_INTERRUPT_MANIFEST_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_interrupt_manifest";
+/// QEMU symbol that binds one public interrupt identity row.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_INTERRUPT_BIND_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_interrupt_bind";
+/// QEMU symbol that seals every interrupt identity row.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_INTERRUPT_BINDINGS_SEAL_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_interrupt_bindings_seal";
 
 const CAPABILITIES_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_capabilities\0";
 const SUBMIT_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_submit\0";
@@ -81,6 +92,10 @@ const REGISTER_BIND_ARCHITECTURE_SYMBOL_C: &[u8] =
 const REGISTER_BINDINGS_SEAL_SYMBOL_C: &[u8] =
     b"qemu_plugin_crucible_fault_register_bindings_seal\0";
 const INSTRUCTION_MANIFEST_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_instruction_manifest\0";
+const INTERRUPT_MANIFEST_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_interrupt_manifest\0";
+const INTERRUPT_BIND_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_interrupt_bind\0";
+const INTERRUPT_BINDINGS_SEAL_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_fault_interrupt_bindings_seal\0";
 const CAPABILITY_HASH_DOMAIN: &[u8] = b"crucible.qemu-fault-capability.v1\0";
 
 #[repr(C)]
@@ -171,6 +186,29 @@ struct QemuFaultRegisterCapability {
     mask_bytes: usize,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct QemuFaultInterruptCapability {
+    family: u16,
+    trigger: u16,
+    polarity: u16,
+    delivery_drop: u16,
+    vector_start: u32,
+    vector_end: u32,
+    replacement_vector_start: u32,
+    replacement_vector_end: u32,
+    priority: u16,
+    vmstate: u8,
+    reserved: u8,
+    model_phase_mask: u64,
+    id: *const c_char,
+    controller: *const c_char,
+    source: *const c_char,
+    controller_version: *const c_char,
+    target_vcpus: *const u32,
+    target_vcpu_count: usize,
+}
+
 type QemuFaultCapabilitiesFn = extern "C" fn(*mut QemuFaultCapability, usize) -> usize;
 type QemuFaultSubmitFn = extern "C" fn(*const QemuFaultCommand, *const u8, usize) -> c_int;
 type QemuFaultCancelFn = extern "C" fn(u64) -> c_int;
@@ -184,6 +222,10 @@ type QemuFaultRegisterBindFn = extern "C" fn(*const u8, u32) -> c_int;
 type QemuFaultRegisterBindArchitectureFn = extern "C" fn(*const u8) -> c_int;
 type QemuFaultRegisterBindingsSealFn = extern "C" fn() -> c_int;
 type QemuFaultInstructionManifestFn = extern "C" fn(*mut u8, usize, *mut u8, *mut u16) -> usize;
+type QemuFaultInterruptManifestFn =
+    extern "C" fn(*mut QemuFaultInterruptCapability, usize, *mut u16) -> usize;
+type QemuFaultInterruptBindFn = extern "C" fn(u32, *const u8, *const u8, *const u8) -> c_int;
+type QemuFaultInterruptBindingsSealFn = extern "C" fn() -> c_int;
 
 /// Resolved, closed QEMU fault registry operations.
 #[derive(Clone, Copy)]
@@ -201,6 +243,9 @@ pub(crate) struct QemuFaultCommandApis {
     register_bind_architecture: QemuFaultRegisterBindArchitectureFn,
     register_bindings_seal: QemuFaultRegisterBindingsSealFn,
     instruction_manifest: QemuFaultInstructionManifestFn,
+    interrupt_manifest: QemuFaultInterruptManifestFn,
+    interrupt_bind: QemuFaultInterruptBindFn,
+    interrupt_bindings_seal: QemuFaultInterruptBindingsSealFn,
 }
 
 impl QemuFaultCommandApis {
@@ -243,6 +288,18 @@ impl QemuFaultCommandApis {
             instruction_manifest: resolve_symbol(
                 INSTRUCTION_MANIFEST_SYMBOL_C,
                 QEMU_PLUGIN_CRUCIBLE_FAULT_INSTRUCTION_MANIFEST_SYMBOL,
+            )?,
+            interrupt_manifest: resolve_symbol(
+                INTERRUPT_MANIFEST_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_INTERRUPT_MANIFEST_SYMBOL,
+            )?,
+            interrupt_bind: resolve_symbol(
+                INTERRUPT_BIND_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_INTERRUPT_BIND_SYMBOL,
+            )?,
+            interrupt_bindings_seal: resolve_symbol(
+                INTERRUPT_BINDINGS_SEAL_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_INTERRUPT_BINDINGS_SEAL_SYMBOL,
             )?,
         })
     }
@@ -377,6 +434,84 @@ impl QemuFaultCommandApis {
         })
     }
 
+    fn interrupt_manifest(
+        self,
+    ) -> Result<FaultInterruptCapabilityManifestV1, FaultCommandBridgeError> {
+        let mut architecture = 0_u16;
+        let required = (self.interrupt_manifest)(std::ptr::null_mut(), 0, &mut architecture);
+        if required == 0 || required > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS {
+            return Err(FaultCommandBridgeError::InterruptManifestCount { required });
+        }
+        let empty = QemuFaultInterruptCapability {
+            family: 0,
+            trigger: 0,
+            polarity: 0,
+            delivery_drop: 0,
+            vector_start: 0,
+            vector_end: 0,
+            replacement_vector_start: 0,
+            replacement_vector_end: 0,
+            priority: 0,
+            vmstate: 0,
+            reserved: 0,
+            model_phase_mask: 0,
+            id: std::ptr::null(),
+            controller: std::ptr::null(),
+            source: std::ptr::null(),
+            controller_version: std::ptr::null(),
+            target_vcpus: std::ptr::null(),
+            target_vcpu_count: 0,
+        };
+        let mut raw = vec![empty; required];
+        let observed = (self.interrupt_manifest)(raw.as_mut_ptr(), raw.len(), &mut architecture);
+        if observed != required {
+            return Err(FaultCommandBridgeError::InterruptManifestChanged {
+                expected: required,
+                observed,
+            });
+        }
+        let manifest = FaultInterruptCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::from_u16(architecture)
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+            rows: raw
+                .into_iter()
+                .map(interrupt_capability_row)
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        FaultInterruptCapabilityManifestV1::decode(
+            &manifest
+                .encode()
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        )
+        .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
+    }
+
+    fn bind_interrupt_manifest(
+        self,
+        manifest: &FaultInterruptCapabilityManifestV1,
+    ) -> Result<(), FaultCommandBridgeError> {
+        for (index, row) in manifest.rows.iter().enumerate() {
+            let row_index = u32::try_from(index)
+                .map_err(|_source| FaultCommandBridgeError::InterruptManifestRow)?;
+            let id = crucible_shmem::fault_object_id_hash_v1(&row.id);
+            let controller = crucible_shmem::fault_object_id_hash_v1(&row.controller);
+            let source = crucible_shmem::fault_object_id_hash_v1(&row.source);
+            let status =
+                (self.interrupt_bind)(row_index, id.as_ptr(), controller.as_ptr(), source.as_ptr());
+            if status != 0 {
+                return Err(FaultCommandBridgeError::InterruptManifestBind { row_index, status });
+            }
+        }
+        let status = (self.interrupt_bindings_seal)();
+        if status != 0 {
+            return Err(FaultCommandBridgeError::InterruptManifestBind {
+                row_index: 0,
+                status,
+            });
+        }
+        Ok(())
+    }
+
     fn bind_register_manifest(
         self,
         manifest: &FaultRegisterCapabilityManifestV1,
@@ -429,6 +564,9 @@ impl QemuFaultCommandApis {
             register_bind_architecture: test_register_bind_architecture,
             register_bindings_seal: test_register_bindings_seal,
             instruction_manifest: test_instruction_manifest,
+            interrupt_manifest: test_interrupt_manifest,
+            interrupt_bind: test_interrupt_bind,
+            interrupt_bindings_seal: test_interrupt_bindings_seal,
         }
     }
 }
@@ -565,6 +703,30 @@ extern "C" fn test_register_manifest(
 }
 
 #[cfg(test)]
+extern "C" fn test_interrupt_manifest(
+    _out: *mut QemuFaultInterruptCapability,
+    _capacity: usize,
+    _architecture: *mut u16,
+) -> usize {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_interrupt_bind(
+    _row_index: u32,
+    _id: *const u8,
+    _controller: *const u8,
+    _source: *const u8,
+) -> c_int {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_interrupt_bindings_seal() -> c_int {
+    0
+}
+
+#[cfg(test)]
 extern "C" fn test_register_bind(_identity: *const u8, _numeric_id: u32) -> c_int {
     0
 }
@@ -683,6 +845,45 @@ fn register_capability_row(
         reserved_mask: copy_mask(raw.reserved_mask),
         ignored_mask: copy_mask(raw.ignored_mask),
         read_only_mask: copy_mask(raw.read_only_mask),
+    })
+}
+
+fn interrupt_capability_row(
+    raw: QemuFaultInterruptCapability,
+) -> Result<FaultInterruptCapabilityRowV1, FaultCommandBridgeError> {
+    if raw.reserved != 0
+        || raw.target_vcpu_count == 0
+        || raw.target_vcpu_count > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS
+        || raw.target_vcpus.is_null()
+    {
+        return Err(FaultCommandBridgeError::InterruptManifestRow);
+    }
+    // SAFETY: the sealed QEMU manifest owns a process-lifetime target array;
+    // its non-null pointer and hard-bounded element count were checked above.
+    let target_vcpus =
+        unsafe { std::slice::from_raw_parts(raw.target_vcpus, raw.target_vcpu_count) }.to_vec();
+    Ok(FaultInterruptCapabilityRowV1 {
+        id: capability_text(raw.id, "interrupt_id")?.to_owned(),
+        controller: capability_text(raw.controller, "interrupt_controller")?.to_owned(),
+        source: capability_text(raw.source, "interrupt_source")?.to_owned(),
+        controller_version: capability_text(raw.controller_version, "controller_version")?
+            .to_owned(),
+        family: FaultInterruptFamilyV1::from_u16(raw.family)
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        vector_start: raw.vector_start,
+        vector_end: raw.vector_end,
+        replacement_vector_start: raw.replacement_vector_start,
+        replacement_vector_end: raw.replacement_vector_end,
+        trigger: FaultInterruptTriggerV1::from_u16(raw.trigger)
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        polarity: FaultInterruptPolarityV1::from_u16(raw.polarity)
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        target_vcpus,
+        model_phase_mask: raw.model_phase_mask,
+        priority: raw.priority,
+        delivery_drop: FaultInterruptDeliveryDropV1::from_u16(raw.delivery_drop)
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        vmstate: raw.vmstate == 1,
     })
 }
 
@@ -975,6 +1176,7 @@ pub(crate) struct FaultCommandBridge {
     capability_payload: Vec<u8>,
     capability_queries: BTreeSet<u64>,
     register_manifest_payload: Option<Vec<u8>>,
+    interrupt_manifest_payload: Option<Vec<u8>>,
     register_evidence_identity: Option<RegisterEvidenceIdentity>,
     instruction_evidence_identity: Option<InstructionEvidenceIdentity>,
     register_commands: BTreeMap<u64, RegisterCommandExpectation>,
@@ -1024,9 +1226,39 @@ impl FaultCommandBridge {
             register_row.scope = manifest.architecture;
             register_row.capability_hash =
                 register_capability_hash(manifest.architecture, manifest_digest);
+            (Some(payload), Some(evidence_identity))
+        } else {
+            (None, None)
+        };
+        let (interrupt_manifest_payload, interrupt_manifest_digest) = if rows.iter().any(|row| {
+            matches!(
+                row.command_kind,
+                FaultCommandKind::InterruptDisposition | FaultCommandKind::InterruptStorm
+            ) && row.required_feature_bits & FAULT_CAPABILITY_FEATURE_INTERRUPT != 0
+        }) {
+            let manifest = apis.interrupt_manifest()?;
+            apis.bind_interrupt_manifest(&manifest)?;
+            if register_evidence_identity
+                .as_ref()
+                .is_some_and(|register| register.architecture != manifest.architecture)
+            {
+                return Err(FaultCommandBridgeError::InterruptManifestRow);
+            }
+            let payload = manifest
+                .encode()
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
+            (
+                Some(payload.clone()),
+                Some(*blake3::hash(&payload).as_bytes()),
+            )
+        } else {
+            (None, None)
+        };
+        if let Some(register) = register_evidence_identity.as_ref() {
             rows.push(target_manifest_capability_row(
-                manifest.architecture,
-                manifest_digest,
+                register.architecture,
+                register.manifest_digest,
+                interrupt_manifest_digest,
             ));
             rows.sort_by_key(|row| {
                 (
@@ -1037,10 +1269,7 @@ impl FaultCommandBridge {
             });
             fault_capability_manifest_digest(&rows)
                 .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
-            (Some(payload), Some(evidence_identity))
-        } else {
-            (None, None)
-        };
+        }
         let instruction_evidence_identity = if rows.iter().any(|row| {
             matches!(
                 row.command_kind,
@@ -1085,6 +1314,7 @@ impl FaultCommandBridge {
             capability_payload,
             capability_queries: BTreeSet::new(),
             register_manifest_payload,
+            interrupt_manifest_payload,
             register_evidence_identity,
             instruction_evidence_identity,
             register_commands: BTreeMap::new(),
@@ -1133,10 +1363,19 @@ impl FaultCommandBridge {
                 }
             };
             let required_result_payload = match &command {
-                DequeuedFaultCommand::Valid { header, .. }
+                DequeuedFaultCommand::Valid { header, payload }
                     if header.command_kind == FaultCommandKind::QueryTargetManifest =>
                 {
-                    self.register_manifest_payload.as_ref().map_or(0, Vec::len)
+                    let query = FaultTargetManifestQueryV1::decode(payload).ok();
+                    match query.map(|query| query.kind) {
+                        Some(FaultTargetManifestKind::Register) => {
+                            self.register_manifest_payload.as_ref().map_or(0, Vec::len)
+                        }
+                        Some(FaultTargetManifestKind::Interrupt) => {
+                            self.interrupt_manifest_payload.as_ref().map_or(0, Vec::len)
+                        }
+                        None => 0,
+                    }
                 }
                 DequeuedFaultCommand::Valid { .. } | DequeuedFaultCommand::Rejected { .. } => 0,
             };
@@ -1232,16 +1471,11 @@ impl FaultCommandBridge {
                     logical_icount,
                 );
             }
-            if query.kind != FaultTargetManifestKind::Register {
-                return self.publish_local_rejection(
-                    header.command_kind as u16,
-                    header.command_sequence,
-                    header.phase,
-                    FaultResultStatus::UnsupportedCapability,
-                    logical_icount,
-                );
-            }
-            let Some(result_payload) = self.register_manifest_payload.clone() else {
+            let result_payload = match query.kind {
+                FaultTargetManifestKind::Register => self.register_manifest_payload.clone(),
+                FaultTargetManifestKind::Interrupt => self.interrupt_manifest_payload.clone(),
+            };
+            let Some(result_payload) = result_payload else {
                 return self.publish_local_rejection(
                     header.command_kind as u16,
                     header.command_sequence,
@@ -1873,17 +2107,27 @@ fn track_terminal_instruction_event(
 
 fn target_manifest_capability_row(
     architecture: FaultCapabilityScope,
-    manifest_digest: [u8; 32],
+    register_manifest_digest: [u8; 32],
+    interrupt_manifest_digest: Option<[u8; 32]>,
 ) -> FaultCapabilityRowV1 {
-    let name = b"qemu.target-manifest.register.v1";
-    let schema = b"crucible.target-manifest-query.v1";
+    let name = b"qemu.target-manifest.node.v1";
+    let schema = b"crucible.target-manifest-query.v1;kinds=register,interrupt";
     let mut hasher = blake3::Hasher::new();
     hasher.update(CAPABILITY_HASH_DOMAIN);
     hasher.update(name);
     hasher.update(&[0]);
     hasher.update(schema);
     hasher.update(&[0]);
-    hasher.update(&manifest_digest);
+    hasher.update(&register_manifest_digest);
+    match interrupt_manifest_digest {
+        Some(digest) => {
+            hasher.update(&[1]);
+            hasher.update(&digest);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
     FaultCapabilityRowV1 {
         command_kind: FaultCommandKind::QueryTargetManifest,
         semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
@@ -1891,7 +2135,8 @@ fn target_manifest_capability_row(
         phase_mask: FaultBoundaryPhase::NodeBoundary.bit(),
         maximum_payload_bytes: FAULT_TARGET_MANIFEST_QUERY_V1_BYTES as u32,
         maximum_pending_commands: 1,
-        required_feature_bits: FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
+        required_feature_bits: FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION
+            | interrupt_manifest_digest.map_or(0, |_digest| FAULT_CAPABILITY_FEATURE_INTERRUPT),
         capability_hash: *hasher.finalize().as_bytes(),
     }
 }
@@ -2901,6 +3146,31 @@ pub enum FaultCommandBridgeError {
         /// Negative errno-style status.
         status: c_int,
     },
+    /// The architecture interrupt registry reported an invalid row count.
+    #[error("QEMU interrupt manifest reported invalid row count {required}")]
+    InterruptManifestCount {
+        /// Reported row count.
+        required: usize,
+    },
+    /// The immutable interrupt registry changed between size and copy calls.
+    #[error("QEMU interrupt manifest changed from {expected} to {observed} rows")]
+    InterruptManifestChanged {
+        /// First size query.
+        expected: usize,
+        /// Copy-call result.
+        observed: usize,
+    },
+    /// A raw interrupt row contained invalid reserved or pointer state.
+    #[error("QEMU interrupt manifest row has invalid raw framing")]
+    InterruptManifestRow,
+    /// QEMU rejected one public interrupt identity binding.
+    #[error("QEMU rejected interrupt binding for row {row_index}: status {status}")]
+    InterruptManifestBind {
+        /// Zero-based manifest row index.
+        row_index: u32,
+        /// Negative errno-style status.
+        status: c_int,
+    },
     /// Register mutation was advertised without its required capability row.
     #[error("QEMU register manifest has no CPU register-transform capability")]
     RegisterCapabilityMissing,
@@ -3170,6 +3440,7 @@ mod tests {
             capability_payload: capability_payload.clone(),
             capability_queries: BTreeSet::new(),
             register_manifest_payload: None,
+            interrupt_manifest_payload: None,
             register_evidence_identity: None,
             instruction_evidence_identity: None,
             register_commands: BTreeMap::new(),

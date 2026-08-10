@@ -307,7 +307,8 @@ fn x86_interrupt() -> WorldNodeInterrupt {
         source: id("lapic-timer"),
         controller_version: "qemu-x86-local-apic-v1".to_owned(),
         family: WorldNodeInterruptFamily::X86Timer,
-        vector: 48,
+        vector_start: 32,
+        vector_end: 255,
         replacement_vector_start: 32,
         replacement_vector_end: 255,
         trigger: WorldNodeInterruptTrigger::Edge,
@@ -363,7 +364,7 @@ fn node_interrupt_manifest_is_closed_and_architecture_specific() {
     ));
 
     let mut bad_range = capabilities;
-    bad_range.interrupts[0].replacement_vector_end = 47;
+    bad_range.interrupts[0].replacement_vector_end = 31;
     assert!(matches!(
         bad_range.validate(),
         Err(WorldFaultTopologyError::Invalid(
