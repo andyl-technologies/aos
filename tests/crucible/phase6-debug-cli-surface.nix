@@ -10,7 +10,7 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   };
 
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
@@ -251,7 +251,7 @@
       }
       {
         label = "allow mutate test";
-        needle = "cli_debug_surface_supports_session_checkpoint_and_allow_mutate";
+        needle = "cli_debug_surface_requires_explicit_fork_for_allow_mutate";
       }
       {
         label = "conflict test";

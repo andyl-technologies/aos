@@ -14,9 +14,17 @@ pub(super) struct BackendSelectionPlan {
     pub(super) resolved_backend: Option<ResolvedLocalBackend>,
     pub(super) reason: BackendSelectionReason,
     pub(super) daemon: Option<String>,
+    pub(super) daemon_security: Option<DaemonMutualTlsPaths>,
     pub(super) remote_uses_control_api: bool,
     pub(super) local_uses_simulation_backend: bool,
     pub(super) local_remote_equivalence_contract: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct DaemonMutualTlsPaths {
+    pub(super) server_ca: PathBuf,
+    pub(super) client_certificate: PathBuf,
+    pub(super) client_private_key: PathBuf,
 }
 
 impl BackendSelectionPlan {
@@ -236,6 +244,17 @@ pub(super) fn plan_backend_selection_with_discovery(
         if daemon.is_empty() {
             return Err(usage_error("--daemon must not be empty"));
         }
+        let daemon_security = daemon_mutual_tls_paths(cli)?;
+        if daemon_security.is_some() && cli.trusted_unauthenticated_daemon {
+            return Err(usage_error(
+                "--trusted-unauthenticated-daemon cannot be combined with daemon mutual TLS",
+            ));
+        }
+        if daemon_security.is_none() && !cli.trusted_unauthenticated_daemon {
+            return Err(usage_error(
+                "cleartext daemon access requires explicit --trusted-unauthenticated-daemon or a complete --daemon-ca/--daemon-cert/--daemon-key mutual-TLS configuration",
+            ));
+        }
         return Ok(Some(BackendSelectionPlan {
             subcommand,
             target: BackendExecutionTarget::RemoteDaemon,
@@ -243,6 +262,7 @@ pub(super) fn plan_backend_selection_with_discovery(
             resolved_backend: None,
             reason: BackendSelectionReason::RemoteDaemon,
             daemon: Some(daemon.clone()),
+            daemon_security,
             remote_uses_control_api: true,
             local_uses_simulation_backend: false,
             local_remote_equivalence_contract: true,
@@ -282,10 +302,27 @@ pub(super) fn plan_backend_selection_with_discovery(
         resolved_backend: Some(resolved_backend),
         reason,
         daemon: None,
+        daemon_security: None,
         remote_uses_control_api: false,
         local_uses_simulation_backend: true,
         local_remote_equivalence_contract: true,
     }))
+}
+
+fn daemon_mutual_tls_paths(cli: &Cli) -> Result<Option<DaemonMutualTlsPaths>, CliError> {
+    match (&cli.daemon_ca, &cli.daemon_cert, &cli.daemon_key) {
+        (None, None, None) => Ok(None),
+        (Some(server_ca), Some(client_certificate), Some(client_private_key)) => {
+            Ok(Some(DaemonMutualTlsPaths {
+                server_ca: server_ca.clone(),
+                client_certificate: client_certificate.clone(),
+                client_private_key: client_private_key.clone(),
+            }))
+        }
+        _ => Err(usage_error(
+            "--daemon-ca, --daemon-cert, and --daemon-key must be supplied together",
+        )),
+    }
 }
 
 pub(super) trait QemuDiscoveryEnvironment {
@@ -1077,6 +1114,7 @@ pub(super) fn subcommand_uses_backend_selection(command: &Commands) -> bool {
             | Commands::Replay(_)
             | Commands::Search(_)
             | Commands::Fuzz(_)
+            | Commands::Debug(_)
             | Commands::Serve(_)
     )
 }
@@ -1134,7 +1172,7 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         let outcome = if let Some(verify_plan) = verify_plan {
             match (&verify_plan.mode, backend) {
                 (VerifyMode::CompareArtifacts { .. }, _) => {
-                    let report = verify_compare_artifacts(verify_plan, Some(backend))?;
+                    let report = verify_compare_artifacts(verify_plan)?;
                     finish_verify_workflow_outcome(
                         thin_plan,
                         backend_plan,
@@ -1234,56 +1272,10 @@ impl BackendCommandRunner for NullBackendCommandRunner {
     }
 }
 
-pub(super) fn execute_backend_routed_command(
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    run_plan: Option<&RunInvocationPlan>,
-    verify_plan: Option<&VerifyInvocationPlan>,
-    save_plan: Option<&SaveInvocationPlan>,
-    runner: &mut impl BackendCommandRunner,
-) -> Result<BackendCommandOutcome, CliError> {
-    if !thin_plan.proves_t_cli_2() || !backend_plan.has_consistent_route() {
-        return Err(CliError::Backend(
-            "CLI command route violates the RFC-0010 backend split".to_string(),
-        ));
-    }
-    if thin_plan.subcommand != backend_plan.subcommand {
-        return Err(CliError::Backend(
-            "CLI backend route does not match the command dispatch plan".to_string(),
-        ));
-    }
+#[path = "backend/routing.rs"]
+mod routing;
 
-    let execution = match (
-        &backend_plan.target,
-        &backend_plan.resolved_backend,
-        &backend_plan.daemon,
-    ) {
-        (BackendExecutionTarget::Local, Some(backend), None) => runner.run_local(
-            backend,
-            thin_plan,
-            backend_plan,
-            ergonomics_plan,
-            run_plan,
-            verify_plan,
-            save_plan,
-        ),
-        (BackendExecutionTarget::RemoteDaemon, None, Some(daemon)) => runner.run_remote(
-            daemon,
-            thin_plan,
-            backend_plan,
-            ergonomics_plan,
-            run_plan,
-            verify_plan,
-            save_plan,
-        ),
-        _ => Err(CliError::Backend(
-            "CLI backend route is internally inconsistent".to_string(),
-        )),
-    }?;
-    validate_backend_execution_evidence(backend_plan, &execution.evidence)?;
-    Ok(execution.outcome)
-}
+pub(super) use routing::*;
 #[path = "backend/evidence.rs"]
 mod evidence;
 pub(super) use evidence::{observe_local_backend_execution, validate_backend_execution_evidence};

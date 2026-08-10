@@ -2,92 +2,10 @@
 
 use super::*;
 
-pub(crate) fn write_replay_report_human(
-    output: &mut impl Write,
-    report: &ReplayArtifactReport,
-) -> io::Result<()> {
-    writeln!(
-        output,
-        "crucible: replay artifact {} ({}) seed={} scenario={} digest={}",
-        report.path.display(),
-        REPRODUCTION_ARTIFACT_MEDIA_TYPE,
-        report.seed,
-        report.scenario_digest,
-        report.digest
-    )?;
-    if let Some(reduction) = &report.reduction {
-        writeln!(
-            output,
-            "crucible: replay reduction status=reexecuted artifact={} scenario={} schedule={} state={} reconstructed_decisions={}",
-            format_content_hash_ref(reduction.artifact),
-            format_content_hash_ref(reduction.scenario),
-            format_content_hash_ref(reduction.schedule),
-            format_content_hash_ref(reduction.state),
-            reduction.reconstructed_decisions
-        )?;
-    }
-    if let Some(check) = &report.check {
-        match &check.mismatch {
-            Some(mismatch) => {
-                writeln!(
-                    output,
-                    "crucible: replay check {} status=mismatch expected={} replayed={} first_diff_byte={} original_len={} replayed_len={}",
-                    check.path.display(),
-                    mismatch.original_digest,
-                    mismatch.replayed_digest,
-                    mismatch.first_diff_byte,
-                    mismatch.original_len,
-                    mismatch.replayed_len
-                )?;
-            }
-            None => {
-                writeln!(
-                    output,
-                    "crucible: replay check {} status=byte-identical digest={}",
-                    check.path.display(),
-                    check.digest
-                )?;
-            }
-        }
-    }
-    if let Some(target) = &report.to_savepoint {
-        writeln!(output, "{}", replay_to_savepoint_status_line(target))?;
-    }
-    if let Some(bisect) = &report.bisect {
-        match &bisect.divergence {
-            Some(divergence) => {
-                writeln!(
-                    output,
-                    "crucible: replay bisect {} status=diverged mismatch={} first_decision={} first_fingerprint_sample={} first_instruction={} node={} byte={} left_state={} right_state={}",
-                    bisect.other_path.display(),
-                    divergence.mismatch.label(),
-                    divergence
-                        .first_different_decision
-                        .map(|decision| decision.to_string())
-                        .unwrap_or_else(|| String::from("unknown")),
-                    divergence
-                        .first_different_fingerprint_sample
-                        .map(|sample| sample.to_string())
-                        .unwrap_or_else(|| String::from("unknown")),
-                    divergence.first_different_instruction,
-                    divergence.node.as_deref().unwrap_or("unknown"),
-                    divergence.first_different_byte,
-                    divergence.left_state_digest,
-                    divergence.right_state_digest
-                )?;
-            }
-            None => {
-                writeln!(
-                    output,
-                    "crucible: replay bisect {} status=byte-identical digest={}",
-                    bisect.other_path.display(),
-                    bisect.other_digest
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
+#[path = "support/replay_output.rs"]
+mod replay_output;
+
+pub(crate) use replay_output::*;
 
 pub(crate) fn default_run_store_root(cli: &Cli) -> PathBuf {
     cli.store
@@ -354,6 +272,96 @@ pub(crate) fn export_savepoint_handle(
     Ok(())
 }
 
+pub(crate) fn emit_save_workflow_failure_trace(
+    cli: &Cli,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    save_plan: &SaveInvocationPlan,
+    trace: &SaveWorkflowFailureTrace,
+    error: &CliError,
+) -> Result<(), CliError> {
+    let mut entries = backend_canonical_log_entries(thin_plan, backend_plan, ergonomics_plan);
+    for entry in &mut entries {
+        entry.kind = match entry.kind.as_str() {
+            "session_command" => String::from("planned_session_command"),
+            "api_call" => String::from("planned_api_call"),
+            _ => continue,
+        };
+    }
+    let request_seed = save_plan
+        .run_plan
+        .request_seed
+        .unwrap_or_else(|| save_plan.run_plan.scenario.scenario_def().seed());
+    push_save_failure_trace_entry(
+        &mut entries,
+        "scenario",
+        "run_scenario",
+        format!("id={}", save_plan.run_plan.scenario.scenario_id().to_hex()),
+    );
+    push_save_failure_trace_entry(&mut entries, "session", "run_seed", request_seed.to_hex());
+    push_save_failure_trace_entry(
+        &mut entries,
+        "session",
+        "save_boundary_mode",
+        match &trace.selector {
+            SaveAtSelector::PropertyViolation { .. } => String::from("property-violation"),
+            SaveAtSelector::Marker { .. } => String::from("marker (quiescence-guarded)"),
+        },
+    );
+    for state in &trace.state_updates {
+        push_save_failure_trace_entry(&mut entries, "session", "run_state_update", state.clone());
+    }
+    for command in &trace.acknowledged_commands {
+        push_save_failure_trace_entry(
+            &mut entries,
+            "control",
+            "interactive_ack",
+            session_command_name(*command).to_string(),
+        );
+    }
+    push_save_failure_trace_entry(
+        &mut entries,
+        "control",
+        "save_boundary_failure",
+        trace.canonical_summary(error),
+    );
+    let digest = canonical_log_digest(&entries);
+    push_save_failure_trace_entry(
+        &mut entries,
+        "cli",
+        "final_outcome",
+        format!(
+            "subcommand=save status=error exit_code={} canonical_log={} artifact=none",
+            error.exit_code(),
+            digest
+        ),
+    );
+    emit_canonical_trace(
+        cli.output_format(),
+        &entries,
+        cli.trace.as_deref(),
+        !cli.quiet,
+    )?;
+    Ok(())
+}
+
+fn push_save_failure_trace_entry(
+    entries: &mut Vec<CanonicalLogEntry>,
+    node: &str,
+    kind: &str,
+    summary: String,
+) {
+    let sequence = entries.len() as u64;
+    entries.push(CanonicalLogEntry {
+        sequence,
+        virtual_time_ticks: sequence,
+        node: node.to_string(),
+        kind: kind.to_string(),
+        summary,
+    });
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SavepointClosureStoreReport {
     pub(crate) artifact: crucible::ContentHash,
@@ -373,33 +381,71 @@ pub(crate) fn persist_savepoint_closure_artifact(
             format_content_hash_ref(oracle.fat_checkpoint)
         )));
     }
-    let artifact = crucible::ReproductionArtifact::capture(
-        plan.run_plan.scenario.scenario_form(),
-        &oracle.schedule,
-    )
-    .map_err(|error| {
-        artifact_error(format!(
-            "savepoint closure artifact capture failed for {}: {error}",
-            format_content_hash_ref(savepoint)
-        ))
-    })?;
     let configuration = crucible::Configuration {
-        def: artifact.scenario_def(),
-        schedule: artifact.schedule().clone(),
+        def: plan.run_plan.scenario.scenario_def().clone(),
+        schedule: oracle.schedule.clone(),
     };
+    persist_checkpoint_closure_artifact(
+        &plan.store_root,
+        plan.run_plan.scenario.scenario_form(),
+        &configuration,
+        oracle.frontier,
+        savepoint,
+    )
+}
+
+/// Persists the replayable closure and lookup index for a terminal checkpoint.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when scenario or checkpoint identities disagree, the
+/// replay artifact cannot be captured, or the DAG store cannot persist its
+/// artifact and checkpoint index.
+pub(crate) fn persist_checkpoint_closure_artifact(
+    store_root: &Path,
+    scenario_form: &crucible::ScenarioDefForm,
+    configuration: &crucible::Configuration,
+    frontier: crucible::VirtualTime,
+    savepoint: crucible::ContentHash,
+) -> Result<SavepointClosureStoreReport, CliError> {
+    if configuration.def.id() != scenario_form.scenario_def().id() {
+        return Err(CliError::Identity(format!(
+            "savepoint closure scenario {} did not match terminal configuration scenario {}",
+            scenario_form.scenario_def().id().to_hex(),
+            configuration.def.id().to_hex()
+        )));
+    }
     if configuration.id() != savepoint {
         return Err(CliError::Identity(format!(
-            "savepoint closure artifact reconstructed {}, expected {}",
+            "savepoint closure terminal configuration {} did not match checkpoint {}",
             format_content_hash_ref(configuration.id()),
             format_content_hash_ref(savepoint)
         )));
     }
-    let store = crucible::LocalDagStore::new(plan.store_root.clone());
+    let artifact = crucible::ReproductionArtifact::capture(scenario_form, &configuration.schedule)
+        .map_err(|error| {
+            artifact_error(format!(
+                "savepoint closure artifact capture failed for {}: {error}",
+                format_content_hash_ref(savepoint)
+            ))
+        })?;
+    let reconstructed = crucible::Configuration {
+        def: artifact.scenario_def(),
+        schedule: artifact.schedule().clone(),
+    };
+    if reconstructed.id() != savepoint {
+        return Err(CliError::Identity(format!(
+            "savepoint closure artifact reconstructed {}, expected {}",
+            format_content_hash_ref(reconstructed.id()),
+            format_content_hash_ref(savepoint)
+        )));
+    }
+    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
     let artifact_key = store
         .put(&artifact.to_compact_binary())
         .map_err(CliError::Store)?;
     let index_key = store
-        .write_checkpoint_closure_index(savepoint, artifact_key, oracle.frontier)
+        .write_checkpoint_closure_index(savepoint, artifact_key, frontier)
         .map_err(CliError::Store)?;
     Ok(SavepointClosureStoreReport {
         artifact: artifact_key,
@@ -448,6 +494,56 @@ pub(crate) fn savepoint_handle_bytes(
     );
     artifact_line(&mut text, &["frontier", &frontier_ticks.to_string()]);
     artifact_line(&mut text, &["at", plan.at.label()]);
+    match &plan.selector {
+        Some(SaveAtSelector::PropertyViolation { assertion }) => {
+            artifact_line(&mut text, &["selector", "property-violation", assertion])
+        }
+        Some(SaveAtSelector::Marker { name }) => {
+            artifact_line(&mut text, &["selector", "guest-marker", name]);
+        }
+        None => artifact_line(&mut text, &["selector", "none"]),
+    }
+    if let Some(firing) = outcome
+        .save_boundary_evidence
+        .as_ref()
+        .and_then(|evidence| evidence.breakpoint_firing.as_ref())
+    {
+        artifact_line(
+            &mut text,
+            &[
+                "boundary-proof",
+                "breakpoint",
+                &firing.id.to_string(),
+                "suspend",
+                &firing.frontier.ticks.to_string(),
+                &firing.quanta.to_string(),
+            ],
+        );
+        let predicate_payload = firing.predicate.to_compact_binary();
+        artifact_line(
+            &mut text,
+            &[
+                "boundary-predicate",
+                &content_address_bytes(&predicate_payload),
+                &hex_bytes(&predicate_payload),
+            ],
+        );
+    } else {
+        let quanta = outcome
+            .save_boundary_evidence
+            .as_ref()
+            .map_or(0, |evidence| evidence.quanta);
+        artifact_line(
+            &mut text,
+            &[
+                "boundary-proof",
+                "coordinate",
+                &frontier_ticks.to_string(),
+                &quanta.to_string(),
+            ],
+        );
+        artifact_line(&mut text, &["boundary-predicate", "none"]);
+    }
     artifact_line(
         &mut text,
         &[

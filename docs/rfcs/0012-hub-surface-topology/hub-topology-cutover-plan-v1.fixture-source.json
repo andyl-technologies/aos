@@ -1,0 +1,1473 @@
+{
+  "schema_version": "aos.hub.topology-cutover-plan/v1",
+  "document_kind": "cutover_plan",
+  "canonicalization": {
+    "algorithm": "RFC8785-JCS",
+    "unicode": "UTF-8",
+    "numbers": "I-JSON",
+    "array_order": "schema-defined-sort-keys-v1"
+  },
+  "plan_id": "plan/fixture/topology-v1",
+  "created_at": "2026-08-04T12:00:00Z",
+  "source": {
+    "deployment_revision": "source-abcdef0",
+    "schema_revision": "legacy-000001",
+    "topology_digest": "derive:sha256:1000000000000000000000000000000000000000000000000000000000000001",
+    "databases": [
+      {
+        "kind": "durable_object_sqlite",
+        "stable_id": "database/do/topology",
+        "role": "durable_object_namespace"
+      },
+      {
+        "kind": "d1",
+        "stable_id": "database/production",
+        "role": "primary"
+      }
+    ],
+    "resource_nodes": [
+      {
+        "node_id": "legacy/cache/example-main",
+        "resource_kind": "binary_cache",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000001",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/binding/local/capabilities/1",
+        "resource_kind": "binding_capability_observation",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000027",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/binding/local/grant/example",
+        "resource_kind": "binding_grant",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000017",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/binding/local/write-revision/1",
+        "resource_kind": "binding_write_revision",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000016",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/endpoint/cache-example/1",
+        "resource_kind": "delivery_endpoint",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000020",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/route/cache-canonical",
+        "resource_kind": "delivery_route",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000005",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/route/cache-canonical/configuration/1",
+        "resource_kind": "delivery_route",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000001",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/route/registry-git",
+        "resource_kind": "delivery_route",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000001",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/route/registry-git/configuration/1",
+        "resource_kind": "delivery_route",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000003",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/route/registry-web",
+        "resource_kind": "delivery_route",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000005",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/route/registry-web/configuration/1",
+        "resource_kind": "delivery_route",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000007",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/domain/cache-example-test",
+        "resource_kind": "domain",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000002",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/cache/main/equivalence/1",
+        "resource_kind": "equivalence_set",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000024",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/instance/production",
+        "resource_kind": "instance",
+        "owner_scope_stable_id": "instance/production",
+        "source_locator_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000003",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/cache/main/inventory/1",
+        "resource_kind": "inventory_generation",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000007",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/boundary/public/1",
+        "resource_kind": "network_boundary",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000021",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/org/example",
+        "resource_kind": "organization",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000004",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/cache/main/placement/primary",
+        "resource_kind": "placement",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000004",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/cache/main/placement/primary/manifest/1",
+        "resource_kind": "placement",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000008",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/registry/main/placement/primary",
+        "resource_kind": "placement",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000009",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/cache/main/policy/1",
+        "resource_kind": "placement_policy",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000023",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/registry/main/policy/1",
+        "resource_kind": "placement_policy",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000011",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/cache/main/population/registry-main",
+        "resource_kind": "population_target",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000026",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/registry/main/publication/cache-main",
+        "resource_kind": "publication_binding",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000025",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/registry/example-main",
+        "resource_kind": "registry",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000005",
+        "expected_mapping_edge_count": 2
+      },
+      {
+        "node_id": "legacy/cache/main/retention/registry-main",
+        "resource_kind": "retention_subscription",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000006",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/binding/example-local",
+        "resource_kind": "storage_binding",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000003",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/storage-default/instance",
+        "resource_kind": "storage_default",
+        "owner_scope_stable_id": "instance/production",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000018",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/gateway/hub/1",
+        "resource_kind": "storage_gateway",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000022",
+        "expected_mapping_edge_count": 1
+      },
+      {
+        "node_id": "legacy/cache/main/write-authority/1",
+        "resource_kind": "write_authority",
+        "owner_scope_stable_id": "org/example",
+        "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000019",
+        "expected_mapping_edge_count": 1
+      }
+    ]
+  },
+  "target": {
+    "deployment_revision": "target-abcdef0",
+    "schema_revision": "topology-000001",
+    "api_manifest_node_id": "manifest/api",
+    "cli_manifest_node_id": "manifest/cli",
+    "route_manifest_node_id": "manifest/routes"
+  },
+  "scope": {
+    "instance_stable_id": "instance/production",
+    "resource_stable_ids": [
+      {
+        "kind": "binary_cache",
+        "stable_id": "org/example/cache/main"
+      },
+      {
+        "kind": "binding_capability_observation",
+        "stable_id": "org/example/binding/local/capabilities/1"
+      },
+      {
+        "kind": "binding_grant",
+        "stable_id": "org/example/binding/local/grant/example"
+      },
+      {
+        "kind": "binding_write_revision",
+        "stable_id": "org/example/binding/local/write-revision/1"
+      },
+      {
+        "kind": "delivery_endpoint",
+        "stable_id": "endpoint/cache-example/1"
+      },
+      {
+        "kind": "delivery_route",
+        "stable_id": "org/example/cache/main/route/canonical"
+      },
+      {
+        "kind": "delivery_route",
+        "stable_id": "org/example/registry/main/route/git"
+      },
+      {
+        "kind": "delivery_route",
+        "stable_id": "org/example/registry/main/route/web"
+      },
+      {
+        "kind": "domain",
+        "stable_id": "domain/cache.example.test"
+      },
+      {
+        "kind": "equivalence_set",
+        "stable_id": "org/example/cache/main/equivalence/1"
+      },
+      {
+        "kind": "instance",
+        "stable_id": "instance/production"
+      },
+      {
+        "kind": "inventory_generation",
+        "stable_id": "org/example/cache/main/inventory/1"
+      },
+      {
+        "kind": "network_boundary",
+        "stable_id": "boundary/public/1"
+      },
+      {
+        "kind": "organization",
+        "stable_id": "org/example"
+      },
+      {
+        "kind": "placement",
+        "stable_id": "org/example/cache/main/placement/primary"
+      },
+      {
+        "kind": "placement",
+        "stable_id": "org/example/registry/main/placement/primary"
+      },
+      {
+        "kind": "placement_manifest",
+        "stable_id": "org/example/cache/main/placement/primary/manifest/1"
+      },
+      {
+        "kind": "placement_policy",
+        "stable_id": "org/example/cache/main/policy/1"
+      },
+      {
+        "kind": "placement_policy",
+        "stable_id": "org/example/registry/main/policy/1"
+      },
+      {
+        "kind": "population_target",
+        "stable_id": "org/example/cache/main/population/registry-main"
+      },
+      {
+        "kind": "publication_binding",
+        "stable_id": "org/example/registry/main/publication/cache-main"
+      },
+      {
+        "kind": "registry",
+        "stable_id": "org/example/registry/main"
+      },
+      {
+        "kind": "registry_publication",
+        "stable_id": "org/example/registry/main/publication/1"
+      },
+      {
+        "kind": "retention_subscription",
+        "stable_id": "org/example/cache/main/retention/registry-main"
+      },
+      {
+        "kind": "route_configuration",
+        "stable_id": "org/example/cache/main/route/canonical/configuration/1"
+      },
+      {
+        "kind": "route_configuration",
+        "stable_id": "org/example/registry/main/route/git/configuration/1"
+      },
+      {
+        "kind": "route_configuration",
+        "stable_id": "org/example/registry/main/route/web/configuration/1"
+      },
+      {
+        "kind": "storage_binding",
+        "stable_id": "org/example/binding/local"
+      },
+      {
+        "kind": "storage_default",
+        "stable_id": "instance/production/storage-default"
+      },
+      {
+        "kind": "storage_gateway",
+        "stable_id": "gateway/hub/1"
+      },
+      {
+        "kind": "write_authority",
+        "stable_id": "org/example/cache/main/write-authority/1"
+      }
+    ],
+    "maintenance_window": {
+      "not_before": "2026-08-05T02:00:00Z",
+      "not_after": "2026-08-05T04:00:00Z",
+      "maximum_write_quiesce_seconds": 7200
+    }
+  },
+  "backup": [
+    {
+      "database_stable_id": "database/do/topology",
+      "database_kind": "durable_object_sqlite",
+      "method": "durable_object_logical_export",
+      "expected_media_type": "application/vnd.aos.do-export+json",
+      "quiesce_required": true,
+      "verification_restore_required": true,
+      "retention_until": "2026-09-05T04:00:00Z",
+      "destination_artifact_node_id": "artifact/backup/do-topology"
+    },
+    {
+      "database_stable_id": "database/production",
+      "database_kind": "d1",
+      "method": "d1_export",
+      "expected_media_type": "application/sql",
+      "quiesce_required": true,
+      "verification_restore_required": true,
+      "retention_until": "2026-09-05T04:00:00Z",
+      "destination_artifact_node_id": "artifact/backup/d1"
+    }
+  ],
+  "transform": {
+    "source_schema_revision": "legacy-000001",
+    "target_schema_revision": "topology-000001",
+    "input_digest": "derive:sha256:1000000000000000000000000000000000000000000000000000000000000001",
+    "expected_output_digest": "derive:sha256:4000000000000000000000000000000000000000000000000000000000000003",
+    "mode": "side_by_side_then_atomic_switch",
+    "stable_id_rules": [
+      {
+        "resource_kind": "binary_cache",
+        "source_identity_field": "cache.scope_slug",
+        "target_identity_field": "binary_cache.stable_id",
+        "collision_policy": "abort"
+      }
+    ],
+    "transformer_node_id": "artifact/transformer/v1"
+  },
+  "topology": {
+    "mapping_coverage": {
+      "source_count": 30,
+      "target_count": 31,
+      "mapping_count": 31,
+      "source_set_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000010",
+      "target_set_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000011",
+      "mapping_set_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000012",
+      "missing_source_count": 0,
+      "unmapped_target_count": 0,
+      "duplicate_source_count": 0,
+      "duplicate_target_count": 0
+    },
+    "instances": [
+      {
+        "stable_id": "instance/production",
+        "owner_stable_id": "instance/production",
+        "generation": 1,
+        "state": "active",
+        "configuration_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000003"
+      }
+    ],
+    "organizations": [
+      {
+        "stable_id": "org/example",
+        "owner_stable_id": "instance/production",
+        "generation": 1,
+        "state": "active",
+        "configuration_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000004"
+      }
+    ],
+    "projects": [],
+    "surfaces": [
+      {
+        "stable_id": "org/example/cache/main",
+        "kind": "binary_cache",
+        "owner_scope_stable_id": "org/example",
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000013"
+      },
+      {
+        "stable_id": "org/example/registry/main",
+        "kind": "registry",
+        "owner_scope_stable_id": "org/example",
+        "configuration_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000005"
+      }
+    ],
+    "bindings": [
+      {
+        "stable_id": "org/example/binding/local",
+        "owner_scope_stable_id": "org/example",
+        "kind": "local_fs",
+        "provider_identity_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000014",
+        "access_mode": "private",
+        "endpoint_origin": null,
+        "capabilities": {
+          "reads": true,
+          "writes": true,
+          "conditional_writes": true,
+          "deletes": false,
+          "lists": true,
+          "presigns": false,
+          "observation_generation": 1,
+          "observation_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000015"
+        },
+        "credential_refs": [],
+        "current_write_revision": 1,
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000003"
+      }
+    ],
+    "binding_capability_observations": [
+      {
+        "stable_id": "org/example/binding/local/capabilities/1",
+        "owner_stable_id": "org/example/binding/local",
+        "generation": 1,
+        "state": "observed",
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000027"
+      }
+    ],
+    "credential_generations": [],
+    "binding_write_revisions": [
+      {
+        "stable_id": "org/example/binding/local/write-revision/1",
+        "owner_stable_id": "org/example/binding/local",
+        "generation": 1,
+        "state": "active",
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000016"
+      }
+    ],
+    "binding_grants": [
+      {
+        "stable_id": "org/example/binding/local/grant/example",
+        "source_stable_id": "org/example/binding/local",
+        "target_stable_id": "org/example",
+        "generation": 1,
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000017"
+      }
+    ],
+    "storage_defaults": [
+      {
+        "stable_id": "instance/production/storage-default",
+        "source_stable_id": "instance/production",
+        "target_stable_id": "org/example/binding/local",
+        "generation": 1,
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000018"
+      }
+    ],
+    "placements": [
+      {
+        "stable_id": "org/example/cache/main/placement/primary",
+        "surface": {
+          "kind": "binary_cache",
+          "stable_id": "org/example/cache/main"
+        },
+        "binding_stable_id": "org/example/binding/local",
+        "prefix": "cache/main/",
+        "kind": "complete",
+        "hash_range": null,
+        "desired_state": "active",
+        "write_authority": "separate_record",
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000004"
+      },
+      {
+        "stable_id": "org/example/registry/main/placement/primary",
+        "surface": {
+          "kind": "registry",
+          "stable_id": "org/example/registry/main"
+        },
+        "binding_stable_id": "org/example/binding/local",
+        "prefix": "registry/main/",
+        "kind": "complete",
+        "hash_range": null,
+        "desired_state": "active",
+        "write_authority": "separate_record",
+        "configuration_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000013"
+      }
+    ],
+    "write_authorities": [
+      {
+        "stable_id": "org/example/cache/main/write-authority/1",
+        "surface_stable_id": "org/example/cache/main",
+        "generation": 1,
+        "desired_placement_stable_id": "org/example/cache/main/placement/primary",
+        "observed_placement_stable_id": "org/example/cache/main/placement/primary",
+        "binding_write_revision_stable_id": "org/example/binding/local/write-revision/1",
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000019"
+      }
+    ],
+    "delivery_endpoints": [
+      {
+        "stable_id": "endpoint/cache-example/1",
+        "owner_stable_id": "endpoint/cache-example",
+        "generation": 1,
+        "state": "active",
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000020"
+      }
+    ],
+    "network_boundaries": [
+      {
+        "stable_id": "boundary/public/1",
+        "owner_stable_id": "boundary/public",
+        "generation": 1,
+        "state": "observed",
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000021"
+      }
+    ],
+    "gateways": [
+      {
+        "stable_id": "gateway/hub/1",
+        "owner_stable_id": "gateway/hub",
+        "generation": 1,
+        "state": "observed",
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000022"
+      }
+    ],
+    "routes": [
+      {
+        "stable_id": "org/example/cache/main/route/canonical",
+        "surface": {
+          "kind": "binary_cache",
+          "stable_id": "org/example/cache/main"
+        },
+        "audience": "nix_cache",
+        "frontend_kind": "hub_proxy",
+        "base_url": "https://cache.example.test/main/",
+        "access_policy": "public",
+        "canonical": true,
+        "configuration_generation_stable_id": "org/example/cache/main/route/canonical/configuration/1",
+        "endpoint_generation_stable_id": "endpoint/cache-example/1",
+        "boundary_generation_stable_id": "boundary/public/1",
+        "gateway_generation_stable_id": "gateway/hub/1",
+        "placement_policy_generation_stable_id": "org/example/cache/main/policy/1",
+        "backend_placement_stable_ids": [
+          "org/example/cache/main/placement/primary"
+        ],
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000005"
+      },
+      {
+        "stable_id": "org/example/registry/main/route/git",
+        "surface": {
+          "kind": "registry",
+          "stable_id": "org/example/registry/main"
+        },
+        "audience": "git",
+        "frontend_kind": "hub_proxy",
+        "base_url": "https://cache.example.test/git/",
+        "access_policy": "hub_authenticated",
+        "canonical": true,
+        "configuration_generation_stable_id": "org/example/registry/main/route/git/configuration/1",
+        "endpoint_generation_stable_id": "endpoint/cache-example/1",
+        "boundary_generation_stable_id": "boundary/public/1",
+        "gateway_generation_stable_id": "gateway/hub/1",
+        "placement_policy_generation_stable_id": "org/example/registry/main/policy/1",
+        "backend_placement_stable_ids": [
+          "org/example/registry/main/placement/primary"
+        ],
+        "configuration_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000014"
+      },
+      {
+        "stable_id": "org/example/registry/main/route/web",
+        "surface": {
+          "kind": "registry",
+          "stable_id": "org/example/registry/main"
+        },
+        "audience": "web",
+        "frontend_kind": "hub_proxy",
+        "base_url": "https://cache.example.test/web/",
+        "access_policy": "public",
+        "canonical": true,
+        "configuration_generation_stable_id": "org/example/registry/main/route/web/configuration/1",
+        "endpoint_generation_stable_id": "endpoint/cache-example/1",
+        "boundary_generation_stable_id": "boundary/public/1",
+        "gateway_generation_stable_id": "gateway/hub/1",
+        "placement_policy_generation_stable_id": "org/example/registry/main/policy/1",
+        "backend_placement_stable_ids": [
+          "org/example/registry/main/placement/primary"
+        ],
+        "configuration_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000015"
+      }
+    ],
+    "route_configurations": [
+      {
+        "stable_id": "org/example/cache/main/route/canonical/configuration/1",
+        "owner_stable_id": "org/example/cache/main/route/canonical",
+        "generation": 1,
+        "state": "active",
+        "access_policy": "public",
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000005"
+      },
+      {
+        "stable_id": "org/example/registry/main/route/git/configuration/1",
+        "owner_stable_id": "org/example/registry/main/route/git",
+        "generation": 1,
+        "state": "active",
+        "access_policy": "hub_authenticated",
+        "configuration_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000014"
+      },
+      {
+        "stable_id": "org/example/registry/main/route/web/configuration/1",
+        "owner_stable_id": "org/example/registry/main/route/web",
+        "generation": 1,
+        "state": "active",
+        "access_policy": "public",
+        "configuration_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000015"
+      }
+    ],
+    "domains": [
+      {
+        "stable_id": "domain/cache.example.test",
+        "hostname": "cache.example.test",
+        "route_stable_id": "org/example/cache/main/route/canonical",
+        "verification_state": "verified",
+        "access_policy": "public"
+      }
+    ],
+    "placement_policies": [
+      {
+        "stable_id": "org/example/cache/main/policy/1",
+        "owner_stable_id": "org/example/cache/main",
+        "generation": 1,
+        "state": "active",
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000023"
+      },
+      {
+        "stable_id": "org/example/registry/main/policy/1",
+        "owner_stable_id": "org/example/registry/main",
+        "generation": 1,
+        "state": "active",
+        "configuration_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000018"
+      }
+    ],
+    "equivalence_sets": [
+      {
+        "stable_id": "org/example/cache/main/equivalence/1",
+        "owner_stable_id": "org/example/cache/main",
+        "generation": 1,
+        "state": "active",
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000024"
+      }
+    ],
+    "registry_publications": [
+      {
+        "stable_id": "org/example/registry/main/publication/1",
+        "owner_stable_id": "org/example/registry/main",
+        "generation": 1,
+        "state": "ready",
+        "configuration_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000006"
+      }
+    ],
+    "publication_bindings": [
+      {
+        "stable_id": "org/example/registry/main/publication/cache-main",
+        "source_stable_id": "org/example/registry/main",
+        "target_stable_id": "org/example/cache/main",
+        "generation": 1,
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000025"
+      }
+    ],
+    "population_targets": [
+      {
+        "stable_id": "org/example/cache/main/population/registry-main",
+        "source_stable_id": "org/example/registry/main",
+        "target_stable_id": "org/example/cache/main",
+        "generation": 1,
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000026"
+      }
+    ],
+    "retention_subscriptions": [
+      {
+        "stable_id": "org/example/cache/main/retention/registry-main",
+        "cache_stable_id": "org/example/cache/main",
+        "registry_stable_id": "org/example/registry/main",
+        "selector_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000006",
+        "removal_grace_seconds": 86400,
+        "source_generation_stable_id": "org/example/registry/main/publication/1",
+        "expected_root_count": 2
+      }
+    ],
+    "inventories": [
+      {
+        "stable_id": "org/example/cache/main/inventory/1",
+        "cache_stable_id": "org/example/cache/main",
+        "generation": 1,
+        "aggregate_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000007",
+        "placement_manifests": [
+          {
+            "manifest_stable_id": "org/example/cache/main/placement/primary/manifest/1",
+            "placement_stable_id": "org/example/cache/main/placement/primary",
+            "manifest_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000008",
+            "object_count": 4,
+            "strong_identity_count": 4
+          }
+        ],
+        "complete": true
+      }
+    ],
+    "placement_manifests": [
+      {
+        "stable_id": "org/example/cache/main/placement/primary/manifest/1",
+        "owner_stable_id": "org/example/cache/main/placement/primary",
+        "generation": 1,
+        "state": "complete",
+        "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000008"
+      }
+    ],
+    "mapping_edges": [
+      {
+        "edge_id": "mapping/org/example/cache/main",
+        "source_node_id": "legacy/cache/example-main",
+        "target_resource_kind": "binary_cache",
+        "target_stable_id": "org/example/cache/main",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/cache-scope-slug/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/binding/local/capabilities/1",
+        "source_node_id": "legacy/binding/local/capabilities/1",
+        "target_resource_kind": "binding_capability_observation",
+        "target_stable_id": "org/example/binding/local/capabilities/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/binding-capabilities/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/binding/local/grant/example",
+        "source_node_id": "legacy/binding/local/grant/example",
+        "target_resource_kind": "binding_grant",
+        "target_stable_id": "org/example/binding/local/grant/example",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/binding-grant/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/binding/local/write-revision/1",
+        "source_node_id": "legacy/binding/local/write-revision/1",
+        "target_resource_kind": "binding_write_revision",
+        "target_stable_id": "org/example/binding/local/write-revision/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/binding-write-revision/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/endpoint/cache-example/1",
+        "source_node_id": "legacy/endpoint/cache-example/1",
+        "target_resource_kind": "delivery_endpoint",
+        "target_stable_id": "endpoint/cache-example/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/endpoint-generation/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/cache/main/route/canonical",
+        "source_node_id": "legacy/route/cache-canonical",
+        "target_resource_kind": "delivery_route",
+        "target_stable_id": "org/example/cache/main/route/canonical",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/route/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/registry/main/route/git",
+        "source_node_id": "legacy/route/registry-git",
+        "target_resource_kind": "delivery_route",
+        "target_stable_id": "org/example/registry/main/route/git",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/route/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/registry/main/route/web",
+        "source_node_id": "legacy/route/registry-web",
+        "target_resource_kind": "delivery_route",
+        "target_stable_id": "org/example/registry/main/route/web",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/route/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/domain/cache.example.test",
+        "source_node_id": "legacy/domain/cache-example-test",
+        "target_resource_kind": "domain",
+        "target_stable_id": "domain/cache.example.test",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/domain/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/cache/main/equivalence/1",
+        "source_node_id": "legacy/cache/main/equivalence/1",
+        "target_resource_kind": "equivalence_set",
+        "target_stable_id": "org/example/cache/main/equivalence/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/equivalence/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/instance/production",
+        "source_node_id": "legacy/instance/production",
+        "target_resource_kind": "instance",
+        "target_stable_id": "instance/production",
+        "owner_scope_stable_id": "instance/production",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/instance/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/cache/main/inventory/1",
+        "source_node_id": "legacy/cache/main/inventory/1",
+        "target_resource_kind": "inventory_generation",
+        "target_stable_id": "org/example/cache/main/inventory/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/inventory-generation/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/boundary/public/1",
+        "source_node_id": "legacy/boundary/public/1",
+        "target_resource_kind": "network_boundary",
+        "target_stable_id": "boundary/public/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/network-boundary/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example",
+        "source_node_id": "legacy/org/example",
+        "target_resource_kind": "organization",
+        "target_stable_id": "org/example",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/organization/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/cache/main/placement/primary",
+        "source_node_id": "legacy/cache/main/placement/primary",
+        "target_resource_kind": "placement",
+        "target_stable_id": "org/example/cache/main/placement/primary",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/placement/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/registry/main/placement/primary",
+        "source_node_id": "legacy/registry/main/placement/primary",
+        "target_resource_kind": "placement",
+        "target_stable_id": "org/example/registry/main/placement/primary",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/placement/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/cache/main/placement/primary/manifest/1",
+        "source_node_id": "legacy/cache/main/placement/primary/manifest/1",
+        "target_resource_kind": "placement_manifest",
+        "target_stable_id": "org/example/cache/main/placement/primary/manifest/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/placement-manifest/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/cache/main/policy/1",
+        "source_node_id": "legacy/cache/main/policy/1",
+        "target_resource_kind": "placement_policy",
+        "target_stable_id": "org/example/cache/main/policy/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/placement-policy/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/registry/main/policy/1",
+        "source_node_id": "legacy/registry/main/policy/1",
+        "target_resource_kind": "placement_policy",
+        "target_stable_id": "org/example/registry/main/policy/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/placement-policy/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/cache/main/population/registry-main",
+        "source_node_id": "legacy/cache/main/population/registry-main",
+        "target_resource_kind": "population_target",
+        "target_stable_id": "org/example/cache/main/population/registry-main",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/population-target/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/registry/main/publication/cache-main",
+        "source_node_id": "legacy/registry/main/publication/cache-main",
+        "target_resource_kind": "publication_binding",
+        "target_stable_id": "org/example/registry/main/publication/cache-main",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/publication-binding/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/registry/main",
+        "source_node_id": "legacy/registry/example-main",
+        "target_resource_kind": "registry",
+        "target_stable_id": "org/example/registry/main",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/registry-scope-slug/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/registry/main/publication/1",
+        "source_node_id": "legacy/registry/example-main",
+        "target_resource_kind": "registry_publication",
+        "target_stable_id": "org/example/registry/main/publication/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 2,
+        "derivation_rule_id": "rule/registry-publication/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/cache/main/retention/registry-main",
+        "source_node_id": "legacy/cache/main/retention/registry-main",
+        "target_resource_kind": "retention_subscription",
+        "target_stable_id": "org/example/cache/main/retention/registry-main",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/retention-subscription/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/cache/main/route/canonical/configuration/1",
+        "source_node_id": "legacy/route/cache-canonical/configuration/1",
+        "target_resource_kind": "route_configuration",
+        "target_stable_id": "org/example/cache/main/route/canonical/configuration/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/route-configuration/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/registry/main/route/git/configuration/1",
+        "source_node_id": "legacy/route/registry-git/configuration/1",
+        "target_resource_kind": "route_configuration",
+        "target_stable_id": "org/example/registry/main/route/git/configuration/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/route-configuration/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/registry/main/route/web/configuration/1",
+        "source_node_id": "legacy/route/registry-web/configuration/1",
+        "target_resource_kind": "route_configuration",
+        "target_stable_id": "org/example/registry/main/route/web/configuration/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/route-configuration/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/binding/local",
+        "source_node_id": "legacy/binding/example-local",
+        "target_resource_kind": "storage_binding",
+        "target_stable_id": "org/example/binding/local",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/storage-binding/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/instance/production/storage-default",
+        "source_node_id": "legacy/storage-default/instance",
+        "target_resource_kind": "storage_default",
+        "target_stable_id": "instance/production/storage-default",
+        "owner_scope_stable_id": "instance/production",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/storage-default/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/gateway/hub/1",
+        "source_node_id": "legacy/gateway/hub/1",
+        "target_resource_kind": "storage_gateway",
+        "target_stable_id": "gateway/hub/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/storage-gateway/v1",
+        "evidence_required": true
+      },
+      {
+        "edge_id": "mapping/org/example/cache/main/write-authority/1",
+        "source_node_id": "legacy/cache/main/write-authority/1",
+        "target_resource_kind": "write_authority",
+        "target_stable_id": "org/example/cache/main/write-authority/1",
+        "owner_scope_stable_id": "org/example",
+        "ordinal": 1,
+        "derivation_rule_id": "rule/write-authority/v1",
+        "evidence_required": true
+      }
+    ]
+  },
+  "auth_no_widening": {
+    "algorithm": "permission-set-subset-v1",
+    "source_policy_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000001",
+    "target_policy_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000002",
+    "source_principal_stable_ids": [
+      "principal/operator/example"
+    ],
+    "source_scope_stable_ids": [
+      "org/example/cache/main"
+    ],
+    "expected_principal_scope_pairs": [
+      {
+        "principal_stable_id": "principal/operator/example",
+        "scope_stable_id": "org/example/cache/main"
+      }
+    ],
+    "principal_coverage": {
+      "expected_count": 1,
+      "proved_count": 1,
+    "expected_set_digest": "9277dab2031be9ea32f4c1eed1cc3fce5e3af07d3fdc92b062fdb588dd2d0195",
+    "proved_set_digest": "9277dab2031be9ea32f4c1eed1cc3fce5e3af07d3fdc92b062fdb588dd2d0195",
+      "missing_count": 0,
+      "duplicate_count": 0
+    },
+    "route_coverage": {
+      "expected_count": 3,
+      "proved_count": 3,
+      "expected_set_digest": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3JvdXRlL2Nhbm9uaWNhbCIsIm9yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvZ2l0Iiwib3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9yb3V0ZS93ZWIiXQ",
+      "proved_set_digest": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3JvdXRlL2Nhbm9uaWNhbCIsIm9yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvZ2l0Iiwib3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9yb3V0ZS93ZWIiXQ",
+      "missing_count": 0,
+      "duplicate_count": 0
+    },
+    "principal_proofs": [
+      {
+        "principal_stable_id": "principal/operator/example",
+        "scope_stable_id": "org/example/cache/main",
+        "source_permissions": [
+          "cache.read"
+        ],
+        "target_permissions": [
+          "cache.read"
+        ],
+        "assertion": "equal",
+        "proof_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000012"
+      }
+    ],
+    "route_proofs": [
+      {
+        "route_stable_id": "org/example/cache/main/route/canonical",
+        "source_access_policy": "public",
+        "target_access_policy": "public",
+        "source_policy_configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000005",
+        "target_policy_configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000005",
+        "assertion": "equal",
+        "proof_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000003"
+      },
+      {
+        "route_stable_id": "org/example/registry/main/route/git",
+        "source_access_policy": "hub_authenticated",
+        "target_access_policy": "hub_authenticated",
+        "source_policy_configuration_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000014",
+        "target_policy_configuration_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000014",
+        "assertion": "equal",
+        "proof_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000013"
+      },
+      {
+        "route_stable_id": "org/example/registry/main/route/web",
+        "source_access_policy": "public",
+        "target_access_policy": "public",
+        "source_policy_configuration_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000015",
+        "target_policy_configuration_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000015",
+        "assertion": "equal",
+        "proof_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000014"
+      }
+    ],
+    "result": "no_widening"
+  },
+  "validation": {
+    "required_checks": [
+      {
+        "check_id": "check/auth-no-widening",
+        "kind": "auth_no_widening",
+        "expected": "pass",
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/preflight/source-digest",
+        "kind": "stable_identity",
+        "expected": "pass",
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/referential-integrity",
+        "kind": "referential_integrity",
+        "expected": "pass",
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/retention-fresh",
+        "kind": "retention_fresh",
+        "expected": "pass",
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/route-parity",
+        "kind": "route_parity",
+        "expected": "pass",
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/storage-access",
+        "kind": "storage_access",
+        "expected": "pass",
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/target/inventory-complete",
+        "kind": "inventory_complete",
+        "expected": "pass",
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/target/schema",
+        "kind": "schema",
+        "expected": "pass",
+        "evidence_required": true
+      }
+    ],
+    "count_invariants": [
+      {
+        "name": "binary_caches",
+        "source_count": 1,
+        "target_count": 1,
+        "relation": "equal"
+      }
+    ],
+    "digest_invariants": [
+      {
+        "name": "effective_routes",
+        "source_digest": "derive:sha256:7000000000000000000000000000000000000000000000000000000000000001",
+        "target_digest": "derive:sha256:7000000000000000000000000000000000000000000000000000000000000002",
+        "relation": "typed_transform"
+      }
+    ]
+  },
+  "smoke_tests": [
+    {
+      "test_id": "smoke/api-private-denied",
+      "surface": "api",
+      "route_stable_id": null,
+      "placement_stable_id": null,
+      "binding_stable_id": null,
+      "method": "GET",
+      "path_digest": "derive:sha256:8000000000000000000000000000000000000000000000000000000000000002",
+      "expected_status": 401,
+      "auth_context": "anonymous",
+      "evidence_required": true
+    },
+    {
+      "test_id": "smoke/cli-private-reader",
+      "surface": "cli",
+      "route_stable_id": null,
+      "placement_stable_id": null,
+      "binding_stable_id": null,
+      "method": "CLI",
+      "path_digest": "derive:sha256:8000000000000000000000000000000000000000000000000000000000000003",
+      "expected_status": 200,
+      "auth_context": "least_privileged_reader",
+      "evidence_required": true
+    },
+    {
+      "test_id": "smoke/git-private-denied",
+      "surface": "git",
+      "route_stable_id": "org/example/registry/main/route/git",
+      "placement_stable_id": "org/example/registry/main/placement/primary",
+      "binding_stable_id": "org/example/binding/local",
+      "method": "GET",
+      "path_digest": "derive:sha256:8000000000000000000000000000000000000000000000000000000000000004",
+      "expected_status": 401,
+      "auth_context": "anonymous",
+      "evidence_required": true
+    },
+    {
+      "test_id": "smoke/git-private-reader",
+      "surface": "git",
+      "route_stable_id": "org/example/registry/main/route/git",
+      "placement_stable_id": "org/example/registry/main/placement/primary",
+      "binding_stable_id": "org/example/binding/local",
+      "method": "GET",
+      "path_digest": "derive:sha256:8000000000000000000000000000000000000000000000000000000000000006",
+      "expected_status": 200,
+      "auth_context": "least_privileged_reader",
+      "evidence_required": true
+    },
+    {
+      "test_id": "smoke/nix-cache-info",
+      "surface": "nix_cache",
+      "route_stable_id": "org/example/cache/main/route/canonical",
+      "placement_stable_id": "org/example/cache/main/placement/primary",
+      "binding_stable_id": "org/example/binding/local",
+      "method": "GET",
+      "path_digest": "derive:sha256:8000000000000000000000000000000000000000000000000000000000000001",
+      "expected_status": 200,
+      "auth_context": "anonymous",
+      "evidence_required": true
+    },
+    {
+      "test_id": "smoke/web-public-read",
+      "surface": "web",
+      "route_stable_id": "org/example/registry/main/route/web",
+      "placement_stable_id": "org/example/registry/main/placement/primary",
+      "binding_stable_id": "org/example/binding/local",
+      "method": "GET",
+      "path_digest": "derive:sha256:8000000000000000000000000000000000000000000000000000000000000005",
+      "expected_status": 200,
+      "auth_context": "anonymous",
+      "evidence_required": true
+    }
+  ],
+  "switch": {
+    "strategy": "single_atomic_runtime_switch",
+    "write_quiesce_required": true,
+    "write_quiesce_scope_digest": "derive:sha256:7000000000000000000000000000000000000000000000000000000000000010",
+    "quiescence_targets": [
+      {
+        "stable_id": "alarm/domain-probes",
+        "kind": "alarm"
+      },
+      {
+        "stable_id": "schedule/cron",
+        "kind": "cron"
+      },
+      {
+        "stable_id": "database/production",
+        "kind": "database"
+      },
+      {
+        "stable_id": "credential/direct-writes",
+        "kind": "direct_write_credential"
+      },
+      {
+        "stable_id": "database/do/topology",
+        "kind": "durable_object_namespace"
+      },
+      {
+        "stable_id": "object-store/production",
+        "kind": "object_store"
+      },
+      {
+        "stable_id": "queue/topology",
+        "kind": "queue"
+      },
+      {
+        "stable_id": "runtime/native",
+        "kind": "runtime"
+      },
+      {
+        "stable_id": "runtime/worker",
+        "kind": "runtime"
+      }
+    ],
+    "rollback_boundary": "first_target_write_admitted",
+    "new_runtime_health_gate": {
+      "check_id": "check/new-runtime-health",
+      "kind": "runtime_health",
+      "expected": "healthy",
+      "evidence_required": true
+    },
+    "old_runtime_stop_gate": {
+      "check_id": "check/old-runtime-stopped",
+      "kind": "runtime_health",
+      "expected": "zero",
+      "evidence_required": true
+    }
+  },
+  "gc_gate": {
+    "destructive_gc_enabled_during_cutover": false,
+    "readiness": "ready",
+    "inventory_gate": "complete",
+    "retention_gate": "fresh",
+    "first_sweep_acknowledgement_state": "absent",
+    "outstanding_blocker_check_ids": [],
+    "cutover_check_ids": [
+      "check/gc-disabled",
+      "check/retention-fresh",
+      "check/target/inventory-complete"
+    ],
+    "post_cutover_check_ids": [],
+    "enablement_requires": [
+      {
+        "check_id": "check/gc-disabled",
+        "kind": "gc_disabled",
+        "expected": "disabled",
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/retention-fresh",
+        "kind": "retention_fresh",
+        "expected": "pass",
+        "evidence_required": true
+      },
+      {
+        "check_id": "check/target/inventory-complete",
+        "kind": "inventory_complete",
+        "expected": "pass",
+        "evidence_required": true
+      }
+    ]
+  },
+  "rollback": {
+    "strategy": "full_backup_and_deployment_restore",
+    "deadline": "2026-08-05T06:00:00Z",
+    "restore_backups": [
+      "database/do/topology",
+      "database/production"
+    ],
+    "restore_deployment_revision": "source-abcdef0",
+    "write_reopen_gate": {
+      "check_id": "check/rollback-health",
+      "kind": "runtime_health",
+      "expected": "healthy",
+      "evidence_required": true
+    },
+    "new_runtime_write_forbidden_before_closure": true,
+    "forbidden_after_boundary": true
+  },
+  "legacy_removal": {
+    "legacy_parser_present_in_target": false,
+    "legacy_routes_present_in_target": false,
+    "legacy_schema_present_after_switch": false,
+    "ruleset_digest": "derive:sha256:9200000000000000000000000000000000000000000000000000000000000001",
+    "scanned_path_set_digest": "derive:sha256:9200000000000000000000000000000000000000000000000000000000000002",
+    "allowlist_digest": "derive:sha256:9200000000000000000000000000000000000000000000000000000000000003",
+    "absence_categories": {
+      "source": 0,
+      "generated": 0,
+      "linked_symbols": 0,
+      "build_features": 0,
+      "database": 0,
+      "http_rpc": 0,
+      "cli": 0,
+      "environment": 0,
+      "configuration": 0,
+      "migrations": 0,
+      "worker_bindings": 0,
+      "deployed_manifests": 0
+    },
+    "repository_guard": {
+      "check_id": "check/legacy-absent",
+      "kind": "legacy_absent",
+      "expected": "absent",
+      "evidence_required": true
+    }
+  },
+  "blockers": [],
+  "execution_contract": {
+    "attempt_namespace": "cutover/production/topology-v1",
+    "maximum_attempts": 3,
+    "required_transition_states": [
+      "planned",
+      "quiesced",
+      "backed_up",
+      "transformed",
+      "validated",
+      "switched",
+      "closed"
+    ],
+    "idempotency_key": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLmlkZW1wb3RlbmN5L3Yx:eyJidW5kbGVfaWQiOiJidW5kbGUvZml4dHVyZS90b3BvbG9neS12MSIsInBsYW5faWQiOiJwbGFuL2ZpeHR1cmUvdG9wb2xvZ3ktdjEiLCJzb3VyY2VfZGVwbG95bWVudF9yZXZpc2lvbiI6InNvdXJjZS1hYmNkZWYwIiwidGFyZ2V0X2RlcGxveW1lbnRfcmV2aXNpb24iOiJ0YXJnZXQtYWJjZGVmMCIsInRhcmdldF9zY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifQ"
+  },
+  "dialect": "aos-cutover-schema/v1",
+  "bundle_id": "bundle/fixture/topology-v1",
+  "generation": {
+    "generator_revision": "generator-abcdef0",
+    "generated_by_principal_stable_id": "principal/operator/example",
+    "source_export_node_id": "artifact/source-export/redacted"
+  }
+}

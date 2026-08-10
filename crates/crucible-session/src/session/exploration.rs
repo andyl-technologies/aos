@@ -377,6 +377,7 @@ pub struct LiveSnapshot {
     event_log_len: AtomicU64,
     quanta_stepped: AtomicU64,
     control_acknowledgements: AtomicU64,
+    state_transition_sequence: AtomicU64,
 }
 
 /// Copy-out view of [`LiveSnapshot`].
@@ -398,6 +399,8 @@ pub struct LiveSnapshotView {
     pub quanta_stepped: u64,
     /// Monotone count of actor-acknowledged control commands.
     pub control_acknowledgements: u64,
+    /// Greatest state-transition sequence represented by this snapshot.
+    pub state_transition_sequence: u64,
 }
 
 impl LiveSnapshotView {
@@ -438,8 +441,9 @@ impl LiveSnapshot {
             event_log_len: AtomicU64::new(0),
             quanta_stepped: AtomicU64::new(0),
             control_acknowledgements: AtomicU64::new(0),
+            state_transition_sequence: AtomicU64::new(0),
         };
-        snapshot.publish(initial, 0);
+        snapshot.publish(initial, 0, 0);
         snapshot
     }
 
@@ -476,6 +480,7 @@ impl LiveSnapshot {
             let event_log_len = self.event_log_len.load(Ordering::Acquire);
             let quanta_stepped = self.quanta_stepped.load(Ordering::Acquire);
             let control_acknowledgements = self.control_acknowledgements.load(Ordering::Acquire);
+            let state_transition_sequence = self.state_transition_sequence.load(Ordering::Acquire);
             let end_epoch = self.epoch.load(Ordering::Acquire);
 
             if start_epoch == end_epoch && end_epoch.is_multiple_of(2) {
@@ -493,6 +498,7 @@ impl LiveSnapshot {
                     event_log_len,
                     quanta_stepped,
                     control_acknowledgements,
+                    state_transition_sequence,
                 };
             }
 
@@ -514,7 +520,12 @@ impl LiveSnapshot {
         }
     }
 
-    pub(super) fn publish(&self, snapshot: &EngineSnapshot, control_acknowledgements: u64) {
+    pub(super) fn publish(
+        &self,
+        snapshot: &EngineSnapshot,
+        control_acknowledgements: u64,
+        state_transition_sequence: u64,
+    ) {
         let write_epoch = self.epoch.load(Ordering::Relaxed).wrapping_add(1) | 1;
         self.epoch.store(write_epoch, Ordering::Release);
         self.state_kind.store(
@@ -553,6 +564,8 @@ impl LiveSnapshot {
             .store(snapshot.quanta, Ordering::Release);
         self.control_acknowledgements
             .store(control_acknowledgements, Ordering::Release);
+        self.state_transition_sequence
+            .store(state_transition_sequence, Ordering::Release);
         self.epoch
             .store(write_epoch.wrapping_add(1), Ordering::Release);
     }

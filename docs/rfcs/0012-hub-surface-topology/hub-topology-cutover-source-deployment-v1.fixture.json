@@ -1,0 +1,5 @@
+{
+  "schema_version": "aos.hub.topology-cutover-deployment-artifact/v1",
+  "fixture_only": true,
+  "deployment_revision": "source-abcdef0"
+}

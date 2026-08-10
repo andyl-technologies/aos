@@ -72,25 +72,34 @@ pub(super) fn replay_reproduction_artifact(
     let seed = artifact.seed;
     let scenario_digest = artifact.scenario.digest.clone();
     let reduction = replay_embedded_model_artifact(&artifact)?;
+    let live_qemu = if replay_uses_live_qemu(cli)? {
+        if reduction.is_none() {
+            return Err(artifact_error(
+                "v3 replay requires an embedded pure model reproduction proof",
+            ));
+        }
+        Some(replay_live_qemu_evidence(cli, &artifact)?)
+    } else {
+        None
+    };
     let to_savepoint = args
         .to
         .as_deref()
         .map(|target| replay_to_savepoint(cli, target, &artifact))
         .transpose()?;
     let check = if let Some(path) = &args.check {
-        let canonical_log = canonical_log_entries_from_artifact(&artifact)?;
-        let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);
+        let replayed = canonical_log_entry_bytes(&canonical_log_entries_from_artifact(&artifact)?);
         let original = fs::read(path)?;
-        let mismatch = (original != canonical_log_bytes).then(|| ReplayCheckMismatchReport {
+        let mismatch = (original != replayed).then(|| ReplayCheckMismatchReport {
             original_digest: content_address_bytes(&original),
-            replayed_digest: content_address_bytes(&canonical_log_bytes),
-            first_diff_byte: bisect_first_different_byte(&original, &canonical_log_bytes),
+            replayed_digest: content_address_bytes(&replayed),
+            first_diff_byte: bisect_first_different_byte(&original, &replayed),
             original_len: original.len(),
-            replayed_len: canonical_log_bytes.len(),
+            replayed_len: replayed.len(),
         });
         Some(ReplayCheckReport {
             path: path.clone(),
-            digest: content_address_bytes(&canonical_log_bytes),
+            digest: content_address_bytes(&replayed),
             mismatch,
         })
     } else {
@@ -114,10 +123,282 @@ pub(super) fn replay_reproduction_artifact(
         seed,
         scenario_digest,
         reduction,
+        live_qemu,
         to_savepoint,
         check,
         bisect,
     })
+}
+
+fn replay_uses_live_qemu(cli: &Cli) -> Result<bool, CliError> {
+    let plan = plan_backend_selection(cli)?;
+    Ok(matches!(
+        plan.as_ref()
+            .and_then(|plan| plan.resolved_backend.as_ref()),
+        Some(ResolvedLocalBackend::Qemu { .. })
+    ))
+}
+
+fn replay_live_qemu_evidence(
+    cli: &Cli,
+    artifact: &CliReproductionArtifact,
+) -> Result<ReplayLiveQemuProof, CliError> {
+    let contract_bytes = required_single_component_payload(
+        artifact,
+        LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE,
+        "live QEMU replay contract",
+    )?;
+    let expected_events = required_single_component_payload(
+        artifact,
+        LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE,
+        "live QEMU event stream",
+    )?;
+    let expected_fingerprints = required_single_component_payload(
+        artifact,
+        LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE,
+        "live QEMU fingerprint stream",
+    )?;
+    let contract = LiveQemuReplayContract::decode(contract_bytes)?;
+    let top_level_fingerprints =
+        verify_fingerprint_stream_bytes(&artifact_fingerprint_samples(artifact));
+    if top_level_fingerprints != expected_fingerprints {
+        return Err(artifact_error(
+            "live-QEMU fingerprint component does not match top-level artifact samples",
+        ));
+    }
+    if artifact.scenario.media_type != "application/vnd.crucible.scenario.compact-binary" {
+        return Err(artifact_error(
+            "v3 live-QEMU replay requires a compact binary scenario component",
+        ));
+    }
+    let scenario = crucible::ScenarioDefForm::from_compact_binary(resolved_component_payload(
+        artifact,
+        &artifact.scenario,
+    )?)
+    .map_err(|error| artifact_error(format!("decode live-QEMU replay scenario: {error}")))?;
+    let model_bytes = required_single_component_payload(
+        artifact,
+        MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE,
+        "model reproduction",
+    )?;
+    let model = crucible::ReproductionArtifact::from_compact_binary(model_bytes)
+        .map_err(|error| artifact_error(format!("decode live-QEMU replay model: {error}")))?;
+    if model.scenario_def().id() != scenario.id() {
+        return Err(CliError::Identity(format!(
+            "live-QEMU model scenario {} did not match artifact scenario {}",
+            model.scenario_def().id().to_hex(),
+            scenario.id().to_hex()
+        )));
+    }
+    let terminal_configuration = crucible::Configuration {
+        def: scenario.scenario_def(),
+        schedule: model.schedule().clone(),
+    };
+    if format_content_hash_ref(terminal_configuration.id()) != contract.terminal_configuration {
+        return Err(CliError::Identity(format!(
+            "live-QEMU contract terminal configuration {} did not match model configuration {}",
+            contract.terminal_configuration,
+            format_content_hash_ref(terminal_configuration.id())
+        )));
+    }
+    let backend_plan = plan_backend_selection(cli)?.ok_or_else(|| {
+        backend_error("live-QEMU artifact replay requires a resolved local backend")
+    })?;
+    if backend_plan.target != BackendExecutionTarget::Local {
+        return Err(backend_error(
+            "live-QEMU artifact replay does not support a remote daemon",
+        ));
+    }
+    let backend = backend_plan.resolved_backend.as_ref().ok_or_else(|| {
+        backend_error("live-QEMU artifact replay requires a resolved local QEMU backend")
+    })?;
+    if !matches!(backend, ResolvedLocalBackend::Qemu { .. }) {
+        return Err(backend_error(
+            "v3 reproduction artifacts replay only through the packaged QEMU backend",
+        ));
+    }
+    let terminal_node_count = scenario.world().vm_nodes().len();
+    let scenario_nodes = scenario
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.name.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let (_run_plan, report) =
+        run_live_qemu_artifact_replay(backend, scenario, model.schedule(), &contract)?;
+    let replay_events = canonical_verify_log_stream_bytes(&[], &report.streamed_event_frames);
+    let replay_samples = match contract.fingerprint_scope {
+        LiveQemuFingerprintScope::FullExecution => run_fingerprint_samples(&report),
+        LiveQemuFingerprintScope::TerminalAllNodes => {
+            let expected_samples = artifact.fingerprints.len();
+            if expected_samples != terminal_node_count {
+                return Err(artifact_error(format!(
+                    "terminal fingerprint scope contains {expected_samples} samples for {terminal_node_count} VM nodes"
+                )));
+            }
+            let artifact_nodes = artifact
+                .fingerprints
+                .iter()
+                .map(|sample| sample.node.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            if artifact_nodes != scenario_nodes {
+                return Err(artifact_error(format!(
+                    "terminal fingerprint scope nodes {artifact_nodes:?} did not match scenario VM nodes {scenario_nodes:?}"
+                )));
+            }
+            let mut samples = run_fingerprint_samples(&report);
+            if samples.len() < expected_samples {
+                return Err(CliError::ReplayCheck(format!(
+                    "live QEMU replay produced {} fingerprint samples, expected a terminal all-node snapshot of {expected_samples}",
+                    samples.len()
+                )));
+            }
+            let mut terminal = samples.split_off(samples.len() - expected_samples);
+            let terminal_nodes = terminal
+                .iter()
+                .map(|sample| sample.node.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            if terminal_nodes != scenario_nodes {
+                return Err(CliError::ReplayCheck(format!(
+                    "live QEMU replay terminal fingerprint nodes {terminal_nodes:?} did not match scenario VM nodes {scenario_nodes:?}"
+                )));
+            }
+            for (index, sample) in terminal.iter_mut().enumerate() {
+                sample.index = index as u64;
+            }
+            terminal
+        }
+    };
+    let replay_fingerprints = verify_fingerprint_stream_bytes(&replay_samples);
+    validate_live_qemu_terminal(&contract, model.schedule(), &report)?;
+    if replay_events != expected_events {
+        return Err(CliError::ReplayCheck(format!(
+            "live QEMU event stream diverged at byte {} (expected {} bytes, replayed {})",
+            bisect_first_different_byte(expected_events, &replay_events),
+            expected_events.len(),
+            replay_events.len()
+        )));
+    }
+    if replay_fingerprints != expected_fingerprints {
+        return Err(CliError::ReplayCheck(format!(
+            "live QEMU fingerprint stream diverged at byte {} (expected {} bytes, replayed {})",
+            bisect_first_different_byte(expected_fingerprints, &replay_fingerprints),
+            expected_fingerprints.len(),
+            replay_fingerprints.len()
+        )));
+    }
+    if matches!(
+        contract.producer.as_str(),
+        "run" | "verify" | "fuzz" | "fork"
+    ) {
+        let actual_controls = report
+            .acknowledged_commands
+            .iter()
+            .map(|command| session_command_name(*command))
+            .collect::<Vec<_>>();
+        let expected_controls = contract
+            .controls
+            .iter()
+            .map(|control| control.command.as_str())
+            .collect::<Vec<_>>();
+        if actual_controls != expected_controls {
+            return Err(CliError::ReplayCheck(format!(
+                "live QEMU control sequence diverged: expected {expected_controls:?}, got {actual_controls:?}"
+            )));
+        }
+    }
+    Ok(ReplayLiveQemuProof {
+        producer: contract.producer,
+        terminal_status: contract.terminal_status,
+        terminal_outcome: contract.terminal_outcome,
+        terminal_configuration: contract.terminal_configuration,
+        event_stream_digest: content_address_bytes(expected_events),
+        fingerprint_stream_digest: content_address_bytes(expected_fingerprints),
+        controls: contract.controls.len(),
+    })
+}
+
+fn required_single_component_payload<'a>(
+    artifact: &'a CliReproductionArtifact,
+    media_type: &str,
+    label: &str,
+) -> Result<&'a [u8], CliError> {
+    let components = artifact
+        .components
+        .iter()
+        .filter(|component| component.media_type == media_type)
+        .collect::<Vec<_>>();
+    if components.len() != 1 {
+        return Err(artifact_error(format!(
+            "v3 replay requires exactly one {label} component, found {}",
+            components.len()
+        )));
+    }
+    resolved_component_payload(artifact, components[0])
+}
+
+fn validate_live_qemu_terminal(
+    contract: &LiveQemuReplayContract,
+    expected_schedule: &crucible::Schedule,
+    report: &RunWorkflowReport,
+) -> Result<(), CliError> {
+    let actual_configuration = report
+        .terminal_configuration
+        .as_ref()
+        .map(|configuration| format_content_hash_ref(configuration.id()))
+        .ok_or_else(|| artifact_error("live QEMU replay omitted its terminal configuration"))?;
+    let actual_outcome = terminal_outcome_label(report.outcome);
+    if report.status.label() != contract.terminal_status
+        || actual_outcome != contract.terminal_outcome
+        || actual_configuration != contract.terminal_configuration
+        || report.final_frontier_ticks != contract.final_frontier_ticks
+        || report.final_quanta != contract.final_quanta
+        || report.budget_timed_out != contract.budget_timed_out
+    {
+        let actual_schedule = report
+            .terminal_configuration
+            .as_ref()
+            .map(|configuration| &configuration.schedule);
+        let first_different_decision = actual_schedule.and_then(|actual| {
+            expected_schedule
+                .decisions()
+                .iter()
+                .zip(actual.decisions())
+                .position(|(expected, actual)| expected != actual)
+                .or_else(|| {
+                    (expected_schedule.len() != actual.len())
+                        .then_some(expected_schedule.len().min(actual.len()))
+                })
+        });
+        let expected_decision = first_different_decision
+            .and_then(|index| expected_schedule.decisions().get(index))
+            .map_or_else(|| String::from("none"), |decision| format!("{decision:?}"));
+        let actual_decision = first_different_decision
+            .and_then(|index| actual_schedule.and_then(|schedule| schedule.decisions().get(index)))
+            .map_or_else(|| String::from("none"), |decision| format!("{decision:?}"));
+        return Err(CliError::ReplayCheck(format!(
+            "live QEMU terminal tuple diverged: expected status={} outcome={} configuration={} frontier={} quanta={} budget_timeout={} decisions={}, got status={} outcome={} configuration={} frontier={} quanta={} budget_timeout={} decisions={} first_different_decision={} expected_decision={} actual_decision={}",
+            contract.terminal_status,
+            contract.terminal_outcome,
+            contract.terminal_configuration,
+            contract.final_frontier_ticks,
+            contract.final_quanta,
+            contract.budget_timed_out,
+            expected_schedule.len(),
+            report.status.label(),
+            actual_outcome,
+            actual_configuration,
+            report.final_frontier_ticks,
+            report.final_quanta,
+            report.budget_timed_out,
+            actual_schedule.map_or(0, crucible::Schedule::len),
+            first_different_decision
+                .map_or_else(|| String::from("none"), |index| index.to_string()),
+            expected_decision,
+            actual_decision
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn replay_embedded_model_artifact(
@@ -239,7 +520,13 @@ pub(super) fn replay_to_savepoint(
     artifact: &CliReproductionArtifact,
 ) -> Result<ReplayToSavepointReport, CliError> {
     let savepoint = resolve_savepoint_ref("replay --to", Some(target))?;
-    let evidence = savepoint_evidence("replay --to", &savepoint, &default_run_store_root(cli))?;
+    let evidence = match savepoint_evidence("replay --to", &savepoint, &default_run_store_root(cli))
+    {
+        Ok(evidence) => evidence,
+        Err(store_error) => {
+            embedded_terminal_savepoint_evidence(artifact, &savepoint)?.ok_or(store_error)?
+        }
+    };
     validate_embedded_scenario_identity("replay --to savepoint", &evidence.scenario, artifact)
         .map_err(|error| match error {
             CliError::Identity(message) => CliError::Artifact(message),
@@ -263,6 +550,54 @@ pub(super) fn replay_to_savepoint(
         oracle,
         materialization,
     })
+}
+
+fn embedded_terminal_savepoint_evidence(
+    artifact: &CliReproductionArtifact,
+    savepoint: &ResumeSavepointRef,
+) -> Result<Option<ResumeHandleEvidence>, CliError> {
+    let ResumeSavepointRef::CheckpointHash(target) = savepoint else {
+        return Ok(None);
+    };
+    let contract_bytes = required_single_component_payload(
+        artifact,
+        LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE,
+        "live QEMU replay contract",
+    )?;
+    let contract = LiveQemuReplayContract::decode(contract_bytes)?;
+    if contract.terminal_configuration != format_content_hash_ref(*target) {
+        return Ok(None);
+    }
+    let model_bytes = required_single_component_payload(
+        artifact,
+        MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE,
+        "model reproduction",
+    )?;
+    let model = crucible::ReproductionArtifact::from_compact_binary(model_bytes)
+        .map_err(|error| artifact_error(format!("decode replay --to embedded model: {error}")))?;
+    let scenario_form = model.scenario_form().clone();
+    let scenario = model.scenario_def();
+    let schedule = model.schedule().clone();
+    let configuration = crucible::Configuration {
+        def: scenario.clone(),
+        schedule: schedule.clone(),
+    };
+    if configuration.id() != *target {
+        return Err(CliError::Identity(format!(
+            "replay --to embedded terminal configuration {} did not match target {}",
+            format_content_hash_ref(configuration.id()),
+            format_content_hash_ref(*target)
+        )));
+    }
+    let frontier = validate_resume_handle_frontier(&schedule, contract.final_frontier_ticks)?;
+    let checkpoint = checkpoint_for_resume_configuration(&configuration, frontier)?;
+    Ok(Some(ResumeHandleEvidence {
+        scenario_form,
+        scenario,
+        schedule,
+        configuration,
+        checkpoint,
+    }))
 }
 
 pub(super) fn prove_replay_schedule_prefix(
@@ -433,6 +768,12 @@ pub(super) fn replay_bisect_artifacts(
 ) -> Result<ReplayBisectionReport, CliError> {
     let other_bytes = fs::read(other_path)?;
     let other_artifact = validate_replayable_reproduction_artifact(cli, &other_bytes)?;
+    if replay_uses_live_qemu(cli)? {
+        replay_embedded_model_artifact(&other_artifact)?.ok_or_else(|| {
+            artifact_error("replay --bisect requires a model proof in the other v3 artifact")
+        })?;
+        replay_live_qemu_evidence(cli, &other_artifact)?;
+    }
     verify_compare_artifact_inputs_match("replay --bisect", artifact, &other_artifact)?;
     let mode = VerifyMode::CompareArtifacts {
         left: PathBuf::from("replay-left"),
@@ -464,7 +805,7 @@ pub(super) fn replay_bisect_error(
     divergence: &VerifyDivergenceReport,
 ) -> CliError {
     CliError::ReplayCheck(format!(
-        "replay --bisect divergence between `{}` and `{}`: mismatch={}, first_decision={}, first_fingerprint_sample={}, first_instruction={}, node={}, first_diff_byte={}, left_state={}, right_state={}",
+        "replay --bisect divergence between `{}` and `{}`: mismatch={}, first_decision={}, first_fingerprint_sample={}, first_virtual_time={}, first_virtual_time_node={}, first_instruction={}, first_instruction_node={}, first_diff_byte={}, left_state={}, right_state={}",
         left_path.display(),
         bisect.other_path.display(),
         divergence.mismatch.label(),
@@ -476,8 +817,22 @@ pub(super) fn replay_bisect_error(
             .first_different_fingerprint_sample
             .map(|sample| sample.to_string())
             .unwrap_or_else(|| String::from("unknown")),
-        divergence.first_different_instruction,
-        divergence.node.as_deref().unwrap_or("unknown"),
+        divergence
+            .first_different_virtual_time
+            .map(|ticks| ticks.to_string())
+            .unwrap_or_else(|| String::from("unknown")),
+        divergence
+            .first_different_virtual_time_node
+            .as_deref()
+            .unwrap_or("unknown"),
+        divergence
+            .first_different_instruction
+            .map(|instruction| instruction.to_string())
+            .unwrap_or_else(|| String::from("unknown")),
+        divergence
+            .first_different_instruction_node
+            .as_deref()
+            .unwrap_or("unknown"),
         divergence.first_different_byte,
         divergence.left_state_digest,
         divergence.right_state_digest
@@ -499,26 +854,7 @@ pub(super) fn replay_check_mismatch_error(
     ))
 }
 
-pub(super) fn write_failure_reproduction_artifact(
-    cli: &Cli,
-    artifact_bytes: &[u8],
-    failure_slug: &str,
-) -> Result<FailureArtifactReport, CliError> {
-    validate_replayable_reproduction_artifact(cli, artifact_bytes)?;
-    let digest = content_address_bytes(artifact_bytes);
-    fs::create_dir_all(&cli.artifact_dir)?;
-    let file_name = format!(
-        "repro-{}-{}.crucible",
-        sanitize_slug(failure_slug),
-        short_digest(&digest)
-    );
-    let path = cli.artifact_dir.join(file_name);
-    fs::write(&path, artifact_bytes)?;
-    let footer = failure_reproduction_footer(path.clone());
+#[path = "replay/artifact.rs"]
+mod artifact;
 
-    Ok(FailureArtifactReport {
-        path,
-        digest,
-        footer,
-    })
-}
+pub(super) use artifact::*;

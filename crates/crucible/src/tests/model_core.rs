@@ -3,6 +3,14 @@
 use super::*;
 
 #[test]
+fn streamed_content_hash_matches_in_memory_hash() -> Result<(), std::io::Error> {
+    let bytes = b"streamed-content-address";
+    let streamed = ContentHash::from_reader(std::io::Cursor::new(bytes))?;
+    assert_eq!(streamed, ContentHash::from_bytes(bytes));
+    Ok(())
+}
+
+#[test]
 fn step_appends_decision_without_mutating_parent() {
     let config = Configuration::genesis(ScenarioDef::from_canonical_material(
         "crucible.test.step",

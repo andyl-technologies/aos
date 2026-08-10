@@ -30,7 +30,7 @@ normative `MUST` maps to at least one task.
 
 ## Inventory
 
-The plan covers **586 tasks** across 37 areas, satisfying **1092 numbered
+The plan covers **592 tasks** across 37 areas, satisfying **1094 numbered
 requirements** (plus the goal/non-goal/invariant/decision IDs). Coverage is
 **complete**: every defined requirement is cited by at least one checklist task,
 and no task cites a non-existent requirement (verified by the `T-PLAN-1` lint).
@@ -39,11 +39,11 @@ Task counts by area:
 ```text
 PERF 34  DET 31  SCHED 30  HARN 28  PLUG 27  PATCH 24  PKG 23  ADV 21  SPAT 21
 CLI 20  EXEC 20  RISK 20  TRIG 20  SHM 19  ASRT 18  GHC 17  CRATE 16  FAULT 16
-IO 16  QEMU 16  API 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11  DCE 10
-PAT 9  TIME 9  DBG 8  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
+IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
+DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:8032f17360a8ae27`
+Checklist sync digest: `rfc0010-checklist-v1:a21bc3bc8e8a3582`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -131,7 +131,7 @@ all land and are gated. Everything later is built on this.
 - Execution model (Configuration/step/instantiate, decision RNG; the `Decision`
   taxonomy extensions `T-EXEC-19` `Preemption` + `T-EXEC-20` `AppRandom`): `T-EXEC-1 … T-EXEC-20` ([`05`](05-execution-model.md)).
 - Temporal graph + content-addressed store (engine-independent parts): `T-TEMP-1 … T-TEMP-11` ([`07`](07-temporal-graph.md)).
-- Harness, gate catalog, in-process QEMU double, fingerprint, divergence bisector: `T-HARN-1 … T-HARN-28` ([`24`](24-determinism-harness-testing.md)).
+- Harness, gate catalog, in-process QEMU double, fingerprint, divergence bisector: `T-HARN-1 … T-HARN-29` ([`24`](24-determinism-harness-testing.md)).
 - Patterns tracked here: `T-PAT-1, T-PAT-4, T-PAT-5, T-PAT-6, T-PAT-9`;
   the backend pattern is completed by the phase-5 backend and SimDouble suite
   ([`29`](29-patterns-and-sketches.md)).
@@ -337,9 +337,11 @@ long-held locks.
   `T-API-7` is green through `checks.crucible.phase5.apiStateUpdateStream`,
   which wires `Control`/`Watch` attach to the actor state-transition bus, exposes
   monotone state-update frames separately from event-log frames, demultiplexes
-  RPC `state-update-frame` messages from the shared framed stream without
-  starving behind undrained event frames, and proves a Watch-only client can
-  track run-state from `SendResponse` plus `StateUpdate`.
+  RPC `state-update-frame` messages from the shared framed stream, coalesces
+  superseded state updates while preserving fail-closed event-log lag, binds the
+  attach snapshot to an atomic transition-sequence floor, and proves a Watch-only
+  client can track run-state from `SendResponse` plus `StateUpdate` even after
+  exceeding the bounded live state tail.
   `T-API-8` is green through `checks.crucible.phase5.apiEpochGuards`, which
   carries `expected_epoch` on attach, command, and lifecycle destroy requests,
   rejects stale session refs and expected epochs before actor dispatch, proves
@@ -376,7 +378,7 @@ long-held locks.
   a non-empty replayed causal event payload projection under quiet/noisy
   streaming observer load, and forbids wall-clock reads in the production API
   paths.
-- CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-20` ([`23`](23-cli.md)).
+- CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-21` ([`23`](23-cli.md)).
   `T-CLI-2` is green through `checks.crucible.phase5.cliThinWrapper`, which
   enforces a pre-dispatch thin-wrapper plan for every closed subcommand, records
   the emitted session/API/driver operations, limits routed control capabilities
@@ -426,7 +428,9 @@ long-held locks.
   the QEMU install/version entrypoints; text impersonators are rejected.
   `T-CLI-6` is completed through `checks.crucible.phase5.cliRunWorkflow`, which
   covers canonical scenario file and `blake3:` store-reference parsing,
-  invalid-scenario exit 5, local and daemon lifecycle session creation through
+  invalid-scenario exit 5 with field-specific malformed-ID diagnostics and
+  serialized-versus-recomputed values for stale derived IDs, local and daemon
+  lifecycle session creation through
   the typed control-client workflow, production HTTP/2 RPC serving, control
   attachment, non-empty scheduler event/state stream consumption, parsed
   virtual-time/quanta budget checks from live counters, outcome-derived
@@ -441,6 +445,8 @@ long-held locks.
   decision/sample/byte reporting, both-side reproduction artifacts,
   `verify --compare <a> <b>`, exit 0/1 deterministic/divergent outcomes, and
   local-QEMU verify output pinned to the resolved QEMU/plugin build identity.
+  Artifact comparison validates the two embedded producer identities against
+  each other and does not substitute an auto-discovered local backend identity.
   Each local-QEMU reduction also performs an independent production plugin boot
   and rejects non-identical live reports.
   `T-CLI-16` is green through `checks.crucible.phase5.cliCompletionsHelp`, which
@@ -460,7 +466,9 @@ long-held locks.
   Supplemental feature-gated tests cover the fast test corpus, canonical
   `--gates <list>` validation, malformed/unsupported selection rejection, and
   file-backed `--corpus <path>` manifests; those test-double runners are absent
-  from the packaged binary.
+  from the packaged binary. Self-test output now follows the shared format,
+  trace, quiet, and terminal-outcome contract, including byte-identical JSONL
+  stdout and explicit trace output.
   `T-CLI-9` is completed through `checks.crucible.phase5.cliSaveWorkflow`, which
   covers executable `save <SCENARIO> --at quiescence` and `--at virtual-time
   --max-virtual-time <dur>` saves, parser/planner coverage for
@@ -477,8 +485,10 @@ long-held locks.
   routes explicitly selected local-QEMU saves through the same create-savepoint/
   export/oracle workflow with resolved QEMU/plugin identity metadata, routes
   remote-daemon quiescence and virtual-time saves over the RPC control API and
-  validates them with replay-oracle evidence, routes remote selector proof
-  queries over RPC breakpoint-firing payloads, transfers arbitrary scenario
+  validates them with replay-oracle evidence, drives exact virtual-time saves
+  through individually acknowledged scheduler quanta with bounded tolerance for
+  zero-time boot quanta, rejects stagnation and overshoot, routes remote
+  selector proof queries over RPC breakpoint-firing payloads, transfers arbitrary scenario
   selector sources to remote daemons as form-bearing inline `CreateSession` RPC
   payloads, derives remote guest-marker white-box policy from the transferred
   source form, and fails undeclared property selectors and marker selectors
@@ -493,6 +503,10 @@ long-held locks.
   decoding with compact scenario/schedule evidence, direct `blake3:<hash>`
   checkpoint reference parsing and local DAG-store checkpoint closure loading,
   virtual-time budget validation, malformed-handle artifact errors, and
+  runtime-only fat checkpoint support when deterministic execution advances the
+  frontier without appending a schedule decision, including exact-frontier thin
+  replay, bounded stagnation and overshoot rejection, genuine thin-checkpoint
+  coverage, and strict zero-time baked-genesis validation, and
   executable handle- or store-backed local-double resume to quiescence,
   virtual-time, interactive command driving, or a declared property violation
   through the session checkpoint-resume API with breakpoint-firing proof for the
@@ -536,7 +550,12 @@ long-held locks.
   checkpoint closure index, malformed-handle artifact errors, seed/override
   conflict usage errors, handle- and store-backed no-divergence local-double fork
   execution through an independent child session, repeatable post-fork
-  `--override` decision application, explicit post-fork `--seed` execution in
+  `--override` decision application with fail-closed admission to the production
+  scheduler's live World-network point and choice taxonomy, exact-choice
+  consumption enforcement through the scheduler frontier query before cleanup
+  (so an unconsumed choice cannot wedge actor shutdown), and point/choice trace
+  evidence, explicit post-fork
+  `--seed` execution in
   the local double by deriving the child's post-fork decision stream from the
   explicit seed while preserving the requested savepoint prefix, distinct-seed
   terminal-savepoint and exact virtual-time-boundary proof, interactive child
@@ -572,9 +591,21 @@ long-held locks.
   materialization with runtime/reduced-state, single-VM-fingerprint, and
   fat/thin checkpoint agreement, plus host-profile machine-independent replay
   coverage in the same gate for quiet single-core vs loaded many-core artifact
-  reproduction. Ordinary replay re-executes the pure
-  `reduce(ScenarioDef, Schedule)` materialization and verifies the reconstructed
-  canonical bytes and fingerprint evidence.
+  reproduction. The pure `reduce(ScenarioDef, Schedule)` materialization is the
+  mandatory replay preflight; T-CLI-21 removes the production model-only path.
+  V3 artifacts from every local-QEMU producer add a v2 live recipe plus exact
+  event bytes and an explicit fingerprint scope: full execution for
+  run/verify/fuzz, terminal all-node snapshot for search/fork. Fork recipes
+  preserve the retained base for unchanged, reseeded, and contiguous-override
+  children and force only post-base choices; search recipes preserve their
+  lifecycle ceilings. Interactive capture fails closed until exact timed command
+  replay exists; ordered non-interactive startup and initial recipes reproduce
+  the acknowledgement sequence compared by replay. Ordinary replay, `--check`,
+  and `--to` launch a fresh pinned
+  QEMU/plugin pair, while `--bisect` launches both sides independently before
+  comparison. The same check covers the closed five-producer recipe matrix and
+  creates and replays a real two-VM timeout artifact through ordinary,
+  `--check`, `--to`, and identical-artifact `--bisect`, completing T-HARN-29.
   `T-CLI-13` is completed through `checks.crucible.phase5.cliSearchFuzzWorkflow`,
   which covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,
   concrete scenario resolution for search, family reference resolution for fuzz,
@@ -644,7 +675,9 @@ long-held locks.
   frontier and replay-validates both children in fresh two-node QEMU sessions.
   The fuzz family excludes pre-boot faults so a real guest quantum commits
   plugin coverage before feedback is evaluated. Neither fixture modifies
-  Linux.
+  Linux. An explicit `--findings-out` path is materialized as a valid signed v3
+  ledger even when the campaign retains zero findings; the implicit default
+  remains absent for a zero-finding campaign.
   `T-CLI-17` is complete under `checks.crucible.phase5.cliTriageWorkflow`: the
   thin `triage <FINDINGS>` parser/planner loads empty and signed engine-owned
   property findings ledgers through the local DagStore, drives triage-engine
@@ -658,7 +691,10 @@ long-held locks.
   `checks.crucible.phase5.cliServeMultiClient`, and
   `checks.crucible.phase5.cliServeShutdown`: the CLI advertises and enforces
   `serve --read-only` and `serve --max-sessions <n>`, rejects invalid caps before
-  binding, runs the production HTTP/2 daemon over the shared lifecycle/session
+  binding, requires an explicit trusted-cleartext acknowledgment or complete
+  mutual-TLS credentials on every client route before connection (including a
+  real-binary process regression), runs the
+  production HTTP/2 daemon over the shared lifecycle/session
   actor path, rejects state-mutating calls in read-only mode, admits concurrent
   Watch and Query clients while Control drives the same session, propagates
   shutdown to active Control/Watch streams, maps serve bind/backend failures to
@@ -693,7 +729,7 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
 - Advanced features — fork/save/resume/search/fuzz plus guided/adaptive
   (pluggable signals + bandit), interleaving, and app-random search
   (`T-ADV-17 … T-ADV-21`): `T-ADV-1 … T-ADV-21` ([`22`](22-advanced-features.md)).
-- Time-travel debugging (built on the checkpoint DAG + replay): `T-DBG-1 … T-DBG-8` ([`36`](36-time-travel-debugging.md)).
+- Time-travel debugging (built on the checkpoint DAG + replay): `T-DBG-1 … T-DBG-12` ([`36`](36-time-travel-debugging.md)).
   `T-DBG-1` is completed through `checks.crucible.phase6.debugAttach`; `T-DBG-2`
   is completed through `checks.crucible.phase6.readOnlyDebugInspection`, which proves
   read-only debugger observations do not alter config, virtual time, or the
@@ -730,7 +766,34 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   gdbstub proxy, read-only default inspection, explicit non-canonical mutation
   branches, no-symbol-server ownership, coherent multi-vCPU gdb threads, and
   disabled raw gdb single-step. The command resolves and boots the hermetic
-  packaged QEMU/plugin backend before reporting the delegated debug plan.
+  packaged QEMU/plugin backend before reporting the delegated debug plan. The
+  remote path additionally exposes controller-leased GDB relay plus explicit
+  whole-world guest-introspection fork, argv exec, PTY, and configured in-guest
+  SSH byte bridging through the bounded public protocol, with opt-in bounded
+  branch-local transcript files. A configurable response-idle deadline now
+  attempts bounded cleanup and controller-lease release for an unresponsive
+  guest channel instead of allowing agent-driven `exec`, PTY, or SSH clients to
+  wait forever.
+  Controller-leased
+  `goto`, `reverse-step`, and `reverse-continue` carry operator intent only;
+  the actor binds that intent to its authoritative configuration, event-log
+  prefix, and schedule-prefix event index before restore/replay and gateway
+  replacement. An in-flight operation gate prevents controller lease handoff
+  until replacement completes, and checkpoint-resumed actors reject event
+  history before their explicit resume floor.
+  `T-DBG-9 … T-DBG-12` remain open for the production gateway/live replacement
+  gates, complete authorization and peer-credential enforcement, and live
+  guest-channel acceptance. Manual production testing additionally showed that
+  distinct runtime-coordinate requests may report the same schedule-empty
+  configuration identity and expose no earlier reverse coordinate;
+  T-DBG-10 and the live architecture acceptance task must bind landed runtime
+  evidence and exercise non-empty live reverse history before completion. Typed
+  requested/landed evidence and
+  the inclusive exact event cursor are implemented. A packaged, out-of-check
+  manual runner now defines the complete evidence capture, including
+  content-bound guest assets, non-empty history, atomic operator barriers,
+  scheduler run control, and fork-time guest channels on both architectures;
+  executing and reviewing that live proof is still required.
 - Failure triage: `T-TRI-1` is green through `checks.crucible.phase6.failureSignature`,
   which implements the recorded-run-only `FailureSignature` tuple for property
   violations and divergence bisection points, binds checked event-log projection
@@ -787,6 +850,21 @@ acceptance gate.
 **Tasks.**
 - AOS packaging (hermetic, patched QEMU pkg, fixtures, CI wiring, ratchet seam;
   incl. the new packaging tasks `T-PKG-21 … T-PKG-23`): `T-PKG-1 … T-PKG-23` ([`26`](26-packaging-aos-integration.md)).
+- Debugger packaging and live acceptance: `T-DBG-13 … T-DBG-14`
+  ([`36`](36-time-travel-debugging.md)).
+  `T-DBG-13` is green through `checks.crucible.phase7.debuggerPackage`, which
+  builds GNU GDB 17.2 hermetically with the AOS toolchain, exposes `gdb` and
+  `gdbserver` from the Crucible suite, and verifies Python plus x86_64/aarch64
+  target selection. `T-DBG-14` remains open for captured live parity evidence.
+  The first parity slice is automated by
+  `checks.crucible.phase7.debuggerLiveArchitectures`: packaged x86_64 and
+  aarch64 QEMU run under TCG, negotiate RSP with packaged GDB, preserve repeated
+  register reads, and accept hardware-breakpoint insert/remove packets without
+  a model double. The native suite now retains architecture-specific x86_64 and
+  AArch64 guest closures and selects the corresponding production launch
+  profile. The suite ships the complete controller/gateway/run-control/
+  guest-channel matrix as a manual evidence runner outside Nix checks. The task
+  remains open until successful x86_64 and AArch64 executions are captured.
 - Performance (incl. the fleet-perf tasks `T-PERF-27, T-PERF-28` and the host-parallelism tasks `T-PERF-29 … T-PERF-34`): `T-PERF-1 … T-PERF-34` ([`25`](25-performance-targets.md)).
 - Distributed / continuous exploration (campaigns spanning a fleet of workers): `T-DCE-1 … T-DCE-10` ([`35`](35-distributed-continuous-exploration.md)).
 - Worked example scenarios as CI fixtures (happy path, partition-recovery, crash/restart, fault campaign, determinism check): `T-EX-1 … T-EX-5` ([`33`](33-examples-and-workloads.md)). These double as the `gate:e2e-determinism` corpus.
@@ -824,7 +902,7 @@ maintained two ways:
    SHM     37    16      SPAT   33    21       ARCH    9     5
    ADV     40    21      FAULT  34    16       TEMP   30    11
    EXEC    34    20      API    31    14       TRIG   32    20
-   DBG     40     8      ASRT   33    18       TRI    19     8
+   DBG     47    14      ASRT   33    18       TRI    19     8
    DCE     33    10      SESS   33    13       WL     12     6
                                                EX      3     5
    ```

@@ -60,9 +60,12 @@ impl Queue for WorkerQueue {
         if jobs.is_empty() {
             return Ok(());
         }
-        self.queue
-            .send_batch(jobs.iter().cloned())
-            .await
-            .map_err(|err| anyhow!("queue send_batch: {err}"))
+        for chunk in jobs.chunks(100) {
+            self.queue
+                .send_batch(chunk.iter().cloned())
+                .await
+                .map_err(|err| anyhow!("queue send_batch: {err}"))?;
+        }
+        Ok(())
     }
 }

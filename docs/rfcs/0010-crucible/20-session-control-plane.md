@@ -86,6 +86,12 @@ mailbox at all.
   slow a single quantum is on a given host. *Gate:* `gate:control-responsive`.
   *Spec:* §1, §3; routes [INV-8].
 
+  A `continue` may cross `Running` and reach a breakpoint-induced `Paused` state
+  (or terminal `Stopped` state) before a streaming observer samples the mirror.
+  The streaming acknowledgement therefore accepts that later stable state only
+  when its state-transition sequence is newer than the pre-command snapshot; a
+  stale `Paused` mirror does not acknowledge `continue`.
+
 ---
 
 ## 2. The lifecycle state machine
@@ -496,6 +502,9 @@ pub enum StepMode {
   itself interruptible by `pause`/`stop`) and MUST land at the same configuration
   on every host for the same starting configuration and mode. On reaching the stop
   point it MUST transition to `Paused { reason: StepComplete { mode } }`.
+  `Duration` completion MUST compare the authoritative cross-node scheduler
+  frontier to its target. An individual event or node timestamp at the target
+  MUST NOT complete the step while the global frontier remains behind it.
   *Gate:* `gate:control-responsive`, `gate:replay-oracle`. *Spec:* §4.3.
 
 ---
@@ -675,7 +684,9 @@ the one temporal graph (07). This section states the session-level contract;
 - **resume** is `instantiate` of the configuration the savepoint records (05 §5):
   `loadvm` of its fat snapshot, or replay-from-nearest-fat-ancestor if it is thin
   (07 §4). A session created from a savepoint is *not* a special "restored"
-  object — it is a fresh session whose configuration happens to be non-genesis.
+  object — it is a fresh session at the checkpoint's recorded configuration and
+  runtime frontier. The configuration may still be genesis when deterministic
+  execution advanced without appending a causal schedule decision.
 
 - **fork** is `instantiate` of a *prefix* configuration (05 §6), producing a
   child session that shares the parent's checkpoints CoW (07 §5) and appends
@@ -683,10 +694,10 @@ the one temporal graph (07). This section states the session-level contract;
   a session's tip, a savepoint, or a node deep in the temporal graph (07).
 
 The headline (05 §5): **a session is created at genesis OR resumed from any
-checkpoint identically** — both are `instantiate` of a configuration, distinguished
-only by which configuration. There is no `boot()` distinct from `loadvm()`
-distinct from `fork()` at the session level any more than there is at the model
-level.
+checkpoint identically** — both are `instantiate` of a configuration,
+distinguished only by the recorded checkpoint boundary. There is no `boot()`
+distinct from `loadvm()` distinct from `fork()` at the session level any more
+than there is at the model level.
 
 - **[SESS-18]** `create_savepoint`, `resume` (instantiate-from-checkpoint), and
   `fork` MUST be implemented purely as operations on the execution model (05) and
@@ -695,9 +706,10 @@ level.
   of the recorded configuration (05 §5); fork = `instantiate` of a prefix
   configuration (05 §6) yielding a child session that CoW-shares the parent's
   checkpoints (07 §5). A session created at genesis and a session resumed from any
-  checkpoint MUST be the *same kind of object* differing only in their
-  configuration; the session MUST NOT have a distinct "restored" or "forked"
-  code path. *Gate:* `gate:replay-oracle`, `gate:content-address`. *Spec:* §7;
+  checkpoint MUST be the *same kind of object* differing only in their recorded
+  configuration and runtime frontier; the session MUST NOT have a distinct
+  "restored" or "forked" code path. *Gate:* `gate:replay-oracle`,
+  `gate:content-address`. *Spec:* §7;
   cross-ref 05 §5/§6/§9, 07 §10.
 
 - **[SESS-19]** A `fork` MUST be servable from a `Paused` or `Stopped` session
@@ -1097,7 +1109,10 @@ pub enum SessionError {
     fault/query commands through queued scheduler control operations, and actor
     command rejection into typed reply completion. Focused tests cover successful
     reply delivery across engine boundaries and side-effect-free rejection
-    replies. Full breakpoint predicate evaluation and independent forked child
+    replies. Reply-bearing debugger and guest-introspection commands use the same
+    recovery path even when they are sent directly rather than wrapped in an
+    actor acknowledgement, so a rejected reverse coordinate or branch policy
+    does not terminate the session actor. Full breakpoint predicate evaluation and independent forked child
     actors remain tracked by `T-SESS-7` and `T-SESS-8`.
 - [x] **T-SESS-5** Implement the five step modes (Quantum/Event/Assertion/Timer/
   Duration), each resolving to a deterministic stop point, interruptible by
@@ -1108,9 +1123,10 @@ pub enum SessionError {
     (`Quantum`, `Event`, `Assertion`, `Timer`, `Duration`) and engine-owned
     active-step state. The actor starts bounded execution through the mailbox,
     polls between quanta, pauses with `StepComplete { mode }` only after the
-    requested event-log or virtual-time stop point, and clears active steps when
-    `pause` or `stop` interrupts. Focused tests cover event, assertion, timer,
-    duration, and interruptible pause/stop behavior.
+    requested event-log or virtual-time stop point, evaluates duration against
+    the global scheduler frontier rather than per-node event timestamps, and
+    clears active steps when `pause` or `stop` interrupts. Focused tests cover
+    event, assertion, timer, duration, and interruptible pause/stop behavior.
 - [x] **T-SESS-6** Implement boundary-deferred application of mid-run mutating
   commands (apply at the next quantum boundary, record the boundary in the
   control log) and immediate-at-boundary pause/stop with clean

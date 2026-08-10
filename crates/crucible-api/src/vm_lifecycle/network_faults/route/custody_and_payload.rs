@@ -7,8 +7,8 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct NetworkCustodyApplication {
-    defer_until: Option<u64>,
-    repeat_phase_on_resume: bool,
+    pub(super) defer_until: Option<u64>,
+    pub(super) repeat_phase_on_resume: bool,
 }
 
 pub(in super::super) fn network_bundle_identity(

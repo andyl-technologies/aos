@@ -6,19 +6,19 @@ use super::*;
 ///
 /// Exact local events and conservative link horizons may split a realization;
 /// the bound leaves room for both VM nodes and terminal scheduler settling.
-const LIVE_EXPLORATION_QUANTUM_LIMIT: u64 = 16;
+pub(crate) const LIVE_EXPLORATION_QUANTUM_LIMIT: u64 = 16;
 
 /// Terminal instruction-count ceiling for one live exploration realization.
 ///
 /// The certified stock-kernel network workload emits near 3.3 billion
 /// instructions and resolves its link delivery below this three-window bound.
-const LIVE_EXPLORATION_RUN_CEILING_ICOUNT: u64 = 12_000_000_000;
+pub(crate) const LIVE_EXPLORATION_RUN_CEILING_ICOUNT: u64 = 12_000_000_000;
 
 /// Terminal instruction-count ceiling for a production CLI lifecycle session.
-const PRODUCTION_CLI_RUN_CEILING_ICOUNT: u64 = 40_000_000_000;
+pub(crate) const PRODUCTION_CLI_RUN_CEILING_ICOUNT: u64 = 40_000_000_000;
 
 /// Scheduler-quantum ceiling for a production CLI lifecycle session.
-const PRODUCTION_CLI_QUANTUM_BUDGET: u64 = 10_000;
+pub(crate) const PRODUCTION_CLI_QUANTUM_BUDGET: u64 = 10_000;
 
 /// Per-node wall-clock timeout for a production CLI lifecycle step.
 const PRODUCTION_CLI_COMPLETION_TIMEOUT: Duration = Duration::from_secs(300);
@@ -136,6 +136,7 @@ fn validate_live_qemu_probe_evidence(
         resolved_backend: Some(backend.clone()),
         reason: BackendSelectionReason::ExplicitQemu,
         daemon: None,
+        daemon_security: None,
         remote_uses_control_api: false,
         local_uses_simulation_backend: true,
         local_remote_equivalence_contract: true,
@@ -333,8 +334,14 @@ fn execute_qemu_fuzz_iterations(
                 iteration.sequence,
             )));
         }
-        let finding =
-            qemu_fuzz_finding_evidence(&form, &report, phase, iteration.sequence, backend_plan)?;
+        let finding = qemu_fuzz_finding_evidence(
+            &form,
+            &report,
+            phase,
+            iteration.sequence,
+            iteration.schedule().len(),
+            backend_plan,
+        )?;
         execution.feedback.push(report.coverage_feedback);
         if let Some((evidence, reproduction)) = finding {
             let store = crucible::LocalDagStore::new(plan.store_root.clone());
@@ -361,6 +368,7 @@ fn qemu_fuzz_finding_evidence(
     report: &RunWorkflowReport,
     phase: &str,
     sequence: u64,
+    branch_decisions: usize,
     backend_plan: &BackendSelectionPlan,
 ) -> Result<Option<(crate::cli_report::TriageFindingEvidence, Vec<u8>)>, CliError> {
     if report.status == BackendCommandStatus::Passed {
@@ -427,10 +435,18 @@ fn qemu_fuzz_finding_evidence(
         BackendCommandStatus::Passed => return Ok(None),
     }
     .map_err(|error| backend_error(format!("build QEMU fuzz finding evidence: {error}")))?;
-    let reproduction = finding_reproduction_artifact_bytes(
+    let reproduction = live_finding_reproduction_artifact_bytes(
         backend_plan.resolved_backend.as_ref(),
         &evidence.finding,
         "fuzz",
+        &qemu_fuzz_iteration_plan(sequence, form.clone()),
+        report,
+        LiveQemuReplayBranch::PrefixOverrides {
+            base_decisions: 0,
+            frontier_ticks: 0,
+            decision_start: 0,
+            decision_end: branch_decisions as u64,
+        },
     )?;
     Ok(Some((evidence, reproduction)))
 }
@@ -607,7 +623,7 @@ fn attach_qemu_findings_outputs(
     findings: Vec<crate::cli_report::TriageFindingEvidence>,
     reproduction_artifacts: Vec<Vec<u8>>,
 ) -> Result<(), CliError> {
-    if findings.is_empty() {
+    if findings.is_empty() && findings_out.is_none() {
         return Ok(());
     }
     let (path, digest, ledger_bytes) = crate::cli_triage_debug::write_failure_findings_ledger_v3(
@@ -753,6 +769,7 @@ fn qemu_fuzz_iteration_plan(sequence: u64, form: crucible::ScenarioDefForm) -> R
     let scenario = form.scenario_def();
     RunInvocationPlan {
         request_seed: Some(scenario.seed()),
+        save_store_root: None,
         scenario: RunScenarioRef::BuiltInExample {
             name: format!("fuzz-iteration-{sequence}"),
             form,
@@ -769,7 +786,7 @@ fn qemu_fuzz_iteration_plan(sequence: u64, form: crucible::ScenarioDefForm) -> R
         initial_control_commands: vec![SessionCommandKind::Query],
         accepted_interactive_commands: Vec::new(),
         observer_profile: VERIFY_BASELINE_PROFILE,
-        collect_execution_fingerprints: false,
+        collect_execution_fingerprints: true,
         bounded_ack_quanta: RUN_INTERACTIVE_ACK_QUANTA_BOUND,
         outcome_exit_codes: vec![
             (BackendCommandStatus::Passed, 0),
@@ -793,6 +810,8 @@ pub(crate) fn run_local_qemu_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     run_plan: &RunInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let mut run_plan = run_plan.clone();
+    run_plan.collect_execution_fingerprints = true;
     let config = production_qemu_lifecycle_config(backend)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -800,12 +819,18 @@ pub(crate) fn run_local_qemu_workflow(
     let control_plane = production_qemu_control_plane(config, run_plan.scenario.scenario_form());
     let client = InProcessLifecycleClient::new(control_plane);
     let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
-        runtime.block_on(run_control_client_workflow_stdin_async(&client, run_plan))?
+        runtime.block_on(run_control_client_workflow_stdin_async(
+            &client, &run_plan, false,
+        ))?
     } else {
-        runtime.block_on(run_control_client_workflow_async(&client, run_plan, &[]))?
+        runtime.block_on(run_control_client_workflow_async(&client, &run_plan, &[]))?
     };
-    finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
+    finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, &run_plan, report)
 }
+
+#[path = "qemu_live/replay.rs"]
+mod replay;
+pub(crate) use replay::*;
 
 /// Verifies every reduction through an independent packaged-QEMU session.
 pub(crate) fn run_local_qemu_verify_workflow(
@@ -893,14 +918,31 @@ pub(crate) fn production_qemu_lifecycle_config(
         option_env!("CRUCIBLE_AOS_ROOT_IMAGE"),
         "root image",
     )?;
-    let mut config =
-        production_api::ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image)
-            .with_root_image_format(production_api::ProductionRootImageFormat::Raw)
-            .with_run_ceiling_icount(PRODUCTION_CLI_RUN_CEILING_ICOUNT)
-            .with_quantum_budget(PRODUCTION_CLI_QUANTUM_BUDGET)
-            .with_completion_timeout(PRODUCTION_CLI_COMPLETION_TIMEOUT);
+    let native_guest_architecture = live_qemu_native_guest_architecture()?;
+    let mut config = production_api::ProductionVmLifecycleConfig::new_for_guest_architecture(
+        qemu,
+        plugin,
+        native_guest_architecture,
+        kernel,
+        root_image,
+    )
+    .with_root_image_format(production_api::ProductionRootImageFormat::Raw)
+    .with_run_ceiling_icount(PRODUCTION_CLI_RUN_CEILING_ICOUNT)
+    .with_quantum_budget(PRODUCTION_CLI_QUANTUM_BUDGET)
+    .with_completion_timeout(PRODUCTION_CLI_COMPLETION_TIMEOUT);
     if let Some(kernel_cmdline) = live_qemu_kernel_cmdline() {
         config = config.with_kernel_cmdline_prefix(kernel_cmdline);
+    }
+    if live_qemu_validate_guest_asset_references()? {
+        config = config.with_guest_asset_reference_validation();
+    }
+    if let Some((kernel, root_image, kernel_cmdline)) = live_qemu_aarch64_assets()? {
+        config = config.with_guest_assets(
+            crucible::VmArchitecture::Aarch64,
+            kernel,
+            root_image,
+            kernel_cmdline,
+        );
     }
     if let Some(initrd) = optional_live_qemu_asset(
         "CRUCIBLE_INITRD",
@@ -908,6 +950,11 @@ pub(crate) fn production_qemu_lifecycle_config(
         "initrd",
     )? {
         config = config.with_initrd(initrd);
+    }
+    if let Some(gateway) =
+        optional_live_qemu_asset("CRUCIBLE_DEBUG_GATEWAY", None, "debugger gateway")?
+    {
+        config = config.with_debug_gateway(gateway);
     }
     Ok(config)
 }

@@ -87,6 +87,10 @@ Fuzzing is currently local. `--daemon` fuzz is rejected.
 
 `triage` is offline: it loads a findings ledger, groups failures by signature,
 optionally minimizes representatives, stores the result, and writes reports.
+The input is the signed ledger itself, not a directory of reproduction
+artifacts and not an individual `.crucible` artifact. Only the ledger retains
+the discovery-time signature and evidence binding needed for deterministic
+clustering and `--recompute-signatures`.
 
 ```sh
 ./result/bin/crucible \
@@ -122,8 +126,11 @@ Search and fuzz write a signed v3 ledger automatically when they retain at
 least one finding. Its default location is
 `<artifact-dir>/findings/<digest>.crucible-findings`; use
 `--findings-out <path>` on either command when automation needs a fixed path.
-The ledger binds each artifact to its exact event frames, coverage fingerprint,
-typed finding evidence, and discovery signature. `triage
+An explicit path is created even when the campaign has zero findings, yielding
+a valid signed ledger with `finding_count=0` that can be passed to `triage` and
+compared across campaigns. Without an explicit path, a zero-finding campaign
+does not create a ledger. The ledger binds each artifact to its exact event
+frames, coverage fingerprint, typed finding evidence, and discovery signature. `triage
 --recompute-signatures` verifies that binding.
 
 Timeout clusters are reportable but not shrinkable by the offline model

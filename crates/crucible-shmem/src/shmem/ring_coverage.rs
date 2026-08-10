@@ -35,12 +35,12 @@ pub const RING_HEADER_SIZE: usize = core::mem::size_of::<RingHeader>();
 /// Wire alignment of one [`RingHeader`].
 pub const RING_HEADER_ALIGN: usize = core::mem::align_of::<RingHeader>();
 
-pub(super) const _: () = assert!(RING_HEADER_READ_IDX_OFFSET == 0);
-pub(super) const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 8);
-pub(super) const _: () = assert!(RING_HEADER_WRITE_IDX_OFFSET == 64);
-pub(super) const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 72);
-pub(super) const _: () = assert!(RING_HEADER_SIZE == 128);
-pub(super) const _: () = assert!(RING_HEADER_ALIGN == 128);
+const _: () = assert!(RING_HEADER_READ_IDX_OFFSET == 0);
+const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 8);
+const _: () = assert!(RING_HEADER_WRITE_IDX_OFFSET == 64);
+const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 72);
+const _: () = assert!(RING_HEADER_SIZE == 128);
+const _: () = assert!(RING_HEADER_ALIGN == 128);
 
 impl RingHeader {
     /// Builds an empty SPSC ring header.
@@ -159,6 +159,31 @@ impl RingHeader {
         Ok(())
     }
 
+    /// Enqueues one complete guest-introspection record entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the entry slice has invalid capacity,
+    /// shared indices are corrupt, or the fixed queue is full.
+    pub fn enqueue_guest_introspection(
+        &self,
+        entries: &mut [GuestIntrospectionEntry],
+        entry: GuestIntrospectionEntry,
+    ) -> Result<(), SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let tail = self.write_idx.load(Ordering::Relaxed);
+        let head = self.read_idx.load(Ordering::Acquire);
+        let live = live_count(head, tail, capacity)?;
+        if live == capacity {
+            return Err(SpscRingError::QueueFull { capacity });
+        }
+        let slot = (tail & (capacity - 1)) as usize;
+        entries[slot] = entry;
+        self.write_idx
+            .store(tail.wrapping_add(1), Ordering::Release);
+        Ok(())
+    }
+
     /// Returns the next frame's delivery icount without consuming it.
     ///
     /// # Errors
@@ -265,6 +290,89 @@ impl RingHeader {
         let entry = entries[slot];
         self.read_idx.store(head.wrapping_add(1), Ordering::Release);
         Ok(Some(entry))
+    }
+
+    /// Dequeues the next guest-introspection record entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the entry slice has invalid capacity,
+    /// shared indices describe more live entries than the queue can hold, or
+    /// the next untrusted cross-process entry is malformed. A malformed entry
+    /// is not consumed, allowing the caller to treat the channel as failed.
+    pub fn dequeue_guest_introspection(
+        &self,
+        entries: &[GuestIntrospectionEntry],
+    ) -> Result<Option<GuestIntrospectionEntry>, SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Relaxed);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        if live_count(head, tail, capacity)? == 0 {
+            return Ok(None);
+        }
+        let slot = (head & (capacity - 1)) as usize;
+        let entry = entries[slot]
+            .validate()
+            .map_err(|source| SpscRingError::InvalidGuestIntrospectionEntry { source })?;
+        self.read_idx.store(head.wrapping_add(1), Ordering::Release);
+        Ok(Some(entry))
+    }
+
+    /// Peeks at the next validated guest-introspection entry without consuming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the entry slice or shared indices are
+    /// invalid, or the next cross-process entry is malformed.
+    pub fn peek_guest_introspection(
+        &self,
+        entries: &[GuestIntrospectionEntry],
+    ) -> Result<Option<GuestIntrospectionEntry>, SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Relaxed);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        if live_count(head, tail, capacity)? == 0 {
+            return Ok(None);
+        }
+        let slot = (head & (capacity - 1)) as usize;
+        entries[slot]
+            .validate()
+            .map(Some)
+            .map_err(|source| SpscRingError::InvalidGuestIntrospectionEntry { source })
+    }
+
+    /// Commits consumption of a previously peeked guest-introspection entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the queue changed unexpectedly, is empty,
+    /// or its next validated entry does not carry `expected_sequence`.
+    pub fn commit_guest_introspection(
+        &self,
+        entries: &[GuestIntrospectionEntry],
+        expected_sequence: u64,
+    ) -> Result<(), SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Relaxed);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        if live_count(head, tail, capacity)? == 0 {
+            return Err(SpscRingError::GuestIntrospectionSequenceMismatch {
+                expected: expected_sequence,
+                actual: 0,
+            });
+        }
+        let slot = (head & (capacity - 1)) as usize;
+        let entry = entries[slot]
+            .validate()
+            .map_err(|source| SpscRingError::InvalidGuestIntrospectionEntry { source })?;
+        if entry.sequence() != expected_sequence {
+            return Err(SpscRingError::GuestIntrospectionSequenceMismatch {
+                expected: expected_sequence,
+                actual: entry.sequence(),
+            });
+        }
+        self.read_idx.store(head.wrapping_add(1), Ordering::Release);
+        Ok(())
     }
 
     /// Captures the live ring entries in FIFO order under quiescence.
@@ -529,14 +637,14 @@ pub const COVERAGE_ENTRY_SIZE: usize = core::mem::size_of::<CoverageEntry>();
 /// Wire alignment of one [`CoverageEntry`].
 pub const COVERAGE_ENTRY_ALIGN: usize = core::mem::align_of::<CoverageEntry>();
 
-pub(super) const _: () = assert!(COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET == 0);
-pub(super) const _: () = assert!(COVERAGE_ENTRY_GUEST_PC_OFFSET == 8);
-pub(super) const _: () = assert!(COVERAGE_ENTRY_MAP_INDEX_OFFSET == 16);
-pub(super) const _: () = assert!(COVERAGE_ENTRY_VCPU_INDEX_OFFSET == 24);
-pub(super) const _: () = assert!(COVERAGE_ENTRY_BLOCK_LEN_OFFSET == 28);
-pub(super) const _: () = assert!(COVERAGE_ENTRY_RESERVED_OFFSET == 32);
-pub(super) const _: () = assert!(COVERAGE_ENTRY_SIZE == 64);
-pub(super) const _: () = assert!(COVERAGE_ENTRY_ALIGN == 64);
+const _: () = assert!(COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET == 0);
+const _: () = assert!(COVERAGE_ENTRY_GUEST_PC_OFFSET == 8);
+const _: () = assert!(COVERAGE_ENTRY_MAP_INDEX_OFFSET == 16);
+const _: () = assert!(COVERAGE_ENTRY_VCPU_INDEX_OFFSET == 24);
+const _: () = assert!(COVERAGE_ENTRY_BLOCK_LEN_OFFSET == 28);
+const _: () = assert!(COVERAGE_ENTRY_RESERVED_OFFSET == 32);
+const _: () = assert!(COVERAGE_ENTRY_SIZE == 64);
+const _: () = assert!(COVERAGE_ENTRY_ALIGN == 64);
 
 impl CoverageEntry {
     /// Builds one validated novel coverage observation.

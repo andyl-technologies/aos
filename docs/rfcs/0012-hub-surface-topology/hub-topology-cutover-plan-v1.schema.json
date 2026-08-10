@@ -1,0 +1,838 @@
+{
+  "$schema": "https://aos.andyl.org/schemas/aos-cutover-schema-v1.metaschema.json",
+  "$id": "https://aos.andyl.org/schemas/hub-topology-cutover-plan-v1.schema.json",
+  "dialect": "aos-cutover-schema/v1",
+  "title": "AOS Hub topology cutover plan v1",
+  "description": "A closed, secret-free plan for the one-shot RFC-0012 topology cutover. The final runtime does not consume this artifact.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document_kind",
+    "dialect",
+    "bundle_id",
+    "canonicalization",
+    "plan_id",
+    "created_at",
+    "source",
+    "target",
+    "scope",
+    "backup",
+    "transform",
+    "topology",
+    "auth_no_widening",
+    "validation",
+    "smoke_tests",
+    "switch",
+    "gc_gate",
+    "rollback",
+    "legacy_removal",
+    "blockers",
+    "generation",
+    "execution_contract"
+  ],
+  "properties": {
+    "schema_version": { "const": "aos.hub.topology-cutover-plan/v1" },
+    "document_kind": { "const": "cutover_plan" },
+    "dialect": { "const": "aos-cutover-schema/v1" },
+    "bundle_id": { "$ref": "#/$defs/stableId" },
+    "canonicalization": { "$ref": "#/$defs/canonicalization" },
+    "plan_id": { "$ref": "#/$defs/stableId" },
+    "created_at": { "$ref": "#/$defs/timestamp" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deployment_revision", "schema_revision", "topology_digest", "databases", "resource_nodes"],
+      "properties": {
+        "deployment_revision": { "$ref": "#/$defs/revision" },
+        "schema_revision": { "$ref": "#/$defs/revision" },
+        "topology_digest": { "$ref": "#/$defs/sha256" },
+        "databases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/database" }
+        },
+        "resource_nodes": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/sourceResourceNode" } }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deployment_revision", "schema_revision", "api_manifest_node_id", "cli_manifest_node_id", "route_manifest_node_id"],
+      "properties": {
+        "deployment_revision": { "$ref": "#/$defs/revision" },
+        "schema_revision": { "$ref": "#/$defs/revision" },
+        "api_manifest_node_id": { "$ref": "#/$defs/stableId" },
+        "cli_manifest_node_id": { "$ref": "#/$defs/stableId" },
+        "route_manifest_node_id": { "$ref": "#/$defs/stableId" }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instance_stable_id", "resource_stable_ids", "maintenance_window"],
+      "properties": {
+        "instance_stable_id": { "$ref": "#/$defs/stableId" },
+        "resource_stable_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/resourceRef" },
+          "uniqueItems": true
+        },
+        "maintenance_window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["not_before", "not_after", "maximum_write_quiesce_seconds"],
+          "properties": {
+            "not_before": { "$ref": "#/$defs/timestamp" },
+            "not_after": { "$ref": "#/$defs/timestamp" },
+            "maximum_write_quiesce_seconds": { "type": "integer", "minimum": 1, "maximum": 86400 }
+          }
+        }
+      }
+    },
+    "backup": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/backupPlan" }
+    },
+    "transform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transformer_node_id", "source_schema_revision", "target_schema_revision", "input_digest", "expected_output_digest", "mode", "stable_id_rules"],
+      "properties": {
+        "transformer_node_id": { "$ref": "#/$defs/stableId" },
+        "source_schema_revision": { "$ref": "#/$defs/revision" },
+        "target_schema_revision": { "$ref": "#/$defs/revision" },
+        "input_digest": { "$ref": "#/$defs/sha256" },
+        "expected_output_digest": { "$ref": "#/$defs/sha256" },
+        "mode": { "const": "side_by_side_then_atomic_switch" },
+        "stable_id_rules": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["resource_kind", "source_identity_field", "target_identity_field", "collision_policy"],
+            "properties": {
+              "resource_kind": { "$ref": "#/$defs/resourceKind" },
+              "source_identity_field": { "$ref": "#/$defs/fieldPath" },
+              "target_identity_field": { "$ref": "#/$defs/fieldPath" },
+              "collision_policy": { "const": "abort" }
+            }
+          }
+        }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mapping_coverage", "mapping_edges", "instances", "organizations", "projects", "surfaces", "bindings", "binding_capability_observations", "credential_generations", "binding_write_revisions", "binding_grants", "storage_defaults", "placements", "write_authorities", "delivery_endpoints", "domains", "network_boundaries", "gateways", "routes", "route_configurations", "placement_policies", "equivalence_sets", "registry_publications", "publication_bindings", "population_targets", "retention_subscriptions", "inventories", "placement_manifests"],
+      "properties": {
+        "mapping_coverage": { "$ref": "#/$defs/setCoverage" },
+        "mapping_edges": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/stableIdMapping" }
+        },
+        "instances": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "organizations": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "projects": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "bindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/binding" }
+        },
+        "binding_capability_observations": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "credential_generations": { "type": "array", "items": { "$ref": "#/$defs/credentialGeneration" }, "uniqueItems": true },
+        "surfaces": { "type": "array", "items": { "$ref": "#/$defs/surface" }, "uniqueItems": true },
+        "binding_write_revisions": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "binding_grants": { "type": "array", "items": { "$ref": "#/$defs/relationResource" }, "uniqueItems": true },
+        "storage_defaults": { "type": "array", "items": { "$ref": "#/$defs/relationResource" }, "uniqueItems": true },
+        "placements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/placement" }
+        },
+        "write_authorities": { "type": "array", "items": { "$ref": "#/$defs/writeAuthority" }, "uniqueItems": true },
+        "delivery_endpoints": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "network_boundaries": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "gateways": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "routes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/route" }
+        },
+        "route_configurations": { "type": "array", "items": { "$ref": "#/$defs/routeConfiguration" }, "uniqueItems": true },
+        "domains": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/domain" }
+        },
+        "placement_policies": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "equivalence_sets": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "registry_publications": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "publication_bindings": { "type": "array", "items": { "$ref": "#/$defs/relationResource" }, "uniqueItems": true },
+        "population_targets": { "type": "array", "items": { "$ref": "#/$defs/relationResource" }, "uniqueItems": true },
+        "retention_subscriptions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/retention" }
+        },
+        "inventories": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/inventory" }
+        },
+        "placement_manifests": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true }
+      }
+    },
+    "auth_no_widening": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "source_policy_digest", "target_policy_digest", "source_principal_stable_ids", "source_scope_stable_ids", "expected_principal_scope_pairs", "principal_coverage", "route_coverage", "principal_proofs", "route_proofs", "result"],
+      "properties": {
+        "algorithm": { "const": "permission-set-subset-v1" },
+        "source_policy_digest": { "$ref": "#/$defs/sha256" },
+        "target_policy_digest": { "$ref": "#/$defs/sha256" },
+        "source_principal_stable_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/stableId" } },
+        "source_scope_stable_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/stableId" } },
+        "expected_principal_scope_pairs": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/authPair" } },
+        "principal_coverage": { "$ref": "#/$defs/proofCoverage" },
+        "route_coverage": { "$ref": "#/$defs/proofCoverage" },
+        "principal_proofs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/principalProof" }
+        },
+        "route_proofs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/routeAuthProof" }
+        },
+        "result": { "const": "no_widening" }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_checks", "count_invariants", "digest_invariants"],
+      "properties": {
+        "required_checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/checkSpec" }
+        },
+        "count_invariants": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/countInvariant" }
+        },
+        "digest_invariants": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/digestInvariant" }
+        }
+      }
+    },
+    "smoke_tests": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/smokeTest" }
+    },
+    "switch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "write_quiesce_required", "write_quiesce_scope_digest", "quiescence_targets", "rollback_boundary", "new_runtime_health_gate", "old_runtime_stop_gate"],
+      "properties": {
+        "strategy": { "const": "single_atomic_runtime_switch" },
+        "write_quiesce_required": { "const": true },
+        "write_quiesce_scope_digest": { "$ref": "#/$defs/sha256" },
+        "quiescence_targets": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/quiescenceTarget" } },
+        "rollback_boundary": { "const": "first_target_write_admitted" },
+        "new_runtime_health_gate": { "$ref": "#/$defs/checkSpec" },
+        "old_runtime_stop_gate": { "$ref": "#/$defs/checkSpec" }
+      }
+    },
+    "gc_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destructive_gc_enabled_during_cutover", "readiness", "inventory_gate", "retention_gate", "first_sweep_acknowledgement_state", "outstanding_blocker_check_ids", "cutover_check_ids", "post_cutover_check_ids", "enablement_requires"],
+      "properties": {
+        "destructive_gc_enabled_during_cutover": { "const": false },
+        "readiness": { "enum": ["ready", "blocked"] },
+        "inventory_gate": { "enum": ["complete", "blocked"] },
+        "retention_gate": { "enum": ["fresh", "blocked"] },
+        "first_sweep_acknowledgement_state": { "const": "absent" },
+        "outstanding_blocker_check_ids": { "type": "array", "items": { "$ref": "#/$defs/stableId" }, "uniqueItems": true },
+        "cutover_check_ids": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/stableId" }, "uniqueItems": true },
+        "post_cutover_check_ids": { "type": "array", "items": { "$ref": "#/$defs/stableId" }, "uniqueItems": true },
+        "enablement_requires": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/checkSpec" }
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "readiness": { "const": "ready" } } }, "then": { "properties": { "inventory_gate": { "const": "complete" }, "retention_gate": { "const": "fresh" }, "outstanding_blocker_check_ids": { "maxItems": 0 } } } },
+        { "if": { "properties": { "readiness": { "const": "blocked" } } }, "then": { "properties": { "outstanding_blocker_check_ids": { "minItems": 1 } }, "anyOf": [{ "properties": { "inventory_gate": { "const": "blocked" } } }, { "properties": { "retention_gate": { "const": "blocked" } } }] } }
+      ]
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "deadline", "restore_backups", "restore_deployment_revision", "write_reopen_gate", "new_runtime_write_forbidden_before_closure", "forbidden_after_boundary"],
+      "properties": {
+        "strategy": { "const": "full_backup_and_deployment_restore" },
+        "deadline": { "$ref": "#/$defs/timestamp" },
+        "restore_backups": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/stableId" } },
+        "restore_deployment_revision": { "$ref": "#/$defs/revision" },
+        "write_reopen_gate": { "$ref": "#/$defs/checkSpec" },
+        "new_runtime_write_forbidden_before_closure": { "const": true },
+        "forbidden_after_boundary": { "const": true }
+      }
+    },
+    "legacy_removal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["legacy_parser_present_in_target", "legacy_routes_present_in_target", "legacy_schema_present_after_switch", "ruleset_digest", "scanned_path_set_digest", "allowlist_digest", "absence_categories", "repository_guard"],
+      "properties": {
+        "legacy_parser_present_in_target": { "const": false },
+        "legacy_routes_present_in_target": { "const": false },
+        "legacy_schema_present_after_switch": { "const": false },
+        "ruleset_digest": { "$ref": "#/$defs/sha256" },
+        "scanned_path_set_digest": { "$ref": "#/$defs/sha256" },
+        "allowlist_digest": { "$ref": "#/$defs/sha256" },
+        "absence_categories": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "generated", "linked_symbols", "build_features", "database", "http_rpc", "cli", "environment", "configuration", "migrations", "worker_bindings", "deployed_manifests"],
+          "properties": {
+            "source": { "const": 0 }, "generated": { "const": 0 }, "linked_symbols": { "const": 0 }, "build_features": { "const": 0 }, "database": { "const": 0 }, "http_rpc": { "const": 0 }, "cli": { "const": 0 }, "environment": { "const": 0 }, "configuration": { "const": 0 }, "migrations": { "const": 0 }, "worker_bindings": { "const": 0 }, "deployed_manifests": { "const": 0 }
+          }
+        },
+        "repository_guard": { "$ref": "#/$defs/checkSpec" }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/blocker" }
+    },
+    "generation": {
+      "type": "object",
+      "required": ["generator_revision", "generated_by_principal_stable_id", "source_export_node_id"],
+      "properties": {
+        "generator_revision": { "$ref": "#/$defs/revision" },
+        "generated_by_principal_stable_id": { "$ref": "#/$defs/stableId" },
+        "source_export_node_id": { "$ref": "#/$defs/stableId" }
+      },
+      "additionalProperties": false
+    },
+    "execution_contract": { "$ref": "#/$defs/executionContract" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "utc-date-time"
+    },
+    "stableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "revision": {
+      "type": "string",
+      "minLength": 7,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+    },
+    "fieldPath": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+      "maxLength": 255
+    },
+    "httpsUrl": {
+      "type": "string",
+      "format": "https-or-path-uri",
+      "maxLength": 2048,
+      "pattern": "^https://[^/@?#\\s]+(?::[0-9]{1,5})?(?:/[^@?#\\s]*)?$"
+    },
+    "hostname": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+    },
+    "canonicalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "unicode", "numbers", "array_order"],
+      "properties": {
+        "algorithm": { "const": "RFC8785-JCS" },
+        "unicode": { "const": "UTF-8" },
+        "numbers": { "const": "I-JSON" },
+        "array_order": { "const": "schema-defined-sort-keys-v1" }
+      }
+    },
+    "resourceKind": {
+      "enum": ["instance", "organization", "project", "registry", "registry_publication", "binary_cache", "surface", "storage_binding", "binding_capability_observation", "storage_binding_credential", "binding_write_revision", "binding_grant", "storage_default", "placement", "placement_manifest", "write_authority", "delivery_endpoint", "domain", "network_boundary", "storage_gateway", "delivery_route", "route_configuration", "placement_policy", "equivalence_set", "publication_binding", "population_target", "retention_subscription", "inventory_generation"]
+    },
+    "resourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "stable_id"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/resourceKind" },
+        "stable_id": { "$ref": "#/$defs/stableId" }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "stable_id", "role"],
+      "properties": {
+        "kind": { "enum": ["sqlite", "d1", "durable_object_sqlite", "postgres", "mysql"] },
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "role": { "enum": ["primary", "durable_object_namespace", "auxiliary"] }
+      }
+    },
+    "authPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal_stable_id", "scope_stable_id"],
+      "properties": {
+        "principal_stable_id": { "$ref": "#/$defs/stableId" },
+        "scope_stable_id": { "$ref": "#/$defs/stableId" }
+      }
+    },
+    "quiescenceTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "kind"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "kind": { "enum": ["database", "durable_object_namespace", "object_store", "queue", "alarm", "cron", "direct_write_credential", "multipart_fence", "runtime"] }
+      }
+    },
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_node_id"],
+      "properties": {
+        "artifact_node_id": { "$ref": "#/$defs/stableId" }
+      }
+    },
+    "credentialRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purpose", "stable_id", "version", "metadata_digest"],
+      "properties": {
+        "purpose": { "enum": ["read", "write", "delete", "list", "presign"] },
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "version": { "type": "integer", "minimum": 1 },
+        "metadata_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "backupPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["database_stable_id", "database_kind", "method", "destination_artifact_node_id", "expected_media_type", "quiesce_required", "verification_restore_required", "retention_until"],
+      "properties": {
+        "database_stable_id": { "$ref": "#/$defs/stableId" },
+        "database_kind": { "enum": ["sqlite", "d1", "durable_object_sqlite", "postgres", "mysql"] },
+        "method": { "enum": ["sqlite_online_backup", "d1_export", "durable_object_logical_export", "pg_dump_custom", "mysql_single_transaction_dump"] },
+        "destination_artifact_node_id": { "$ref": "#/$defs/stableId" },
+        "expected_media_type": { "type": "string", "pattern": "^[a-z0-9.+-]+/[a-zA-Z0-9.+-]+$", "maxLength": 127 },
+        "quiesce_required": { "const": true },
+        "verification_restore_required": { "const": true },
+        "retention_until": { "$ref": "#/$defs/timestamp" }
+      },
+      "allOf": [
+        { "if": { "properties": { "database_kind": { "const": "sqlite" } } }, "then": { "properties": { "method": { "const": "sqlite_online_backup" } } } },
+        { "if": { "properties": { "database_kind": { "const": "d1" } } }, "then": { "properties": { "method": { "const": "d1_export" } } } },
+        { "if": { "properties": { "database_kind": { "const": "durable_object_sqlite" } } }, "then": { "properties": { "method": { "const": "durable_object_logical_export" } } } },
+        { "if": { "properties": { "database_kind": { "const": "postgres" } } }, "then": { "properties": { "method": { "const": "pg_dump_custom" } } } },
+        { "if": { "properties": { "database_kind": { "const": "mysql" } } }, "then": { "properties": { "method": { "const": "mysql_single_transaction_dump" } } } }
+      ]
+    },
+    "stableIdMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["edge_id", "source_node_id", "target_resource_kind", "target_stable_id", "owner_scope_stable_id", "ordinal", "derivation_rule_id", "evidence_required"],
+      "properties": {
+        "edge_id": { "$ref": "#/$defs/stableId" },
+        "source_node_id": { "$ref": "#/$defs/stableId" },
+        "target_resource_kind": { "$ref": "#/$defs/resourceKind" },
+        "target_stable_id": { "$ref": "#/$defs/stableId" },
+        "owner_scope_stable_id": { "$ref": "#/$defs/stableId" },
+        "ordinal": { "type": "integer", "minimum": 1 },
+        "derivation_rule_id": { "$ref": "#/$defs/stableId" },
+        "evidence_required": { "const": true }
+      }
+    },
+    "setCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_count", "target_count", "mapping_count", "source_set_digest", "target_set_digest", "mapping_set_digest", "missing_source_count", "unmapped_target_count", "duplicate_source_count", "duplicate_target_count"],
+      "properties": {
+        "source_count": { "type": "integer", "minimum": 1 },
+        "target_count": { "type": "integer", "minimum": 1 },
+        "mapping_count": { "type": "integer", "minimum": 1 },
+        "source_set_digest": { "$ref": "#/$defs/sha256" },
+        "target_set_digest": { "$ref": "#/$defs/sha256" },
+        "mapping_set_digest": { "$ref": "#/$defs/sha256" },
+        "missing_source_count": { "const": 0 },
+        "unmapped_target_count": { "const": 0 },
+        "duplicate_source_count": { "const": 0 },
+        "duplicate_target_count": { "const": 0 }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "kind", "owner_scope_stable_id", "configuration_digest"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "kind": { "enum": ["registry", "binary_cache"] },
+        "owner_scope_stable_id": { "$ref": "#/$defs/stableId" },
+        "configuration_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "generationResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "owner_stable_id", "generation", "state", "configuration_digest"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "owner_stable_id": { "$ref": "#/$defs/stableId" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "state": { "enum": ["active", "observed", "ready", "complete", "retired"] },
+        "configuration_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "sourceResourceNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "resource_kind", "owner_scope_stable_id", "source_locator_digest", "expected_mapping_edge_count"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/stableId" },
+        "resource_kind": { "$ref": "#/$defs/resourceKind" },
+        "owner_scope_stable_id": { "$ref": "#/$defs/stableId" },
+        "source_locator_digest": { "$ref": "#/$defs/sha256" },
+        "expected_mapping_edge_count": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "credentialGeneration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "owner_stable_id", "generation", "version", "purpose", "state", "metadata_digest", "configuration_digest"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "owner_stable_id": { "$ref": "#/$defs/stableId" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "version": { "type": "integer", "minimum": 1 },
+        "purpose": { "enum": ["read", "write", "delete", "list", "presign"] },
+        "state": { "enum": ["active", "retired"] },
+        "metadata_digest": { "$ref": "#/$defs/sha256" },
+        "configuration_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "routeConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "owner_stable_id", "generation", "state", "access_policy", "configuration_digest"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "owner_stable_id": { "$ref": "#/$defs/stableId" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "state": { "enum": ["active", "retired"] },
+        "access_policy": { "$ref": "#/$defs/accessPolicy" },
+        "configuration_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "executionContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt_namespace", "idempotency_key", "maximum_attempts", "required_transition_states"],
+      "properties": {
+        "attempt_namespace": { "$ref": "#/$defs/stableId" },
+        "idempotency_key": { "$ref": "#/$defs/stableId" },
+        "maximum_attempts": { "type": "integer", "minimum": 1 },
+        "required_transition_states": { "const": ["planned", "quiesced", "backed_up", "transformed", "validated", "switched", "closed"] }
+      }
+    },
+    "relationResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "source_stable_id", "target_stable_id", "generation", "configuration_digest"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "source_stable_id": { "$ref": "#/$defs/stableId" },
+        "target_stable_id": { "$ref": "#/$defs/stableId" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "configuration_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "owner_scope_stable_id", "kind", "provider_identity_digest", "access_mode", "endpoint_origin", "capabilities", "credential_refs", "current_write_revision", "configuration_digest"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "owner_scope_stable_id": { "$ref": "#/$defs/stableId" },
+        "kind": { "enum": ["local_fs", "s3", "r2"] },
+        "provider_identity_digest": { "$ref": "#/$defs/sha256" },
+        "access_mode": { "enum": ["public", "private", "private_network"] },
+        "endpoint_origin": { "anyOf": [{ "$ref": "#/$defs/httpsUrl" }, { "type": "null" }] },
+        "credential_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/credentialRef" },
+          "uniqueItems": true
+        },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reads", "writes", "conditional_writes", "deletes", "lists", "presigns", "observation_generation", "observation_digest"],
+          "properties": {
+            "reads": { "type": "boolean" },
+            "writes": { "type": "boolean" },
+            "conditional_writes": { "type": "boolean" },
+            "deletes": { "type": "boolean" },
+            "lists": { "type": "boolean" },
+            "presigns": { "type": "boolean" },
+            "observation_generation": { "type": "integer", "minimum": 1 },
+            "observation_digest": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "current_write_revision": { "type": "integer", "minimum": 1 },
+        "configuration_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "surface", "binding_stable_id", "prefix", "kind", "hash_range", "desired_state", "write_authority", "configuration_digest"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "surface": { "$ref": "#/$defs/resourceRef" },
+        "binding_stable_id": { "$ref": "#/$defs/stableId" },
+        "prefix": { "type": "string", "maxLength": 1024, "pattern": "^(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*/?$" },
+        "kind": { "enum": ["complete", "shard", "archive"] },
+        "hash_range": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "object", "additionalProperties": false, "required": ["start", "end"], "properties": { "start": { "type": "integer", "minimum": 0, "maximum": 4294967295 }, "end": { "type": "integer", "minimum": 1, "maximum": 4294967296 } } }
+          ]
+        },
+        "desired_state": { "enum": ["active", "draining", "offline"] },
+        "write_authority": { "const": "separate_record" },
+        "configuration_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "accessPolicy": {
+      "enum": ["public", "hub_authenticated", "origin_authenticated", "private_network"]
+    },
+    "writeAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "surface_stable_id", "generation", "desired_placement_stable_id", "observed_placement_stable_id", "binding_write_revision_stable_id", "configuration_digest"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "surface_stable_id": { "$ref": "#/$defs/stableId" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "desired_placement_stable_id": { "$ref": "#/$defs/stableId" },
+        "observed_placement_stable_id": { "$ref": "#/$defs/stableId" },
+        "binding_write_revision_stable_id": { "$ref": "#/$defs/stableId" },
+        "configuration_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "surface", "audience", "frontend_kind", "base_url", "access_policy", "canonical", "configuration_generation_stable_id", "endpoint_generation_stable_id", "boundary_generation_stable_id", "gateway_generation_stable_id", "placement_policy_generation_stable_id", "backend_placement_stable_ids", "configuration_digest"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "surface": { "$ref": "#/$defs/resourceRef" },
+        "audience": { "enum": ["git", "nix_cache", "web", "api"] },
+        "frontend_kind": { "enum": ["hub_proxy", "hub_worker", "direct_origin", "static_cdn", "private_network"] },
+        "base_url": { "$ref": "#/$defs/httpsUrl" },
+        "access_policy": { "$ref": "#/$defs/accessPolicy" },
+        "canonical": { "type": "boolean" },
+        "configuration_generation_stable_id": { "$ref": "#/$defs/stableId" },
+        "endpoint_generation_stable_id": { "$ref": "#/$defs/stableId" },
+        "boundary_generation_stable_id": { "$ref": "#/$defs/stableId" },
+        "gateway_generation_stable_id": { "oneOf": [{ "$ref": "#/$defs/stableId" }, { "type": "null" }] },
+        "placement_policy_generation_stable_id": { "$ref": "#/$defs/stableId" },
+        "backend_placement_stable_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/stableId" },
+          "uniqueItems": true
+        },
+        "configuration_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "hostname", "route_stable_id", "verification_state", "access_policy"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "hostname": { "$ref": "#/$defs/hostname" },
+        "route_stable_id": { "$ref": "#/$defs/stableId" },
+        "verification_state": { "enum": ["verified", "declared_private"] },
+        "access_policy": { "$ref": "#/$defs/accessPolicy" }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "cache_stable_id", "registry_stable_id", "selector_digest", "removal_grace_seconds", "source_generation_stable_id", "expected_root_count"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "cache_stable_id": { "$ref": "#/$defs/stableId" },
+        "registry_stable_id": { "$ref": "#/$defs/stableId" },
+        "selector_digest": { "$ref": "#/$defs/sha256" },
+        "removal_grace_seconds": { "type": "integer", "minimum": 0 },
+        "source_generation_stable_id": { "$ref": "#/$defs/stableId" },
+        "expected_root_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_id", "cache_stable_id", "generation", "aggregate_digest", "placement_manifests", "complete"],
+      "properties": {
+        "stable_id": { "$ref": "#/$defs/stableId" },
+        "cache_stable_id": { "$ref": "#/$defs/stableId" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "aggregate_digest": { "$ref": "#/$defs/sha256" },
+        "placement_manifests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["manifest_stable_id", "placement_stable_id", "manifest_digest", "object_count", "strong_identity_count"],
+            "properties": {
+              "manifest_stable_id": { "$ref": "#/$defs/stableId" },
+              "placement_stable_id": { "$ref": "#/$defs/stableId" },
+              "manifest_digest": { "$ref": "#/$defs/sha256" },
+              "object_count": { "type": "integer", "minimum": 0 },
+              "strong_identity_count": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "complete": { "const": true }
+      }
+    },
+    "permission": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+      "maxLength": 127
+    },
+    "proofCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_count", "proved_count", "expected_set_digest", "proved_set_digest", "missing_count", "duplicate_count"],
+      "properties": {
+        "expected_count": { "type": "integer", "minimum": 1 },
+        "proved_count": { "type": "integer", "minimum": 1 },
+        "expected_set_digest": { "$ref": "#/$defs/sha256" },
+        "proved_set_digest": { "$ref": "#/$defs/sha256" },
+        "missing_count": { "const": 0 },
+        "duplicate_count": { "const": 0 }
+      }
+    },
+    "principalProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal_stable_id", "scope_stable_id", "source_permissions", "target_permissions", "assertion", "proof_digest"],
+      "properties": {
+        "principal_stable_id": { "$ref": "#/$defs/stableId" },
+        "scope_stable_id": { "$ref": "#/$defs/stableId" },
+        "source_permissions": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/permission" }, "uniqueItems": true },
+        "target_permissions": { "type": "array", "items": { "$ref": "#/$defs/permission" }, "uniqueItems": true },
+        "assertion": { "enum": ["equal", "narrower"] },
+        "proof_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "routeAuthProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["route_stable_id", "source_access_policy", "target_access_policy", "source_policy_configuration_digest", "target_policy_configuration_digest", "assertion", "proof_digest"],
+      "properties": {
+        "route_stable_id": { "$ref": "#/$defs/stableId" },
+        "source_access_policy": { "$ref": "#/$defs/accessPolicy" },
+        "target_access_policy": { "$ref": "#/$defs/accessPolicy" },
+        "source_policy_configuration_digest": { "$ref": "#/$defs/sha256" },
+        "target_policy_configuration_digest": { "$ref": "#/$defs/sha256" },
+        "assertion": { "enum": ["equal", "narrower"] },
+        "proof_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "checkSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id", "kind", "expected", "evidence_required"],
+      "properties": {
+        "check_id": { "$ref": "#/$defs/stableId" },
+        "kind": { "enum": ["schema", "referential_integrity", "stable_identity", "auth_no_widening", "route_parity", "storage_access", "inventory_complete", "retention_fresh", "gc_disabled", "runtime_health", "legacy_absent", "backup_restore", "smoke"] },
+        "expected": { "enum": ["pass", "zero", "equal", "subset", "healthy", "disabled", "absent"] },
+        "evidence_required": { "const": true }
+      }
+    },
+    "countInvariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source_count", "target_count", "relation"],
+      "properties": {
+        "name": { "$ref": "#/$defs/stableId" },
+        "source_count": { "type": "integer", "minimum": 0 },
+        "target_count": { "type": "integer", "minimum": 0 },
+        "relation": { "enum": ["equal", "target_greater_by_declared_expansion"] }
+      }
+    },
+    "digestInvariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source_digest", "target_digest", "relation"],
+      "properties": {
+        "name": { "$ref": "#/$defs/stableId" },
+        "source_digest": { "$ref": "#/$defs/sha256" },
+        "target_digest": { "$ref": "#/$defs/sha256" },
+        "relation": { "enum": ["equal", "typed_transform"] }
+      }
+    },
+    "smokeTest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["test_id", "surface", "route_stable_id", "placement_stable_id", "binding_stable_id", "method", "path_digest", "expected_status", "auth_context", "evidence_required"],
+      "properties": {
+        "test_id": { "$ref": "#/$defs/stableId" },
+        "surface": { "enum": ["web", "api", "cli", "git", "nix_cache"] },
+        "route_stable_id": { "anyOf": [{ "$ref": "#/$defs/stableId" }, { "type": "null" }] },
+        "placement_stable_id": { "anyOf": [{ "$ref": "#/$defs/stableId" }, { "type": "null" }] },
+        "binding_stable_id": { "anyOf": [{ "$ref": "#/$defs/stableId" }, { "type": "null" }] },
+        "method": { "enum": ["GET", "HEAD", "POST", "CLI"] },
+        "path_digest": { "$ref": "#/$defs/sha256" },
+        "expected_status": { "type": "integer", "minimum": 0, "maximum": 599 },
+        "auth_context": { "enum": ["anonymous", "least_privileged_reader", "operator", "private_network"] },
+        "evidence_required": { "const": true }
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocker_id", "code", "severity", "resource", "state", "resolution_check_id", "evidence_required"],
+      "properties": {
+        "blocker_id": { "$ref": "#/$defs/stableId" },
+        "code": { "enum": ["stable_id_collision", "ambiguous_binding", "ambiguous_write_authority", "credential_reference_missing", "url_unmapped", "auth_widening", "inventory_incomplete", "retention_stale", "backup_unverified", "legacy_surface_present", "transform_digest_mismatch", "smoke_failed"] },
+        "severity": { "const": "blocking" },
+        "resource": { "$ref": "#/$defs/resourceRef" },
+        "state": { "enum": ["open", "resolved"] },
+        "resolution_check_id": { "$ref": "#/$defs/stableId" },
+        "evidence_required": { "const": true }
+      }
+    }
+  }
+}

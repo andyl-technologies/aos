@@ -25,7 +25,7 @@
       && base != "target"
       && base != "result";
   };
-  cargoDepsHash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+  cargoDepsHash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   crucibleCargoDeps = fetchCargoDeps {
     src = crucibleSource;
     sourceRoot = "source/crates";

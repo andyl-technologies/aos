@@ -200,7 +200,7 @@
       }
       {
         label = "inline cargo dependency hash";
-        needle = "hash = \"sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=\";";
+        needle = "hash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" crucibleNix [
@@ -210,7 +210,7 @@
       }
       {
         label = "inline cargo dependency hash";
-        needle = "cargoDepsHash = \"sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=\";";
+        needle = "cargoDepsHash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible-guest.nix" guestNix [
@@ -220,7 +220,7 @@
       }
       {
         label = "inline cargo dependency hash";
-        needle = "hash = \"sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=\";";
+        needle = "hash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible-fleet-store.nix" fleetStoreNix [
@@ -230,7 +230,7 @@
       }
       {
         label = "inline cargo dependency hash";
-        needle = "cargoDepsHash = \"sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=\";";
+        needle = "cargoDepsHash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
       }
     ];
 

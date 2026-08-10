@@ -117,6 +117,18 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_fault_event_slot_v1, reservation_end)",
         "offsetof(crucible_fault_event_slot_v1, header)",
         "offsetof(crucible_fault_event_slot_v1, reserved)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_guest_introspection_entry)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_guest_introspection_entry)",
+        "offsetof(crucible_shmem_guest_introspection_entry, sequence)",
+        "offsetof(crucible_shmem_guest_introspection_entry, len)",
+        "offsetof(crucible_shmem_guest_introspection_entry, pad)",
+        "offsetof(crucible_shmem_guest_introspection_entry, data)",
+        "offsetof(crucible_shmem_guest_introspection_entry, reserved)",
+        "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM 2u",
+        "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_REQUEST_RING_OFFSET 0u",
+        "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RESPONSE_RING_OFFSET 1u",
+        "crucible_shmem_guest_introspection_ring_index(",
+        "crucible_shmem_guest_introspection_layout_compute(",
     ] {
         assert!(
             header.contains(needle),
@@ -238,6 +250,11 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
     assert_eq!(decoded.whitebox_marker.vcpu_index, 2);
     assert_eq!(decoded.whitebox_marker.kind, 4);
     assert_eq!(decoded.whitebox_marker.payload, b"MARK");
+    assert_eq!(decoded.guest_introspection.sequence, 19);
+    assert_eq!(
+        decoded.guest_introspection.record,
+        GOLDEN_GUEST_INTROSPECTION_RECORD
+    );
 
     let mut payload_mutation = fixture.bytes.clone();
     payload_mutation[GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET

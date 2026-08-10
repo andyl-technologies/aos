@@ -18,12 +18,19 @@ crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
 crucible-session = { path = "../crucible-session" }
 futures-util = { workspace = true }
+hyper-util = { workspace = true }
 reqwest = { workspace = true, features = ["http2"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 crucible = { path = "../crucible", features = ["test-double", "test-support"] }

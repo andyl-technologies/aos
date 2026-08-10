@@ -5,7 +5,8 @@ use thiserror::Error;
 use super::{
     DEFAULT_ACCEL, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, InputPolicy,
     MAX_ICOUNT_SHIFT, MAX_RR_SWITCH_QUANTUM, MachineResetMode, QEMU_CONSOLE_CHARDEV_ID,
-    QEMU_CONSOLE_SOCKET_FILE_NAME, entropy::GUEST_ENTROPY_RNG_ID,
+    QEMU_CONSOLE_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
+    QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, entropy::GUEST_ENTROPY_RNG_ID,
 };
 
 mod values;
@@ -745,6 +746,13 @@ fn validate_internal_chardev_option(
         "socket"
             if value.eq_ignore_ascii_case(&format!(
                 "socket,id={QEMU_CONSOLE_CHARDEV_ID},path={QEMU_CONSOLE_SOCKET_FILE_NAME},server=on,wait=off"
+            )) =>
+        {
+            Ok(())
+        }
+        "socket"
+            if value.eq_ignore_ascii_case(&format!(
+                "socket,id={QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID},path={QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME}"
             )) =>
         {
             Ok(())

@@ -66,8 +66,6 @@ pub(super) fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts
         String::from("--quiet"),
         String::from("--backend"),
         String::from("double"),
-        String::from("--seed"),
-        String::from("12"),
         String::from("--artifact-dir"),
         artifact_dir.display().to_string(),
         String::from("verify"),
@@ -84,13 +82,13 @@ pub(super) fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts
         &cli,
         &FakeSeedEnvironment::default(),
         &mut FakeSeedEntropySource::new(0),
-    )?
-    .expect("verify should resolve a seed");
+    )?;
+    assert!(seed_plan.is_none());
 
     let outcome = execute_backend_routed_command(
         &plan_cli_invocation(&cli),
         &plan_backend_selection(&cli)?.expect("verify should require backend selection"),
-        Some(&seed_plan),
+        seed_plan.as_ref(),
         None,
         Some(&verify_plan),
         None,
@@ -109,8 +107,10 @@ pub(super) fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts
     assert!(divergence_line.contains("\tmismatch=canonical-log+fingerprint-stream\t"));
     assert!(divergence_line.contains("\tfirst_decision=1\t"));
     assert!(divergence_line.contains("\tfirst_fingerprint_sample=0\t"));
-    assert!(divergence_line.contains("\tfirst_instruction=12\t"));
-    assert!(divergence_line.contains("\tnode=node-b\t"));
+    assert!(divergence_line.contains("\tfirst_virtual_time=12\t"));
+    assert!(divergence_line.contains("\tfirst_virtual_time_node=node-b\t"));
+    assert!(divergence_line.contains("\tfirst_instruction=0\t"));
+    assert!(divergence_line.contains("\tfirst_instruction_node=session\t"));
     assert!(divergence_line.contains("\tbyte="));
     let bisect_line = outcome
         .stdout
@@ -161,6 +161,7 @@ pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without
         String::from("crucible"),
         String::from("--daemon"),
         String::from("127.0.0.1:9000"),
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("--seed"),
         String::from("12"),
         String::from("verify"),
@@ -317,6 +318,53 @@ pub(super) fn cli_verify_workflow_compares_existing_reproduction_artifacts()
             .any(|line| line.contains("mismatch=canonical-log+fingerprint-stream"))
     );
 
+    let qemu_backend = ResolvedLocalBackend::Qemu {
+        qemu: PathBuf::from("/test/qemu"),
+        plugin: PathBuf::from("/test/plugin"),
+        qemu_build_id: content_address_bytes(b"verify-compare-qemu-build"),
+        qemu_patch_series_hash: content_address_bytes(b"verify-compare-qemu-patches"),
+        plugin_abi: required_qemu_plugin_abi(),
+        shmem_abi_version: crucible::SHMEM_ABI_VERSION.to_string(),
+        qemu_source: QemuDiscoverySource::Flag,
+        plugin_source: QemuDiscoverySource::Flag,
+    };
+    let qemu_artifact = verify_reproduction_artifact_bytes(
+        21,
+        Some(&qemu_backend),
+        &scenario,
+        &entries,
+        &second_samples,
+    )?;
+    let qemu_left = temp.path().join("qemu-left.crucible");
+    let qemu_right = temp.path().join("qemu-right.crucible");
+    fs::write(&qemu_left, &qemu_artifact)?;
+    fs::write(&qemu_right, &qemu_artifact)?;
+    let auto_cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("auto"),
+        String::from("verify"),
+        String::from("--compare"),
+        qemu_left.display().to_string(),
+        qemu_right.display().to_string(),
+    ]);
+    let Commands::Verify(auto_args) = &auto_cli.command else {
+        panic!("expected verify command");
+    };
+    let auto_plan = plan_verify_invocation(auto_args, temp.path())?;
+    let auto_outcome = execute_backend_routed_command(
+        &plan_cli_invocation(&auto_cli),
+        &plan_backend_selection(&auto_cli)?.expect("verify should retain a route"),
+        None,
+        None,
+        Some(&auto_plan),
+        None,
+        &mut NullBackendCommandRunner,
+    )?;
+    assert_eq!(auto_outcome.status, BackendCommandStatus::Passed);
+    let producer_mismatch = verify_compare_artifacts_with_paths(&left, &qemu_artifact, &cli)?;
+    assert!(matches!(producer_mismatch, CliError::Identity(_)));
+
     let different_seed = verify_reproduction_artifact_bytes(
         22,
         Some(&ResolvedLocalBackend::Double),
@@ -362,6 +410,7 @@ pub(super) fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Resul
         String::from("crucible"),
         String::from("--daemon"),
         daemon,
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("--seed"),
         String::from("13"),
         String::from("verify"),
@@ -414,7 +463,7 @@ pub(super) fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Resul
             .stdout
             .iter()
             .filter(|line| line.starts_with("verify-run\t"))
-            .all(|line| line.contains("\tfingerprint=") && line.contains("\tsamples=2"))
+            .all(|line| line.contains("\tfingerprint=") && line.contains("\tsamples=4"))
     );
     assert!(
         outcome
@@ -484,6 +533,7 @@ pub(super) fn cli_backend_selection_routes_daemon_over_api_without_local_backend
         "crucible",
         "--daemon",
         "127.0.0.1:9000",
+        "--trusted-unauthenticated-daemon",
         "--backend",
         "qemu",
         "run",
@@ -534,6 +584,29 @@ pub(super) fn cli_backend_selection_routes_daemon_over_api_without_local_backend
 }
 
 #[test]
+pub(super) fn cli_backend_selection_rejects_unacknowledged_cleartext_daemon() {
+    let cli = Cli::parse_from([
+        "crucible",
+        "--daemon",
+        "http://198.51.100.7:9000",
+        "run",
+        TEST_SCENARIO,
+    ]);
+
+    let error = plan_backend_selection(&cli)
+        .expect_err("cleartext daemon access without explicit trust must fail closed");
+
+    assert!(matches!(error, CliError::Usage(_)));
+    assert_eq!(error.exit_code(), 64);
+    assert!(
+        error
+            .to_string()
+            .contains("--trusted-unauthenticated-daemon")
+    );
+    assert!(error.to_string().contains("mutual-TLS"));
+}
+
+#[test]
 pub(super) fn cli_backend_selection_local_and_remote_have_equivalent_canonical_outcome()
 -> Result<(), Box<dyn Error>> {
     let local_cli = Cli::parse_from(["crucible", "--backend", "double", "run", TEST_SCENARIO]);
@@ -543,6 +616,7 @@ pub(super) fn cli_backend_selection_local_and_remote_have_equivalent_canonical_o
         "double",
         "--daemon",
         "127.0.0.1:9000",
+        "--trusted-unauthenticated-daemon",
         "run",
         TEST_SCENARIO,
     ]);
@@ -761,6 +835,40 @@ pub(super) fn cli_determinism_ergonomics_resolves_seed_by_flag_env_or_generated(
     );
     assert!(generated_plan.proves_t_cli_4());
 
+    let inherited_fork = Cli::parse_from(["crucible", "fork", "source.crucible-savepoint"]);
+    assert_eq!(
+        seed_resolution_mode(&inherited_fork.command),
+        SeedResolutionMode::ArtifactOrSavepointOwned
+    );
+    let draws_before_fork = entropy.draws;
+    assert!(
+        plan_determinism_ergonomics(
+            &inherited_fork,
+            &FakeSeedEnvironment {
+                seed: Some(String::from("123")),
+            },
+            &mut entropy,
+        )?
+        .is_none()
+    );
+    assert_eq!(entropy.draws, draws_before_fork);
+
+    let reseeded_fork = Cli::parse_from([
+        "crucible",
+        "--seed",
+        "123",
+        "fork",
+        "source.crucible-savepoint",
+    ]);
+    let reseeded_fork_plan = plan_determinism_ergonomics(
+        &reseeded_fork,
+        &FakeSeedEnvironment::default(),
+        &mut entropy,
+    )?
+    .expect("explicitly reseeded fork should resolve its seed");
+    assert_eq!(reseeded_fork_plan.seed.value, 123);
+    assert_eq!(reseeded_fork_plan.seed.source, SeedSource::Flag);
+
     let mut recorder = RecordingDeterminismErgonomicsRecorder::default();
     execute_determinism_ergonomics_plan(&generated_plan, &mut recorder)?;
     assert_eq!(recorder.seeds, vec![generated_plan.seed.clone()]);
@@ -820,6 +928,17 @@ pub(super) fn cli_determinism_ergonomics_rejects_invalid_seed_and_markdown_trace
         ),
         SeedResolutionMode::ArtifactOrSavepointOwned
     );
+    let compare = Cli::parse_from([
+        "crucible",
+        "verify",
+        "--compare",
+        "left.crucible",
+        "right.crucible",
+    ]);
+    assert_eq!(
+        seed_resolution_mode(&compare.command),
+        SeedResolutionMode::ArtifactOrSavepointOwned
+    );
     let draws_before = entropy.draws;
     assert!(
         plan_determinism_ergonomics(
@@ -828,6 +947,11 @@ pub(super) fn cli_determinism_ergonomics_rejects_invalid_seed_and_markdown_trace
             &mut entropy,
         )?
         .is_none()
+    );
+    assert_eq!(entropy.draws, draws_before);
+    assert!(
+        plan_determinism_ergonomics(&compare, &FakeSeedEnvironment::default(), &mut entropy,)?
+            .is_none()
     );
     assert_eq!(entropy.draws, draws_before);
 
@@ -885,6 +1009,7 @@ pub(super) fn cli_determinism_ergonomics_threads_seed_into_backend_outcome()
         "double",
         "--daemon",
         "127.0.0.1:9000",
+        "--trusted-unauthenticated-daemon",
         "--seed",
         "1",
         "run",
@@ -1049,13 +1174,10 @@ pub(super) fn cli_determinism_ergonomics_emits_trace_and_failure_artifact_from_o
     emit_backend_command_output(&cli, &outcome)?;
 
     let trace_text = fs::read_to_string(&trace)?;
-    assert_eq!(trace_text.lines().count(), outcome.canonical_log.len() + 1);
+    assert_eq!(trace_text.lines().count(), outcome.canonical_log.len());
     assert!(
-        trace_text
-            .lines()
-            .last()
-            .expect("trace should include final outcome")
-            .contains("\"kind\":\"final_outcome\"")
+        !trace_text.contains("\"kind\":\"final_outcome\""),
+        "replay input must exclude the invocation-local final outcome"
     );
     let artifact_entries = fs::read_dir(&artifact_dir)?.collect::<Result<Vec<_>, _>>()?;
     assert_eq!(artifact_entries.len(), 1);
@@ -1119,6 +1241,7 @@ pub(super) fn cli_determinism_ergonomics_rejects_remote_mock_failure_artifact()
         "crucible",
         "--daemon",
         "127.0.0.1:9000",
+        "--trusted-unauthenticated-daemon",
         "--seed",
         "0x55",
         "run",
@@ -1227,7 +1350,10 @@ pub(super) fn cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline()
     let findings = temp.path().join("findings");
     let store = temp.path().join("store");
     let reports = temp.path().join("triage-reports");
-    fs::create_dir_all(&findings)?;
+    fs::write(
+        &findings,
+        crucible::FailureFindingsLedger::from_artifacts([]).artifact_bytes(),
+    )?;
     let baseline_cli = Cli::parse_from([
         "crucible",
         "--store",
@@ -1588,11 +1714,57 @@ pub(super) fn cli_triage_rejects_artifact_only_findings_without_engine_evidence(
 
     assert!(matches!(error, CliError::Artifact(_)));
     assert_eq!(error.exit_code(), 5);
-    assert!(
-        error
-            .to_string()
-            .contains("discovery-time signature evidence")
-    );
+    assert!(error.to_string().contains("signed findings ledger"));
+    assert!(error.to_string().contains("is a directory"));
+}
+
+#[test]
+pub(super) fn cli_triage_distinguishes_empty_malformed_and_missing_ledgers() {
+    let temp = TempDir::new().expect("tempdir must be created");
+    let store = crucible::LocalDagStore::new(temp.path().join("store"));
+    let empty = temp.path().join("empty.crucible-findings");
+    let malformed = temp.path().join("malformed.crucible-findings");
+    let missing = temp.path().join("missing.crucible-findings");
+    fs::write(&empty, []).expect("empty fixture must be written");
+    fs::write(&malformed, b"{\"artifact\":\"unsigned\"}")
+        .expect("malformed fixture must be written");
+
+    for (path, expected) in [
+        (&empty, "is empty"),
+        (&malformed, "unsupported or malformed input"),
+        (&missing, "cannot read triage findings ledger"),
+    ] {
+        let error =
+            load_triage_findings_ledger(&store, &TriageFindingsSource::Path(path.to_path_buf()))
+                .expect_err("non-ledger input must fail");
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected error for {}: {error}",
+            path.display()
+        );
+        assert!(error.to_string().contains(&path.display().to_string()));
+    }
+}
+
+#[test]
+pub(super) fn cli_explicit_findings_path_writes_triageable_empty_v3_ledger()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let path = temp.path().join("empty.crucible-findings");
+    let (written_path, digest, bytes) =
+        write_failure_findings_ledger_v3(temp.path(), Some(&path), &[])?;
+
+    assert_eq!(written_path, path);
+    assert_eq!(fs::read(&path)?, bytes);
+    assert_eq!(digest, crucible::ContentHash::from_bytes(&bytes));
+    assert!(String::from_utf8(bytes.clone())?.contains("finding_count=0"));
+
+    let store = crucible::LocalDagStore::new(temp.path().join("store"));
+    let loaded = parse_failure_findings_ledger_bytes(&store, &bytes)?;
+    assert_eq!(loaded.ledger.artifact_count(), 0);
+    assert!(loaded.ledger.signed_findings().is_empty());
+    assert!(loaded.evidence.is_empty());
+    Ok(())
 }
 
 #[test]
@@ -2640,8 +2812,16 @@ pub(super) fn cli_replay_bisects_artifact_divergence() -> Result<(), Box<dyn Err
     );
     assert_eq!(divergence.first_different_decision, Some(1));
     assert_eq!(divergence.first_different_fingerprint_sample, Some(0));
-    assert_eq!(divergence.first_different_instruction, 12);
-    assert_eq!(divergence.node.as_deref(), Some("node-b"));
+    assert_eq!(divergence.first_different_virtual_time, Some(12));
+    assert_eq!(
+        divergence.first_different_virtual_time_node.as_deref(),
+        Some("node-b")
+    );
+    assert_eq!(divergence.first_different_instruction, Some(0));
+    assert_eq!(
+        divergence.first_different_instruction_node.as_deref(),
+        Some("session")
+    );
     assert!(divergence.first_different_byte > 0);
 
     let error = match dispatch(&cli) {
@@ -2652,6 +2832,140 @@ pub(super) fn cli_replay_bisects_artifact_divergence() -> Result<(), Box<dyn Err
     assert_eq!(error.exit_code(), 1);
     assert!(error.to_string().contains("replay --bisect divergence"));
     assert!(error.to_string().contains("first_decision=1"));
+    assert!(error.to_string().contains("first_virtual_time=12"));
+    assert!(error.to_string().contains("first_virtual_time_node=node-b"));
+    assert!(error.to_string().contains("first_instruction=0"));
+    assert!(error.to_string().contains("first_instruction_node=session"));
+
+    let canonical_only = verify_reproduction_artifact_bytes(
+        12,
+        Some(&ResolvedLocalBackend::Double),
+        &scenario,
+        &diverged_entries,
+        &first_samples,
+    )?;
+    let canonical_only_path = temp.path().join("canonical-only.crucible");
+    fs::write(&canonical_only_path, canonical_only)?;
+    let canonical_only_cli = Cli::parse_from([
+        "crucible",
+        "--quiet",
+        "--backend",
+        "double",
+        "replay",
+        left.to_str().unwrap_or("."),
+        "--bisect",
+        canonical_only_path.to_str().unwrap_or("."),
+    ]);
+    let Commands::Replay(canonical_only_args) = &canonical_only_cli.command else {
+        panic!("expected replay command");
+    };
+    let canonical_only_report =
+        replay_reproduction_artifact(&canonical_only_cli, canonical_only_args)?;
+    let canonical_only_divergence = canonical_only_report
+        .bisect
+        .as_ref()
+        .and_then(|bisect| bisect.divergence.as_ref())
+        .expect("canonical-log divergence should be localized");
+    assert_eq!(
+        canonical_only_divergence.mismatch,
+        VerifyMismatchKind::CanonicalLog
+    );
+    assert_eq!(
+        canonical_only_divergence.first_different_virtual_time,
+        Some(12)
+    );
+    assert_eq!(
+        canonical_only_divergence
+            .first_different_virtual_time_node
+            .as_deref(),
+        Some("node-b")
+    );
+    assert_eq!(canonical_only_divergence.first_different_instruction, None);
+    assert_eq!(
+        canonical_only_divergence.first_different_instruction_node,
+        None
+    );
+    let canonical_only_bisect = canonical_only_report
+        .bisect
+        .as_ref()
+        .expect("bisection report");
+    let canonical_only_error =
+        replay_bisect_error(&left, canonical_only_bisect, canonical_only_divergence);
+    assert!(
+        canonical_only_error
+            .to_string()
+            .contains("first_instruction=unknown")
+    );
+    let canonical_only_machine = replay_bisect_machine_readable_summary(canonical_only_bisect);
+    assert!(canonical_only_machine.contains("first_virtual_time=12"));
+    assert!(canonical_only_machine.contains("first_virtual_time_node=node-b"));
+    assert!(canonical_only_machine.contains("first_instruction=unknown"));
+    assert!(canonical_only_machine.contains("first_instruction_node=unknown"));
+    let mut canonical_only_human = Vec::new();
+    write_replay_report_human(&mut canonical_only_human, &canonical_only_report)?;
+    let canonical_only_human = String::from_utf8(canonical_only_human)?;
+    assert!(canonical_only_human.contains("first_virtual_time=12"));
+    assert!(canonical_only_human.contains("first_instruction=unknown"));
+
+    let fingerprint_only = verify_reproduction_artifact_bytes(
+        12,
+        Some(&ResolvedLocalBackend::Double),
+        &scenario,
+        &entries,
+        &second_samples,
+    )?;
+    let fingerprint_only_path = temp.path().join("fingerprint-only.crucible");
+    fs::write(&fingerprint_only_path, fingerprint_only)?;
+    let fingerprint_only_cli = Cli::parse_from([
+        "crucible",
+        "--quiet",
+        "--backend",
+        "double",
+        "replay",
+        left.to_str().unwrap_or("."),
+        "--bisect",
+        fingerprint_only_path.to_str().unwrap_or("."),
+    ]);
+    let Commands::Replay(fingerprint_only_args) = &fingerprint_only_cli.command else {
+        panic!("expected replay command");
+    };
+    let fingerprint_only_report =
+        replay_reproduction_artifact(&fingerprint_only_cli, fingerprint_only_args)?;
+    let fingerprint_only_bisect = fingerprint_only_report
+        .bisect
+        .as_ref()
+        .expect("bisection report");
+    let fingerprint_only_divergence = fingerprint_only_bisect
+        .divergence
+        .as_ref()
+        .expect("fingerprint-stream divergence should be localized");
+    assert_eq!(
+        fingerprint_only_divergence.mismatch,
+        VerifyMismatchKind::FingerprintStream
+    );
+    assert_eq!(
+        fingerprint_only_divergence.first_different_virtual_time,
+        None
+    );
+    assert_eq!(
+        fingerprint_only_divergence.first_different_virtual_time_node,
+        None
+    );
+    assert_eq!(
+        fingerprint_only_divergence.first_different_instruction,
+        Some(0)
+    );
+    assert_eq!(
+        fingerprint_only_divergence
+            .first_different_instruction_node
+            .as_deref(),
+        Some("session")
+    );
+    let fingerprint_only_machine = replay_bisect_machine_readable_summary(fingerprint_only_bisect);
+    assert!(fingerprint_only_machine.contains("first_virtual_time=unknown"));
+    assert!(fingerprint_only_machine.contains("first_virtual_time_node=unknown"));
+    assert!(fingerprint_only_machine.contains("first_instruction=0"));
+    assert!(fingerprint_only_machine.contains("first_instruction_node=session"));
 
     let seed_mismatch = verify_reproduction_artifact_bytes(
         13,
@@ -2799,6 +3113,7 @@ pub(super) fn cli_replay_rejects_remote_daemon_without_producer_identity()
         "crucible",
         "--daemon",
         "127.0.0.1:9000",
+        "--trusted-unauthenticated-daemon",
         "replay",
         &artifact_arg,
     ]);
@@ -2884,232 +3199,6 @@ pub(super) fn cli_failure_artifact_writer_emits_replay_and_debug_commands()
 }
 
 #[test]
-pub(super) fn cli_debug_surface_parses_full_t_dbg_8_flags_and_verbs() -> Result<(), Box<dyn Error>>
-{
-    let cli = Cli::parse_from([
-        "crucible",
-        "debug",
-        "case.crucible",
-        "--at",
-        "icount:guest-a:102",
-        "--node",
-        "guest-a",
-        "--gdb-listen",
-        "127.0.0.1:9000",
-        "--checkpoint-stride",
-        "4",
-        "reverse-step",
-        "event",
-    ]);
-    let Commands::Debug(args) = &cli.command else {
-        panic!("expected debug command");
-    };
-
-    assert_eq!(args.target.as_deref(), Some("case.crucible"));
-    assert_eq!(args.at.as_deref(), Some("icount:guest-a:102"));
-    assert_eq!(args.node.as_deref(), Some("guest-a"));
-    assert_eq!(args.gdb_listen.as_deref(), Some("127.0.0.1:9000"));
-    assert_eq!(args.checkpoint_stride, Some(4));
-    assert!(matches!(
-        &args.verb,
-        Some(DebugVerbArgs::ReverseStep {
-            grain: DebugStepGrainArg::Event
-        })
-    ));
-
-    let plan = plan_debug_invocation(&cli, args)?;
-
-    assert!(matches!(&plan.target, DebugPlanTarget::Artifact(_)));
-    assert!(matches!(
-        &plan.coordinate,
-        DebugPlanCoordinate::At(crucible::DebugCoordinate::NodeIcount {
-            node,
-            icount
-        }) if node.name == "guest-a" && icount.retired == 102
-    ));
-    assert_eq!(plan.node.as_deref(), Some("guest-a"));
-    assert!(plan.read_only);
-    assert!(!plan.allow_mutate);
-    assert_eq!(plan.checkpoint_stride, Some(4));
-    assert!(
-        plan.session_commands
-            .iter()
-            .all(SessionCommand::is_read_only),
-        "reverse-step grains are realized by the debug reverse-step/goto path, not unsupported session step modes"
-    );
-    assert!(
-        plan.engine_operations
-            .contains(&DebugEngineOperation::ReverseStep)
-    );
-    assert!(
-        plan.engine_operations
-            .contains(&DebugEngineOperation::RestoreNearestCheckpointReplay)
-    );
-    assert!(
-        plan.engine_operations
-            .contains(&DebugEngineOperation::CheckpointCadence)
-    );
-    assert!(plan.proves_t_dbg_8());
-
-    Ok(())
-}
-
-#[test]
-pub(super) fn cli_debug_surface_supports_session_checkpoint_and_allow_mutate()
--> Result<(), Box<dyn Error>> {
-    let checkpoint = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
-    let cli = Cli::parse_from([
-        "crucible",
-        "debug",
-        "--session",
-        "127.0.0.1:7000",
-        "--at-checkpoint",
-        checkpoint,
-        "--allow-mutate",
-        "goto",
-        "vtime:7",
-    ]);
-    let Commands::Debug(args) = &cli.command else {
-        panic!("expected debug command");
-    };
-
-    let plan = plan_debug_invocation(&cli, args)?;
-
-    assert!(matches!(&plan.target, DebugPlanTarget::Session(_)));
-    assert!(matches!(
-        &plan.coordinate,
-        DebugPlanCoordinate::AtCheckpoint(_)
-    ));
-    assert!(matches!(
-        &plan.verb,
-        DebugInteractiveVerbPlan::Goto(crucible::DebugCoordinate::VirtualTime(
-            crucible::VirtualTime { ticks: 7 }
-        ))
-    ));
-    assert!(plan.allow_mutate);
-    assert!(!plan.read_only);
-    assert_eq!(
-        plan.non_canonical_branch_label.as_deref(),
-        Some("NON-CANONICAL debug branch")
-    );
-    assert!(
-        plan.session_commands
-            .contains(&SessionCommand::fork_current())
-    );
-    assert!(
-        plan.engine_operations
-            .contains(&DebugEngineOperation::NonCanonicalBranchFork)
-    );
-    assert!(plan.proves_t_dbg_8());
-
-    Ok(())
-}
-
-#[test]
-pub(super) fn cli_debug_surface_rejects_conflicts_and_backend_without_gdbstub() {
-    assert!(
-        Cli::try_parse_from([
-            "crucible",
-            "debug",
-            "case.crucible",
-            "--read-only",
-            "--allow-mutate",
-        ])
-        .is_err()
-    );
-    assert!(
-        Cli::try_parse_from([
-            "crucible",
-            "debug",
-            "case.crucible",
-            "--at-event",
-            "1",
-            "--at-failure",
-        ])
-        .is_err()
-    );
-
-    let cli = Cli::parse_from(["crucible", "--backend", "double", "debug", "case.crucible"]);
-    let Commands::Debug(args) = &cli.command else {
-        panic!("expected debug command");
-    };
-    let error = match plan_debug_invocation(&cli, args) {
-        Ok(_) => panic!("double backend must not advertise a gdbstub debug surface"),
-        Err(error) => error,
-    };
-
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
-    assert!(error.to_string().contains("open_gdbstub"));
-
-    let cli = Cli::parse_from([
-        "crucible",
-        "debug",
-        "case.crucible",
-        "--checkpoint-stride",
-        "0",
-    ]);
-    let Commands::Debug(args) = &cli.command else {
-        panic!("expected debug command");
-    };
-    let error = match plan_debug_invocation(&cli, args) {
-        Ok(_) => panic!("zero checkpoint stride must be rejected"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, CliError::Usage(_)));
-    assert_eq!(error.exit_code(), 64);
-    assert!(error.to_string().contains("non-zero"));
-
-    let cli = Cli::parse_from(["crucible", "debug", "case.crucible", "--node", ""]);
-    let Commands::Debug(args) = &cli.command else {
-        panic!("expected debug command");
-    };
-    let error = match plan_debug_invocation(&cli, args) {
-        Ok(_) => panic!("empty debug node must be rejected"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, CliError::Usage(_)));
-    assert_eq!(error.exit_code(), 64);
-    assert!(error.to_string().contains("--node"));
-}
-
-#[test]
-pub(super) fn cli_debug_surface_defaults_coordinate_by_target_kind() -> Result<(), Box<dyn Error>> {
-    let artifact_cli = Cli::parse_from(["crucible", "debug", "case.crucible"]);
-    let Commands::Debug(args) = &artifact_cli.command else {
-        panic!("expected debug command");
-    };
-    let artifact_plan = plan_debug_invocation(&artifact_cli, args)?;
-    assert!(matches!(
-        artifact_plan.coordinate,
-        DebugPlanCoordinate::AtFailure
-    ));
-
-    let savepoint = "blake3:1111111111111111111111111111111111111111111111111111111111111111";
-    let savepoint_cli = Cli::parse_from(["crucible", "debug", savepoint]);
-    let Commands::Debug(args) = &savepoint_cli.command else {
-        panic!("expected debug command");
-    };
-    let savepoint_plan = plan_debug_invocation(&savepoint_cli, args)?;
-    assert!(matches!(
-        savepoint_plan.coordinate,
-        DebugPlanCoordinate::AtCheckpoint(_)
-    ));
-
-    let session_cli = Cli::parse_from(["crucible", "debug", "--session", "127.0.0.1:7000"]);
-    let Commands::Debug(args) = &session_cli.command else {
-        panic!("expected debug command");
-    };
-    let session_plan = plan_debug_invocation(&session_cli, args)?;
-    assert!(matches!(
-        session_plan.coordinate,
-        DebugPlanCoordinate::Current
-    ));
-
-    Ok(())
-}
-
-#[test]
 pub(super) fn cli_replay_rejects_duplicate_singleton_lines() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let path = temp.path().join("duplicate.crucible");
@@ -3148,5 +3237,7 @@ pub(super) fn cli_mock_failure_artifact_is_harness_decodable() -> Result<(), Box
 
     Ok(())
 }
+#[path = "verify_dispatch/debug_surface.rs"]
+mod debug_surface;
 #[path = "verify_dispatch/selftest.rs"]
 mod selftest;

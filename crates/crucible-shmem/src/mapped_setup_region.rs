@@ -11,10 +11,12 @@ use super::{
     FAULT_COMMAND_SLOT_V1_BYTES, FAULT_EVENT_SLOT_V1_BYTES, FAULT_PAYLOAD_ARENA_HEADER_BYTES,
     FAULT_RESULT_SLOT_V1_BYTES, FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE,
     FRAME_ENTRY_ALIGN, FRAME_ENTRY_SIZE, FaultCommandSlotV1, FaultEventSlotV1,
-    FaultPayloadArenaHeader, FaultResultSlotV1, FingerprintSampleSlot, FrameEntry, NODE_SLOT_ALIGN,
-    NODE_SLOT_SIZE, NodeSlot, REGION_HEADER_ALIGN, REGION_HEADER_SIZE, RING_HEADER_ALIGN,
-    RING_HEADER_SIZE, RegionHeader, RegionLayout, RegionLayoutError, RegionSetupValidationError,
-    RingHeader, ValidatedSetupRegion, WHITEBOX_MARKER_ENTRY_ALIGN, WHITEBOX_MARKER_ENTRY_SIZE,
+    FaultPayloadArenaHeader, FaultResultSlotV1, FingerprintSampleSlot, FrameEntry,
+    GUEST_INTROSPECTION_ENTRY_ALIGN, GUEST_INTROSPECTION_ENTRY_SIZE, GuestIntrospectionEntry,
+    GuestIntrospectionRingDirection, NODE_SLOT_ALIGN, NODE_SLOT_SIZE, NodeSlot,
+    REGION_HEADER_ALIGN, REGION_HEADER_SIZE, RING_HEADER_ALIGN, RING_HEADER_SIZE, RegionHeader,
+    RegionLayout, RegionLayoutError, RegionSetupValidationError, RingHeader, SpscRingError,
+    ValidatedSetupRegion, WHITEBOX_MARKER_ENTRY_ALIGN, WHITEBOX_MARKER_ENTRY_SIZE,
     WhiteboxMarkerEntry, directed_rings, layout_from_setup_region_header,
     validate_setup_region_header,
 };
@@ -117,6 +119,194 @@ pub struct MappedFaultEventTransportMut<'a> {
     pub arena: &'a mut [u8],
     /// Region-relative offset of `arena` for event envelopes.
     pub arena_region_offset: u64,
+}
+
+/// Producer-only access to one directional guest-introspection ring.
+pub struct MappedGuestIntrospectionProducerRingMut<'a> {
+    vm_slot: u32,
+    direction: GuestIntrospectionRingDirection,
+    header: &'a RingHeader,
+    entries: &'a mut [GuestIntrospectionEntry],
+}
+
+impl MappedGuestIntrospectionProducerRingMut<'_> {
+    /// Returns the logical VM associated with this producer.
+    #[must_use]
+    pub const fn vm_slot(&self) -> u32 {
+        self.vm_slot
+    }
+
+    /// Returns the fixed producer-to-consumer direction.
+    #[must_use]
+    pub const fn direction(&self) -> GuestIntrospectionRingDirection {
+        self.direction
+    }
+
+    /// Enqueues one complete validated `CRGI` record entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the ring geometry or indices are invalid
+    /// or the bounded queue is full.
+    pub fn enqueue(&mut self, entry: GuestIntrospectionEntry) -> Result<(), SpscRingError> {
+        self.header.enqueue_guest_introspection(self.entries, entry)
+    }
+}
+
+/// Consumer-only access to one directional guest-introspection ring.
+pub struct MappedGuestIntrospectionConsumerRingMut<'a> {
+    vm_slot: u32,
+    direction: GuestIntrospectionRingDirection,
+    header: &'a RingHeader,
+    entries: &'a mut [GuestIntrospectionEntry],
+}
+
+impl MappedGuestIntrospectionConsumerRingMut<'_> {
+    /// Returns the logical VM associated with this consumer.
+    #[must_use]
+    pub const fn vm_slot(&self) -> u32 {
+        self.vm_slot
+    }
+
+    /// Returns the fixed producer-to-consumer direction.
+    #[must_use]
+    pub const fn direction(&self) -> GuestIntrospectionRingDirection {
+        self.direction
+    }
+
+    /// Dequeues and validates the next complete `CRGI` record entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the ring geometry or indices are invalid
+    /// or the next untrusted cross-process entry is malformed.
+    pub fn dequeue(&mut self) -> Result<Option<GuestIntrospectionEntry>, SpscRingError> {
+        self.header.dequeue_guest_introspection(self.entries)
+    }
+}
+
+/// Host-side role view: request producer and response consumer.
+pub struct MappedHostGuestIntrospectionRingsMut<'a> {
+    /// Host-to-plugin request producer.
+    pub requests: MappedGuestIntrospectionProducerRingMut<'a>,
+    /// Plugin-to-host response consumer.
+    pub responses: MappedGuestIntrospectionConsumerRingMut<'a>,
+}
+
+/// Plugin-side role view: request consumer and response producer.
+pub struct MappedPluginGuestIntrospectionRingsMut<'a> {
+    /// Host-to-plugin request consumer.
+    pub requests: MappedGuestIntrospectionConsumerRingMut<'a>,
+    /// Plugin-to-host response producer.
+    pub responses: MappedGuestIntrospectionProducerRingMut<'a>,
+}
+
+/// Role-preserving process-lifetime handle for plugin guest-introspection rings.
+///
+/// The handle erases the mapping borrow so a pinned QEMU callback owner can
+/// retain it. Its private raw addresses are process-local adapter state and are
+/// never stored in shared memory. Methods preserve the plugin's sole request
+/// consumer and response producer roles.
+pub struct DetachedPluginGuestIntrospectionRings {
+    request_header: NonNull<RingHeader>,
+    request_entries: NonNull<GuestIntrospectionEntry>,
+    request_capacity: usize,
+    response_header: NonNull<RingHeader>,
+    response_entries: NonNull<GuestIntrospectionEntry>,
+    response_capacity: usize,
+}
+
+impl MappedPluginGuestIntrospectionRingsMut<'_> {
+    /// Detaches this role view for a process-lifetime callback owner.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain the owning [`MappedSetupRegion`] without moving,
+    /// unmapping, or creating another plugin-side view for these rings until
+    /// the returned handle is dropped. QEMU callbacks using the handle must be
+    /// serialized according to the SPSC role contract.
+    #[must_use]
+    pub unsafe fn detach_for_mapping_lifetime(self) -> DetachedPluginGuestIntrospectionRings {
+        let request_entries = self.requests.entries.as_mut_ptr();
+        let response_entries = self.responses.entries.as_mut_ptr();
+        // SAFETY: validated guest-introspection queues have fixed nonzero
+        // capacity, so each slice supplies a non-null first-entry address.
+        let request_entries = unsafe { NonNull::new_unchecked(request_entries) };
+        // SAFETY: same invariant as the request queue above.
+        let response_entries = unsafe { NonNull::new_unchecked(response_entries) };
+        DetachedPluginGuestIntrospectionRings {
+            request_header: NonNull::from(self.requests.header),
+            request_entries,
+            request_capacity: self.requests.entries.len(),
+            response_header: NonNull::from(self.responses.header),
+            response_entries,
+            response_capacity: self.responses.entries.len(),
+        }
+    }
+}
+
+impl DetachedPluginGuestIntrospectionRings {
+    /// Peeks at the next validated host request without consuming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when ring indices or the next shared entry are
+    /// malformed.
+    pub fn peek_request(&mut self) -> Result<Option<GuestIntrospectionEntry>, SpscRingError> {
+        // SAFETY: the detach contract retains the mapping and unique plugin
+        // role for this exact entry range while the handle is live.
+        let entries = unsafe {
+            core::slice::from_raw_parts_mut(self.request_entries.as_ptr(), self.request_capacity)
+        };
+        // SAFETY: the same detach contract retains the shared header.
+        unsafe { self.request_header.as_ref() }.peek_guest_introspection(entries)
+    }
+
+    /// Commits a previously peeked host request after guest delivery succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the queue changed or its next entry does
+    /// not have `expected_sequence`.
+    pub fn commit_request(&mut self, expected_sequence: u64) -> Result<(), SpscRingError> {
+        // SAFETY: the detach contract retains the mapping and unique plugin
+        // role for this exact entry range while the handle is live.
+        let entries = unsafe {
+            core::slice::from_raw_parts_mut(self.request_entries.as_ptr(), self.request_capacity)
+        };
+        // SAFETY: the same detach contract retains the shared header.
+        unsafe { self.request_header.as_ref() }
+            .commit_guest_introspection(entries, expected_sequence)
+    }
+
+    /// Enqueues one validated guest response for the host consumer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when ring indices are invalid or the response
+    /// queue is full.
+    pub fn enqueue_response(
+        &mut self,
+        entry: GuestIntrospectionEntry,
+    ) -> Result<(), SpscRingError> {
+        // SAFETY: the detach contract retains the mapping and unique plugin
+        // role for this exact entry range while the handle is live.
+        let entries = unsafe {
+            core::slice::from_raw_parts_mut(self.response_entries.as_ptr(), self.response_capacity)
+        };
+        // SAFETY: the same detach contract retains the shared header.
+        unsafe { self.response_header.as_ref() }.enqueue_guest_introspection(entries, entry)
+    }
+}
+
+struct GuestIntrospectionRawRingMut<'a> {
+    header: &'a RingHeader,
+    entries: &'a mut [GuestIntrospectionEntry],
+}
+
+struct GuestIntrospectionRingPairMut<'a> {
+    request: GuestIntrospectionRawRingMut<'a>,
+    response: GuestIntrospectionRawRingMut<'a>,
 }
 
 /// A mutable view of two distinct mapped directed rings and one node slot.
@@ -649,6 +839,141 @@ impl MappedSetupRegion {
         })
     }
 
+    /// Borrows one VM's host-side guest-introspection role view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when `vm_slot` is absent or the
+    /// request or response segment is invalid.
+    pub fn host_guest_introspection_rings_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<MappedHostGuestIntrospectionRingsMut<'_>, MappedSetupRegionAccessError> {
+        let GuestIntrospectionRingPairMut { request, response } =
+            self.guest_introspection_ring_pair_mut(vm_slot)?;
+        Ok(MappedHostGuestIntrospectionRingsMut {
+            requests: MappedGuestIntrospectionProducerRingMut {
+                vm_slot,
+                direction: GuestIntrospectionRingDirection::Request,
+                header: request.header,
+                entries: request.entries,
+            },
+            responses: MappedGuestIntrospectionConsumerRingMut {
+                vm_slot,
+                direction: GuestIntrospectionRingDirection::Response,
+                header: response.header,
+                entries: response.entries,
+            },
+        })
+    }
+
+    /// Borrows one VM's plugin-side guest-introspection role view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when `vm_slot` is absent or the
+    /// request or response segment is invalid.
+    pub fn plugin_guest_introspection_rings_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<MappedPluginGuestIntrospectionRingsMut<'_>, MappedSetupRegionAccessError> {
+        let GuestIntrospectionRingPairMut { request, response } =
+            self.guest_introspection_ring_pair_mut(vm_slot)?;
+        Ok(MappedPluginGuestIntrospectionRingsMut {
+            requests: MappedGuestIntrospectionConsumerRingMut {
+                vm_slot,
+                direction: GuestIntrospectionRingDirection::Request,
+                header: request.header,
+                entries: request.entries,
+            },
+            responses: MappedGuestIntrospectionProducerRingMut {
+                vm_slot,
+                direction: GuestIntrospectionRingDirection::Response,
+                header: response.header,
+                entries: response.entries,
+            },
+        })
+    }
+
+    fn guest_introspection_ring_pair_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<GuestIntrospectionRingPairMut<'_>, MappedSetupRegionAccessError> {
+        let layout = self
+            .layout()
+            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
+        if vm_slot >= layout.vm_node_count {
+            return Err(
+                MappedSetupRegionAccessError::UnknownGuestIntrospectionRing {
+                    vm_slot,
+                    vm_node_count: layout.vm_node_count,
+                },
+            );
+        }
+        let request_index = GuestIntrospectionRingDirection::Request
+            .ring_index(vm_slot)
+            .ok_or(MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "guest-introspection ring",
+                index: vm_slot,
+            })?;
+        let response_index = GuestIntrospectionRingDirection::Response
+            .ring_index(vm_slot)
+            .ok_or(MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "guest-introspection ring",
+                index: vm_slot,
+            })?;
+        let request_header_offset =
+            mapped_guest_introspection_ring_header_offset(layout, self.len, request_index)?;
+        let response_header_offset =
+            mapped_guest_introspection_ring_header_offset(layout, self.len, response_index)?;
+        let request_entries_offset =
+            mapped_guest_introspection_ring_entries_offset(layout, self.len, request_index)?;
+        let response_entries_offset =
+            mapped_guest_introspection_ring_entries_offset(layout, self.len, response_index)?;
+        let entry_count =
+            usize::try_from(layout.guest_introspection_queue_capacity).map_err(|_error| {
+                MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                    segment: "guest-introspection entry",
+                    index: request_index,
+                }
+            })?;
+        if request_header_offset == response_header_offset
+            || request_entries_offset == response_entries_offset
+        {
+            return Err(MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "guest-introspection ring",
+                index: vm_slot,
+            });
+        }
+        let base = self.base_ptr();
+        // SAFETY: the offset helpers validate every complete aligned range in
+        // this owned mapping. Request and response indices are distinct and
+        // each fixed-size segment uses its ring index as a non-overlapping
+        // stride. The exclusive mapping borrow prevents any other safe mutable
+        // view for the lifetime of the returned role pair.
+        let pair = unsafe {
+            GuestIntrospectionRingPairMut {
+                request: GuestIntrospectionRawRingMut {
+                    header: &*base.add(request_header_offset).cast::<RingHeader>(),
+                    entries: core::slice::from_raw_parts_mut(
+                        base.add(request_entries_offset)
+                            .cast::<GuestIntrospectionEntry>(),
+                        entry_count,
+                    ),
+                },
+                response: GuestIntrospectionRawRingMut {
+                    header: &*base.add(response_header_offset).cast::<RingHeader>(),
+                    entries: core::slice::from_raw_parts_mut(
+                        base.add(response_entries_offset)
+                            .cast::<GuestIntrospectionEntry>(),
+                        entry_count,
+                    ),
+                },
+            }
+        };
+        Ok(pair)
+    }
+
     /// Borrows one VM's dedicated plugin-to-host fingerprint sample slot.
     ///
     /// The VM slot is also the fingerprint-slot index. The interior atomic
@@ -815,6 +1140,17 @@ pub enum MappedSetupRegionAccessError {
     UnknownFaultTransport {
         /// Transport segment being requested.
         segment: &'static str,
+        /// Rejected VM slot.
+        vm_slot: u32,
+        /// Number of logical VM slots in the region.
+        vm_node_count: u32,
+    },
+
+    /// A VM slot was outside the guest-introspection ring table.
+    #[error(
+        "mapped setup region has no guest-introspection ring for VM slot {vm_slot}; VM count is {vm_node_count}"
+    )]
+    UnknownGuestIntrospectionRing {
         /// Rejected VM slot.
         vm_slot: u32,
         /// Number of logical VM slots in the region.
@@ -1185,6 +1521,21 @@ fn mapped_fault_ring_header_offset(
     )
 }
 
+fn mapped_guest_introspection_ring_header_offset(
+    layout: RegionLayout,
+    region_len: usize,
+    ring_index: u32,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    mapped_segment_offset(
+        "guest-introspection ring header",
+        ring_index,
+        layout.guest_introspection_ring_hdr_off,
+        RING_HEADER_SIZE,
+        RING_HEADER_ALIGN,
+        region_len,
+    )
+}
+
 fn mapped_fault_slot_offset(
     base: u64,
     count: u32,
@@ -1231,6 +1582,34 @@ fn mapped_fault_arena_header_offset(
         base,
         FAULT_PAYLOAD_ARENA_HEADER_BYTES,
         FAULT_PAYLOAD_ARENA_HEADER_BYTES,
+        region_len,
+    )
+}
+
+fn mapped_guest_introspection_ring_entries_offset(
+    layout: RegionLayout,
+    region_len: usize,
+    ring_index: u32,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    let capacity =
+        usize::try_from(layout.guest_introspection_queue_capacity).map_err(|_error| {
+            MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "guest-introspection entry",
+                index: ring_index,
+            }
+        })?;
+    let byte_len = capacity.checked_mul(GUEST_INTROSPECTION_ENTRY_SIZE).ok_or(
+        MappedSetupRegionAccessError::SegmentOffsetOverflow {
+            segment: "guest-introspection entry",
+            index: ring_index,
+        },
+    )?;
+    mapped_segment_offset(
+        "guest-introspection entry",
+        ring_index,
+        layout.guest_introspection_ring_data_off,
+        byte_len,
+        GUEST_INTROSPECTION_ENTRY_ALIGN,
         region_len,
     )
 }

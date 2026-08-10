@@ -1594,7 +1594,7 @@ in rec {
     cliReplayCheck = import ./phase5-cli-replay-check.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliReplayCheck";
-      taskIds = ["T-CLI-12"];
+      taskIds = ["T-CLI-12" "T-CLI-21" "T-HARN-29"];
       openTaskIds = [];
       dependencies = [
         phase5.cliRunWorkflow
@@ -2375,6 +2375,7 @@ in rec {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.debugNonCanonicalBranch";
         taskIds = ["T-DBG-6"];
+        openTaskIds = [];
         dependencies = [
           phase4.gates.replayOracle.rawGate
           phase4.gates.e2eDeterminism.rawGate
@@ -2458,6 +2459,16 @@ in rec {
     };
   };
   phase7 = {
+    debuggerPackage = import ./phase7-debugger-package.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.debuggerPackage";
+      taskIds = ["T-DBG-13"];
+    };
+    debuggerLiveArchitectures = import ./phase7-debugger-live-architectures.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.debuggerLiveArchitectures";
+      taskIds = ["T-DBG-14"];
+    };
     cruciblePackageInventory = import ./phase7-crucible-package-inventory.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.cruciblePackageInventory";

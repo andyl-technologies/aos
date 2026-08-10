@@ -8,7 +8,7 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   };
 
   harnessManifest = builtins.readFile ../../crates/crucible-harness/Cargo.toml;
@@ -74,7 +74,7 @@
     ++ failuresFor "crates/crucible-harness/src/reproduction.rs" reproduction [
       {
         label = "artifact schema constant";
-        needle = "pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v2\";";
+        needle = "pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v3\";";
       }
       {
         label = "artifact type";
@@ -201,8 +201,8 @@
         needle = "fn replay_reproduction_artifact";
       }
       {
-        label = "CLI v2 artifact schema";
-        needle = "const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v2\";";
+        label = "CLI v3 artifact schema";
+        needle = "const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v3\";";
       }
       {
         label = "CLI patch-series identity";
@@ -320,7 +320,7 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            schema=crucible.reproduction-artifact.v2
+            schema=crucible.reproduction-artifact.v3
             tuple=seed,scenario-def-ref,schedule
             component_addressing=cas-crucible-hash
             inline_payloads=small-components

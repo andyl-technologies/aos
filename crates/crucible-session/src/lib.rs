@@ -60,7 +60,7 @@ pub mod engine {
 /// Session-owned replay and validation DAG adapters.
 pub mod validation;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
@@ -70,16 +70,21 @@ use crucible::{
     Action, BackendError, Checkpoint, CodePoint, Condition, ConditionEvaluationError,
     ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle,
     Configuration, ContentHash, ControlOperation, ControlOperationKind, DagStore,
-    DebugAttachReport, DebugAttachRequest, DebugGotoReport, DebugGotoRequest,
-    DebugNonCanonicalBranchReport, DebugNonCanonicalBranchRequest, DebugReverseContinueReport,
-    DebugReverseContinueRequest, DebugReverseStepGrain, DebugReverseStepReport,
-    DebugReverseStepRequest, Decision, EngineError, FingerprintSample, GdbListen, MemPlace, NodeId,
-    ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
-    ResolvedCodePoint, ResolvedMemPlace, RuntimeState, Schedule, ScheduledEventPayload,
-    SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
+    DebugAttachReport, DebugAttachRequest, DebugCoordinate, DebugGdbEndpoint, DebugGotoReport,
+    DebugGotoRequest, DebugNonCanonicalBranchAction, DebugNonCanonicalBranchReport,
+    DebugNonCanonicalBranchRequest, DebugReverseContinueReport, DebugReverseContinueRequest,
+    DebugReverseStepGrain, DebugReverseStepReport, DebugReverseStepRequest,
+    DebugRuntimeRepositionRequest, Decision, EngineError, FingerprintSample, GdbListen, MemPlace,
+    NodeId, ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest,
+    QuantumTerminalVerdict, ResolvedCodePoint, ResolvedMemPlace, RuntimeState, Schedule,
+    ScheduledEventPayload, SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
     SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerLivenessScenario,
     SchedulerQuiescence, SchedulerWorldInstantiationError, SimDuration, SingleScheduler,
     TemporalGraph, VirtualTime, WhiteBoxPolicy, World, WorldIoLayoutPolicy,
+};
+use crucible_protocol::guest_introspection::{
+    GUEST_INTROSPECTION_FEATURE_CHANNEL_ID, GuestIntrospectionFailureCode,
+    GuestIntrospectionFeatures, GuestIntrospectionMessage, GuestIntrospectionRecord,
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -95,6 +100,8 @@ mod session_breakpoint_metadata;
 mod session_commands;
 #[path = "session/core.rs"]
 mod session_core;
+#[path = "session/debug_coordinator.rs"]
+mod session_debug_coordinator;
 #[path = "session/engine.rs"]
 mod session_engine;
 #[path = "session/exploration.rs"]
@@ -108,6 +115,7 @@ pub use session_actor::*;
 pub use session_breakpoint_metadata::*;
 pub use session_commands::*;
 pub use session_core::*;
+pub use session_debug_coordinator::*;
 pub use session_engine::*;
 pub use session_exploration::*;
 use session_exploration_support::*;

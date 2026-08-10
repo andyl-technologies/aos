@@ -80,6 +80,10 @@ where
     fn quit(&mut self) -> Result<(), QemuNodeChannelError> {
         self.vmstate.quit().map(|_complete| ())
     }
+
+    fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.vmstate.activate_debug_guest().map(|_complete| ())
+    }
 }
 
 /// Errors returned while assembling a completed QEMU node.

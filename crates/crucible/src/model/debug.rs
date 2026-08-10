@@ -551,6 +551,10 @@ pub(super) fn push_debug_non_canonical_action_lines(
             lines.push(format!("{prefix}.kind=operator-control"));
             lines.push(format!("{prefix}.operator_control={}", kind.label()));
         }
+        DebugNonCanonicalBranchAction::GuestIntrospection { node } => {
+            lines.push(format!("{prefix}.kind=guest-introspection"));
+            lines.push(format!("{prefix}.node={}", node.name));
+        }
     }
 }
 
@@ -732,7 +736,8 @@ pub(super) fn debug_non_canonical_schedule_delta(
         DebugNonCanonicalBranchAction::Decision(decision) => Some(decision.clone()),
         DebugNonCanonicalBranchAction::ControlOperation(_)
         | DebugNonCanonicalBranchAction::GuestEdit(_)
-        | DebugNonCanonicalBranchAction::OperatorControl(_) => None,
+        | DebugNonCanonicalBranchAction::OperatorControl(_)
+        | DebugNonCanonicalBranchAction::GuestIntrospection { .. } => None,
     }))
 }
 
@@ -964,6 +969,8 @@ pub enum DebugNonCanonicalBranchTrigger {
     OperatorStep,
     /// The operator supplied a model-expressible decision or control operation.
     ScheduleExpressibleEdit,
+    /// The operator opened an exec, PTY, or SSH-compatible guest channel.
+    GuestIntrospection,
 }
 
 impl DebugNonCanonicalBranchTrigger {
@@ -977,6 +984,7 @@ impl DebugNonCanonicalBranchTrigger {
             Self::OperatorContinue => "operator-continue",
             Self::OperatorStep => "operator-step",
             Self::ScheduleExpressibleEdit => "schedule-expressible-edit",
+            Self::GuestIntrospection => "guest-introspection",
         }
     }
 }
@@ -1070,6 +1078,11 @@ pub enum DebugNonCanonicalBranchAction {
     GuestEdit(DebugGuestEdit),
     /// Free operator execution control outside the canonical schedule.
     OperatorControl(DebugOperatorControlKind),
+    /// Opens an out-of-band debug guest-agent channel on one node.
+    GuestIntrospection {
+        /// Node whose guest agent receives the request.
+        node: NodeId,
+    },
 }
 
 impl DebugNonCanonicalBranchAction {
@@ -1095,6 +1108,12 @@ impl DebugNonCanonicalBranchAction {
     #[must_use]
     pub const fn operator_control(kind: DebugOperatorControlKind) -> Self {
         Self::OperatorControl(kind)
+    }
+
+    /// Builds a guest-introspection channel action.
+    #[must_use]
+    pub const fn guest_introspection(node: NodeId) -> Self {
+        Self::GuestIntrospection { node }
     }
 }
 
@@ -1169,6 +1188,12 @@ impl DebugNonCanonicalBranchTrigger {
                 DebugNonCanonicalBranchAction::Decision(_)
                     | DebugNonCanonicalBranchAction::ControlOperation(_)
             ),
+            Self::GuestIntrospection => {
+                matches!(
+                    action,
+                    DebugNonCanonicalBranchAction::GuestIntrospection { .. }
+                )
+            }
         }
     }
 }
@@ -1201,7 +1226,8 @@ impl DebugEditScript {
                 DebugNonCanonicalBranchAction::GuestEdit(edit) => Some(edit.clone()),
                 DebugNonCanonicalBranchAction::Decision(_)
                 | DebugNonCanonicalBranchAction::ControlOperation(_)
-                | DebugNonCanonicalBranchAction::OperatorControl(_) => None,
+                | DebugNonCanonicalBranchAction::OperatorControl(_)
+                | DebugNonCanonicalBranchAction::GuestIntrospection { .. } => None,
             })
             .enumerate()
             .map(|(sequence, edit)| DebugEditScriptEntry {
@@ -1346,7 +1372,8 @@ impl DebugNonCanonicalBranch {
                 DebugNonCanonicalBranchAction::Decision(decision) => Some(decision.clone()),
                 DebugNonCanonicalBranchAction::ControlOperation(_)
                 | DebugNonCanonicalBranchAction::GuestEdit(_)
-                | DebugNonCanonicalBranchAction::OperatorControl(_) => None,
+                | DebugNonCanonicalBranchAction::OperatorControl(_)
+                | DebugNonCanonicalBranchAction::GuestIntrospection { .. } => None,
             })
             .collect();
         let control_log_entries = request
@@ -1358,7 +1385,8 @@ impl DebugNonCanonicalBranch {
                 }
                 DebugNonCanonicalBranchAction::Decision(_)
                 | DebugNonCanonicalBranchAction::GuestEdit(_)
-                | DebugNonCanonicalBranchAction::OperatorControl(_) => None,
+                | DebugNonCanonicalBranchAction::OperatorControl(_)
+                | DebugNonCanonicalBranchAction::GuestIntrospection { .. } => None,
             })
             .collect();
         let operator_controls = request
@@ -1368,7 +1396,8 @@ impl DebugNonCanonicalBranch {
                 DebugNonCanonicalBranchAction::OperatorControl(kind) => Some(*kind),
                 DebugNonCanonicalBranchAction::Decision(_)
                 | DebugNonCanonicalBranchAction::ControlOperation(_)
-                | DebugNonCanonicalBranchAction::GuestEdit(_) => None,
+                | DebugNonCanonicalBranchAction::GuestEdit(_)
+                | DebugNonCanonicalBranchAction::GuestIntrospection { .. } => None,
             })
             .collect();
         let fork_marker = debug_non_canonical_fork_marker(
@@ -1471,6 +1500,11 @@ pub struct DebugNonCanonicalBranchReport {
     pub causal_event_log_after: EventLogCausalProjection,
     /// Event log view including the non-canonical fork marker.
     pub event_log_with_fork_marker: Vec<SchedulerEventLogEntry>,
+    /// Capabilities negotiated from the activated guest agent, when this fork opened introspection.
+    pub guest_introspection_features:
+        Option<crucible_protocol::guest_introspection::GuestIntrospectionFeatures>,
+    /// Bounded activation failure after the non-canonical fork committed, if any.
+    pub guest_introspection_activation_failure: Option<String>,
 }
 
 impl DebugNonCanonicalBranchReport {
@@ -1994,7 +2028,16 @@ impl DebugCliSurfaceContract {
                 "--allow-mutate",
                 "--checkpoint-stride",
             ],
-            interactive_verbs: vec!["attach-gdb", "goto", "reverse-step", "reverse-continue"],
+            interactive_verbs: vec![
+                "attach-gdb",
+                "fork-debug",
+                "goto",
+                "reverse-step",
+                "reverse-continue",
+                "exec",
+                "pty",
+                "ssh",
+            ],
             cli_holds_debug_state: false,
             delegates_to_session_commands: true,
             delegates_to_gdbstub_proxy: true,
@@ -2036,7 +2079,16 @@ impl DebugCliSurfaceContract {
     pub fn has_required_interactive_verbs(&self) -> bool {
         debug_labels_contain_all(
             &self.interactive_verbs,
-            &["attach-gdb", "goto", "reverse-step", "reverse-continue"],
+            &[
+                "attach-gdb",
+                "fork-debug",
+                "goto",
+                "reverse-step",
+                "reverse-continue",
+                "exec",
+                "pty",
+                "ssh",
+            ],
         )
     }
 
@@ -2119,6 +2171,10 @@ pub struct DebugGotoReport {
     pub target_coordinate: DebugCoordinate,
     /// Configuration reached by the operation.
     pub target_configuration: ContentHash,
+    /// Scheduler virtual time at the landed runtime boundary.
+    pub landed_virtual_time: VirtualTime,
+    /// Number of schedule decisions in the landed runtime prefix.
+    pub landed_schedule_prefix_len: usize,
     /// Configuration restored before forward replay.
     pub restore_configuration: ContentHash,
     /// Checkpoint restored before forward replay.
@@ -2131,6 +2187,8 @@ pub struct DebugGotoReport {
     pub target_checkpoint: ContentHash,
     /// Replay-oracle proof that the rewound coordinate matches forward replay.
     pub replay_oracle: ReplayOracleCheck,
+    /// Production gateway-promotion evidence, when a live backend was replaced.
+    pub live_reposition: Option<DebugRuntimeRepositionReport>,
 }
 
 impl DebugGotoReport {
@@ -2148,6 +2206,171 @@ impl DebugGotoReport {
     #[must_use]
     pub fn used_restore_then_replay(&self) -> bool {
         self.restore_configuration != self.target_configuration && self.replay_suffix_decisions > 0
+    }
+}
+
+/// Backend request to replace the live debug runtime at a resolved graph coordinate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugRuntimeRepositionRequest {
+    /// Node whose live QEMU process and gateway backend are replaced.
+    pub node: NodeId,
+    /// Configuration currently owned by the live runtime.
+    pub current_configuration: ContentHash,
+    /// Private QEMU endpoint currently selected by the debugger gateway.
+    pub current_qemu_gdbstub: DebugGdbEndpoint,
+    /// Complete target configuration the backend must instantiate.
+    pub target: Configuration,
+    /// Configuration whose checkpoint must be restored before replay.
+    pub restore_configuration: ContentHash,
+    /// Fat checkpoint the backend must restore before replay.
+    pub restore_checkpoint: ContentHash,
+    /// Fat checkpoint expected after replay reaches the target.
+    pub target_checkpoint: ContentHash,
+    /// Runtime state whose scheduler, event-log, and node coordinates must be realized.
+    pub target_runtime: RuntimeState,
+    /// Fat/thin replay-oracle proof binding the target checkpoint to the target configuration.
+    pub replay_oracle: ReplayOracleCheck,
+}
+
+impl DebugRuntimeRepositionRequest {
+    /// Builds a backend request from a graph-level `goto` plan and its target configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointConfigurationMismatch`] when `target`
+    /// does not match the configuration named by `goto`.
+    pub fn from_goto(
+        target: Configuration,
+        goto: &DebugGotoReport,
+        node: NodeId,
+        current_qemu_gdbstub: DebugGdbEndpoint,
+    ) -> Result<Self, EngineError> {
+        if target.id() != goto.target_configuration {
+            return Err(EngineError::CheckpointConfigurationMismatch {
+                checkpoint: goto.target_checkpoint,
+                expected: goto.target_configuration,
+                actual: target.id(),
+            });
+        }
+        if !goto.proves_replay_oracle() {
+            return Err(EngineError::ReplayOracleMismatch {
+                checkpoint: goto.target_checkpoint,
+                expected: goto.replay_oracle.thin_checkpoint,
+                actual: goto.replay_oracle.fat_checkpoint,
+            });
+        }
+        Ok(Self {
+            node,
+            current_configuration: goto.current_configuration,
+            current_qemu_gdbstub,
+            target,
+            restore_configuration: goto.restore_configuration,
+            restore_checkpoint: goto.restore_checkpoint,
+            target_checkpoint: goto.target_checkpoint,
+            target_runtime: goto.runtime.runtime.clone(),
+            replay_oracle: goto.replay_oracle.clone(),
+        })
+    }
+
+    /// Returns whether the request carries a complete target replay-oracle proof.
+    #[must_use]
+    pub fn proves_target_oracle(&self) -> bool {
+        self.target_runtime.configuration == self.target.id()
+            && self.replay_oracle.configuration == self.target.id()
+            && self.replay_oracle.fat_checkpoint == self.target_checkpoint
+            && self.replay_oracle.thin_checkpoint == self.target_checkpoint
+    }
+}
+
+/// Backend evidence that an atomic live-runtime replacement completed.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugRuntimeRepositionReport {
+    /// Node whose replacement was promoted by the debugger gateway.
+    pub node: NodeId,
+    /// Configuration replaced by the operation.
+    pub previous_configuration: ContentHash,
+    /// Configuration now owned by the live runtime.
+    pub target_configuration: ContentHash,
+    /// Fat checkpoint verified after replay reached the target.
+    pub target_checkpoint: ContentHash,
+    /// Private QEMU endpoint promoted by the debugger gateway.
+    pub qemu_gdbstub: DebugGdbEndpoint,
+    /// Nonzero gateway generation returned by the committed prepare transaction.
+    pub gateway_generation: u64,
+    /// How the replaced world was deauthorized after gateway promotion.
+    pub retired_world_cleanup: DebugRetiredWorldCleanup,
+}
+
+/// Teardown evidence for a world retired by debugger runtime replacement.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DebugRetiredWorldCleanup {
+    /// Every old QEMU child completed the normal shutdown and reap ladder.
+    Reaped,
+    /// Runtime authority was detached, but process cleanup was not observed.
+    DetachedCleanupPending {
+        /// Bounded diagnostic from the failed observed shutdown ladder.
+        diagnostic: String,
+    },
+}
+
+impl DebugRetiredWorldCleanup {
+    /// Returns whether the retired world no longer has scheduler or gateway authority.
+    ///
+    /// This proof concerns Crucible control authority only. A
+    /// [`Self::DetachedCleanupPending`] result deliberately makes no claim that
+    /// every operating-system process has exited or been reaped.
+    #[must_use]
+    pub const fn proves_deauthorization(&self) -> bool {
+        true
+    }
+}
+
+impl DebugRuntimeRepositionReport {
+    /// Builds a success report for a gateway promotion.
+    #[must_use]
+    pub fn completed(
+        request: &DebugRuntimeRepositionRequest,
+        qemu_gdbstub: DebugGdbEndpoint,
+        gateway_generation: u64,
+    ) -> Self {
+        Self::completed_with_cleanup(
+            request,
+            qemu_gdbstub,
+            gateway_generation,
+            DebugRetiredWorldCleanup::Reaped,
+        )
+    }
+
+    /// Builds a success report with explicit retired-world cleanup evidence.
+    #[must_use]
+    pub fn completed_with_cleanup(
+        request: &DebugRuntimeRepositionRequest,
+        qemu_gdbstub: DebugGdbEndpoint,
+        gateway_generation: u64,
+        retired_world_cleanup: DebugRetiredWorldCleanup,
+    ) -> Self {
+        Self {
+            node: request.node.clone(),
+            previous_configuration: request.current_configuration,
+            target_configuration: request.target.id(),
+            target_checkpoint: request.target_checkpoint,
+            qemu_gdbstub,
+            gateway_generation,
+            retired_world_cleanup,
+        }
+    }
+
+    /// Returns whether this report proves completion of exactly `request`.
+    #[must_use]
+    pub fn proves(&self, request: &DebugRuntimeRepositionRequest) -> bool {
+        request.proves_target_oracle()
+            && self.node == request.node
+            && self.previous_configuration == request.current_configuration
+            && self.target_configuration == request.target.id()
+            && self.target_checkpoint == request.target_checkpoint
+            && self.qemu_gdbstub != request.current_qemu_gdbstub
+            && self.gateway_generation != 0
+            && self.retired_world_cleanup.proves_deauthorization()
     }
 }
 
@@ -2600,7 +2823,7 @@ impl DebugWholeWorldTimeTravelReport {
 /// Non-zero opportunistic checkpoint stride for debug time travel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DebugCheckpointStride {
-    pub(super) every: NonZeroUsize,
+    every: NonZeroUsize,
 }
 
 impl DebugCheckpointStride {

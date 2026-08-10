@@ -1,14 +1,17 @@
-##! protobuf — Protocol Buffers compiler (pre-built binary)
+##! protobuf — Protocol Buffers compiler and C++ runtime
 ##!
-##! Uses a pre-built protoc binary, patchelf'd for AOS.
-##! protoc is only needed as a build tool for Rust/Go crates that
-##! generate code from .proto files.
+##! Built from the complete upstream source release with the AOS C++
+##! toolchain. The compiler is used by Rust and Go packages that generate code
+##! from .proto files; the installed libraries and headers support native C++
+##! consumers too.
 {
   mkDerivation,
   fetchurl,
-  patchelf,
-  python3,
-  bootstrapTools,
+  cmake,
+  gnumake,
+  pkg-config,
+  abseil-cpp,
+  zlib,
 }: let
   version = "29.5";
 in
@@ -18,47 +21,106 @@ in
 
     src = fetchurl {
       urls = [
-        "https://github.com/protocolbuffers/protobuf/releases/download/v${version}/protoc-${version}-linux-x86_64.zip"
+        "https://github.com/protocolbuffers/protobuf/releases/download/v${version}/protobuf-${version}.tar.gz"
       ];
-      hash = "sha256-o/CUNjzSBcb3rw0bkwXLTIUXBD8mXNsYjwmMrpPoshc=";
+      hash = "sha256-oZHSr911mXuln2IBlCUBZwPa7TVqnZL3Ql9HQUOa5UQ=";
     };
 
     buildDeps = [
-      patchelf
-      python3
+      cmake
+      gnumake
+      pkg-config
     ];
-    runtimeDeps = [];
+    runtimeDeps = [
+      abseil-cpp
+      zlib
+    ];
+    propagatedDeps = [
+      abseil-cpp
+      zlib
+    ];
 
     phases = [
       {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd protobuf-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          mkdir build
+          cd build
+          cmake .. \
+            -DCMAKE_INSTALL_PREFIX=$out \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DBUILD_SHARED_LIBS=ON \
+            -Dprotobuf_ABSL_PROVIDER=package \
+            -Dabsl_DIR=${abseil-cpp}/lib/cmake/absl \
+            -Dprotobuf_BUILD_TESTS=OFF \
+            -Dprotobuf_BUILD_EXAMPLES=OFF \
+            -Dprotobuf_WITH_ZLIB=ON \
+            -DZLIB_ROOT=${zlib}
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          cmake --build . -j$NIX_BUILD_CORES
+        '';
+      }
+      {
         name = "install";
         script = ''
-          mkdir -p $out
+          cmake --install .
 
-          # Extract zip using python3 (no unzip in AOS yet)
-          python3 -c "
-          import zipfile, sys
-          with zipfile.ZipFile(sys.argv[1]) as z:
-              z.extractall(sys.argv[2])
-          " $src $out
+          config=$out/lib/cmake/protobuf/protobuf-config.cmake
+          sed -i "1i set(ZLIB_ROOT \"${zlib}\")" "$config"
+          sed -i "1i set(utf8_range_DIR \"$out/lib/cmake/utf8_range\")" "$config"
+          sed -i "1i set(absl_DIR \"${abseil-cpp}/lib/cmake/absl\")" "$config"
 
-          chmod +x $out/bin/protoc
-
-          # Patchelf if dynamically linked; skip if static
-          if readelf -l $out/bin/protoc 2>/dev/null | grep -q "INTERP"; then
-            INTERP=$(cat ${bootstrapTools}/nix-support/dynamic-linker)
-            RPATH="${bootstrapTools}/lib"
-            patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" $out/bin/protoc
-          fi
-
-          # Verify it runs
           $out/bin/protoc --version
+
+          mkdir -p "$TMPDIR/protobuf-consumer"
+          cd "$TMPDIR/protobuf-consumer"
+          cat > smoke.proto <<'EOF'
+          syntax = "proto3";
+          package aos.protobuf.smoke;
+          message Probe { string value = 1; }
+          EOF
+          $out/bin/protoc --cpp_out=. smoke.proto
+          cat > main.cc <<'EOF'
+          #include "smoke.pb.h"
+
+          int main() {
+            aos::protobuf::smoke::Probe probe;
+            probe.set_value("source-built");
+            return probe.value() == "source-built" ? 0 : 1;
+          }
+          EOF
+          cat > CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.16)
+          project(aos_protobuf_consumer LANGUAGES CXX)
+          find_package(Protobuf CONFIG REQUIRED)
+          add_executable(protobuf-consumer main.cc smoke.pb.cc)
+          target_link_libraries(protobuf-consumer PRIVATE protobuf::libprotobuf)
+          EOF
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DProtobuf_DIR=$out/lib/cmake/protobuf
+          cmake --build build -j$NIX_BUILD_CORES
+          LD_LIBRARY_PATH="$out/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            build/protobuf-consumer
         '';
       }
     ];
 
     meta = {
-      description = "Protocol Buffers compiler (pre-built binary)";
+      description = "Protocol Buffers compiler and C++ runtime";
       homepage = "https://protobuf.dev";
       license = "BSD-3-Clause";
     };

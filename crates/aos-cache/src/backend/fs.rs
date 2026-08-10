@@ -1,5 +1,6 @@
 //! Filesystem (`file://`) cache backend.
 
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -7,8 +8,9 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 
 use aos_net::{TransferEngine, TransferRequest};
+use sha2::{Digest as _, Sha256};
 
-use super::{CacheBackend, add_static_metadata_headers};
+use super::{CacheBackend, StaticFileIdentity, add_static_metadata_headers};
 
 /// Filesystem cache backend.
 ///
@@ -46,6 +48,39 @@ impl FsBackend {
 impl CacheBackend for FsBackend {
     async fn exists(&self, relative_path: &str) -> Result<bool> {
         Ok(self.root.join(relative_path).exists())
+    }
+
+    async fn static_file_identity(
+        &self,
+        relative_path: &str,
+    ) -> Result<Option<StaticFileIdentity>> {
+        let path = self.root.join(relative_path);
+        let mut file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error).with_context(|| format!("opening {}", path.display())),
+        };
+        let metadata = file
+            .metadata()
+            .with_context(|| format!("stat {}", path.display()))?;
+        if !metadata.is_file() {
+            return Ok(None);
+        }
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 128 * 1024];
+        loop {
+            let count = file
+                .read(&mut buffer)
+                .with_context(|| format!("reading {}", path.display()))?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+        }
+        Ok(Some(StaticFileIdentity {
+            byte_size: metadata.len(),
+            sha256: hex::encode(hasher.finalize()),
+        }))
     }
 
     async fn has_narinfo(&self, store_hash: &str) -> Result<bool> {
@@ -162,10 +197,18 @@ impl CacheBackend for FsBackend {
         source: &std::path::Path,
         content_type: Option<&str>,
         cache_control: Option<&str>,
+        content_disposition: Option<&str>,
+        sha256: Option<&str>,
     ) -> Result<()> {
         let url = self.file_url(relative_path);
         let mut req = TransferRequest::put_file(&url, source.to_path_buf());
-        add_static_metadata_headers(&mut req, content_type, cache_control);
+        add_static_metadata_headers(
+            &mut req,
+            content_type,
+            cache_control,
+            content_disposition,
+            sha256,
+        );
         self.engine
             .execute(req)
             .await

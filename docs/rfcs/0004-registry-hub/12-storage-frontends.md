@@ -4,7 +4,10 @@
   cache + registry bucket-direct resolvers, the instance-default and org
   custom-binding WebUI, and the security gate are all in and green; see the
   implementation checklist at the bottom for the per-item state and the small
-  remaining polish.
+  remaining polish. Its binding-frontend inheritance target is superseded by
+  [RFC-0012](../0012-hub-surface-topology/README.md), which models explicit
+  placements, storage gateways, and materialized delivery routes. This file
+  remains the historical record for shipped behavior until that migration.
 - **Builds on:** [`01-architecture.md`](01-architecture.md) (a control plane
   over a *static data plane*), [`03-api-storage-frontends.md`](03-api-storage-frontends.md)
   (`StorageBinding`, shared buckets, direct/proxied frontends), and

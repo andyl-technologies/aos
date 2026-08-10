@@ -124,6 +124,15 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         _ => None,
     };
+    if let Some(plan) = &fuzz_plan
+        && !plan.family.is_builtin_fault_campaign()
+    {
+        load_fuzz_family(plan)?;
+    }
+    let debug_plan = match &cli.command {
+        Commands::Debug(args) => Some(plan_debug_invocation(cli, args)?),
+        _ => None,
+    };
     let emit_human = should_emit_human_dispatch_output(cli);
     if let Some(plan) = &ergonomics_plan {
         execute_determinism_ergonomics_plan(plan, &mut NullDeterminismErgonomicsRecorder)?;
@@ -136,6 +145,36 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     }
     if let Some(backend_plan) = plan_backend_selection(cli)? {
         execute_backend_selection_plan(&backend_plan, cli.quiet, &mut NullBackendRouteRecorder)?;
+        if let Some(plan) = &debug_plan {
+            if cli.daemon.is_some() {
+                return run_remote_debug_relay(cli, plan);
+            }
+            let backend = require_selftest_qemu_backend(cli)?;
+            let lines = run_local_qemu_debug_workflow(&backend, plan)?;
+            let mut outcome = execute_backend_routed_command(
+                &thin_plan,
+                &backend_plan,
+                ergonomics_plan.as_ref(),
+                None,
+                None,
+                None,
+                &mut NullBackendCommandRunner,
+            )?;
+            for line in &lines {
+                let (kind, summary) = line.split_once('\t').unwrap_or(("debug", line));
+                outcome.canonical_log.push(CanonicalLogEntry {
+                    sequence: outcome.canonical_log.len() as u64,
+                    virtual_time_ticks: outcome.canonical_log.len() as u64,
+                    node: String::from("debugger"),
+                    kind: kind.to_string(),
+                    summary: summary.to_string(),
+                });
+            }
+            outcome.stdout.extend(lines);
+            outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+            emit_backend_command_output(cli, &outcome)?;
+            return Ok(());
+        }
         if let Some(resume_plan) = &resume_plan {
             if backend_plan.target == BackendExecutionTarget::Local {
                 let outcome = match backend_plan.resolved_backend.as_ref() {
@@ -306,42 +345,74 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 None => return Err(unsupported_fuzz_backend_error(fuzz_plan)),
             }
         }
-        let mut outcome = execute_backend_routed_command(
-            &thin_plan,
-            &backend_plan,
-            ergonomics_plan.as_ref(),
-            run_plan
-                .as_ref()
-                .or_else(|| save_plan.as_ref().map(|plan| &plan.run_plan)),
-            verify_plan.as_ref(),
-            save_plan.as_ref(),
-            &mut NullBackendCommandRunner,
-        )?;
-        #[cfg(any(test, feature = "test-double"))]
-        if matches!(
-            &cli.command,
-            Commands::Run(RunArgs {
-                emit_mock_failure_artifact: true,
-                ..
-            })
-        ) {
-            mark_mock_failure_outcome(cli, &backend_plan, &mut outcome, ergonomics_plan.as_ref())?;
-        }
-        if emit_human && backend_plan.should_announce(cli.quiet) {
-            println!("{}", backend_plan.announcement());
-        }
-        if let Some(save_plan) = &save_plan {
-            export_savepoint_handle(save_plan, &mut outcome)?;
-        }
-        emit_backend_command_output(cli, &outcome)?;
-        if outcome.status.is_non_passing() {
-            return Err(CliError::Outcome(outcome.status));
+        if !matches!(&cli.command, Commands::Replay(_)) {
+            let execution = execute_backend_routed_command(
+                &thin_plan,
+                &backend_plan,
+                ergonomics_plan.as_ref(),
+                run_plan
+                    .as_ref()
+                    .or_else(|| save_plan.as_ref().map(|plan| &plan.run_plan)),
+                verify_plan.as_ref(),
+                save_plan.as_ref(),
+                &mut NullBackendCommandRunner,
+            );
+            let mut outcome = match execution {
+                Err(CliError::SaveWorkflowTrace { source, trace }) => {
+                    let save_plan = save_plan.as_ref().ok_or_else(|| {
+                        backend_error("save workflow trace escaped a non-save command")
+                    })?;
+                    emit_save_workflow_failure_trace(
+                        cli,
+                        &thin_plan,
+                        &backend_plan,
+                        ergonomics_plan.as_ref(),
+                        save_plan,
+                        &trace,
+                        &source,
+                    )?;
+                    return Err(*source);
+                }
+                Err(error) => return Err(error),
+                Ok(outcome) => outcome,
+            };
+            #[cfg(any(test, feature = "test-double"))]
+            if matches!(
+                &cli.command,
+                Commands::Run(RunArgs {
+                    emit_mock_failure_artifact: true,
+                    ..
+                })
+            ) {
+                mark_mock_failure_outcome(
+                    cli,
+                    &backend_plan,
+                    &mut outcome,
+                    ergonomics_plan.as_ref(),
+                )?;
+            }
+            if emit_human && backend_plan.should_announce(cli.quiet) {
+                println!("{}", backend_plan.announcement());
+            }
+            if let Some(save_plan) = &save_plan {
+                export_savepoint_handle(save_plan, &mut outcome)?;
+            }
+            emit_backend_command_output(cli, &outcome)?;
+            if outcome.status.is_non_passing() {
+                return Err(CliError::Outcome(outcome.status));
+            }
         }
     }
 
     match &cli.command {
         Commands::Replay(args) => {
-            let report = replay_reproduction_artifact(cli, args)?;
+            let report = match replay_reproduction_artifact(cli, args) {
+                Ok(report) => report,
+                Err(error) => {
+                    emit_replay_error_output(cli, args, &error)?;
+                    return Err(error);
+                }
+            };
             emit_replay_report_output(cli, &report)?;
             if let Some(check) = &report.check
                 && let Some(mismatch) = &check.mismatch
@@ -358,28 +429,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Run(_) => Ok(()),
         Commands::Selftest(args) => {
             let report = run_selftest(cli, args)?;
-            if !cli.quiet {
-                for gate in &report.gates {
-                    println!(
-                        "crucible: selftest gate={} status={} runner={} corpus={} runs-per-entry={} qemu={} live-icount={} live-fingerprint={}",
-                        gate.name,
-                        gate.status.label(),
-                        gate.runner.label(),
-                        gate.corpus_entries,
-                        gate.runs_per_entry,
-                        gate.qemu_build_id.as_deref().unwrap_or("none"),
-                        gate.live_qemu_icount
-                            .map_or_else(|| String::from("none"), |value| value.to_string()),
-                        gate.live_qemu_fingerprint.as_deref().unwrap_or("none")
-                    );
-                }
-                for verified in report.verified {
-                    println!(
-                        "crucible: selftest {} PASS runs={}",
-                        verified.scenario_name, verified.runs
-                    );
-                }
-            }
+            emit_selftest_report(cli, &report)?;
             Ok(())
         }
         Commands::Verify(_)
@@ -388,6 +438,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         | Commands::Fork(_)
         | Commands::Search(_)
         | Commands::Fuzz(_)
+        | Commands::Debug(_)
         | Commands::Serve(_) => Ok(()),
         Commands::Completions(args) => {
             write_completions(args.shell, &mut io::stdout());
@@ -422,15 +473,60 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
             Ok(())
         }
-        Commands::Debug(args) => {
-            let plan = plan_debug_invocation(cli, args)?;
-            let backend = require_selftest_qemu_backend(cli)?;
-            for line in run_local_qemu_debug_workflow(&backend, &plan)? {
-                println!("{line}");
-            }
-            Ok(())
-        }
     }
+}
+
+fn emit_selftest_report(cli: &Cli, report: &SelftestReport) -> Result<(), CliError> {
+    let mut entries = Vec::with_capacity(report.gates.len() + report.verified.len() + 1);
+    for gate in &report.gates {
+        entries.push(CanonicalLogEntry {
+            sequence: entries.len() as u64,
+            virtual_time_ticks: entries.len() as u64,
+            node: String::from("selftest"),
+            kind: String::from("selftest_gate"),
+            summary: format!(
+                "gate={} status={} runner={} corpus={} runs-per-entry={} qemu={} live-icount={} live-fingerprint={}",
+                gate.name,
+                gate.status.label(),
+                gate.runner.label(),
+                gate.corpus_entries,
+                gate.runs_per_entry,
+                gate.qemu_build_id.as_deref().unwrap_or("none"),
+                gate.live_qemu_icount
+                    .map_or_else(|| String::from("none"), |value| value.to_string()),
+                gate.live_qemu_fingerprint.as_deref().unwrap_or("none")
+            ),
+        });
+    }
+    for verified in &report.verified {
+        entries.push(CanonicalLogEntry {
+            sequence: entries.len() as u64,
+            virtual_time_ticks: entries.len() as u64,
+            node: String::from("selftest"),
+            kind: String::from("selftest_scenario"),
+            summary: format!(
+                "scenario={} status=PASS runs={}",
+                verified.scenario_name, verified.runs
+            ),
+        });
+    }
+    let digest = canonical_log_digest(&entries);
+    entries.push(CanonicalLogEntry {
+        sequence: entries.len() as u64,
+        virtual_time_ticks: entries.len() as u64,
+        node: String::from("cli"),
+        kind: String::from("final_outcome"),
+        summary: format!(
+            "subcommand=selftest status=passed exit_code=0 canonical_log={digest} artifact=none"
+        ),
+    });
+    emit_canonical_trace(
+        cli.output_format(),
+        &entries,
+        cli.trace.as_deref(),
+        !cli.quiet,
+    )?;
+    Ok(())
 }
 
 #[path = "dispatch/support.rs"]

@@ -379,13 +379,26 @@ impl OwnedCallbackRuntimeState {
                 marker_ring.entries.len(),
             )
         };
+        let guest_introspection_rings = state
+            .setup
+            .mapped_region_mut()
+            .plugin_guest_introspection_rings_mut(args.slot())
+            .map_err(
+                |source| live_whitebox::LiveWhiteboxError::MappedGuestIntrospectionRings { source },
+            )?;
+        let guest_introspection_rings = {
+            // SAFETY: the pinned runtime retains the setup mapping for the
+            // entire callback lifetime and installs exactly one plugin-side
+            // role handle.
+            unsafe { guest_introspection_rings.detach_for_mapping_lifetime() }
+        };
         let callback_state = live_whitebox::LiveWhiteboxState::new(
             apis,
             live_whitebox::LiveWhiteboxTarget::new(target_architecture, args.whitebox_setup()),
             vcpu_count,
             icount_raw,
             request_shutdown,
-            marker_output,
+            live_whitebox::LiveWhiteboxShmem::new(marker_output, guest_introspection_rings),
             args.app_random(),
         )?;
         let mut callback_state = Box::pin(callback_state);

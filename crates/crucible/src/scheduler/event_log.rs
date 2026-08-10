@@ -1,6 +1,8 @@
 //! Quantum-loop contracts plus canonical scheduler event-log storage and projections.
 
 use super::*;
+use crate::{DebugCoordinate, RuntimeState};
+use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod backend_loop;
 mod observation_append;
 pub use backend_loop::{
@@ -89,6 +91,25 @@ pub trait QuantumLoop {
         Ok(VirtualTime { ticks: at.retired })
     }
 
+    /// Projects a backend observation's physical counter onto scheduler time.
+    ///
+    /// Backends whose counters share the scheduler origin use the identity
+    /// projection. Production VM schedulers override this for ready-point and
+    /// restart counter origins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the node is unknown or the physical
+    /// counter cannot be projected onto the scheduler timeline.
+    fn backend_observation_time(
+        &self,
+        node: &NodeId,
+        at: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let _ = node;
+        Ok(at)
+    }
+
     /// Samples a deterministic execution fingerprint for `node`.
     ///
     /// Backends that do not own concrete VM state use the default unsupported
@@ -106,6 +127,122 @@ pub trait QuantumLoop {
             capability: "sample_fingerprint",
         }
         .into())
+    }
+
+    /// Binds the completed backend boundary to its exact graph runtime identity.
+    ///
+    /// Live debugger implementations use this post-materialization hook to seal
+    /// backend fingerprints to the content-addressed node blobs and runtime ID
+    /// produced by the temporal graph. Pure loops may retain the no-op default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the supplied runtime does not describe
+    /// the loop's most recently completed boundary.
+    fn bind_debug_runtime_evidence(
+        &mut self,
+        configuration: &Configuration,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        let _ = configuration;
+        Ok(runtime.clone())
+    }
+
+    /// Resolves graph materialization to a previously bound backend boundary.
+    ///
+    /// Live debugger implementations use this hook before a runtime
+    /// reposition so production-only scheduler and event-log state remains
+    /// part of the replay oracle. Pure loops retain the graph runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no unique backend boundary matches the
+    /// supplied graph runtime.
+    fn resolve_debug_runtime_evidence(
+        &self,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        Ok(runtime.clone())
+    }
+
+    /// Resolves production evidence for one requested debugger coordinate.
+    ///
+    /// Event-log coordinates may identify distinct live boundaries whose graph
+    /// configuration is identical. Backends that retain boundary-indexed
+    /// evidence override this hook; pure loops retain graph runtime state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no recorded backend boundary can satisfy
+    /// the coordinate and graph runtime together.
+    fn resolve_debug_coordinate_runtime_evidence(
+        &self,
+        coordinate: &DebugCoordinate,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        let _ = coordinate;
+        self.resolve_debug_runtime_evidence(runtime)
+    }
+
+    /// Resolves the scheduler-owned frontier for a debugger coordinate.
+    ///
+    /// Production loops may retain logical VM clocks that are not represented
+    /// by temporal-graph configuration changes. Pure loops keep the graph
+    /// frontier supplied by the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no recorded backend boundary matches
+    /// the resolved coordinate runtime.
+    fn resolve_debug_coordinate_frontier(
+        &self,
+        coordinate: &DebugCoordinate,
+        runtime: &RuntimeState,
+        graph_fallback: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let _ = (coordinate, runtime);
+        Ok(graph_fallback)
+    }
+
+    /// Returns the next GDB run-control packet awaiting scheduler admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the mediated gateway cannot be polled.
+    fn poll_gdb_run_control(&mut self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        Ok(None)
+    }
+
+    /// Delivers the scheduler's RSP completion to the mediated GDB connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the gateway cannot deliver the response.
+    fn complete_gdb_run_control(&mut self, response: &[u8]) -> Result<(), SchedulerError> {
+        let _ = response;
+        Err(BackendError::Unsupported {
+            capability: "complete_gdb_run_control",
+        }
+        .into())
+    }
+
+    /// Acquires debugger-gateway ownership for an internal scheduler run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when operator RSP state cannot be suspended
+    /// at a clean packet boundary.
+    fn acquire_internal_debug_run(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
+    /// Releases debugger-gateway ownership after an internal scheduler run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when operator RSP state cannot be restored.
+    fn release_internal_debug_run(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
     }
 
     /// Applies scheduler-owned control at the current boundary.
@@ -127,6 +264,22 @@ pub trait QuantumLoop {
         Ok(Vec::new())
     }
 
+    /// Appends non-canonical debugger metadata to the scheduler-owned log.
+    ///
+    /// The session and scheduler must advance from the same dense offset before
+    /// fork-time guest activation is allowed to drive another quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the entries are not dense at the current
+    /// scheduler offset or fail event-log validation.
+    fn append_noncanonical_debug_event_log_entries(
+        &mut self,
+        entries: Vec<SchedulerEventLogEntry>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        Ok(entries)
+    }
+
     /// Opens the optional backend gdbstub channel outside scheduler order.
     ///
     /// Pure loops and backends without a real mediated gdbstub use the default
@@ -145,6 +298,79 @@ pub trait QuantumLoop {
         let _ = listen;
         Err(BackendError::Unsupported {
             capability: "open_gdbstub",
+        }
+        .into())
+    }
+
+    /// Activates a node's dormant debug guest agent after a non-canonical fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the backend does not provide the fixed
+    /// activation transport or rejects the request.
+    fn activate_debug_guest(&mut self, node: NodeId) -> Result<(), SchedulerError> {
+        let _ = node;
+        Err(BackendError::Unsupported {
+            capability: "activate_debug_guest",
+        }
+        .into())
+    }
+
+    /// Sends one request to a node's out-of-band debug guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the backend does not support guest
+    /// introspection or rejects the bounded request.
+    fn send_guest_introspection(
+        &mut self,
+        node: NodeId,
+        record: GuestIntrospectionRecord,
+    ) -> Result<(), SchedulerError> {
+        let _ = node;
+        let _ = record;
+        Err(BackendError::Unsupported {
+            capability: "send_guest_introspection",
+        }
+        .into())
+    }
+
+    /// Receives one available response from a node's out-of-band debug guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the backend does not support guest
+    /// introspection or the bounded response is malformed.
+    fn receive_guest_introspection(
+        &mut self,
+        node: NodeId,
+    ) -> Result<Option<GuestIntrospectionRecord>, SchedulerError> {
+        let _ = node;
+        Err(BackendError::Unsupported {
+            capability: "receive_guest_introspection",
+        }
+        .into())
+    }
+
+    /// Atomically replaces the live runtime at a resolved debugger coordinate.
+    ///
+    /// Implementations must leave the current runtime usable when candidate
+    /// instantiation, replay, verification, or replacement fails. A successful
+    /// return means the old runtime has been replaced and the new runtime is
+    /// paused at the requested target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the candidate runtime cannot be built,
+    /// replayed, verified, or installed. Loops without an owned live runtime
+    /// return an unsupported-capability error.
+    fn reposition_debug_runtime(
+        &mut self,
+        request: DebugRuntimeRepositionRequest,
+    ) -> Result<DebugRuntimeRepositionReport, SchedulerError> {
+        let _ = request;
+        Err(BackendError::Unsupported {
+            capability: "reposition_debug_runtime",
         }
         .into())
     }
@@ -1789,122 +2015,7 @@ pub fn assertion_proximity_fingerprint_from_event_log(
     event_log_assertion_proximity_projection(entries).content_hash()
 }
 
-pub(super) fn event_log_coverage_entry(
-    raw_index: usize,
-    entry: &SchedulerEventLogEntry,
-) -> Option<EventLogCoverageProjectionEntry> {
-    let observation = match entry.payload() {
-        SchedulerEventLogPayload::Observable(ObservableEventPayload::CoverageBlock {
-            node,
-            guest_pc,
-            block_len,
-            ..
-        }) => EventLogCoverageObservation::BasicBlock {
-            node: node.clone(),
-            guest_pc: *guest_pc,
-            block_len: *block_len,
-        },
-        SchedulerEventLogPayload::Observable(ObservableEventPayload::CoverageMarker {
-            node,
-            marker,
-            ..
-        }) => EventLogCoverageObservation::Named {
-            node: node.clone(),
-            marker: marker.clone(),
-        },
-        SchedulerEventLogPayload::ResolvedHappening(_)
-        | SchedulerEventLogPayload::Decision(_)
-        | SchedulerEventLogPayload::Observable(_)
-        | SchedulerEventLogPayload::EvaluationBoundary(_)
-        | SchedulerEventLogPayload::TriggerFired(_)
-        | SchedulerEventLogPayload::TriggerActionApplied(_)
-        | SchedulerEventLogPayload::FaultObservation(_)
-        | SchedulerEventLogPayload::Diagnostic(_) => return None,
-    };
-    Some(EventLogCoverageProjectionEntry {
-        raw_index,
-        at: entry.time().icount.clone(),
-        source: entry.source().clone(),
-        observation,
-    })
-}
+#[path = "event_log/projection_material.rs"]
+mod projection_material;
 
-pub(super) fn event_log_assertion_proximity_entry(
-    raw_index: usize,
-    entry: &SchedulerEventLogEntry,
-) -> Option<EventLogAssertionProximityProjectionEntry> {
-    let SchedulerEventLogPayload::Observable(ObservableEventPayload::AssertionProximity {
-        assertion,
-        quantifier,
-        distance,
-        node,
-    }) = entry.payload()
-    else {
-        return None;
-    };
-    Some(EventLogAssertionProximityProjectionEntry {
-        raw_index,
-        at: entry.time().icount.clone(),
-        source: entry.source().clone(),
-        assertion: assertion.clone(),
-        quantifier: *quantifier,
-        distance: *distance,
-        node: node.clone(),
-    })
-}
-
-pub(super) fn assertion_proximity_entry_is_better(
-    candidate: &EventLogAssertionProximityProjectionEntry,
-    current: &EventLogAssertionProximityProjectionEntry,
-) -> bool {
-    candidate
-        .distance
-        .cmp(&current.distance)
-        .then_with(|| candidate.at.icount.retired.cmp(&current.at.icount.retired))
-        .then_with(|| candidate.raw_index.cmp(&current.raw_index))
-        .is_lt()
-}
-
-pub(super) fn event_log_assertion_proximity_minimum_material(
-    entry: &EventLogAssertionProximityProjectionEntry,
-) -> String {
-    let node_material = match &entry.node {
-        Some(node) => format!(
-            "node=some\nnode_len={}\nnode={}",
-            node.name.len(),
-            node.name
-        ),
-        None => String::from("node=none"),
-    };
-    format!(
-        "assertion_len={}\nassertion={}\nquantifier={}\ndistance={}\n{}",
-        entry.assertion.name.len(),
-        entry.assertion.name,
-        assertion_quantifier_kind_label(entry.quantifier),
-        entry.distance,
-        node_material,
-    )
-}
-
-pub(super) fn event_log_coverage_observation_material(
-    entry: &EventLogCoverageProjectionEntry,
-) -> String {
-    match &entry.observation {
-        EventLogCoverageObservation::BasicBlock {
-            node,
-            guest_pc,
-            block_len,
-        } => format!(
-            "kind=basic_block\nnode_len={}\nnode={}\nguest_pc={guest_pc}\nblock_len={block_len}",
-            node.name.len(),
-            node.name
-        ),
-        EventLogCoverageObservation::Named { node, marker } => format!(
-            "kind=named\nnode_len={}\nnode={}\nid_len={}\nid={}",
-            node.name.len(),
-            node.name,
-            marker.name.len(),
-            marker.name
-        ),
-    }
-}
+pub(super) use projection_material::*;

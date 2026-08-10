@@ -12,8 +12,13 @@ use crucible_shmem::{
     FAULT_RESULT_SLOT_V1_BYTES, FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE,
     FRAME_ENTRY_ALIGN, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
     FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_PAD_OFFSET, FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE,
-    FRAME_ENTRY_SRC_NODE_OFFSET, HARD_FAULT_PAYLOAD_ARENA_BYTES, KIND_9P, KIND_BLK, KIND_NET,
-    LAYOUT_TARGET_SUPPORTED, LAYOUT_TARGET_TRIPLE, MAX_NODES, MAX_VM_NODES, NODE_SLOT_ALIGN,
+    FRAME_ENTRY_SRC_NODE_OFFSET, GUEST_INTROSPECTION_ENTRY_ALIGN,
+    GUEST_INTROSPECTION_ENTRY_DATA_OFFSET, GUEST_INTROSPECTION_ENTRY_LEN_OFFSET,
+    GUEST_INTROSPECTION_ENTRY_PAD_OFFSET, GUEST_INTROSPECTION_ENTRY_RESERVED_OFFSET,
+    GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET, GUEST_INTROSPECTION_ENTRY_SIZE,
+    GUEST_INTROSPECTION_QUEUE_CAPACITY, GuestIntrospectionEntry, GuestIntrospectionRingDirection,
+    HARD_FAULT_PAYLOAD_ARENA_BYTES, KIND_9P, KIND_BLK, KIND_NET, LAYOUT_TARGET_SUPPORTED,
+    LAYOUT_TARGET_TRIPLE, MAX_NODES, MAX_VM_NODES, NODE_SLOT_ALIGN,
     NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
     NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET, NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET,
     NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
@@ -128,6 +133,14 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET, 4_624);
     assert_eq!(WHITEBOX_MARKER_ENTRY_SIZE, 4_672);
     assert_eq!(WHITEBOX_MARKER_ENTRY_ALIGN, 64);
+    assert_eq!(GUEST_INTROSPECTION_QUEUE_CAPACITY, 64);
+    assert_eq!(GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET, 0);
+    assert_eq!(GUEST_INTROSPECTION_ENTRY_LEN_OFFSET, 8);
+    assert_eq!(GUEST_INTROSPECTION_ENTRY_PAD_OFFSET, 10);
+    assert_eq!(GUEST_INTROSPECTION_ENTRY_DATA_OFFSET, 16);
+    assert_eq!(GUEST_INTROSPECTION_ENTRY_RESERVED_OFFSET, 4_624);
+    assert_eq!(GUEST_INTROSPECTION_ENTRY_SIZE, 4_672);
+    assert_eq!(GUEST_INTROSPECTION_ENTRY_ALIGN, 64);
 }
 
 #[test]
@@ -274,14 +287,91 @@ fn region_layout_computes_offsets_and_directed_rings() {
         layout.fault_event_arena_hdr_off
             + u64::from(layout.fault_event_ring_count) * FAULT_PAYLOAD_ARENA_HEADER_BYTES as u64
     );
+    let fault_event_data_end = layout.fault_event_arena_off
+        + u64::from(layout.fault_event_ring_count) * layout.fault_event_arena_stride;
+    assert_eq!(
+        layout.guest_introspection_ring_count,
+        2 * layout.vm_node_count
+    );
+    assert_eq!(
+        layout.guest_introspection_queue_capacity,
+        GUEST_INTROSPECTION_QUEUE_CAPACITY
+    );
+    assert_eq!(
+        layout.guest_introspection_ring_hdr_off,
+        fault_event_data_end.div_ceil(RING_HEADER_ALIGN as u64) * RING_HEADER_ALIGN as u64
+    );
+    assert_eq!(
+        layout.guest_introspection_ring_data_off,
+        layout.guest_introspection_ring_hdr_off
+            + u64::from(layout.guest_introspection_ring_count) * RING_HEADER_SIZE as u64
+    );
+    assert_eq!(
+        layout.guest_introspection_entry_stride,
+        GUEST_INTROSPECTION_ENTRY_SIZE as u64
+    );
     assert_eq!(
         layout.region_size,
-        layout.fault_event_arena_off
-            + u64::from(layout.fault_event_ring_count) * layout.fault_event_arena_stride
+        layout.guest_introspection_ring_data_off
+            + layout.guest_introspection_entry_count() * layout.guest_introspection_entry_stride
     );
     assert_eq!(
         layout.frame_entry_count(),
         u64::from(layout.ring_count) * u64::from(DEFAULT_QUEUE_CAPACITY)
+    );
+}
+
+#[test]
+fn guest_introspection_rings_are_directional_bounded_and_vm_isolated() {
+    const CLOSE_RECORD: &[u8] =
+        b"CRGI\x01\x00\x07\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+    let mut allocation = match RegionAllocation::new_model(RegionConfig::new(2, 8, 0)) {
+        Ok(allocation) => allocation,
+        Err(error) => panic!("guest-introspection test region should allocate: {error}"),
+    };
+    let request = match GuestIntrospectionEntry::new(1, CLOSE_RECORD) {
+        Ok(entry) => entry,
+        Err(error) => panic!("request entry should fit: {error}"),
+    };
+    let response = match GuestIntrospectionEntry::new(2, CLOSE_RECORD) {
+        Ok(entry) => entry,
+        Err(error) => panic!("response entry should fit: {error}"),
+    };
+
+    assert_eq!(
+        GuestIntrospectionRingDirection::Request.ring_index(0),
+        Some(0)
+    );
+    assert_eq!(
+        GuestIntrospectionRingDirection::Response.ring_index(0),
+        Some(1)
+    );
+    assert_eq!(
+        GuestIntrospectionRingDirection::Request.ring_index(1),
+        Some(2)
+    );
+    assert_eq!(
+        GuestIntrospectionRingDirection::Response.ring_index(1),
+        Some(3)
+    );
+
+    assert_eq!(
+        allocation.enqueue_guest_introspection_request(0, request),
+        Ok(())
+    );
+    assert_eq!(
+        allocation.enqueue_guest_introspection_response(1, response),
+        Ok(())
+    );
+    assert_eq!(allocation.dequeue_guest_introspection_response(0), Ok(None));
+    assert_eq!(allocation.dequeue_guest_introspection_request(1), Ok(None));
+    assert_eq!(
+        allocation.dequeue_guest_introspection_request(0),
+        Ok(Some(request))
+    );
+    assert_eq!(
+        allocation.dequeue_guest_introspection_response(1),
+        Ok(Some(response))
     );
 }
 

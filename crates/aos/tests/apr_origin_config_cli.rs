@@ -13,9 +13,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
-#[path = "support/git_ssh.rs"]
-mod git_ssh;
-
 #[test]
 fn apr_origin_config_requires_registry_config() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
@@ -191,6 +188,60 @@ fn apr_origin_upload_falls_back_to_persisted_upload_urls() -> Result<()> {
         upload_dir.join("HEAD").exists(),
         "uploaded origin surface is missing HEAD in {}",
         upload_dir.display(),
+    );
+
+    Ok(())
+}
+
+#[test]
+fn apr_commit_refuses_unsafe_paths_and_pre_staged_changes() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    if !git_supports_sha256(&home)? {
+        eprintln!("skipping apr commit boundary test: git cannot initialize a sha256 repository");
+        return Ok(());
+    }
+    run_apr(&home, &["create", "core"])?;
+    let registry = registry_dir(&home, "core");
+    write_fixture_package(&registry)?;
+
+    let unsafe_path = run_apr_err(
+        &home,
+        &[
+            "commit",
+            "../outside",
+            "--message",
+            "unsafe path",
+            "--registry",
+            "core",
+        ],
+    )?;
+    assert!(
+        output_text(&unsafe_path).contains("registry-relative path without '.' or '..'"),
+        "{}",
+        output_text(&unsafe_path),
+    );
+
+    git_stdout(
+        &registry,
+        &["add", "packages/f/fixture-tool.toml"],
+        "staging fixture before apr commit",
+    )?;
+    let staged = run_apr_err(
+        &home,
+        &[
+            "commit",
+            "packages/f/fixture-tool.toml",
+            "--message",
+            "must not absorb staged state",
+            "--registry",
+            "core",
+        ],
+    )?;
+    assert!(
+        output_text(&staged).contains("already has staged changes"),
+        "{}",
+        output_text(&staged),
     );
 
     Ok(())
@@ -501,16 +552,20 @@ async fn apr_release_channel_upload_supports_verified_consumer_sync() -> Result<
 
     let maintainer_registry = registry_dir(&maintainer_home, "signed-reg");
     write_fixture_package(&maintainer_registry)?;
-    configure_fixture_git_signing(&maintainer_registry, &key_path)?;
-    git_stdout(
-        &maintainer_registry,
-        &["add", "packages/f/fixture-tool.toml"],
-        "staging signed fixture package",
-    )?;
-    git_stdout(
-        &maintainer_registry,
-        &["commit", "-m", "publish signed fixture package metadata"],
-        "committing signed fixture package",
+    run_apr(
+        &maintainer_home,
+        &[
+            "commit",
+            "packages/f/fixture-tool.toml",
+            "--message",
+            "publish signed fixture package metadata",
+            "--registry",
+            "signed-reg",
+            "--key",
+            key_path
+                .to_str()
+                .context("fixture signing key path utf-8")?,
+        ],
     )?;
 
     let upload_dir = tmp.path().join("signed-reg-upload");
@@ -589,15 +644,20 @@ async fn apr_release_channel_upload_supports_verified_consumer_sync() -> Result<
     assert_eq!(entries[0]["version"], "1.0.0");
 
     write_fixture_package_version(&maintainer_registry, "1.1.0")?;
-    git_stdout(
-        &maintainer_registry,
-        &["add", "packages/f/fixture-tool.toml"],
-        "staging signed fixture package update",
-    )?;
-    git_stdout(
-        &maintainer_registry,
-        &["commit", "-m", "publish signed fixture package update"],
-        "committing signed fixture package update",
+    run_apr(
+        &maintainer_home,
+        &[
+            "commit",
+            "packages/f/fixture-tool.toml",
+            "--message",
+            "publish signed fixture package update",
+            "--registry",
+            "signed-reg",
+            "--key",
+            key_path
+                .to_str()
+                .context("fixture signing key path utf-8")?,
+        ],
     )?;
 
     let release = run_apr(
@@ -882,39 +942,6 @@ fn configure_fixture_git_identity(registry: &Path) -> Result<()> {
     Ok(())
 }
 
-fn configure_fixture_git_signing(registry: &Path, key_path: &Path) -> Result<()> {
-    git_stdout(
-        registry,
-        &["config", "user.name", "Registry Test"],
-        "configuring fixture git user",
-    )?;
-    git_stdout(
-        registry,
-        &["config", "user.email", "registry@example.com"],
-        "configuring fixture git email",
-    )?;
-    git_stdout(
-        registry,
-        &["config", "gpg.format", "ssh"],
-        "configuring fixture git ssh signing",
-    )?;
-    git_stdout(
-        registry,
-        &[
-            "config",
-            "user.signingkey",
-            key_path.to_str().context("signing key path utf-8")?,
-        ],
-        "configuring fixture git signing key",
-    )?;
-    git_stdout(
-        registry,
-        &["config", "commit.gpgsign", "true"],
-        "enabling fixture commit signing",
-    )?;
-    Ok(())
-}
-
 fn extract_public_key(output: &str) -> Result<String> {
     output
         .lines()
@@ -935,7 +962,6 @@ fn git_stdout(cwd: &Path, args: &[&str], context: &str) -> Result<String> {
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env("USER", "registry-test")
         .env("LOGNAME", "registry-test");
-    git_ssh::apply_git_ssh_program_env(&mut command);
     let output = command
         .output()
         .with_context(|| format!("{context}: git {}", args.join(" ")))?;

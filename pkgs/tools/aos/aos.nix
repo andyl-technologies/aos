@@ -4,6 +4,7 @@
   mkCargoPackage,
   fetchCargoDeps,
   bash,
+  binutils,
   git-minimal,
   nix,
   openssh,
@@ -21,13 +22,18 @@
   pkg-config,
   protobuf,
   semodule-utils,
+  sbsigntools,
   systemd,
+  mtools,
+  qemu,
   tpm2-tools,
   which,
   zlib,
   zstd,
 }: let
   version = "0.1.0";
+  repoRoot = ../../..;
+  repoRootString = toString repoRoot;
   # Every external tool the aos/apm/apr binaries shell out to by bare name
   # (resolved via $PATH). The wrappers below set PATH to exactly this, so the
   # binaries are hermetic — their behavior never depends on the caller's
@@ -40,27 +46,46 @@
   # `registry::porcelain`, and `security` modules) — so git-minimal, gnupg, and
   # openssh are gone from the runtime closure. Tools:
   #   nix           nix / nix-store: cache and store operations
-  #   systemd       systemctl, for runtime package preset/attach reconciliation
+  #   systemd       systemctl and systemd-measure; systemctl also captures
+  #                 failed-unit diagnostics after activation reconciliation
+  #   sbsigntools   sbverify for image signature verification
+  #   binutils      objcopy for UKI section extraction
   #   zstd          pack-delta compression and store decompression
   #   which         check_command_exists() preflight in the drain/sysroot path
   #   bash          wrapper interpreter; avoids relying on /bin/sh on the host
-  #   systemd       systemctl: the post-activation reconcile's failed-unit
-  #                 `systemctl status` capture (display-only — the reconcile
-  #                 itself drives systemd over D-Bus); without it on PATH the
-  #                 capture fails ENOENT and masks the real diagnostic
   # These are declared as runtimeDeps below (not just buildDeps) so the
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash nix systemd zstd which];
-  runtimeBinPath = lib.makeBinPath runtimeTools;
+  runtimeTools = [bash binutils nix sbsigntools systemd mtools qemu zstd which];
+  runtimeBinPath = lib.concatStringsSep ":" [
+    (lib.makeBinPath runtimeTools)
+    "${systemd}/lib/systemd"
+  ];
   src = builtins.path {
-    path = ../../../crates;
-    name = "aos-crates-src";
-    filter = path: type: let
+    path = repoRoot;
+    name = "aos-workspace-src";
+    filter = path: _type: let
+      pathString = toString path;
       base = baseNameOf path;
     in
-      base != "target" && base != ".git";
+      base != "target"
+      && base != ".git"
+      && (
+        pathString == repoRootString
+        || lib.hasPrefix "${repoRootString}/crates" pathString
+        || lib.hasPrefix "${repoRootString}/lib" pathString
+        || lib.hasPrefix "${repoRootString}/modules" pathString
+        || lib.hasPrefix "${repoRootString}/pkgs" pathString
+        || lib.hasPrefix "${repoRootString}/stdenv" pathString
+        || lib.hasPrefix "${repoRootString}/systems" pathString
+        || pathString == "${repoRootString}/default.nix"
+        || pathString == "${repoRootString}/flake.nix"
+        || pathString == "${repoRootString}/justfile"
+        || pathString == "${repoRootString}/docs"
+        || pathString == "${repoRootString}/docs/rfcs"
+        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
+      );
   };
 in
   mkCargoPackage {
@@ -71,7 +96,8 @@ in
 
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+      sourceRoot = "source/crates";
+      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
     };
 
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here
@@ -86,6 +112,7 @@ in
     runtimeDeps = [openssl zlib aos-landlock aos-selinux-run aos-verity-root-guard aos-ebpf-net-policy aos-ebpf-lsm-policy checkpolicy policycoreutils semodule-utils tpm2-tools] ++ runtimeTools;
 
     preBuild = ''
+      cd crates
       export OPENSSL_DIR="${openssl}"
       export OPENSSL_LIB_DIR="${openssl}/lib"
       export OPENSSL_INCLUDE_DIR="${openssl}/include"
@@ -96,6 +123,8 @@ in
       export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
       export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
       export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
+      export AOS_MCOPY="${mtools}/bin/mcopy"
+      export AOS_QEMU_IMG="${qemu}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
       export AOS_TPM2_CREATEAK="${tpm2-tools}/bin/tpm2_createak"
       export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"
@@ -109,6 +138,15 @@ in
       export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
       export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
       export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
+      # The real-Git interoperability test intentionally exercises stock
+      # OpenSSH signing. Nix builders have numeric uids without /etc/passwd
+      # entries, while ssh-keygen requires getpwuid(3) even with an explicit
+      # key path. Compile the repository-owned identity shim and scope it to
+      # that test's child processes; it never enters the runtime closure.
+      export AOS_TEST_IDENTITY_PRELOAD="$NIX_BUILD_TOP/aos-test-identity.so"
+      cc -shared -fPIC -O2 -Wall -Wextra -Werror \
+        -o "$AOS_TEST_IDENTITY_PRELOAD" \
+        aos-hub/tests/nix_builder_identity.c
     '';
 
     doCheck = true;
@@ -151,6 +189,8 @@ in
       export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
       export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
       export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
+      export AOS_MCOPY="${mtools}/bin/mcopy"
+      export AOS_QEMU_IMG="${qemu}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
       export AOS_TPM2_CREATEAK="${tpm2-tools}/bin/tpm2_createak"
       export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"
@@ -173,6 +213,17 @@ in
               $out/bin/$name
             chmod +x $out/bin/$name
           done
+
+          # Exercise the installed wrapper, not the pre-install Cargo binary.
+          # The wrapper must exec .aos-unwrapped so current_exe() materializes
+          # exactly the bytes that the bundled verifier will later execute.
+          wrapperMaterializerRoot="$NIX_BUILD_TOP/aos-cutover-wrapper-materializer"
+          bundleRecipe="$NIX_BUILD_TOP/source/docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.fixture.json"
+          mkdir -p "$wrapperMaterializerRoot/bundle/bin"
+          $out/bin/aos hub topology cutover materialize-verifier \
+            --bundle "$wrapperMaterializerRoot/bundle" \
+            --bundle-recipe "$bundleRecipe"
+          cmp $out/bin/.aos-unwrapped "$wrapperMaterializerRoot/bundle/bin/aos"
     '';
 
     checks = {

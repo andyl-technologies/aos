@@ -7,6 +7,7 @@
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
+  liveDebuggerMatrix = builtins.readFile ../../examples/codex-skills/crucible-debugger/scripts/live-matrix.sh;
   cliHermeticDiscoveryCheck = builtins.readFile ./phase5-cli-hermetic-discovery.nix;
   workspaceBuildCheck = builtins.readFile ./phase1-aos-workspace-build.nix;
   cliMain = import ./_cli-source.nix {inherit lib;};
@@ -41,20 +42,56 @@
         needle = "qemu-crucible";
       }
       {
+        label = "native x86_64 QEMU executable";
+        needle = ''"x86_64-linux" = "qemu-system-x86_64";'';
+      }
+      {
+        label = "native aarch64 QEMU executable";
+        needle = ''"aarch64-linux" = "qemu-system-aarch64";'';
+      }
+      {
+        label = "unsupported native QEMU system fails closed";
+        needle = "or (throw \"crucible: unsupported native QEMU system '" + "$" + "{stdenv.hostPlatform.system}'\")";
+      }
+      {
         label = "plugin package argument";
         needle = "crucible-qemu-plugin";
       }
       {
         label = "suite runtime closure keeps controller and QEMU-side outputs separate";
-        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];";
+        needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
+      }
+      {
+        label = "suite records the external AArch64 matrix path";
+        needle = "debugger_live_matrix_external_architectures=aarch64";
       }
       {
         label = "runtime QEMU wrapper configuration";
         needle = "CRUCIBLE_QEMU:=";
       }
       {
+        label = "runtime native guest architecture configuration";
+        needle = "CRUCIBLE_NATIVE_GUEST_ARCHITECTURE:=";
+      }
+      {
         label = "runtime plugin wrapper configuration";
         needle = "CRUCIBLE_PLUGIN:=";
+      }
+      {
+        label = "runtime AArch64 kernel wrapper configuration";
+        needle = "CRUCIBLE_KERNEL_AARCH64:=";
+      }
+      {
+        label = "runtime AArch64 root-image wrapper configuration";
+        needle = "CRUCIBLE_ROOT_IMAGE_AARCH64:=";
+      }
+      {
+        label = "packaged manual debugger matrix";
+        needle = "crucible-debugger-live-matrix";
+      }
+      {
+        label = "manual debugger matrix uses only AOS tools";
+        needle = "export PATH=\"" + "$" + "{coreutils}/bin:" + "$" + "{grep}/bin:" + "$" + "{sed}/bin:" + "$" + "{util-linux}/bin:" + "$" + "{bash}/bin\"";
       }
       {
         label = "QEMU package build-info field";
@@ -62,7 +99,7 @@
       }
       {
         label = "QEMU path build-info field";
-        needle = "qemu_path=" + "$" + "{qemu-crucible}/bin/qemu-system-x86_64";
+        needle = "qemu_path=" + "$" + "{nativeQemuPath}";
       }
       {
         label = "plugin package build-info field";
@@ -147,6 +184,40 @@
         needle = "cli_hermetic_qemu_discovery_fails_absent_or_mismatched_artifacts_with_exit_4";
       }
     ]
+    ++ failuresFor "examples/codex-skills/crucible-debugger/scripts/live-matrix.sh" liveDebuggerMatrix [
+      {
+        label = "live fixture binds packaged boot assets";
+        needle = ''"$CRUCIBLE_MATRIX_FIXTURE_GENERATOR"'';
+      }
+      {
+        label = "external AArch64 assets reach the production lifecycle";
+        needle = "export CRUCIBLE_KERNEL_AARCH64=";
+      }
+      {
+        label = "external AArch64 command line reaches the production lifecycle";
+        needle = "export CRUCIBLE_KERNEL_CMDLINE_AARCH64=";
+      }
+      {
+        label = "read-only GDB state comparison";
+        needle = ''files_equal "$directory/read-only-before.gdb" "$directory/read-only-after.gdb"'';
+      }
+      {
+        label = "complete landed tuple comparison";
+        needle = ''files_equal "$directory/reverse-earlier.tuple" "$directory/goto-earlier.tuple"'';
+      }
+      {
+        label = "stable GDB survives replacement";
+        needle = ''kill -0 "$gdb_pid" 2>/dev/null || fail "GDB connection did not survive reverse replacement"'';
+      }
+      {
+        label = "guest channel is live before reposition";
+        needle = "CRUCIBLE_CHANNEL_READY";
+      }
+      {
+        label = "SSH transcript is retained";
+        needle = ''--record-transcript $directory/ssh.crgt'';
+      }
+    ]
     ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
       {
         label = "host PATH QEMU discovery";
@@ -186,7 +257,7 @@
       }
       {
         label = "output smoke checks QEMU path metadata";
-        needle = "grep -q '^qemu_path=" + "$" + "{packages.qemu-crucible}/bin/qemu-system-x86_64$'";
+        needle = "grep -q '^qemu_path=" + "$" + "{packages.qemu-crucible}/bin/" + "$" + "{nativeQemuSystemBinary}$'";
       }
       {
         label = "output smoke checks plugin package metadata";

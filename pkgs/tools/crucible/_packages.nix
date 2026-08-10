@@ -5,6 +5,7 @@
   "crucible-shmem"
   "crucible-protocol"
   "crucible-device"
+  "crucible-debug-gateway"
   "crucible-qemu"
   "crucible-qemu-plugin"
   "crucible-guest"

@@ -792,10 +792,16 @@ impl fmt::Display for EngineError {
                     "scenario serialized {field} reference is not content-addressed"
                 )
             }
-            Self::ScenarioSerializedIdMismatch { component, .. } => {
+            Self::ScenarioSerializedIdMismatch {
+                component,
+                expected,
+                actual,
+            } => {
                 write!(
                     f,
-                    "scenario serialized {component} id does not match parsed content"
+                    "scenario serialized {component} id {} does not match recomputed {}",
+                    format_content_hash_ref(*expected),
+                    format_content_hash_ref(*actual)
                 )
             }
             Self::ReproductionScenarioMismatch { .. } => {

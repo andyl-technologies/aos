@@ -2,6 +2,8 @@
 
 use super::*;
 
+const THIN_REPLAY_STAGNANT_QUANTA_BOUND: u64 = 4_096;
+
 impl<L, F> LifecycleControlPlane<L, F>
 where
     L: QuantumLoop + Send + 'static,
@@ -16,9 +18,17 @@ where
             def: scenario.clone(),
             schedule: request.schedule.clone(),
         };
-        validate_resume_checkpoint_closure(&target, &request.checkpoint)?;
+        validate_resume_checkpoint_closure(
+            &target,
+            &request.checkpoint,
+            ResumeCheckpointValidation::ThinReplay,
+        )?;
 
         let graph = graph_with_baked_genesis(&scenario)?;
+        let debug_genesis = Some(debug_genesis_checkpoint(
+            &Configuration::genesis(scenario.clone()),
+            &request.scenario,
+        )?);
         let loop_instance = (self.loop_factory)(&scenario, Some(&request.scenario), request.seed)?;
         let white_box_policies =
             self.white_box_policies_for_source(Some(&request.scenario), &scenario);
@@ -39,6 +49,9 @@ where
             event_log,
             reproduction_log,
             state_transitions,
+            debug_access: DebugCoordinator::new(),
+            debug_operation_gate: Arc::new(Mutex::new(())),
+            debug_genesis,
             actor_task,
         };
 
@@ -74,6 +87,7 @@ where
             .saturating_add(1);
         let mut matched =
             initial.configuration == target_id && initial.virtual_time == target_frontier;
+        let mut stagnant_quanta = 0_u64;
         for _ in 0..max_steps {
             if matched {
                 break;
@@ -113,6 +127,22 @@ where
                 return Err(error);
             }
             let current = runtime.live.read();
+            if current.configuration == before.configuration
+                && current.virtual_time == before.virtual_time
+            {
+                stagnant_quanta = stagnant_quanta.saturating_add(1);
+                if stagnant_quanta >= THIN_REPLAY_STAGNANT_QUANTA_BOUND {
+                    cleanup_runtime(runtime).await;
+                    return Err(LifecycleApiError::ResumeCheckpoint {
+                        message: format!(
+                            "thin replay made no configuration or virtual-time progress after {stagnant_quanta} quanta at frontier {}",
+                            current.virtual_time.ticks
+                        ),
+                    });
+                }
+            } else {
+                stagnant_quanta = 0;
+            }
             matched = current.configuration == target_id && current.virtual_time == target_frontier;
         }
 

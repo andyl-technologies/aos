@@ -260,11 +260,11 @@ Version 4 defines epoch-scoped identities, the closed error payload used by
 signal-driven storage faults, payload-free discard, reset events, and reset
 dispositions. The one-byte error values and their
 guest-visible errno mapping are listed in
-[`14-block-typed-errors.md`](../0012-signal-driven-fault-model/14-qemu-fault-patches/14-block-typed-errors.md),
+[`14-block-typed-errors.md`](../0013-signal-driven-fault-model/14-qemu-fault-patches/14-block-typed-errors.md),
 and discard is specified in
-[`15-block-discard.md`](../0012-signal-driven-fault-model/14-qemu-fault-patches/15-block-discard.md).
+[`15-block-discard.md`](../0013-signal-driven-fault-model/14-qemu-fault-patches/15-block-discard.md).
 Reset transport is specified in
-[`16-block-transport-reset.md`](../0012-signal-driven-fault-model/14-qemu-fault-patches/16-block-transport-reset.md).
+[`16-block-transport-reset.md`](../0013-signal-driven-fault-model/14-qemu-fault-patches/16-block-transport-reset.md).
 Versions 1 through 3 are not accepted by a version 4 endpoint; there is no legacy
 decode or silent downgrade path.
 

@@ -188,7 +188,7 @@ pub(super) fn expected_replay_identity_for_backend(
     };
     CliIdentity {
         engine_version: env!("CARGO_PKG_VERSION").to_string(),
-        engine_abi: String::from("crucible-harness-e2e-v1"),
+        engine_abi: String::from("crucible-harness-e2e-v2"),
         artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
         qemu_build_id,
         qemu_patch_series_hash,
@@ -251,6 +251,8 @@ pub(super) struct ReproductionArtifactComponentPayload {
 #[derive(Clone, Debug)]
 pub(super) struct CliFingerprint {
     pub(super) index: u64,
+    pub(super) instruction: u64,
+    pub(super) node: String,
     pub(super) digest: String,
 }
 
@@ -382,12 +384,16 @@ pub(super) fn decode_reproduction_artifact(
                 decisions.push(decision);
             }
             "fingerprint" => {
-                require_field_count(line_index, tag, &fields, 3)?;
+                require_field_count(line_index, tag, &fields, 5)?;
                 let index = parse_u64(line_index, tag, &fields[1])?;
-                validate_digest("fingerprint.digest", &fields[2])?;
+                let instruction = parse_u64(line_index, tag, &fields[2])?;
+                validate_required_field("fingerprint.node", &fields[3])?;
+                validate_digest("fingerprint.digest", &fields[4])?;
                 fingerprints.push(CliFingerprint {
                     index,
-                    digest: fields[2].clone(),
+                    instruction,
+                    node: fields[3].clone(),
+                    digest: fields[4].clone(),
                 });
             }
             "sampling" => {
@@ -600,6 +606,8 @@ pub(super) fn canonical_artifact_text(artifact: &CliReproductionArtifact) -> Str
             &[
                 "fingerprint",
                 &fingerprint.index.to_string(),
+                &fingerprint.instruction.to_string(),
+                &fingerprint.node,
                 &fingerprint.digest,
             ],
         );
@@ -749,7 +757,10 @@ pub(super) fn mock_failure_reproduction_artifact_bytes_for_backend(
             ],
         );
     }
-    artifact_line(&mut text, &["fingerprint", "1", &fingerprint_digest]);
+    artifact_line(
+        &mut text,
+        &["fingerprint", "0", "1", "node-a", &fingerprint_digest],
+    );
     artifact_line(
         &mut text,
         &[
@@ -986,6 +997,10 @@ pub(super) fn validate_digest(field: &'static str, digest: &str) -> Result<(), C
 mod errors;
 
 pub(super) use errors::*;
+
+#[path = "artifact/live_qemu.rs"]
+mod live_qemu;
+pub(crate) use live_qemu::*;
 
 #[path = "artifact/reports.rs"]
 mod reports;

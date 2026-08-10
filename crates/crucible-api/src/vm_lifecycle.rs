@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::net::TcpListener;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -15,20 +15,22 @@ use std::time::Duration;
 
 use crate::vm_resume::{
     PRODUCTION_ROOT_OVERLAY_FILE_NAME, PRODUCTION_VMSTATE_FILE_NAME, ProductionAppRandomConfig,
-    ProductionGdbstubChannelConfig, ProductionLiveNode, ProductionLiveNodeStepGateConfig,
+    ProductionGdbstubChannelConfig, ProductionGuestArchitecture, ProductionLiveNodeStepGateConfig,
     ProductionNodeSet, ProductionPluginSwitch, ProductionRootImageFormat,
-    launch_production_live_node, launch_production_live_node_exact_snapshot,
+    launch_production_live_node,
 };
 use crucible::model::{FaultCoordinate, SignalArtifactProvider, SignalBoundarySnapshot};
 use crucible::{
     Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, Checkpoint, CheckpointKind,
-    ConditionEvaluationPass, ConditionLeaf, Configuration, ControlOperation, DagStore, Decision,
-    EventFirings, EventGraph, EventGraphState, FingerprintSample, GdbAttachInfo, GdbListen,
-    HostAssertionEvaluator, HostAssertionOutcome, HostAssertionOutcomeKind, NodeId,
-    ObservableEvent, QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
-    ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
-    SchedulerLivenessScenario, SearchFrontierChoices, Seed, Shift, SimInstant, SimulationBackend,
-    SingleScheduler, VirtualTime, World,
+    ConditionEvaluationPass, ConditionLeaf, Configuration, ContentHash, ControlOperation, DagStore,
+    DebugGdbEndpoint, DebugRetiredWorldCleanup, DebugRuntimeRepositionReport,
+    DebugRuntimeRepositionRequest, Decision, EventFirings, EventGraph, EventGraphState,
+    EventLogOffset, FingerprintSample, GdbAttachInfo, GdbListen, HostAssertionEvaluator,
+    HostAssertionOutcome, HostAssertionOutcomeKind, Icount, NodeId, NodeLifecycle, ObservableEvent,
+    QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RuntimeState, ScenarioDef,
+    ScenarioDefForm, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
+    SchedulerLivenessScenario, SchedulerState, SearchFrontierChoices, Seed, Shift, SimDuration,
+    SimInstant, SimulationBackend, SingleScheduler, VirtualTime, VmArchitecture, World,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
@@ -36,6 +38,10 @@ use crucible_qemu::{
 };
 
 use crate::LifecycleApiError;
+use crate::debug_gateway::DebugGatewayProcess;
+
+mod assets;
+use assets::*;
 
 /// Default final icount available to one production CLI lifecycle session.
 const DEFAULT_RUN_CEILING_ICOUNT: u64 = 16_000_000;
@@ -51,20 +57,23 @@ const MAX_TRIGGER_SETTLE_BATCHES: usize = 1_024;
 pub struct ProductionVmLifecycleConfig {
     executable: PathBuf,
     plugin: PathBuf,
-    kernel: PathBuf,
-    root_image: PathBuf,
+    native_guest_architecture: VmArchitecture,
+    guest_assets: BTreeMap<VmArchitecture, ProductionVmGuestAssets>,
     initrd: Option<PathBuf>,
     kernel_cmdline_prefix: Option<String>,
     root_image_format: ProductionRootImageFormat,
     run_ceiling_icount: u64,
     quantum_budget: u64,
+    rendezvous_interval_icount: Option<u64>,
     completion_timeout: Duration,
     coverage: ProductionPluginSwitch,
+    debug_gateway_executable: Option<PathBuf>,
     debug: Option<ProductionVmDebugConfig>,
     branch: Option<ProductionVmBranchConfig>,
     branch_network_choices: Vec<crucible::OverrideDecision>,
     signal_artifacts: Option<Arc<dyn SignalArtifactProvider>>,
     world_artifacts: Option<Arc<dyn DagStore>>,
+    validate_guest_asset_references: bool,
 }
 
 impl std::fmt::Debug for ProductionVmLifecycleConfig {
@@ -73,10 +82,9 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
             .debug_struct("ProductionVmLifecycleConfig")
             .field("executable", &self.executable)
             .field("plugin", &self.plugin)
-            .field("kernel", &self.kernel)
-            .field("root_image", &self.root_image)
+            .field("native_guest_architecture", &self.native_guest_architecture)
+            .field("guest_assets", &self.guest_assets)
             .field("initrd", &self.initrd)
-            .field("kernel_cmdline_prefix", &self.kernel_cmdline_prefix)
             .field("root_image_format", &self.root_image_format)
             .field("run_ceiling_icount", &self.run_ceiling_icount)
             .field("quantum_budget", &self.quantum_budget)
@@ -102,6 +110,8 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
 struct ProductionVmDebugConfig {
     node: Option<String>,
     operator_listen: String,
+    all_nodes: bool,
+    allow_requested_loopback_listen: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -110,6 +120,19 @@ struct ProductionVmBranchConfig {
     frontier: VirtualTime,
     decisions: Vec<Decision>,
     seed: Option<Seed>,
+}
+
+/// Original live-execution evidence sampled at one scheduler boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProductionVmDebugRuntimeEvidence {
+    configuration: ContentHash,
+    event_log: EventLogOffset,
+    scheduler: SchedulerState,
+    node_icounts: BTreeMap<NodeId, Icount>,
+    node_times: BTreeMap<NodeId, VirtualTime>,
+    fingerprints: BTreeMap<NodeId, FingerprintSample>,
+    graph_runtimes: Vec<RuntimeState>,
+    runtime: Option<RuntimeState>,
 }
 
 #[derive(Clone, Debug)]
@@ -124,185 +147,11 @@ struct ProductionVmExactCheckpointTarget {
     manifest_identity: crucible::ContentHash,
 }
 
-impl ProductionVmLifecycleConfig {
-    /// Builds a local-QEMU lifecycle configuration with bounded defaults.
-    #[must_use]
-    pub fn new(
-        executable: impl Into<PathBuf>,
-        plugin: impl Into<PathBuf>,
-        kernel: impl Into<PathBuf>,
-        root_image: impl Into<PathBuf>,
-    ) -> Self {
-        Self {
-            executable: executable.into(),
-            plugin: plugin.into(),
-            kernel: kernel.into(),
-            root_image: root_image.into(),
-            initrd: None,
-            kernel_cmdline_prefix: None,
-            root_image_format: ProductionRootImageFormat::Qcow2,
-            run_ceiling_icount: DEFAULT_RUN_CEILING_ICOUNT,
-            quantum_budget: DEFAULT_QUANTUM_BUDGET,
-            completion_timeout: Duration::from_secs(240),
-            coverage: ProductionPluginSwitch::Off,
-            debug: None,
-            branch: None,
-            branch_network_choices: Vec::new(),
-            signal_artifacts: None,
-            world_artifacts: None,
-        }
-    }
-
-    /// Returns this configuration with the materialized initrd passed to QEMU.
-    #[must_use]
-    pub fn with_initrd(mut self, initrd: impl Into<PathBuf>) -> Self {
-        self.initrd = Some(initrd.into());
-        self
-    }
-
-    /// Returns this configuration with package-owned kernel command-line pins.
-    #[must_use]
-    pub fn with_kernel_cmdline_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.kernel_cmdline_prefix = Some(prefix.into());
-        self
-    }
-
-    /// Returns this configuration with the immutable root image's format.
-    #[must_use]
-    pub const fn with_root_image_format(mut self, format: ProductionRootImageFormat) -> Self {
-        self.root_image_format = format;
-        self
-    }
-
-    /// Returns this configuration with a different terminal icount ceiling.
-    #[must_use]
-    pub const fn with_run_ceiling_icount(mut self, ceiling: u64) -> Self {
-        self.run_ceiling_icount = ceiling;
-        self
-    }
-
-    /// Returns this configuration with a different scheduler quantum budget.
-    #[must_use]
-    pub const fn with_quantum_budget(mut self, budget: u64) -> Self {
-        self.quantum_budget = budget;
-        self
-    }
-
-    /// Returns this configuration with a different per-node completion timeout.
-    #[must_use]
-    pub const fn with_completion_timeout(mut self, timeout: Duration) -> Self {
-        self.completion_timeout = timeout;
-        self
-    }
-
-    /// Returns this configuration with observation-only basic-block coverage.
-    #[must_use]
-    pub const fn with_coverage(mut self, coverage: ProductionPluginSwitch) -> Self {
-        self.coverage = coverage;
-        self
-    }
-
-    /// Returns this configuration with one mediated QEMU gdbstub channel.
-    ///
-    /// `node` selects a World VM by canonical name. When omitted, the first VM
-    /// owns the debugger channel. The operator listener accepts the same stable
-    /// address syntax as [`GdbListen`], including `127.0.0.1:0`.
-    #[must_use]
-    pub fn with_debug_gdbstub(
-        mut self,
-        node: Option<String>,
-        operator_listen: impl Into<String>,
-    ) -> Self {
-        self.debug = Some(ProductionVmDebugConfig {
-            node,
-            operator_listen: operator_listen.into(),
-        });
-        self
-    }
-
-    /// Returns this configuration with explorer overrides admitted at `frontier`.
-    ///
-    /// The lifecycle waits until deterministic replay reaches both the exact
-    /// base configuration and saved frontier, then records the supplied
-    /// overrides before any further backend advance.
-    #[must_use]
-    pub fn with_branch_prefix_overrides(
-        mut self,
-        base: Configuration,
-        frontier: VirtualTime,
-        decisions: Vec<Decision>,
-    ) -> Self {
-        self.branch = Some(ProductionVmBranchConfig {
-            base,
-            frontier,
-            decisions,
-            seed: None,
-        });
-        self
-    }
-
-    /// Returns this configuration with decision streams re-seeded at `frontier`.
-    ///
-    /// Prefix replay continues under the scenario seed. Once the authoritative
-    /// scheduler reaches both `base` and the saved frontier, every future
-    /// scheduler, network, block/9p, and live app-random decision stream
-    /// restarts from cursor zero under `seed`.
-    #[must_use]
-    pub fn with_branch_reseed(
-        mut self,
-        base: Configuration,
-        frontier: VirtualTime,
-        seed: Seed,
-    ) -> Self {
-        self.branch = Some(ProductionVmBranchConfig {
-            base,
-            frontier,
-            decisions: Vec::new(),
-            seed: Some(seed),
-        });
-        self
-    }
-
-    /// Returns this configuration with exact live World-network branch choices.
-    #[must_use]
-    pub fn with_branch_network_choices(mut self, choices: Vec<crucible::OverrideDecision>) -> Self {
-        self.branch_network_choices = choices;
-        self
-    }
-
-    /// Returns this configuration with the production signal-artifact provider.
-    ///
-    /// A nonempty signal fault plan is rejected unless this provider is present;
-    /// the lifecycle never substitutes an empty or process-local test store.
-    #[must_use]
-    pub fn with_signal_artifacts(mut self, artifacts: Arc<dyn SignalArtifactProvider>) -> Self {
-        self.signal_artifacts = Some(artifacts);
-        self
-    }
-
-    /// Returns this configuration with immutable World I/O artifacts.
-    ///
-    /// A World that declares block or 9p nodes is rejected unless this store can
-    /// supply every content-addressed base image or filesystem tree. Production
-    /// execution never substitutes deterministic test bytes.
-    #[must_use]
-    pub fn with_world_artifacts(mut self, artifacts: Arc<dyn DagStore>) -> Self {
-        self.world_artifacts = Some(artifacts);
-        self
-    }
-
-    /// Returns a conservative bound for driving through the configured budget.
-    ///
-    /// The scheduler budget is already a count of authoritative quanta. The
-    /// additional per-node pass covers scheduler-only boundaries and terminal
-    /// settling after the final admitted quantum.
-    #[must_use]
-    pub fn maximum_scheduler_quanta(&self, node_count: usize) -> u64 {
-        let node_count = u64::try_from(node_count).unwrap_or(u64::MAX).max(1);
-        self.quantum_budget
-            .saturating_add(node_count)
-            .saturating_add(1)
-    }
+#[derive(Clone, Debug)]
+struct ProductionVmRecordedControl {
+    configuration: Configuration,
+    node_times: BTreeMap<NodeId, VirtualTime>,
+    control: Vec<ControlOperation>,
 }
 
 /// Lifecycle loop backed by an authoritative scheduler and live QEMU node set.
@@ -315,6 +164,7 @@ pub struct ProductionVmLifecycleLoop {
     assertion_evaluator: HostAssertionEvaluator,
     assertion_oracle: BlackBoxHostOracle,
     terminal_verdict: Option<QuantumTerminalVerdict>,
+    initial_lifecycle_observations_pending: bool,
     branch: Option<ProductionVmBranchConfig>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
@@ -328,13 +178,22 @@ pub struct ProductionVmLifecycleLoop {
     source: ScenarioDefForm,
     config: ProductionVmLifecycleConfig,
     checkpoint_targets: BTreeMap<NodeId, ProductionVmExactCheckpointTarget>,
+    recorded_controls: Vec<ProductionVmRecordedControl>,
+    debug_backend_paths: BTreeMap<NodeId, PathBuf>,
+    debug_gateway: Option<DebugGatewayProcess>,
+    debug_attach: Option<GdbAttachInfo>,
+    debug_gateway_teardown_required: bool,
+    indeterminate_debug_candidate: Option<Box<ProductionVmLifecycleLoop>>,
+    debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,
     _run_directory: tempfile::TempDir,
 }
 
+mod config;
 mod helpers;
 mod network_faults;
 mod quantum_loop;
 mod runtime;
+mod search;
 mod storage_faults;
 
 use helpers::*;
@@ -342,63 +201,8 @@ use network_faults::{
     ProductionFaultEvaluationCursor, ProductionFaultNetworkInterceptor,
     SharedProductionFaultEvaluationCursor,
 };
+pub use search::production_vm_search_frontier;
 use storage_faults::{ProductionBlockFaultCoordinator, block_binding_for_vm, ninep_binding_for_vm};
-
-/// Derives the production scheduler's initial state-space search frontier.
-///
-/// The returned choices come from the same [`SingleScheduler`] construction
-/// used by live QEMU execution. Backend processes are not launched by this
-/// policy-only query; callers must execute every selected branch through
-/// [`build_production_vm_lifecycle_loop`] to obtain runtime evidence.
-///
-/// # Errors
-///
-/// Returns [`LifecycleApiError::LoopFactory`] when the World is empty, VM
-/// shifts differ, time conversion overflows, configured bounds are invalid, or
-/// the authoritative scheduler rejects the scenario.
-pub fn production_vm_search_frontier(
-    scenario: &ScenarioDef,
-    source: &ScenarioDefForm,
-    config: &ProductionVmLifecycleConfig,
-) -> Result<SearchFrontierChoices, LifecycleApiError> {
-    let nodes = source.world().vm_nodes();
-    let first = nodes
-        .first()
-        .ok_or_else(|| loop_factory_error("scenario World has no VM nodes"))?;
-    if nodes
-        .iter()
-        .any(|node| node.icount_shift != first.icount_shift)
-    {
-        return Err(loop_factory_error(
-            "production QEMU lifecycle currently requires one shared icount shift",
-        ));
-    }
-    if config.run_ceiling_icount == 0 || config.quantum_budget == 0 {
-        return Err(loop_factory_error(
-            "production QEMU lifecycle bounds must be nonzero",
-        ));
-    }
-    let shift = Shift::new(first.icount_shift)
-        .map_err(|error| loop_factory_error(format!("validate icount shift: {error}")))?;
-    let time_limit_nanos = config
-        .run_ceiling_icount
-        .checked_shl(u32::from(first.icount_shift))
-        .ok_or_else(|| loop_factory_error("QEMU lifecycle time limit overflow"))?;
-    let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
-        &scenario.id().to_hex(),
-        shift,
-        config.quantum_budget,
-        SimInstant {
-            nanos: time_limit_nanos,
-        },
-        0,
-        source.world(),
-    )
-    .with_scenario_def(scenario.clone());
-    let scheduler = SingleScheduler::new(runtime_scenario)
-        .map_err(|error| loop_factory_error(format!("construct QEMU scheduler: {error}")))?;
-    Ok(scheduler.materialized_scheduler_state().search_frontier)
-}
 
 /// Builds a production local-QEMU lifecycle loop for `scenario`.
 ///
@@ -429,7 +233,10 @@ pub fn build_production_vm_lifecycle_loop(
             "production QEMU lifecycle currently requires one shared icount shift",
         ));
     }
-    if config.run_ceiling_icount == 0 || config.quantum_budget == 0 {
+    if config.run_ceiling_icount == 0
+        || config.quantum_budget == 0
+        || config.rendezvous_interval_icount == Some(0)
+    {
         return Err(loop_factory_error(
             "production QEMU lifecycle bounds must be nonzero",
         ));
@@ -445,6 +252,11 @@ pub fn build_production_vm_lifecycle_loop(
             debug.node.as_deref().unwrap_or_default()
         )));
     }
+    if config.debug.is_some() && config.debug_gateway_executable.is_none() {
+        return Err(loop_factory_error(
+            "production QEMU debugging requires a standalone debugger gateway executable",
+        ));
+    }
 
     let run_directory = tempfile::TempDir::new()
         .map_err(|error| loop_factory_error(format!("create QEMU run directory: {error}")))?;
@@ -453,17 +265,21 @@ pub fn build_production_vm_lifecycle_loop(
     let mut block_bindings = BTreeMap::new();
     let mut ninep_bindings = BTreeMap::new();
     let mut node_indexes = BTreeMap::new();
+    let mut debug_backend_paths = BTreeMap::new();
     let mut initial_ticks = None;
     let scenario_seed = scenario.seed().bytes();
     let mut launch_seed_bytes = [0_u8; 8];
     launch_seed_bytes.copy_from_slice(&scenario_seed[..8]);
     let launch_seed = u64::from_le_bytes(launch_seed_bytes);
     for (index, vm) in nodes.iter().enumerate() {
-        if vm.arch != crucible::VmArchitecture::X86_64 {
-            return Err(loop_factory_error(format!(
-                "QEMU node `{}` uses unsupported architecture {:?}",
-                vm.id.name, vm.arch
-            )));
+        let guest_assets = config.guest_assets.get(&vm.arch).ok_or_else(|| {
+            loop_factory_error(format!(
+                "production QEMU lifecycle has no boot artifacts for {:?}",
+                vm.arch
+            ))
+        })?;
+        if config.validate_guest_asset_references {
+            validate_guest_asset_references(vm, guest_assets)?;
         }
         let node_directory = run_directory.path().join(format!("node-{index}"));
         fs::create_dir_all(&node_directory).map_err(|error| {
@@ -472,21 +288,28 @@ pub fn build_production_vm_lifecycle_loop(
                 node_directory.display()
             ))
         })?;
-        prepare_root_overlay(&config.executable, &config.root_image, &node_directory)?;
-        let kernel_cmdline = match &config.kernel_cmdline_prefix {
+        prepare_root_overlay(
+            &config.executable,
+            &guest_assets.root_image,
+            &node_directory,
+        )?;
+        let kernel_cmdline_prefix = production_kernel_cmdline_prefix(config, vm.arch, guest_assets);
+        let kernel_cmdline = match kernel_cmdline_prefix {
             Some(prefix) if !prefix.trim().is_empty() => {
                 format!("{} {}", prefix.trim(), vm.cmdline.trim())
             }
             _ => vm.cmdline.clone(),
         };
         let whitebox = production_whitebox_switch(vm.white_box);
+        let qemu_executable = production_qemu_executable(&config.executable, vm.arch);
         let mut launch = ProductionLiveNodeStepGateConfig::new_with_root_image(
-            &config.executable,
+            qemu_executable,
             &config.plugin,
-            &config.kernel,
-            &config.root_image,
+            &guest_assets.kernel,
+            &guest_assets.root_image,
             &node_directory,
         )
+        .with_guest_architecture(production_guest_architecture(vm.arch))
         .with_root_image_format(config.root_image_format)
         .with_kernel_cmdline(kernel_cmdline)
         .with_vm_shape(vm.memory_mib, vm.smp_vcpus, vm.icount_shift)
@@ -529,21 +352,24 @@ pub fn build_production_vm_lifecycle_loop(
             launch = launch.with_initrd(initrd);
         }
         if config.debug.as_ref().is_some_and(|debug| {
-            debug
-                .node
-                .as_deref()
-                .map_or(index == 0, |selected| selected == vm.id.name)
+            debug.all_nodes
+                || debug
+                    .node
+                    .as_deref()
+                    .map_or(index == 0, |selected| selected == vm.id.name)
         }) {
             let debug = config.debug.as_ref().ok_or_else(|| {
                 loop_factory_error("debug configuration disappeared during QEMU launch")
             })?;
-            let backend_listen = reserve_backend_gdbstub_endpoint()?;
+            let backend_path = private_backend_gdbstub_path(&node_directory);
+            let backend_listen = qemu_unix_gdbstub_endpoint(&backend_path)?;
             let gdbstub =
                 ProductionGdbstubChannelConfig::new(backend_listen, debug.operator_listen.clone())
                     .map_err(|error| {
                         loop_factory_error(format!("configure QEMU gdbstub: {error}"))
                     })?;
             launch = launch.with_gdbstub(gdbstub);
+            debug_backend_paths.insert(vm.id.clone(), backend_path);
         }
         launch_configs.insert(vm.id.clone(), launch.clone());
         node_indexes.insert(vm.id.clone(), index);
@@ -588,7 +414,7 @@ pub fn build_production_vm_lifecycle_loop(
         .run_ceiling_icount
         .checked_shl(u32::from(first.icount_shift))
         .ok_or_else(|| loop_factory_error("QEMU lifecycle time limit overflow"))?;
-    let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
+    let mut runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
         shift,
         config.quantum_budget,
@@ -599,6 +425,16 @@ pub fn build_production_vm_lifecycle_loop(
         source.world(),
     )
     .with_scenario_def(scenario.clone());
+    if let Some(interval_icount) = config.rendezvous_interval_icount {
+        let interval_nanos = interval_icount
+            .checked_shl(u32::from(first.icount_shift))
+            .ok_or_else(|| loop_factory_error("QEMU rendezvous interval overflow"))?;
+        runtime_scenario = runtime_scenario
+            .with_rendezvous_interval(SimDuration {
+                nanos: interval_nanos,
+            })
+            .map_err(|error| loop_factory_error(format!("configure QEMU rendezvous: {error}")))?;
+    }
     let mut scheduler = SingleScheduler::new(runtime_scenario)
         .map_err(|error| loop_factory_error(format!("construct QEMU scheduler: {error}")))?;
     if let Some(branch) = &config.branch {
@@ -707,7 +543,7 @@ pub fn build_production_vm_lifecycle_loop(
             })?;
     }
 
-    Ok(ProductionVmLifecycleLoop {
+    let mut lifecycle = ProductionVmLifecycleLoop {
         inner: BackendQuantumLoop::with_network_output_interceptor(
             scheduler,
             backends,
@@ -726,6 +562,7 @@ pub fn build_production_vm_lifecycle_loop(
             .with_world_white_box_policies(source.world()),
         assertion_oracle: BlackBoxHostOracle,
         terminal_verdict: None,
+        initial_lifecycle_observations_pending: true,
         branch: config.branch.clone(),
         block_bindings,
         ninep_bindings,
@@ -739,6 +576,20 @@ pub fn build_production_vm_lifecycle_loop(
         source: source.clone(),
         config: config.clone(),
         checkpoint_targets: BTreeMap::new(),
+        recorded_controls: Vec::new(),
+        debug_backend_paths,
+        debug_gateway: None,
+        debug_attach: None,
+        debug_gateway_teardown_required: false,
+        indeterminate_debug_candidate: None,
+        debug_runtime_evidence: Vec::new(),
         _run_directory: run_directory,
-    })
+    };
+    if let Err(error) = lifecycle.capture_debug_runtime_evidence() {
+        let _ = lifecycle.inner.shutdown();
+        return Err(loop_factory_error(format!(
+            "capture initial debugger runtime evidence: {error}"
+        )));
+    }
+    Ok(lifecycle)
 }
