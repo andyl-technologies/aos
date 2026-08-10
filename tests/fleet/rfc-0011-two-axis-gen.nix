@@ -215,7 +215,7 @@ in {
               HOME=/tmp USER=root {APM} registry --system add \
                 git://registry:9418/sysreg \
                 --name sysreg \
-                --version '=1.0.0' \
+                --tag 1.0.0 \
                 --trust-key '{public_key}'
               HOME=/tmp USER=root {APM} update --system --registry sysreg
           """), timeout=180)
