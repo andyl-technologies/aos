@@ -2437,6 +2437,76 @@ impl WorldNodeAddressSpace {
     }
 }
 
+/// Closed interrupt-controller family exposed by the live fault ABI.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeInterruptFamily {
+    /// x86 local-APIC fixed interrupt.
+    X86LocalApicFixed,
+    /// x86 inter-processor interrupt.
+    X86Ipi,
+    /// x86 I/O-APIC routed interrupt.
+    X86IoApic,
+    /// x86 legacy 8259 PIC interrupt.
+    X86Pic,
+    /// x86 PCI MSI interrupt.
+    X86Msi,
+    /// x86 PCI MSI-X interrupt.
+    X86MsiX,
+    /// x86 non-maskable interrupt.
+    X86Nmi,
+    /// x86 architectural local-APIC timer interrupt.
+    X86Timer,
+    /// Arm GIC software-generated interrupt.
+    ArmGicSgi,
+    /// Arm GIC private peripheral interrupt.
+    ArmGicPpi,
+    /// Arm GIC shared peripheral interrupt.
+    ArmGicSpi,
+    /// Arm GIC locality-specific peripheral interrupt.
+    ArmGicLpi,
+    /// Arm architectural timer interrupt routed as a PPI.
+    ArmTimer,
+}
+
+/// Electrical trigger mode for one interrupt manifest row.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeInterruptTrigger {
+    /// One transition creates one pending event.
+    Edge,
+    /// An asserted line may re-pend after acknowledgement.
+    Level,
+}
+
+/// Active electrical polarity for one interrupt source.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeInterruptPolarity {
+    /// A high level or rising edge is active.
+    ActiveHigh,
+    /// A low level or falling edge is active.
+    ActiveLow,
+}
+
+/// Controller-state transition used when delivery is dropped.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeInterruptDeliveryDrop {
+    /// The selected pending edge is consumed without making it active.
+    ConsumeEdge,
+    /// The sampled level is consumed and re-pends while the line remains asserted.
+    RependAssertedLevel,
+}
+
 /// One fully routed interrupt exposed by the live fault ABI.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2447,14 +2517,89 @@ pub struct WorldNodeInterrupt {
     pub controller: SignalId,
     /// Interrupt source ID.
     pub source: SignalId,
+    /// Realized QEMU controller implementation and version.
+    pub controller_version: String,
+    /// Architecture interrupt family.
+    pub family: WorldNodeInterruptFamily,
     /// Architecture vector or interrupt type.
     pub vector: u32,
+    /// Inclusive first vector accepted by replacement mutations.
+    pub replacement_vector_start: u32,
+    /// Inclusive last vector accepted by replacement mutations.
+    pub replacement_vector_end: u32,
+    /// Electrical trigger mode.
+    pub trigger: WorldNodeInterruptTrigger,
+    /// Electrical active polarity.
+    pub polarity: WorldNodeInterruptPolarity,
     /// Closed set of routable target vCPU indices.
     pub target_vcpus: Vec<u32>,
+    /// Ordered unique fault interception phases implemented for this row.
+    pub model_phases: Vec<FaultPhase>,
+    /// Controller priority value used for deterministic ordering.
+    pub priority: u16,
+    /// Delivery-drop controller-state transition.
+    pub delivery_drop: WorldNodeInterruptDeliveryDrop,
+    /// Whether controller and fault overlay state are covered by VMState.
+    pub vmstate: bool,
 }
 impl WorldNodeInterrupt {
     const fn id(&self) -> &SignalId {
         &self.id
+    }
+
+    const fn architecture_matches(&self, architecture: WorldNodeArchitecture) -> bool {
+        matches!(
+            (architecture, self.family),
+            (
+                WorldNodeArchitecture::X86_64,
+                WorldNodeInterruptFamily::X86LocalApicFixed
+                    | WorldNodeInterruptFamily::X86Ipi
+                    | WorldNodeInterruptFamily::X86IoApic
+                    | WorldNodeInterruptFamily::X86Pic
+                    | WorldNodeInterruptFamily::X86Msi
+                    | WorldNodeInterruptFamily::X86MsiX
+                    | WorldNodeInterruptFamily::X86Nmi
+                    | WorldNodeInterruptFamily::X86Timer
+            ) | (
+                WorldNodeArchitecture::Aarch64,
+                WorldNodeInterruptFamily::ArmGicSgi
+                    | WorldNodeInterruptFamily::ArmGicPpi
+                    | WorldNodeInterruptFamily::ArmGicSpi
+                    | WorldNodeInterruptFamily::ArmGicLpi
+                    | WorldNodeInterruptFamily::ArmTimer
+            )
+        )
+    }
+
+    fn architectural_vector_valid(&self, vector: u32) -> bool {
+        match self.family {
+            WorldNodeInterruptFamily::X86Nmi => vector == 2,
+            WorldNodeInterruptFamily::X86Pic => vector <= 255,
+            WorldNodeInterruptFamily::X86LocalApicFixed
+            | WorldNodeInterruptFamily::X86Ipi
+            | WorldNodeInterruptFamily::X86IoApic
+            | WorldNodeInterruptFamily::X86Msi
+            | WorldNodeInterruptFamily::X86MsiX
+            | WorldNodeInterruptFamily::X86Timer => (16..=255).contains(&vector),
+            WorldNodeInterruptFamily::ArmGicSgi => vector <= 15,
+            WorldNodeInterruptFamily::ArmGicPpi | WorldNodeInterruptFamily::ArmTimer => {
+                (16..=31).contains(&vector)
+            }
+            WorldNodeInterruptFamily::ArmGicSpi => (32..=1_019).contains(&vector),
+            WorldNodeInterruptFamily::ArmGicLpi => (8_192..=16_777_215).contains(&vector),
+        }
+    }
+
+    const fn fixed_edge_family(&self) -> bool {
+        matches!(
+            self.family,
+            WorldNodeInterruptFamily::X86Ipi
+                | WorldNodeInterruptFamily::X86Msi
+                | WorldNodeInterruptFamily::X86MsiX
+                | WorldNodeInterruptFamily::X86Nmi
+                | WorldNodeInterruptFamily::ArmGicSgi
+                | WorldNodeInterruptFamily::ArmGicLpi
+        )
     }
 }
 
@@ -2699,7 +2844,69 @@ impl WorldNodeFaultCapabilities {
             )?;
         }
         for interrupt in &self.interrupts {
-            require(!interrupt.target_vcpus.is_empty(), "node interrupt targets")?;
+            require(
+                interrupt.architecture_matches(self.architecture),
+                "node interrupt architecture family",
+            )?;
+            require(
+                !interrupt.controller_version.is_empty()
+                    && interrupt.controller_version.len() <= 96
+                    && interrupt
+                        .controller_version
+                        .bytes()
+                        .all(|byte| byte.is_ascii_graphic() && !byte.is_ascii_whitespace()),
+                "node interrupt controller version",
+            )?;
+            require(
+                interrupt.architectural_vector_valid(interrupt.vector)
+                    && interrupt.architectural_vector_valid(interrupt.replacement_vector_start)
+                    && interrupt.architectural_vector_valid(interrupt.replacement_vector_end)
+                    && interrupt.replacement_vector_start <= interrupt.vector
+                    && interrupt.vector <= interrupt.replacement_vector_end,
+                "node interrupt vector range",
+            )?;
+            require(
+                !interrupt.target_vcpus.is_empty()
+                    && !interrupt
+                        .target_vcpus
+                        .windows(2)
+                        .any(|pair| pair[0] >= pair[1]),
+                "node interrupt targets",
+            )?;
+            require(
+                !interrupt.model_phases.is_empty()
+                    && interrupt.model_phases.iter().all(|phase| {
+                        matches!(
+                            phase,
+                            FaultPhase::Raise | FaultPhase::Route | FaultPhase::InterruptDeliver
+                        )
+                    })
+                    && !interrupt
+                        .model_phases
+                        .windows(2)
+                        .any(|pair| pair[0] >= pair[1]),
+                "node interrupt model phases",
+            )?;
+            require(interrupt.priority <= 255, "node interrupt priority")?;
+            require(interrupt.vmstate, "node interrupt VMState coverage")?;
+            require(
+                !interrupt.fixed_edge_family()
+                    || interrupt.trigger == WorldNodeInterruptTrigger::Edge,
+                "node interrupt architecture trigger",
+            )?;
+            require(
+                matches!(
+                    (interrupt.trigger, interrupt.delivery_drop),
+                    (
+                        WorldNodeInterruptTrigger::Edge,
+                        WorldNodeInterruptDeliveryDrop::ConsumeEdge
+                    ) | (
+                        WorldNodeInterruptTrigger::Level,
+                        WorldNodeInterruptDeliveryDrop::RependAssertedLevel
+                    )
+                ),
+                "node interrupt delivery-drop state",
+            )?;
         }
         require(
             self.clock_sources
