@@ -87,9 +87,18 @@ impl LiveWhiteboxMarkerShmemProducer {
     }
 }
 
-struct LiveGuestMemoryWriter {
+pub(super) struct LiveGuestMemoryWriter {
     apis: LiveWhiteboxApis,
     current_icount: u64,
+}
+
+impl LiveGuestMemoryWriter {
+    pub(super) const fn new(apis: LiveWhiteboxApis, current_icount: u64) -> Self {
+        Self {
+            apis,
+            current_icount,
+        }
+    }
 }
 
 impl WhiteboxGuestInputWriter for LiveGuestMemoryWriter {

@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "engine_state/guest_introspection.rs"]
+mod guest_introspection;
+
 #[test]
 fn step_modes_cover_forward_vocabulary_and_reverse_grains() {
     assert_eq!(
@@ -124,6 +127,42 @@ fn engine_step_modes_complete_from_quantum_outcomes() {
 }
 
 #[test]
+fn duration_step_uses_global_frontier_instead_of_event_timestamp() {
+    let scenario = generated_scenario(225);
+    let configuration = Configuration::genesis(scenario);
+    let target = VirtualTime { ticks: 8 };
+    let event = crucible::test_support::condition_boundary_entry_for_test(
+        0,
+        target,
+        crucible::SchedulerEvaluationBoundaryKind::Quantum,
+    );
+    let outcome = QuantumOutcome {
+        configuration,
+        frontier: VirtualTime { ticks: 4 },
+        advanced_node: None,
+        resolved_events: Vec::new(),
+        decisions: Vec::new(),
+        event_log_entries: vec![event],
+        event_log_segment_bytes: Vec::new(),
+        event_log_segment_text: String::new(),
+        event_log_segment_hash: None,
+        event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 1),
+        scheduler_quiescence: None,
+    };
+    let step = ActiveStep::new(
+        StepMode::Duration(SimDuration { nanos: 8 }),
+        VirtualTime::default(),
+    );
+
+    assert_eq!(step.target_frontier, Some(target));
+    assert!(
+        !step
+            .is_complete(&outcome, 0)
+            .unwrap_or_else(|error| panic!("duration completion should evaluate: {error}"))
+    );
+}
+
+#[test]
 fn timer_step_ignores_timer_actions_without_timer_predicate_fire() {
     let scenario = generated_scenario(26);
     let config = Configuration::genesis(scenario.clone());
@@ -211,6 +250,7 @@ fn lifecycle_state_reason_outcome_and_command_sets_are_closed() {
             SessionCommandKind::DebugReverseStep,
             SessionCommandKind::DebugReverseContinue,
             SessionCommandKind::DebugForkNonCanonical,
+            SessionCommandKind::GuestIntrospection,
         ]
     );
     assert_eq!(
@@ -487,7 +527,10 @@ async fn rfc_command_payloads_return_replies_through_engine_boundary() {
 #[tokio::test]
 async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
     let (root, first, second, graph) = debug_time_travel_fixture();
-    let mut engine = Engine::new(second.clone(), graph, DebugGdbLoop);
+    let mut engine = Engine::new(second.clone(), graph, DebugGdbLoop).with_white_box_policies([
+        (node_id("guest-a"), WhiteBoxPolicy::Enabled),
+        (node_id("node-a"), WhiteBoxPolicy::Enabled),
+    ]);
 
     if let Err(error) = engine.apply_command(SessionCommand::Start) {
         panic!("debug fixture should instantiate: {error}");
@@ -496,6 +539,7 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
     if let Err(error) = engine.apply_command(SessionCommand::AttachGdb {
         node: node_id("guest-a"),
         listen: gdb_listen("127.0.0.1:9000"),
+        debug_genesis: None,
         reply: attach_reply,
     }) {
         panic!("attach-gdb should use the loop gdbstub capability: {error}");
@@ -552,15 +596,38 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
             operation: "continue"
         }
     ));
+    let canonical_guest = match GuestIntrospectionRecord::new(
+        1,
+        crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
+    ) {
+        Ok(record) => record,
+        Err(error) => panic!("guest-introspection fixture must be valid: {error}"),
+    };
+    let canonical_guest_error = engine
+        .apply_command(SessionCommand::GuestIntrospection {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            channel_id: 1,
+            request: Some(canonical_guest),
+            reply: CommandReply::discard(),
+        })
+        .expect_err("canonical guest introspection must require an explicit debug fork");
+    assert!(matches!(
+        canonical_guest_error,
+        SessionError::DebugNonCanonicalBranchRequired {
+            operation: "guest-introspection"
+        }
+    ));
 
     let branch_request = DebugNonCanonicalBranchRequest::new(
         first.clone(),
         engine.frontier(),
-        DebugNonCanonicalBranchTrigger::OperatorContinue,
+        DebugNonCanonicalBranchTrigger::GuestIntrospection,
     )
-    .with_action(DebugNonCanonicalBranchAction::operator_control(
-        DebugOperatorControlKind::Continue,
-    ));
+    .with_action(DebugNonCanonicalBranchAction::guest_introspection(node_id(
+        "node-a",
+    )));
     let (branch_reply, branch_receiver) = CommandReply::channel();
     if let Err(error) = engine.apply_command(SessionCommand::DebugForkNonCanonical {
         request: branch_request,
@@ -570,6 +637,11 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
     }
     let branch = receive_reply(branch_receiver).await;
     assert!(branch.proves_non_canonical_debug_branch());
+    assert!(
+        branch
+            .guest_introspection_features
+            .is_some_and(GuestIntrospectionFeatures::ssh_bridge)
+    );
     assert!(!engine.debug_branch_required());
     let branch_entries = engine.drain_event_log_entries();
     assert_eq!(branch_entries.len(), 1);
@@ -630,6 +702,53 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
         branch_count,
         "malformed same-length prefix must not mutate graph branch metadata"
     );
+    let unauthorized_record = GuestIntrospectionRecord::new(
+        1,
+        crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
+    )
+    .unwrap_or_else(|error| panic!("guest-introspection fixture must be valid: {error}"));
+    let unauthorized_error = engine
+        .apply_command_with_event_log(
+            SessionCommand::GuestIntrospection {
+                node: node_id("guest-disabled"),
+                channel_id: 1,
+                request: Some(unauthorized_record),
+                reply: CommandReply::discard(),
+            },
+            &branch_entries,
+        )
+        .expect_err("guest introspection must require explicit white-box authorization");
+    assert!(matches!(
+        unauthorized_error,
+        SessionError::GuestIntrospectionNotAuthorized { node }
+            if node == "guest-disabled"
+    ));
+    let guest_record = match GuestIntrospectionRecord::new(
+        1,
+        crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
+    ) {
+        Ok(record) => record,
+        Err(error) => panic!("guest-introspection fixture must be valid: {error}"),
+    };
+    let guest_error = engine
+        .apply_command_with_event_log(
+            SessionCommand::GuestIntrospection {
+                node: NodeId {
+                    name: String::from("node-a"),
+                },
+                channel_id: 1,
+                request: Some(guest_record),
+                reply: CommandReply::discard(),
+            },
+            &branch_entries,
+        )
+        .expect_err("stub backend must reject guest introspection after the fork gate opens");
+    assert!(matches!(
+        guest_error,
+        SessionError::Scheduler(SchedulerError::Backend(BackendError::Unsupported {
+            capability: "send_guest_introspection"
+        }))
+    ));
     if let Err(error) = engine.apply_command(SessionCommand::Continue) {
         panic!("continue after non-canonical branch marker should be accepted: {error}");
     }
@@ -664,8 +783,111 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
 }
 
 #[tokio::test]
-async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
+async fn rejected_debug_runtime_reposition_preserves_session_transaction() {
     let (_root, first, second, graph) = debug_time_travel_fixture();
+    let mut engine = Engine::new(
+        second.clone(),
+        graph,
+        RejectingDebugRepositionLoop {
+            scheduler_run_active: false,
+            acquire_attempts: 0,
+            release_attempts: 0,
+        },
+    );
+
+    if let Err(error) = engine.apply_command(SessionCommand::Start) {
+        panic!("debug fixture should instantiate: {error}");
+    }
+    let (attach_reply, attach_receiver) = CommandReply::channel();
+    if let Err(error) = engine.apply_command(SessionCommand::AttachGdb {
+        node: node_id("guest-a"),
+        listen: gdb_listen("127.0.0.1:9000"),
+        debug_genesis: None,
+        reply: attach_reply,
+    }) {
+        panic!("attach-gdb should use the loop gdbstub capability: {error}");
+    }
+    let _attach = receive_reply(attach_receiver).await;
+    let active_guest_channel = (node_id("guest-a"), 41);
+    engine
+        .begin_guest_channel_run()
+        .unwrap_or_else(|error| panic!("guest channel run should start: {error}"));
+    engine.guest_channels.insert(active_guest_channel.clone());
+
+    let before_snapshot = engine.snapshot();
+    let before_runtime = engine.runtime.clone();
+    let before_attach = engine.debug_attach.clone();
+    let before_graph = engine.graph.clone();
+    let error = engine
+        .apply_command(SessionCommand::DebugGoto {
+            request: DebugGotoRequest::at_configuration(second, first),
+            reply: CommandReply::discard(),
+        })
+        .expect_err("a rejected live-runtime replacement must fail the goto");
+
+    assert!(matches!(
+        error,
+        SessionError::Scheduler(SchedulerError::Backend(BackendError::Rejected { .. }))
+    ));
+    assert_eq!(engine.snapshot(), before_snapshot);
+    assert_eq!(engine.runtime, before_runtime);
+    assert_eq!(engine.debug_attach, before_attach);
+    assert_eq!(engine.graph, before_graph);
+    assert!(!engine.debug_branch_required());
+    assert!(engine.guest_channels.contains(&active_guest_channel));
+    assert!(!engine.guest_responses.contains_key(&active_guest_channel));
+    assert!(engine.quantum_loop.scheduler_run_active);
+    assert_eq!(engine.quantum_loop.release_attempts, 1);
+    assert_eq!(engine.quantum_loop.acquire_attempts, 2);
+}
+
+#[tokio::test]
+async fn mismatched_debug_runtime_evidence_fails_closed_without_committing_model_state() {
+    let (_root, first, second, graph) = debug_time_travel_fixture();
+    let mut engine = Engine::new(second.clone(), graph, MismatchingDebugRepositionLoop);
+
+    if let Err(error) = engine.apply_command(SessionCommand::Start) {
+        panic!("debug fixture should instantiate: {error}");
+    }
+    let (attach_reply, attach_receiver) = CommandReply::channel();
+    if let Err(error) = engine.apply_command(SessionCommand::AttachGdb {
+        node: node_id("guest-a"),
+        listen: gdb_listen("127.0.0.1:9000"),
+        debug_genesis: None,
+        reply: attach_reply,
+    }) {
+        panic!("attach-gdb should use the loop gdbstub capability: {error}");
+    }
+    let _attach = receive_reply(attach_receiver).await;
+
+    let before_snapshot = engine.snapshot();
+    let before_runtime = engine.runtime.clone();
+    let before_attach = engine.debug_attach.clone();
+    let before_graph = engine.graph.clone();
+    let error = engine
+        .apply_command(SessionCommand::DebugGoto {
+            request: DebugGotoRequest::at_configuration(second, first),
+            reply: CommandReply::discard(),
+        })
+        .expect_err("mismatched replacement evidence must fail the goto");
+
+    assert!(matches!(
+        error,
+        SessionError::DebugRuntimeRepositionMismatch(_)
+    ));
+    assert_eq!(engine.snapshot(), before_snapshot);
+    assert_eq!(engine.runtime, before_runtime);
+    assert_eq!(engine.debug_attach, before_attach);
+    assert_eq!(engine.graph, before_graph);
+    assert!(matches!(
+        engine.debug_coordinator().state(),
+        DebugCoordinatorState::Failed { .. }
+    ));
+}
+
+#[tokio::test]
+async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
+    let (root, first, second, graph) = debug_time_travel_fixture();
     let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
     let (_sender, receiver) = mpsc::channel(4);
     let mut actor = SessionActor::new(engine, receiver);
@@ -681,6 +903,7 @@ async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
         .apply_command_without_spawning_forks(SessionCommand::AttachGdb {
             node: node_id("guest-a"),
             listen: gdb_listen("127.0.0.1:9000"),
+            debug_genesis: None,
             reply: attach_reply,
         })
         .await
@@ -693,7 +916,9 @@ async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
     let mut unread_stream = actor.event_log_stream(EventLogCursor::new(0));
     let mut past_stream = actor.event_log_stream(EventLogCursor::new(0));
 
-    actor.append_event_log_entries(&[test_event_log_entry(0), test_event_log_entry(1)]);
+    actor
+        .append_event_log_entries(&[test_event_log_entry(0), test_event_log_entry(1)])
+        .unwrap_or_else(|error| panic!("debug history fixture must append: {error}"));
     actor.engine.event_log_len = 2;
     for expected in [test_event_log_entry(0), test_event_log_entry(1)] {
         let frame = past_stream
@@ -709,7 +934,9 @@ async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
     let (goto_reply, goto_receiver) = CommandReply::channel();
     if let Err(error) = actor
         .apply_command_without_spawning_forks(SessionCommand::DebugGoto {
-            request: DebugGotoRequest::at_configuration(second.clone(), first.clone()),
+            // The actor replaces this stale caller-supplied current coordinate
+            // with its authoritative engine configuration before dispatch.
+            request: DebugGotoRequest::at_configuration(root.clone(), first.clone()),
             reply: goto_reply,
         })
         .await
@@ -778,6 +1005,103 @@ async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
     assert_eq!(actor.event_log.len(), 1);
     assert_eq!(actor.condition_event_log.len(), 1);
     assert_eq!(actor.condition_event_log[0], marker);
+    assert_eq!(
+        actor.debug_event_coordinates.get(&marker.sequence()),
+        Some(&actor.engine().snapshot().configuration),
+    );
+}
+
+#[test]
+fn actor_debug_history_indexes_each_emitted_decision_prefix() {
+    let (root, first, second, graph) = debug_time_travel_fixture();
+    let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
+    let (_sender, receiver) = mpsc::channel(4);
+    let mut actor = SessionActor::new(engine, receiver);
+    actor.debug_index_configuration = root.clone();
+    let decisions = second.schedule.decisions();
+    let entries = vec![
+        crucible::test_support::condition_payload_entry_for_test(
+            0,
+            VirtualTime { ticks: 1 },
+            SchedulerEventLogPayload::Decision(decisions[0].clone()),
+        ),
+        crucible::test_support::condition_payload_entry_for_test(
+            1,
+            VirtualTime { ticks: 1 },
+            resolved_backend_input_payload(1),
+        ),
+        crucible::test_support::condition_payload_entry_for_test(
+            2,
+            VirtualTime { ticks: 2 },
+            SchedulerEventLogPayload::Decision(decisions[1].clone()),
+        ),
+        crucible::test_support::condition_boundary_entry_for_test(
+            3,
+            VirtualTime { ticks: 2 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+    actor.engine.event_log_len = entries.len();
+    actor
+        .append_event_log_entries(&entries)
+        .unwrap_or_else(|error| panic!("multi-entry history must append: {error}"));
+
+    assert_ne!(root, first);
+    assert_eq!(actor.debug_event_coordinates.get(&0), Some(&first));
+    assert_eq!(actor.debug_event_coordinates.get(&1), Some(&first));
+    assert_eq!(actor.debug_event_coordinates.get(&2), Some(&second));
+    assert_eq!(actor.debug_event_coordinates.get(&3), Some(&second));
+    assert_eq!(actor.debug_current_event_limit(&second), Some(4));
+}
+
+#[test]
+fn actor_non_advancing_command_preserves_future_coordinate_indexes() {
+    let (_root, _first, second, graph) = debug_time_travel_fixture();
+    let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
+    let (_sender, receiver) = mpsc::channel(4);
+    let mut actor = SessionActor::new(engine, receiver);
+    actor.condition_event_log = vec![test_event_log_entry(0), test_event_log_entry(1)];
+    actor.debug_event_coordinates = BTreeMap::from([(0, second.clone()), (1, second)]);
+    actor.engine.event_log_len = 1;
+
+    actor
+        .append_event_log_entries(&[])
+        .unwrap_or_else(|error| panic!("empty command boundary must preserve history: {error}"));
+
+    assert_eq!(actor.condition_event_log.len(), 2);
+    assert!(actor.debug_event_coordinates.contains_key(&1));
+}
+
+#[tokio::test]
+async fn resumed_actor_rejects_reverse_event_history_before_its_floor() {
+    let (_root, _first, second, graph) = debug_time_travel_fixture();
+    let mut engine = Engine::new(second.clone(), graph, DebugGdbLoop);
+    engine.event_log_len = 7;
+    let (_sender, receiver) = mpsc::channel(4);
+    let mut actor = SessionActor::new(engine, receiver);
+    let (reply, receiver) = CommandReply::channel();
+    let error = actor
+        .apply_command_without_spawning_forks(SessionCommand::DebugReverseStep {
+            request: DebugReverseStepRequest::new(
+                second,
+                DebugReverseStepGrain::Quantum,
+                Vec::new(),
+            ),
+            reply,
+        })
+        .await
+        .expect_err("resumed history before the checkpoint must fail explicitly");
+    assert_eq!(
+        error,
+        SessionError::DebugHistoryUnavailable {
+            operation: "debug-reverse-step",
+            floor: 7,
+        }
+    );
+    assert_eq!(
+        receive_reply_error::<DebugReverseStepReport>(receiver).await,
+        error
+    );
 }
 
 #[tokio::test]
@@ -2193,61 +2517,7 @@ async fn no_entry_breakpoint_after_prior_event_uses_current_boundary() {
     );
 }
 
-#[test]
-fn session_driver_delegates_to_quantum_loop() {
-    let config = Configuration::genesis(ScenarioDef::from_canonical_material(
-        "crucible.test.session.quantum-loop",
-        "scenario=stub",
-    ));
-    let request = QuantumRequest {
-        configuration: config.clone(),
-        control: Vec::new(),
-    };
-    let mut driver = SessionDriver::new(StubLoop);
-
-    let outcome = driver.drive_quantum(request);
-
-    assert_eq!(
-        outcome.as_ref().map(|outcome| &outcome.configuration),
-        Ok(&config)
-    );
-}
-
-#[test]
-fn engine_start_instantiates_runtime_and_pauses() {
-    let scenario = generated_scenario(11);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(config.clone(), graph, StubLoop);
-
-    let snapshot = match engine.apply_command(SessionCommand::Start) {
-        Ok(snapshot) => snapshot,
-        Err(error) => panic!("start should instantiate runtime: {error}"),
-    };
-
-    assert_eq!(
-        snapshot.state,
-        EngineState::Paused {
-            reason: PauseReason::Instantiated
-        }
-    );
-    assert_eq!(
-        engine.runtime().map(|runtime| runtime.configuration),
-        Some(config.id())
-    );
-}
-
-#[test]
-fn session_actor_owns_breakpoint_set_with_runtime_state() {
-    let scenario = generated_scenario(10);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let engine = Engine::new(config, graph, StubLoop);
-    let (_sender, receiver) = mpsc::channel(4);
-    let actor = SessionActor::new(engine, receiver);
-
-    assert!(actor.engine().breakpoints().is_empty());
-    assert_eq!(actor.engine().breakpoints().len(), 0);
-}
 #[path = "engine_state/budget_exhaustion.rs"]
 mod budget_exhaustion;
+#[path = "engine_state/runtime_smoke.rs"]
+mod runtime_smoke;

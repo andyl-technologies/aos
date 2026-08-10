@@ -9,7 +9,9 @@ use crucible_shmem::{
     COVERAGE_ENTRY_GUEST_PC_OFFSET, COVERAGE_ENTRY_MAP_INDEX_OFFSET, COVERAGE_ENTRY_SIZE,
     COVERAGE_ENTRY_VCPU_INDEX_OFFSET, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
     FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE, FRAME_ENTRY_SRC_NODE_OFFSET,
-    FrameEntry, MAX_FRAME_DATA, NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
+    FrameEntry, GUEST_INTROSPECTION_ENTRY_DATA_OFFSET, GUEST_INTROSPECTION_ENTRY_LEN_OFFSET,
+    GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET, GUEST_INTROSPECTION_ENTRY_SIZE, MAX_FRAME_DATA,
+    NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
     NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
     NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET, NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
     NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET, NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET,
@@ -44,7 +46,12 @@ const GOLDEN_RING_HEADER_BASE: usize = GOLDEN_NODE_SLOT_BASE + NODE_SLOT_SIZE;
 const GOLDEN_FRAME_ENTRY_BASE: usize = GOLDEN_RING_HEADER_BASE + RING_HEADER_SIZE;
 const GOLDEN_COVERAGE_ENTRY_BASE: usize = GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_SIZE;
 const GOLDEN_WHITEBOX_MARKER_ENTRY_BASE: usize = GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_SIZE;
-const GOLDEN_TOTAL_LEN: usize = GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_SIZE;
+const GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE: usize =
+    GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_SIZE;
+const GOLDEN_TOTAL_LEN: usize =
+    GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE + GUEST_INTROSPECTION_ENTRY_SIZE;
+const GOLDEN_GUEST_INTROSPECTION_RECORD: &[u8] =
+    b"CRGI\x01\x00\x07\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
 
 #[path = "gate_abi_conformance/gate_cases.rs"]
 mod gate_cases;
@@ -368,6 +375,21 @@ fn live_golden_bytes() -> Vec<u8> {
     bytes[GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET
         ..GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET + 4]
         .copy_from_slice(b"MARK");
+    write_u64(
+        &mut bytes,
+        GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE + GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET,
+        19,
+    );
+    write_u16(
+        &mut bytes,
+        GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE + GUEST_INTROSPECTION_ENTRY_LEN_OFFSET,
+        GOLDEN_GUEST_INTROSPECTION_RECORD.len() as u16,
+    );
+    bytes[GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE + GUEST_INTROSPECTION_ENTRY_DATA_OFFSET
+        ..GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE
+            + GUEST_INTROSPECTION_ENTRY_DATA_OFFSET
+            + GOLDEN_GUEST_INTROSPECTION_RECORD.len()]
+        .copy_from_slice(GOLDEN_GUEST_INTROSPECTION_RECORD);
 
     bytes
 }
@@ -475,6 +497,15 @@ fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
     if marker_len_usize > MAX_FRAME_DATA {
         return Err(format!(
             "white-box marker payload length {marker_len} exceeds MAX_FRAME_DATA"
+        ));
+    }
+    let guest_introspection_len = usize::from(read_u16(
+        bytes,
+        GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE + GUEST_INTROSPECTION_ENTRY_LEN_OFFSET,
+    ));
+    if guest_introspection_len > MAX_FRAME_DATA {
+        return Err(format!(
+            "guest-introspection record length {guest_introspection_len} exceeds MAX_FRAME_DATA"
         ));
     }
 
@@ -625,6 +656,18 @@ fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                 ..GOLDEN_WHITEBOX_MARKER_ENTRY_BASE
                     + WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET
                     + marker_len_usize]
+                .to_vec(),
+        },
+        guest_introspection: GuestIntrospectionEntryState {
+            sequence: read_u64(
+                bytes,
+                GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE + GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET,
+            ),
+            record: bytes[GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE
+                + GUEST_INTROSPECTION_ENTRY_DATA_OFFSET
+                ..GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE
+                    + GUEST_INTROSPECTION_ENTRY_DATA_OFFSET
+                    + guest_introspection_len]
                 .to_vec(),
         },
     })
@@ -886,6 +929,21 @@ fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
             + WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET
             + state.whitebox_marker.payload.len()]
         .copy_from_slice(&state.whitebox_marker.payload);
+    write_u64(
+        &mut bytes,
+        GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE + GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET,
+        state.guest_introspection.sequence,
+    );
+    write_u16(
+        &mut bytes,
+        GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE + GUEST_INTROSPECTION_ENTRY_LEN_OFFSET,
+        state.guest_introspection.record.len() as u16,
+    );
+    bytes[GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE + GUEST_INTROSPECTION_ENTRY_DATA_OFFSET
+        ..GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE
+            + GUEST_INTROSPECTION_ENTRY_DATA_OFFSET
+            + state.guest_introspection.record.len()]
+        .copy_from_slice(&state.guest_introspection.record);
 
     bytes
 }
@@ -942,6 +1000,7 @@ struct GoldenState {
     frame: FrameEntryState,
     coverage: CoverageEntryState,
     whitebox_marker: WhiteboxMarkerEntryState,
+    guest_introspection: GuestIntrospectionEntryState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1015,4 +1074,10 @@ struct WhiteboxMarkerEntryState {
     vcpu_index: u32,
     kind: u16,
     payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestIntrospectionEntryState {
+    sequence: u64,
+    record: Vec<u8>,
 }

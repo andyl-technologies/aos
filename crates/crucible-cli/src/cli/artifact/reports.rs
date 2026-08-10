@@ -9,9 +9,21 @@ pub(crate) struct ReplayArtifactReport {
     pub(crate) seed: u64,
     pub(crate) scenario_digest: String,
     pub(crate) reduction: Option<ReplayReductionProof>,
+    pub(crate) live_qemu: Option<ReplayLiveQemuProof>,
     pub(crate) to_savepoint: Option<ReplayToSavepointReport>,
     pub(crate) check: Option<ReplayCheckReport>,
     pub(crate) bisect: Option<ReplayBisectionReport>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ReplayLiveQemuProof {
+    pub(crate) producer: String,
+    pub(crate) terminal_status: String,
+    pub(crate) terminal_outcome: String,
+    pub(crate) terminal_configuration: String,
+    pub(crate) event_stream_digest: String,
+    pub(crate) fingerprint_stream_digest: String,
+    pub(crate) controls: usize,
 }
 
 #[derive(Debug)]

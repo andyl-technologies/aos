@@ -37,9 +37,8 @@ pub(crate) use crucible_qemu::{
     DEFAULT_ROOT_OVERLAY_FILE_NAME as PRODUCTION_ROOT_OVERLAY_FILE_NAME,
     DEFAULT_VMSTATE_FILE_NAME as PRODUCTION_VMSTATE_FILE_NAME,
     QemuGdbstubChannelConfig as ProductionGdbstubChannelConfig,
-    QemuLiveNodeStepGateConfig as ProductionLiveNodeStepGateConfig, QemuNode as ProductionLiveNode,
+    QemuLiveNodeStepGateConfig as ProductionLiveNodeStepGateConfig,
     QemuNodeSet as ProductionNodeSet, launch_qemu_live_node as launch_production_live_node,
-    launch_qemu_live_node_exact_snapshot as launch_production_live_node_exact_snapshot,
 };
 
 /// Errors returned while deriving a process-local VM resume realization proof.

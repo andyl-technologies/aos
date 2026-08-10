@@ -26,6 +26,51 @@
     pkgs.zlib
   ];
   publishDeps = fixtures.commonDeps ++ nixRuntimeDeps;
+  publishSysrootImage = pkgs.mkDerivation {
+    pname = "apm-registry-publish-sysroot-image";
+    version = "1.0.0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.jq];
+    UKI_STORE_PATH = "${pkgs.systemd}/lib/systemd/boot/efi";
+    UKI_FILENAME = "systemd-bootx64.efi";
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out"
+          filename=aos-server.img
+          printf 'AOS registry publish image fixture\n' > "$out/$filename"
+          image_sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
+          image_size=$(stat -c %s "$out/$filename")
+          uki_sha256=$(sha256sum "$UKI_STORE_PATH/$UKI_FILENAME" | cut -d ' ' -f1)
+          uki_size=$(stat -c %s "$UKI_STORE_PATH/$UKI_FILENAME")
+          ${pkgs.jq}/bin/jq -S -n \
+            --arg filename "$filename" \
+            --arg sha256 "$image_sha256" \
+            --arg logicalDiskSha256 "$image_sha256" \
+            --arg rootfsSha256 "$image_sha256" \
+            --arg objectKey "images/sha256/$image_sha256/$filename" \
+            --arg ukiFilename "$UKI_FILENAME" \
+            --arg ukiSha256 "$uki_sha256" \
+            --argjson byteSize "$image_size" \
+            --argjson ukiSize "$uki_size" \
+            '{schemaVersion: 1, name: "server", version: "1.0.0",
+              architecture: "x86_64", platform: "x86_64-linux", format: "raw",
+              filename: $filename, objectKey: $objectKey,
+              mediaType: "application/vnd.aos.disk-image.raw", compression: "none",
+              byteSize: $byteSize, virtualSizeBytes: $byteSize, sha256: $sha256,
+              logicalDiskSha256: $logicalDiskSha256, rootfsSha256: $rootfsSha256,
+              compatibleTargets: ["bare-metal"],
+              partitionTable: "gpt", kernelParams: "",
+              partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 0, offsetBytes: 0, sizeBytes: $byteSize}],
+              esp: {uki: "EFI/Linux/aos-server.efi", sdBoot: "EFI/systemd/systemd-bootx64.efi"},
+              uki: {filename: $ukiFilename, espPath: "EFI/Linux/aos-server.efi",
+                byteSize: $ukiSize, sha256: $ukiSha256, signed: false, measured: false}}' \
+            > "$out/image-info.json"
+        '';
+      }
+    ];
+  };
   maintainerWorkflowDeps =
     publishDeps
     ++ [
@@ -917,7 +962,7 @@ in {
   # -------------------------------------------------------------------------
   registry-publish-sysroot = testing.mkVMTest {
     name = "apm-registry-publish-sysroot";
-    rootfsDeps = publishDeps;
+    rootfsDeps = publishDeps ++ [publishSysrootImage];
     memory = 512;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -936,8 +981,9 @@ in {
         --license MIT \
         --maintainer test \
         --sysroot \
-        --image ${aosPkg} \
+        --image ${publishSysrootImage} \
         --image-format raw \
+        --image-uki ${pkgs.systemd}/lib/systemd/boot/efi/systemd-bootx64.efi \
         --registry test-reg
 
       # Verify sysroot flag

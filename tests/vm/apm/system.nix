@@ -759,9 +759,8 @@ in {
       cat > "$BAD_HOME/.local/share/apm/registries/system-reg/registry.toml" << 'REGEOF'
       [registry]
       name = "system-reg"
-      [[caches]]
-      url = "http://127.0.0.1:9/user-cache"
-      priority = 9999
+      [caches]
+      endpoint = "http://127.0.0.1:9/user-cache"
       REGEOF
 
       HOME="$BAD_HOME" $APM install server --system --registry system-reg --yes \

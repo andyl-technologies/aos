@@ -215,6 +215,30 @@ impl ObservableEvent {
         self.at
     }
 
+    /// Returns the VM node that supplied this backend observation, when any.
+    pub(crate) fn backend_node(&self) -> Option<&NodeId> {
+        match &self.payload {
+            ObservableEventPayload::ConsoleOutput { node, .. }
+            | ObservableEventPayload::CoverageBlock { node, .. }
+            | ObservableEventPayload::CoverageMarker { node, .. }
+            | ObservableEventPayload::MemorySample { node, .. }
+            | ObservableEventPayload::IoCompletion { node, .. }
+            | ObservableEventPayload::NodeState { node, .. }
+            | ObservableEventPayload::GuestMarker { node, .. }
+            | ObservableEventPayload::GuestAssertionMarker { node, .. } => Some(node),
+            ObservableEventPayload::AssertionProximity { node, .. } => node.as_ref(),
+            ObservableEventPayload::NetworkDelivered { .. }
+            | ObservableEventPayload::AssertionStateChanged { .. }
+            | ObservableEventPayload::AssertionEvaluated { .. } => None,
+        }
+    }
+
+    /// Replaces the scheduler-time coordinate after physical-counter projection.
+    pub(crate) fn with_scheduler_time(mut self, at: VirtualTime) -> Self {
+        self.at = at;
+        self
+    }
+
     /// Moves a polled console observation forward to its unified scheduler boundary.
     pub(crate) fn normalize_backend_poll_boundary(mut self, boundary: VirtualTime) -> Self {
         if matches!(&self.payload, ObservableEventPayload::ConsoleOutput { .. }) {

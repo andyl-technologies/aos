@@ -12,6 +12,7 @@ use crucible::{
     FingerprintSample, GdbAttachInfo, GdbListen, NodeId, ObservableEvent, SimulationBackend,
     StepObservation, VirtualTime,
 };
+use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_shmem::{
     DequeuedFaultEvent, DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1,
 };
@@ -713,6 +714,25 @@ impl SimulationBackend for QemuNodeSet {
         listen: GdbListen,
     ) -> Result<GdbAttachInfo, BackendError> {
         self.node_mut(&node)?.open_gdbstub(node, listen)
+    }
+
+    fn activate_debug_guest(&mut self, node: &NodeId) -> Result<(), BackendError> {
+        Ok(self.node_mut(node)?.activate_debug_guest()?)
+    }
+
+    fn send_guest_introspection(
+        &mut self,
+        node: &NodeId,
+        record: GuestIntrospectionRecord,
+    ) -> Result<(), BackendError> {
+        Ok(self.node_mut(node)?.send_guest_introspection(record)?)
+    }
+
+    fn receive_guest_introspection(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<GuestIntrospectionRecord>, BackendError> {
+        Ok(self.node_mut(node)?.receive_guest_introspection()?)
     }
 
     fn shutdown(&mut self) -> Result<(), BackendError> {

@@ -491,8 +491,8 @@ impl fmt::Display for ReplayOracleSearchBisectionError {
                 "{mismatch}; failed to localize checkpoint {} at materialization {}: {source}",
                 failure.bisection.checkpoint_id,
                 failure.bisection.sequence,
-                mismatch = &failure.mismatch,
-                source = &failure.source
+                mismatch = failure.mismatch,
+                source = failure.source
             ),
         }
     }

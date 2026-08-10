@@ -2,6 +2,41 @@
 
 use super::*;
 
+pub(super) fn rpc_decode(message: impl Into<String>) -> ControlClientError {
+    ControlClientError::RpcDecode {
+        message: message.into(),
+    }
+}
+
+pub(super) fn push_session_ref(output: &mut String, session: SessionRef) {
+    push_line(output, "session-id", &session.id.value.to_string());
+    push_line(output, "epoch", &session.epoch.to_string());
+    push_line(output, "seed", &session.seed.to_hex());
+}
+
+pub(super) fn push_line(output: &mut String, key: &str, value: &str) {
+    output.push_str(key);
+    output.push('=');
+    output.push_str(value);
+    output.push('\n');
+}
+
+pub(super) fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+pub(super) fn command_kind_name(command: SessionCommandKind) -> &'static str {
+    api_command_for_session_command(command)
+        .map(|mapping| mapping.command_name)
+        .unwrap_or("unknown")
+}
+
 pub(super) fn parse_query_result_line(
     line: Option<&str>,
 ) -> Result<Option<QueryResult>, ControlClientError> {
@@ -109,6 +144,26 @@ pub(super) fn parse_query_result_line(
                 at,
                 fingerprint: ExecutionFingerprint { hash },
             })))
+        }
+        "debug-operator-endpoint" => {
+            let value = fields
+                .next()
+                .ok_or_else(|| rpc_decode("missing debug operator endpoint"))?;
+            let target = if value == "none" {
+                None
+            } else {
+                let node = NodeId {
+                    name: parse_hex_string(value)?,
+                };
+                let endpoint = DebugGdbEndpoint::new(
+                    "debug_operator_endpoint",
+                    parse_hex_string_field(fields.next(), "debug operator endpoint")?,
+                )
+                .map_err(|error| rpc_decode(format!("invalid debug operator endpoint: {error}")))?;
+                Some((node, endpoint))
+            };
+            reject_extra_query_result_fields(fields.next())?;
+            Ok(Some(QueryResult::DebugOperatorEndpoint(target)))
         }
         "snapshot" => {
             let state = parse_engine_state_field(fields.next(), "query result snapshot state")?;

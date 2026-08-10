@@ -20,6 +20,7 @@ use crucible::{
     FingerprintSample, GdbAttachInfo, GdbListen, Icount, NodeId, ObservableEvent,
     SchedulerEventLogAppend, SimulationBackend, StepObservation, VirtualTime,
 };
+use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_shmem::{
     DequeuedFaultEvent, DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1,
     FaultResultStatus, SchedulerPreemptionCommand,
@@ -261,6 +262,37 @@ pub trait QemuPluginIpcControlChannel: Send {
 
 /// Shared-memory hot-path channel for per-quantum data.
 pub trait QemuShmemHotPathChannel: Send {
+    /// Enqueues one guest-agent request through the public shared-memory ABI.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when guest introspection is unavailable
+    /// or the request queue cannot accept the record.
+    fn send_guest_introspection(
+        &mut self,
+        _record: GuestIntrospectionRecord,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "send guest introspection",
+            "guest introspection is unavailable on this channel",
+        ))
+    }
+
+    /// Dequeues one guest-agent response, if one is currently available.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when guest introspection is unavailable
+    /// or the response queue is malformed.
+    fn receive_guest_introspection(
+        &mut self,
+    ) -> Result<Option<GuestIntrospectionRecord>, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "receive guest introspection",
+            "guest introspection is unavailable on this channel",
+        ))
+    }
+
     /// Returns whether this channel owns a plugin-to-host coverage queue.
     ///
     /// The registration-time value is immutable. Direct node APIs use it to
@@ -544,6 +576,19 @@ pub trait QemuQmpMachineControlChannel: Send {
     ///
     /// Returns [`QemuNodeChannelError`] when QMP cannot send the quit command.
     fn quit(&mut self) -> Result<(), QemuNodeChannelError>;
+
+    /// Sends the fixed fork-time activation token to the dormant guest bootstrap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the channel has no activation
+    /// device or QMP rejects the bounded command.
+    fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "activate_debug_guest",
+            "QMP debug guest activation is unavailable",
+        ))
+    }
 }
 
 /// The three logical channel roles owned by one QEMU node.
@@ -701,6 +746,55 @@ impl QemuNode {
             .install_ninep_fault_coordinator(coordinator)
             .map_err(|source| {
                 QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })
+    }
+
+    /// Activates the dormant guest-introspection bootstrap after a non-canonical fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the bounded QMP activation command fails.
+    pub fn activate_debug_guest(&mut self) -> Result<(), QemuNodeError> {
+        self.channels
+            .qmp_machine_control
+            .activate_debug_guest()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
+            })
+    }
+
+    /// Sends one request to this VM's debug guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the shared-memory request path is
+    /// unavailable, malformed, or full.
+    pub fn send_guest_introspection(
+        &mut self,
+        record: GuestIntrospectionRecord,
+    ) -> Result<(), QemuNodeError> {
+        self.channels
+            .shmem_hot_path
+            .send_guest_introspection(record)
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
+    }
+
+    /// Receives one currently available response from this VM's debug guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the shared-memory response path is
+    /// unavailable or malformed.
+    pub fn receive_guest_introspection(
+        &mut self,
+    ) -> Result<Option<GuestIntrospectionRecord>, QemuNodeError> {
+        self.channels
+            .shmem_hot_path
+            .receive_guest_introspection()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })
     }
 
@@ -1605,69 +1699,10 @@ impl QemuNode {
     }
 }
 
-struct QemuNodeAsyncStepTarget<'a> {
-    child: &'a mut QemuNodeChild,
-    channels: &'a mut QemuNodeChannels,
-    lifecycle_state: &'a mut QemuNodeLifecycleState,
-    shutdown_policy: QemuShutdownPolicy,
-}
+#[path = "node/async_step.rs"]
+mod async_step;
 
-impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
-    fn shutdown_after_crash(&mut self) -> Result<QemuShutdownReport, QemuAsyncDriverTargetError> {
-        shutdown_node_child(
-            self.child,
-            self.channels,
-            self.lifecycle_state,
-            self.shutdown_policy,
-        )
-        .map_err(|error| QemuAsyncDriverTargetError::new("shutdown after crash", error.to_string()))
-    }
-}
-
-impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
-    type PendingQuantum = QemuNodePendingQuantum;
-
-    fn start_quantum(
-        &mut self,
-        horizon: ExecutionHorizon,
-    ) -> Result<Self::PendingQuantum, QemuNodeChannelError> {
-        self.channels.shmem_hot_path.start_quantum(horizon)
-    }
-
-    fn finish_quantum(
-        &mut self,
-        pending: &mut Self::PendingQuantum,
-    ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
-        self.channels.shmem_hot_path.poll_quantum(pending)
-    }
-}
-
-fn shutdown_node_child(
-    child: &mut QemuNodeChild,
-    channels: &mut QemuNodeChannels,
-    lifecycle_state: &mut QemuNodeLifecycleState,
-    shutdown_policy: QemuShutdownPolicy,
-) -> Result<QemuShutdownReport, QemuNodeError> {
-    if child.reaped() {
-        *lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
-        return Ok(QemuShutdownReport {
-            attempts: Vec::new(),
-            failures: Vec::new(),
-            reaped: true,
-            leaked: false,
-        });
-    }
-
-    let mut target = QemuNodeShutdownTarget {
-        child,
-        plugin_control: channels.plugin_control.as_mut(),
-        qmp_machine_control: channels.qmp_machine_control.as_mut(),
-    };
-    let report =
-        shutdown_qemu_child(&mut target, shutdown_policy).map_err(QemuNodeError::from_shutdown)?;
-    *lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
-    Ok(report)
-}
+use async_step::*;
 
 impl Backend for QemuNode {
     fn advance_to_horizon(
@@ -1918,6 +1953,21 @@ impl SimulationBackend for QemuNode {
         let info = GdbAttachInfo::new(node, gdbstub.qemu_endpoint().to_owned(), actual_listen)?;
         self.active_gdbstub = Some(server);
         Ok(info)
+    }
+
+    fn send_guest_introspection(
+        &mut self,
+        _node: &NodeId,
+        record: GuestIntrospectionRecord,
+    ) -> Result<(), BackendError> {
+        QemuNode::send_guest_introspection(self, record).map_err(BackendError::from)
+    }
+
+    fn receive_guest_introspection(
+        &mut self,
+        _node: &NodeId,
+    ) -> Result<Option<GuestIntrospectionRecord>, BackendError> {
+        QemuNode::receive_guest_introspection(self).map_err(BackendError::from)
     }
 
     fn shutdown(&mut self) -> Result<(), BackendError> {

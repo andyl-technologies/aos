@@ -533,7 +533,7 @@ pub const CANONICAL_SHMEM_ABI_VERSION: u32 = include!("../../crucible-shmem/src/
 pub fn canonical_mock_build_identity() -> E2eBuildIdentity {
     E2eBuildIdentity {
         crucible_version: env!("CARGO_PKG_VERSION").to_string(),
-        harness_abi: String::from("crucible-harness-e2e-v1"),
+        harness_abi: String::from("crucible-harness-e2e-v2"),
         backend: String::from("simdouble-mock"),
         backend_build_id: String::from("mock-backend-source-v1"),
         qemu_patch_series_hash: String::from(

@@ -5,8 +5,9 @@
 use crucible_shmem::{
     ABI_VERSION, DEFAULT_QUEUE_CAPACITY, FRAME_ENTRY_DATA_OFFSET,
     FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET, FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_SEQ_OFFSET,
-    FRAME_ENTRY_SIZE, FRAME_ENTRY_SRC_NODE_OFFSET, FrameEntry, KIND_9P, KIND_BLK, KIND_NET,
-    KIND_VM, MAX_NODES, NODE_SLOT_KIND_OFFSET, NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET,
+    FRAME_ENTRY_SIZE, FRAME_ENTRY_SRC_NODE_OFFSET, FrameEntry, GuestIntrospectionEntry,
+    GuestIntrospectionRingDirection, KIND_9P, KIND_BLK, KIND_NET, KIND_VM, MAX_NODES,
+    NODE_SLOT_KIND_OFFSET, NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET,
     REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ENTRY_STRIDE_OFFSET,
     REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
     REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
@@ -497,6 +498,55 @@ fn mmap_setup_region_round_trips_fault_command_transport() {
         DequeuedFaultResult::Valid { header, payload: actual }
             if header.command_sequence == 1 && actual == b"applied"
     ));
+}
+
+#[test]
+#[cfg(unix)]
+fn mmap_setup_region_keeps_guest_introspection_directions_distinct() {
+    const CLOSE_RECORD: &[u8] =
+        b"CRGI\x01\x00\x07\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+        Ok(allocation) => allocation,
+        Err(error) => panic!("valid region allocation should build: {error}"),
+    };
+    let mut mapped = mapped_region_from_allocation(&allocation);
+    let request = match GuestIntrospectionEntry::new(7, CLOSE_RECORD) {
+        Ok(entry) => entry,
+        Err(error) => panic!("valid guest-introspection entry should build: {error}"),
+    };
+
+    {
+        let mut host_rings = match mapped.host_guest_introspection_rings_mut(0) {
+            Ok(rings) => rings,
+            Err(error) => panic!("mapped host role should bind: {error}"),
+        };
+        assert_eq!(
+            host_rings.requests.direction(),
+            GuestIntrospectionRingDirection::Request
+        );
+        assert_eq!(
+            host_rings.responses.direction(),
+            GuestIntrospectionRingDirection::Response
+        );
+        if let Err(error) = host_rings.requests.enqueue(request) {
+            panic!("mapped request ring should enqueue: {error}");
+        }
+        assert_eq!(host_rings.responses.dequeue(), Ok(None));
+    }
+
+    let mut plugin_rings = match mapped.plugin_guest_introspection_rings_mut(0) {
+        Ok(rings) => rings,
+        Err(error) => panic!("mapped plugin role should bind: {error}"),
+    };
+    assert_eq!(
+        plugin_rings.requests.direction(),
+        GuestIntrospectionRingDirection::Request
+    );
+    assert_eq!(
+        plugin_rings.responses.direction(),
+        GuestIntrospectionRingDirection::Response
+    );
+    assert_eq!(plugin_rings.requests.dequeue(), Ok(Some(request)));
 }
 
 fn valid_snapshot() -> (RegionLayout, RegionHeaderSnapshot) {

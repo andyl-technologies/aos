@@ -488,6 +488,16 @@ pub struct RegionLayout {
     pub fault_event_arena_off: u64,
     /// Byte stride between event payload arenas.
     pub fault_event_arena_stride: u64,
+    /// Number of guest-introspection rings, two per logical VM.
+    pub guest_introspection_ring_count: u32,
+    /// Fixed entry capacity of every guest-introspection ring.
+    pub guest_introspection_queue_capacity: u32,
+    /// Byte offset to the first guest-introspection ring header.
+    pub guest_introspection_ring_hdr_off: u64,
+    /// Byte offset to the first guest-introspection entry.
+    pub guest_introspection_ring_data_off: u64,
+    /// Byte stride between guest-introspection entries.
+    pub guest_introspection_entry_stride: u64,
     /// Total mapped region size in bytes.
     pub region_size: u64,
     /// Fixed icount shift used to derive virtual nanoseconds.
@@ -740,10 +750,38 @@ impl RegionLayout {
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
         let fault_event_arena_stride = u64::from(config.fault_payload_arena_bytes);
-        let region_size = fault_event_arena_off
+        let fault_event_data_end = fault_event_arena_off
             .checked_add(
                 u64::from(fault_event_ring_count)
                     .checked_mul(fault_event_arena_stride)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+
+        // ABI v10 appends the two bounded guest-introspection directions after
+        // the fault transports, preserving all ABI v9 fault offsets.
+        let guest_introspection_ring_count = config
+            .vm_node_count
+            .checked_mul(GUEST_INTROSPECTION_RINGS_PER_VM)
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let guest_introspection_queue_capacity = GUEST_INTROSPECTION_QUEUE_CAPACITY;
+        let guest_introspection_ring_hdr_off =
+            checked_align_up(fault_event_data_end, usize_to_u64(RING_HEADER_ALIGN)?)?;
+        let guest_introspection_ring_data_off = guest_introspection_ring_hdr_off
+            .checked_add(
+                u64::from(guest_introspection_ring_count)
+                    .checked_mul(usize_to_u64(RING_HEADER_SIZE)?)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let guest_introspection_entry_stride = usize_to_u64(GUEST_INTROSPECTION_ENTRY_SIZE)?;
+        let guest_introspection_entry_count = u64::from(guest_introspection_ring_count)
+            .checked_mul(u64::from(guest_introspection_queue_capacity))
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let region_size = guest_introspection_ring_data_off
+            .checked_add(
+                guest_introspection_entry_count
+                    .checked_mul(guest_introspection_entry_stride)
                     .ok_or(RegionLayoutError::GeometryOverflow)?,
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
@@ -794,6 +832,11 @@ impl RegionLayout {
             fault_event_arena_hdr_off,
             fault_event_arena_off,
             fault_event_arena_stride,
+            guest_introspection_ring_count,
+            guest_introspection_queue_capacity,
+            guest_introspection_ring_hdr_off,
+            guest_introspection_ring_data_off,
+            guest_introspection_entry_stride,
             region_size,
             icount_shift: config.icount_shift,
             fault_payload_arena_bytes: config.fault_payload_arena_bytes,
@@ -834,6 +877,13 @@ impl RegionLayout {
     #[must_use]
     pub fn fault_event_slot_count(&self) -> u64 {
         u64::from(self.fault_event_ring_count) * u64::from(self.fault_event_queue_capacity)
+    }
+
+    /// Returns the number of guest-introspection entries in both directions.
+    #[must_use]
+    pub fn guest_introspection_entry_count(&self) -> u64 {
+        u64::from(self.guest_introspection_ring_count)
+            * u64::from(self.guest_introspection_queue_capacity)
     }
 }
 
@@ -909,6 +959,8 @@ pub struct RegionAllocation {
     fault_event_slots: Vec<FaultEventSlotV1>,
     fault_event_arena_headers: Vec<FaultPayloadArenaHeader>,
     fault_event_arena_bytes: Vec<u8>,
+    guest_introspection_ring_headers: Vec<RingHeader>,
+    guest_introspection_entries: Vec<GuestIntrospectionEntry>,
     rings: Vec<DirectedRing>,
     layout: RegionLayout,
 }
@@ -936,6 +988,8 @@ impl Clone for RegionAllocation {
             fault_event_slots: self.fault_event_slots.clone(),
             fault_event_arena_headers: self.fault_event_arena_headers.clone(),
             fault_event_arena_bytes: self.fault_event_arena_bytes.clone(),
+            guest_introspection_ring_headers: self.guest_introspection_ring_headers.clone(),
+            guest_introspection_entries: self.guest_introspection_entries.clone(),
             rings: self.rings.clone(),
             layout: self.layout,
         }
@@ -1082,6 +1136,15 @@ impl RegionAllocation {
         )
         .map_err(|_| RegionLayoutError::GeometryOverflow)?;
         let fault_event_arena_bytes = vec![0; fault_event_arena_len];
+        let guest_introspection_ring_headers = (0..layout.guest_introspection_ring_count)
+            .map(|_| RingHeader::new())
+            .collect::<Vec<_>>();
+        let guest_introspection_entry_count =
+            usize::try_from(layout.guest_introspection_entry_count())
+                .map_err(|_| RegionLayoutError::GeometryOverflow)?;
+        let guest_introspection_entries = (0..guest_introspection_entry_count)
+            .map(|_| GuestIntrospectionEntry::default())
+            .collect::<Vec<_>>();
 
         Ok(Self {
             header,
@@ -1104,6 +1167,8 @@ impl RegionAllocation {
             fault_event_slots,
             fault_event_arena_headers,
             fault_event_arena_bytes,
+            guest_introspection_ring_headers,
+            guest_introspection_entries,
             rings,
             layout,
         })
@@ -1227,6 +1292,18 @@ impl RegionAllocation {
     #[must_use]
     pub fn fault_event_arena_bytes(&self) -> &[u8] {
         &self.fault_event_arena_bytes
+    }
+
+    /// Returns the bidirectional guest-introspection ring headers.
+    #[must_use]
+    pub fn guest_introspection_ring_headers(&self) -> &[RingHeader] {
+        &self.guest_introspection_ring_headers
+    }
+
+    /// Returns the guest-introspection entry backing storage.
+    #[must_use]
+    pub fn guest_introspection_entries(&self) -> &[GuestIntrospectionEntry] {
+        &self.guest_introspection_entries
     }
 
     /// Returns the deterministic directed-ring map.
@@ -1489,6 +1566,30 @@ impl RegionAllocation {
             })?
             .copy_from_slice(&self.fault_event_arena_bytes);
 
+        for (index, ring_header) in self.guest_introspection_ring_headers.iter().enumerate() {
+            let base = checked_segment_offset(
+                "guest-introspection ring header",
+                index,
+                self.layout.guest_introspection_ring_hdr_off,
+                RING_HEADER_SIZE,
+                region_len,
+            )?;
+            write_ring_header_bytes(&mut bytes[base..base + RING_HEADER_SIZE], ring_header);
+        }
+        for (index, entry) in self.guest_introspection_entries.iter().enumerate() {
+            let base = checked_segment_offset(
+                "guest-introspection entry",
+                index,
+                self.layout.guest_introspection_ring_data_off,
+                GUEST_INTROSPECTION_ENTRY_SIZE,
+                region_len,
+            )?;
+            write_guest_introspection_entry_bytes(
+                &mut bytes[base..base + GUEST_INTROSPECTION_ENTRY_SIZE],
+                entry,
+            );
+        }
+
         Ok(bytes)
     }
 
@@ -1592,6 +1693,90 @@ impl RegionAllocation {
         self.whitebox_marker_ring_headers[ring_index]
             .enqueue_whitebox_marker(&mut self.whitebox_marker_entries[start..end], entry)?;
         Ok(())
+    }
+
+    /// Enqueues one host-produced guest-introspection request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionAllocationAccessError`] when the VM slot is absent, the
+    /// directional backing range overflows, or the SPSC queue rejects the entry.
+    pub fn enqueue_guest_introspection_request(
+        &mut self,
+        vm_slot: u32,
+        entry: GuestIntrospectionEntry,
+    ) -> Result<(), RegionAllocationAccessError> {
+        self.enqueue_guest_introspection_entry(
+            vm_slot,
+            GuestIntrospectionRingDirection::Request,
+            entry,
+        )
+    }
+
+    /// Enqueues one plugin-produced guest-introspection response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionAllocationAccessError`] when the VM slot is absent, the
+    /// response backing range overflows, or the SPSC queue rejects the entry.
+    pub fn enqueue_guest_introspection_response(
+        &mut self,
+        vm_slot: u32,
+        entry: GuestIntrospectionEntry,
+    ) -> Result<(), RegionAllocationAccessError> {
+        self.enqueue_guest_introspection_entry(
+            vm_slot,
+            GuestIntrospectionRingDirection::Response,
+            entry,
+        )
+    }
+
+    fn enqueue_guest_introspection_entry(
+        &mut self,
+        vm_slot: u32,
+        direction: GuestIntrospectionRingDirection,
+        entry: GuestIntrospectionEntry,
+    ) -> Result<(), RegionAllocationAccessError> {
+        let (ring_index, range) = self.guest_introspection_entry_range(vm_slot, direction)?;
+        self.guest_introspection_ring_headers[ring_index]
+            .enqueue_guest_introspection(&mut self.guest_introspection_entries[range], entry)?;
+        Ok(())
+    }
+
+    /// Dequeues one host-produced guest-introspection request for the plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionAllocationAccessError`] when the VM slot is absent, the
+    /// directional backing range overflows, or the SPSC queue is corrupt.
+    pub fn dequeue_guest_introspection_request(
+        &self,
+        vm_slot: u32,
+    ) -> Result<Option<GuestIntrospectionEntry>, RegionAllocationAccessError> {
+        self.dequeue_guest_introspection_entry(vm_slot, GuestIntrospectionRingDirection::Request)
+    }
+
+    /// Dequeues one plugin-produced guest-introspection response for the host.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionAllocationAccessError`] when the VM slot is absent, the
+    /// response backing range overflows, or the SPSC queue is corrupt.
+    pub fn dequeue_guest_introspection_response(
+        &self,
+        vm_slot: u32,
+    ) -> Result<Option<GuestIntrospectionEntry>, RegionAllocationAccessError> {
+        self.dequeue_guest_introspection_entry(vm_slot, GuestIntrospectionRingDirection::Response)
+    }
+
+    fn dequeue_guest_introspection_entry(
+        &self,
+        vm_slot: u32,
+        direction: GuestIntrospectionRingDirection,
+    ) -> Result<Option<GuestIntrospectionEntry>, RegionAllocationAccessError> {
+        let (ring_index, range) = self.guest_introspection_entry_range(vm_slot, direction)?;
+        Ok(self.guest_introspection_ring_headers[ring_index]
+            .dequeue_guest_introspection(&self.guest_introspection_entries[range])?)
     }
 
     /// Publishes pending inputs, then the scheduler ceiling, then the futex wake.
@@ -1779,6 +1964,53 @@ impl RegionAllocation {
         }
         Ok(start..end)
     }
+
+    fn guest_introspection_entry_range(
+        &self,
+        vm_slot: u32,
+        direction: GuestIntrospectionRingDirection,
+    ) -> Result<(usize, std::ops::Range<usize>), RegionAllocationAccessError> {
+        if vm_slot >= self.layout.vm_node_count {
+            return Err(RegionAllocationAccessError::UnknownGuestIntrospectionRing {
+                vm_slot,
+                vm_node_count: self.layout.vm_node_count,
+            });
+        }
+        let wire_index = direction.ring_index(vm_slot).ok_or(
+            RegionAllocationAccessError::GuestIntrospectionEntryRangeOverflow {
+                ring_index: u32::MAX,
+            },
+        )?;
+        let ring_index = usize::try_from(wire_index).map_err(|_error| {
+            RegionAllocationAccessError::GuestIntrospectionEntryRangeOverflow {
+                ring_index: wire_index,
+            }
+        })?;
+        let capacity =
+            usize::try_from(self.layout.guest_introspection_queue_capacity).map_err(|_error| {
+                RegionAllocationAccessError::GuestIntrospectionEntryRangeOverflow {
+                    ring_index: wire_index,
+                }
+            })?;
+        let start = ring_index.checked_mul(capacity).ok_or(
+            RegionAllocationAccessError::GuestIntrospectionEntryRangeOverflow {
+                ring_index: wire_index,
+            },
+        )?;
+        let end = start.checked_add(capacity).ok_or(
+            RegionAllocationAccessError::GuestIntrospectionEntryRangeOverflow {
+                ring_index: wire_index,
+            },
+        )?;
+        if end > self.guest_introspection_entries.len() {
+            return Err(
+                RegionAllocationAccessError::GuestIntrospectionEntryRangeOverflow {
+                    ring_index: wire_index,
+                },
+            );
+        }
+        Ok((ring_index, start..end))
+    }
 }
 
 /// An error produced while accessing a typed region allocation.
@@ -1791,6 +2023,22 @@ pub enum RegionAllocationAccessError {
         src_slot: u32,
         /// Consumer slot.
         dst_slot: u32,
+    },
+    /// A VM slot was outside the guest-introspection ring table.
+    #[error(
+        "region allocation has no guest-introspection ring for VM slot {vm_slot}; VM count is {vm_node_count}"
+    )]
+    UnknownGuestIntrospectionRing {
+        /// Rejected VM slot.
+        vm_slot: u32,
+        /// Number of logical VM slots.
+        vm_node_count: u32,
+    },
+    /// A guest-introspection entry range overflowed local indexing.
+    #[error("guest-introspection ring {ring_index} entry range overflowed")]
+    GuestIntrospectionEntryRangeOverflow {
+        /// Rejected directional ring index.
+        ring_index: u32,
     },
     /// A VM slot does not have a plugin-to-host coverage ring.
     #[error(
@@ -2237,6 +2485,24 @@ pub(super) fn write_whitebox_marker_entry_bytes(bytes: &mut [u8], entry: &Whiteb
     bytes[WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET..WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET]
         .copy_from_slice(&entry.payload);
     bytes[WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET..WHITEBOX_MARKER_ENTRY_SIZE]
+        .copy_from_slice(&entry._reserved);
+}
+
+pub(super) fn write_guest_introspection_entry_bytes(
+    bytes: &mut [u8],
+    entry: &GuestIntrospectionEntry,
+) {
+    write_u64_at(
+        bytes,
+        GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET,
+        entry.sequence,
+    );
+    write_u16_at(bytes, GUEST_INTROSPECTION_ENTRY_LEN_OFFSET, entry.len);
+    bytes[GUEST_INTROSPECTION_ENTRY_PAD_OFFSET..GUEST_INTROSPECTION_ENTRY_DATA_OFFSET]
+        .copy_from_slice(&entry._pad);
+    bytes[GUEST_INTROSPECTION_ENTRY_DATA_OFFSET..GUEST_INTROSPECTION_ENTRY_RESERVED_OFFSET]
+        .copy_from_slice(&entry.data);
+    bytes[GUEST_INTROSPECTION_ENTRY_RESERVED_OFFSET..GUEST_INTROSPECTION_ENTRY_SIZE]
         .copy_from_slice(&entry._reserved);
 }
 

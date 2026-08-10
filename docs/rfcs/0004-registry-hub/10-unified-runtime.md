@@ -197,10 +197,10 @@ with a native and a worker impl, the logic above it written once. The surface
 (native filesystem with safe-join + symlink containment + atomic temp-rename;
 worker R2 `put`/`delete`), and it backs the three write consumers now shared on
 both shells: the facade artifact-upload `PUT`, the git-backed config/change
-flow, and hosted-key channel advance (`core::signing`). The couplings:
+flow, and retained signing operations (`core::signing`). The couplings:
 
 - `SecretSealer` (**exists** in `core::auth::seal`) — seals OIDC client
-  secrets and hosted-key seeds at rest (AES-256-GCM). Native builds it from a
+  secrets and the isolated draft-signing seed at rest (AES-256-GCM). Native builds it from a
   file-backed instance key; the worker builds the *same* `AesGcmSealer` from a
   Wrangler secret binding. No new trait — just a different constructor.
 - `Mailer` (**now an async trait** in `core::auth::magic`) — sends magic-link /
@@ -393,7 +393,7 @@ beyond the one-time `migrations apply`. Same code path yields the same config
 path. *Handler unification has landed: the worker now serves the **entire**
 shared router — RPC, the facade read **and write** (`PUT`), browse, the full
 producer console (login/OIDC/activate/passkey/IAM/config/changes), and
-hosted-key channel advance — so `aos hub … --hub https://…workers.dev`
+retained signing operations — so `aos hub … --hub https://…workers.dev`
 administers a Cloudflare deployment identically to a native one. Schema
 migration and root bootstrap are CLI-driven over D1 (`aos-registry-hub init
 --target d1:<name>`) — the Worker has no public init endpoint.*

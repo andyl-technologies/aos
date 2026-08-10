@@ -464,8 +464,19 @@ where
             outcome.event_log_segment_hash = append.segment_hash;
             outcome.event_log_offset = append.offset;
         }
-        self.pending_observations
-            .extend(self.backend.drain_observable_events()?);
+        let observations = self
+            .backend
+            .drain_observable_events()?
+            .into_iter()
+            .map(|event| {
+                let Some(node) = event.backend_node() else {
+                    return Ok(event);
+                };
+                let at = self.loop_impl.backend_observation_time(node, event.at())?;
+                Ok(event.with_scheduler_time(at))
+            })
+            .collect::<Result<Vec<_>, SchedulerError>>()?;
+        self.pending_observations.extend(observations);
         self.pending_observations.sort_by_key(ObservableEvent::at);
         let committed = self
             .pending_observations
@@ -498,12 +509,46 @@ where
         self.loop_impl.apply_control_at_boundary(control)
     }
 
+    fn append_noncanonical_debug_event_log_entries(
+        &mut self,
+        entries: Vec<SchedulerEventLogEntry>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.loop_impl
+            .append_noncanonical_debug_event_log_entries(entries)
+    }
+
     fn open_gdbstub(
         &mut self,
         node: NodeId,
         listen: GdbListen,
     ) -> Result<GdbAttachInfo, SchedulerError> {
         self.backend.open_gdbstub(node, listen).map_err(Into::into)
+    }
+
+    fn activate_debug_guest(&mut self, node: NodeId) -> Result<(), SchedulerError> {
+        self.backend.activate_debug_guest(&node).map_err(Into::into)
+    }
+
+    fn send_guest_introspection(
+        &mut self,
+        node: NodeId,
+        record: crucible_protocol::guest_introspection::GuestIntrospectionRecord,
+    ) -> Result<(), SchedulerError> {
+        self.backend
+            .send_guest_introspection(&node, record)
+            .map_err(Into::into)
+    }
+
+    fn receive_guest_introspection(
+        &mut self,
+        node: NodeId,
+    ) -> Result<
+        Option<crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
+        SchedulerError,
+    > {
+        self.backend
+            .receive_guest_introspection(&node)
+            .map_err(Into::into)
     }
 
     fn append_backend_observable_events(
@@ -608,7 +653,23 @@ where
                 .map(|(_recorded, _configuration, append)| append.entries),
             Err(error) => Err(SchedulerError::from(error)),
         };
-        let final_observations = self.backend.drain_observable_events();
+        let final_observations = self.backend.drain_observable_events().and_then(|events| {
+            events
+                .into_iter()
+                .map(|event| {
+                    let Some(node) = event.backend_node() else {
+                        return Ok(event);
+                    };
+                    let at = self
+                        .loop_impl
+                        .backend_observation_time(node, event.at())
+                        .map_err(|error| BackendError::Rejected {
+                            message: error.to_string(),
+                        })?;
+                    Ok(event.with_scheduler_time(at))
+                })
+                .collect::<Result<Vec<_>, BackendError>>()
+        });
         let final_append = final_observations.and_then(|events| {
             self.pending_observations.extend(events);
             self.pending_observations.sort_by_key(ObservableEvent::at);

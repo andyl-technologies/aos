@@ -2,17 +2,14 @@
 //! half).
 //!
 //! When a registry's state changes through a hub-mediated path — an index
-//! completes, a channel advances, a registry's visibility flips, a release is
-//! published — the hub raises a [`WebhookEvent`]. [`dispatch`] finds the owning
-//! org's *active* webhooks subscribed to that event type and enqueues one
-//! durable delivery per hook (a pure database write). The actual HTTP delivery
-//! worker — the part that `POST`s payloads with a hardened client and retries —
-//! lives in the native hub (RFC-0004 Phase 5), since it needs an HTTP stack; on
-//! the Cloudflare Worker the same queue is drained by a Cron-triggered fetch.
+//! completes, a channel advances, or a release is published — the hub commits
+//! a [`WebhookEvent`] to the canonical topology outbox. The materializer fans
+//! that event out to active subscriptions, and native and Worker delivery
+//! loops send the resulting durable deliveries.
 //!
 //! This module owns the deployment-independent pieces shared by both: the event
 //! [taxonomy](WebhookEvent), the HMAC-SHA256 [body signature](sign_body), the
-//! db-enqueue [`dispatch`], and the [`backoff_secs`] retry schedule.
+//! outbox-enqueue [`dispatch`], and the [`backoff_secs`] retry schedule.
 //!
 //! # Event taxonomy
 //!
@@ -24,7 +21,6 @@
 //! | --- | --- | --- |
 //! | `index.completed` | a registry finishes (re)indexing | `registry`, `commit`, `packages`, `releases`, `channels`, `incremental`, `at` |
 //! | `channel.advanced` | a channel's partitions move to a release | `registry`, `channel`, `release`, `moved`, `at_target`, `rollout_percent`, `at` |
-//! | `registry.visibility_changed` | a registry's visibility flips | `registry`, `old`, `new`, `at` |
 //! | `release.published` | a new release tag is indexed | `registry`, `semver`, `commit`, `at` |
 //!
 //! # Signature scheme
@@ -41,8 +37,8 @@ use crate::db::Database;
 
 /// Maximum number of delivery attempts before a delivery is marked `failed`.
 ///
-/// Backoff is exponential (see [`backoff_secs`]); six attempts spans roughly
-/// 10s + 20s + 40s + 80s + 160s ≈ 5 minutes of retries before giving up.
+/// Backoff is exponential (see [`backoff_secs`]); six attempts span five waits
+/// of 20s + 40s + 80s + 160s + 320s (about ten minutes) before giving up.
 pub const MAX_ATTEMPTS: i64 = 6;
 
 /// Base delay, in seconds, for the first retry; doubled each subsequent
@@ -52,6 +48,62 @@ const BASE_BACKOFF_SECS: i64 = 10;
 /// Cap, in seconds, on a single backoff interval (1 hour), so a long-failing
 /// delivery does not schedule retries arbitrarily far out.
 const MAX_BACKOFF_SECS: i64 = 3600;
+
+/// Returns whether an event name is safe for the closed webhook header wire.
+///
+/// Every closed-taxonomy value must also remain a bounded ASCII token before it
+/// can be persisted and mirrored into `X-AOS-Event`.
+#[must_use]
+pub fn is_safe_event_header_value(event_type: &str) -> bool {
+    !event_type.is_empty()
+        && event_type.len() <= 128
+        && event_type
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// Event names accepted by webhook subscription filters.
+///
+/// This is the single API/CLI/UI taxonomy: it contains operational registry
+/// events plus every topology outbox event emitted by the hard-cutover schema.
+pub const SUPPORTED_EVENT_TYPES: &[&str] = &[
+    "index.completed",
+    "channel.advanced",
+    "release.published",
+    "project.created",
+    "project.deleted",
+    "registry.configuration.updated",
+    "registry.deleted",
+    "webhook.created",
+    "webhook.deleted",
+    "topology.storage_credential.validated",
+    "topology.storage_credential.rejected",
+    "topology.storage_gateway.created",
+    "topology.storage_gateway.revised",
+    "topology.storage_gateway.enabled",
+    "topology.storage_gateway.disabled",
+    "topology.storage_gateway.reconciled",
+    "topology.storage_gateway.deleted",
+    "topology.delivery_route.created",
+    "topology.delivery_route.revised",
+    "topology.delivery_route.reconciled",
+    "topology.delivery_route.deleted",
+    "topology.network_boundary.activation_started",
+    "topology.network_boundary.activated",
+    "topology.network_boundary.retirement_started",
+    "topology.network_boundary.retired",
+    "topology.delivery_endpoint.created",
+    "topology.delivery_endpoint.generation_staged",
+    "topology.delivery_endpoint.generation_activated",
+    "topology.delivery_endpoint.reconciled",
+    "topology.delivery_endpoint.deleted",
+];
+
+/// Returns whether `event_type` is a member of the closed webhook taxonomy.
+#[must_use]
+pub fn is_supported_event_type(event_type: &str) -> bool {
+    SUPPORTED_EVENT_TYPES.contains(&event_type)
+}
 
 /// HMAC-SHA256 keyed by a webhook's shared secret.
 type HmacSha256 = Hmac<Sha256>;
@@ -97,17 +149,6 @@ pub enum WebhookEvent {
         /// Unix time the advance completed.
         at: i64,
     },
-    /// A registry's visibility changed.
-    VisibilityChanged {
-        /// The registry's canonical slug.
-        registry: String,
-        /// The previous visibility (`public`, `internal`, or `private`).
-        old: String,
-        /// The new visibility.
-        new: String,
-        /// Unix time the change applied.
-        at: i64,
-    },
     /// A new release tag was published (observed in the index).
     ReleasePublished {
         /// The registry's canonical slug.
@@ -131,8 +172,40 @@ impl WebhookEvent {
         match self {
             WebhookEvent::IndexCompleted { .. } => "index.completed",
             WebhookEvent::ChannelAdvanced { .. } => "channel.advanced",
-            WebhookEvent::VisibilityChanged { .. } => "registry.visibility_changed",
             WebhookEvent::ReleasePublished { .. } => "release.published",
+        }
+    }
+
+    /// Returns the canonical registry identity carried by the event.
+    #[must_use]
+    pub fn registry(&self) -> &str {
+        match self {
+            WebhookEvent::IndexCompleted { registry, .. }
+            | WebhookEvent::ChannelAdvanced { registry, .. }
+            | WebhookEvent::ReleasePublished { registry, .. } => registry,
+        }
+    }
+
+    /// Returns a stable semantic key used to deduplicate producer retries.
+    pub(crate) fn dedupe_key(&self) -> serde_json::Value {
+        match self {
+            WebhookEvent::IndexCompleted {
+                registry, commit, ..
+            } => serde_json::json!([registry, commit]),
+            WebhookEvent::ChannelAdvanced {
+                registry,
+                channel,
+                release,
+                at_target,
+                rollout_percent,
+                ..
+            } => serde_json::json!([registry, channel, release, at_target, rollout_percent]),
+            WebhookEvent::ReleasePublished {
+                registry,
+                semver,
+                commit,
+                ..
+            } => serde_json::json!([registry, semver, commit]),
         }
     }
 
@@ -179,17 +252,6 @@ impl WebhookEvent {
                 "rollout_percent": rollout_percent,
                 "at": at,
             }),
-            WebhookEvent::VisibilityChanged {
-                registry,
-                old,
-                new,
-                at,
-            } => serde_json::json!({
-                "registry": registry,
-                "old": old,
-                "new": new,
-                "at": at,
-            }),
             WebhookEvent::ReleasePublished {
                 registry,
                 semver,
@@ -217,7 +279,13 @@ impl WebhookEvent {
 /// so the construction is infallible.
 #[must_use]
 pub fn sign_body(secret: &str, body: &[u8]) -> String {
-    let Ok(mut mac) = <HmacSha256 as Mac>::new_from_slice(secret.as_bytes()) else {
+    sign_body_bytes(secret.as_bytes(), body)
+}
+
+/// Computes an HMAC signature with arbitrary provider-managed key bytes.
+#[must_use]
+pub fn sign_body_bytes(secret: &[u8], body: &[u8]) -> String {
+    let Ok(mut mac) = <HmacSha256 as Mac>::new_from_slice(secret) else {
         // Unreachable: HMAC accepts any key length. Returning a stable,
         // never-matching marker keeps this total without an `expect`.
         return "sha256=".to_string();
@@ -226,32 +294,39 @@ pub fn sign_body(secret: &str, body: &[u8]) -> String {
     format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
 }
 
-/// Fan one event out to an org's subscribed, active webhooks.
+/// Commits one operational event to the canonical topology outbox.
 ///
-/// Looks up the org's webhooks, and for each one that is active and subscribed
-/// to `event.event_type()` enqueues one pending delivery of the event's
-/// payload. Returns the number of deliveries enqueued (`0` when the org has no
-/// matching subscriptions).
-///
-/// This is intentionally cheap and synchronous (a few small inserts): callers
-/// invoke it inline on the operation that raised the event and ignore — or
-/// merely log — its result, so a webhook failure never breaks that operation.
+/// Producer retries use the event's semantic key to converge on one immutable
+/// outbox identity. The ordinary materializer performs subscription fanout and
+/// creates stable delivery IDs; operational events therefore have exactly the
+/// same audit, Queue, lease, and deduplication path as topology mutations.
+/// Returns `1` when it inserts the event and `0` when a producer retry finds
+/// the same semantic identity already durable.
 ///
 /// # Errors
 ///
-/// Returns an error only on database failure while listing webhooks or
-/// enqueuing a delivery; the payload serialization is infallible.
+/// Returns an error for serialization, inconsistent registry ownership, or
+/// outbox persistence failure.
 pub async fn dispatch(db: &Database, org_id: i64, event: &WebhookEvent) -> anyhow::Result<usize> {
     let event_type = event.event_type();
     let payload = serde_json::to_string(&event.payload())?;
-    let mut enqueued = 0;
-    for hook in db.list_webhooks(org_id).await? {
-        if hook.active && hook.subscribes_to(event_type) {
-            db.enqueue_delivery(hook.id, event_type, &payload).await?;
-            enqueued += 1;
-        }
-    }
-    Ok(enqueued)
+    let dedupe_key = serde_json::to_string(&event.dedupe_key())?;
+    Ok(
+        if db
+            .enqueue_operational_webhook_event(
+                org_id,
+                event.registry(),
+                event_type,
+                &dedupe_key,
+                &payload,
+            )
+            .await?
+        {
+            1
+        } else {
+            0
+        },
+    )
 }
 
 /// The retry delay, in seconds, after `attempts` have already been made.
@@ -290,6 +365,30 @@ mod tests {
         assert_eq!(payload["release"], "1.2.3");
         assert_eq!(payload["moved"], 64);
         assert_eq!(payload["rollout_percent"], 50);
+    }
+
+    #[test]
+    fn channel_dedupe_uses_exact_partition_count() {
+        let event = |at_target| WebhookEvent::ChannelAdvanced {
+            registry: "acme/cdn".into(),
+            channel: "stable".into(),
+            release: "1.2.3".into(),
+            moved: 1,
+            at_target,
+            rollout_percent: 50,
+            at: 1_770_000_000,
+        };
+        assert_ne!(event(128).dedupe_key(), event(129).dedupe_key());
+    }
+
+    #[test]
+    fn event_header_tokens_are_bounded_and_injection_safe() {
+        assert!(is_safe_event_header_value("topology.webhook.created"));
+        assert!(!is_safe_event_header_value(""));
+        assert!(!is_safe_event_header_value(
+            "index.completed\r\nx-injected: yes"
+        ));
+        assert!(!is_safe_event_header_value(&"x".repeat(129)));
     }
 
     #[test]

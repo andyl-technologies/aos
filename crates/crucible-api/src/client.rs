@@ -12,15 +12,15 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crucible::{
-    Action, Checkpoint, Configuration, ContentHash, ControlOperationKind, EventLevel,
-    ExecutionFingerprint, FingerprintSample, NodeId, Predicate, Schedule, Seed, SimDuration,
-    VirtualTime,
+    Action, Checkpoint, Configuration, ContentHash, ControlOperationKind, DebugGdbEndpoint,
+    EventLevel, ExecutionFingerprint, FingerprintSample, NodeId, Predicate, Schedule, Seed,
+    SimDuration, VirtualTime,
 };
 use crucible_session::{
-    BreakpointDisposition, BreakpointFiring, BreakpointId, BreakpointPolicy, EngineSnapshot,
-    EngineState, LifecycleStateKind, LiveSnapshot, LiveStateKind, Outcome, OutcomeKind,
-    PauseReason, QueryKind, QueryResult, SavepointInfo, SessionCommand, SessionCommandKind,
-    StepMode,
+    BreakpointDisposition, BreakpointFiring, BreakpointId, BreakpointPolicy, DebugClientId,
+    DebugControllerLease, EngineSnapshot, EngineState, LifecycleStateKind, LiveSnapshot,
+    LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind, QueryResult, SavepointInfo,
+    SessionCommand, SessionCommandKind, StepMode,
 };
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
@@ -121,9 +121,9 @@ impl ClientControlStream {
     ///
     /// # Errors
     ///
-    /// Returns [`ControlClientError`] when the underlying transport fails, the
-    /// RPC state-update frame is malformed, or the in-process state-update
-    /// stream lags.
+    /// Returns [`ControlClientError`] when the underlying transport fails or an
+    /// RPC state-update frame is malformed. Superseded state updates are
+    /// coalesced on both transports.
     pub async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
@@ -254,9 +254,9 @@ impl ClientWatchStream {
     ///
     /// # Errors
     ///
-    /// Returns [`ControlClientError`] when the underlying transport fails, the
-    /// RPC state-update frame is malformed, or the in-process state-update
-    /// stream lags.
+    /// Returns [`ControlClientError`] when the underlying transport fails or an
+    /// RPC state-update frame is malformed. Superseded state updates are
+    /// coalesced on both transports.
     pub async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
@@ -364,7 +364,7 @@ struct RpcStreamingEventReceiver {
     pending_events: VecDeque<StreamingEventFrame>,
     pending_state_updates: VecDeque<StreamingStateUpdateFrame>,
     skipped_events: u64,
-    skipped_state_updates: u64,
+    last_state_sequence: Option<u64>,
 }
 
 impl RpcStreamingEventReceiver {
@@ -394,19 +394,15 @@ impl RpcStreamingEventReceiver {
     async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
-        if self.skipped_state_updates > 0 {
-            let skipped = std::mem::take(&mut self.skipped_state_updates);
-            return Err(ControlClientError::from(
-                StreamingApiError::StateUpdateStreamLagged { skipped },
-            ));
-        }
-        if let Some(frame) = self.pending_state_updates.pop_front() {
-            return Ok(Some(frame));
-        }
-
-        loop {
+        let mut latest = self.pending_state_updates.pop_back();
+        self.pending_state_updates.clear();
+        while latest.is_none() {
             match self.frames.recv().await {
-                Some(Ok(RpcStreamingFrame::StateUpdate(frame))) => return Ok(Some(frame)),
+                Some(Ok(RpcStreamingFrame::StateUpdate(frame))) => {
+                    if self.state_sequence_is_newer(frame.sequence) {
+                        latest = Some(frame);
+                    }
+                }
                 Some(Ok(RpcStreamingFrame::Event(frame))) => {
                     self.push_pending_event(frame);
                 }
@@ -414,6 +410,30 @@ impl RpcStreamingEventReceiver {
                 None => return Ok(None),
             }
         }
+
+        loop {
+            match self.frames.try_recv() {
+                Ok(Ok(RpcStreamingFrame::StateUpdate(frame))) => {
+                    if latest
+                        .as_ref()
+                        .is_none_or(|current| frame.sequence > current.sequence)
+                        && self.state_sequence_is_newer(frame.sequence)
+                    {
+                        latest = Some(frame);
+                    }
+                }
+                Ok(Ok(RpcStreamingFrame::Event(frame))) => self.push_pending_event(frame),
+                Ok(Err(error)) => return Err(error),
+                Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                    break;
+                }
+            }
+        }
+
+        if let Some(frame) = &latest {
+            self.last_state_sequence = Some(frame.sequence);
+        }
+        Ok(latest)
     }
 
     fn push_pending_event(&mut self, frame: StreamingEventFrame) {
@@ -425,11 +445,21 @@ impl RpcStreamingEventReceiver {
     }
 
     fn push_pending_state_update(&mut self, frame: StreamingStateUpdateFrame) {
-        if self.pending_state_updates.len() >= RPC_STREAM_PENDING_FRAME_CAPACITY {
-            let _dropped = self.pending_state_updates.pop_front();
-            self.skipped_state_updates = self.skipped_state_updates.saturating_add(1);
+        if !self.state_sequence_is_newer(frame.sequence)
+            || self
+                .pending_state_updates
+                .back()
+                .is_some_and(|pending| pending.sequence >= frame.sequence)
+        {
+            return;
         }
+        self.pending_state_updates.clear();
         self.pending_state_updates.push_back(frame);
+    }
+
+    fn state_sequence_is_newer(&self, sequence: u64) -> bool {
+        self.last_state_sequence
+            .is_none_or(|delivered| sequence > delivered)
     }
 }
 
@@ -914,6 +944,28 @@ pub struct RpcEndpoint {
     protocol: RpcTransportProtocol,
 }
 
+/// PEM material used by an authenticated remote RPC client.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RpcMutualTlsConfig {
+    server_ca_pem: Vec<u8>,
+    client_identity_pem: Vec<u8>,
+}
+
+impl RpcMutualTlsConfig {
+    /// Builds client mutual-TLS material from a server CA and a combined client
+    /// certificate/private-key PEM document.
+    #[must_use]
+    pub fn from_pem(
+        server_ca_pem: impl Into<Vec<u8>>,
+        client_identity_pem: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            server_ca_pem: server_ca_pem.into(),
+            client_identity_pem: client_identity_pem.into(),
+        }
+    }
+}
+
 impl RpcEndpoint {
     /// Builds an HTTP/2 RPC endpoint.
     #[must_use]
@@ -963,6 +1015,47 @@ impl RpcControlClient {
     pub fn new(endpoint: RpcEndpoint) -> Result<Self, ControlClientError> {
         let http = reqwest::Client::builder()
             .http2_prior_knowledge()
+            .build()
+            .map_err(|error| ControlClientError::HttpClientBuild {
+                message: error.to_string(),
+            })?;
+        Ok(Self {
+            endpoint,
+            http,
+            wire_model: ControlWireModel::current(),
+        })
+    }
+
+    /// Builds an authenticated HTTPS/2 RPC client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError::HttpClientBuild`] when `endpoint` is not
+    /// HTTPS, either PEM document is invalid, or the HTTP client cannot be
+    /// initialized.
+    pub fn new_mtls(
+        endpoint: RpcEndpoint,
+        tls: RpcMutualTlsConfig,
+    ) -> Result<Self, ControlClientError> {
+        if !endpoint.uri().starts_with("https://") {
+            return Err(ControlClientError::HttpClientBuild {
+                message: String::from("mutual-TLS control endpoints must use https://"),
+            });
+        }
+        let server_ca = reqwest::Certificate::from_pem(&tls.server_ca_pem).map_err(|error| {
+            ControlClientError::HttpClientBuild {
+                message: format!("invalid daemon CA certificate: {error}"),
+            }
+        })?;
+        let identity = reqwest::Identity::from_pem(&tls.client_identity_pem).map_err(|error| {
+            ControlClientError::HttpClientBuild {
+                message: format!("invalid daemon client identity: {error}"),
+            }
+        })?;
+        let http = reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .add_root_certificate(server_ca)
+            .identity(identity)
             .build()
             .map_err(|error| ControlClientError::HttpClientBuild {
                 message: error.to_string(),
@@ -1256,7 +1349,7 @@ async fn decode_attached_stream_response(
             pending_events: VecDeque::new(),
             pending_state_updates: VecDeque::new(),
             skipped_events: 0,
-            skipped_state_updates: 0,
+            last_state_sequence: None,
         },
     ))
 }
@@ -1538,6 +1631,7 @@ fn query_kind_request_wire(kind: &QueryKind) -> String {
         QueryKind::ExecutionFingerprint { node } => {
             format!("execution-fingerprint|{}", hex_encode(node.name.as_bytes()))
         }
+        QueryKind::DebugOperatorEndpoint => String::from("debug-operator-endpoint"),
     }
 }
 
@@ -1584,6 +1678,34 @@ fn decode_list_scenarios_response(
         });
     }
     Ok(ListScenariosResponse { scenarios })
+}
+
+fn decode_debug_controller_acquire_response(
+    body: &[u8],
+) -> Result<DebugControllerLease, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(
+        lines.next(),
+        "crucible.rpc/debug-controller-acquire-response",
+    )?;
+    let client = DebugClientId::new(parse_hex_string_line(lines.next(), "client=")?)
+        .map_err(|error| rpc_decode(format!("invalid debug controller identity: {error}")))?;
+    let generation = parse_u64_line(lines.next(), "generation=")?;
+    reject_trailing(lines.next())?;
+    Ok(DebugControllerLease { client, generation })
+}
+
+fn decode_debug_relay_read_response(
+    body: &[u8],
+) -> Result<crate::DebugRelayChunk, ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), "crucible.rpc/debug-relay-read-response")?;
+    let eof = parse_bool_line(lines.next(), "eof=")?;
+    let bytes = parse_hex_bytes(parse_prefixed_line(lines.next(), "data=")?)?;
+    reject_trailing(lines.next())?;
+    Ok(crate::DebugRelayChunk { bytes, eof })
 }
 
 fn decode_create_session_response(
@@ -2752,41 +2874,6 @@ fn reject_trailing(line: Option<&str>) -> Result<(), ControlClientError> {
     Ok(())
 }
 
-fn push_session_ref(output: &mut String, session: SessionRef) {
-    push_line(output, "session-id", &session.id.value.to_string());
-    push_line(output, "epoch", &session.epoch.to_string());
-    push_line(output, "seed", &session.seed.to_hex());
-}
-
-fn push_line(output: &mut String, key: &str, value: &str) {
-    output.push_str(key);
-    output.push('=');
-    output.push_str(value);
-    output.push('\n');
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    output
-}
-
-fn rpc_decode(message: impl Into<String>) -> ControlClientError {
-    ControlClientError::RpcDecode {
-        message: message.into(),
-    }
-}
-
-fn command_kind_name(command: SessionCommandKind) -> &'static str {
-    api_command_for_session_command(command)
-        .map(|mapping| mapping.command_name)
-        .unwrap_or("unknown")
-}
-
 fn command_name_from_static(value: &str) -> Result<&'static str, ControlClientError> {
     API_COMMAND_MAPPINGS
         .iter()
@@ -2869,6 +2956,12 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, ControlClientError> {
     }
     Ok(bytes)
 }
+
+#[cfg(test)]
+mod streaming_receiver_tests;
+
+mod debug;
+pub use debug::{DebugControllerAccess, DebugControllerAcquisition};
 mod query_result;
 
 use query_result::*;

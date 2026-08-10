@@ -1023,6 +1023,9 @@ pub enum RegistryCommand {
         /// Image format for each --image (repeatable, paired with --image)
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
+        /// Exact UKI file for each --image (repeatable, paired with --image)
+        #[arg(long = "image-uki")]
+        image_ukis: Vec<String>,
         /// Expose manifest.json to publish with package metadata
         #[arg(long = "expose-manifest")]
         expose_manifest: Option<String>,
@@ -1149,6 +1152,24 @@ pub enum RegistryCommand {
     // ----- Git Workflow -----
     /// Show working tree status
     Status {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Commit explicit registry paths through AOS's in-process signer
+    Commit {
+        /// Registry-relative paths to stage and commit
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Commit message
+        #[arg(short, long)]
+        message: String,
+        /// Private key path used to sign the commit
+        #[arg(long)]
+        key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1285,6 +1306,9 @@ pub enum RegistryCommand {
         /// Image format for each --image (repeatable, paired with --image)
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
+        /// Exact UKI file for each --image when --store-path is used
+        #[arg(long = "image-uki")]
+        image_ukis: Vec<String>,
         /// Bless additional content for paths already recorded with different
         /// bits in the store/ graph when --store-path is used
         #[arg(long)]
@@ -1316,10 +1340,10 @@ pub enum RegistryCommand {
         /// Nix narinfo signing key file in `name:base64-secret` form
         #[arg(long = "cache-key")]
         cache_key: Option<PathBuf>,
-        /// Public cache URL to write into committed registry.toml [[caches]]
+        /// Public cache URL to add to the committed registry cache stack.
         #[arg(long = "cache-url")]
         cache_url: Option<String>,
-        /// Priority for generated nix-cache-info and registry [[caches]]
+        /// Priority for generated nix-cache-info.
         #[arg(long = "cache-priority")]
         cache_priority: Option<u32>,
         /// Regenerate and re-upload paths even when local or remote entries exist
@@ -1804,7 +1828,7 @@ pub enum CacheCommand {
         /// Nix narinfo signing key file in `name:base64-secret` form
         #[arg(long)]
         key: Option<PathBuf>,
-        /// Public cache URL to write into committed registry.toml [[caches]]
+        /// Public cache URL to add to the committed registry cache stack.
         #[arg(long)]
         cache_url: Option<String>,
         /// Backend URL to upload generated files to; repeat for multiple destinations
@@ -1815,10 +1839,10 @@ pub enum CacheCommand {
         /// Authentication and backend-specific upload options
         #[command(flatten)]
         auth: CacheUploadAuthArgs,
-        /// Priority for generated nix-cache-info and registry [[caches]]
+        /// Priority for generated nix-cache-info.
         #[arg(long, default_value = "40")]
         priority: u32,
-        /// Do not commit registry.toml after updating [[caches]]
+        /// Do not commit registry.toml after updating the cache stack.
         #[arg(long)]
         no_commit: bool,
         /// Registry to operate on
@@ -3054,6 +3078,7 @@ async fn run_registry(
             source_drv,
             images,
             image_formats,
+            image_ukis,
             expose_manifest,
             bless,
             no_ca,
@@ -3078,6 +3103,7 @@ async fn run_registry(
                 source_drv.as_deref(),
                 images,
                 image_formats,
+                image_ukis,
                 expose_manifest.as_deref(),
                 *bless,
                 *no_ca,
@@ -3184,6 +3210,24 @@ async fn run_registry(
         RegistryCommand::Status { registry } => {
             registry_ops::status(config, registry.as_deref(), printer).await
         }
+        RegistryCommand::Commit {
+            paths,
+            message,
+            key,
+            key_id,
+            registry,
+        } => {
+            registry_ops::commit_changes(
+                config,
+                paths,
+                message,
+                key.as_deref(),
+                key_id.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
         RegistryCommand::Log {
             package,
             n,
@@ -3257,6 +3301,7 @@ async fn run_registry(
             source_drv,
             images,
             image_formats,
+            image_ukis,
             bless,
             message,
             channel,
@@ -3292,6 +3337,7 @@ async fn run_registry(
                 source_drv.as_deref(),
                 images,
                 image_formats,
+                image_ukis,
                 *bless,
                 message.as_deref(),
                 channel.as_deref(),

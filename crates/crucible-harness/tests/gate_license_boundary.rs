@@ -18,6 +18,7 @@ const APACHE_LICENSE: &str = "Apache-2.0";
 const BOUNDARY_LICENSE: &str = "MIT OR Apache-2.0";
 const PLUGIN_LICENSE: &str = "GPL-2.0-only";
 const PLUGIN_PACKAGE: &str = "crucible-qemu-plugin";
+const DEBUG_GATEWAY_PACKAGE: &str = "crucible-debug-gateway";
 const BOUNDARY_PACKAGES: &[&str] = &["crucible-protocol", "crucible-shmem"];
 
 #[path = "gate_license_boundary/contributor_authorization.rs"]
@@ -49,10 +50,11 @@ fn repository_publishes_each_declared_license_scope() -> Result<(), Box<dyn Erro
         );
     }
 
-    let licensing = fs::read_to_string(root.join("LICENSING.md"))?;
+    let licensing = fs::read_to_string(root.join("docs/legal/licensing.md"))?;
     for marker in [
         "`crucible-protocol` and `crucible-shmem` | MIT OR Apache-2.0",
         "`crucible-qemu-plugin` | GPL-2.0-only",
+        "`crucible-debug-gateway` | GPL-2.0-only",
         "`crucible-qemu-trace-plugin` | GPL-2.0-only",
         "unmarked files default to GPL-2.0-or-later",
         "shared memory is the high-throughput data plane",
@@ -60,7 +62,7 @@ fn repository_publishes_each_declared_license_scope() -> Result<(), Box<dyn Erro
     ] {
         assert!(
             licensing.contains(marker),
-            "LICENSING.md must contain `{marker}`"
+            "docs/legal/licensing.md must contain `{marker}`"
         );
     }
     let readme = fs::read_to_string(root.join("README.md"))?;
@@ -170,36 +172,38 @@ fn cargo_metadata_preserves_component_licenses() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn plugin_internal_dependencies_are_only_permissive_boundary_crates() -> Result<(), Box<dyn Error>>
+fn gpl_side_internal_dependencies_are_only_permissive_boundary_crates() -> Result<(), Box<dyn Error>>
 {
     let crates = workspace_crates_dir()?;
     let workspace: Value = fs::read_to_string(crates.join("Cargo.toml"))?.parse()?;
     let workspace_dependencies = workspace["workspace"]["dependencies"]
         .as_table()
         .ok_or("workspace.dependencies must be a table")?;
-    let manifest_path = crates.join(PLUGIN_PACKAGE).join("Cargo.toml");
-    let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
     let mut failures = Vec::new();
 
-    dependencies::visit_production_dependency_tables(
-        &manifest,
-        &mut |table_name, dependencies| {
-            for (name, dependency) in dependencies {
-                let package = dependencies::resolved_dependency_package(
-                    name,
-                    dependency,
-                    workspace_dependencies,
-                );
-                let is_internal_crucible =
-                    package == "crucible" || package.starts_with("crucible-");
-                if is_internal_crucible && !BOUNDARY_PACKAGES.contains(&package) {
-                    failures.push(format!(
-                    "{PLUGIN_PACKAGE}: production {table_name} entry `{package}` crosses the GPL boundary"
-                ));
+    for gpl_package in [PLUGIN_PACKAGE, DEBUG_GATEWAY_PACKAGE] {
+        let manifest_path = crates.join(gpl_package).join("Cargo.toml");
+        let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
+        dependencies::visit_production_dependency_tables(
+            &manifest,
+            &mut |table_name, dependencies| {
+                for (name, dependency) in dependencies {
+                    let package = dependencies::resolved_dependency_package(
+                        name,
+                        dependency,
+                        workspace_dependencies,
+                    );
+                    let is_internal_crucible =
+                        package == "crucible" || package.starts_with("crucible-");
+                    if is_internal_crucible && !BOUNDARY_PACKAGES.contains(&package) {
+                        failures.push(format!(
+                            "{gpl_package}: production {table_name} entry `{package}` crosses the GPL boundary"
+                        ));
+                    }
                 }
-            }
-        },
-    )?;
+            },
+        )?;
+    }
 
     for boundary in BOUNDARY_PACKAGES {
         let boundary_manifest: Value =
@@ -221,10 +225,26 @@ fn plugin_internal_dependencies_are_only_permissive_boundary_crates() -> Result<
         plugin_package.contains("LICENSES/MIT.txt"),
         "the GPL plugin package must retain the MIT notice for its dual-licensed boundary crates"
     );
+    let gateway_package = fs::read_to_string(
+        crates
+            .parent()
+            .ok_or("crates/ must be inside the repository")?
+            .join("pkgs/tools/crucible/crucible.nix"),
+    )?;
+    for marker in [
+        "LICENSES/GPL-2.0-only.txt",
+        "share/licenses/crucible-debug-gateway/COMPONENT",
+        "crucible-protocol is used under its MIT option",
+    ] {
+        assert!(
+            gateway_package.contains(marker),
+            "the GPL debugger gateway package must contain `{marker}`"
+        );
+    }
 
     assert!(
         failures.is_empty(),
-        "plugin dependency boundary drift:\n{}",
+        "GPL-side dependency boundary drift:\n{}",
         failures.join("\n")
     );
     Ok(())
@@ -347,7 +367,10 @@ fn public_shmem_interface_is_process_shaped() -> Result<(), Box<dyn Error>> {
         !header.contains("(*"),
         "public C ABI must not contain function pointers"
     );
-    for line in header.lines().filter(|line| line.trim_end().ends_with(';')) {
+    for line in header
+        .lines()
+        .filter(|line| line.trim_end().ends_with(';') && !line.contains('='))
+    {
         assert!(
             !line.contains('*'),
             "public C ABI field must not be a pointer: {line}"
@@ -395,7 +418,7 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
         version_bytes[3],
     ]);
     assert_eq!(version, fixture.abi_version);
-    assert_eq!(fixture.total_len, 9_880);
+    assert_eq!(fixture.total_len, 14_552);
     Ok(())
 }
 
@@ -433,6 +456,15 @@ fn boundary_artifacts_and_code_docs_remain_explicit() -> Result<(), Box<dyn Erro
             .as_slice(),
         ),
         (
+            "crucible-debug-gateway/src/lib.rs",
+            [
+                "SPDX-License-Identifier: GPL-2.0-only",
+                "versioned owned-byte protocol",
+                "separate process",
+            ]
+            .as_slice(),
+        ),
+        (
             "crucible-shmem/src/lib.rs",
             [
                 "SPDX-License-Identifier: MIT OR Apache-2.0",
@@ -465,7 +497,7 @@ fn boundary_artifacts_and_code_docs_remain_explicit() -> Result<(), Box<dyn Erro
 
 fn expected_license(package: &str) -> &'static str {
     match package {
-        PLUGIN_PACKAGE => PLUGIN_LICENSE,
+        PLUGIN_PACKAGE | DEBUG_GATEWAY_PACKAGE => PLUGIN_LICENSE,
         "crucible-protocol" | "crucible-shmem" => BOUNDARY_LICENSE,
         _ => APACHE_LICENSE,
     }

@@ -1,6 +1,10 @@
 //! Asynchronous session actor, mailbox scheduling, and live state mirrors.
 
 use super::*;
+use std::time::Duration;
+
+#[path = "actor/terminal.rs"]
+mod terminal;
 
 /// Error returned by the session actor or engine state machine.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -120,90 +124,102 @@ pub enum SessionError {
         /// Operation blocked until branch metadata is recorded.
         operation: &'static str,
     },
+    /// Guest introspection targeted a node without explicit white-box opt-in.
+    #[error("guest introspection is not authorized for node `{node}`")]
+    GuestIntrospectionNotAuthorized {
+        /// Node whose authored policy did not enable white-box access.
+        node: String,
+    },
+    /// Fork-time activation did not produce a valid feature advertisement.
+    #[error("guest introspection activation failed for node `{node}`: {reason}")]
+    GuestIntrospectionActivation {
+        /// Node whose dormant agent was activated.
+        node: String,
+        /// Stable activation or negotiation failure detail.
+        reason: String,
+    },
+    /// A guest request requires a capability that the activated agent did not advertise.
+    #[error("guest introspection capability `{capability}` is unavailable for node `{node}`")]
+    GuestIntrospectionCapabilityUnavailable {
+        /// Target guest node.
+        node: String,
+        /// Stable protocol capability label.
+        capability: &'static str,
+    },
+    /// Opening another guest channel would exceed the negotiated per-node limit.
+    #[error("guest introspection channel limit {max_channels} is exhausted for node `{node}`")]
+    GuestIntrospectionChannelLimit {
+        /// Target guest node.
+        node: String,
+        /// Agent-advertised maximum concurrent channels.
+        max_channels: u16,
+    },
+    /// A resumed session does not carry event history before its checkpoint boundary.
+    #[error(
+        "debug operation {operation} reached the resumed event-history floor at sequence {floor}"
+    )]
+    DebugHistoryUnavailable {
+        /// Debug operation that requires unavailable pre-resume history.
+        operation: &'static str,
+        /// First scheduler event sequence observable by this actor.
+        floor: u64,
+    },
+    /// The runtime reported success for a different debug target than requested.
+    #[error("debug runtime reposition evidence mismatch: {0}")]
+    DebugRuntimeRepositionMismatch(Box<DebugRuntimeRepositionEvidenceMismatch>),
 }
 
-pub(super) fn is_recoverable_command_rejection(
-    command: &SessionCommand,
-    error: &SessionError,
-) -> bool {
-    let SessionCommand::Acknowledge { .. } = command else {
-        return false;
-    };
-    match error {
-        SessionError::InvalidTransition { .. }
-        | SessionError::InvalidEngineState { .. }
-        | SessionError::BreakpointConditionPrefix { .. }
-        | SessionError::UnsupportedBreakpointAction { .. }
-        | SessionError::UnsupportedBreakpointFault { .. }
-        | SessionError::BreakpointNotFound { .. }
-        | SessionError::DebugAttachRequired { .. }
-        | SessionError::DebugNonCanonicalBranchRequired { .. } => true,
-        SessionError::Engine(error) => is_recoverable_engine_rejection(error),
-        SessionError::Scheduler(error) => is_recoverable_scheduler_rejection(error),
-        SessionError::ChannelClosed
-        | SessionError::EventLogOffsetRegression { .. }
-        | SessionError::EventLogOffsetMismatch { .. }
-        | SessionError::ControlReplayBoundaryMismatch { .. }
-        | SessionError::ControlReplayFrontierMismatch { .. }
-        | SessionError::ControlReplayBatchMismatch { .. }
-        | SessionError::ControlReplayFinalSnapshotMismatch { .. } => false,
+/// Expected and actual identities from a mismatched runtime replacement report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DebugRuntimeRepositionEvidenceMismatch {
+    /// Node required by the session transaction.
+    pub expected_node: NodeId,
+    /// Current configuration required by the session transaction.
+    pub expected_previous_configuration: ContentHash,
+    /// Target configuration required by the session transaction.
+    pub expected_configuration: ContentHash,
+    /// Target checkpoint required by the session transaction.
+    pub expected_checkpoint: ContentHash,
+    /// Previous private QEMU endpoint that must not remain selected.
+    pub expected_previous_qemu_gdbstub: DebugGdbEndpoint,
+    /// Node claimed by the backend.
+    pub actual_node: NodeId,
+    /// Current configuration claimed by the backend.
+    pub actual_previous_configuration: ContentHash,
+    /// Target configuration claimed by the backend.
+    pub actual_configuration: ContentHash,
+    /// Checkpoint claimed by the backend.
+    pub actual_checkpoint: ContentHash,
+    /// Private QEMU endpoint claimed by the backend.
+    pub actual_qemu_gdbstub: DebugGdbEndpoint,
+    /// Gateway generation claimed by the backend.
+    pub actual_gateway_generation: u64,
+}
+
+impl fmt::Display for DebugRuntimeRepositionEvidenceMismatch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "expected node={:?} previous={:?} configuration={:?} checkpoint={:?} previous_qemu_gdbstub={:?}, actual node={:?} previous={:?} configuration={:?} checkpoint={:?} qemu_gdbstub={:?} gateway_generation={}",
+            self.expected_node,
+            self.expected_previous_configuration,
+            self.expected_configuration,
+            self.expected_checkpoint,
+            self.expected_previous_qemu_gdbstub,
+            self.actual_node,
+            self.actual_previous_configuration,
+            self.actual_configuration,
+            self.actual_checkpoint,
+            self.actual_qemu_gdbstub,
+            self.actual_gateway_generation,
+        )
     }
 }
 
-/// Distinguishes engine-driven failures from rejected operator commands.
-fn is_autonomous_actor_error(error: &SessionError) -> bool {
-    matches!(
-        error,
-        SessionError::Scheduler(_)
-            | SessionError::EventLogOffsetRegression { .. }
-            | SessionError::EventLogOffsetMismatch { .. }
-            | SessionError::BreakpointConditionPrefix { .. }
-            | SessionError::UnsupportedBreakpointAction { .. }
-            | SessionError::UnsupportedBreakpointFault { .. }
-    )
-}
+#[path = "actor/recoverability.rs"]
+mod recoverability;
 
-pub(super) fn is_recoverable_engine_rejection(error: &EngineError) -> bool {
-    matches!(
-        error,
-        EngineError::CheckpointNotRecorded { .. }
-            | EngineError::MissingBakedGenesis { .. }
-            | EngineError::PropertyPredicateUnknownNode { .. }
-            | EngineError::PropertyPredicateUnknownAssertion { .. }
-            | EngineError::DebugAttachUnknownNode { .. }
-            | EngineError::DebugTargetResolverFailureNotFound { .. }
-            | EngineError::DebugTimeTravelCoordinateNotFound { .. }
-            | EngineError::DebugTimeTravelUnknownNode { .. }
-            | EngineError::NotImplemented { .. }
-            | EngineError::WorldNodeUnsupportedWorkload { .. }
-            | EngineError::WorldNodeUnsupportedWorkloadConfigTree { .. }
-            | EngineError::WorldNodeUnsupportedWorkloadPattern { .. }
-            | EngineError::WorldNodeUnsupportedWorkloadSpikeMode { .. }
-            | EngineError::WorldNodeUnsupportedWorkloadTimeSource { .. }
-            | EngineError::DebugBreakpointRequiresAllowMutate { .. }
-            | EngineError::EventLogReplayUnsupported { .. }
-            | EngineError::SchedulePrefix(_)
-    )
-}
-
-pub(super) const fn is_recoverable_scheduler_rejection(error: &SchedulerError) -> bool {
-    match error {
-        SchedulerError::NotImplemented { .. }
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => true,
-        SchedulerError::Backend(error) => is_recoverable_backend_rejection(error),
-    }
-}
-
-pub(super) const fn is_recoverable_backend_rejection(error: &BackendError) -> bool {
-    match error {
-        BackendError::NotImplemented { .. }
-        | BackendError::Unsupported { .. }
-        | BackendError::Rejected { .. } => true,
-    }
-}
-
+pub(super) use recoverability::*;
 /// Evidence returned when a session actor exits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionRunReport {
@@ -337,12 +353,16 @@ pub struct SessionActor<L> {
     pub(super) last_published_state: EngineState,
     pub(super) fork_loop_factory: Option<SessionForkLoopFactory<L>>,
     pub(super) condition_event_log: Vec<SchedulerEventLogEntry>,
+    pub(super) debug_event_coordinates: BTreeMap<u64, Configuration>,
+    pub(super) debug_history_floor: u64,
+    pub(super) debug_index_configuration: Configuration,
     pub(super) commands_applied: u64,
     pub(super) yielded_after_quanta: u64,
     pub(super) control_acknowledgements: u64,
     pub(super) state_transition_sequence: u64,
     pub(super) terminal_command_keepalive: bool,
     pub(super) terminal_shutdown_requested: bool,
+    pub(super) gdb_run_control_stop: Option<Vec<u8>>,
 }
 
 impl<L> SessionActor<L> {
@@ -375,6 +395,8 @@ impl<L> SessionActor<L> {
         fork_loop_factory: Option<SessionForkLoopFactory<L>>,
     ) -> Self {
         let last_published_state = engine.state().clone();
+        let debug_history_floor = u64::try_from(engine.event_log_len()).unwrap_or(u64::MAX);
+        let debug_index_configuration = engine.snapshot().configuration;
         let live = Arc::new(LiveSnapshot::new(&engine.snapshot()));
         Self {
             engine,
@@ -386,12 +408,16 @@ impl<L> SessionActor<L> {
             last_published_state,
             fork_loop_factory,
             condition_event_log: Vec::new(),
+            debug_event_coordinates: BTreeMap::new(),
+            debug_history_floor,
+            debug_index_configuration,
             commands_applied: 0,
             yielded_after_quanta: 0,
             control_acknowledgements: 0,
             state_transition_sequence: 0,
             terminal_command_keepalive: false,
             terminal_shutdown_requested: false,
+            gdb_run_control_stop: None,
         }
     }
 
@@ -485,11 +511,21 @@ impl<L> SessionActor<L> {
         let before_state = self.last_published_state.clone();
         let before = self.live.read();
         let snapshot = self.engine.snapshot();
-        self.live.publish(&snapshot, self.control_acknowledgements);
-        let after = self.live.read();
         let after_state = snapshot.state.clone();
-        if before_state != after_state {
-            self.state_transition_sequence = self.state_transition_sequence.saturating_add(1);
+        let state_changed = before_state != after_state;
+        let state_transition_sequence = if state_changed {
+            self.state_transition_sequence.saturating_add(1)
+        } else {
+            self.state_transition_sequence
+        };
+        self.live.publish(
+            &snapshot,
+            self.control_acknowledgements,
+            state_transition_sequence,
+        );
+        let after = self.live.read();
+        if state_changed {
+            self.state_transition_sequence = state_transition_sequence;
             self.state_transitions.publish(SessionStateTransitionFrame {
                 sequence: self.state_transition_sequence,
                 from_state: before_state,
@@ -501,12 +537,74 @@ impl<L> SessionActor<L> {
         self.last_published_state = after_state;
     }
 
-    pub(super) fn append_event_log_entries(&mut self, entries: &[SchedulerEventLogEntry]) {
+    pub(super) fn append_event_log_entries(
+        &mut self,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<(), SessionError> {
+        self.append_event_log_entries_with_history_policy(entries, false)
+    }
+
+    pub(super) fn append_event_log_entries_preserving_debug_history(
+        &mut self,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<(), SessionError> {
+        self.append_event_log_entries_with_history_policy(entries, true)
+    }
+
+    fn append_event_log_entries_with_history_policy(
+        &mut self,
+        entries: &[SchedulerEventLogEntry],
+        preserve_debug_history: bool,
+    ) -> Result<(), SessionError> {
         let base_len = self.engine.event_log_len().saturating_sub(entries.len());
         self.event_log.truncate_to_len(base_len);
-        self.condition_event_log.truncate(base_len);
+        let base_sequence = u64::try_from(base_len).unwrap_or(u64::MAX);
+        if !preserve_debug_history && !entries.is_empty() {
+            self.condition_event_log
+                .retain(|entry| entry.sequence() < base_sequence);
+            self.debug_event_coordinates
+                .retain(|sequence, _| *sequence < base_sequence);
+        }
         self.event_log.append_entries(entries);
+        let current = self.engine.snapshot().configuration;
+        if preserve_debug_history {
+            self.debug_index_configuration = current;
+            return Ok(());
+        }
         self.condition_event_log.extend(entries.iter().cloned());
+        let mut coordinate = self.debug_index_configuration.clone();
+        for entry in entries {
+            if let SchedulerEventLogPayload::Decision(decision) = entry.payload()
+                && current.schedule.decisions().get(coordinate.schedule.len()) == Some(decision)
+            {
+                coordinate = Configuration {
+                    def: current.def.clone(),
+                    schedule: current
+                        .schedule
+                        .prefix(coordinate.schedule.len().saturating_add(1))
+                        .map_err(EngineError::SchedulePrefix)?,
+                };
+            }
+            if matches!(
+                entry.payload(),
+                SchedulerEventLogPayload::EvaluationBoundary(
+                    SchedulerEvaluationBoundaryKind::Quantum
+                )
+            ) {
+                coordinate = current.clone();
+            }
+            self.debug_event_coordinates
+                .insert(entry.sequence(), coordinate.clone());
+        }
+        self.debug_index_configuration = current;
+        Ok(())
+    }
+
+    pub(super) fn debug_current_event_limit(&self, current: &Configuration) -> Option<u64> {
+        let _ = current;
+        self.engine
+            .debug_event_cursor()
+            .or_else(|| u64::try_from(self.engine.event_log_len()).ok())
     }
 
     fn condition_event_log_prefix(&self) -> Vec<SchedulerEventLogEntry> {
@@ -521,12 +619,6 @@ impl<L> SessionActor<L> {
         self.reproduction_log
             .sync_from_boundary_log(self.engine.boundary_control_log());
     }
-
-    fn terminalize_actor_error(&mut self, error: &SessionError) {
-        self.engine.stop_after_actor_crash(error.to_string());
-        self.sync_reproduction_log();
-        self.publish_live_snapshot();
-    }
 }
 
 pub(super) fn split_acknowledged_command(
@@ -535,6 +627,47 @@ pub(super) fn split_acknowledged_command(
     match command {
         SessionCommand::Acknowledge { command, reply } => (*command, Some(reply)),
         command => (command, None),
+    }
+}
+
+fn gdb_run_control_command(packet: &[u8]) -> Option<SessionCommand> {
+    if packet == [0x03] {
+        return Some(SessionCommand::Pause);
+    }
+    if packet == b"c" {
+        return Some(SessionCommand::Continue);
+    }
+    if packet == b"s" {
+        return Some(SessionCommand::Step {
+            mode: StepMode::Quantum,
+        });
+    }
+    let actions = packet.strip_prefix(b"vCont;")?.split(|byte| *byte == b';');
+    let mut saw_continue = false;
+    let mut saw_step = false;
+    for action in actions {
+        let operation = match action.iter().position(|byte| *byte == b':') {
+            Some(separator) if separator + 1 < action.len() => &action[..separator],
+            Some(_) => return None,
+            None => action,
+        };
+        match operation {
+            b"c" => saw_continue = true,
+            b"s" => saw_step = true,
+            _ => return None,
+        }
+    }
+    if saw_step {
+        // In all-stop mode GDB asks the selected thread to step and all other
+        // threads to continue. The deterministic scheduler implements that
+        // request as one quantum followed by a correlated all-stop reply.
+        Some(SessionCommand::Step {
+            mode: StepMode::Quantum,
+        })
+    } else if saw_continue {
+        Some(SessionCommand::Continue)
+    } else {
+        None
     }
 }
 
@@ -616,8 +749,21 @@ where
     }
 
     pub(super) async fn run_once(&mut self) -> Result<(), SessionError> {
+        let result = self.run_once_inner().await;
+        if result.is_err() {
+            self.fail_pending_gdb_run_control();
+        }
+        result
+    }
+
+    async fn run_once_inner(&mut self) -> Result<(), SessionError> {
         match self.engine.state().clone() {
             EngineState::Running => {
+                if self.poll_gdb_run_control().await? {
+                    self.publish_live_snapshot();
+                    self.complete_pending_gdb_run_control()?;
+                    return Ok(());
+                }
                 if let Some(command) = self.next_boundary_command()? {
                     self.apply_command_or_recover(command).await?;
                     return Ok(());
@@ -627,38 +773,43 @@ where
                 let _outcome = match self.engine.step_quantum() {
                     Ok(outcome) => outcome,
                     Err(SessionError::Scheduler(SchedulerError::Backend(error))) => {
+                        self.engine.fail_pending_guest_activation(format!(
+                            "backend failed while activating guest agent: {error}"
+                        ));
                         self.engine.stop_after_backend_crash(error.to_string())?;
                         self.publish_live_snapshot();
+                        self.complete_pending_gdb_run_control()?;
                         return Ok(());
                     }
                     Err(error) => return Err(error),
                 };
                 let entries = self.engine.drain_event_log_entries();
                 let emitted_event_log_entries = entries.len();
-                self.append_event_log_entries(&entries);
+                self.append_event_log_entries(&entries)?;
                 self.engine
                     .evaluate_breakpoints(&self.condition_event_log, emitted_event_log_entries)?;
                 self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
-                self.append_event_log_entries(&breakpoint_entries);
+                self.append_event_log_entries(&breakpoint_entries)?;
+                self.engine.poll_pending_guest_activation()?;
                 self.engine.stop_on_continuous_quiescence()?;
                 let shutdown_entries = self.engine.drain_event_log_entries();
-                self.append_event_log_entries(&shutdown_entries);
+                self.append_event_log_entries(&shutdown_entries)?;
                 self.control_acknowledgements = self
                     .control_acknowledgements
                     .saturating_add(pending_control);
                 self.publish_live_snapshot();
+                self.complete_pending_gdb_run_control()?;
                 self.yielded_after_quanta = self.yielded_after_quanta.saturating_add(1);
                 tokio::task::yield_now().await;
                 Ok(())
             }
             EngineState::Loaded | EngineState::Paused { .. } => {
-                let command = self
-                    .mailbox
-                    .recv()
-                    .await
-                    .ok_or(SessionError::ChannelClosed)?;
-                self.apply_command_or_recover(command).await
+                match tokio::time::timeout(Duration::from_millis(10), self.mailbox.recv()).await {
+                    Ok(Some(command)) => self.apply_command_or_recover(command).await,
+                    Ok(None) => Err(SessionError::ChannelClosed),
+                    Err(_) => self.poll_gdb_run_control().await.map(|_| ()),
+                }
             }
             EngineState::Stopped { .. } => {
                 if self.terminal_command_keepalive && !self.terminal_shutdown_requested {
@@ -674,6 +825,11 @@ where
     async fn run_once_without_spawning_forks(&mut self) -> Result<(), SessionError> {
         match self.engine.state().clone() {
             EngineState::Running => {
+                if self.poll_gdb_run_control().await? {
+                    self.publish_live_snapshot();
+                    self.complete_pending_gdb_run_control()?;
+                    return Ok(());
+                }
                 if let Some(command) = self.next_boundary_command()? {
                     self.apply_command_without_spawning_forks_or_recover(command)
                         .await?;
@@ -684,39 +840,46 @@ where
                 let _outcome = match self.engine.step_quantum() {
                     Ok(outcome) => outcome,
                     Err(SessionError::Scheduler(SchedulerError::Backend(error))) => {
+                        self.engine.fail_pending_guest_activation(format!(
+                            "backend failed while activating guest agent: {error}"
+                        ));
                         self.engine.stop_after_backend_crash(error.to_string())?;
                         self.publish_live_snapshot();
+                        self.complete_pending_gdb_run_control()?;
                         return Ok(());
                     }
                     Err(error) => return Err(error),
                 };
                 let entries = self.engine.drain_event_log_entries();
                 let emitted_event_log_entries = entries.len();
-                self.append_event_log_entries(&entries);
+                self.append_event_log_entries(&entries)?;
                 self.engine
                     .evaluate_breakpoints(&self.condition_event_log, emitted_event_log_entries)?;
                 self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
-                self.append_event_log_entries(&breakpoint_entries);
+                self.append_event_log_entries(&breakpoint_entries)?;
+                self.engine.poll_pending_guest_activation()?;
                 self.engine.stop_on_continuous_quiescence()?;
                 let shutdown_entries = self.engine.drain_event_log_entries();
-                self.append_event_log_entries(&shutdown_entries);
+                self.append_event_log_entries(&shutdown_entries)?;
                 self.control_acknowledgements = self
                     .control_acknowledgements
                     .saturating_add(pending_control);
                 self.publish_live_snapshot();
+                self.complete_pending_gdb_run_control()?;
                 self.yielded_after_quanta = self.yielded_after_quanta.saturating_add(1);
                 tokio::task::yield_now().await;
                 Ok(())
             }
             EngineState::Loaded | EngineState::Paused { .. } => {
-                let command = self
-                    .mailbox
-                    .recv()
-                    .await
-                    .ok_or(SessionError::ChannelClosed)?;
-                self.apply_command_without_spawning_forks_or_recover(command)
-                    .await
+                match tokio::time::timeout(Duration::from_millis(10), self.mailbox.recv()).await {
+                    Ok(Some(command)) => {
+                        self.apply_command_without_spawning_forks_or_recover(command)
+                            .await
+                    }
+                    Ok(None) => Err(SessionError::ChannelClosed),
+                    Err(_) => self.poll_gdb_run_control().await.map(|_| ()),
+                }
             }
             EngineState::Stopped { .. } => {
                 self.drain_terminal_commands_without_spawning_forks()
@@ -731,6 +894,51 @@ where
             Ok(command) => Ok(Some(command)),
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => Err(SessionError::ChannelClosed),
+        }
+    }
+
+    async fn poll_gdb_run_control(&mut self) -> Result<bool, SessionError> {
+        let Some(packet) = self.engine.quantum_loop.poll_gdb_run_control()? else {
+            return Ok(false);
+        };
+        let command = match gdb_run_control_command(&packet) {
+            Some(command) => command,
+            None => {
+                self.engine.quantum_loop.complete_gdb_run_control(b"E01")?;
+                return Ok(true);
+            }
+        };
+        let stop = if packet == [0x03] { b"T02" } else { b"T05" };
+        match self.apply_command_without_spawning_forks(command).await {
+            Ok(()) => {
+                self.gdb_run_control_stop = Some(stop.to_vec());
+                Ok(true)
+            }
+            Err(error @ SessionError::DebugNonCanonicalBranchRequired { .. }) => {
+                self.engine.quantum_loop.complete_gdb_run_control(b"E31")?;
+                let _ = error;
+                Ok(true)
+            }
+            Err(error) => {
+                self.engine.quantum_loop.complete_gdb_run_control(b"E31")?;
+                Err(error)
+            }
+        }
+    }
+
+    fn complete_pending_gdb_run_control(&mut self) -> Result<(), SessionError> {
+        if !matches!(self.engine.state(), EngineState::Running)
+            && let Some(stop) = self.gdb_run_control_stop.as_ref()
+        {
+            self.engine.quantum_loop.complete_gdb_run_control(stop)?;
+            self.gdb_run_control_stop = None;
+        }
+        Ok(())
+    }
+
+    fn fail_pending_gdb_run_control(&mut self) {
+        if self.gdb_run_control_stop.take().is_some() {
+            let _ = self.engine.quantum_loop.complete_gdb_run_control(b"E31");
         }
     }
 
@@ -799,6 +1007,59 @@ where
             && command.requires_running_quantum_ack();
         let control_acknowledged = command.is_control_acknowledged();
         let condition_event_log = self.condition_event_log_prefix();
+        let mut command = command;
+        match &mut command {
+            SessionCommand::DebugGoto { request, .. } => {
+                request.current = self.engine.snapshot().configuration;
+                request.event_coordinates = self.debug_event_coordinates.clone();
+            }
+            SessionCommand::DebugReverseStep { request, .. } => {
+                request.current = self.engine.snapshot().configuration;
+                request.event_log.clone_from(&condition_event_log);
+                request.event_coordinates = self.debug_event_coordinates.clone();
+                if let Some(sequence) = self.debug_current_event_limit(&request.current) {
+                    request.current_event_sequence = Some(sequence);
+                }
+            }
+            SessionCommand::DebugReverseContinue { request, .. } => {
+                request.current = self.engine.snapshot().configuration;
+                request.event_log.clone_from(&condition_event_log);
+                request.event_coordinates = self.debug_event_coordinates.clone();
+                if let Some(sequence) = self.debug_current_event_limit(&request.current) {
+                    request.current_event_sequence = Some(sequence);
+                }
+            }
+            _ => {}
+        }
+        let history_operation = match &command {
+            SessionCommand::DebugReverseStep { request, .. }
+                if self.debug_history_floor > 0
+                    && request.grain != DebugReverseStepGrain::Instruction
+                    && request
+                        .current_event_sequence
+                        .is_some_and(|sequence| sequence <= self.debug_history_floor) =>
+            {
+                Some("debug-reverse-step")
+            }
+            SessionCommand::DebugReverseContinue { request, .. }
+                if self.debug_history_floor > 0
+                    && request
+                        .current_event_sequence
+                        .is_some_and(|sequence| sequence <= self.debug_history_floor) =>
+            {
+                Some("debug-reverse-continue")
+            }
+            _ => None,
+        };
+        if let Some(operation) = history_operation {
+            let error = SessionError::DebugHistoryUnavailable {
+                operation,
+                floor: self.debug_history_floor,
+            };
+            command.complete_error(error.clone());
+            complete_acknowledgement(acknowledgement, &Err(error.clone()));
+            return Err(error);
+        }
         if let Err(error) = self
             .engine
             .apply_command_with_event_log(command.clone(), &condition_event_log)
@@ -807,8 +1068,18 @@ where
             complete_acknowledgement(acknowledgement, &Err(error.clone()));
             return Err(error);
         }
+        let preserve_debug_history = matches!(
+            command,
+            SessionCommand::DebugGoto { .. }
+                | SessionCommand::DebugReverseStep { .. }
+                | SessionCommand::DebugReverseContinue { .. }
+        );
         let entries = self.engine.drain_event_log_entries();
-        self.append_event_log_entries(&entries);
+        if preserve_debug_history {
+            self.append_event_log_entries_preserving_debug_history(&entries)?;
+        } else {
+            self.append_event_log_entries(&entries)?;
+        }
         self.sync_reproduction_log();
         let pending_control_after = self.engine.pending_control_len() as u64;
         if self.engine.quanta() > quanta_before && pending_control_after < pending_control_before {
@@ -955,5 +1226,48 @@ where
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod gdb_run_control_tests {
+    use super::*;
+
+    #[test]
+    fn parser_accepts_gdb_all_stop_scheduler_semantics() {
+        assert!(matches!(
+            gdb_run_control_command(b"c"),
+            Some(SessionCommand::Continue)
+        ));
+        assert!(matches!(
+            gdb_run_control_command(b"vCont;s"),
+            Some(SessionCommand::Step {
+                mode: StepMode::Quantum
+            })
+        ));
+        assert!(matches!(
+            gdb_run_control_command(b"vCont;s;s"),
+            Some(SessionCommand::Step {
+                mode: StepMode::Quantum
+            })
+        ));
+        assert!(matches!(
+            gdb_run_control_command(b"vCont;s:p1.1;c:p1.-1"),
+            Some(SessionCommand::Step {
+                mode: StepMode::Quantum
+            })
+        ));
+        assert!(matches!(
+            gdb_run_control_command(&[0x03]),
+            Some(SessionCommand::Pause)
+        ));
+        assert!(matches!(
+            gdb_run_control_command(b"vCont;s:1"),
+            Some(SessionCommand::Step {
+                mode: StepMode::Quantum
+            })
+        ));
+        assert!(gdb_run_control_command(b"vCont;s:").is_none());
+        assert!(gdb_run_control_command(b"vCont;c;bogus").is_none());
     }
 }

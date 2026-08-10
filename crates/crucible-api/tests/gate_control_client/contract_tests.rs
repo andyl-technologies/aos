@@ -341,7 +341,6 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
         stream_stopped.state_update.map(|update| update.state),
         Some(LiveStateKind::Stopped),
     );
-
     let destroyed = rpc
         .destroy_session(DestroySessionRequest::new(created.session))
         .await
@@ -562,6 +561,19 @@ async fn in_process_lifecycle_control_stream_stop_cleans_registry() {
         )
         .await
         .unwrap_or_else(|error| panic!("in-process Control attach should succeed: {error}"));
+    let stepped = control
+        .send_command(30_515, SessionCommand::step(StepMode::Quantum))
+        .await
+        .unwrap_or_else(|error| panic!("in-process Control Step should succeed: {error}"));
+    assert_eq!(stepped.result.status, CommandResultStatus::Accepted);
+    let before_stop = control
+        .send_command(30_516, SessionCommand::query_snapshot())
+        .await
+        .unwrap_or_else(|error| panic!("pre-Stop snapshot should succeed: {error}"));
+    let Some(QueryResult::Snapshot(before_stop)) = before_stop.query_result else {
+        panic!("pre-Stop query should return a snapshot");
+    };
+    assert!(before_stop.quanta > 0);
     let stopped = control
         .send_command(30_517, SessionCommand::Stop)
         .await
@@ -571,6 +583,26 @@ async fn in_process_lifecycle_control_stream_stop_cleans_registry() {
         stopped.state_update.map(|update| update.state),
         Some(LiveStateKind::Stopped),
     );
+    let Some(QueryResult::Snapshot(snapshot)) = stopped.query_result else {
+        panic!("accepted lifecycle Stop should return its terminal snapshot");
+    };
+    assert!(matches!(
+        snapshot.state,
+        EngineState::Stopped {
+            outcome: crucible_session::Outcome::Stopped
+        }
+    ));
+    assert_eq!(snapshot.configuration, before_stop.configuration);
+    assert_eq!(snapshot.frontier, before_stop.frontier);
+    assert_eq!(snapshot.quanta, before_stop.quanta);
+    assert_eq!(snapshot.event_log_len, before_stop.event_log_len);
+    let checkpoint = snapshot
+        .terminal_savepoint
+        .as_ref()
+        .unwrap_or_else(|| panic!("operator Stop should materialize a terminal savepoint"));
+    assert_eq!(checkpoint.id, snapshot.configuration.id());
+    assert_eq!(checkpoint.configuration, snapshot.configuration.id());
+    assert_eq!(checkpoint.virtual_time, snapshot.frontier);
 
     let sessions = client.list_sessions().await.unwrap_or_else(|error| {
         panic!("in-process list after Control Stop should succeed: {error}")
@@ -589,6 +621,54 @@ async fn in_process_lifecycle_control_stream_stop_cleans_registry() {
     assert_eq!(destroyed.session, created.session);
     assert!(destroyed.already_absent);
     assert!(!destroyed.stopped);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejected_lifecycle_stop_has_no_snapshot_and_keeps_registry_entry() {
+    let client = InProcessLifecycleClient::new(lifecycle_control_plane());
+    let created = client
+        .create_session(
+            CreateSessionRequest::scenario_ref(
+                "api-control-client-scenario",
+                Seed::from_u64(30_518),
+            )
+            .with_start_paused(true),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("in-process CreateSession should succeed: {error}"));
+    let control = client
+        .control_attach(AttachRequest::new(created.session))
+        .await
+        .unwrap_or_else(|error| panic!("in-process Control attach should succeed: {error}"));
+    let exhausted = control
+        .send_command(30_519, SessionCommand::ExhaustBudget)
+        .await
+        .unwrap_or_else(|error| panic!("ExhaustBudget should terminalize the session: {error}"));
+    assert_eq!(exhausted.result.status, CommandResultStatus::Accepted);
+
+    let rejected = control
+        .send_command(30_520, SessionCommand::Stop)
+        .await
+        .unwrap_or_else(|error| panic!("rejected Stop should remain a response: {error}"));
+    assert_eq!(
+        rejected.result.status,
+        CommandResultStatus::Rejected {
+            reason: CommandRejectionKind::InvalidState,
+        }
+    );
+    assert!(rejected.query_result.is_none());
+    let sessions = client
+        .list_sessions()
+        .await
+        .unwrap_or_else(|error| panic!("list after rejected Stop should succeed: {error}"));
+    assert_eq!(sessions.sessions.len(), 1);
+    assert_eq!(sessions.sessions[0].session, created.session);
+
+    let destroyed = client
+        .destroy_session(DestroySessionRequest::new(created.session))
+        .await
+        .unwrap_or_else(|error| panic!("terminal session cleanup should succeed: {error}"));
+    assert_eq!(destroyed.session, created.session);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -783,6 +863,20 @@ async fn production_http2_lifecycle_server_admits_concurrent_watch_and_query_cli
         .await
         .unwrap_or_else(|error| panic!("Control Stop should decode: {error}"));
     assert_eq!(stopped.result.status, CommandResultStatus::Accepted);
+    let Some(QueryResult::Snapshot(snapshot)) = stopped.query_result else {
+        panic!("HTTP/2 Stop should round-trip the terminal snapshot");
+    };
+    assert!(matches!(snapshot.state, EngineState::Stopped { .. }));
+    assert_eq!(snapshot.configuration.def, scenario);
+    let checkpoint = snapshot
+        .terminal_savepoint
+        .as_ref()
+        .unwrap_or_else(|| panic!("HTTP/2 terminal snapshot should carry its savepoint"));
+    assert_eq!(checkpoint.id, snapshot.configuration.id());
+    assert_eq!(checkpoint.virtual_time, snapshot.frontier);
+    assert!(snapshot.quanta > 0);
+    assert_eq!(snapshot.frontier.ticks, snapshot.quanta);
+    assert_eq!(snapshot.event_log_len, 0);
     let destroyed = rpc
         .destroy_session(DestroySessionRequest::new(created.session))
         .await
@@ -1625,117 +1719,5 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend()
- {
-    assert_qemu_node_implements_simulation_backend_contract();
-
-    let sim_double_client = InProcessLifecycleClient::new(reference_lifecycle_control_plane(
-        "crucible-reference-simdouble",
-        |_scenario, _seed| ReferenceSimDoubleLoop::new(),
-    ));
-    let rpc_server = spawn_http2_lifecycle_server().await;
-    let rpc_client = RpcControlClient::new(RpcEndpoint::http2(rpc_server.endpoint()))
-        .unwrap_or_else(|error| panic!("reference RPC client should build: {error}"));
-
-    let sim_double = run_reference_client_conformance(&sim_double_client, "SimDouble").await;
-    let rpc = run_reference_client_conformance(&rpc_client, "HTTP2-RPC").await;
-
-    assert_reference_conformance_equivalent(&sim_double, &rpc);
-    assert_eq!(sim_double.transport, ControlTransportKind::InProcess);
-    assert_eq!(rpc.transport, ControlTransportKind::Http2Rpc);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn api_nondeterminism_gate_proves_transport_observers_wall_clock_and_read_only_traffic_do_not_perturb_state()
- {
-    let quiet_in_process = InProcessLifecycleClient::new(lifecycle_control_plane());
-    let noisy_in_process = InProcessLifecycleClient::new(lifecycle_control_plane());
-    let quiet_rpc_server = spawn_http2_lifecycle_server().await;
-    let quiet_rpc = RpcControlClient::new(RpcEndpoint::http2(quiet_rpc_server.endpoint()))
-        .unwrap_or_else(|error| panic!("quiet nondeterminism RPC client should build: {error}"));
-    let rpc_server = spawn_http2_lifecycle_server().await;
-    let noisy_rpc = RpcControlClient::new(RpcEndpoint::http2(rpc_server.endpoint()))
-        .unwrap_or_else(|error| panic!("nondeterminism RPC client should build: {error}"));
-    let arrival_rpc_server = spawn_http2_lifecycle_server().await;
-    let arrival_rpc = RpcControlClient::new(RpcEndpoint::http2(arrival_rpc_server.endpoint()))
-        .unwrap_or_else(|error| {
-            panic!("arrival-order nondeterminism RPC client should build: {error}")
-        });
-    let baseline =
-        drive_api_nondeterminism_projection(&quiet_in_process, ApiDeterminismTraffic::Quiet).await;
-    let noisy_in_process =
-        drive_api_nondeterminism_projection(&noisy_in_process, ApiDeterminismTraffic::Noisy).await;
-    let quiet_rpc =
-        drive_api_nondeterminism_projection(&quiet_rpc, ApiDeterminismTraffic::Quiet).await;
-    let noisy_rpc =
-        drive_api_nondeterminism_projection(&noisy_rpc, ApiDeterminismTraffic::Noisy).await;
-    let arrival_rpc =
-        drive_rpc_arrival_permutation_projection(&arrival_rpc, &arrival_rpc_server).await;
-    let quiet_causal =
-        drive_streaming_causal_subsequence_projection(ApiDeterminismTraffic::Quiet).await;
-    let noisy_causal =
-        drive_streaming_causal_subsequence_projection(ApiDeterminismTraffic::Noisy).await;
-
-    assert_eq!(baseline.transport, ControlTransportKind::InProcess);
-    assert_eq!(noisy_in_process.transport, ControlTransportKind::InProcess);
-    assert_eq!(quiet_rpc.transport, ControlTransportKind::Http2Rpc);
-    assert_eq!(noisy_rpc.transport, ControlTransportKind::Http2Rpc);
-    assert_eq!(arrival_rpc.transport, ControlTransportKind::Http2Rpc);
-    assert_eq!(
-        baseline.normalized(),
-        noisy_in_process.normalized(),
-        "in-process read-only traffic, observer load, and scheduling gaps must not perturb State",
-    );
-    assert_eq!(
-        baseline.normalized(),
-        quiet_rpc.normalized(),
-        "quiet RPC transport must match the quiet in-process projection",
-    );
-    assert_eq!(
-        baseline.normalized(),
-        noisy_rpc.normalized(),
-        "RPC transport and independent observer/request arrival order must not perturb State",
-    );
-    assert_eq!(
-        baseline.normalized(),
-        arrival_rpc.normalized(),
-        "server-observed RPC read/mutate order permutations must not perturb the boundary command projection",
-    );
-    assert_eq!(
-        quiet_causal, noisy_causal,
-        "read-only traffic and undrained observers must not perturb the causal event projection",
-    );
-    assert!(
-        !quiet_causal.causal_events.is_empty(),
-        "causal projection must be non-vacuous"
-    );
-}
-
-#[test]
-fn control_client_rejects_rpc_major_version_mismatch_on_both_transports() {
-    let (in_process, _actor) = in_process_client_fixture();
-    let rpc = RpcControlClient::new(RpcEndpoint::http2("http://127.0.0.1:65535"))
-        .unwrap_or_else(|error| panic!("HTTP/2 RPC client should build: {error}"));
-    let incompatible = HelloRequest::new(
-        "api-control-client-test",
-        crucible_api::ProtocolVersion {
-            major: RPC_PROTOCOL_VERSION.major.saturating_add(1),
-            minor: RPC_PROTOCOL_VERSION.minor,
-            patch: RPC_PROTOCOL_VERSION.patch,
-            build: RPC_PROTOCOL_VERSION.build,
-        },
-    );
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap_or_else(|error| panic!("current-thread runtime should build: {error}"));
-    let in_process_error = runtime
-        .block_on(in_process.hello(incompatible.clone()))
-        .expect_err("in-process client should reject major mismatch");
-    let rpc_error = runtime
-        .block_on(rpc.hello(incompatible))
-        .expect_err("RPC client should reject major mismatch");
-
-    assert_eq!(in_process_error, rpc_error);
-}
+#[path = "contract_tests/transport_conformance.rs"]
+mod transport_conformance;

@@ -41,7 +41,7 @@ use crucible_session::test_support::append_event_log_entries_for_test;
 use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, BreakpointSpec, CheckpointRef, CommandReply, Engine,
     EngineState, LifecycleStateKind, LiveStateKind, OutcomeKind, QueryKind, QueryResult,
-    SessionActor, SessionCommand, SessionCommandKind, SessionError, SessionRunReport,
+    SessionActor, SessionCommand, SessionCommandKind, SessionError, SessionRunReport, StepMode,
 };
 use futures_util::stream;
 use tokio::sync::{Mutex, mpsc, oneshot};

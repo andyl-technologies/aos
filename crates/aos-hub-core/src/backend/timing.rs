@@ -1,9 +1,9 @@
 //! Per-statement query timing, for diagnosing the per-request DB latency floor.
 //!
 //! RFC-0004 chapter 14 traced the deployed Worker's ~150–300 ms per-request
-//! floor to the cost of *opening/using* the D1 read-replication session — the
+//! floor to the cost of *opening/using* the Worker database session — the
 //! first statement of a request pays ~120 ms, each later one ~10 ms — even
-//! though D1 reports <1 ms query execution. The D1 dashboard's query-latency
+//! though the engine reports <1 ms query execution. The provider's query-latency
 //! metric excludes that round-trip, so it cannot be measured from the dashboard;
 //! it has to be measured at the call site, in the Worker.
 //!
@@ -30,7 +30,7 @@
 
 use anyhow::Result;
 
-use crate::backend::{Backend, Statement};
+use crate::backend::{Backend, CheckedStatement, Statement};
 use crate::clock::Instant;
 use crate::dialect::Dialect;
 use crate::value::{Row, Value};
@@ -57,7 +57,7 @@ pub struct QuerySpan {
     /// A leading snippet of the source SQL (truncated; see [`snippet`]), for the
     /// `Server-Timing` description. Empty for `batch` (a statement list).
     pub sql: String,
-    /// Wall-clock milliseconds the statement took, end to end (including the D1
+    /// Wall-clock milliseconds the statement took, end to end (including the Worker
     /// session round-trip this whole module exists to surface).
     pub millis: u64,
 }
@@ -149,7 +149,7 @@ impl QueryTimings {
 
 /// A [`Backend`] decorator that times every statement into a [`QueryTimings`].
 ///
-/// Wraps a concrete backend (the D1 backend on the Worker, the `SqlxBackend`
+/// Wraps a concrete backend (HubDb on the Worker, the `SqlxBackend`
 /// natively) and forwards each call unchanged, recording its wall-clock duration
 /// first. The dialect and all results are the inner backend's, verbatim — the
 /// wrapper is observationally transparent apart from the timing side effect.
@@ -204,6 +204,13 @@ impl<B: Backend> Backend for TimingBackend<B> {
         let started = Instant::now();
         let r = self.inner.batch(stmts).await;
         self.timings.record("batch", "", started);
+        r
+    }
+
+    async fn checked_batch(&self, stmts: &[CheckedStatement]) -> Result<()> {
+        let started = Instant::now();
+        let r = self.inner.checked_batch(stmts).await;
+        self.timings.record("checked_batch", "", started);
         r
     }
 }

@@ -68,6 +68,12 @@ pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
         section_6_row: true,
     },
     CrateSpecIndexEntry {
+        package: "crucible-debug-gateway",
+        root: "src/lib.rs",
+        spec_files: &["36"],
+        section_6_row: true,
+    },
+    CrateSpecIndexEntry {
         package: "crucible-guest",
         root: "src/lib.rs",
         spec_files: &["16"],

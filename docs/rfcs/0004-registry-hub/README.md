@@ -1,6 +1,14 @@
 # RFC-0004: `aos-registry-hub` — a multi-tenant registry management WebUI
 
 - **Status:** Implemented (phases 1–4) — `crates/aos-registry-hub`.
+  **Topology follow-up:** [RFC-0012](../0012-hub-surface-topology/README.md)
+  proposes the authoritative next topology for registries, binary caches,
+  storage placements, delivery routes/domains, registry/cache integrations,
+  and cache retention/GC. It supersedes the target topology in files 03, 04,
+  05, 11, and 12 while preserving this RFC as the history of the shipped
+  implementation. Until RFC-0012 is implemented, the shipped RFC-0004 model
+  remains current behavior.
+
   Phase 1: surface reader, fail-closed indexer (anti-rollback floors,
   presence+integrity validation), machine-path facade, no-JS browse UI,
   cache-freshness probes, `aos.registry.v1` read path, local-first
@@ -98,7 +106,7 @@ is a live proposal and its own file carries its working status.
 | [08-sequencing.md](08-sequencing.md) | Implementation sequencing of the shipped phases |
 | [09-alternatives-and-open-questions.md](09-alternatives-and-open-questions.md) | Alternatives considered and open questions |
 | [10-unified-runtime.md](10-unified-runtime.md) | **Phase 5 (Complete):** one async codebase, full Cloudflare/native parity, sqlx + D1 backends, `aos hub` CLI-over-API, the wasm-feasibility spike + Connect-JSON transport decision, the D1 transaction audit, the workerd+miniflare e2e |
-| [11-caches.md](11-caches.md) | **Proposed:** hosting managed Nix binary **caches** (GC, size limits, expiring pins, search, closure-graph viz, GC roots pinned to packages, NAR explorer, web browse) as a first-class sibling of registries — the org/registry/cache topology, schema (v22+), GC subsystem, and the `aos-registry-* → aos-hub` rename. Carries its own implementation checklist. |
-| [12-storage-frontends.md](12-storage-frontends.md) | **Proposed:** **storage-binding frontends** — a public bucket owns its CDN frontend, and registries/caches stored in it inherit a direct-from-bucket frontend (path inferred from their `prefix`), with a per-consumer advertise toggle; promotes the instance default storage to a real, editable binding so it shares the same frontend form. Serves bulk `nar/**`/git bytes straight from R2's CDN instead of streaming through the Worker. Carries its own implementation checklist. |
+| [11-caches.md](11-caches.md) | Historical managed-cache design and implementation checklist; relationship/storage/GC target superseded by RFC-0012. |
+| [12-storage-frontends.md](12-storage-frontends.md) | Historical shipped storage-frontend inheritance design; topology target superseded by RFC-0012. |
 | [13-streaming-multipart-uploads.md](13-streaming-multipart-uploads.md) | Streaming multipart uploads through the facade. |
 | [14-colocated-storage-architecture.md](14-colocated-storage-architecture.md) | **Proposed:** the target storage architecture, motivated by a production investigation of the deployed Worker's ~150–300 ms per-request D1 latency floor (measured: per-request D1 *session* cost, not query execution / distance / cold start). Maps each data class to the right primitive — **KV (Worker) / LMDB (native)** for hot point-reads (sessions/tokens/config/routing), **Durable Objects** for coordination (rate-limit/lease/anti-rollback), edge-regenerated read models for browse, and **tenant-sharded SQLite-in-DO** as the colocated system of record — all behind single-source ports. Carries a phased (A–E), goal-mode implementation checklist. |

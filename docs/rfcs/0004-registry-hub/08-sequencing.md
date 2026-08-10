@@ -24,8 +24,7 @@ phase 2 — the first generally usable release.
    requests, per-org OIDC SSO, hub-driven mirror jobs + pull-through
    frontends, cache stacks (with the `apm` miss-fallthrough change),
    audit.
-4. **Hosted keys, derived registries, fuller change-request review,
+4. **Provider-custodied signing generations, derived registries, fuller change-request review,
    webhooks/notifications**; postgres/mysql drivers hardened; AOS
    package + module for self-hosting; `[registry.upstream]` and
    `[[origins]]` if demand materializes.
-

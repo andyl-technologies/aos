@@ -31,6 +31,28 @@ impl QuantumLoop for NoopLoop {
     ) -> Result<QuantumOutcome, SchedulerError> {
         panic!("lifecycle unary gate keeps sessions paused before any quantum")
     }
+
+    fn open_gdbstub(
+        &mut self,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<GdbAttachInfo, SchedulerError> {
+        GdbAttachInfo::new(node, "127.0.0.1:39001", listen).map_err(SchedulerError::from)
+    }
+
+    fn reposition_debug_runtime(
+        &mut self,
+        request: crucible::DebugRuntimeRepositionRequest,
+    ) -> Result<crucible::DebugRuntimeRepositionReport, SchedulerError> {
+        let endpoint = crucible::DebugGdbEndpoint::new("qemu_gdbstub", "127.0.0.1:39002").map_err(
+            |error| SchedulerError::BoundaryViolation {
+                message: format!("test reposition endpoint is invalid: {error}"),
+            },
+        )?;
+        Ok(crucible::DebugRuntimeRepositionReport::completed(
+            &request, endpoint, 2,
+        ))
+    }
 }
 
 pub(super) struct FailingLoop;
@@ -42,6 +64,62 @@ impl QuantumLoop for FailingLoop {
     ) -> Result<QuantumOutcome, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("synthetic backend quantum failure"),
+        })
+    }
+}
+
+pub(super) struct RejectShutdownLoop;
+
+impl QuantumLoop for RejectShutdownLoop {
+    fn drive_quantum(
+        &mut self,
+        _request: QuantumRequest,
+    ) -> Result<QuantumOutcome, SchedulerError> {
+        panic!("rejected-shutdown gate keeps its session paused")
+    }
+
+    fn shutdown(&mut self) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("synthetic unconsumed branch choice"),
+        })
+    }
+}
+
+pub(super) struct RuntimeOnlyReplayLoop {
+    frontier: u64,
+    step: u64,
+}
+
+impl RuntimeOnlyReplayLoop {
+    pub(super) const fn new() -> Self {
+        Self {
+            frontier: 0,
+            step: 1,
+        }
+    }
+
+    pub(super) const fn with_step(step: u64) -> Self {
+        Self { frontier: 0, step }
+    }
+}
+
+impl QuantumLoop for RuntimeOnlyReplayLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.frontier = self.frontier.saturating_add(self.step);
+        Ok(QuantumOutcome {
+            configuration: request.configuration,
+            frontier: VirtualTime {
+                ticks: self.frontier,
+            },
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: Default::default(),
+            scheduler_quiescence: None,
         })
     }
 }

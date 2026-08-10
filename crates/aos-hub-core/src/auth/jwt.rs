@@ -3,7 +3,7 @@
 //! A client exchanges its long-lived provisioning secret at
 //! `POST /oauth2/token` for one of these access tokens; the JWT then rides
 //! every machine-path request in `Authorization: Bearer`. The token is
-//! self-describing — it carries the owner, the scope path, and the explicit
+//! self-describing — it carries the owner, the stable scope key, the explicit
 //! permission verbs — so the gate can decide without a database round-trip on
 //! the hot path.
 //!
@@ -22,8 +22,9 @@
 //!   "sub":        "1f0c…",                 token id (UUID) it was minted from
 //!   "owner_kind": "user",                  "user" | "service_account"
 //!   "owner_id":   42,                      owning principal's row id
-//!   "scope":      "acme/infra/prod",       path-prefix the token is bound to
+//!   "scope":      "project:0123…",         stable scope the token is bound to
 //!   "perms":      ["read","publish"],      permission verbs (snake-case)
+//!   "authz_version": "stable-scope-1",     authorization-model epoch
 //!   "iat":        1718200000,              issued-at, Unix seconds
 //!   "exp":        1718200900               expiry, Unix seconds
 //! }
@@ -56,6 +57,13 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 /// The fixed compact-JWS header for an HS256 token.
 const HEADER_JSON: &[u8] = br#"{"alg":"HS256","typ":"JWT"}"#;
 
+/// Authorization-model epoch embedded in every newly minted access token.
+///
+/// Verification rejects any other value, including tokens minted before the
+/// stable-scope cutover. Increment this whenever claim interpretation or the
+/// authorization graph changes incompatibly.
+pub const AUTHORIZATION_CLAIMS_VERSION: &str = "stable-scope-1";
+
 /// The HS256-signed claims carried by a hub access token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
@@ -65,10 +73,12 @@ pub struct Claims {
     pub owner_kind: String,
     /// Owning principal's row id.
     pub owner_id: i64,
-    /// The scope path the token is bound to (`""` for instance root).
+    /// The immutable authorization scope key the token is bound to.
     pub scope: String,
     /// Permission verbs the token grants, as snake-case wire names.
     pub perms: Vec<String>,
+    /// Authorization-model epoch used to invalidate pre-cutover tokens.
+    pub authz_version: String,
     /// Issued-at timestamp (Unix seconds).
     pub iat: i64,
     /// Expiry timestamp (Unix seconds).
@@ -135,6 +145,7 @@ impl JwtKeys {
                 .iter()
                 .map(|p| p.as_str().to_string())
                 .collect(),
+            authz_version: AUTHORIZATION_CLAIMS_VERSION.to_string(),
             iat: now,
             exp: now + ttl_secs,
         };
@@ -153,7 +164,8 @@ impl JwtKeys {
     /// # Errors
     ///
     /// Returns an error if the token is malformed, the signature is invalid,
-    /// the token is expired, or the claims cannot be deserialized.
+    /// the token is expired, its authorization epoch is obsolete, or the
+    /// claims cannot be deserialized.
     pub fn verify(&self, token: &str) -> Result<Claims> {
         let mut parts = token.split('.');
         let (Some(header_b64), Some(claims_b64), Some(sig_b64), None) =
@@ -185,8 +197,11 @@ impl JwtKeys {
             .decode(claims_b64)
             .context("invalid JWT claims base64")?;
         let claims: Claims = serde_json::from_slice(&claims_bytes).context("invalid JWT claims")?;
+        if claims.authz_version != AUTHORIZATION_CLAIMS_VERSION {
+            bail!("JWT was minted for an incompatible authorization model");
+        }
         let now = unix_now()?;
-        if claims.exp < now {
+        if claims.exp <= now {
             bail!("JWT has expired");
         }
         Ok(claims)
@@ -204,11 +219,13 @@ mod tests {
     use super::*;
     use crate::domain::{Permission, Principal, Scope};
 
+    const PROJECT_SCOPE: &str = "project:00000000000000000000000000000001";
+
     fn sample_auth() -> TokenAuth {
         TokenAuth {
             token_id: "tok-1".to_string(),
             owner: Principal::user(42),
-            scope: Scope::parse("acme/infra/prod"),
+            scope: Scope::parse(PROJECT_SCOPE),
             permissions: vec![Permission::Read, Permission::Publish],
         }
     }
@@ -221,8 +238,9 @@ mod tests {
         assert_eq!(claims.sub, "tok-1");
         assert_eq!(claims.owner_kind, "user");
         assert_eq!(claims.owner_id, 42);
-        assert_eq!(claims.scope, "acme/infra/prod");
+        assert_eq!(claims.scope, PROJECT_SCOPE);
         assert_eq!(claims.perms, vec!["read", "publish"]);
+        assert_eq!(claims.authz_version, AUTHORIZATION_CLAIMS_VERSION);
         assert!(claims.exp > claims.iat);
     }
 
@@ -262,6 +280,30 @@ mod tests {
         // A negative TTL yields an exp well in the past (beyond any
         // residual leeway).
         let token = keys.mint(&sample_auth(), -120).unwrap();
+        assert!(keys.verify(&token).is_err());
+    }
+
+    #[test]
+    fn obsolete_authorization_epoch_is_rejected() {
+        let keys = JwtKeys::random();
+        let now = unix_now().unwrap();
+        let claims = Claims {
+            sub: "tok-1".to_string(),
+            owner_kind: "user".to_string(),
+            owner_id: 42,
+            scope: PROJECT_SCOPE.to_string(),
+            perms: vec!["read".to_string()],
+            authz_version: "obsolete-path-scope-v0".to_string(),
+            iat: now,
+            exp: now + 900,
+        };
+        let claims_json = serde_json::to_vec(&claims).unwrap();
+        let signing_input = format!("{}.{}", B64.encode(HEADER_JSON), B64.encode(claims_json));
+        let token = format!(
+            "{signing_input}.{}",
+            B64.encode(keys.sign(signing_input.as_bytes()))
+        );
+
         assert!(keys.verify(&token).is_err());
     }
 

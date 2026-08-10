@@ -155,10 +155,12 @@ use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 pub use abi_header::generated_c_header;
 #[cfg(unix)]
 pub use mapped_setup_region::{
-    MappedCoverageRingMut, MappedDirectedRingMut, MappedFaultCommandTransportMut,
-    MappedFaultEventTransportMut, MappedFaultResultTransportMut, MappedNodeRingPairMut,
-    MappedSetupRegion, MappedSetupRegionAccessError, MappedWhiteboxMarkerRingMut,
-    SetupRegionMapError, mmap_setup_region,
+    DetachedPluginGuestIntrospectionRings, MappedCoverageRingMut, MappedDirectedRingMut,
+    MappedFaultCommandTransportMut, MappedFaultEventTransportMut, MappedFaultResultTransportMut,
+    MappedGuestIntrospectionConsumerRingMut, MappedGuestIntrospectionProducerRingMut,
+    MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut,
+    MappedPluginGuestIntrospectionRingsMut, MappedSetupRegion, MappedSetupRegionAccessError,
+    MappedWhiteboxMarkerRingMut, SetupRegionMapError, mmap_setup_region,
 };
 
 use thiserror::Error;
@@ -180,7 +182,9 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// a fresh plugin can reconstruct idle-jump time after QEMU loads VMState.
 /// Version 9 adds typed node-fault commands and an independent lossless stream
 /// for actual QEMU fault-rule occurrences.
-pub const ABI_VERSION: u32 = 9;
+/// Version 10 appends bounded bidirectional guest-introspection rings per VM
+/// after the ABI v9 fault transports.
+pub const ABI_VERSION: u32 = 10;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///
@@ -193,6 +197,14 @@ pub const COVERAGE_QUEUE_CAPACITY: u32 = 65_536;
 /// The queue is drained at quantum boundaries. Exhaustion is a fail-loud
 /// infrastructure error rather than causal guest backpressure.
 pub const WHITEBOX_MARKER_QUEUE_CAPACITY: u32 = 1_024;
+/// Fixed entry capacity of each guest-introspection request or response ring.
+pub const GUEST_INTROSPECTION_QUEUE_CAPACITY: u32 = 64;
+/// Number of fixed-direction guest-introspection rings allocated per VM.
+pub const GUEST_INTROSPECTION_RINGS_PER_VM: u32 = 2;
+/// Per-VM ring offset for host-to-plugin requests.
+pub const GUEST_INTROSPECTION_REQUEST_RING_OFFSET: u32 = 0;
+/// Per-VM ring offset for plugin-to-host responses.
+pub const GUEST_INTROSPECTION_RESPONSE_RING_OFFSET: u32 = 1;
 /// Compile-time physical slot capacity of one shared-memory region.
 pub const MAX_NODES: usize = 32;
 /// Number of physical slots reserved for executor endpoints.
@@ -249,6 +261,8 @@ mod frame_node;
 mod region;
 #[path = "shmem/ring_coverage.rs"]
 mod ring_coverage;
+#[path = "shmem/ring_guest_introspection.rs"]
+mod ring_guest_introspection;
 #[path = "shmem/ring_whitebox_marker.rs"]
 mod ring_whitebox_marker;
 
@@ -267,4 +281,5 @@ pub use fingerprint_sample::*;
 pub use frame_node::*;
 pub use region::*;
 pub use ring_coverage::*;
+pub use ring_guest_introspection::*;
 pub use ring_whitebox_marker::*;

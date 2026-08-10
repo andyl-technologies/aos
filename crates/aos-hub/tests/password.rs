@@ -7,6 +7,8 @@
 //! rate-limited), the session-authed `POST /account/password` set/change flow,
 //! and the "no password set" account behavior.
 
+mod common;
+
 use std::sync::Arc;
 
 use aos_hub::auth::extract::{mint_csrf_token, AuthState};
@@ -36,11 +38,16 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         ratelimit: auth.ratelimit.clone(),
         trusted_proxy: false,
         auth,
-        leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
+        leases: std::sync::Arc::new(aos_hub_core::lease::InMemoryLease::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
+        secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
+        image_snapshots: None,
         mailer: Arc::new(aos_hub::auth::magic::LogMailer),
         dev: true,
+        delivery_attestation_verifier: None,
+        domain_probe_terminator: None,
+        route_reservation_keyring: None,
     })
 }
 
@@ -60,7 +67,10 @@ async fn send(
     cookie: Option<&str>,
     form: Option<&str>,
 ) -> Resp {
-    let mut req = Request::builder().method(method).uri(uri);
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::HOST, "127.0.0.1:8420");
     if let Some(cookie) = cookie {
         req = req.header(header::COOKIE, cookie);
     }
@@ -526,9 +536,14 @@ async fn enforced_via_membership_password_login_redirects_to_sso() {
     db.set_user_password(user, &hash_password("hunter2").unwrap())
         .await
         .unwrap();
-    db.grant_membership("user", user, "acme/cdn", "viewer")
-        .await
-        .unwrap();
+    db.grant_membership(
+        "user",
+        user,
+        &common::org_scope(&db, "acme").await,
+        "viewer",
+    )
+    .await
+    .unwrap();
 
     let resp = send(
         &app,
@@ -659,6 +674,7 @@ async fn enforced_user_cannot_enroll_passkey() {
     let req = Request::builder()
         .method("POST")
         .uri("/-/account/passkeys/finish")
+        .header(header::HOST, "127.0.0.1:8420")
         .header(header::COOKIE, &cookie)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))

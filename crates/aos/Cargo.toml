@@ -13,6 +13,7 @@ name = "apr"
 path = "src/apr.rs"
 
 [dependencies]
+rustix = { workspace = true }
 aos-core = { workspace = true }
 aos-server = { workspace = true }
 aos-cache = { workspace = true }
@@ -46,6 +47,9 @@ tokio-util = { workspace = true }
 hyper-util = { workspace = true }
 tower = { workspace = true }
 libc = { workspace = true }
+ed25519-dalek = { workspace = true }
+url = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

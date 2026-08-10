@@ -1,6 +1,6 @@
 //! Exhaustive scenario-owned resource limits for the fault system.
 //!
-//! The public plan carries every executable limit named by RFC-0012. Values
+//! The public plan carries every executable limit named by RFC-0013. Values
 //! may be lowered but never raised above the compiled ceiling. This table is
 //! also the machine-readable source for reference generation and generic
 //! resource diagnostics, so adapters cannot introduce hidden semantic bounds.

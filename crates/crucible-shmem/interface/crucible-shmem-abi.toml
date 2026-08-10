@@ -7,7 +7,7 @@
 name = "crucible-shmem"
 kind = "process-shared-memory"
 license = "MIT OR Apache-2.0"
-abi_version = 9
+abi_version = 10
 magic_ascii = "CRUCSHM1"
 target = "x86_64-unknown-linux-gnu"
 byte_order = "little"
@@ -31,6 +31,12 @@ plugin_eventfd_additional_writes = [
   "host-io-service",
 ]
 future_waiter_armed_wake_optimization = "documented-not-implemented"
+guest_introspection_rings_per_vm = 2
+guest_introspection_request_direction = "host-to-plugin"
+guest_introspection_response_direction = "plugin-to-host"
+guest_introspection_queue_capacity = 64
+guest_introspection_record_protocol = "CRGI-v1"
+guest_introspection_full_queue = "bounded-backpressure-no-overwrite"
 
 [representation]
 allowed = [

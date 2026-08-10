@@ -15,9 +15,9 @@ workspace = true
 
 [dependencies]
 crucible = { path = "../crucible" }
+crucible-protocol = { path = "../crucible-protocol" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
 crucible = { path = "../crucible", features = ["test-double", "test-support"] }
-crucible-protocol = { path = "../crucible-protocol" }

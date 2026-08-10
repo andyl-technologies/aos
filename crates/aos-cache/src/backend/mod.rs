@@ -26,6 +26,15 @@ use async_trait::async_trait;
 
 use aos_net::{TransferEngine, TransferEngineConfig, TransferRequest};
 
+/// Trustworthy identity metadata for one backend-relative static object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticFileIdentity {
+    /// Exact byte length reported by the backend.
+    pub byte_size: u64,
+    /// Exact lowercase SHA-256 metadata, when the backend preserves it.
+    pub sha256: String,
+}
+
 /// Trait for binary cache storage backends.
 ///
 /// Store paths are identified by their *store hash* — the 32-character
@@ -45,6 +54,23 @@ pub trait CacheBackend: Send + Sync {
     /// Returns an error if the existence check itself fails. A clean "not
     /// found" is `Ok(false)`.
     async fn exists(&self, relative_path: &str) -> Result<bool>;
+
+    /// Returns exact identity evidence for an immutable static object.
+    ///
+    /// The default returns `None`: existence alone is not identity evidence.
+    /// Backends should override this only when both size and SHA-256 are
+    /// trustworthy for the exact bytes served at `relative_path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot determine whether trustworthy
+    /// identity evidence is available.
+    async fn static_file_identity(
+        &self,
+        _relative_path: &str,
+    ) -> Result<Option<StaticFileIdentity>> {
+        Ok(None)
+    }
 
     /// Checks whether a narinfo exists for a store hash.
     ///
@@ -99,55 +125,51 @@ pub trait CacheBackend: Send + Sync {
     /// Returns an error if the upload fails.
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()>;
 
-    /// Mints a short-lived presigned upload URL for a cache-relative object
-    /// `path` (e.g. `nar/<file>.nar.zst`), when the cache is backed by a
-    /// presignable public origin (S3/R2 with credentials sealed in the hub).
+    /// Admits one cache-relative object upload and returns its write URL.
     ///
     /// `Ok(Some(url))` means the caller should upload the bytes **directly** to
-    /// `url` via [`put_to_url`](CacheBackend::put_to_url) — bypassing the hub so
-    /// the bytes never traverse the Worker. `Ok(None)` means no presign is
-    /// available and the caller must fall back to [`put_nar`](CacheBackend::put_nar)
-    /// (or multipart) through the facade. The narinfo is uploaded through the
-    /// facade regardless, so the hub index stays authoritative.
+    /// `url` via [`upload_to_admitted_url`](CacheBackend::upload_to_admitted_url).
+    /// The URL may be a direct presigned origin URL or an authenticated Hub
+    /// proxy URL. `Ok(None)` means the object requires typed multipart or the
+    /// backend does not implement admission.
     ///
-    /// The default returns `Ok(None)` — only AOS HTTP backends presign.
+    /// The default returns `Ok(None)`; only AOS Hub HTTP backends admit uploads.
     ///
     /// # Errors
     ///
     /// Returns an error only on a hard transport failure; an unsupported or
-    /// not-presignable cache is `Ok(None)`, not an error.
-    async fn mint_upload_url(&self, _path: &str) -> Result<Option<String>> {
+    /// unsupported backend is `Ok(None)`, not an error.
+    async fn create_object_upload(&self, _path: &str, _size: u64) -> Result<Option<String>> {
         Ok(None)
     }
 
-    /// Uploads bytes directly to a presigned `url` minted by
-    /// [`mint_upload_url`](CacheBackend::mint_upload_url), bypassing the hub.
+    /// Uploads bytes to a URL returned by
+    /// [`create_object_upload`](CacheBackend::create_object_upload).
     ///
-    /// The URL carries its own query-string authorization, so no credential
-    /// headers are attached.
+    /// Implementations attach normal authorization only for typed Hub proxy
+    /// URLs; direct origin URLs carry their own short-lived authorization.
     ///
     /// # Errors
     ///
     /// Returns an error if the direct upload fails, or if the backend does not
-    /// support presigned upload (the default).
-    async fn put_to_url(&self, _url: &str, _data: &[u8]) -> Result<()> {
-        anyhow::bail!("backend does not support presigned direct upload")
+    /// support admitted upload (the default).
+    async fn upload_to_admitted_url(&self, _url: &str, _data: &[u8]) -> Result<()> {
+        anyhow::bail!("backend does not support admitted object upload")
     }
 
-    /// Mints presigned upload URLs for many object paths in one round-trip.
+    /// Admits many object uploads in one round-trip.
     ///
-    /// Returns a map from each input path to its presigned PUT URL; paths that
-    /// are not presignable are simply absent from the map (the caller falls back
-    /// to the facade for those). The default returns an empty map — only AOS
-    /// HTTP backends batch-mint.
+    /// Returns a map from each input path to its direct or proxy PUT URL. Paths
+    /// requiring multipart are absent. The default returns an empty map; only
+    /// AOS Hub HTTP backends batch-admit.
     ///
     /// # Errors
     ///
     /// Returns an error only on a hard transport failure; a not-presignable
     /// cache yields an empty map, not an error.
-    async fn mint_upload_urls(
+    async fn create_object_uploads(
         &self,
-        _paths: &[String],
+        _uploads: &[(String, u64)],
     ) -> Result<std::collections::HashMap<String, String>> {
         Ok(std::collections::HashMap::new())
     }
@@ -216,6 +238,8 @@ pub trait CacheBackend: Send + Sync {
         source: &std::path::Path,
         content_type: Option<&str>,
         cache_control: Option<&str>,
+        content_disposition: Option<&str>,
+        sha256: Option<&str>,
     ) -> Result<()>;
 
     /// Returns whether this backend supports AOS pack upload.
@@ -259,7 +283,12 @@ pub trait CacheBackend: Send + Sync {
     ///
     /// Returns an error when the backend does not support multipart or the
     /// request fails. The default always errors.
-    async fn initiate_multipart(&self, _nar_path: &str) -> Result<(String, u64)> {
+    async fn initiate_multipart(
+        &self,
+        _nar_path: &str,
+        _size: u64,
+        _sha256: Option<&str>,
+    ) -> Result<(String, u64)> {
         anyhow::bail!("multipart upload not supported by this backend")
     }
 
@@ -295,6 +324,16 @@ pub trait CacheBackend: Send + Sync {
     ) -> Result<()> {
         anyhow::bail!("multipart upload not supported by this backend")
     }
+
+    /// Abort an in-progress multipart upload after any failed part or complete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend does not support multipart or cannot
+    /// confirm the best-effort cleanup request. The default always errors.
+    async fn abort_multipart(&self, _nar_path: &str, _upload_id: &str) -> Result<()> {
+        anyhow::bail!("multipart upload not supported by this backend")
+    }
 }
 
 /// `Cache-Control` for content-addressed payloads that never change in
@@ -322,6 +361,8 @@ pub(crate) fn add_static_metadata_headers(
     request: &mut TransferRequest,
     content_type: Option<&str>,
     cache_control: Option<&str>,
+    content_disposition: Option<&str>,
+    sha256: Option<&str>,
 ) {
     if let Some(content_type) = content_type {
         request
@@ -332,6 +373,17 @@ pub(crate) fn add_static_metadata_headers(
         request
             .headers
             .push(("Cache-Control".to_string(), cache_control.to_string()));
+    }
+    if let Some(content_disposition) = content_disposition {
+        request.headers.push((
+            "Content-Disposition".to_string(),
+            content_disposition.to_string(),
+        ));
+    }
+    if let Some(sha256) = sha256 {
+        request
+            .headers
+            .push(("X-AOS-SHA256".to_string(), sha256.to_string()));
     }
 }
 

@@ -41,7 +41,9 @@ pub(super) fn fuzz_dispatch_route(
     if backend_plan.target == BackendExecutionTarget::Local && is_packaged_backend(backend_plan) {
         return Some(FuzzDispatchRoute::LocalPackagedBackend);
     }
-    if plan.family.is_builtin_fault_campaign() {
+    if backend_plan.target == BackendExecutionTarget::Local
+        && plan.family.is_builtin_fault_campaign()
+    {
         return Some(FuzzDispatchRoute::BuiltInFaultCampaignProof);
     }
     #[cfg(any(test, feature = "test-double"))]
@@ -250,7 +252,16 @@ pub(super) fn emit_backend_command_output(
 ) -> Result<(), CliError> {
     let trace_entries = backend_machine_readable_trace_entries(outcome);
     let format = cli.output_format();
-    let _trace = emit_canonical_trace(format, &trace_entries, cli.trace.as_deref(), !cli.quiet)?;
+    if let Some(path) = cli.trace.as_deref() {
+        // `--trace` is replay input, while the machine-readable stdout stream
+        // also carries the invocation-local final outcome. Keep that porcelain
+        // record out of the canonical trace so `replay --check` can consume a
+        // trace written by `run` without trimming it first.
+        emit_canonical_trace(format, &outcome.canonical_log, Some(path), false)?;
+        emit_canonical_trace(format, &trace_entries, None, !cli.quiet)?;
+    } else {
+        emit_canonical_trace(format, &trace_entries, None, !cli.quiet)?;
+    }
     let emit_human = !cli.quiet && should_emit_human_backend_output(format);
     if emit_human {
         for line in &outcome.stdout {
@@ -355,212 +366,7 @@ pub(super) fn final_outcome_summary(outcome: &BackendCommandOutcome) -> String {
     )
 }
 
-pub(super) fn emit_replay_report_output(
-    cli: &Cli,
-    report: &ReplayArtifactReport,
-) -> Result<(), CliError> {
-    let format = cli.output_format();
-    if format.is_machine_readable() {
-        let status = replay_report_status(report);
-        let exit_code = replay_report_exit_code(report);
-        let entries = replay_machine_readable_trace_entries(report, status, exit_code);
-        emit_canonical_trace(format, &entries, cli.trace.as_deref(), !cli.quiet)?;
-    } else if !cli.quiet {
-        write_replay_report_human(&mut io::stdout(), report)?;
-    }
-    Ok(())
-}
+#[path = "exploration/replay_output.rs"]
+mod replay_output;
 
-pub(super) fn replay_report_status(report: &ReplayArtifactReport) -> BackendCommandStatus {
-    if report
-        .check
-        .as_ref()
-        .and_then(|check| check.mismatch.as_ref())
-        .is_some()
-    {
-        return BackendCommandStatus::Failed;
-    }
-    if report
-        .bisect
-        .as_ref()
-        .and_then(|bisect| bisect.divergence.as_ref())
-        .is_some()
-    {
-        BackendCommandStatus::Failed
-    } else {
-        BackendCommandStatus::Passed
-    }
-}
-
-pub(super) fn replay_report_exit_code(report: &ReplayArtifactReport) -> i32 {
-    replay_report_status(report).exit_code()
-}
-
-pub(super) fn replay_machine_readable_trace_entries(
-    report: &ReplayArtifactReport,
-    status: BackendCommandStatus,
-    exit_code: i32,
-) -> Vec<CanonicalLogEntry> {
-    let mut entries = Vec::new();
-    push_replay_trace_entry(
-        &mut entries,
-        "replay_artifact",
-        format!(
-            "path={} digest={} seed={} scenario={}",
-            report.path.display(),
-            report.digest,
-            report.seed,
-            report.scenario_digest
-        ),
-    );
-    if let Some(reduction) = &report.reduction {
-        push_replay_trace_entry(
-            &mut entries,
-            "replay_reduction",
-            format!(
-                "status=reexecuted artifact={} scenario={} schedule={} state={} reconstructed_decisions={}",
-                format_content_hash_ref(reduction.artifact),
-                format_content_hash_ref(reduction.scenario),
-                format_content_hash_ref(reduction.schedule),
-                format_content_hash_ref(reduction.state),
-                reduction.reconstructed_decisions
-            ),
-        );
-    }
-    if let Some(check) = &report.check {
-        push_replay_trace_entry(
-            &mut entries,
-            "replay_check",
-            replay_check_machine_readable_summary(check),
-        );
-    }
-    if let Some(target) = &report.to_savepoint {
-        push_replay_trace_entry(
-            &mut entries,
-            "replay_to_savepoint",
-            replay_to_savepoint_machine_readable_summary(target),
-        );
-    }
-    if let Some(bisect) = &report.bisect {
-        push_replay_trace_entry(
-            &mut entries,
-            "replay_bisect",
-            replay_bisect_machine_readable_summary(bisect),
-        );
-    }
-    let canonical_log_digest = canonical_log_digest(&entries);
-    push_replay_trace_entry(
-        &mut entries,
-        "final_outcome",
-        replay_final_outcome_summary(report, status, exit_code, &canonical_log_digest),
-    );
-    entries
-}
-
-pub(super) fn push_replay_trace_entry(
-    entries: &mut Vec<CanonicalLogEntry>,
-    kind: impl Into<String>,
-    summary: impl Into<String>,
-) {
-    entries.push(CanonicalLogEntry {
-        sequence: entries.len() as u64,
-        virtual_time_ticks: entries
-            .last()
-            .map(|entry| entry.virtual_time_ticks.saturating_add(1))
-            .unwrap_or(0),
-        node: String::from("cli"),
-        kind: kind.into(),
-        summary: summary.into(),
-    });
-}
-
-pub(super) fn replay_final_outcome_summary(
-    report: &ReplayArtifactReport,
-    status: BackendCommandStatus,
-    exit_code: i32,
-    canonical_log_digest: &str,
-) -> String {
-    format!(
-        "subcommand=replay status={} exit_code={} canonical_log={} artifact={}",
-        status.label(),
-        exit_code,
-        canonical_log_digest,
-        report.digest
-    )
-}
-
-pub(super) fn replay_check_machine_readable_summary(check: &ReplayCheckReport) -> String {
-    match &check.mismatch {
-        Some(mismatch) => format!(
-            "path={} status=mismatch expected={} replayed={} first_diff_byte={} original_len={} replayed_len={}",
-            check.path.display(),
-            mismatch.original_digest,
-            mismatch.replayed_digest,
-            mismatch.first_diff_byte,
-            mismatch.original_len,
-            mismatch.replayed_len
-        ),
-        None => format!(
-            "path={} status=byte-identical digest={}",
-            check.path.display(),
-            check.digest
-        ),
-    }
-}
-
-pub(super) fn replay_to_savepoint_machine_readable_summary(
-    target: &ReplayToSavepointReport,
-) -> String {
-    format!(
-        "target={} status=target-validated schedule_prefix=typed materialization={} unified_operation={} checkpoint={} frontier_ticks={} target_decisions={} artifact_decisions={} matched_decisions={} typed_prefix_digest={} artifact_prefix_digest={} materialized_configuration={} materialized_schedule={} materialized_checkpoint={} runtime_state={} reduced_state={} single_vm_fingerprint={} graph={} replay_fat={} replay_thin={} oracle={} store_objects={}",
-        target.target_label,
-        target.materialization.materialization,
-        target.materialization.operation,
-        format_content_hash_ref(target.checkpoint),
-        target.frontier_ticks,
-        target.schedule_prefix.target_decisions,
-        target.schedule_prefix.artifact_decisions,
-        target.schedule_prefix.matched_decisions,
-        target.schedule_prefix.typed_prefix_digest,
-        target.schedule_prefix.artifact_prefix_digest,
-        format_content_hash_ref(target.materialization.configuration),
-        format_content_hash_ref(target.materialization.schedule),
-        format_content_hash_ref(target.materialization.checkpoint),
-        format_content_hash_ref(target.materialization.runtime_state),
-        format_content_hash_ref(target.materialization.reduced_state),
-        format_content_hash_ref(target.materialization.single_vm_fingerprint),
-        format_content_hash_ref(target.materialization.graph),
-        format_content_hash_ref(target.materialization.replay_fat_checkpoint),
-        format_content_hash_ref(target.materialization.replay_thin_checkpoint),
-        target.oracle.status_label(),
-        target.oracle.store_objects
-    )
-}
-
-pub(super) fn replay_bisect_machine_readable_summary(bisect: &ReplayBisectionReport) -> String {
-    match &bisect.divergence {
-        Some(divergence) => format!(
-            "path={} status=diverged mismatch={} first_decision={} first_fingerprint_sample={} first_instruction={} node={} byte={} left_state={} right_state={}",
-            bisect.other_path.display(),
-            divergence.mismatch.label(),
-            divergence
-                .first_different_decision
-                .map(|decision| decision.to_string())
-                .unwrap_or_else(|| String::from("unknown")),
-            divergence
-                .first_different_fingerprint_sample
-                .map(|sample| sample.to_string())
-                .unwrap_or_else(|| String::from("unknown")),
-            divergence.first_different_instruction,
-            divergence.node.as_deref().unwrap_or("unknown"),
-            divergence.first_different_byte,
-            divergence.left_state_digest,
-            divergence.right_state_digest
-        ),
-        None => format!(
-            "path={} status=byte-identical digest={}",
-            bisect.other_path.display(),
-            bisect.other_digest
-        ),
-    }
-}
+pub(super) use replay_output::*;

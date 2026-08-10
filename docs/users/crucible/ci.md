@@ -92,7 +92,12 @@ After a scenario passes its ordinary run, compare independent reductions:
 
 Two runs are a useful pull-request gate. Increase `--runs` for scheduled jobs
 when the extra backend time is justified. `--bisect` prints the first causal
-divergence if fingerprints or canonical logs differ.
+divergence if fingerprints or canonical logs differ. The report keeps evidence
+coordinates distinct: `first_virtual_time` comes from a canonical-log event,
+while `first_instruction` comes from a fingerprint sample. A coordinate is
+`unknown` when that evidence stream does not localize the mismatch. Each
+coordinate has its own adjacent node field; do not pair an instruction count
+with `first_virtual_time_node`.
 
 ## Recheck a reported failure
 
@@ -108,9 +113,11 @@ canonical log:
 ```
 
 Use the actual artifact filename emitted by the failed run. A replay exit of
-`0` confirms the recorded failure. Exit `1` means the replay did not match the
-recording; exit `5` means an artifact, store object, or local input was invalid
-or unavailable.
+`0` confirms that a fresh packaged-QEMU run reached the recorded terminal
+configuration with identical event and fingerprint streams, and that the
+retained canonical log matched. Exit `1` means live replay or the explicit log
+check diverged; exit `5` means an artifact, store object, or local input was
+invalid or unavailable.
 
 ## Parallel jobs
 

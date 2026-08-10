@@ -394,6 +394,24 @@ fn snapshot_delete_uses_the_same_tag_and_vmstate_device() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn predeclared_debug_guest_activation_emits_no_qmp_mutation() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let client = QmpClient::connect(stream)?.with_predeclared_debug_guest_endpoint();
+
+    client.confirm_predeclared_debug_guest_endpoint()?;
+
+    drop(client);
+    let audit = audit_snapshot(&audit);
+    let lines = written_json_lines(&audit)?;
+    assert_eq!(lines.len(), 1, "activation emitted a QMP mutation");
+    Ok(())
+}
+
+#[test]
 fn qmp_client_skips_async_events_until_command_return() -> Result<(), Box<dyn Error>> {
     let mut client = QmpClient::connect(scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
@@ -577,120 +595,7 @@ fn loadvm_probe_authorization() -> crucible_qemu::QemuLoadvmCommandAuthorization
     QemuExactSnapshotPolicy::production().authorize_loadvm_probe()
 }
 
-fn scripted_qmp<const N: usize>(lines: [&str; N]) -> ScriptedQmpStream {
-    let mut input = Vec::new();
-    for line in lines {
-        input.extend_from_slice(line.as_bytes());
-        input.extend_from_slice(b"\r\n");
-    }
-    ScriptedQmpStream {
-        read: Cursor::new(input),
-        audit: Arc::new(Mutex::new(ScriptedQmpAudit::default())),
-    }
-}
+#[path = "qmp/support.rs"]
+mod support;
 
-fn written_json_lines(audit: &ScriptedQmpAudit) -> Result<Vec<Value>, serde_json::Error> {
-    String::from_utf8_lossy(&audit.written)
-        .lines()
-        .map(serde_json::from_str)
-        .collect()
-}
-
-fn audit_snapshot(handle: &Arc<Mutex<ScriptedQmpAudit>>) -> ScriptedQmpAudit {
-    handle
-        .lock()
-        .expect("scripted QMP audit lock should remain available")
-        .clone()
-}
-
-fn json_line(lines: &[Value], index: usize) -> &Value {
-    match lines.get(index) {
-        Some(line) => line,
-        None => panic!("missing written QMP line {index}"),
-    }
-}
-
-fn execute_name(value: &Value) -> Option<&str> {
-    value.get("execute").and_then(Value::as_str)
-}
-
-fn assert_timeout_budget(timeouts: &[Duration], budget: Duration) {
-    assert!(!timeouts.is_empty());
-    assert!(
-        timeouts
-            .iter()
-            .all(|timeout| !timeout.is_zero() && *timeout <= budget)
-    );
-}
-
-fn checkpoint_with_hash_byte(byte: u8) -> Checkpoint {
-    Checkpoint::new(
-        content_hash_with_byte(byte),
-        content_hash_with_byte(byte.wrapping_add(1)),
-        CheckpointKind::Fat,
-    )
-}
-
-fn content_hash_with_byte(byte: u8) -> ContentHash {
-    ContentHash { bytes: [byte; 32] }
-}
-
-#[derive(Debug)]
-struct ScriptedQmpStream {
-    read: Cursor<Vec<u8>>,
-    audit: Arc<Mutex<ScriptedQmpAudit>>,
-}
-
-impl ScriptedQmpStream {
-    fn audit_handle(&self) -> Arc<Mutex<ScriptedQmpAudit>> {
-        Arc::clone(&self.audit)
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct ScriptedQmpAudit {
-    written: Vec<u8>,
-    read_timeouts: Vec<Duration>,
-    write_timeouts: Vec<Duration>,
-}
-
-impl Read for ScriptedQmpStream {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.read.read(buf)
-    }
-}
-
-impl Write for ScriptedQmpStream {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.audit
-            .lock()
-            .map_err(|_| io::Error::other("scripted QMP audit lock poisoned"))?
-            .written
-            .extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl QmpTimeoutStream for ScriptedQmpStream {
-    fn set_qmp_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
-        self.audit
-            .lock()
-            .map_err(|_| io::Error::other("scripted QMP audit lock poisoned"))?
-            .read_timeouts
-            .push(timeout);
-        Ok(())
-    }
-
-    fn set_qmp_write_timeout(&mut self, timeout: Duration) -> io::Result<()> {
-        self.audit
-            .lock()
-            .map_err(|_| io::Error::other("scripted QMP audit lock poisoned"))?
-            .write_timeouts
-            .push(timeout);
-        Ok(())
-    }
-}
+use support::*;

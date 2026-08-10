@@ -11,11 +11,13 @@ use crucible_protocol::app_random_transport::{
     AppRandomDecisionTransportRecord, WHITEBOX_SHMEM_KIND_APP_RANDOM_DECISION,
     app_random_stream_name,
 };
+use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_protocol::{
     PluginBasicBlockCoverageObservation, WhiteboxDoorbellFrame, decode_whitebox_marker_payload,
 };
 use crucible_shmem::{
-    FingerprintSample, MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, STATUS_DONE,
+    FingerprintSample, GuestIntrospectionEntry, MappedDirectedRingMut, MappedNodeRingPairMut,
+    MappedSetupRegion, STATUS_DONE,
 };
 
 use crate::{
@@ -44,6 +46,8 @@ pub struct QemuMappedQuantumShmemHotPath {
     last_coverage_icount: Option<u64>,
     seen_coverage_map_indices: Vec<bool>,
     next_marker_sequence: u64,
+    next_guest_introspection_request_sequence: u64,
+    next_guest_introspection_response_sequence: u64,
     last_marker_icount: Option<u64>,
     pending_marker_events: Vec<ObservableEvent>,
     // crucible-lint: allow host-nondeterminism-state -- pending values cross only to the authoritative scheduler validator.
@@ -266,6 +270,8 @@ impl QemuMappedQuantumShmemHotPath {
             last_coverage_icount: None,
             seen_coverage_map_indices,
             next_marker_sequence,
+            next_guest_introspection_request_sequence: 1,
+            next_guest_introspection_response_sequence: 1,
             last_marker_icount: None,
             pending_marker_events: Vec::new(),
             pending_app_random_decisions: Vec::new(),
@@ -521,6 +527,96 @@ impl QemuMappedQuantumShmemHotPath {
 }
 
 impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
+    fn send_guest_introspection(
+        &mut self,
+        record: GuestIntrospectionRecord,
+    ) -> Result<(), QemuNodeChannelError> {
+        record.validate_host_request().map_err(|error| {
+            QemuNodeChannelError::new("validate guest introspection request", error.to_string())
+        })?;
+        let encoded = record.encode().map_err(|error| {
+            QemuNodeChannelError::new("encode guest introspection request", error.to_string())
+        })?;
+        let following_sequence = self
+            .next_guest_introspection_request_sequence
+            .checked_add(1)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "enqueue guest introspection request",
+                    "request sequence overflow",
+                )
+            })?;
+        let entry =
+            GuestIntrospectionEntry::new(self.next_guest_introspection_request_sequence, &encoded)
+                .map_err(|error| {
+                    QemuNodeChannelError::new("encode guest introspection entry", error.to_string())
+                })?;
+        self.region
+            .host_guest_introspection_rings_mut(self.config.vm_slot)
+            .map_err(|error| {
+                QemuNodeChannelError::new("map guest introspection request ring", error.to_string())
+            })?
+            .requests
+            .enqueue(entry)
+            .map_err(|error| {
+                QemuNodeChannelError::new("enqueue guest introspection request", error.to_string())
+            })?;
+        self.next_guest_introspection_request_sequence = following_sequence;
+        Ok(())
+    }
+
+    fn receive_guest_introspection(
+        &mut self,
+    ) -> Result<Option<GuestIntrospectionRecord>, QemuNodeChannelError> {
+        let entry = self
+            .region
+            .host_guest_introspection_rings_mut(self.config.vm_slot)
+            .map_err(|error| {
+                QemuNodeChannelError::new(
+                    "map guest introspection response ring",
+                    error.to_string(),
+                )
+            })?
+            .responses
+            .dequeue()
+            .map_err(|error| {
+                QemuNodeChannelError::new("dequeue guest introspection response", error.to_string())
+            })?;
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        if entry.sequence() != self.next_guest_introspection_response_sequence {
+            return Err(QemuNodeChannelError::new(
+                "dequeue guest introspection response",
+                format!(
+                    "response sequence mismatch: expected {}, actual {}",
+                    self.next_guest_introspection_response_sequence,
+                    entry.sequence()
+                ),
+            ));
+        }
+        let following_sequence = self
+            .next_guest_introspection_response_sequence
+            .checked_add(1)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "dequeue guest introspection response",
+                    "response sequence overflow",
+                )
+            })?;
+        let record = GuestIntrospectionRecord::decode(entry.record().map_err(|error| {
+            QemuNodeChannelError::new("decode guest introspection entry", error.to_string())
+        })?)
+        .map_err(|error| {
+            QemuNodeChannelError::new("decode guest introspection response", error.to_string())
+        })?;
+        record.validate_guest_response().map_err(|error| {
+            QemuNodeChannelError::new("validate guest introspection response", error.to_string())
+        })?;
+        self.next_guest_introspection_response_sequence = following_sequence;
+        Ok(Some(record))
+    }
+
     fn current_icount(&mut self) -> Result<Icount, QemuNodeChannelError> {
         self.with_hot_path("current_icount", |hot_path| {
             QemuShmemHotPathChannel::current_icount(hot_path)

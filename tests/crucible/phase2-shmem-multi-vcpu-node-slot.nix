@@ -8,7 +8,7 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   };
 
   shmemContract = builtins.concatStringsSep "\n" [
@@ -61,7 +61,7 @@
     failuresFor "crates/crucible-shmem source modules" shmemContract [
       {
         label = "ABI version unchanged for multi-vCPU nodes";
-        needle = "pub const ABI_VERSION: u32 = 8;";
+        needle = "pub const ABI_VERSION: u32 = 10;";
       }
       {
         label = "region config uses VM node count";

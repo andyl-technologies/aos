@@ -1,7 +1,7 @@
 //! The coordination port: strongly-consistent counters, leases, and floors.
 //!
 //! RFC-0004 chapter 14 routes the hub's *atomic* state — fixed-window rate
-//! limits, the publish lease, and channel anti-rollback floors — off D1 and onto
+//! limits, the publish lease, and channel anti-rollback floors — onto
 //! a primitive that gives **strict serializability** without a per-request SQL
 //! round-trip. Workers KV is the wrong tool (eventually consistent, ~1 write/sec
 //! per key, no atomic increment); the right one is a **Durable Object**:
@@ -18,7 +18,7 @@
 //!
 //! - [`admit`](Coordinator::admit) — a fixed-window rate-limit counter: record
 //!   one attempt against a window budget, atomically, returning whether it was
-//!   admitted. Replaces the D1 `rate_limits` upsert that ran a *write* on every
+//!   admitted without running a relational upsert on every
 //!   browse request (RFC-0004 ch.14 "no writes on read paths").
 //! - [`acquire_lease`](Coordinator::acquire_lease) /
 //!   [`release_lease`](Coordinator::release_lease) — a generic holder/deadline
@@ -59,7 +59,7 @@ pub trait Coordinator: BackendBounds {
     /// # Errors
     ///
     /// Returns an error if the coordinator cannot be reached. Callers fail open
-    /// (admit) on error, mirroring the prior D1 limiter.
+    /// (admit) on error, preserving fail-open rate-limit behavior.
     async fn admit(&self, class: &str, key: &str, window: i64, budget: i64) -> Result<bool>;
 
     /// Acquires or refreshes the lease at `key` for `holder`, or reports the

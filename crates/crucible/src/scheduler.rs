@@ -25,16 +25,17 @@ use crate::trigger::{
 };
 use crate::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, BackendError, BackendInput,
-    BackendNetworkOutput, BackendNetworkRoute, ChoiceTag, Configuration, ContentHash, Decision,
-    DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventId, EventKey, EventLogOffset,
-    EventSequenceState, FingerprintSample, GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId,
-    MIN_LINK_LATENCY, MarkerId, NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle,
-    OverrideDecision, PendingFrame, PreemptionDecision, PreemptionKind, RngStreamId,
-    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
-    SchedulingPoint, SearchFrontierChoices, SearchRuntimeFrontier, Seed, Shift, SimDuration,
-    SimInstant, SimulationBackend, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
-    WorldIoInstantiationError, WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology,
-    instantiate_world_io_sub_nodes, step,
+    BackendNetworkOutput, BackendNetworkRoute, ChoiceTag, Configuration, ContentHash,
+    DebugRuntimeRepositionReport, DebugRuntimeRepositionRequest, Decision, DecisionRecorder,
+    DecisionRngState, DeliveryOrderDecision, EventId, EventKey, EventLogOffset, EventSequenceState,
+    FingerprintSample, GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId, MIN_LINK_LATENCY,
+    MarkerId, NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle, OverrideDecision,
+    PendingFrame, PreemptionDecision, PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef,
+    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices,
+    SearchRuntimeFrontier, Seed, Shift, SimDuration, SimInstant, SimulationBackend,
+    TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldIoInstantiationError,
+    WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology, instantiate_world_io_sub_nodes,
+    step,
 };
 
 const EVENT_LOG_SEGMENT_BINARY_MAGIC: &[u8; 16] = b"CRUCIBLE-ELOGSEG";
@@ -43,6 +44,7 @@ const EVENT_LOG_SEGMENT_NODE_ABSENT: u8 = 0;
 const EVENT_LOG_SEGMENT_NODE_PRESENT: u8 = 1;
 const EVENT_LOG_LEVEL_TRACE: u8 = 0;
 const EVENT_LOG_LEVEL_DEBUG: u8 = 1;
+
 const EVENT_LOG_LEVEL_INFO: u8 = 2;
 const EVENT_LOG_LEVEL_WARN: u8 = 3;
 const EVENT_LOG_LEVEL_ERROR: u8 = 4;

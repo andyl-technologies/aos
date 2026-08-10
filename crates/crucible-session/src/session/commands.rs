@@ -1,6 +1,7 @@
 //! Session command payloads, replies, and breakpoint specifications.
 
 use super::*;
+use crucible::GenesisCheckpoint;
 
 /// Actor-local breakpoint identifier.
 pub type BreakpointId = u64;
@@ -265,6 +266,8 @@ pub enum QueryKind {
         /// Node whose backend fingerprint should be sampled.
         node: NodeId,
     },
+    /// Return the active stable operator-facing GDB endpoint, when attached.
+    DebugOperatorEndpoint,
 }
 
 /// Result returned by a read-only query command.
@@ -287,6 +290,8 @@ pub enum QueryResult {
     },
     /// Deterministic execution-fingerprint sample for one node.
     ExecutionFingerprint(FingerprintSample),
+    /// Attached node and stable operator-facing GDB endpoint, or none before attach.
+    DebugOperatorEndpoint(Option<(NodeId, DebugGdbEndpoint)>),
 }
 
 /// Read-only query kind served directly from the lock-free live snapshot.
@@ -374,6 +379,9 @@ pub enum SessionCommand {
         node: NodeId,
         /// Operator-facing gdb-protocol listener.
         listen: GdbListen,
+        /// Optional source-world genesis used only when the ordinary lifecycle
+        /// graph carries identity-only checkpoint material.
+        debug_genesis: Option<Box<GenesisCheckpoint>>,
         /// Completion route returning the debug attach report.
         reply: CommandReply<DebugAttachReport>,
     },
@@ -404,6 +412,17 @@ pub enum SessionCommand {
         request: DebugNonCanonicalBranchRequest,
         /// Completion route returning the branch report.
         reply: CommandReply<DebugNonCanonicalBranchReport>,
+    },
+    /// Exchanges one bounded record with a node's debug guest agent.
+    GuestIntrospection {
+        /// Node whose guest agent owns the channel.
+        node: NodeId,
+        /// Opaque channel whose response is requested.
+        channel_id: u64,
+        /// Host request to send, or `None` to poll one available response.
+        request: Option<GuestIntrospectionRecord>,
+        /// Completion route returning one available guest response.
+        reply: CommandReply<Option<GuestIntrospectionRecord>>,
     },
     /// Apply an inner command and acknowledge actor-level completion.
     Acknowledge {
@@ -484,6 +503,7 @@ impl SessionCommand {
             | Self::Stop
             | Self::ExhaustBudget
             | Self::DebugForkNonCanonical { .. } => false,
+            Self::GuestIntrospection { .. } => false,
         }
     }
 
@@ -506,6 +526,7 @@ impl SessionCommand {
             | Self::DebugReverseStep { .. }
             | Self::DebugReverseContinue { .. }
             | Self::DebugForkNonCanonical { .. } => false,
+            Self::GuestIntrospection { .. } => false,
         }
     }
 
@@ -525,6 +546,7 @@ impl SessionCommand {
             | Self::DebugReverseStep { .. }
             | Self::DebugReverseContinue { .. }
             | Self::DebugForkNonCanonical { .. } => true,
+            Self::GuestIntrospection { .. } => true,
             Self::Start | Self::Continue | Self::Step { .. } | Self::Stop | Self::ExhaustBudget => {
                 false
             }
@@ -551,6 +573,7 @@ impl SessionCommand {
             | Self::DebugReverseStep { .. }
             | Self::DebugReverseContinue { .. }
             | Self::DebugForkNonCanonical { .. } => false,
+            Self::GuestIntrospection { .. } => false,
         }
     }
 
@@ -561,7 +584,8 @@ impl SessionCommand {
             | Self::Step { .. }
             | Self::Inject
             | Self::SetBreakpoint { .. }
-            | Self::RemoveBreakpoint { .. } => true,
+            | Self::RemoveBreakpoint { .. }
+            | Self::GuestIntrospection { .. } => true,
             Self::Start
             | Self::Pause
             | Self::Snapshot
@@ -590,6 +614,7 @@ impl SessionCommand {
             Self::DebugReverseStep { reply, .. } => reply.complete(Err(error)),
             Self::DebugReverseContinue { reply, .. } => reply.complete(Err(error)),
             Self::DebugForkNonCanonical { reply, .. } => reply.complete(Err(error)),
+            Self::GuestIntrospection { reply, .. } => reply.complete(Err(error)),
             Self::Acknowledge { command, reply } => {
                 command.complete_error(error.clone());
                 reply.complete(Err(error));
@@ -652,6 +677,8 @@ pub enum SessionCommandKind {
     DebugReverseContinue,
     /// Mark a non-canonical debug branch before forward or mutating debug use.
     DebugForkNonCanonical,
+    /// Exchange a bounded request or response with a debug guest agent.
+    GuestIntrospection,
 }
 
 impl SessionCommandKind {
@@ -660,7 +687,7 @@ impl SessionCommandKind {
     /// This covers the RFC §4 command surface plus the current implementation's
     /// legacy `Inject` and boundary `Snapshot` shims. T-SESS-4 replaces those
     /// shims with the reply-carrying command payloads.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Start,
         Self::Continue,
         Self::Pause,
@@ -683,6 +710,7 @@ impl SessionCommandKind {
         Self::DebugReverseStep,
         Self::DebugReverseContinue,
         Self::DebugForkNonCanonical,
+        Self::GuestIntrospection,
     ];
 
     pub(super) const fn operation_name(self) -> &'static str {
@@ -709,6 +737,7 @@ impl SessionCommandKind {
             Self::DebugReverseStep => "debug-reverse-step",
             Self::DebugReverseContinue => "debug-reverse-continue",
             Self::DebugForkNonCanonical => "debug-fork-non-canonical",
+            Self::GuestIntrospection => "guest-introspection",
         }
     }
 
@@ -762,6 +791,7 @@ impl SessionCommandKind {
             | Self::DebugReverseStep
             | Self::DebugReverseContinue
             | Self::DebugForkNonCanonical => return None,
+            Self::GuestIntrospection => return None,
         };
         Some(command)
     }
@@ -812,7 +842,8 @@ pub const fn lifecycle_transition(
             | Command::DebugGoto
             | Command::DebugReverseStep
             | Command::DebugReverseContinue
-            | Command::DebugForkNonCanonical,
+            | Command::DebugForkNonCanonical
+            | Command::GuestIntrospection,
         ) => Rejected,
 
         (
@@ -847,8 +878,10 @@ pub const fn lifecycle_transition(
             | Command::DebugGoto
             | Command::DebugReverseStep
             | Command::DebugReverseContinue
-            | Command::DebugForkNonCanonical,
+            | Command::DebugForkNonCanonical
+            | Command::GuestIntrospection,
         ) => Accepted { to: State::Paused },
+        (State::Running, Command::GuestIntrospection) => Accepted { to: State::Running },
         (State::Running, Command::Stop | Command::ExhaustBudget) => Accepted { to: State::Stopped },
         (
             State::Running,
@@ -896,7 +929,8 @@ pub const fn lifecycle_transition(
             | Command::DebugGoto
             | Command::DebugReverseStep
             | Command::DebugReverseContinue
-            | Command::DebugForkNonCanonical,
+            | Command::DebugForkNonCanonical
+            | Command::GuestIntrospection,
         ) => Rejected,
     }
 }

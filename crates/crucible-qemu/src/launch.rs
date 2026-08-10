@@ -65,6 +65,14 @@ pub use whitebox_setup::{
 pub const QEMU_CONSOLE_CHARDEV_ID: &str = "crucible-console";
 /// Stable run-directory Unix socket carrying output-only guest console bytes.
 pub const QEMU_CONSOLE_SOCKET_FILE_NAME: &str = "crucible-console.sock";
+/// Stable QEMU chardev identifier for fork-time debug guest activation.
+pub const QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID: &str = "crucible-debug-activation";
+/// Stable run-directory socket used to inject the fork-time activation token.
+pub const QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME: &str = "crucible-debug-activation.sock";
+/// Stable virtio-serial controller identifier for debugger-only guest channels.
+pub const QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID: &str = "crucible-debug-serial";
+/// Stable guest-visible virtio-port name for the dormant debugger bootstrap.
+pub const QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME: &str = "org.aos.crucible.debug";
 
 /// Guest architecture selected by a deterministic QEMU launch profile.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -548,6 +556,7 @@ pub struct QemuLaunchCommandBuilder {
     console_capture: bool,
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
     allow_live_gate_manifest_discovery: bool,
+    debug_guest_activation_endpoint: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -578,6 +587,7 @@ impl QemuLaunchCommandBuilder {
             console_capture: false,
             fault_capability_requirement,
             allow_live_gate_manifest_discovery: false,
+            debug_guest_activation_endpoint: false,
         }
     }
 
@@ -622,6 +632,16 @@ impl QemuLaunchCommandBuilder {
     #[must_use]
     pub const fn with_console_capture(mut self) -> Self {
         self.console_capture = true;
+        self
+    }
+
+    /// Returns a builder with the inert debugger activation endpoint.
+    ///
+    /// No host connects or sends the fixed token until a non-canonical debugger
+    /// fork commits, so canonical execution cannot activate the guest agent.
+    #[must_use]
+    pub const fn with_debug_guest_activation_endpoint(mut self) -> Self {
+        self.debug_guest_activation_endpoint = true;
         self
     }
 
@@ -715,7 +735,10 @@ impl QemuLaunchCommandBuilder {
             return Err(QemuLaunchCommandError::InvalidTranslationPrefetchReportPath);
         }
 
-        let vm_hash_material = self.vm.launch_hash_material();
+        let mut vm_hash_material = self.vm.launch_hash_material();
+        if self.debug_guest_activation_endpoint {
+            vm_hash_material.push_str("\ndebug_guest_activation_endpoint=fixed-inert-v1");
+        }
         let mut args = self.profile.canonical_qemu_args();
         if self.vm.kernel().is_none() {
             remove_option_with_value(&mut args, "-append")?;
@@ -730,6 +753,20 @@ impl QemuLaunchCommandBuilder {
                 "-chardev".to_owned(),
                 format!(
                     "socket,id={QEMU_CONSOLE_CHARDEV_ID},path={QEMU_CONSOLE_SOCKET_FILE_NAME},server=on,wait=off"
+                ),
+            ]);
+        }
+        if self.debug_guest_activation_endpoint {
+            args.extend([
+                "-chardev".to_owned(),
+                format!(
+                    "socket,id={QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID},path={QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME}"
+                ),
+                "-device".to_owned(),
+                format!("virtio-serial-pci,id={QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID},bus=pcie.0"),
+                "-device".to_owned(),
+                format!(
+                    "virtserialport,bus={QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID}.0,chardev={QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID},name={QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME}"
                 ),
             ]);
         }

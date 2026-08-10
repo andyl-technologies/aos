@@ -9,7 +9,7 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   };
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
@@ -90,7 +90,7 @@
     ++ forbiddenFailuresFor "crates/crucible-session/src/lib.rs" sessionLib [
       {
         label = "wall-clock lifecycle timeout type";
-        needle = "tokio::time";
+        needle = "LifecycleWallClockTimeout";
       }
     ]
     ++ failuresFor "crates/crucible-session/tests/gate_exploration_lifecycle.rs" lifecycleGateTest [

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::ffi::OsStr;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,15 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
 static SSH_KEYGEN: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+fn stock_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    command.env_remove("LD_LIBRARY_PATH");
+    if let Some(preload) = std::env::var_os("AOS_TEST_IDENTITY_PRELOAD") {
+        command.env("LD_PRELOAD", preload);
+    }
+    command
+}
 
 pub struct RegistryFixture {
     tmp: tempfile::TempDir,
@@ -138,6 +148,8 @@ impl RegistryFixture {
     }
 
     pub fn write_registry_toml_with_caches(&self, caches: &[(&str, u32)]) -> Result<()> {
+        let mut caches = caches.to_vec();
+        caches.sort_by(|left, right| right.1.cmp(&left.1));
         let mut content = format!(
             r#"[registry]
 name = "{}"
@@ -145,14 +157,16 @@ description = "Fixture registry"
 "#,
             self.name
         );
-        for (url, priority) in caches {
-            content.push_str(&format!(
-                r#"
-[[caches]]
-url = "{url}"
-priority = {priority}
-"#,
-            ));
+        if let Some((url, _)) = caches.first() {
+            if caches.len() == 1 {
+                content.push_str(&format!("\n[caches]\nendpoint = \"{url}\"\n"));
+            } else {
+                content.push_str("\n[caches]\nkind = \"try\"\nmembers = [\n");
+                for (url, _) in &caches {
+                    content.push_str(&format!("  {{ endpoint = \"{url}\" }},\n"));
+                }
+                content.push_str("]\n");
+            }
         }
         fs::write(self.source.join("registry.toml"), content).context("writing registry.toml")?;
         Ok(())
@@ -629,7 +643,7 @@ async fn write_response_with_length(
 /// (identity, signing keys, allowed signers); a host `~/.gitconfig` that
 /// enables e.g. `commit.gpgsign` with a GPG key must not leak into them.
 fn git_command(dir: &Path) -> Command {
-    let mut cmd = Command::new("git");
+    let mut cmd = stock_command("git");
     add_ssh_program_config(&mut cmd);
     cmd.current_dir(dir)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -675,8 +689,7 @@ fn ssh_keygen_can_sign(candidate: &Path) -> bool {
         return false;
     };
     let key = tmp.path().join("key");
-    let Ok(keygen) = Command::new(candidate)
-        .env_remove("LD_LIBRARY_PATH")
+    let Ok(keygen) = stock_command(candidate)
         .args(["-q", "-t", "ed25519", "-N", "", "-C", "aos-registry", "-f"])
         .arg(&key)
         .output()
@@ -692,8 +705,7 @@ fn ssh_keygen_can_sign(candidate: &Path) -> bool {
         return false;
     }
 
-    Command::new(candidate)
-        .env_remove("LD_LIBRARY_PATH")
+    stock_command(candidate)
         .arg("-Y")
         .arg("sign")
         .arg("-f")

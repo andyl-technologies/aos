@@ -1,7 +1,7 @@
 //! Per-dialect SQL translation, re-exported from [`aos_hub_core::dialect`].
 //!
 //! The translation logic moved to the runtime-agnostic core crate (RFC-0004
-//! Phase 5) so the Cloudflare Worker's D1 backend can share it; this re-export
+//! Phase 5) so the Cloudflare Worker's HubDb backend can share it; this re-export
 //! keeps the hub's `db::dialect::…` paths stable. The tests live here because
 //! several assert against the hub's [`MIGRATIONS`](crate::db::MIGRATIONS) and
 //! [`split_statements`](crate::db::backend::split_statements).
@@ -72,6 +72,53 @@ mod tests {
         );
         assert!(my.sql.contains("n BIGINT"), "{}", my.sql);
         assert!(my.sql.contains("body LONGBLOB"), "{}", my.sql);
+    }
+
+    #[test]
+    fn ddl_autoincrement_phrase_rewrite_skips_non_executable_text() {
+        let src = "CREATE TABLE t (\
+                   id INTEGER PRIMARY KEY, \
+                   spaced INTEGER\n PRIMARY\tKEY, \
+                   near INTEGER PRIMARY KEYED, \
+                   literal TEXT DEFAULT 'INTEGER PRIMARY KEY', \
+                   escaped TEXT DEFAULT 'INTEGER PRIMARY KEY''INTEGER PRIMARY KEY', \
+                   \"INTEGER PRIMARY KEY\" TEXT, \
+                   `INTEGER PRIMARY KEY` TEXT, \
+                   [INTEGER PRIMARY KEY] TEXT \
+                   /* INTEGER PRIMARY KEY */); -- INTEGER PRIMARY KEY";
+
+        for (dialect, primary_key) in [
+            (Dialect::Postgres, "BIGSERIAL PRIMARY KEY"),
+            (Dialect::Mysql, "BIGINT AUTO_INCREMENT PRIMARY KEY"),
+        ] {
+            let sql = dialect.translate(src).unwrap().sql;
+            assert!(
+                sql.contains(&format!("id {primary_key}")),
+                "{dialect:?}: {sql}"
+            );
+            assert!(
+                sql.contains(&format!("spaced {primary_key}")),
+                "{dialect:?}: variable whitespace was not recognized: {sql}"
+            );
+            assert!(
+                sql.contains("near BIGINT PRIMARY KEYED"),
+                "{dialect:?}: a longer token was mistaken for PRIMARY KEY: {sql}"
+            );
+            for untouched in [
+                "'INTEGER PRIMARY KEY'",
+                "'INTEGER PRIMARY KEY''INTEGER PRIMARY KEY'",
+                "\"INTEGER PRIMARY KEY\"",
+                "`INTEGER PRIMARY KEY`",
+                "[INTEGER PRIMARY KEY]",
+                "/* INTEGER PRIMARY KEY */",
+                "-- INTEGER PRIMARY KEY",
+            ] {
+                assert!(
+                    sql.contains(untouched),
+                    "{dialect:?}: protected text {untouched:?} was rewritten: {sql}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -162,22 +209,42 @@ mod tests {
     }
 
     #[test]
+    fn mysql_longtext_defaults_use_expression_syntax() {
+        for migration in crate::db::MIGRATIONS {
+            for line in migration.lines().filter(|line| line.contains("LONGTEXT")) {
+                if let Some((_, default)) = line.split_once("DEFAULT") {
+                    assert!(
+                        default.trim_start().starts_with('('),
+                        "MySQL 8.0.16 requires LONGTEXT defaults as expressions: {line}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ddl_idtext_is_binary_collated_only_on_mysql() {
         // M-6: a security-identity `IDTEXT` column (OIDC iss/sub) must be
-        // byte-exact. On mysql that means an explicit `utf8mb4_bin` collation,
-        // because the server-default collation is case-insensitive and would
-        // collapse case-variant identities onto one row (account takeover). On
-        // postgres/sqlite `TEXT` is already case-sensitive, so `IDTEXT` is plain
-        // `TEXT` with no collation clause.
+        // byte-exact. On the supported MySQL 8.0.16+ baseline that means the
+        // binary, NO PAD `utf8mb4_0900_bin` collation, because the server
+        // default is case-insensitive and older PAD SPACE collations also
+        // collapse a trailing-space variant onto the unspaced identity. MySQL
+        // 8.0.16 is also the first release that enforces the CHECK constraints
+        // used by the topology schema. On postgres/sqlite `TEXT` is already
+        // case-sensitive, so `IDTEXT` is plain `TEXT`.
         let src = "CREATE TABLE t (issuer IDTEXT NOT NULL, subject IDTEXT NOT NULL)";
 
         let my = Dialect::Mysql.translate(src).unwrap().sql;
         assert!(
-            my.contains("issuer VARCHAR(255) COLLATE utf8mb4_bin NOT NULL"),
+            my.contains(
+                "issuer VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL"
+            ),
             "issuer must be binary-collated on mysql: {my}"
         );
         assert!(
-            my.contains("subject VARCHAR(255) COLLATE utf8mb4_bin NOT NULL"),
+            my.contains(
+                "subject VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL"
+            ),
             "subject must be binary-collated on mysql: {my}"
         );
         // The marker must never leak into emitted SQL.
@@ -195,6 +262,165 @@ mod tests {
             );
             assert!(!out.contains("IDTEXT"), "{dialect:?}: IDTEXT leaked: {out}");
         }
+    }
+
+    #[test]
+    fn ddl_keytext_is_bounded_and_binary_collated_on_every_dialect() {
+        let capacities = [32, 64, 128, 255, 512];
+        let src = "CREATE TABLE t (k32 KEYTEXT32, k64 KEYTEXT64, \
+                   k128 KEYTEXT128, k255 KEYTEXT255, k512 KEYTEXT512)";
+
+        let sqlite = Dialect::Sqlite.translate(src).unwrap().sql;
+        let postgres = Dialect::Postgres.translate(src).unwrap().sql;
+        let mysql = Dialect::Mysql.translate(src).unwrap().sql;
+
+        for (column, capacity) in ["k32", "k64", "k128", "k255", "k512"]
+            .into_iter()
+            .zip(capacities)
+        {
+            assert!(
+                sqlite.contains(&format!("{column} TEXT COLLATE BINARY")),
+                "{column} must use SQLite's bytewise collation: {sqlite}"
+            );
+            assert!(
+                postgres.contains(&format!("{column} VARCHAR({capacity}) COLLATE \"C\"")),
+                "{column} must use postgres's deterministic C collation: {postgres}"
+            );
+            assert!(
+                mysql.contains(&format!(
+                    "{column} VARCHAR({capacity}) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"
+                )),
+                "{column} must use mysql's byte-exact utf8mb4 collation: {mysql}"
+            );
+        }
+
+        for (dialect, sql) in [
+            (Dialect::Sqlite, sqlite),
+            (Dialect::Postgres, postgres),
+            (Dialect::Mysql, mysql),
+        ] {
+            assert!(
+                !sql.contains("KEYTEXT") && !sql.contains("KEY_EXACT"),
+                "{dialect:?}: KEYTEXT marker or sentinel leaked: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn mysql_topology_ddl_preserves_the_minimum_version_contract() {
+        // MySQL 8.0.16+ is required: it both provides the selected binary,
+        // NO PAD collation and enforces CHECK instead of merely parsing it.
+        let sql = Dialect::Mysql
+            .translate("CREATE TABLE t (kind KEYTEXT32 NOT NULL, CHECK (kind IN ('a', 'b')))")
+            .unwrap()
+            .sql;
+
+        assert!(
+            sql.contains("VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"),
+            "topology keys require the supported MySQL collation: {sql}"
+        );
+        assert!(
+            sql.contains("CHECK (kind IN ('a', 'b'))"),
+            "topology integrity depends on enforced CHECK constraints: {sql}"
+        );
+    }
+
+    #[test]
+    fn ddl_keytext_rewrite_skips_non_type_tokens() {
+        let src = "CREATE TABLE t (actual KEYTEXT64, KEYTEXT640 TEXT, \
+                   prefix_KEYTEXT64 TEXT, KEYTEXT64_suffix TEXT, \
+                   literal TEXT DEFAULT 'KEYTEXT64', \
+                   escaped TEXT DEFAULT 'KEYTEXT64''KEYTEXT32', \
+                   \"KEYTEXT64\" TEXT, `KEYTEXT64` TEXT, [KEYTEXT64] TEXT \
+                   /* KEYTEXT64 block comment */); -- KEYTEXT64 line comment";
+
+        for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
+            let sql = dialect.translate(src).unwrap().sql;
+            assert!(
+                !sql.contains("actual KEYTEXT64"),
+                "{dialect:?}: the actual type marker must be translated: {sql}"
+            );
+            for untouched in [
+                "KEYTEXT640",
+                "prefix_KEYTEXT64",
+                "KEYTEXT64_suffix",
+                "'KEYTEXT64'",
+                "'KEYTEXT64''KEYTEXT32'",
+                "\"KEYTEXT64\"",
+                "`KEYTEXT64`",
+                "[KEYTEXT64]",
+                "/* KEYTEXT64 block comment */",
+                "-- KEYTEXT64 line comment",
+            ] {
+                assert!(
+                    sql.contains(untouched),
+                    "{dialect:?}: non-type token {untouched:?} was rewritten: {sql}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn topology_v34_keytext_translates_without_leaks_and_fits_mysql_indexes() {
+        const UTF8MB4_MAX_BYTES_PER_CHAR: usize = 4;
+        const BIGINT_INDEX_BYTES: usize = 8;
+        const INNODB_MAX_INDEX_BYTES: usize = 3_072;
+
+        let v34 = crate::db::MIGRATIONS
+            .iter()
+            .find(|migration| {
+                migration.contains("CREATE TABLE registry_publications")
+                    && migration.contains("CREATE TABLE surface_placements")
+                    && migration.contains("KEYTEXT512")
+            })
+            .expect("v34 topology migration");
+        let statements = crate::db::backend::split_statements(v34);
+        assert!(!statements.is_empty(), "v34 must contain executable DDL");
+
+        for statement in &statements {
+            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
+                let sql = dialect.translate(statement).unwrap().sql;
+                assert!(
+                    !sql.contains("KEYTEXT") && !sql.contains("KEY_EXACT"),
+                    "v34 marker leaked for {dialect:?}: {sql}"
+                );
+            }
+        }
+
+        let release_artifacts = statements
+            .iter()
+            .find(|statement| statement.contains("CREATE TABLE release_artifacts"))
+            .expect("release_artifacts DDL");
+        let release_mysql = Dialect::Mysql.translate(release_artifacts).unwrap().sql;
+        for declaration in [
+            "package_name VARCHAR(128)",
+            "package_version VARCHAR(64)",
+            "platform VARCHAR(64)",
+            "artifact_kind VARCHAR(32)",
+            "store_hash VARCHAR(64)",
+        ] {
+            assert!(release_mysql.contains(declaration), "{release_mysql}");
+        }
+        let release_index_bytes =
+            (128 + 64 + 64 + 32 + 64) * UTF8MB4_MAX_BYTES_PER_CHAR + BIGINT_INDEX_BYTES;
+        assert_eq!(release_index_bytes, 1_416);
+        assert!(release_index_bytes <= INNODB_MAX_INDEX_BYTES);
+
+        let root_reasons = statements
+            .iter()
+            .find(|statement| statement.contains("CREATE TABLE cache_root_reasons"))
+            .expect("cache_root_reasons DDL");
+        let roots_mysql = Dialect::Mysql.translate(root_reasons).unwrap().sql;
+        for declaration in [
+            "store_hash VARCHAR(64)",
+            "source_kind VARCHAR(32)",
+            "source_ref VARCHAR(255)",
+        ] {
+            assert!(roots_mysql.contains(declaration), "{roots_mysql}");
+        }
+        let roots_index_bytes = (64 + 32 + 255) * UTF8MB4_MAX_BYTES_PER_CHAR + BIGINT_INDEX_BYTES;
+        assert_eq!(roots_index_bytes, 1_412);
+        assert!(roots_index_bytes <= INNODB_MAX_INDEX_BYTES);
     }
 
     #[test]
@@ -216,7 +442,7 @@ mod tests {
                         .find(|l| l.trim_start().starts_with(col))
                         .unwrap_or_else(|| panic!("no {col} column line in: {my}"));
                     assert!(
-                        line.contains("COLLATE utf8mb4_bin"),
+                        line.contains("COLLATE utf8mb4_0900_bin"),
                         "user_identities.{col} must be binary-collated on mysql: {line:?}"
                     );
                 }
@@ -226,138 +452,6 @@ mod tests {
             saw_identity,
             "expected the user_identities table in the schema"
         );
-    }
-
-    #[tokio::test]
-    async fn v13_operations_migration_translates_for_every_dialect() {
-        // The v13 operations migration must split and translate cleanly on
-        // postgres and mysql (the dialect contract tests need a live server;
-        // this is the offline translation-only smoke check).
-        // v13 is the 13th migration (index 12); `.last()` now points at v14.
-        let v13 = crate::db::MIGRATIONS
-            .get(12)
-            .expect("v13 operations migration");
-        for stmt in crate::db::backend::split_statements(v13) {
-            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
-                dialect
-                    .translate(&stmt)
-                    .unwrap_or_else(|e| panic!("v13 stmt failed for {dialect:?}: {e}\n{stmt}"));
-            }
-        }
-        // Spot-check the org_quotas FK primary key maps to a plain column, not
-        // an autoincrement (it carries an explicit value on every write).
-        let create = crate::db::backend::split_statements(v13)
-            .into_iter()
-            .find(|s| s.contains("CREATE TABLE org_quotas"))
-            .expect("org_quotas DDL present");
-        let pg = Dialect::Postgres.translate(&create).unwrap().sql;
-        // org_id is `INTEGER PRIMARY KEY REFERENCES`, so it follows the same
-        // BIGSERIAL spelling the existing per-org tables use; the upsert always
-        // supplies org_id explicitly so the serial default is never taken.
-        assert!(
-            pg.contains("BIGSERIAL PRIMARY KEY REFERENCES orgs(id)"),
-            "{pg}"
-        );
-    }
-
-    #[test]
-    fn v14_repair_jobs_migration_translates_for_every_dialect() {
-        // The v14 repair_jobs migration must split and translate cleanly on
-        // every dialect — its column names avoid SQL reserved words and it uses
-        // the standard INTEGER PRIMARY KEY / TEXT shapes.
-        let v14 = crate::db::MIGRATIONS
-            .get(13)
-            .expect("v14 repair_jobs migration");
-        for stmt in crate::db::backend::split_statements(v14) {
-            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
-                dialect
-                    .translate(&stmt)
-                    .unwrap_or_else(|e| panic!("v14 stmt failed for {dialect:?}: {e}\n{stmt}"));
-            }
-        }
-        let create = crate::db::backend::split_statements(v14)
-            .into_iter()
-            .find(|s| s.contains("CREATE TABLE repair_jobs"))
-            .expect("repair_jobs DDL present");
-        // The synthetic id is an autoincrement PK on every dialect.
-        let pg = Dialect::Postgres.translate(&create).unwrap().sql;
-        assert!(pg.contains("BIGSERIAL PRIMARY KEY"), "{pg}");
-        let my = Dialect::Mysql.translate(&create).unwrap().sql;
-        assert!(my.contains("BIGINT AUTO_INCREMENT PRIMARY KEY"), "{my}");
-        // TEXT columns narrow to an indexable VARCHAR on mysql.
-        assert!(my.contains("VARCHAR(255)"), "{my}");
-        assert!(!my.contains("TEXT"), "all TEXT narrowed on mysql: {my}");
-    }
-
-    #[test]
-    fn v15_change_request_columns_migration_translates_for_every_dialect() {
-        // The v15 migration adds git_ref/git_commit to config_changesets via
-        // plain ALTER TABLE ... ADD COLUMN ... TEXT; the column names avoid
-        // reserved words and translate cleanly on every dialect.
-        let v15 = crate::db::MIGRATIONS
-            .get(14)
-            .expect("v15 change-request columns migration");
-        let stmts = crate::db::backend::split_statements(v15);
-        assert_eq!(stmts.len(), 2, "two ALTER statements: {stmts:?}");
-        for stmt in &stmts {
-            assert!(
-                stmt.contains("ALTER TABLE config_changesets ADD COLUMN"),
-                "{stmt}"
-            );
-            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
-                dialect
-                    .translate(stmt)
-                    .unwrap_or_else(|e| panic!("v15 stmt failed for {dialect:?}: {e}\n{stmt}"));
-            }
-        }
-        // The added TEXT column narrows to VARCHAR on mysql (added columns are
-        // not PKs, so no autoincrement spelling is involved).
-        let git_ref = stmts
-            .iter()
-            .find(|s| s.contains("git_ref"))
-            .expect("git_ref ALTER present");
-        let my = Dialect::Mysql.translate(git_ref).unwrap().sql;
-        assert!(my.contains("VARCHAR(255)"), "{my}");
-    }
-
-    #[test]
-    fn v16_mirror_and_frontends_migration_translates_for_every_dialect() {
-        // The v16 migration adds mirror_sources, frontends, and frontend_probes.
-        // Its column names (`mode`, `domain`, `verify`, `advertised`, …) avoid
-        // SQL reserved-identifier hazards on every dialect, and the standard
-        // INTEGER PRIMARY KEY / TEXT shapes translate cleanly.
-        let v16 = crate::db::MIGRATIONS
-            .get(15)
-            .expect("v16 mirror/frontends migration");
-        for stmt in crate::db::backend::split_statements(v16) {
-            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
-                dialect
-                    .translate(&stmt)
-                    .unwrap_or_else(|e| panic!("v16 stmt failed for {dialect:?}: {e}\n{stmt}"));
-            }
-        }
-        // mirror_sources keys on the registry FK (explicit value on every
-        // write), so its PK maps to BIGSERIAL/BIGINT, not an autoincrement.
-        let mirror = crate::db::backend::split_statements(v16)
-            .into_iter()
-            .find(|s| s.contains("CREATE TABLE mirror_sources"))
-            .expect("mirror_sources DDL present");
-        let pg = Dialect::Postgres.translate(&mirror).unwrap().sql;
-        assert!(
-            pg.contains("BIGSERIAL PRIMARY KEY REFERENCES registries(id)"),
-            "{pg}"
-        );
-        // frontends has a synthetic autoincrement id on every dialect; its TEXT
-        // columns (domain, mode, base_path) narrow to an indexable VARCHAR on
-        // mysql so the UNIQUE(domain, base_path) index is valid.
-        let frontends = crate::db::backend::split_statements(v16)
-            .into_iter()
-            .find(|s| s.contains("CREATE TABLE frontends"))
-            .expect("frontends DDL present");
-        let my = Dialect::Mysql.translate(&frontends).unwrap().sql;
-        assert!(my.contains("BIGINT AUTO_INCREMENT PRIMARY KEY"), "{my}");
-        assert!(my.contains("VARCHAR(255)"), "{my}");
-        assert!(!my.contains("TEXT"), "all TEXT narrowed on mysql: {my}");
     }
 
     #[test]

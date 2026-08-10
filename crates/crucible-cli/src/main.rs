@@ -19,6 +19,7 @@ use std::fs;
 use std::future::Future;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 #[cfg(any(test, feature = "test-double"))]
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,10 +28,12 @@ use clap::{ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueE
 use clap_complete::Shell;
 use crucible_api::{
     AttachRequest, CONTROL_PROTOCOL_VERSION, CommandResultStatus, ControlClient,
-    CreateSessionRequest, DestroySessionRequest, InProcessLifecycleClient, LifecycleControlPlane,
-    LifecycleServerMode, QuiescentLifecycleLoop, RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR,
-    RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH, ResumeSessionRequest, RpcControlClient, RpcEndpoint,
-    SendRequest, SessionRef, serve_lifecycle_http2_with_mode_until_shutdown,
+    CreateSessionRequest, DebugAuthorizationPolicy, DestroySessionRequest,
+    InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode, QuiescentLifecycleLoop,
+    RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH,
+    ResumeSessionRequest, RpcControlClient, RpcEndpoint, RpcMutualTlsConfig, SendRequest,
+    SessionRef, mutual_tls_acceptor_from_pem, serve_lifecycle_http2_mtls_with_mode_until_shutdown,
+    serve_lifecycle_http2_with_debug_policy_until_shutdown,
 };
 use crucible_session::engine as crucible_model;
 #[cfg(test)]
@@ -40,9 +43,9 @@ use crucible_session::validation::{
     validation_dag_with_baked_genesis,
 };
 use crucible_session::{
-    BreakpointDisposition, BreakpointId, BreakpointSpec, CommandReply, EngineSnapshot,
-    LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand, SessionCommandKind,
-    StepMode,
+    BreakpointDisposition, BreakpointId, BreakpointSpec, CommandReply, DebugCapability, DebugRole,
+    EngineSnapshot, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
+    SessionCommandKind, StepMode,
     engine::{
         self as crucible, Checkpoint, CheckpointKind, ChoiceTag, DagStore, FindingDiscoveryPath,
         FindingReproductionArtifact, MaterializationPolicy, MaterializationTrigger, MemoryDagStore,
@@ -60,11 +63,17 @@ use test_double_imports::*;
 #[cfg(any(test, feature = "test-double"))]
 use tokio::sync::{mpsc, oneshot};
 
-const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
+const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v3";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
 const MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str =
     "application/vnd.crucible.model-reproduction+binary";
 const MODEL_REPLAY_STATE_MEDIA_TYPE: &str = "application/vnd.crucible.model-replay-state+text";
+const LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-replay-contract.v2+text";
+const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-event-stream.v1+bytes";
+const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
 const REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA: &str = "crucible.replay.schedule-prefix-proof.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-named-truths.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
@@ -72,7 +81,8 @@ const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
 const SEARCH_RETAINED_EVIDENCE_SCHEMA: &str = "crucible.search-retained-evidence.v1";
 const SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE: &str =
     "application/vnd.crucible.search-retained-evidence+toml";
-const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v2";
+const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v3";
+const SAVEPOINT_HANDLE_SCHEMA_V2: &str = "crucible.savepoint-handle.v2";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1: &str = "crucible.failure-triage.findings-ledger.v1";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2: &str = "crucible.failure-triage.findings-ledger.v2";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V3: &str = "crucible.failure-triage.findings-ledger.v3";
@@ -148,6 +158,18 @@ struct Cli {
     /// Talk to a daemon (21) instead of running in-process.
     #[arg(long, value_name = "addr", global = true)]
     daemon: Option<String>,
+    /// CA certificate used to authenticate an HTTPS daemon.
+    #[arg(long, value_name = "path", global = true, requires = "daemon")]
+    daemon_ca: Option<PathBuf>,
+    /// Client certificate chain presented to an HTTPS daemon.
+    #[arg(long, value_name = "path", global = true, requires = "daemon")]
+    daemon_cert: Option<PathBuf>,
+    /// Client private key presented to an HTTPS daemon.
+    #[arg(long, value_name = "path", global = true, requires = "daemon")]
+    daemon_key: Option<PathBuf>,
+    /// Permit an unauthenticated daemon endpoint on a trusted network.
+    #[arg(long, action = ArgAction::SetTrue, global = true, requires = "daemon")]
+    trusted_unauthenticated_daemon: bool,
     /// Patched QEMU system binary (26). Else discovered.
     #[arg(long, value_name = "path", global = true)]
     qemu: Option<PathBuf>,
@@ -272,7 +294,7 @@ struct RunArgs {
     /// Stop with Timeout past this virtual time (20 §2).
     #[arg(long, value_name = "dur", required_if_eq("until", "virtual-time"))]
     max_virtual_time: Option<String>,
-    /// Stop with Timeout past this many scheduler quanta.
+    /// Stop with Timeout at this scheduler-quantum boundary.
     #[arg(long, value_name = "n")]
     max_quanta: Option<u64>,
     /// Pause at genesis and drive the session interactively.
@@ -700,8 +722,8 @@ struct DebugArgs {
     /// Attach to this artifact or savepoint.
     #[arg(value_name = "ARTIFACT|SAVEPOINT", conflicts_with = "session")]
     target: Option<String>,
-    /// Attach to a running session.
-    #[arg(long, value_name = "ADDR")]
+    /// Attach to a running daemon session by id:epoch:64-lowercase-hex-seed.
+    #[arg(long, value_name = "SESSION")]
     session: Option<String>,
     /// Open at a virtual-time or node-icount coordinate.
     #[arg(long, value_name = "COORD")]
@@ -724,12 +746,18 @@ struct DebugArgs {
     /// Keep the canonical run read-only.
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "allow_mutate")]
     read_only: bool,
-    /// Fork a non-canonical branch for mutation.
+    /// Authorize an explicit non-canonical debug fork.
     #[arg(long, action = ArgAction::SetTrue)]
     allow_mutate: bool,
     /// Bound reverse-step replay distance.
     #[arg(long, value_name = "N")]
     checkpoint_stride: Option<u64>,
+    /// Record the non-canonical guest channel to a new transcript file.
+    #[arg(long, value_name = "PATH")]
+    record_transcript: Option<PathBuf>,
+    /// Fail when the guest agent produces no response for this duration.
+    #[arg(long, value_name = "dur")]
+    guest_idle_timeout: Option<String>,
     #[command(subcommand)]
     verb: Option<DebugVerbArgs>,
 }
@@ -738,9 +766,11 @@ struct DebugArgs {
 enum DebugVerbArgs {
     /// Open the mediated gdbstub channel.
     AttachGdb,
+    /// Explicitly fork a non-canonical whole-world debug branch.
+    ForkDebug,
     /// Move to another debug coordinate.
     Goto {
-        /// Coordinate accepted by --at.
+        /// Virtual-time, event-log, or node-icount coordinate.
         coord: String,
     },
     /// Step backward by one deterministic grain.
@@ -754,6 +784,26 @@ enum DebugVerbArgs {
         /// Condition expression.
         condition: String,
     },
+    /// Execute an argv-based command through the guest debug agent.
+    Exec {
+        /// Program and arguments, without shell parsing.
+        #[arg(required = true, trailing_var_arg = true)]
+        argv: Vec<String>,
+    },
+    /// Open an interactive command on a guest PTY.
+    Pty {
+        /// Initial terminal columns.
+        #[arg(long, default_value_t = 80)]
+        columns: u16,
+        /// Initial terminal rows.
+        #[arg(long, default_value_t = 24)]
+        rows: u16,
+        /// Program and arguments, without shell parsing.
+        #[arg(required = true, trailing_var_arg = true)]
+        argv: Vec<String>,
+    },
+    /// Bridge stdin/stdout to the guest agent's configured SSH server.
+    Ssh,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -790,9 +840,30 @@ struct ServeArgs {
     /// Concurrency cap on live sessions.
     #[arg(long, value_name = "n")]
     max_sessions: Option<usize>,
+    /// Host sessions with the packaged production QEMU lifecycle.
+    #[arg(long, action = ArgAction::SetTrue)]
+    production_qemu: bool,
+    /// Cap production-QEMU RUNs at this deterministic icount interval.
+    #[arg(long, value_name = "icount")]
+    qemu_rendezvous_icount: Option<u64>,
     /// Accept only read-only API calls (query/watch); no mutate.
     #[arg(long, action = ArgAction::SetTrue)]
     read_only: bool,
+    /// Server certificate chain for authenticated remote access.
+    #[arg(long, value_name = "path")]
+    tls_cert: Option<PathBuf>,
+    /// Server private key for authenticated remote access.
+    #[arg(long, value_name = "path")]
+    tls_key: Option<PathBuf>,
+    /// CA certificate used to authenticate remote clients.
+    #[arg(long, value_name = "path")]
+    client_ca: Option<PathBuf>,
+    /// Permit cleartext access on this explicitly trusted bind address.
+    #[arg(long, action = ArgAction::SetTrue)]
+    trusted_unauthenticated_bind: bool,
+    /// Map a client certificate fingerprint to debugger capabilities.
+    #[arg(long, value_name = "sha256=capability,...")]
+    debug_role: Vec<String>,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -1299,35 +1370,6 @@ trait CliOperationRecorder {
     fn record_state_reference(&mut self, reference: CliStateReferenceKind);
 }
 
-#[derive(Default)]
-struct NullOperationRecorder;
-
-fn execute_cli_dispatch_plan(
-    plan: &CliThinWrapperPlan,
-    recorder: &mut impl CliOperationRecorder,
-) -> Result<(), CliError> {
-    if !plan.proves_t_cli_2() {
-        return Err(CliError::Backend(
-            "CLI invocation violates the RFC-0010 thin-wrapper contract".to_string(),
-        ));
-    }
-
-    for command in &plan.session_commands {
-        recorder.record_session_command(*command);
-    }
-    for call in &plan.api_calls {
-        recorder.record_api_call(*call);
-    }
-    for driver in &plan.delegated_drivers {
-        recorder.record_driver(*driver);
-    }
-    for reference in &plan.state_references {
-        recorder.record_state_reference(*reference);
-    }
-
-    Ok(())
-}
-
 #[path = "cli/artifact.rs"]
 mod cli_artifact;
 #[path = "cli/backend.rs"]
@@ -1367,6 +1409,7 @@ use cli_triage_debug::*;
 use cli_verify_serve::*;
 
 mod null_operation_recorder;
+use null_operation_recorder::*;
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used, clippy::unwrap_used)]

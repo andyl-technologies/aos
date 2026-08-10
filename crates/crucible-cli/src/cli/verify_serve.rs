@@ -49,7 +49,6 @@ where
 
 pub(super) fn verify_compare_artifacts(
     verify_plan: &VerifyInvocationPlan,
-    backend: Option<&ResolvedLocalBackend>,
 ) -> Result<VerifyWorkflowReport, CliError> {
     let VerifyMode::CompareArtifacts { left, right } = &verify_plan.mode else {
         return Err(backend_error(
@@ -60,9 +59,7 @@ pub(super) fn verify_compare_artifacts(
     let right_bytes = fs::read(right)?;
     let left_artifact = decode_reproduction_artifact(&left_bytes)?;
     let right_artifact = decode_reproduction_artifact(&right_bytes)?;
-    let expected_identity = expected_replay_identity_for_backend(backend);
-    verify_replay_identity(&left_artifact.identity, &expected_identity)?;
-    verify_replay_identity(&right_artifact.identity, &expected_identity)?;
+    verify_replay_identity(&right_artifact.identity, &left_artifact.identity)?;
     verify_compare_artifact_inputs_match("verify --compare", &left_artifact, &right_artifact)?;
     let witnesses = vec![
         verify_witness_from_artifact(verify_plan.reductions[0].clone(), left_artifact, left_bytes)?,
@@ -112,6 +109,7 @@ pub(super) fn verify_run_invocation_plan(
 ) -> RunInvocationPlan {
     RunInvocationPlan {
         scenario,
+        save_store_root: None,
         request_seed: Some(request_seed),
         terminal_condition: RunTerminalCondition::Quiescence,
         max_virtual_time: None,
@@ -173,12 +171,55 @@ pub(super) fn verify_witness_from_run_report(
     let state_dump = verify_state_dump(run_plan, report);
     let artifact = backend
         .map(|backend| {
-            verify_reproduction_artifact_bytes(
+            if !matches!(backend, ResolvedLocalBackend::Qemu { .. }) {
+                return verify_reproduction_artifact_bytes(
+                    seed,
+                    Some(backend),
+                    run_plan.scenario.scenario_def(),
+                    &canonical_log,
+                    &fingerprint_samples,
+                );
+            }
+            let scenario = run_plan.scenario.scenario_form();
+            let terminal = report.terminal_configuration.as_ref().ok_or_else(|| {
+                artifact_error("verify artifact capture requires a terminal configuration")
+            })?;
+            let model = crucible::ReproductionArtifact::capture(scenario, &terminal.schedule)
+                .map_err(|error| {
+                    artifact_error(format!("verify model reproduction capture failed: {error}"))
+                })?;
+            let replay = model.replay().map_err(|error| {
+                artifact_error(format!("verify model reproduction replay failed: {error}"))
+            })?;
+            let live = live_qemu_artifact_evidence_from_run(
+                LiveQemuArtifactRecipe {
+                    producer: "verify",
+                    terminal_condition: run_plan.terminal_condition,
+                    max_virtual_time_ticks: run_plan.max_virtual_time_ticks,
+                    max_quanta: run_plan.max_quanta,
+                    coverage: false,
+                    execution_mode: run_plan.execution_mode,
+                    startup_commands: &run_plan.startup_commands,
+                    initial_control_commands: &run_plan.initial_control_commands,
+                    branch: LiveQemuReplayBranch::None,
+                },
+                scenario,
+                report,
+            )?;
+            let mut payloads = model_reproduction_artifact_payloads(&model, replay.state);
+            payloads.extend(live_qemu_artifact_payloads(&live));
+            let scenario_bytes = scenario.to_compact_binary();
+            reproduction_artifact_bytes_with_scenario_payload(
                 seed,
                 Some(backend),
-                run_plan.scenario.scenario_def(),
+                ReproductionScenarioPayload {
+                    name: "verify-scenario.crucible-scenario",
+                    media_type: "application/vnd.crucible.scenario.compact-binary",
+                    bytes: &scenario_bytes,
+                },
                 &canonical_log,
                 &fingerprint_samples,
+                &payloads,
             )
         })
         .transpose()?;
@@ -229,6 +270,7 @@ pub(super) fn canonical_run_log_entries(
         artifact_digest: content_address_bytes(b"empty"),
         terminal_savepoint: None,
         savepoint_oracle: None,
+        save_boundary_evidence: None,
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
     };
@@ -505,8 +547,8 @@ pub(super) fn artifact_fingerprint_samples(
         .iter()
         .map(|fingerprint| VerifyFingerprintSample {
             index: fingerprint.index,
-            instruction: fingerprint.index,
-            node: String::from("artifact"),
+            instruction: fingerprint.instruction,
+            node: fingerprint.node.clone(),
             digest: fingerprint.digest.clone(),
         })
         .collect()
@@ -583,13 +625,10 @@ pub(super) fn localize_verify_divergence(
         mismatch,
         first_different_decision,
         first_different_fingerprint_sample: first_different_sample,
-        first_different_instruction: entry
-            .map(|entry| entry.virtual_time_ticks)
-            .or_else(|| sample.map(|sample| sample.instruction))
-            .unwrap_or(first_different_byte as u64),
-        node: entry
-            .map(|entry| entry.node.clone())
-            .or_else(|| sample.map(|sample| sample.node.clone())),
+        first_different_virtual_time: entry.map(|entry| entry.virtual_time_ticks),
+        first_different_virtual_time_node: entry.map(|entry| entry.node.clone()),
+        first_different_instruction: sample.map(|sample| sample.instruction),
+        first_different_instruction_node: sample.map(|sample| sample.node.clone()),
         first_different_byte,
         left_state_digest: verify_witness_state_digest(left),
         right_state_digest: verify_witness_state_digest(right),
@@ -667,7 +706,13 @@ pub(super) fn prefixes_match(left: &[u8], right: &[u8], len: usize) -> bool {
     left.get(..len) == right.get(..len)
 }
 
-fn reproduction_artifact_bytes_with_scenario_payload(
+/// Encodes a self-contained reproduction artifact around an explicit scenario payload.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when component identity, decision payload, or canonical
+/// artifact encoding validation fails.
+pub(crate) fn reproduction_artifact_bytes_with_scenario_payload(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
     scenario: ReproductionScenarioPayload<'_>,
@@ -798,7 +843,13 @@ fn reproduction_artifact_bytes_with_scenario_payload(
     for sample in fingerprint_samples {
         artifact_line(
             &mut text,
-            &["fingerprint", &sample.index.to_string(), &sample.digest],
+            &[
+                "fingerprint",
+                &sample.index.to_string(),
+                &sample.instruction.to_string(),
+                &sample.node,
+                &sample.digest,
+            ],
         );
     }
     artifact_line(
@@ -861,7 +912,7 @@ pub(super) async fn run_local_double_workflow_stdin_async(
         |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
     );
     let client = InProcessLifecycleClient::new(control_plane);
-    run_control_client_workflow_stdin_async(&client, run_plan).await
+    run_control_client_workflow_stdin_async(&client, run_plan, false).await
 }
 
 pub(super) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), CliError> {
@@ -871,7 +922,7 @@ pub(super) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
         ));
     }
     validate_serve_invocation(args)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| serve_error(format!("serve runtime error: {error}")))?;
@@ -890,6 +941,14 @@ pub(super) async fn run_serve_invocation_until_shutdown<S>(
 where
     S: Future<Output = Result<(), CliError>> + Send + 'static,
 {
+    let debug_authorization = debug_authorization_policy(args)?;
+    let tls_acceptor = match (&args.tls_cert, &args.tls_key, &args.client_ca) {
+        (Some(certificate), Some(private_key), Some(client_ca)) => Some(
+            mutual_tls_acceptor_from_pem(certificate, private_key, client_ca)
+                .map_err(|error| serve_error(format!("serve mutual-TLS error: {error}")))?,
+        ),
+        _ => None,
+    };
     let listener = tokio::net::TcpListener::bind(&args.listen)
         .await
         .map_err(|error| serve_error(format!("serve bind error: {error}")))?;
@@ -902,7 +961,51 @@ where
         } else {
             "read-write"
         };
-        println!("crucible: serving API daemon at http://{address} mode={mode}");
+        let scheme = if tls_acceptor.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+        println!("crucible: serving API daemon at {scheme}://{address} mode={mode}");
+    }
+    let mode = if args.read_only {
+        LifecycleServerMode::read_only()
+    } else {
+        LifecycleServerMode::read_write()
+    };
+    if args.production_qemu {
+        let backend = require_selftest_qemu_backend(cli)?;
+        let mut config = production_qemu_lifecycle_config(&backend)?;
+        if let Some(interval) = args.qemu_rendezvous_icount {
+            config = config.with_rendezvous_interval_icount(interval);
+        }
+        let config = config.with_debug_gdbstubs_for_all_nodes("127.0.0.1:0");
+        let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
+            "crucible-cli-qemu-daemon",
+            Vec::new(),
+            move |scenario, source, _seed| {
+                let source =
+                    source.ok_or_else(|| crucible_api::LifecycleApiError::LoopFactory {
+                        message: String::from(
+                            "production QEMU daemon requires an inline scenario definition",
+                        ),
+                    })?;
+                crucible_api::build_production_vm_lifecycle_loop(scenario, source, &config)
+            },
+        )
+        .with_thin_replay_resume();
+        if let Some(max_sessions) = args.max_sessions {
+            control_plane = control_plane.with_max_sessions(max_sessions);
+        }
+        return run_bound_lifecycle_server(
+            listener,
+            control_plane,
+            mode,
+            tls_acceptor,
+            debug_authorization,
+            shutdown,
+        )
+        .await;
     }
     let mut control_plane = LifecycleControlPlane::new(
         "crucible-cli-daemon",
@@ -912,16 +1015,61 @@ where
     if let Some(max_sessions) = args.max_sessions {
         control_plane = control_plane.with_max_sessions(max_sessions);
     }
-    let mode = if args.read_only {
-        LifecycleServerMode::read_only()
-    } else {
-        LifecycleServerMode::read_write()
-    };
+    run_bound_lifecycle_server(
+        listener,
+        control_plane,
+        mode,
+        tls_acceptor,
+        debug_authorization,
+        shutdown,
+    )
+    .await
+}
+
+async fn run_bound_lifecycle_server<L, F, S>(
+    listener: tokio::net::TcpListener,
+    control_plane: LifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
+    tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
+    debug_authorization: DebugAuthorizationPolicy,
+    shutdown: S,
+) -> Result<(), CliError>
+where
+    L: crucible::QuantumLoop + Send + 'static,
+    F: Fn(
+            &crucible::ScenarioDef,
+            Option<&crucible::ScenarioDefForm>,
+            crucible::Seed,
+        ) -> Result<L, crucible_api::LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+    S: Future<Output = Result<(), CliError>> + Send + 'static,
+{
     let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
-    let server =
-        serve_lifecycle_http2_with_mode_until_shutdown(listener, control_plane, mode, async move {
-            let _ = shutdown_receiver.await;
-        });
+    let server: Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send>> =
+        if let Some(tls_acceptor) = tls_acceptor {
+            Box::pin(serve_lifecycle_http2_mtls_with_mode_until_shutdown(
+                listener,
+                control_plane,
+                mode,
+                tls_acceptor,
+                debug_authorization,
+                async move {
+                    let _ = shutdown_receiver.await;
+                },
+            ))
+        } else {
+            Box::pin(serve_lifecycle_http2_with_debug_policy_until_shutdown(
+                listener,
+                control_plane,
+                mode,
+                debug_authorization,
+                async move {
+                    let _ = shutdown_receiver.await;
+                },
+            ))
+        };
     tokio::pin!(server);
     tokio::pin!(shutdown);
     // crucible-lint: allow unordered-select -- serve shutdown races only with host daemon drainage.
@@ -967,7 +1115,83 @@ pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
     if args.max_sessions == Some(0) {
         return Err(usage_error("--max-sessions must be greater than zero"));
     }
+    if args.qemu_rendezvous_icount == Some(0) {
+        return Err(usage_error(
+            "--qemu-rendezvous-icount must be greater than zero",
+        ));
+    }
+    if args.qemu_rendezvous_icount.is_some() && !args.production_qemu {
+        return Err(usage_error(
+            "--qemu-rendezvous-icount requires --production-qemu",
+        ));
+    }
+    let tls_file_count = [
+        args.tls_cert.is_some(),
+        args.tls_key.is_some(),
+        args.client_ca.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if tls_file_count != 0 && tls_file_count != 3 {
+        return Err(usage_error(
+            "--tls-cert, --tls-key, and --client-ca must be supplied together",
+        ));
+    }
+    if tls_file_count == 3 && args.trusted_unauthenticated_bind {
+        return Err(usage_error(
+            "--trusted-unauthenticated-bind cannot be combined with mutual TLS",
+        ));
+    }
+    if tls_file_count == 0 && !args.trusted_unauthenticated_bind {
+        return Err(usage_error(
+            "serve requires mutual TLS or explicit --trusted-unauthenticated-bind",
+        ));
+    }
+    let _ = debug_authorization_policy(args)?;
     Ok(())
+}
+
+fn debug_authorization_policy(args: &ServeArgs) -> Result<DebugAuthorizationPolicy, CliError> {
+    let mut policy = DebugAuthorizationPolicy::deny_all();
+    if args.trusted_unauthenticated_bind {
+        policy.grant_trusted_unauthenticated_role(DebugRole::new([
+            DebugCapability::Observe,
+            DebugCapability::Control,
+            DebugCapability::Mutate,
+            DebugCapability::Shell,
+            DebugCapability::Admin,
+        ]));
+    }
+    for mapping in &args.debug_role {
+        let (fingerprint, capabilities) = mapping
+            .split_once('=')
+            .ok_or_else(|| usage_error("--debug-role must use sha256=capability,... syntax"))?;
+        let mut parsed = Vec::new();
+        for capability in capabilities.split(',') {
+            parsed.push(match capability {
+                "observe" => DebugCapability::Observe,
+                "control" => DebugCapability::Control,
+                "mutate" => DebugCapability::Mutate,
+                "shell" => DebugCapability::Shell,
+                "admin" => DebugCapability::Admin,
+                _ => {
+                    return Err(usage_error(format!(
+                        "unknown debugger capability `{capability}`"
+                    )));
+                }
+            });
+        }
+        if parsed.is_empty() {
+            return Err(usage_error(
+                "--debug-role must grant at least one capability",
+            ));
+        }
+        policy
+            .grant_certificate_role(fingerprint, DebugRole::new(parsed))
+            .map_err(|error| usage_error(error.to_string()))?;
+    }
+    Ok(policy)
 }
 
 pub(super) async fn run_control_client_workflow_async<C>(
@@ -982,6 +1206,8 @@ where
         client,
         run_plan,
         InteractiveCommandDriver::Preparsed(interactive_commands),
+        false,
+        false,
     )
     .await
 }
@@ -1008,74 +1234,55 @@ where
     let mut state_updates = Vec::new();
     let mut command_id = 1;
 
-    let boundary = match save_plan.at {
+    let (boundary, breakpoint_firing) = match save_plan.at {
         SaveAtArg::Quiescence => {
-            let before =
-                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
-                    .await?;
-            send_save_workflow_command(
+            let predicate = crucible::Predicate::quiescent();
+            let (boundary, breakpoint_id) = run_save_predicate_to_boundary(
+                client,
+                created.session,
+                BreakpointSpec::suspend_once(predicate.clone()),
+                &mut command_id,
+                &mut acknowledged_commands,
+                &mut state_updates,
+                "paused quiescence save boundary",
+                false,
+            )
+            .await?;
+            let firings = query_save_breakpoint_firings(
                 client,
                 created.session,
                 &mut command_id,
-                SessionCommand::step(StepMode::Quantum),
                 &mut acknowledged_commands,
                 &mut state_updates,
             )
             .await?;
-            wait_for_save_workflow_advanced_paused(
-                client,
-                created.session,
-                &before,
-                "paused quiescence save boundary",
-            )
-            .await?
+            let firing = validate_save_breakpoint_firing(
+                "quiescence",
+                &predicate,
+                breakpoint_id,
+                &boundary,
+                &firings,
+            )?;
+            (boundary, Some(firing))
         }
         SaveAtArg::VirtualTime => {
             let budget = run_plan.max_virtual_time_ticks.ok_or_else(|| {
                 usage_error("save --at virtual-time requires --max-virtual-time <dur>")
             })?;
-            let summary =
-                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
-                    .await?;
-            let boundary = if summary.frontier.ticks < budget {
-                send_save_workflow_command(
-                    client,
-                    created.session,
-                    &mut command_id,
-                    SessionCommand::step(StepMode::Duration(SimDuration {
-                        nanos: budget.saturating_sub(summary.frontier.ticks),
-                    })),
-                    &mut acknowledged_commands,
-                    &mut state_updates,
-                )
-                .await?;
-                let max_attempts = RUN_INTERACTIVE_ACK_QUANTA_BOUND
-                    .saturating_add(budget.saturating_sub(summary.frontier.ticks));
-                wait_for_save_workflow_summary(
-                    client,
-                    created.session,
-                    |candidate| {
-                        candidate.state == LiveStateKind::Paused
-                            && candidate.frontier.ticks >= budget
-                            && candidate.quanta_stepped > summary.quanta_stepped
-                    },
-                    "paused requested virtual-time save boundary",
-                    max_attempts,
-                )
-                .await?
-            } else {
-                summary
-            };
-            if boundary.frontier.ticks != budget {
-                return Err(CliError::Identity(format!(
-                    "save virtual-time boundary reached {}, expected {}",
-                    boundary.frontier.ticks, budget
-                )));
-            }
-            boundary
+            let boundary = drive_save_to_virtual_time_boundary(
+                client,
+                created.session,
+                budget,
+                &mut command_id,
+                &mut acknowledged_commands,
+                &mut state_updates,
+                "",
+            )
+            .await?;
+            (boundary, None)
         }
         SaveAtArg::Property | SaveAtArg::Marker => {
-            run_save_selector_to_boundary(
+            let (boundary, firing) = run_save_selector_to_boundary(
                 client,
                 created.session,
                 save_plan,
@@ -1083,7 +1290,8 @@ where
                 &mut acknowledged_commands,
                 &mut state_updates,
             )
-            .await?
+            .await?;
+            (boundary, Some(firing))
         }
     };
 
@@ -1209,5 +1417,12 @@ where
             watch_statuses: Vec::new(),
         },
         oracle,
+        boundary_evidence: SaveBoundaryEvidence {
+            at: save_plan.at,
+            selector: save_plan.selector.clone(),
+            frontier_ticks: boundary.frontier.ticks,
+            quanta: boundary.quanta_stepped,
+            breakpoint_firing,
+        },
     })
 }

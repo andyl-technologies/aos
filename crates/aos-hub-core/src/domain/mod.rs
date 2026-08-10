@@ -7,7 +7,7 @@
 //! algebra that decides what each principal may do.
 //!
 //! Its core, [`iam`], is **IO-free and wasm-clean**: pure functions over
-//! roles, permissions, and scope paths. The thin database bridge that
+//! roles, permissions, and stable scope identities. The thin database bridge that
 //! reads a principal's effective grants lives in the hub's `db` layer, which
 //! returns the same [`Scope`]/[`Role`] pairs [`iam::allow`] consumes — so
 //! the decision itself never touches a connection.

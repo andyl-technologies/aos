@@ -54,45 +54,138 @@ pub(crate) fn run_local_qemu_debug_workflow(
 }
 
 pub(crate) fn run_local_qemu_debug_workflow_with_probe(
-    backend: &ResolvedLocalBackend,
+    _backend: &ResolvedLocalBackend,
     plan: &DebugInvocationPlan,
-    probe: &mut impl LiveQemuProbeRunner,
+    _probe: &mut impl LiveQemuProbeRunner,
 ) -> Result<Vec<String>, CliError> {
-    let evidence = probe.run_probe(backend)?;
-    validate_live_qemu_probe_evidence(backend, &evidence)?;
+    let artifact_context = artifact_debug_context(plan)?;
     let target = match &plan.target {
-        DebugPlanTarget::Artifact(path) => format!("artifact:{}", path.display()),
+        DebugPlanTarget::Artifact(path) => {
+            format!(
+                "artifact:{}",
+                escape_debug_plan_field(&path.display().to_string())
+            )
+        }
         DebugPlanTarget::Savepoint(hash) => {
             format!("savepoint:{}", format_content_hash_ref(*hash))
         }
-        DebugPlanTarget::Session(address) => format!("session:{address}"),
+        DebugPlanTarget::Session(address) => {
+            format!("session:{}", escape_debug_plan_field(address))
+        }
     };
     let coordinate = match &plan.coordinate {
         DebugPlanCoordinate::Current => String::from("current"),
-        DebugPlanCoordinate::At(coordinate) => format!("{coordinate:?}"),
+        DebugPlanCoordinate::At(coordinate) => debug_coordinate_label(coordinate),
         DebugPlanCoordinate::AtEvent(sequence) => format!("event:{sequence}"),
-        DebugPlanCoordinate::AtFailure => String::from("failure"),
+        DebugPlanCoordinate::AtFailure => {
+            let context = artifact_context.as_ref().ok_or_else(|| {
+                artifact_error("failure coordinate requires a reproduction artifact")
+            })?;
+            format!(
+                "failure:vtime:{}:quanta:{}",
+                context.frontier_ticks, context.quanta
+            )
+        }
         DebugPlanCoordinate::AtCheckpoint(hash) => {
             format!("checkpoint:{}", format_content_hash_ref(*hash))
         }
     };
-    Ok(vec![
-        format!(
-            "qemu-live\toperation=debug-admission\tqemu_build_id={}\tplugin_abi={}\ticount={}\tfingerprint={}",
-            evidence.qemu_build_id,
-            evidence.plugin_abi,
-            evidence.completed_icount,
-            evidence.execution_fingerprint
+    let requested_operation = match &plan.verb {
+        DebugInteractiveVerbPlan::AttachGdb => String::from("attach-gdb"),
+        DebugInteractiveVerbPlan::ForkDebug => String::from("fork-debug"),
+        DebugInteractiveVerbPlan::Goto(coordinate) => {
+            format!("goto:{}", debug_coordinate_label(coordinate))
+        }
+        DebugInteractiveVerbPlan::ReverseStep { grain } => {
+            format!("reverse-step:{}", reverse_step_grain_label(*grain))
+        }
+        DebugInteractiveVerbPlan::ReverseContinue { condition } => {
+            format!("reverse-continue:{}", escape_debug_plan_field(condition))
+        }
+        DebugInteractiveVerbPlan::Exec { .. } => String::from("exec"),
+        DebugInteractiveVerbPlan::Pty { .. } => String::from("pty"),
+        DebugInteractiveVerbPlan::Ssh => String::from("ssh"),
+    };
+    Err(backend_error(format!(
+        "local debugger execution is unavailable for requested_operation={requested_operation} target={target} coordinate={coordinate}; no debug operation was executed; use an authenticated live daemon session, or use replay/verify for artifact evidence"
+    )))
+}
+
+struct ArtifactFailureContext {
+    frontier_ticks: u64,
+    quanta: u64,
+}
+
+fn artifact_debug_context(
+    plan: &DebugInvocationPlan,
+) -> Result<Option<ArtifactFailureContext>, CliError> {
+    let DebugPlanTarget::Artifact(path) = &plan.target else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(path).map_err(|error| {
+        artifact_error(format!(
+            "debug artifact `{}` could not be read: {error}",
+            path.display()
+        ))
+    })?;
+    let artifact = decode_reproduction_artifact(&bytes)?;
+    if !matches!(plan.coordinate, DebugPlanCoordinate::AtFailure) {
+        return Ok(None);
+    }
+    let component = artifact
+        .components
+        .iter()
+        .find(|component| component.media_type == LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE)
+        .ok_or_else(|| artifact_error("debug artifact has no live-QEMU replay contract"))?;
+    let payload = artifact
+        .payloads
+        .iter()
+        .find(|payload| payload.digest == component.digest)
+        .ok_or_else(|| artifact_error("debug artifact has no embedded live-QEMU contract"))?;
+    let contract = LiveQemuReplayContract::decode(&payload.bytes)?;
+    Ok(Some(ArtifactFailureContext {
+        frontier_ticks: contract.final_frontier_ticks,
+        quanta: contract.final_quanta,
+    }))
+}
+
+fn reverse_step_grain_label(grain: crucible::DebugReverseStepGrain) -> &'static str {
+    match grain {
+        crucible::DebugReverseStepGrain::Instruction => "instruction",
+        crucible::DebugReverseStepGrain::Quantum => "quantum",
+        crucible::DebugReverseStepGrain::Event => "event",
+        crucible::DebugReverseStepGrain::Assertion => "assertion",
+        crucible::DebugReverseStepGrain::Timer => "timer",
+    }
+}
+
+fn debug_coordinate_label(coordinate: &crucible::DebugCoordinate) -> String {
+    match coordinate {
+        crucible::DebugCoordinate::Configuration(configuration) => {
+            format!(
+                "configuration:{}",
+                format_content_hash_ref(configuration.id())
+            )
+        }
+        crucible::DebugCoordinate::Checkpoint(checkpoint) => {
+            format!("checkpoint:{}", format_content_hash_ref(*checkpoint))
+        }
+        crucible::DebugCoordinate::EventSequence(sequence) => format!("event:{sequence}"),
+        crucible::DebugCoordinate::VirtualTime(at) => format!("vtime:{}", at.ticks),
+        crucible::DebugCoordinate::NodeIcount { node, icount } => format!(
+            "icount:{}:{}",
+            escape_debug_plan_field(&node.name),
+            icount.retired
         ),
-        format!(
-            "debug-plan\ttarget={target}\tcoordinate={coordinate}\tnode={}\tgdb_listen={}\tread_only={}\tallow_mutate={}\tdelegated_session_commands={}\traw_gdb_single_step=false",
-            plan.node.as_deref().unwrap_or("first-vm"),
-            plan.gdb_listen,
-            plan.read_only,
-            plan.allow_mutate,
-            plan.session_commands.len(),
-        ),
-    ])
+    }
+}
+
+fn escape_debug_plan_field(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
 }
 
 /// Boots one bounded live QEMU/plugin probe and returns its observed proof.
@@ -116,6 +209,10 @@ pub(crate) fn run_live_qemu_backend_probe(
         option_env!("CRUCIBLE_AOS_ROOT_IMAGE"),
         "root image",
     )?;
+    let architecture = match live_qemu_native_guest_architecture()? {
+        crucible::VmArchitecture::X86_64 => production_api::ProductionGuestArchitecture::X86_64,
+        crucible::VmArchitecture::Aarch64 => production_api::ProductionGuestArchitecture::Aarch64,
+    };
     let run_directory = tempfile::TempDir::new()?;
     prepare_live_qemu_root_overlay(qemu, &root_image, run_directory.path())?;
     let mut config = production_api::ProductionPluginInstallConfig::new(
@@ -124,7 +221,7 @@ pub(crate) fn run_live_qemu_backend_probe(
         kernel,
         root_image,
         run_directory.path(),
-        production_api::ProductionGuestArchitecture::X86_64,
+        architecture,
     )
     .with_root_image_format(production_api::ProductionRootImageFormat::Raw)
     .with_fingerprint(production_api::ProductionPluginSwitch::On);
@@ -217,4 +314,128 @@ pub(super) fn live_qemu_kernel_cmdline() -> Option<String> {
     std::env::var("CRUCIBLE_KERNEL_CMDLINE")
         .ok()
         .or_else(|| option_env!("CRUCIBLE_AOS_KERNEL_CMDLINE").map(str::to_owned))
+}
+
+/// Resolves the architecture of the package-native guest artifact triplet.
+pub(super) fn live_qemu_native_guest_architecture() -> Result<crucible::VmArchitecture, CliError> {
+    match std::env::var("CRUCIBLE_NATIVE_GUEST_ARCHITECTURE").as_deref() {
+        Ok("aarch64") => Ok(crucible::VmArchitecture::Aarch64),
+        Ok("x86_64") | Err(std::env::VarError::NotPresent) => Ok(crucible::VmArchitecture::X86_64),
+        Ok(value) => Err(backend_error(format!(
+            "CRUCIBLE_NATIVE_GUEST_ARCHITECTURE has unsupported value `{value}`"
+        ))),
+        Err(std::env::VarError::NotUnicode(_)) => Err(backend_error(
+            "CRUCIBLE_NATIVE_GUEST_ARCHITECTURE is not valid UTF-8",
+        )),
+    }
+}
+
+/// Resolves opt-in verification that declared boot references match selected files.
+pub(super) fn live_qemu_validate_guest_asset_references() -> Result<bool, CliError> {
+    match std::env::var("CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES").as_deref() {
+        Ok("1" | "true") => Ok(true),
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Ok(value) => Err(backend_error(format!(
+            "CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES has unsupported value `{value}`"
+        ))),
+        Err(std::env::VarError::NotUnicode(_)) => Err(backend_error(
+            "CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES is not valid UTF-8",
+        )),
+    }
+}
+
+/// Resolves the packaged AArch64 guest artifact triplet when it is available.
+///
+/// # Errors
+///
+/// Returns an error when an override asset is unreadable or the architecture-specific
+/// kernel, root image, and kernel command line are not configured together.
+pub(super) fn live_qemu_aarch64_assets()
+-> Result<Option<(PathBuf, PathBuf, Option<String>)>, CliError> {
+    let kernel = optional_live_qemu_asset(
+        "CRUCIBLE_KERNEL_AARCH64",
+        option_env!("CRUCIBLE_AOS_KERNEL_AARCH64"),
+        "AArch64 kernel",
+    )?;
+    let root_image = optional_live_qemu_asset(
+        "CRUCIBLE_ROOT_IMAGE_AARCH64",
+        option_env!("CRUCIBLE_AOS_ROOT_IMAGE_AARCH64"),
+        "AArch64 root image",
+    )?;
+    let kernel_cmdline = std::env::var("CRUCIBLE_KERNEL_CMDLINE_AARCH64")
+        .ok()
+        .or_else(|| option_env!("CRUCIBLE_AOS_KERNEL_CMDLINE_AARCH64").map(str::to_owned));
+
+    resolve_aarch64_guest_assets(kernel, root_image, kernel_cmdline)
+}
+
+fn resolve_aarch64_guest_assets(
+    kernel: Option<PathBuf>,
+    root_image: Option<PathBuf>,
+    kernel_cmdline: Option<String>,
+) -> Result<Option<(PathBuf, PathBuf, Option<String>)>, CliError> {
+    match (kernel, root_image, kernel_cmdline) {
+        (Some(kernel), Some(root_image), Some(kernel_cmdline)) => {
+            Ok(Some((kernel, root_image, Some(kernel_cmdline))))
+        }
+        (None, None, None) => Ok(None),
+        _ => Err(backend_error(
+            "AArch64 guest support requires CRUCIBLE_KERNEL_AARCH64, CRUCIBLE_ROOT_IMAGE_AARCH64, and CRUCIBLE_KERNEL_CMDLINE_AARCH64 together",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_aarch64_assets_disable_cross_architecture_support() {
+        let assets = resolve_aarch64_guest_assets(None, None, None);
+
+        assert!(matches!(assets, Ok(None)));
+    }
+
+    #[test]
+    fn complete_aarch64_assets_preserve_the_architecture_specific_cmdline() {
+        let kernel = PathBuf::from("aarch64-kernel");
+        let root_image = PathBuf::from("aarch64-root-image");
+        let kernel_cmdline = String::from("console=ttyAMA0 root=/dev/vda");
+
+        let assets = match resolve_aarch64_guest_assets(
+            Some(kernel.clone()),
+            Some(root_image.clone()),
+            Some(kernel_cmdline.clone()),
+        ) {
+            Ok(assets) => assets,
+            Err(error) => panic!("complete AArch64 assets did not resolve: {error}"),
+        };
+
+        assert_eq!(assets, Some((kernel, root_image, Some(kernel_cmdline))));
+    }
+
+    #[test]
+    fn incomplete_aarch64_assets_fail_closed() {
+        let configurations = [
+            (Some(PathBuf::from("kernel")), None, None),
+            (None, Some(PathBuf::from("root-image")), None),
+            (None, None, Some(String::from("console=ttyAMA0"))),
+            (
+                Some(PathBuf::from("kernel")),
+                Some(PathBuf::from("root-image")),
+                None,
+            ),
+        ];
+
+        for (kernel, root_image, kernel_cmdline) in configurations {
+            let error = match resolve_aarch64_guest_assets(kernel, root_image, kernel_cmdline) {
+                Ok(assets) => panic!("incomplete AArch64 assets resolved as {assets:?}"),
+                Err(error) => error,
+            };
+
+            assert!(error.to_string().contains(
+                "CRUCIBLE_KERNEL_AARCH64, CRUCIBLE_ROOT_IMAGE_AARCH64, and CRUCIBLE_KERNEL_CMDLINE_AARCH64 together"
+            ));
+        }
+    }
 }

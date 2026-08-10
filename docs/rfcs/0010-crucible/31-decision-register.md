@@ -226,7 +226,7 @@ genuinely unresolved and is tracked as a spike in
 
 ### D-7 — White-box signalling is a trapped-instruction doorbell over a virtio-serial channel
 
-- **Status:** Decided
+- **Status:** Superseded by D-38
 - **Decision:** The optional white-box guest→host signal is a **trapped
   instruction doorbell** (a reserved port-I/O / hypercall-style trap) serviced
   synchronously by the in-VM plugin, carrying its payload over a **virtio-serial
@@ -822,15 +822,15 @@ genuinely unresolved and is tracked as a spike in
     artifact without redefining the oracle.
 - **Affects:** file 36 ([DBG-*]), [SESS-32], [SESS-33], [CLI-27]; references
   [ADV-33], [INV-2], D-8.
-- **Phase-0 S14 outcome:** `checks.crucible.phase0.s14GdbstubFallback` found no
-  hermetic gdb client package and no known gdbstub single-step mediation hook in
+- **Phase-0 S14 outcome:** `checks.crucible.phase0.s14GdbstubFallback` originally
+  found no hermetic gdb client package and no known gdbstub single-step mediation hook in
   the scanned AOS QEMU patch/plugin integration surface. The session/backend
   `open_gdbstub` path is implemented by
   `checks.crucible.phase5.sessionDebugTimeTravel`; D-30 remains the target
   architecture decision, but Phase 0 still enables only the conservative policy fallback:
   `fallback_adopted=read_only_attach_crucible_driven_step_until_gdbstub_gate`.
   Live read-only attach neutrality and gdb single-step routing are not claimed
-  until a hermetic gdb client, CLI live attach path, and S14 gate pass without fallback.
+  until the packaged client and CLI live attach path pass S14 without fallback.
 
 ### D-31 — Stock guest cmdline; guest entropy suppression removed from the launch contract
 
@@ -1414,6 +1414,34 @@ becomes a new `Decided` entry referencing the one it supersedes).
   and emit `spsc=exhaustive-ordering-model`.
 - **Affects:** [STD-22], [STD-23], [HARN-33]; files 13, 24, and 28.
 - **Date:** 2026-07-28.
+
+### D-38 — Guest introspection uses doorbell/shared-memory data with fork-only activation
+
+- **Status:** Amended
+- **Decision:** Supersede D-7's virtio-serial payload choice. White-box markers
+  and every guest-introspection feature, command, stream, resize, exit, and close
+  record use the trapped-instruction `CRGX` exchange and ABI-v6 shared-memory
+  rings. A virtual device carries no payload. After an explicit whole-world
+  non-canonical debugger fork commits, Crucible may send one fixed versioned
+  token over a fixed activation-only virtio-serial endpoint. The empty controller,
+  named port, and Unix chardev are content-addressed canonical launch topology;
+  the Crucible-owned stream is established at launch but no token is written and
+  no agent runs before the fork.
+- **Rationale:** The doorbell provides exact icount placement and the shared
+  rings provide a bounded, pointer-free, versioned process protocol. A dormant
+  guest agent cannot receive a host wake through that guest-to-host trap alone.
+  The narrow one-shot activation edge solves only that wakeup problem without
+  making the device a data-channel fallback. Runtime PCIe hotplug was rejected:
+  the portable fixture kernel has no PCIe hotplug support, and an output-oriented
+  QEMU ring buffer cannot inject the token. A live direct-QEMU exercise proved
+  that the host-listener/QEMU-client stream wakes the blocking guest reader.
+- **Evidence:** The launch test freezes the exact inert controller, named port,
+  chardev, absent token, and hash material; the validator permits only that fixed
+  Unix endpoint. ABI conformance continues to cover all `CRGI` records and rings.
+- **Affects:** [GHC-14], [QEMU-17]–[QEMU-19], [SHM-47], [SHM-48], [DBG-9],
+  [DBG-34], [DBG-45], [DBG-45A], [DBG-46]; files 10, 13, 16, and 36.
+- **Supersedes:** D-7.
+- **Date:** 2026-08-08.
 
 ---
 
@@ -2179,28 +2207,28 @@ register.
 
 - **RISK-28 / T-RISK-20 — S14 gdbstub attach/step**
   - **Status:** PASS WITH FALLBACK; the live gdbstub attach/step measurement is
-    not runnable yet because the current repository has no hermetic gdb client,
-    CLI live attach command, or AOS QEMU gdbstub mediation hook/gate. The
+    remains pending because the current repository has no live AOS QEMU gdbstub
+    mediation gate. The hermetic GDB client and CLI live attach command now exist. The
     session/backend `open_gdbstub` surface is implemented by
     `checks.crucible.phase5.sessionDebugTimeTravel`, but that is not a live S14
     neutrality measurement.
   - **Check:** `checks.crucible.phase0.s14GdbstubFallback`.
   - **Result:** `scan_scope=pkgs_emulation_crates_rfc_debug_specs`,
-    `hermetic_gdb_client_available=false`,
+    `hermetic_gdb_client_available=true`,
     `qemu_gdbstub_mediation_scan_scope=aos_qemu_nix_patches_plugin`,
     `known_aos_qemu_gdbstub_step_hook_detected=false`,
     `aos_qemu_gdbstub_mediation_patch_implemented=false`,
     `session_open_gdbstub_implemented=true`,
-    `cli_debug_command_implemented=false`,
+    `cli_debug_command_implemented=true`,
     `read_only_gdbstub_ops_tested=false`,
     `read_only_fingerprint_neutral=not_tested`,
     `read_only_icount_neutral=not_tested`, `gdb_single_step_tested=false`,
     `gdb_single_step_routed_through_scheduler=not_tested`,
     `gdb_single_step_policy=disabled_until_s14_green`,
     `raw_gdb_single_step_allowed_by_crucible_policy=false`,
-    `policy_enforcement_runtime=not_implemented`,
+    `policy_enforcement_runtime=implemented`,
     `default_debug_policy=read_only_attach_crucible_driven_step_reverse_step`,
-    `live_gdbstub_attach_gate_status=fallback_pending_hermetic_gdb_client_and_mediation_gate`,
+    `live_gdbstub_attach_gate_status=fallback_pending_live_mediation_gate`,
     `s1_decision_entry_consumed=true`, `s1_result_status=PASS`,
     `s1_horizon_extended_hash=9d1e61606ac54920`,
     `s1_pause_retired=3200000005`,
@@ -2214,8 +2242,8 @@ register.
     a live gdbstub, set breakpoints, or prove scheduler-routed single-step.
   - **Fallback:** keep raw gdb single-step disabled by Crucible policy and require
     future debug advancement to use Crucible-driven step/reverse-step until a
-    hermetic debug client, backend/CLI gdbstub implementation, and mediation gate
-    land; rerun S14 before treating [DBG-1] or [SCHED-46] as satisfied for live
+    packaged debug client and backend/CLI gdbstub path to pass the live mediation
+    gate; rerun S14 before treating [DBG-1] or [SCHED-46] as satisfied for live
     debugging.
 
 ## Implementation checklist

@@ -11,8 +11,7 @@
 //! wrapper) for the **provider-specific** part of a deployment:
 //!
 //! 1. **provision** — create the R2 bucket and KV namespace (the relational
-//!    system of record is the `HubDb` Durable Object's SQLite — RFC-0004 ch.14
-//!    Phase E — not a D1 database),
+//!    system of record is the `HubDb` Durable Object's SQLite),
 //! 2. **deploy** — render a [`wrangler.toml`](render_wrangler_toml) over the
 //!    bundled wasm dist and `wrangler deploy` it,
 //! 3. **secrets** — `wrangler secret put` the runtime secrets.
@@ -58,7 +57,7 @@
 //!
 //! The pure pieces — argv construction, TOML rendering, `wrangler … list --json`
 //! id parsing, secret generation — are unit-tested in this module. The live
-//! `wrangler` invocations (provision, deploy, `d1 execute`) require a real Cloudflare
+//! `wrangler` invocations (provision and deploy) require a real Cloudflare
 //! account and are validated operator-side (see `DEPLOY.md`), exactly like the
 //! Worker runtime tests that need a workerd host.
 
@@ -138,7 +137,46 @@ fn non_empty_env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
+/// Three account-unique Cloudflare rate-limit namespace identifiers.
+///
+/// Cloudflare shares counters between bindings that reuse a namespace ID, even
+/// when those bindings belong to different Workers. Keeping these identifiers
+/// in the deployment configuration prevents staging and production installs
+/// from influencing each other's request budgets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RateLimitNamespaces {
+    burst5: String,
+    burst10: String,
+    browse120: String,
+}
+
+impl RateLimitNamespaces {
+    /// Derives the three namespace IDs immediately above `base`.
+    ///
+    /// A base of `1000` preserves the original production IDs `1001` through
+    /// `1003`; staging can use another account-unique range such as `2000`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `base` is zero or does not leave room for all
+    /// three positive 32-bit namespace identifiers.
+    pub fn from_base(base: u32) -> Result<Self> {
+        anyhow::ensure!(base > 0, "rate-limit namespace base must be positive");
+        let id = |offset| {
+            base.checked_add(offset)
+                .map(|value| value.to_string())
+                .context("rate-limit namespace base is too large")
+        };
+        Ok(Self {
+            burst5: id(1)?,
+            burst10: id(2)?,
+            browse120: id(3)?,
+        })
+    }
+}
+
 /// The fully-resolved inputs for rendering a deployment `wrangler.toml`.
+#[derive(Clone)]
 pub struct DeployConfig {
     /// The Worker name (`name` in `wrangler.toml`).
     pub name: String,
@@ -146,16 +184,22 @@ pub struct DeployConfig {
     pub bucket: String,
     /// The provisioned KV namespace id.
     pub kv_id: String,
-    /// The hub's canonical public base URL, baked into the `HUB_EXTERNAL_URL`
-    /// `[vars]` entry — or **empty** to omit it, in which case the Worker derives
-    /// its canonical URL from each request's origin (its `*.workers.dev` URL or a
-    /// bound [`custom_domains`](Self::custom_domains) entry).
+    /// The deferred-jobs Queue name.
+    pub queue: String,
+    /// Account-unique rate-limit namespaces for this Worker installation.
+    pub rate_limit_namespaces: RateLimitNamespaces,
+    /// Exact HTTPS endpoint of an optional repository-owned native egress router.
+    /// `None` uses Cloudflare's Worker Fetch transport directly.
+    pub egress_gateway_url: Option<String>,
+    /// The required canonical public origin baked into `HUB_EXTERNAL_URL`.
     ///
-    /// When set, it's the origin the hub emits about itself (the `{url}/{slug}`
+    /// It is the origin the hub emits about itself (the `{url}/{slug}`
     /// push URL in setup snippets, the OIDC `redirect_uri` base, the WebAuthn
     /// relying-party ID, browse links). The `worker` CLI leaves it empty by
     /// default and relies on the request-origin fallback.
     pub external_url: String,
+    /// Immutable source/build identity exposed by the deployed Worker.
+    pub deployment_id: Option<String>,
     /// The magic-link email relay endpoint (`HUB_EMAIL_API_URL` `[vars]`).
     pub email_relay_url: Option<String>,
     /// The verified sender address for Cloudflare Email Service. When `Some`, the
@@ -171,7 +215,7 @@ pub struct DeployConfig {
     /// set: `wrangler deploy` reconciles the live routes to exactly these, so a
     /// partial list would drop the omitted ones — list every domain the Worker
     /// should serve. Every domain's zone must be on the same Cloudflare account.
-    /// Bind the hub's own domain plus any per-registry/per-cache frontend domains
+    /// Bind the hub's own domain plus typed delivery endpoint domains
     /// it dispatches by `Host`.
     ///
     /// **Empty preserves, it does not unbind.** When empty, the generated config
@@ -204,24 +248,30 @@ pub struct DeployConfig {
 ///
 /// `main` is `shim.mjs` (relative to the config's directory, where the dist is
 /// staged). There is intentionally **no** `[build]` command — the hermetic dist
-/// is deployed as-is rather than rebuilt on the operator's machine. The non-
-/// secret configuration (optional `HUB_EXTERNAL_URL` / `HUB_EMAIL_API_URL` /
-/// `HUB_EMAIL_FROM`) is baked into `[vars]`; secrets are applied separately with
+/// is deployed as-is rather than rebuilt on the operator's machine. The
+/// non-secret configuration (required `HUB_EXTERNAL_URL`; optional egress-router
+/// URL and email relay/sender) is baked into `[vars]`; secrets are applied separately with
 /// [`secret_put_args`]. When [`DeployConfig::email_from`] is set, a
 /// `[[send_email]]` binding named `EMAIL` (`remote = true`) is emitted so the
 /// Worker can deliver through Cloudflare Email Service.
 ///
-/// `HUB_EXTERNAL_URL` is omitted when [`DeployConfig::external_url`] is empty —
-/// the Worker then derives its canonical URL from each request's origin (its
-/// `*.workers.dev` URL or a bound domain), so a no-custom-domain deploy needs no
-/// URL configuration.
+/// `HUB_EXTERNAL_URL` is always an exact HTTPS origin. Deployment validation
+/// rejects an empty or path-bearing value before rendering.
 #[must_use]
 pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
     let mut vars = String::from("[vars]\n");
-    if !cfg.external_url.is_empty() {
+    vars.push_str("HUB_DNS_JSON_ENDPOINT = \"https://dns.google/resolve\"\n");
+    if let Some(url) = &cfg.egress_gateway_url {
+        vars.push_str(&format!("HUB_EGRESS_GATEWAY_URL = {}\n", toml_string(url)));
+    }
+    vars.push_str(&format!(
+        "HUB_EXTERNAL_URL = {}\n",
+        toml_string(&cfg.external_url)
+    ));
+    if let Some(deployment_id) = &cfg.deployment_id {
         vars.push_str(&format!(
-            "HUB_EXTERNAL_URL = {}\n",
-            toml_string(&cfg.external_url)
+            "HUB_DEPLOYMENT_ID = {}\n",
+            toml_string(deployment_id)
         ));
     }
     // Surface the default R2 bucket name so the console's instance-settings page
@@ -249,7 +299,7 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
     // Each custom-domain route binds the Worker to one hostname (e.g.
     // aos.example.com); `wrangler deploy` provisions the domain (DNS record +
     // cert) when the zone is on the account. Multiple routes let one Worker serve
-    // the hub's own domain plus per-registry/per-cache frontend domains it
+    // the hub's own domain plus delivery endpoint domains it
     // dispatches by Host. With none, NO routes block is emitted — which (per
     // Cloudflare's contract) leaves any already-bound custom domains untouched
     // rather than unbinding them, so a code-only redeploy is non-destructive.
@@ -291,7 +341,7 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
         String::new()
     };
     // `[placement] mode = "off"` is hardcoded, never surfaced as a setting: the
-    // hub is read-heavy and D1-replicated, so the Worker must run at the edge
+    // hub is read-heavy, so the Worker must run at the edge
     // near each client (reading from the nearest replica), not be pinned to the
     // primary's region by smart placement. Emitting it on every deploy reverts
     // any dashboard toggle to `smart`.
@@ -331,28 +381,37 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          [[migrations]]\n\
          tag = \"v1\"\n\
          new_classes = [\"CoordinatorObject\"]\n\
-         new_sqlite_classes = [\"TenantDb\", \"HubDb\"]\n\
+         new_sqlite_classes = [\"HubDb\"]\n\
          \n\
          [[ratelimits]]\n\
          name = \"RL_BURST5\"\n\
-         namespace_id = \"1001\"\n\
+         namespace_id = {rate_burst5}\n\
          [ratelimits.simple]\n\
          limit = 5\n\
          period = 60\n\
          \n\
          [[ratelimits]]\n\
          name = \"RL_BURST10\"\n\
-         namespace_id = \"1002\"\n\
+         namespace_id = {rate_burst10}\n\
          [ratelimits.simple]\n\
          limit = 10\n\
          period = 60\n\
          \n\
          [[ratelimits]]\n\
          name = \"RL_BROWSE120\"\n\
-         namespace_id = \"1003\"\n\
+         namespace_id = {rate_browse120}\n\
          [ratelimits.simple]\n\
          limit = 120\n\
          period = 60\n\
+         \n\
+         [[queues.producers]]\n\
+         binding = \"JOBS\"\n\
+         queue = {queue}\n\
+         \n\
+         [[queues.consumers]]\n\
+         queue = {queue}\n\
+         max_batch_size = 10\n\
+         max_batch_timeout = 5\n\
          {observability}",
         name = toml_string(&cfg.name),
         compat = COMPAT_DATE,
@@ -364,6 +423,10 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
         bucket = toml_string(&cfg.bucket),
         kvb = KV_BINDING,
         kvid = toml_string(&cfg.kv_id),
+        queue = toml_string(&cfg.queue),
+        rate_burst5 = toml_string(&cfg.rate_limit_namespaces.burst5),
+        rate_burst10 = toml_string(&cfg.rate_limit_namespaces.burst10),
+        rate_browse120 = toml_string(&cfg.rate_limit_namespaces.browse120),
         cron = INDEXER_CRON,
         observability = observability,
     )
@@ -395,11 +458,16 @@ pub fn kv_create_args(title: &str) -> Vec<String> {
     ]
 }
 
+/// `wrangler queues create <name>` — provision a deferred-jobs Queue.
+#[must_use]
+pub fn queue_create_args(name: &str) -> Vec<String> {
+    vec!["queues".into(), "create".into(), name.into()]
+}
+
 /// `wrangler kv namespace list` — list KV namespaces as JSON (for id discovery).
 ///
-/// Unlike `d1 list`, `kv namespace list` takes no `--json` flag — it emits a
-/// JSON array by default (passing `--json` is rejected as an unknown flag), so
-/// this relies on that default output shape.
+/// `kv namespace list` emits a JSON array by default; passing `--json` is
+/// rejected as an unknown flag, so this relies on that default output shape.
 #[must_use]
 pub fn kv_list_args() -> Vec<String> {
     vec!["kv".into(), "namespace".into(), "list".into()]
@@ -412,6 +480,20 @@ pub fn secret_put_args(name: &str, config: &Path) -> Vec<String> {
     vec![
         "secret".into(),
         "put".into(),
+        name.into(),
+        "--config".into(),
+        config.display().to_string(),
+    ]
+}
+
+/// `wrangler secret delete <name> --config <path>` — removes an obsolete
+/// Worker secret. Wrangler 4.20 asks for confirmation, which the deployer
+/// supplies on stdin.
+#[must_use]
+pub fn secret_delete_args(name: &str, config: &Path) -> Vec<String> {
+    vec![
+        "secret".into(),
+        "delete".into(),
         name.into(),
         "--config".into(),
         config.display().to_string(),
@@ -512,8 +594,7 @@ pub fn generate_hex_secret(bytes: usize) -> String {
 /// `HubDb` bootstrap endpoint (`POST {base}/_admin/bootstrap-root`), returning
 /// the new user id.
 ///
-/// The D1-free replacement for the old `aos-hub init --target d1:` root step
-/// (RFC-0004 ch.14 Phase E): the worker runs the shared
+/// The worker runs the shared
 /// [`bootstrap_root`](aos_hub_core::db::Database::bootstrap_root) over the
 /// `HubDb` colocated SQLite. `seal` must equal the deployment's `HUB_SEAL_KEY`.
 /// Idempotent — re-running resets the root password.
@@ -603,9 +684,8 @@ async fn run_wrangler(
         .await
         .context("waiting for wrangler")?;
     if !output.status.success() {
-        // wrangler prints some failures (notably a D1 `{"error":…}` envelope on
-        // `d1 execute`) to stdout, not stderr — include both so the real cause
-        // isn't swallowed.
+        // Wrangler can print structured provider failures to stdout instead of
+        // stderr; include both so the real cause is not swallowed.
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let detail = [stderr.trim(), stdout.trim()]
@@ -661,7 +741,7 @@ async fn run_wrangler_interactive(assets: &Assets, args: &[String]) -> Result<()
 ///
 /// An alternative to the `CLOUDFLARE_API_TOKEN` environment variable: it opens
 /// the operator's browser to authorize, then stores the OAuth credentials that
-/// the deploy/`d1 execute` calls pick up automatically. The callback runs on a
+/// deploy calls pick up automatically. The callback runs on a
 /// localhost port of the *host running this command*, so over SSH to a remote
 /// builder it needs a forwarded port (see `DEPLOY.md`).
 ///
@@ -702,8 +782,67 @@ pub struct Secrets {
     pub jwt_secret: Option<String>,
     /// `HUB_SEAL_KEY` — at-rest AES-GCM sealing key. `None` = preserve-or-mint.
     pub seal_key: Option<String>,
+    /// `HUB_EGRESS_GATEWAY_KEY` — optional operator-provisioned `KEY_ID:KEY`.
+    /// Required exactly when [`DeployConfig::egress_gateway_url`] is configured.
+    pub egress_gateway_key: Option<String>,
+    /// `HUB_CLOUDFLARE_API_TOKEN` — scoped route-observation token.
+    pub cloudflare_api_token: Option<String>,
     /// `HUB_EMAIL_API_TOKEN` — bearer token for the magic-link email relay.
     pub email_api_token: Option<String>,
+    /// `HUB_DELIVERY_ATTESTATION_KEY` — HMAC key shared with a trusted ingress.
+    pub delivery_attestation_key: Option<String>,
+    /// Removes an already-deployed delivery-attestation key when true.
+    pub disable_delivery_attestation: bool,
+    /// `HUB_DOMAIN_PROBE_SIGNER_MANIFEST` — Worker terminator signer manifest.
+    pub domain_probe_signer_manifest: Option<String>,
+    /// `HUB_ROUTE_RESERVATION_KEYRING` — active and retained route HMAC keys.
+    pub route_reservation_keyring: Option<String>,
+}
+
+impl Secrets {
+    /// Validates every supplied Worker secret before any provider mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an explicitly empty secret or a malformed domain
+    /// probe or route-reservation manifest.
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.delivery_attestation_key.is_none() || !self.disable_delivery_attestation,
+            "delivery attestation cannot be configured and disabled together"
+        );
+        for (name, value) in [
+            ("HUB_JWT_SECRET", self.jwt_secret.as_deref()),
+            ("HUB_SEAL_KEY", self.seal_key.as_deref()),
+            (
+                "HUB_CLOUDFLARE_API_TOKEN",
+                self.cloudflare_api_token.as_deref(),
+            ),
+            ("HUB_EMAIL_API_TOKEN", self.email_api_token.as_deref()),
+            ("HUB_EGRESS_GATEWAY_KEY", self.egress_gateway_key.as_deref()),
+            (
+                "HUB_DELIVERY_ATTESTATION_KEY",
+                self.delivery_attestation_key.as_deref(),
+            ),
+        ] {
+            anyhow::ensure!(
+                value.is_none_or(|secret| !secret.is_empty()),
+                "{name} must not be empty when supplied"
+            );
+        }
+        if let Some(manifest) = &self.domain_probe_signer_manifest {
+            aos_hub_core::topology_probe::ManifestDomainProbeTerminatorProvider::from_json(
+                manifest,
+                "worker_secret",
+            )
+            .context("invalid Worker domain-probe signer manifest")?;
+        }
+        if let Some(keyring) = &self.route_reservation_keyring {
+            aos_hub_core::service::ConfiguredRouteReservationKeyring::from_json(keyring)
+                .context("invalid Worker route reservation keyring")?;
+        }
+        Ok(())
+    }
 }
 
 /// The outcome of a deploy: the secrets *freshly minted* this run, so the
@@ -720,8 +859,17 @@ pub struct Applied {
     pub minted_seal_key: Option<String>,
 }
 
-/// Provisions the D1 database, R2 bucket, and KV namespace, then resolves their
-/// ids into a [`DeployConfig`].
+/// Declares whether the target Worker is new or already deployed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeployMode {
+    /// Creates an initial Worker version before applying its first secret set.
+    Install,
+    /// Requires an existing Worker and applies secrets before replacing its code.
+    Update,
+}
+
+/// Provisions the R2 bucket, KV namespace, and deferred-jobs Queue, then
+/// resolves their configuration into a [`DeployConfig`].
 ///
 /// Provisioning is idempotent: a resource that already exists is logged and
 /// skipped. Ids are read back from `wrangler … list` (the stable JSON
@@ -736,15 +884,52 @@ pub async fn provision(
     name: &str,
     bucket: &str,
     kv_title: &str,
+    queue: &str,
+    egress_gateway_url: Option<&str>,
     external_url: &str,
+    deployment_id: Option<&str>,
     email_relay_url: Option<&str>,
     custom_domains: &[String],
+    rate_limit_namespaces: RateLimitNamespaces,
 ) -> Result<DeployConfig> {
-    // RFC-0004 ch.14 Phase E: no D1 — the system of record is the `HubDb`
-    // Durable Object's colocated SQLite (declared by the `wrangler.toml`
+    if let Some(url) = egress_gateway_url {
+        let egress = url::Url::parse(url).context("egress gateway URL is invalid")?;
+        if egress.scheme() != "https"
+            || egress.username() != ""
+            || egress.password().is_some()
+            || egress.query().is_some()
+            || egress.fragment().is_some()
+            || egress.path() != "/v1/fetch"
+        {
+            bail!("egress gateway URL must be an exact HTTPS /v1/fetch endpoint");
+        }
+    }
+    let external = url::Url::parse(external_url).context("external URL is invalid")?;
+    if external.scheme() != "https"
+        || external.username() != ""
+        || external.password().is_some()
+        || external.query().is_some()
+        || external.fragment().is_some()
+        || external.path() != "/"
+    {
+        bail!("external URL must be an exact HTTPS origin");
+    }
+    if let Some(deployment_id) = deployment_id {
+        anyhow::ensure!(
+            !deployment_id.is_empty()
+                && deployment_id.len() <= 128
+                && deployment_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')),
+            "deployment ID must be 1-128 ASCII letters, digits, '.', '_', or '-'"
+        );
+    }
+    // The system of record is the `HubDb` Durable Object's colocated SQLite
+    // (declared by the `wrangler.toml`
     // `new_sqlite_classes` migration, created on first deploy).
     run_wrangler_tolerant(assets, &r2_create_args(bucket), "r2 bucket create").await;
     run_wrangler_tolerant(assets, &kv_create_args(kv_title), "kv namespace create").await;
+    run_wrangler_tolerant(assets, &queue_create_args(queue), "queue create").await;
 
     let kv_list = run_wrangler(assets, &kv_list_args(), None, None).await?;
     let kv_id = parse_kv_id(&kv_list, kv_title)?;
@@ -753,7 +938,11 @@ pub async fn provision(
         name: name.to_string(),
         bucket: bucket.to_string(),
         kv_id,
+        queue: queue.to_string(),
+        rate_limit_namespaces,
+        egress_gateway_url: egress_gateway_url.map(str::to_string),
         external_url: external_url.to_string(),
+        deployment_id: deployment_id.map(str::to_string),
         email_relay_url: email_relay_url.map(str::to_string),
         // The `worker` CLI overrides this from its `--email-from` flag before
         // staging the config; Email Service is off until a sender is set.
@@ -776,6 +965,9 @@ pub async fn provision(
 /// Returns an error if the dist files cannot be copied or the config cannot be
 /// written.
 async fn stage_deploy(assets: &Assets, cfg: &DeployConfig, dir: &Path) -> Result<PathBuf> {
+    tokio::fs::create_dir_all(dir)
+        .await
+        .with_context(|| format!("creating deploy staging directory {}", dir.display()))?;
     for f in ["shim.mjs", "index.wasm"] {
         tokio::fs::copy(assets.dist_dir.join(f), dir.join(f))
             .await
@@ -831,12 +1023,14 @@ async fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
 /// Deploys the staged dist and applies the runtime secrets.
 ///
 /// Stages the dist + generated config into a private temporary directory (cleaned
-/// up on return). Order matters: `wrangler deploy` creates the Worker (and bakes
-/// `[vars]`), then `wrangler secret put` attaches the secrets to the live Worker.
+/// up on return). A first install creates an initial version before attaching
+/// secrets; an update lists and applies its requested secret changes before
+/// replacing the deployed code. Optional-router updates require the old and new
+/// router replicas to accept the challenged overlap key during this sequence.
 ///
-/// Secret application is **idempotent across redeploys**: after deploying, the
-/// Worker's existing secrets are listed and any already-present `HUB_JWT_SECRET`
-/// / `HUB_SEAL_KEY` is preserved rather than re-minted. Rotating `HUB_SEAL_KEY`
+/// Secret application is **idempotent across redeploys**: the Worker's existing
+/// secrets are listed and any already-present `HUB_JWT_SECRET` / `HUB_SEAL_KEY`
+/// is preserved rather than re-minted. Rotating `HUB_SEAL_KEY`
 /// would orphan at-rest sealed data and rotating `HUB_JWT_SECRET` would
 /// invalidate every active session, so a fresh value is minted only on a first
 /// deploy where the secret is absent (or when the operator passes one explicitly
@@ -846,24 +1040,69 @@ async fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
 ///
 /// Returns an error if the temp dir, staging, the deploy, the secret listing, or
 /// any `secret put` fails.
-pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> Result<Applied> {
+pub async fn deploy(
+    assets: &Assets,
+    cfg: &DeployConfig,
+    secrets: &Secrets,
+    mode: DeployMode,
+) -> Result<Applied> {
+    secrets.validate()?;
+    anyhow::ensure!(
+        cfg.egress_gateway_url.is_some() == secrets.egress_gateway_key.is_some(),
+        "HUB_EGRESS_GATEWAY_URL and HUB_EGRESS_GATEWAY_KEY must be configured together"
+    );
+    if let (Some(url), Some(key)) = (
+        cfg.egress_gateway_url.as_deref(),
+        secrets.egress_gateway_key.as_deref(),
+    ) {
+        authenticate_gateway_contract(url, key).await?;
+    }
     let work = tempfile::Builder::new()
         .prefix("aos-hub-deploy")
         .tempdir()
         .context("creating a temporary deploy directory")?;
     let work_dir = work.path();
     let config = stage_deploy(assets, cfg, work_dir).await?;
-    run_wrangler(assets, &deploy_args(&config), None, Some(work_dir)).await?;
 
-    let listed = run_wrangler(assets, &secret_list_args(&config), None, None).await?;
+    // A new router-backed Worker first receives a direct-Fetch bootstrap version
+    // so its complete secret set exists before the URL is selected. An update
+    // keeps the existing transport active while staging a challenged overlap key;
+    // operators keep both router key ids accepted until cutover completes.
+    let secret_config = if mode == DeployMode::Install && cfg.egress_gateway_url.is_some() {
+        let mut direct = cfg.clone();
+        direct.egress_gateway_url = None;
+        let bootstrap_dir = work_dir.join("direct-bootstrap");
+        let bootstrap_config = stage_deploy(assets, &direct, &bootstrap_dir).await?;
+        run_wrangler(
+            assets,
+            &deploy_args(&bootstrap_config),
+            None,
+            Some(&bootstrap_dir),
+        )
+        .await?;
+        bootstrap_config
+    } else if mode == DeployMode::Install {
+        run_wrangler(assets, &deploy_args(&config), None, Some(work_dir)).await?;
+        config.clone()
+    } else {
+        config.clone()
+    };
+
+    let listed = run_wrangler(assets, &secret_list_args(&secret_config), None, None).await?;
     let existing = parse_secret_names(&listed)?;
+
+    // Secrets survive `wrangler deploy` when omitted from configuration. The
+    // pre-cutover name is never consumed by either transport.
+    if existing.iter().any(|name| name == "HUB_EGRESS_SHARED_KEY") {
+        delete_secret(assets, "HUB_EGRESS_SHARED_KEY", &secret_config).await?;
+    }
 
     let minted_jwt_secret = apply_secret(
         assets,
         "HUB_JWT_SECRET",
         secrets.jwt_secret.as_deref(),
         &existing,
-        &config,
+        &secret_config,
     )
     .await?;
     let minted_seal_key = apply_secret(
@@ -871,17 +1110,220 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
         "HUB_SEAL_KEY",
         secrets.seal_key.as_deref(),
         &existing,
-        &config,
+        &secret_config,
     )
     .await?;
+    if let Some(key) = &secrets.egress_gateway_key {
+        // The authenticated challenge above is deliberately before both
+        // deployment and secret rotation. On update, the currently selected
+        // router must accept this overlap key until the URL cutover completes.
+        put_secret(assets, "HUB_EGRESS_GATEWAY_KEY", key, &secret_config).await?;
+    }
+    match secrets.cloudflare_api_token.as_deref() {
+        Some(token) => {
+            put_secret(assets, "HUB_CLOUDFLARE_API_TOKEN", token, &secret_config).await?
+        }
+        None if existing
+            .iter()
+            .any(|name| name == "HUB_CLOUDFLARE_API_TOKEN") => {}
+        None => bail!(
+            "HUB_CLOUDFLARE_API_TOKEN is required on first deploy; pass --cloudflare-api-token"
+        ),
+    }
     if let Some(tok) = &secrets.email_api_token {
-        put_secret(assets, "HUB_EMAIL_API_TOKEN", tok, &config).await?;
+        put_secret(assets, "HUB_EMAIL_API_TOKEN", tok, &secret_config).await?;
+    }
+    if let Some(key) = &secrets.delivery_attestation_key {
+        put_secret(assets, "HUB_DELIVERY_ATTESTATION_KEY", key, &secret_config).await?;
+    } else if secrets.disable_delivery_attestation
+        && existing
+            .iter()
+            .any(|name| name == "HUB_DELIVERY_ATTESTATION_KEY")
+    {
+        delete_secret(assets, "HUB_DELIVERY_ATTESTATION_KEY", &secret_config).await?;
+    }
+    match &secrets.domain_probe_signer_manifest {
+        Some(manifest) => {
+            // Parse before changing the live secret so an invalid deployment
+            // cannot replace the last known-good responder configuration.
+            aos_hub_core::topology_probe::ManifestDomainProbeTerminatorProvider::from_json(
+                manifest,
+                "worker_secret",
+            )
+            .context("invalid Worker domain-probe signer manifest")?;
+            put_secret(
+                assets,
+                "HUB_DOMAIN_PROBE_SIGNER_MANIFEST",
+                manifest,
+                &secret_config,
+            )
+            .await?;
+        }
+        None if !existing
+            .iter()
+            .any(|name| name == "HUB_DOMAIN_PROBE_SIGNER_MANIFEST") =>
+        {
+            // An empty manifest keeps the responder explicitly unready until
+            // exact endpoint-generation material is deployed.
+            put_secret(
+                assets,
+                "HUB_DOMAIN_PROBE_SIGNER_MANIFEST",
+                "[]",
+                &secret_config,
+            )
+            .await?;
+        }
+        None => {}
+    }
+    match &secrets.route_reservation_keyring {
+        Some(manifest) => {
+            aos_hub_core::service::ConfiguredRouteReservationKeyring::from_json(manifest)
+                .context("invalid Worker route reservation keyring")?;
+            put_secret(
+                assets,
+                "HUB_ROUTE_RESERVATION_KEYRING",
+                manifest,
+                &secret_config,
+            )
+            .await?;
+        }
+        None if existing
+            .iter()
+            .any(|name| name == "HUB_ROUTE_RESERVATION_KEYRING") => {}
+        None => bail!(
+            "HUB_ROUTE_RESERVATION_KEYRING is required on first deploy; pass --route-reservation-keys-file"
+        ),
+    }
+
+    if mode == DeployMode::Update || cfg.egress_gateway_url.is_some() {
+        // Updates publish only after every requested secret mutation succeeds.
+        // A first router install likewise selects its URL only after the key.
+        run_wrangler(assets, &deploy_args(&config), None, Some(work_dir)).await?;
+    }
+
+    if cfg.egress_gateway_url.is_none()
+        && existing.iter().any(|name| name == "HUB_EGRESS_GATEWAY_KEY")
+    {
+        // Direct Fetch is active before the unused router credential is removed,
+        // so a failed cleanup cannot make the Worker unavailable.
+        delete_secret(assets, "HUB_EGRESS_GATEWAY_KEY", &config).await?;
     }
 
     Ok(Applied {
         minted_jwt_secret,
         minted_seal_key,
     })
+}
+
+/// Proves the configured gateway serves the operator-provisioned shared key.
+///
+/// This is a contract challenge rather than a health check: the request and
+/// response use distinct HMAC domains, a fresh nonce, and bounded timestamps.
+/// It runs before `wrangler deploy` and before any Worker secret write, so a
+/// missing or stale gateway key cannot create or rotate a Worker deployment.
+async fn authenticate_gateway_contract(gateway_url: &str, shared_key: &str) -> Result<()> {
+    use base64::Engine as _;
+    use rand::RngCore as _;
+
+    let (key_id, key_text) = shared_key
+        .split_once(':')
+        .context("hardened-egress shared secret must be KEY_ID:KEY")?;
+    anyhow::ensure!(
+        !key_id.is_empty()
+            && key_id.len() <= 64
+            && key_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
+        "invalid hardened-egress key id"
+    );
+    let key = crate::auth::seal::parse_key(key_text.as_bytes())
+        .context("invalid operator-provisioned hardened-egress shared key")?;
+    let mut challenge_url = url::Url::parse(gateway_url).context("invalid hardened-egress URL")?;
+    challenge_url.set_path("/v1/challenge");
+    challenge_url.set_query(None);
+    let mut nonce_bytes = [0_u8; 32];
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce_bytes);
+    let timestamp = aos_hub_core::clock::now_unix_secs();
+    let evidence = aos_hub_core::egress_protocol::ChallengeEvidence {
+        timestamp,
+        nonce: &nonce,
+    };
+    let signature = aos_hub_core::egress_protocol::sign_challenge(&key, &evidence)?;
+    let response = crate::fetch::hardened_client()
+        .await
+        .post(challenge_url)
+        .header(
+            "x-aos-egress-contract",
+            aos_hub_core::egress_protocol::CONTRACT,
+        )
+        .header("x-aos-egress-key-id", key_id)
+        .header("x-aos-egress-timestamp", timestamp.to_string())
+        .header("x-aos-egress-nonce", &nonce)
+        .header("x-aos-egress-signature", signature)
+        .send()
+        .await
+        .context("authenticated hardened-egress challenge failed")?;
+    anyhow::ensure!(
+        response.status() == reqwest::StatusCode::NO_CONTENT,
+        "authenticated hardened-egress challenge returned HTTP {}",
+        response.status()
+    );
+    verify_gateway_challenge_response(key_id, &key, &nonce, &response)
+}
+
+fn verify_gateway_challenge_response(
+    key_id: &str,
+    key: &[u8],
+    nonce: &str,
+    response: &reqwest::Response,
+) -> Result<()> {
+    anyhow::ensure!(
+        required_challenge_header(response, "x-aos-egress-contract")?
+            == aos_hub_core::egress_protocol::CONTRACT,
+        "hardened-egress challenge contract mismatch"
+    );
+    anyhow::ensure!(
+        required_challenge_header(response, "x-aos-egress-key-id")? == key_id,
+        "hardened-egress challenge key id mismatch"
+    );
+    anyhow::ensure!(
+        required_challenge_header(response, "x-aos-egress-nonce")? == nonce,
+        "hardened-egress challenge nonce mismatch"
+    );
+    let timestamp =
+        required_challenge_header(response, "x-aos-egress-timestamp")?.parse::<i64>()?;
+    let now = aos_hub_core::clock::now_unix_secs();
+    require_fresh_challenge_timestamp(timestamp, now)?;
+    aos_hub_core::egress_protocol::verify_challenge_response(
+        key,
+        &aos_hub_core::egress_protocol::ChallengeEvidence { timestamp, nonce },
+        required_challenge_header(response, "x-aos-egress-signature")?,
+    )
+}
+
+fn require_fresh_challenge_timestamp(timestamp: i64, now: i64) -> Result<()> {
+    let age = now
+        .checked_sub(timestamp)
+        .context("hardened-egress challenge response timestamp overflow")?;
+    anyhow::ensure!(
+        age >= 0,
+        "hardened-egress challenge response is in the future"
+    );
+    anyhow::ensure!(age <= 60, "hardened-egress challenge response is stale");
+    Ok(())
+}
+
+fn required_challenge_header<'a>(
+    response: &'a reqwest::Response,
+    name: &'static str,
+) -> Result<&'a str> {
+    response
+        .headers()
+        .get(name)
+        .context("hardened-egress challenge response omitted a required header")?
+        .to_str()
+        .context("hardened-egress challenge response header is not text")
 }
 
 /// Resolves and applies one preserve-or-mint secret, returning a freshly minted
@@ -924,6 +1366,14 @@ async fn put_secret(assets: &Assets, name: &str, value: &str, config: &Path) -> 
     run_wrangler(assets, &secret_put_args(name, config), Some(value), None)
         .await
         .with_context(|| format!("setting secret {name}"))?;
+    Ok(())
+}
+
+/// Removes one obsolete Worker secret through Wrangler.
+async fn delete_secret(assets: &Assets, name: &str, config: &Path) -> Result<()> {
+    run_wrangler(assets, &secret_delete_args(name, config), Some("y\n"), None)
+        .await
+        .with_context(|| format!("deleting obsolete secret {name}"))?;
     Ok(())
 }
 
@@ -972,6 +1422,7 @@ mod tests {
             ["kv", "namespace", "create", "SESSIONS"]
         );
         assert_eq!(kv_list_args(), ["kv", "namespace", "list"]);
+        assert_eq!(queue_create_args("jobs"), ["queues", "create", "jobs"]);
         assert_eq!(
             secret_put_args("HUB_JWT_SECRET", Path::new("/tmp/w.toml")),
             ["secret", "put", "HUB_JWT_SECRET", "--config", "/tmp/w.toml"]
@@ -979,6 +1430,10 @@ mod tests {
         assert_eq!(
             secret_list_args(Path::new("/tmp/w.toml")),
             ["secret", "list", "--config", "/tmp/w.toml"]
+        );
+        assert_eq!(
+            secret_delete_args("OLD_SECRET", Path::new("/tmp/w.toml")),
+            ["secret", "delete", "OLD_SECRET", "--config", "/tmp/w.toml"]
         );
         assert_eq!(
             deploy_args(Path::new("/tmp/w.toml")),
@@ -992,7 +1447,11 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
-            external_url: String::new(),
+            queue: "aos-hub-jobs".into(),
+            rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
+            egress_gateway_url: None,
+            external_url: "https://aos.example.com".into(),
+            deployment_id: Some("0123456789abcdef".into()),
             email_relay_url: None,
             email_from: None,
             custom_domains: vec!["aos.example.com".into()],
@@ -1006,8 +1465,14 @@ mod tests {
         let parsed: toml::Value = toml::from_str(&toml).expect("valid TOML");
         assert_eq!(parsed["name"].as_str(), Some("aos-hub"));
         assert_eq!(parsed["main"].as_str(), Some("shim.mjs"));
-        // No canonical URL is baked: the Worker derives it from the request.
-        assert!(parsed["vars"].get("HUB_EXTERNAL_URL").is_none());
+        assert_eq!(
+            parsed["vars"]["HUB_EXTERNAL_URL"].as_str(),
+            Some("https://aos.example.com")
+        );
+        assert_eq!(
+            parsed["vars"]["HUB_DEPLOYMENT_ID"].as_str(),
+            Some("0123456789abcdef")
+        );
         // Root bootstrap is CLI-driven now; the worker no longer reads it.
         assert!(parsed["vars"].get("HUB_ROOT_EMAIL").is_none());
         // The custom domain is bound via a custom_domain route.
@@ -1017,11 +1482,44 @@ mod tests {
         );
         assert_eq!(parsed["routes"][0]["custom_domain"].as_bool(), Some(true));
         // Placement is hardcoded `off` (never `smart`): the Worker runs at the
-        // edge near each client and reads from the nearest D1 replica (RFC-0004
-        // read replication), rather than being pinned to the primary's region.
+        // edge near each client, rather than being pinned to HubDb's region.
         // Emitting it every deploy reverts any dashboard toggle to smart.
         assert_eq!(parsed["placement"]["mode"].as_str(), Some("off"));
         assert_eq!(parsed["kv_namespaces"][0]["id"].as_str(), Some("kv-id"));
+        assert_eq!(
+            parsed["queues"]["producers"][0]["binding"].as_str(),
+            Some("JOBS")
+        );
+        assert_eq!(
+            parsed["queues"]["producers"][0]["queue"].as_str(),
+            Some("aos-hub-jobs")
+        );
+        assert_eq!(
+            parsed["queues"]["consumers"][0]["queue"].as_str(),
+            Some("aos-hub-jobs")
+        );
+        assert_eq!(
+            parsed["queues"]["consumers"][0]["max_batch_size"].as_integer(),
+            Some(10)
+        );
+        assert_eq!(
+            parsed["queues"]["consumers"][0]["max_batch_timeout"].as_integer(),
+            Some(5)
+        );
+        assert_eq!(
+            parsed["ratelimits"][0]["namespace_id"].as_str(),
+            Some("1001")
+        );
+        assert_eq!(
+            parsed["ratelimits"][1]["namespace_id"].as_str(),
+            Some("1002")
+        );
+        assert_eq!(
+            parsed["ratelimits"][2]["namespace_id"].as_str(),
+            Some("1003")
+        );
+        assert!(parsed["vars"].get("HUB_EGRESS_GATEWAY_URL").is_none());
+        assert!(parsed.get("services").is_none());
         assert_eq!(parsed["triggers"]["crons"][0].as_str(), Some(INDEXER_CRON));
         // No build command — we deploy the prebuilt dist.
         assert!(parsed.get("build").is_none());
@@ -1042,7 +1540,11 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
-            external_url: String::new(),
+            queue: "aos-hub-jobs".into(),
+            rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
+            egress_gateway_url: None,
+            external_url: "https://aos.example.com".into(),
+            deployment_id: None,
             email_relay_url: None,
             email_from: None,
             custom_domains: vec![],
@@ -1063,7 +1565,11 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
-            external_url: String::new(),
+            queue: "aos-hub-jobs".into(),
+            rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
+            egress_gateway_url: None,
+            external_url: "https://aos.example.com".into(),
+            deployment_id: None,
             email_relay_url: None,
             email_from: None,
             custom_domains: vec![],
@@ -1085,7 +1591,11 @@ mod tests {
             name: "aos-hub".into(),
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
-            external_url: String::new(),
+            queue: "aos-hub-jobs".into(),
+            rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
+            egress_gateway_url: None,
+            external_url: "https://aos.example.com".into(),
+            deployment_id: None,
             email_relay_url: None,
             email_from: Some("noreply@example.com".into()),
             custom_domains: vec![],
@@ -1117,5 +1627,149 @@ mod tests {
     #[test]
     fn toml_string_escapes_quotes_and_backslashes() {
         assert_eq!(toml_string(r#"a"b\c"#), r#""a\"b\\c""#);
+    }
+
+    #[test]
+    fn rendered_toml_selects_optional_egress_gateway() {
+        let cfg = DeployConfig {
+            name: "aos-hub".into(),
+            bucket: "aos-hub-surfaces".into(),
+            kv_id: "kv-id".into(),
+            queue: "aos-hub-jobs".into(),
+            rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
+            egress_gateway_url: Some("https://egress.example.com/v1/fetch".into()),
+            external_url: "https://aos.example.com".into(),
+            deployment_id: None,
+            email_relay_url: None,
+            email_from: None,
+            custom_domains: vec![],
+            serve_assets: false,
+            observability: true,
+            head_sampling_rate: 1.0,
+            logpush: false,
+        };
+        let parsed: toml::Value = toml::from_str(&render_wrangler_toml(&cfg)).unwrap();
+        assert_eq!(
+            parsed["vars"]["HUB_EGRESS_GATEWAY_URL"].as_str(),
+            Some("https://egress.example.com/v1/fetch")
+        );
+    }
+
+    #[test]
+    fn rate_limit_namespace_ranges_are_isolated_and_bounded() {
+        assert_eq!(
+            RateLimitNamespaces::from_base(1000).unwrap(),
+            RateLimitNamespaces {
+                burst5: "1001".into(),
+                burst10: "1002".into(),
+                browse120: "1003".into(),
+            }
+        );
+        assert_eq!(
+            RateLimitNamespaces::from_base(2000).unwrap(),
+            RateLimitNamespaces {
+                burst5: "2001".into(),
+                burst10: "2002".into(),
+                browse120: "2003".into(),
+            }
+        );
+        assert!(RateLimitNamespaces::from_base(0).is_err());
+        assert!(RateLimitNamespaces::from_base(u32::MAX - 2).is_err());
+    }
+
+    #[test]
+    fn deployment_secrets_reject_empty_or_malformed_values_before_worker_mutation() {
+        let valid = || Secrets {
+            jwt_secret: Some("jwt".into()),
+            seal_key: Some("seal".into()),
+            egress_gateway_key: Some("key-id:key".into()),
+            cloudflare_api_token: Some("cloudflare".into()),
+            email_api_token: None,
+            delivery_attestation_key: Some("attestation".into()),
+            disable_delivery_attestation: false,
+            domain_probe_signer_manifest: None,
+            route_reservation_keyring: None,
+        };
+        assert!(valid().validate().is_ok());
+
+        let mut direct = valid();
+        direct.egress_gateway_key = None;
+        assert!(direct.validate().is_ok());
+
+        let mut secrets = valid();
+        secrets.jwt_secret = Some(String::new());
+        assert!(secrets.validate().is_err());
+
+        let mut secrets = valid();
+        secrets.cloudflare_api_token = Some(String::new());
+        assert!(secrets.validate().is_err());
+
+        let mut secrets = valid();
+        secrets.delivery_attestation_key = Some(String::new());
+        assert!(secrets.validate().is_err());
+
+        let mut secrets = valid();
+        secrets.disable_delivery_attestation = true;
+        assert!(secrets.validate().is_err());
+
+        let mut secrets = valid();
+        secrets.route_reservation_keyring = Some("not-json".into());
+        assert!(secrets.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn deploy_staging_creates_a_nested_bootstrap_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let dist = root.path().join("dist");
+        tokio::fs::create_dir_all(&dist).await.unwrap();
+        tokio::fs::write(dist.join("shim.mjs"), b"export default {}")
+            .await
+            .unwrap();
+        tokio::fs::write(dist.join("index.wasm"), b"wasm")
+            .await
+            .unwrap();
+        let assets = Assets {
+            dist_dir: dist,
+            assets_dir: None,
+            wrangler: vec!["wrangler".into()],
+        };
+        let cfg = DeployConfig {
+            name: "aos-hub".into(),
+            bucket: "aos-hub-surfaces".into(),
+            kv_id: "kv-id".into(),
+            queue: "aos-hub-jobs".into(),
+            rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
+            egress_gateway_url: None,
+            external_url: "https://aos.example.com".into(),
+            deployment_id: None,
+            email_relay_url: None,
+            email_from: None,
+            custom_domains: vec![],
+            serve_assets: false,
+            observability: true,
+            head_sampling_rate: 1.0,
+            logpush: false,
+        };
+        let nested = root.path().join("deploy/direct-bootstrap");
+        let config = stage_deploy(&assets, &cfg, &nested).await.unwrap();
+
+        assert_eq!(config, nested.join("wrangler.toml"));
+        assert_eq!(
+            tokio::fs::read(nested.join("shim.mjs")).await.unwrap(),
+            b"export default {}"
+        );
+        assert_eq!(
+            tokio::fs::read(nested.join("index.wasm")).await.unwrap(),
+            b"wasm"
+        );
+        assert!(tokio::fs::read_to_string(config).await.is_ok());
+    }
+
+    #[test]
+    fn gateway_challenge_freshness_rejects_future_and_stale_evidence() {
+        assert!(require_fresh_challenge_timestamp(101, 100).is_err());
+        assert!(require_fresh_challenge_timestamp(39, 100).is_err());
+        assert!(require_fresh_challenge_timestamp(40, 100).is_ok());
+        assert!(require_fresh_challenge_timestamp(100, 100).is_ok());
     }
 }
