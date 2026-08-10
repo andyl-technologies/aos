@@ -109,7 +109,7 @@ in {
       # Cache publication writes several GiB of NARs before the target imports
       # them. Keep that ephemeral staging I/O in memory so this acceptance test
       # measures the release and lifecycle paths instead of the VM disk.
-      memoryMiB = 10240;
+      memoryMiB = 16384;
     };
 
     target = {
