@@ -24,10 +24,14 @@ pass that trace directly to `replay ARTIFACT --check ORIGINAL`.
 For the complete packaged production matrix, run
 `crucible-debugger-live-matrix --architecture all`. It retains a new evidence
 directory and refuses to overwrite an existing one. The command clears external
-backend/asset overrides and binds generated scenarios to the packaged kernel and
-root-image digests. Use `--output NEW-DIR` when the evidence location must be
-stable; check `--help` before requesting `all` on a suite that may retain only
-its native guest architecture.
+backend overrides and binds generated scenarios to immutable guest-asset
+digests. A native-only suite uses its packaged kernel and root image. To add
+AArch64, supply `CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64`,
+`CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64`, and
+`CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64` together; the retained
+evidence records their identities. Use `--output NEW-DIR` when the evidence
+location must be stable; check `--help` before requesting `all` on a suite that
+may retain only its native guest architecture.
 
 ## Reproduce before changing anything
 
