@@ -436,7 +436,7 @@ in {
           chmod -R a+rX /var/lib/sysreg-cache
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
           chown -R aos-gitd:aos-gitd "$ORIGIN"
-      """), timeout=1800)
+      """), timeout=3600)
       public_key = registry.succeed("cat /tmp/sysreg-pubkey").strip()
       configure_registry(target, public_key)
       configure_registry(incompatible, public_key)
