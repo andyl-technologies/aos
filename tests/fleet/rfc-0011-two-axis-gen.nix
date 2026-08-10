@@ -467,7 +467,7 @@ in {
             --upload-url file:///var/lib/sysreg-cache/apm/registry-static/sysreg
           chmod -R a+rX /var/lib/sysreg-cache
           systemctl start aos-pkg-test-static-cache-server.target
-          systemctl is-active --quiet test-static-cache-server.service
+          systemctl is-active --quiet test-static-cache-server.socket
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
           chown -R aos-gitd:aos-gitd "$ORIGIN"
       """), timeout=1800)
