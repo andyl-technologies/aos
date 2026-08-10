@@ -452,7 +452,8 @@ in {
             --key-id release \
             --jobs 1 \
             --cache-url http://registry:8000/sysreg-cache/apm/registry-static/sysreg \
-            --cache-priority 46
+            --cache-priority 46 \
+            --upload-url file:///var/lib/sysreg-cache/apm/registry-static/sysreg
           chmod -R a+rX /var/lib/sysreg-cache
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
           chown -R aos-gitd:aos-gitd "$ORIGIN"
