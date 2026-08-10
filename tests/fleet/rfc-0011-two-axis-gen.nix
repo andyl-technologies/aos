@@ -101,6 +101,8 @@ in {
         pkgs.git
         pkgs.openssh
         pkgs.systemd
+        pkgs.e2fsprogs
+        pkgs.util-linux
         abi1OnlyConfig
         abi1OnlyConfig.config
         abi1BaseLib
