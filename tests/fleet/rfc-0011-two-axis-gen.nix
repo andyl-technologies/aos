@@ -68,7 +68,14 @@
   # package part of the test images themselves.
   targetBase = mkSystem [
     ../../systems/server-verity.nix
-    {environment.systemPackages = [pkgs.git];}
+    {
+      environment.systemPackages = [pkgs.git];
+      # This acceptance test runs three guests while generating and serving a
+      # full closure. Give evaluation enough wall time on shared CI builders;
+      # production systems retain the normal service limit.
+      systemd.services.aos-eval.serviceConfig.RuntimeMaxSec =
+        lib.mkForce "600s";
+    }
   ];
   abi1BaseLib = targetBase.config.aos.config.evalAtBoot.baseLib;
 
