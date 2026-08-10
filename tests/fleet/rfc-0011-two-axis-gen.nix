@@ -446,7 +446,9 @@ in {
           mkdir -p /var/lib/sysreg-cache
           ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -q /dev/sda
           ${pkgs.util-linux}/bin/mount /dev/sda /var/lib/sysreg-cache
+          mkdir -p /var/lib/sysreg-cache/tmp
           export XDG_CACHE_HOME=/var/lib/sysreg-cache
+          export TMPDIR=/var/lib/sysreg-cache/tmp
           {APR} release 1.0.0 \
             --registry sysreg \
             --key-id release \
