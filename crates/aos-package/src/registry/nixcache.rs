@@ -49,8 +49,12 @@ use toml::Value as TomlValue;
 use super::membership::CacheMembership;
 use super::store::StoreMap;
 
-/// zstd compression level used for published NARs.
-const NAR_ZSTD_LEVEL: i32 = 19;
+/// Zstandard compression level used for published NARs.
+///
+/// Level 3 matches Nix's normal binary-cache default. Higher levels make
+/// publishing large, already-compressed system images disproportionately
+/// expensive while yielding little additional transfer-size reduction.
+const NAR_ZSTD_LEVEL: i32 = 3;
 
 /// Maximum uploads kept in flight per destination. The `aos_net`
 /// connection pool enforces the real per-host limit (8 connections);
