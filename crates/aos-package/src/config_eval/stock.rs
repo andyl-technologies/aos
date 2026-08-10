@@ -456,13 +456,13 @@ pub struct SubstituterFetcher {
 impl SubstituterFetcher {
     /// Creates a fetcher from the cache endpoints in a registry snapshot.
     ///
-    /// Cache locations are taken from the already-authenticated local
-    /// registry clones rather than ambient Nix configuration. Cache signatures
-    /// are not used as an authority here: the selected output's NAR hash and
-    /// size are independently checked against signed registry metadata after
+    /// Cache locations are taken from the already-authenticated local registry
+    /// snapshots rather than ambient Nix configuration. Cache signatures are
+    /// not used as an authority here: the selected output's NAR hash and size
+    /// are independently checked against signed registry metadata after
     /// realization.
     pub fn new(verbose: u8, registries: &RegistrySet, scope: ProfileScope) -> Self {
-        let registries_base = scope.registries_path();
+        let registries_base = scope.cache_path();
         let mut seen = HashSet::new();
         let mut substituters = Vec::new();
         for registry in registries.registries() {
