@@ -439,6 +439,7 @@ in {
           {APR} release 1.0.0 \
             --registry sysreg \
             --key-id release \
+            --jobs 1 \
             --cache-url http://registry:8000/sysreg-cache \
             --cache-priority 46 \
             --upload-url file:///var/lib/sysreg-cache
