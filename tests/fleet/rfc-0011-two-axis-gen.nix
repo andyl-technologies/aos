@@ -111,6 +111,7 @@ in {
       # the registry VM's reflinked system disk.
       extraDisks = [
         {
+          interface = "scsi";
           sizeMiB = 4096;
           serial = "aos-cache";
         }
@@ -441,8 +442,8 @@ in {
             -c user.signingkey="$KEY" \
             commit -S -m 'publish: configuration ABI fixtures'
           mkdir -p /var/lib/sysreg-cache
-          ${pkgs.e2fsprogs}/bin/mkfs.ext4 -F -q /dev/disk/by-id/virtio-aos-cache
-          ${pkgs.util-linux}/bin/mount /dev/disk/by-id/virtio-aos-cache /var/lib/sysreg-cache
+          ${pkgs.e2fsprogs}/bin/mkfs.ext4 -F -q /dev/sda
+          ${pkgs.util-linux}/bin/mount /dev/sda /var/lib/sysreg-cache
           {APR} release 1.0.0 \
             --registry sysreg \
             --key-id release \
