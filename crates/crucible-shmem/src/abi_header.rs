@@ -65,7 +65,6 @@ pub fn generated_c_header() -> String {
     let mut out = String::new();
     emit_preamble(&mut out);
     emit_constants(&mut out);
-    emit_guest_introspection_geometry_helpers(&mut out);
     emit_region_header(&mut out);
     emit_node_slot(&mut out);
     emit_ring_header(&mut out);
@@ -80,6 +79,7 @@ pub fn generated_c_header() -> String {
     crate::emit_fault_terminal_evidence_c_header(&mut out);
     crate::emit_fault_node_c_header(&mut out);
     crate::emit_fault_event_c_header(&mut out);
+    emit_guest_introspection_geometry_helpers(&mut out);
     emit_guest_introspection_entry(&mut out);
     emit_footer(&mut out);
     out
@@ -489,6 +489,7 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
     uint32_t frame_queue_capacity,
     uint64_t frame_entry_stride,
     uint32_t vm_node_count,
+    uint32_t fault_payload_arena_bytes,
     uint64_t advertised_region_size,
     crucible_shmem_guest_introspection_layout *out
 ) {
@@ -503,6 +504,24 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
     uint64_t marker_hdr_off;
     uint64_t marker_data_off;
     uint64_t marker_data_end;
+    uint64_t fault_command_hdr_off;
+    uint64_t fault_command_slot_off;
+    uint64_t fault_command_slot_end;
+    uint64_t fault_command_arena_hdr_off;
+    uint64_t fault_command_arena_off;
+    uint64_t fault_command_data_end;
+    uint64_t fault_result_hdr_off;
+    uint64_t fault_result_slot_off;
+    uint64_t fault_result_slot_end;
+    uint64_t fault_result_arena_hdr_off;
+    uint64_t fault_result_arena_off;
+    uint64_t fault_result_data_end;
+    uint64_t fault_event_hdr_off;
+    uint64_t fault_event_slot_off;
+    uint64_t fault_event_slot_end;
+    uint64_t fault_event_arena_hdr_off;
+    uint64_t fault_event_arena_off;
+    uint64_t fault_event_data_end;
     uint64_t guest_hdr_off;
     uint64_t guest_data_off;
     uint64_t computed_region_size;
@@ -513,6 +532,8 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
         || frame_queue_capacity == 0u
         || (frame_queue_capacity & (frame_queue_capacity - 1u)) != 0u
         || frame_entry_stride != CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE
+        || fault_payload_arena_bytes < CRUCIBLE_FAULT_DEFAULT_PAYLOAD_BYTES
+        || fault_payload_arena_bytes > CRUCIBLE_FAULT_HARD_PAYLOAD_ARENA_BYTES
         || frame_ring_count
             != vm_node_count * CRUCIBLE_SHMEM_RESERVED_SLOTS * 2u) {
         return -1;
@@ -535,7 +556,40 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
         || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_WHITEBOX_MARKER_QUEUE_CAPACITY, &count) != 0
         || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE, &byte_len) != 0
         || crucible_shmem_u64_checked_add(marker_data_off, byte_len, &marker_data_end) != 0
-        || crucible_shmem_u64_checked_align_up(marker_data_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &guest_hdr_off) != 0
+        || crucible_shmem_u64_checked_align_up(marker_data_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &fault_command_hdr_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fault_command_hdr_off, byte_len, &fault_command_slot_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_FAULT_DEFAULT_COMMAND_CAPACITY, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_FAULT_COMMAND_SLOT_V1_BYTES, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fault_command_slot_off, byte_len, &fault_command_slot_end) != 0
+        || crucible_shmem_u64_checked_align_up(fault_command_slot_end, CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES, &fault_command_arena_hdr_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fault_command_arena_hdr_off, byte_len, &fault_command_arena_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, fault_payload_arena_bytes, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fault_command_arena_off, byte_len, &fault_command_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(fault_command_data_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &fault_result_hdr_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fault_result_hdr_off, byte_len, &fault_result_slot_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_FAULT_DEFAULT_COMMAND_CAPACITY, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_FAULT_RESULT_SLOT_V1_BYTES, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fault_result_slot_off, byte_len, &fault_result_slot_end) != 0
+        || crucible_shmem_u64_checked_align_up(fault_result_slot_end, CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES, &fault_result_arena_hdr_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fault_result_arena_hdr_off, byte_len, &fault_result_arena_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, fault_payload_arena_bytes, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fault_result_arena_off, byte_len, &fault_result_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(fault_result_data_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &fault_event_hdr_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fault_event_hdr_off, byte_len, &fault_event_slot_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_FAULT_EVENT_CAPACITY, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_FAULT_EVENT_SLOT_V1_BYTES, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fault_event_slot_off, byte_len, &fault_event_slot_end) != 0
+        || crucible_shmem_u64_checked_align_up(fault_event_slot_end, CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES, &fault_event_arena_hdr_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fault_event_arena_hdr_off, byte_len, &fault_event_arena_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, fault_payload_arena_bytes, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fault_event_arena_off, byte_len, &fault_event_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(fault_event_data_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &guest_hdr_off) != 0
         || vm_node_count > UINT32_MAX / CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM) {
         return -1;
     }

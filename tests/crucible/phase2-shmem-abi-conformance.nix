@@ -94,7 +94,7 @@
       }
       {
         label = "region header reserved Rust static assertion";
-        needle = "const _: () = assert!(REGION_HEADER_RESERVED_OFFSET == 62);";
+        needle = "const _: () = assert!(REGION_HEADER_RESERVED_OFFSET == 68);";
       }
       {
         label = "region header size Rust static assertion";
@@ -404,7 +404,7 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=6";
+        needle = "abi_version=10";
       }
       {
         label = "total serialized length";
@@ -927,10 +927,14 @@ in
                 atomic_init(&header.ring_hdr_off, 4352u);
                 atomic_init(&header.ring_data_off, 5888u);
                 atomic_init(&header.entry_stride, CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE);
-                atomic_init(&header.region_size, 19605760u);
+                atomic_init(&header.region_size, 39586304u);
                 atomic_init(&header.icount_shift, 4u);
                 atomic_init(&header.pause_requested, 1u);
                 atomic_init(&header.shutdown_requested, 0u);
+                atomic_init(
+                    &header.fault_payload_arena_bytes,
+                    CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES
+                );
 
                 crucible_shmem_node_slot slot;
                 memset(&slot, 0, sizeof(slot));
@@ -1021,17 +1025,38 @@ in
                         8u,
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
-                        19605760u,
+                        CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES,
+                        39586304u,
                         &guest_layout
                     ) != 0
                     || guest_layout.ring_count != 4u
                     || guest_layout.queue_capacity
                         != CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY
-                    || guest_layout.ring_hdr_off != 18409216u
-                    || guest_layout.ring_data_off != 18409728u
+                    || guest_layout.ring_hdr_off != 38389760u
+                    || guest_layout.ring_data_off != 38390272u
                     || guest_layout.entry_stride
                         != CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE
-                    || guest_layout.region_size != 19605760u) {
+                    || guest_layout.region_size != 39586304u
+                    || crucible_shmem_guest_introspection_layout_compute(
+                        5888u,
+                        12u,
+                        8u,
+                        CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
+                        2u,
+                        0u,
+                        39586304u,
+                        &guest_layout
+                    ) == 0
+                    || crucible_shmem_guest_introspection_layout_compute(
+                        5888u,
+                        12u,
+                        8u,
+                        CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
+                        2u,
+                        CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES,
+                        39586303u,
+                        &guest_layout
+                    ) == 0) {
                     fprintf(stderr, "guest-introspection geometry validation failed\n");
                     failed = 1;
                 }
@@ -1134,10 +1159,14 @@ in
                     || atomic_load_explicit(&header.ring_hdr_off, memory_order_acquire) != 4352u
                     || atomic_load_explicit(&header.ring_data_off, memory_order_acquire) != 5888u
                     || atomic_load_explicit(&header.entry_stride, memory_order_acquire) != CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE
-                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 19605760u
+                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 39586304u
                     || atomic_load_explicit(&header.icount_shift, memory_order_acquire) != 4u
                     || atomic_load_explicit(&header.pause_requested, memory_order_acquire) != 1u
-                    || atomic_load_explicit(&header.shutdown_requested, memory_order_acquire) != 0u) {
+                    || atomic_load_explicit(&header.shutdown_requested, memory_order_acquire) != 0u
+                    || atomic_load_explicit(
+                        &header.fault_payload_arena_bytes,
+                        memory_order_acquire
+                    ) != CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES) {
                     fprintf(stderr, "region header validation failed\n");
                     return 1;
                 }
