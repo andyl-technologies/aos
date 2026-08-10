@@ -642,9 +642,34 @@ in {
 
       candidate_exhausted = expected_counted[-1]
       target.reboot(timeout=600)
-      target.wait_until_succeeds(
-          "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
-      )
+      try:
+          target.wait_until_succeeds(
+              "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
+          )
+      except Exception:
+          print(target.succeed(f"cat {IMAGE_STATE} 2>&1 || true"))
+          print(target.succeed(
+              "test ! -e /run/aos/image-reeval-required || "
+              "cat /run/aos/image-reeval-required"
+          ))
+          for unit in (
+              "aos-firstboot-reeval.service",
+              "aos-eval.service",
+              "aos-graph-compile.service",
+              "aos-activate.service",
+              "aos-image-boot-commit.service",
+          ):
+              print(target.succeed(
+                  f"systemctl cat {unit} --no-pager 2>&1 || true"
+              ))
+              print(target.succeed(
+                  f"systemctl status {unit} --no-pager 2>&1 || true"
+              ))
+              print(target.succeed(
+                  f"journalctl -b -u {unit} --no-pager 2>&1 || true"
+              ))
+          print(target.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
+          raise
       fallback = image_state()
       assert fallback["running"] == 1, fallback
       assert fallback["default"] == 1, fallback
