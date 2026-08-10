@@ -107,9 +107,15 @@ in {
       ];
       varSizeMiB = 12288;
       # Cache publication writes several GiB of NARs before the target imports
-      # them. Keep that ephemeral staging I/O in memory so this acceptance test
-      # measures the release and lifecycle paths instead of the VM disk.
-      memoryMiB = 16384;
+      # them. Use a fresh sparse disk so staging does not amplify writes through
+      # the registry VM's reflinked system disk.
+      extraDisks = [
+        {
+          sizeMiB = 4096;
+          serial = "aos-cache";
+        }
+      ];
+      memoryMiB = 6144;
     };
 
     target = {
@@ -435,7 +441,8 @@ in {
             -c user.signingkey="$KEY" \
             commit -S -m 'publish: configuration ABI fixtures'
           mkdir -p /var/lib/sysreg-cache
-          ${pkgs.util-linux}/bin/mount -t tmpfs -o size=4G tmpfs /var/lib/sysreg-cache
+          ${pkgs.e2fsprogs}/bin/mkfs.ext4 -F -q /dev/disk/by-id/virtio-aos-cache
+          ${pkgs.util-linux}/bin/mount /dev/disk/by-id/virtio-aos-cache /var/lib/sysreg-cache
           {APR} release 1.0.0 \
             --registry sysreg \
             --key-id release \
