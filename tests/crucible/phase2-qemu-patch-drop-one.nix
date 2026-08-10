@@ -102,6 +102,9 @@
     ];
     "0048-crucible-fault-safe-boundary.patch" = [];
     "0049-crucible-memory-boundary-mutate.patch" = [];
+    "0052-crucible-instruction-and-exception-faults.patch" = [
+      "qemu_plugin_crucible_fault_instruction_manifest"
+    ];
     "0060-crucible-block-typed-errors.patch" = [];
     "0061-crucible-block-discard.patch" = [];
     "0062-crucible-block-transport-reset.patch" = ["qemu_plugin_register_blk_event_cb"];

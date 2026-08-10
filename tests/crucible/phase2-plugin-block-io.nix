@@ -13,7 +13,10 @@
   };
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginBlockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
+  pluginBlockIo = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io_tests.rs)
+  ];
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemSources = builtins.concatStringsSep "\n" (map builtins.readFile [
     ../../crates/crucible-shmem/src/lib.rs

@@ -479,6 +479,16 @@ let
       capability = "manifest-bound x86-64 and AArch64 register mutations at exact instruction boundaries";
     }
     {
+      file = "0052-crucible-instruction-and-exception-faults.patch";
+      branchSubject = "crucible: add instruction and exception faults";
+      branchCommit = "44140ee97e8f3ee1b87570dbb2c7a2d57c590200";
+      branchTree = "0c5cccdb884aa0013a1f95fd094317818c6a45c8";
+      catalogName = "crucible-instruction-and-exception-faults";
+      class = "D";
+      enforces = "QFP-INSN-1,QFP-EXC-1,FAULT-ORDER";
+      capability = "exact x86-64 and AArch64 instruction result, skip, replay, and architectural exception faults";
+    }
+    {
       file = "0060-crucible-block-typed-errors.patch";
       branchCommit = "f2d044bbce8220ef5ee3beb35dcfcd3a82a394b8";
       branchTree = "b8770cfc17cb305fcfca5207b678b21305c7a308";

@@ -149,12 +149,17 @@ width constraint.
 `InstructionSelector`:
 
 ```json
-{"instruction_bytes":null,"occurrence":{"kind":"every"},"opcode_class":7,"pc_length":4,"pc_start":4096}
+{"input_state_sha256":null,"instruction_bytes":null,"occurrence":{"kind":"every"},"opcode_class":7,"pc_length":4,"pc_start":4096}
 ```
 
 `instruction_bytes` is `null` or 1 through 32 exact bytes. `opcode_class` is a
 `u32` or `null`; `pc_length` is positive and `pc_start + pc_length` must not
-overflow.
+overflow. `instruction_bytes` and `opcode_class` cannot both be `null`: every
+selector must bind either the exact encoding, the immutable manifest class, or
+both. `input_state_sha256` is `null` or exactly 32 bytes encoded as 64
+hexadecimal digits. A mismatch consumes the selected occurrence, emits
+`suppressed` evidence containing the expected and observed input digests, and
+executes the unmodified instruction.
 
 ## Architecture exceptions and interrupt routing
 

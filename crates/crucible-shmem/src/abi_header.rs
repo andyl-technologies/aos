@@ -69,6 +69,8 @@ pub fn generated_c_header() -> String {
     crate::emit_fault_command_c_header(&mut out);
     crate::emit_fault_target_manifest_c_header(&mut out);
     crate::emit_fault_register_evidence_c_header(&mut out);
+    crate::emit_fault_instruction_evidence_c_header(&mut out);
+    crate::emit_fault_terminal_evidence_c_header(&mut out);
     crate::emit_fault_node_c_header(&mut out);
     crate::emit_fault_event_c_header(&mut out);
     emit_footer(&mut out);

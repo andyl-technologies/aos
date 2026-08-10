@@ -35,7 +35,10 @@
   ];
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
   pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
-  pluginBlockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
+  pluginBlockIo = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io_tests.rs)
+  ];
   pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
   pluginWhitebox = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs)
