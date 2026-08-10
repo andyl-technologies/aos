@@ -137,6 +137,11 @@ or CPU synchronization. Direct struct writes are forbidden unless the upstream
 architecture contract explicitly designates them and the microtest proves all
 derived state.
 
+A PC/RIP setter also requests an immediate vCPU exit after committing the new
+value. Flushing translated blocks alone is insufficient: the current execution
+loop could otherwise continue past the exact boundary without giving the new
+control-flow state or the event consumer a synchronization point.
+
 Reserved bits are preserved. Modeling an illegal architectural state uses patch
 0052 exception injection, not writing a QEMU-invalid reserved combination.
 Mutation of PC/RIP changes the next instruction and is evidenced as a control-
@@ -150,7 +155,7 @@ Persistent rules are an ordered transform set. Evidence includes manifest/CPU
 model, vCPU/RR cursor, register/field, before/after complete register value,
 derived-state actions, phase, icount, and fingerprint.
 
-The GPL-side `CRUCQRW1` record has a fixed 128-byte little-endian header,
+The GPL-side `CRUCQRW1` record has a fixed 160-byte little-endian header,
 followed by `before`, `after`, `mask`, and `value` byte strings in that order:
 
 | Offset | Width | Field |
@@ -174,9 +179,10 @@ followed by `before`, `after`, `mask`, and `value` byte strings in that order:
 | 64 | 8 | RR current vCPU |
 | 72 | 8 | RR cursor position |
 | 80 | 8 | RR switch quantum |
-| 88 | 32 | execution fingerprint SHA-256 |
-| 120 | 4 | `value` byte length |
-| 124 | 4 | reserved, zero |
+| 88 | 32 | post-mutation execution fingerprint SHA-256 |
+| 120 | 32 | same-coordinate pre-mutation execution fingerprint SHA-256 |
+| 152 | 4 | `value` byte length |
+| 156 | 4 | reserved, zero |
 
 `RR cursor position` is normally strictly less than `RR switch quantum`.
 After-instruction evidence may carry the terminal position equal to the
@@ -184,11 +190,34 @@ quantum: QEMU captures that boundary after the final instruction retires and
 before the RR scheduler rotates to its next slice. No other model phase may
 use the terminal position, and values greater than the quantum are invalid.
 
+Each private execution fingerprint hashes the scheduler coordinate followed by
+every row of the exact admitted register manifest for every vCPU, ordered by
+vCPU index and numeric manifest ID. Each row is framed with its vCPU index,
+numeric ID, and byte length before the architecture-specific canonical value.
+QEMU sorts realized CPUs by `cpu_index` before hashing and rejects an empty,
+negative, duplicate, or noncontiguous `0..N-1` index set, as well as a current
+RR vCPU outside that set. It never relies on CPU realization or queue order.
+The generic debugger register export is not an acceptable substitute because
+it does not cover every writable manifest row.
+
+The live gate runs the same x86-64 impulse at the same scheduler coordinate in
+one-vCPU and two-vCPU machines. Both runs require a baseline/post transition,
+and the gate requires their complete post fingerprints to differ. The
+two-vCPU run can succeed only after the architecture provider reads every
+manifest row for both sorted partitions; the digest comparison additionally
+proves that the realized vCPU set affects the canonical fingerprint.
+
 The Apache bridge does not trust this private row ID in isolation. It resolves
 the submitted public register-name hash through the exact admitted manifest,
 then requires the returned architecture, row ID, phase, range, mutation kind,
 mask, value, widths, and side-effect declaration to match that command and row.
 It independently recomputes the selected-bit transform and both value hashes.
+It also requires both execution fingerprints to be nonzero and requires their
+equality or inequality to match the complete register-value comparison. An
+impulse must change both; a persistent stuck opportunity may leave both equal
+when the target already has its forced value. The private baseline fingerprint
+is consumed by this validation and the canonical public evidence retains the
+post-mutation fingerprint.
 Only then does it emit the canonical 256-byte-header public evidence record,
 which carries the architecture/CPU/manifest digests and the same four byte
 strings. A mismatch is a terminal bridge error, never a partially accepted

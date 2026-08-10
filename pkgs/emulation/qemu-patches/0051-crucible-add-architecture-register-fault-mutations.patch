@@ -395,10 +395,10 @@ index 3d7d502..6c36ed5 100644
  {
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
 new file mode 100644
-index 0000000..bb3c449
+index 0000000..94b81ff
 --- /dev/null
 +++ b/plugins/crucible-fault-register.c
-@@ -0,0 +1,826 @@
+@@ -0,0 +1,859 @@
 +/*
 + * Crucible architecture register fault targets
 + *
@@ -893,11 +893,22 @@ index 0000000..bb3c449
 +    g_assert(digest_len == 32);
 +}
 +
++static gint crucible_register_cpu_index_compare(gconstpointer left,
++                                                gconstpointer right)
++{
++    const CPUState *left_cpu = *(CPUState * const *)left;
++    const CPUState *right_cpu = *(CPUState * const *)right;
++
++    return (left_cpu->cpu_index > right_cpu->cpu_index) -
++           (left_cpu->cpu_index < right_cpu->cpu_index);
++}
++
 +static int crucible_register_execution_fingerprint(
 +    uint64_t icount, const struct qemu_plugin_rr_cursor *rr,
 +    uint8_t output[32])
 +{
 +    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    g_autoptr(GPtrArray) cpus = g_ptr_array_new();
 +    CPUState *cpu;
 +    gsize digest_len = 32;
 +    uint8_t coordinate[32];
@@ -911,29 +922,41 @@ index 0000000..bb3c449
 +    stq_le_p(coordinate + 24, rr->rr_switch_quantum);
 +    g_checksum_update(checksum, coordinate, sizeof(coordinate));
 +    CPU_FOREACH(cpu) {
-+        g_autofree uint8_t *registers = NULL;
-+        size_t required = 0;
-+        uint64_t stamp = 0;
-+        uint8_t framing[12];
-+
-+        if (qemu_plugin_read_vcpu_regs(cpu->cpu_index, NULL, 0,
-+                                      &required, &stamp) == 0 ||
-+            required == 0) {
-+            return -EIO;
-+        }
-+        registers = g_try_malloc(required);
-+        if (!registers ||
-+            qemu_plugin_read_vcpu_regs(cpu->cpu_index, registers, required,
-+                                      &required, &stamp) != 0) {
-+            return -EIO;
-+        }
 +        if (cpu->cpu_index < 0) {
 +            return -EIO;
 +        }
-+        stl_le_p(framing, cpu->cpu_index);
-+        stq_le_p(framing + 4, required);
-+        g_checksum_update(checksum, framing, sizeof(framing));
-+        g_checksum_update(checksum, registers, required);
++        g_ptr_array_add(cpus, cpu);
++    }
++    if (cpus->len == 0 || rr->current_vcpu >= cpus->len) {
++        return -EIO;
++    }
++    g_ptr_array_sort(cpus, crucible_register_cpu_index_compare);
++    for (guint cpu_index = 0; cpu_index < cpus->len; cpu_index++) {
++        cpu = g_ptr_array_index(cpus, cpu_index);
++        CPUClass *cc = CPU_GET_CLASS(cpu);
++
++        if ((guint)cpu->cpu_index != cpu_index) {
++            return -EIO;
++        }
++        for (guint index = 0; index < crucible_register_manifest->len;
++             index++) {
++            const CrucibleRegisterCapability *row =
++                &g_array_index(crucible_register_manifest,
++                               CrucibleRegisterCapability, index);
++            size_t bytes = DIV_ROUND_UP(row->width_bits, 8);
++            g_autofree uint8_t *value = g_try_malloc(bytes);
++            uint8_t framing[16];
++
++            if (!value || cc->crucible_register_read(
++                    cpu, row->numeric_id, value, bytes) != bytes) {
++                return -EIO;
++            }
++            stl_le_p(framing, cpu->cpu_index);
++            stl_le_p(framing + 4, row->numeric_id);
++            stq_le_p(framing + 8, bytes);
++            g_checksum_update(checksum, framing, sizeof(framing));
++            g_checksum_update(checksum, value, bytes);
++        }
 +    }
 +    g_checksum_get_digest(checksum, output, &digest_len);
 +    return digest_len == 32 ? 0 : -EIO;
@@ -973,8 +996,9 @@ index 0000000..bb3c449
 +    g_autoptr(GByteArray) after = g_byte_array_new();
 +    g_autofree uint8_t *desired = NULL;
 +    struct qemu_plugin_rr_cursor rr = { 0 };
++    uint8_t baseline_fingerprint[32];
 +    uint8_t fingerprint[32];
-+    uint8_t header[128] = { 0 };
++    uint8_t header[160] = { 0 };
 +    uint32_t performed_side_effects = 0;
 +    uint32_t rollback_side_effects = 0;
 +    size_t bytes = DIV_ROUND_UP(apply->target->width_bits, 8);
@@ -1014,6 +1038,13 @@ index 0000000..bb3c449
 +        error_report("Crucible register mutation became invalid for register %u",
 +                     apply->target->numeric_id);
 +        return -EINVAL;
++    }
++    if (crucible_register_execution_fingerprint(
++            icount, &rr, baseline_fingerprint) != 0) {
++        error_report("Crucible register mutation could not fingerprint "
++                     "baseline state for register %u",
++                     apply->target->numeric_id);
++        return -EIO;
 +    }
 +    if (cc->crucible_register_write(
 +            apply->cpu, apply->target->numeric_id, desired, bytes,
@@ -1056,7 +1087,9 @@ index 0000000..bb3c449
 +    stq_le_p(header + 72, rr.cursor_position);
 +    stq_le_p(header + 80, rr.rr_switch_quantum);
 +    memcpy(header + 88, fingerprint, sizeof(fingerprint));
-+    stl_le_p(header + 120, apply->value_len);
++    memcpy(header + 120, baseline_fingerprint,
++           sizeof(baseline_fingerprint));
++    stl_le_p(header + 152, apply->value_len);
 +    g_byte_array_append(evidence, header, sizeof(header));
 +    g_byte_array_append(evidence, before->data, before->len);
 +    g_byte_array_append(evidence, after->data, after->len);
@@ -1326,10 +1359,10 @@ index 8188ede..c69f47f 100644
  
 diff --git a/target/arm/crucible-register.c b/target/arm/crucible-register.c
 new file mode 100644
-index 0000000..edc5f85
+index 0000000..4039fbe
 --- /dev/null
 +++ b/target/arm/crucible-register.c
-@@ -0,0 +1,538 @@
+@@ -0,0 +1,541 @@
 +/*
 + * Crucible AArch64 architecture register fault targets
 + *
@@ -1865,6 +1898,9 @@ index 0000000..edc5f85
 +    if (effects & CRUCIBLE_REG_SIDE_TB) {
 +        tb_flush(cs);
 +    }
++    if (effects & CRUCIBLE_REG_SIDE_CONTROL_FLOW) {
++        cpu_exit(cs);
++    }
 +    *performed_side_effects = effects;
 +    return expected;
 +}
@@ -1937,10 +1973,10 @@ index 1ada85b..840519b 100644
  void x86_cpu_list(void);
 diff --git a/target/i386/crucible-register.c b/target/i386/crucible-register.c
 new file mode 100644
-index 0000000..3dd3a2d
+index 0000000..e221992
 --- /dev/null
 +++ b/target/i386/crucible-register.c
-@@ -0,0 +1,991 @@
+@@ -0,0 +1,994 @@
 +/*
 + * Crucible x86-64 architecture register fault targets
 + *
@@ -2495,7 +2531,7 @@ index 0000000..3dd3a2d
 +        return 1;
 +    }
 +    if (id >= X86_CRUCIBLE_SEG_FIRST && id <= X86_CRUCIBLE_SEG_LAST &&
-+        (id - X86_CRUCIBLE_SEG_FIRST) % 4 == 2) {
++        (id - X86_CRUCIBLE_SEG_FIRST) % 4 >= 2) {
 +        return 4;
 +    }
 +    if (id == X86_CRUCIBLE_MXCSR) {
@@ -2929,6 +2965,9 @@ index 0000000..3dd3a2d
 +    if (effects & CRUCIBLE_REG_SIDE_TB) {
 +        tb_flush(cs);
 +    }
++    if (effects & CRUCIBLE_REG_SIDE_CONTROL_FLOW) {
++        cpu_exit(cs);
++    }
 +    *performed_side_effects = effects;
 +    return expected;
 +}
@@ -2946,10 +2985,10 @@ index 2e9c472..1257e54 100644
    'cpu-apic.c',
 diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
 new file mode 100644
-index 0000000..57f4bd6
+index 0000000..301d2ed
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-register.c
-@@ -0,0 +1,946 @@
+@@ -0,0 +1,988 @@
 +/*
 + * Live Crucible architecture-register mutation test plugin
 + *
@@ -2965,7 +3004,7 @@ index 0000000..57f4bd6
 +
 +QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 +
-+#define TEST_REGISTER_EVIDENCE_HEADER_BYTES 128
++#define TEST_REGISTER_EVIDENCE_HEADER_BYTES 160
 +#define TEST_MODEL_PHASE_BEFORE_INSTRUCTION 11
 +#define TEST_MODEL_PHASE_AFTER_INSTRUCTION 12
 +
@@ -3012,6 +3051,7 @@ index 0000000..57f4bd6
 +static uint8_t test_initial_target[64];
 +static size_t test_initial_target_len;
 +static bool test_submit_atomic_verified;
++static char test_execution_fingerprint[65];
 +
 +static bool test_mode_rejects(void)
 +{
@@ -3353,6 +3393,8 @@ index 0000000..57f4bd6
 +    uint8_t before_bit;
 +    uint8_t after_bit;
 +    uint8_t digest[32];
++    bool fingerprint_changed;
++    bool register_changed;
 +    uint64_t cursor_position = test_get_u64(evidence + 72);
 +    uint64_t rr_switch_quantum = test_get_u64(evidence + 80);
 +    uint32_t expected_mutation = test_mode == TEST_MODE_IMPULSE ?
@@ -3381,7 +3423,8 @@ index 0000000..57f4bd6
 +        (test_terminal_cursor_required &&
 +         cursor_position != rr_switch_quantum) ||
 +        !test_bytes_nonzero(evidence + 88, 32) ||
-+        test_get_u32(evidence + 124) != 0) {
++        !test_bytes_nonzero(evidence + 120, 32) ||
++        test_get_u32(evidence + 156) != 0) {
 +        g_printerr("register evidence debug phase=%u vcpu=%u numeric=%u "
 +                   "icount=%" G_GUINT64_FORMAT " current=%" G_GUINT64_FORMAT
 +                   " cursor=%" G_GUINT64_FORMAT " quantum=%" G_GUINT64_FORMAT
@@ -3398,7 +3441,7 @@ index 0000000..57f4bd6
 +    before_len = test_get_u32(evidence + 44);
 +    after_len = test_get_u32(evidence + 48);
 +    mask_len = test_get_u32(evidence + 52);
-+    value_len = test_get_u32(evidence + 120);
++    value_len = test_get_u32(evidence + 152);
 +    if (before_len == 0 || before_len != after_len || mask_len != 1 ||
 +        value_len != 1 ||
 +        TEST_REGISTER_EVIDENCE_HEADER_BYTES + before_len + after_len +
@@ -3423,14 +3466,26 @@ index 0000000..57f4bd6
 +    }
 +    before_bit = test_mask_bit(before, test_first_bit);
 +    after_bit = test_mask_bit(after, test_first_bit);
++    register_changed = memcmp(before, after, before_len) != 0;
++    fingerprint_changed = memcmp(evidence + 120, evidence + 88, 32) != 0;
 +    if (mask[0] != 1 ||
 +        (test_mode == TEST_MODE_IMPULSE &&
 +         (value[0] != 0 || before_bit == after_bit)) ||
 +        (test_mode == TEST_MODE_PERSISTENT &&
 +         (value[0] != 1 || after_bit != 1)) ||
-+        (require_change && before_bit == after_bit)) {
++        (require_change && before_bit == after_bit) ||
++        fingerprint_changed != register_changed) {
 +        test_fail("register evidence does not prove the requested transform");
 +    }
++    for (size_t index = 0; index < 32; index++) {
++        static const char hex[] = "0123456789abcdef";
++
++        test_execution_fingerprint[index * 2] =
++            hex[evidence[88 + index] >> 4];
++        test_execution_fingerprint[index * 2 + 1] =
++            hex[evidence[88 + index] & 0x0f];
++    }
++    test_execution_fingerprint[64] = '\0';
 +    return before_bit != after_bit;
 +}
 +
@@ -3509,6 +3564,17 @@ index 0000000..57f4bd6
 +                memcmp(event.binding_hash, test_command.binding_hash, 32) != 0 ||
 +                memcmp(event.action_hash, test_action_hash, 32) != 0 ||
 +                memcmp(event.target_hash, test_target_hash, 32) != 0) {
++                g_printerr("register event debug phase=%u expected_phase=%u "
++                           "outcome=%u target=%u reserved=%u sequence=%" G_GUINT64_FORMAT
++                           " rule_sequence=%" G_GUINT64_FORMAT
++                           " icount=%" G_GUINT64_FORMAT
++                           " generation=%" G_GUINT64_FORMAT
++                           " expected_generation=%" G_GUINT64_FORMAT "\n",
++                           event.model_phase, test_model_phase, event.outcome,
++                           event.target_kind, event.reserved,
++                           event.event_sequence, event.rule_command_sequence,
++                           event.observed_icount, event.generation,
++                           UINT64_C(1));
 +                test_fail("register event identity is wrong");
 +            }
 +            bool changed = test_validate_register_evidence(
@@ -3533,11 +3599,12 @@ index 0000000..57f4bd6
 +        return;
 +    }
 +    test_finished = true;
-+    g_printerr("CRUCIBLE_REGISTER_MUTATION_LIVE_PASS architecture=%u mode=%s register=%s register_id=%u group=%u phase=%s guest_observed=%s terminal_cursor=%s\n",
++    g_printerr("CRUCIBLE_REGISTER_MUTATION_LIVE_PASS architecture=%u mode=%s register=%s register_id=%u group=%u phase=%s fingerprint=%s guest_observed=%s terminal_cursor=%s\n",
 +               test_architecture, mode, test_register_name, test_numeric_id,
 +               test_group,
 +               test_model_phase == TEST_MODEL_PHASE_BEFORE_INSTRUCTION ?
 +               "before" : "after",
++               test_execution_fingerprint,
 +               test_guest_observed ? "true" : "false",
 +               test_terminal_cursor_required ? "true" : "false");
 +    qemu_plugin_request_shutdown(0);
@@ -3774,8 +3841,6 @@ index 0000000..57f4bd6
 +        if (test_mode != TEST_MODE_PERSISTENT || test_result_address == 0) {
 +            test_fail("result-address is valid only for a persistent guest-observation test");
 +        }
-+    } else if (test_mode == TEST_MODE_PERSISTENT) {
-+        test_fail("persistent mode requires result-address");
 +    }
 +    if (argc == 5 && strcmp(argv[4], "terminal-cursor=true") == 0) {
 +        if (test_mode != TEST_MODE_IMPULSE ||
@@ -3851,6 +3916,22 @@ index 0000000..57f4bd6
 +    if (test_first_bit == selected->width_bits) {
 +        if (test_mode != TEST_MODE_REJECT_OUT_OF_RANGE) {
 +            test_fail("the selected register lacks the requested bit class");
++        }
++    }
++    if (test_mode == TEST_MODE_PERSISTENT) {
++        uint32_t first_candidate =
++            test_architecture == QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64 &&
++            strcmp(test_register_name, "pstate") == 0 ? 28 : 0;
++
++        for (test_first_bit = first_candidate;
++             test_first_bit < selected->width_bits;
++             test_first_bit++) {
++            if (test_mask_bit(selected->writable_mask, test_first_bit)) {
++                break;
++            }
++        }
++        if (test_first_bit == selected->width_bits) {
++            test_fail("persistent target has no selected writable bit");
 +        }
 +    }
 +    g_free(rows);
