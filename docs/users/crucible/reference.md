@@ -508,9 +508,10 @@ VMState coverage.
 | `source` | Source object ID | Device, timer, or vCPU source selected by a fault target. |
 | `controller_version` | Printable non-whitespace string | Exact realized QEMU controller implementation/version identity. |
 | `family` | Interrupt-family value below | Architecture path whose hooks and state semantics are implemented. |
-| `vector` | Family-valid integer | Original routed x86 vector or Arm INTID. |
+| `vector_start` | Family-valid integer | Inclusive first x86 vector or Arm INTID this source may produce after guest programming. |
+| `vector_end` | Family-valid integer | Inclusive last runtime vector or INTID; must be at least `vector_start`. Each opportunity records the exact observed value. |
 | `replacement_vector_start` | Family-valid integer | Inclusive first replacement accepted for this row. |
-| `replacement_vector_end` | Family-valid integer | Inclusive last replacement accepted for this row. The original `vector` must lie in the range. |
+| `replacement_vector_end` | Family-valid integer | Inclusive last replacement accepted for this row; must be at least `replacement_vector_start`. |
 | `trigger` | `edge` or `level` | Electrical pending-state behavior. Families fixed to edge reject `level`. |
 | `polarity` | `active_high` or `active_low` | Active line level or edge direction. |
 | `target_vcpus` | Sorted unique nonempty integer array | Complete closed route target set. |

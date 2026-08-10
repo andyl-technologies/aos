@@ -681,7 +681,7 @@ impl QemuLaunchCommandBuilder {
             .ok_or(QemuLaunchCommandError::InvalidFaultCapabilityRequirement)?;
         if !self.allow_live_gate_manifest_discovery
             && (!fault_capability_requirement.is_world_bound()
-                || required_target.exact_manifest().is_none())
+                || required_target.exact_register_manifest().is_none())
         {
             return Err(QemuLaunchCommandError::UnboundFaultCapabilityRequirement);
         }
