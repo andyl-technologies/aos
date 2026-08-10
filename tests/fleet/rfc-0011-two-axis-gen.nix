@@ -28,8 +28,7 @@
   abi2Uki = abi2.config.system.build.uki;
 
   # A real installable package whose authored configuration module supports
-  # ABI 1 only. Its empty expose policy gives APM a normal signed runtime
-  # artifact while the authored option module remains the negative ABI gate.
+  # ABI 1 only. The authored option module remains the negative ABI gate.
   abi1OnlyConfig = pkgs.mkDerivation {
     pname = "rfc0011-abi1-config";
     version = "0";
@@ -43,7 +42,6 @@
         '';
       }
     ];
-    expose = {};
     configModule = {
       src = ../../pkgs/tests/_config-module-smoke;
       moduleAbiCompat = {
