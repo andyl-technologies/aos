@@ -462,17 +462,30 @@ impl SubstituterFetcher {
     /// are independently checked against signed registry metadata after
     /// realization.
     pub fn new(verbose: u8, registries: &RegistrySet, scope: ProfileScope) -> Self {
-        let registries_base = scope.cache_path();
+        let registries_base = scope.registries_path();
         let mut seen = HashSet::new();
         let mut substituters = Vec::new();
         for registry in registries.registries() {
-            let registry_dir = registries_base.join(&registry.config.name);
-            for cache in crate::registry_ops::resolve_mirrors_for_registry(
+            let registry_name = &registry.config.name;
+            let registry_dir = registries_base.join(registry_name);
+            let mirrors = crate::registry_ops::resolve_mirrors_for_registry(
                 &registry_dir,
                 &registry.config,
-            ) {
+            );
+            if verbose > 0 && mirrors.is_empty() {
+                eprintln!(
+                    "config-eval: registry '{registry_name}' has no cache endpoints in {}",
+                    registry_dir.display()
+                );
+            }
+            for cache in mirrors {
                 let url = cache.url.trim_end_matches('/').to_string();
                 if !url.is_empty() && seen.insert(url.clone()) {
+                    if verbose > 0 {
+                        eprintln!(
+                            "config-eval: using cache endpoint from registry '{registry_name}': {url}"
+                        );
+                    }
                     substituters.push(url);
                 }
             }
