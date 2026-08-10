@@ -36,11 +36,20 @@
     options = {
       serial = mkOption {
         type = types.str;
-        description = "Stable virtio serial exposed below /dev/disk/by-id.";
+        description = "Stable device serial exposed below /dev/disk/by-id.";
       };
       sizeMiB = mkOption {
         type = positiveInt;
         description = "Capacity of the empty additional disk in MiB.";
+      };
+      interface = mkOption {
+        type = types.enum ["virtio" "scsi"];
+        default = "virtio";
+        description = ''
+          QEMU interface used for the additional disk. Virtio preserves the
+          existing stable-path contract; SCSI keeps auxiliary disks outside
+          the root virtio block-device namespace.
+        '';
       };
     };
   };
@@ -131,10 +140,9 @@
         type = types.listOf extraDiskType;
         default = [];
         description = ''
-          Empty virtio block devices attached in addition to the root disk.
-          Their serials appear as /dev/disk/by-id/virtio-<serial>, allowing
-          multi-device provisioning tests to use the production stable-path
-          contract.
+          Empty block devices attached in addition to the root disk. Virtio
+          devices expose /dev/disk/by-id/virtio-<serial>; SCSI devices are
+          available for tests that must preserve root-disk enumeration.
         '';
       };
 
