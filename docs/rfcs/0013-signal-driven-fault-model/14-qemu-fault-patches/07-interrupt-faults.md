@@ -29,6 +29,28 @@ mode (`edge`/`level`), polarity where relevant, routable target set, phases,
 priority fields, and VMState coverage. Device-private callbacks never enter the
 public manifest.
 
+The host declaration and QEMU-reported row use the same closed fields. All are
+required: `id`, `controller`, `source`, `controller_version`, `family`,
+`vector`, `replacement_vector_start`, `replacement_vector_end`, `trigger`,
+`polarity`, sorted unique nonempty `target_vcpus`, sorted unique nonempty
+`model_phases`, `priority`, `delivery_drop`, and `vmstate=true`. Admission
+compares the canonical encoded rows byte-for-byte; it never widens a range or
+fills in a controller default.
+
+The complete family set is:
+
+| Architecture | Families | Vector or INTID domain |
+| --- | --- | --- |
+| x86-64 | `x86_local_apic_fixed`, `x86_ipi`, `x86_io_apic`, `x86_pic`, `x86_msi`, `x86_msi_x`, `x86_nmi`, `x86_timer` | PIC `0..=255`; NMI exactly `2`; all other families `16..=255` |
+| AArch64 | `arm_gic_sgi`, `arm_gic_ppi`, `arm_gic_spi`, `arm_gic_lpi`, `arm_timer` | SGI `0..=15`; PPI/timer `16..=31`; SPI `32..=1019`; LPI `8192..=16777215` |
+
+IPI, MSI, MSI-X, NMI, SGI, and LPI rows are edge-triggered. Edge rows use
+`delivery_drop=consume_edge`; level rows use
+`delivery_drop=repend_asserted_level`. SMI has no family row. SError belongs to
+the typed exception contract in patch 0054. `controller_version` is the exact
+printable realized implementation identity exported by QEMU, not a user-chosen
+label.
+
 ## Rule and event identity
 
 The resolved target selects one source ID, controller, vector/type, target vCPU,

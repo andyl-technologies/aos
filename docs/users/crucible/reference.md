@@ -491,9 +491,63 @@ Register side-effect values are exhaustive:
 | --- | --- | --- |
 | `[[world.node_fault_capabilities.address_spaces]]` | `id`, `start_address`, positive `length_bytes` | One non-wrapping guest address range. Address and length accept a TOML integer or canonical decimal/hex string. |
 | `[world.node_fault_capabilities.dram_geometry]` | `channels=2`, `ranks=2`, `banks=16`, `interleave_bytes=64`, `semantic_version=1` | The only currently implemented GPA-to-DRAM mapping. |
-| `[[world.node_fault_capabilities.interrupts]]` | `id`, `controller`, `source`, `vector`, nonempty `target_vcpus` | One source-to-controller-to-vCPU route. |
+| `[[world.node_fault_capabilities.interrupts]]` | All interrupt-row fields below | One exact source-to-controller route and its mutation contract. |
 | `[[world.node_fault_capabilities.clock_sources]]` | `id`, `semantic_version=1`, `monotonic` | One registered guest clock and whether reads must remain monotonic. |
 | `[[world.node_fault_capabilities.accelerators]]` | `id`, `kind`, `semantic_version=1`, `capability_manifest` | One `gpu`, `tpu`, or `fpga` fault device plus its exact content-addressed capability manifest. |
+
+Interrupt rows are exhaustive realized-machine contracts. Every field is
+required; there are no inferred controller defaults. A scenario is rejected
+before boot if QEMU reports a different family, controller version, electrical
+mode, route, priority, phase set, replacement range, drop transition, or
+VMState coverage.
+
+| Interrupt field | Required value | Meaning |
+| --- | --- | --- |
+| `id` | Unique string | Stable manifest-row identity. |
+| `controller` | Controller object ID | Controller selected by a fault target. |
+| `source` | Source object ID | Device, timer, or vCPU source selected by a fault target. |
+| `controller_version` | Printable non-whitespace string | Exact realized QEMU controller implementation/version identity. |
+| `family` | Interrupt-family value below | Architecture path whose hooks and state semantics are implemented. |
+| `vector` | Family-valid integer | Original routed x86 vector or Arm INTID. |
+| `replacement_vector_start` | Family-valid integer | Inclusive first replacement accepted for this row. |
+| `replacement_vector_end` | Family-valid integer | Inclusive last replacement accepted for this row. The original `vector` must lie in the range. |
+| `trigger` | `edge` or `level` | Electrical pending-state behavior. Families fixed to edge reject `level`. |
+| `polarity` | `active_high` or `active_low` | Active line level or edge direction. |
+| `target_vcpus` | Sorted unique nonempty integer array | Complete closed route target set. |
+| `model_phases` | Sorted unique nonempty phase array | Any subset of `raise`, `route`, and `interrupt_deliver` actually implemented for this row. |
+| `priority` | Integer `0..=255` | Controller priority used by deterministic ordering. |
+| `delivery_drop` | Drop-state value below | Exact controller transition when a selected delivery is dropped. |
+| `vmstate` | `true` | The controller state and Crucible interrupt overlay survive save/restore. |
+
+Interrupt-family values and valid vector domains are exhaustive:
+
+| Family | Architecture | Valid vector/INTID | Required trigger |
+| --- | --- | --- | --- |
+| `x86_local_apic_fixed` | x86-64 | `16..=255` | `edge` or `level` |
+| `x86_ipi` | x86-64 | `16..=255` | `edge` |
+| `x86_io_apic` | x86-64 | `16..=255` | `edge` or `level` |
+| `x86_pic` | x86-64 | `0..=255` | `edge` or `level` |
+| `x86_msi` | x86-64 | `16..=255` | `edge` |
+| `x86_msi_x` | x86-64 | `16..=255` | `edge` |
+| `x86_nmi` | x86-64 | exactly `2` | `edge` |
+| `x86_timer` | x86-64 | `16..=255` | `edge` or `level`, as realized |
+| `arm_gic_sgi` | AArch64 | `0..=15` | `edge` |
+| `arm_gic_ppi` | AArch64 | `16..=31` | `edge` or `level` |
+| `arm_gic_spi` | AArch64 | `32..=1019` | `edge` or `level` |
+| `arm_gic_lpi` | AArch64 | `8192..=16777215` | `edge` |
+| `arm_timer` | AArch64 | `16..=31` | `edge` or `level`, as realized |
+
+`delivery_drop` is constrained by `trigger` so that dropping cannot silently
+change controller semantics:
+
+| Value | Allowed trigger | Exact transition |
+| --- | --- | --- |
+| `consume_edge` | `edge` | Consume the selected pending edge without creating active guest exception state. |
+| `repend_asserted_level` | `level` | Consume the sampled opportunity and re-pend according to the unchanged physical line assertion. |
+
+SMI is intentionally absent: the current QEMU contract does not implement the
+complete SMM state transition. Arm SError is configured as a typed
+`cpu_exception`, not as an interrupt-manifest family.
 
 ## Plans, signals, bindings, and faults
 

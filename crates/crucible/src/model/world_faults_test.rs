@@ -279,3 +279,95 @@ fn node_register_manifest_distinguishes_writable_and_reference_only_rows() {
         .validate()
         .unwrap_or_else(|error| panic!("writable register should validate: {error}"));
 }
+
+fn reference_only_register() -> WorldNodeRegister {
+    WorldNodeRegister {
+        id: id("implementation-status"),
+        name: "implementation-status".to_owned(),
+        numeric_id: 1,
+        group: WorldNodeRegisterGroup::System,
+        width_bits: 8,
+        per_vcpu: true,
+        model_phases: Vec::new(),
+        side_effects: Vec::new(),
+        impulse: false,
+        persistent: false,
+        vmstate: false,
+        writable_mask_hex: "00".to_owned(),
+        reserved_mask_hex: "00".to_owned(),
+        ignored_mask_hex: "00".to_owned(),
+        read_only_mask_hex: "ff".to_owned(),
+    }
+}
+
+fn x86_interrupt() -> WorldNodeInterrupt {
+    WorldNodeInterrupt {
+        id: id("timer-route"),
+        controller: id("local-apic"),
+        source: id("lapic-timer"),
+        controller_version: "qemu-x86-local-apic-v1".to_owned(),
+        family: WorldNodeInterruptFamily::X86Timer,
+        vector: 48,
+        replacement_vector_start: 32,
+        replacement_vector_end: 255,
+        trigger: WorldNodeInterruptTrigger::Edge,
+        polarity: WorldNodeInterruptPolarity::ActiveHigh,
+        target_vcpus: vec![0, 1],
+        model_phases: vec![
+            FaultPhase::Raise,
+            FaultPhase::Route,
+            FaultPhase::InterruptDeliver,
+        ],
+        priority: 128,
+        delivery_drop: WorldNodeInterruptDeliveryDrop::ConsumeEdge,
+        vmstate: true,
+    }
+}
+
+#[test]
+fn node_interrupt_manifest_is_closed_and_architecture_specific() {
+    let mut capabilities = node_capabilities_with_register(reference_only_register());
+    capabilities.interrupts = vec![x86_interrupt()];
+    capabilities
+        .validate()
+        .unwrap_or_else(|error| panic!("complete x86 interrupt row should validate: {error}"));
+
+    let mut wrong_architecture = capabilities.clone();
+    wrong_architecture.architecture = WorldNodeArchitecture::Aarch64;
+    assert!(matches!(
+        wrong_architecture.validate(),
+        Err(WorldFaultTopologyError::Invalid(
+            "node interrupt architecture family"
+        ))
+    ));
+
+    let mut impossible_trigger = capabilities.clone();
+    impossible_trigger.interrupts[0].family = WorldNodeInterruptFamily::X86Msi;
+    impossible_trigger.interrupts[0].trigger = WorldNodeInterruptTrigger::Level;
+    impossible_trigger.interrupts[0].delivery_drop =
+        WorldNodeInterruptDeliveryDrop::RependAssertedLevel;
+    assert!(matches!(
+        impossible_trigger.validate(),
+        Err(WorldFaultTopologyError::Invalid(
+            "node interrupt architecture trigger"
+        ))
+    ));
+
+    let mut uncheckpointed = capabilities.clone();
+    uncheckpointed.interrupts[0].vmstate = false;
+    assert!(matches!(
+        uncheckpointed.validate(),
+        Err(WorldFaultTopologyError::Invalid(
+            "node interrupt VMState coverage"
+        ))
+    ));
+
+    let mut bad_range = capabilities;
+    bad_range.interrupts[0].replacement_vector_end = 47;
+    assert!(matches!(
+        bad_range.validate(),
+        Err(WorldFaultTopologyError::Invalid(
+            "node interrupt vector range"
+        ))
+    ));
+}
