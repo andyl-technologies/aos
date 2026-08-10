@@ -153,6 +153,53 @@ gives the package an isolated network namespace. A service that must use the
 host network needs `network = "host"` and the appropriate `tcp-bind` ports.
 The package renderer rejects inconsistent permissions during evaluation.
 
+## Add an on-host configuration module
+
+Use `configModule` when host policy must set typed package options at runtime.
+Keep the module in a local directory containing `module.nix`; it receives
+`lib`, `config`, and a resolver-supplied `outputs` attrset. Declare every
+runtime output that the module interpolates by name:
+
+```nix
+configModule = {
+  src = ./config-module;
+  dependencies = {
+    bash = bash;
+  };
+  declares = ["acmeHealth.command"];
+  ownsRoots = [{root = "acmeHealth";}];
+};
+```
+
+The module refers to that output without importing a package set:
+
+```nix
+{lib, outputs, ...}: {
+  options.acmeHealth.command = lib.mkOption {
+    type = lib.types.str;
+    default = "${outputs.dependencies.bash}/bin/bash";
+  };
+}
+```
+
+`mkDerivation` exposes the resolved map as `configModuleDependencies` without
+copying store paths into the config-only output. Publication must bind the same
+names to their exact runtime outputs:
+
+```sh
+apr publish "$STORE_PATH" \
+  --config-module "$CONFIG_MODULE_PATH" \
+  --config-base-lib "$BASE_LIB_PATH" \
+  --config-dependency "bash=$BASH_PATH" \
+  --registry acme \
+  --key-id initial
+```
+
+Each dependency must be a direct reference of the published runtime output.
+The registry signs the name-to-path map, and on-host evaluation injects that
+authenticated map as plain strings. It never exposes ambient packages or
+instantiates a derivation.
+
 ## Build and inspect the package
 
 Add the new file to Git before using its flake output; flakes evaluate the

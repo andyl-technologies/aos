@@ -15,15 +15,18 @@
     pname = "composed-config-smoke";
     version = "0";
     src = null;
+    runtimeDeps = [pkgs.bash];
     phases = [{
       name = "install";
       script = ''
         mkdir -p "$out"
         printf payload > "$out/payload"
+        ln -s '${pkgs.bash}' "$out/bash"
       '';
     }];
     configModule = {
       src = ../../pkgs/tests/_config-module-smoke;
+      dependencies.bash = pkgs.bash;
       declares = [
         "configModuleSmoke.command"
         "configModuleSmoke.enable"
@@ -37,12 +40,14 @@
     pname = "config-module-smoke";
     version = "0";
     src = null;
+    runtimeDeps = [pkgs.bash];
     phases = [
       {
         name = "install";
         script = ''
           mkdir -p "$out/share/config-module-smoke"
           printf '%s\n' payload > "$out/share/config-module-smoke/payload.txt"
+          ln -s '${pkgs.bash}' "$out/share/config-module-smoke/bash"
         '';
       }
     ];
@@ -61,7 +66,7 @@
       module = ../../pkgs/tests/_config-module-smoke/module.nix;
       outputs = {
         self = "${configModulePackage}";
-        dependencies.bash = "${pkgs.bash}";
+        dependencies.bash = configModulePackage.configModuleDependencies.bash;
       };
     }];
   };

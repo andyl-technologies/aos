@@ -17,6 +17,7 @@
 ##! configModule = {
 ##!   src = ./config-module;
 ##!   moduleAbiCompat = { min = 1; max = 1; };
+##!   dependencies = { bash = bash; };
 ##!   declares = [ "firewall.allowedTCPPorts" ];
 ##!   ownsRoots = [
 ##!     {
@@ -41,6 +42,7 @@
   knownKeys = [
     "src"
     "moduleAbiCompat"
+    "dependencies"
     "declares"
     "ownsRoots"
     "contributes"
@@ -183,6 +185,14 @@
       (validateList packageName "contributes" (checkedModule.contributes or []));
     providesCapabilities =
       validatePathList packageName "providesCapabilities" (checkedModule.providesCapabilities or []);
+    dependencies = checkedModule.dependencies or {};
+    dependencyNames = builtins.attrNames dependencies;
+    checkedDependencies =
+      throwIfNot
+      (builtins.isAttrs dependencies
+        && builtins.all (name: builtins.match "[A-Za-z0-9_-]+" name != null) dependencyNames)
+      "configModule for package '${packageName}' field 'dependencies' must be an attrset with package-name keys"
+      (builtins.mapAttrs (_: value: builtins.toString value) dependencies);
     ownedRootNames = builtins.map (root: root.root) ownsRoots;
     contributedRootNames = builtins.map (contribution: contribution.root) contributes;
     contributionAuthorizes = declaredPath: contribution: let
@@ -222,6 +232,7 @@
         })
         contributes;
       provides_capabilities = providesCapabilities;
+      dependencies = dependencyNames;
     };
   in
     throwIfNot
@@ -257,6 +268,7 @@
                       name = "config-module-source-${packageName}";
                     };
                     inherit metaJson;
+                    dependencyOutputs = checkedDependencies;
                   })))))));
 in {
   inherit prepare;

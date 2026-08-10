@@ -164,6 +164,8 @@ struct PublishConfigModuleManifest {
     contributes: Vec<RootContribution>,
     #[serde(default)]
     provides_capabilities: Vec<String>,
+    #[serde(default)]
+    dependencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1685,6 +1687,7 @@ pub async fn publish(
     expose_manifest_path: Option<&str>,
     config_module_path: Option<&str>,
     config_base_lib_path: Option<&str>,
+    config_dependencies: &[String],
     bless: bool,
     no_ca: bool,
     no_commit: bool,
@@ -1720,6 +1723,9 @@ pub async fn publish(
     if config_module_path.is_some() != config_base_lib_path.is_some() {
         bail!("--config-module and --config-base-lib must be specified together");
     }
+    if config_module_path.is_none() && !config_dependencies.is_empty() {
+        bail!("--config-dependency requires --config-module");
+    }
     if !image_paths.is_empty() && !sysroot {
         bail!("--image, --image-format, and --image-uki are valid only with --sysroot");
     }
@@ -1752,9 +1758,14 @@ pub async fn publish(
         .map(introspect_store_path)
         .transpose()
         .context("introspecting config base-lib")?;
+    let config_dependency_outputs = parse_config_dependency_outputs(config_dependencies, &info)?;
     let config_module = match (config_module_info.as_ref(), config_base_lib_info.as_ref()) {
         (Some(output), Some(base_lib)) => Some(read_publish_config_module(
-            output, base_lib, pkg_name, &info.path,
+            output,
+            base_lib,
+            pkg_name,
+            &info.path,
+            &config_dependency_outputs,
         )?),
         (None, None) => None,
         _ => bail!("--config-module and --config-base-lib must be specified together"),
@@ -2370,11 +2381,45 @@ fn read_publish_manifest_digest(path: &Path) -> Result<String> {
     ))
 }
 
+/// Parses and authenticates the named outputs exposed to a config module.
+fn parse_config_dependency_outputs(
+    values: &[String],
+    runtime_output: &StorePathInfo,
+) -> Result<BTreeMap<String, String>> {
+    let mut outputs = BTreeMap::new();
+    for value in values {
+        let (name, path) = value.split_once('=').with_context(|| {
+            format!("invalid --config-dependency {value:?}; expected name=/nix/store/path")
+        })?;
+        validate_package_name(name)
+            .with_context(|| format!("validating config dependency name {name:?}"))?;
+        let dependency = introspect_store_path(path)
+            .with_context(|| format!("introspecting config dependency {name:?}"))?;
+        let dependency_hash = crate::registry::store_path_hash(&dependency.path);
+        if !runtime_output
+            .references
+            .iter()
+            .any(|hash| hash == dependency_hash)
+        {
+            bail!(
+                "config dependency '{name}' output {} is not a direct runtime reference of {}",
+                dependency.path,
+                runtime_output.path
+            );
+        }
+        if outputs.insert(name.to_string(), dependency.path).is_some() {
+            bail!("config dependency '{name}' was supplied more than once");
+        }
+    }
+    Ok(outputs)
+}
+
 fn read_publish_config_module(
     config_output: &StorePathInfo,
     base_lib: &StorePathInfo,
     package_name: &str,
     runtime_output: &str,
+    dependency_outputs: &BTreeMap<String, String>,
 ) -> Result<ConfigModuleMeta> {
     let root = Path::new(&config_output.path);
     let module_path = root.join("module.nix");
@@ -2402,12 +2447,23 @@ fn read_publish_config_module(
             authored.schema
         );
     }
+    let mut dependency_names = dependency_outputs.keys().cloned().collect::<Vec<_>>();
+    dependency_names.sort();
+    let mut authored_dependencies = authored.dependencies.clone();
+    authored_dependencies.sort();
+    authored_dependencies.dedup();
+    if dependency_names != authored_dependencies {
+        bail!(
+            "config-meta.json dependency claims do not match --config-dependency arguments: authored={authored_dependencies:?}, supplied={dependency_names:?}"
+        );
+    }
 
     let declarations = derive_config_option_declarations(
         &config_output.path,
         &base_lib.path,
         package_name,
         runtime_output,
+        dependency_outputs,
         &authored,
     )?;
     let mut declares = declarations
@@ -2525,6 +2581,7 @@ fn read_publish_config_module(
             nar_size: base_lib.nar_size,
             references: base_lib.references.clone(),
         }),
+        dependency_outputs: dependency_outputs.clone(),
         module_abi_compat: authored.module_abi_compat,
         declares,
         declaration_schema,
@@ -2565,6 +2622,7 @@ fn derive_config_option_declarations(
     base_lib_path: &str,
     package_name: &str,
     runtime_output: &str,
+    dependency_outputs: &BTreeMap<String, String>,
     authored: &PublishConfigModuleManifest,
 ) -> Result<Vec<DerivedOptionDeclaration>> {
     let owns = authored
@@ -2596,7 +2654,7 @@ fn derive_config_option_declarations(
       name = {};
       configRoot = <aos-publish-config-module>;
       module = <aos-publish-config-module/module.nix>;
-      outputs = {{ self = {}; dependencies = {{}}; }};
+      outputs = {{ self = {}; dependencies = {{ {} }}; }};
       authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; }};
     }} ];
     inherit (base) lib;
@@ -2604,7 +2662,18 @@ fn derive_config_option_declarations(
 in builtins.map (decl: {{ inherit (decl) pathStr typeSig contributable; }})
   (base.lib.optionSurface evaluated)"#,
         nix_publish_string(package_name),
-        nix_publish_string(runtime_output)
+        nix_publish_string(runtime_output),
+        dependency_outputs
+            .iter()
+            .map(|(name, path)| {
+                format!(
+                    "{} = {};",
+                    nix_publish_string(name),
+                    nix_publish_string(path)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     );
     let base_search_path = format!("aos-publish-base-lib={base_lib_path}");
     let module_search_path = format!("aos-publish-config-module={config_output}");
@@ -13152,6 +13221,7 @@ async fn publish_release_store_path(
         None,
         None,
         None,
+        &[],
         publish_opts.bless,
         false,
         false,
@@ -15058,6 +15128,7 @@ mod tests {
                 references: vec![],
             },
             evaluation_base_lib: None,
+            dependency_outputs: BTreeMap::new(),
             module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
             declares: vec!["firewall.allowedTCPPorts".to_string()],
             declaration_schema: vec![],

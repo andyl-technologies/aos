@@ -1,9 +1,10 @@
 ##! Package config-output smoke fixture.
-{mkDerivation}:
+{mkDerivation, bash}:
 mkDerivation {
   pname = "config-module-smoke";
   version = "0";
   src = null;
+  runtimeDeps = [bash];
 
   phases = [
     {
@@ -11,12 +12,14 @@ mkDerivation {
       script = ''
         mkdir -p "$out/share/config-module-smoke"
         printf '%s\n' payload > "$out/share/config-module-smoke/payload.txt"
+        ln -s '${bash}' "$out/share/config-module-smoke/bash"
       '';
     }
   ];
 
   configModule = {
     src = ./_config-module-smoke;
+    dependencies.bash = bash;
     moduleAbiCompat = {
       min = 1;
       max = 1;

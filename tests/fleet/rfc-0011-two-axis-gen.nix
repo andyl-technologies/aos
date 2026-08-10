@@ -39,11 +39,13 @@
         script = ''
           mkdir -p "$out/share/rfc0011-abi1-config"
           printf '%s\n' fixture > "$out/share/rfc0011-abi1-config/payload"
+          ln -s '${pkgs.bash}' "$out/share/rfc0011-abi1-config/bash"
         '';
       }
     ];
     configModule = {
       src = ../../pkgs/tests/_config-module-smoke;
+      dependencies.bash = pkgs.bash;
       moduleAbiCompat = {
         min = 1;
         max = 1;
@@ -409,6 +411,7 @@ in {
             --maintainer test \
             --config-module '${abi1OnlyConfig.config}' \
             --config-base-lib '${abi1BaseLib}' \
+            --config-dependency 'bash=${abi1OnlyConfig.configModuleDependencies.bash}' \
             --registry sysreg \
             --key-id release \
             --no-commit

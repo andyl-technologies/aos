@@ -1989,6 +1989,7 @@ mod tests {
                 references: Vec::new(),
             },
             evaluation_base_lib: None,
+            dependency_outputs: BTreeMap::new(),
             module_abi_compat: ModuleAbiCompat { min: 1, max: 1 },
             declares: Vec::new(),
             declaration_schema: Vec::new(),

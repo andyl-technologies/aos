@@ -1115,6 +1115,9 @@ pub enum RegistryCommand {
         /// Trusted AOS base-lib store path used for the publish-time options-only eval
         #[arg(long = "config-base-lib", requires = "config_module")]
         config_base_lib: Option<String>,
+        /// Named runtime output exposed to the config module (`name=/nix/store/...`)
+        #[arg(long = "config-dependency", requires = "config_module")]
+        config_dependencies: Vec<String>,
         /// Bless additional content for paths already recorded with different
         /// bits in the store/ graph instead of failing
         #[arg(long)]
@@ -4066,6 +4069,7 @@ async fn run_registry(
             expose_manifest,
             config_module,
             config_base_lib,
+            config_dependencies,
             bless,
             no_ca,
             no_commit,
@@ -4093,6 +4097,7 @@ async fn run_registry(
                 expose_manifest.as_deref(),
                 config_module.as_deref(),
                 config_base_lib.as_deref(),
+                config_dependencies,
                 *bless,
                 *no_ca,
                 *no_commit,
