@@ -1005,7 +1005,7 @@ mod tests {
             json!({"kind":"cpu_service","parameters":{"vcpus":[0],"capacity":{"numerator":1,"denominator":2},"quantum_instructions":100,"service_rule":"strict_cap"}}),
             json!({"kind":"vcpu_state","parameters":{"state":"offline","recovery_event":"recover"}}),
             json!({"kind":"register_transform","parameters":{"register":"rax","first_bit":0,"bit_count":8,"mutation":{"kind":"bit_flip","parameters":{"mask":"01"}},"occurrence":{"kind":"every"}}}),
-            json!({"kind":"instruction_transform","parameters":{"selector":{"pc_start":4096,"pc_length":4,"instruction_bytes":"90909090","opcode_class":null,"occurrence":{"kind":"every"}},"mutation":{"kind":"result_corrupt","parameters":{"transform":{"destination":"rax","mutation":{"kind":"replace","parameters":{"value":"01"}}}}}}}),
+            json!({"kind":"instruction_transform","parameters":{"selector":{"pc_start":4096,"pc_length":4,"instruction_bytes":"90909090","opcode_class":null,"input_state_sha256":null,"occurrence":{"kind":"every"}},"mutation":{"kind":"result_corrupt","parameters":{"transform":{"destination":"rax","mutation":{"kind":"replace","parameters":{"value":"01"}}}}}}}),
             json!({"kind":"cpu_exception","parameters":{"exception":{"architecture":"x86_64","vector":18,"syndrome":0,"fault_address":null,"before_instruction":true,"maskable":false,"record":{"kind":"architecture_default"}}}}),
             json!({"kind":"interrupt_disposition","parameters":{"mutation":{"kind":"delay","parameters":{"delay_nanos":10}}}}),
             json!({"kind":"interrupt_storm","parameters":{"source":"timer","vector":32,"period_nanos":100,"burst":2,"count":4,"routing":{"target_vcpus":[0],"priority":0,"retain_pending":true}}}),
@@ -1057,6 +1057,9 @@ mod tests {
             };
             let encoded = encode_node_action(&action, [3; 32])
                 .unwrap_or_else(|error| panic!("{kind:?} must translate: {error}"));
+            if kind == crucible::model::EffectKind::CpuInstructionTransform {
+                assert_eq!(encoded.payload.operation, NodeFaultOperationV1::Apply);
+            }
             let bytes = encoded
                 .payload
                 .encode()

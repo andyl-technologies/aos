@@ -276,6 +276,18 @@
       kind = "recorded";
       symbols = [];
     };
+    "0050-crucible-memory-access-faults.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0051-crucible-add-architecture-register-fault-mutations.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0052-crucible-instruction-and-exception-faults.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_fault_instruction_manifest"];
+    };
     "0060-crucible-block-typed-errors.patch" = {
       kind = "recorded";
       symbols = [];

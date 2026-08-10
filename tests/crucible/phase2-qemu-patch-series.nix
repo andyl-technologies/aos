@@ -378,6 +378,13 @@
       capability = "manifest-bound x86-64 and AArch64 register mutations at exact instruction boundaries";
     }
     {
+      file = "0052-crucible-instruction-and-exception-faults.patch";
+      catalogName = "crucible-instruction-and-exception-faults";
+      class = "D";
+      enforces = "QFP-INSN-1,QFP-EXC-1,FAULT-ORDER";
+      capability = "exact x86-64 and AArch64 instruction result, skip, replay, and architectural exception faults";
+    }
+    {
       file = "0060-crucible-block-typed-errors.patch";
       catalogName = "crucible-block-typed-errors";
       class = "F";

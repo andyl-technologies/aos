@@ -172,7 +172,7 @@ never as a policy lookup key.
 | CPU service | `P1 sorted vCPU IDs:json`, `P2 capacity:ratio`, `P3 quantum:u64`, `P4 CpuServiceDiscipline:u32` |
 | vCPU state | `P1 state:u32`, `P2 has recovery:bool`, `P3 recovery hash or zero` |
 | register transform | `P1 register:hash`, `P2 first bit:u32`, `P3 bit count:u32`, `P4 mutation:u32`, `P5 mask/bytes`, `P6 has value:bool`, `P7 value or zero`, `P8 NodeOccurrencePolicy:json` |
-| instruction transform | `P1 InstructionSelector:json`, `P2 mutation:u32`, `P3 destination hash or zero`, `P4 RegisterMutation:json or zero`, `P5 replay count:u32` |
+| instruction transform | `P1 InstructionSelector:json` (including optional runtime input-state SHA-256), `P2 mutation:u32`, `P3 destination hash or zero`, `P4 RegisterMutation:json or zero`, `P5 replay count:u32` |
 | CPU exception | `P1 NodeException:json` |
 | interrupt disposition | `P1 mutation:u32`, `P2 delay:u64`, `P3 copies:u32`, `P4 gap:u64`, `P5 replacement vector:u32` |
 | interrupt storm | `P1 source:hash`, `P2 vector:u32`, `P3 period:u64`, `P4 burst:u32`, `P5 count:u32`, `P6 InterruptRoutingPolicy:json` |

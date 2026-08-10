@@ -601,6 +601,13 @@ dropping history or inventing a completion.
 | `accelerator.memory_event` | opportunity/impulse; memory access/boundary | address/range, corrected/uncorrectable, syndrome or transform | severity/ordered-transform | device capability; device-memory evidence and guest driver outcome |
 | `accelerator.service` | persistent state; execute/queue | positive rational capacity, optional positive memory/job rates, positive millikelvin/milliwatt metadata | minimum constraints | device capability; queue/job service ledger |
 
+For `cpu.instruction_transform`, ordered result transforms use unsigned
+bytewise `binding_hash`, then `action_hash`, then command sequence. Every
+contributor consumes the result left by its predecessor and retains separate
+evidence and impulse completion. Skip or replay conflicts with every other
+matching instruction transform. Disjoint exact-byte or opcode-class selectors
+may share a PC interval because they cannot match the same decoded instruction.
+
 All executable policy values above are embedded closed data, not names resolved
 by a runtime registry. The only remaining object IDs identify realized things
 whose identity is checked against the capability manifest: registers, devices,
@@ -618,7 +625,7 @@ events. Unknown fields and values fail before QEMU state changes.
 | memory access classes | independent booleans `fetch`, `cpu_load`, `cpu_store`, `dma_read`, `dma_write`, and `page_table_walk`; at least one is true; `page_table_walk` selects normal-RAM descriptor reads by the architecture MMU and requires a guest-physical target; optional `dma_device` is a canonical device identity and requires a DMA-only class set |
 | poison visibility | `access_error`, including a native architecture walk fault for `page_table_walk`; read-only `corrected { xor_mask }`; or CPU fetch/load/store-only `exception { exception }` |
 | architecture exception | `architecture = x86_64/aarch64`, numeric `vector` and `syndrome`, optional `fault_address`, `before_instruction`, `maskable`, and matching `architecture_default/x86_machine_check/aarch64_ras` record |
-| instruction selector | `pc_start`, positive `pc_length`, optional exact `instruction_bytes`, optional numeric `opcode_class`, and occurrence |
+| instruction selector | `pc_start`, positive `pc_length`, optional exact `instruction_bytes`, optional numeric `opcode_class`, optional complete `input_state_sha256`, and occurrence |
 | interrupt routing | sorted nonempty numeric `target_vcpus`, numeric `priority`, and `retain_pending` |
 | ECC visibility | `telemetry_only`; `corrected_interrupt { vector }`; or a complete `exception` |
 | region process | `failed { policy = access_error/exception }`; `retention { interval_nanos, decay_mask }`; or `rowhammer { row_bytes, threshold, victim_distance, flip_mask }` |

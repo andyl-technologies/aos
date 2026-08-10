@@ -345,6 +345,12 @@
       };
     }
     {
+      patch = "0052-crucible-instruction-and-exception-faults.patch";
+      check = import ./phase2-qemu-instruction-faults.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
       patch = "0060-crucible-block-typed-errors.patch";
       check = import ./phase1-qemu-block-shmem.nix {
         inherit pkgs lib qemuPackage;

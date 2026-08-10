@@ -387,6 +387,8 @@ pub struct InstructionSelector {
     pub instruction_bytes: Option<HexBytes>,
     /// Optional stable decoded opcode/class number from the QEMU manifest.
     pub opcode_class: Option<u32>,
+    /// Optional SHA-256 digest required of complete CPU, RAM, and device input state.
+    pub input_state_sha256: Option<HexBytes>,
     /// Opportunity-selection policy within the matching stream.
     pub occurrence: NodeOccurrencePolicy,
 }
@@ -1021,6 +1023,11 @@ impl NodeEffectSpecification {
                         .instruction_bytes
                         .as_ref()
                         .is_none_or(|bytes| bytes.decoded_len() <= 32);
+                let selector_valid = selector_valid
+                    && selector
+                        .input_state_sha256
+                        .as_ref()
+                        .is_none_or(|digest| digest.decoded_len() == 32);
                 let transform_valid = match mutation {
                     InstructionMutation::ResultCorrupt { transform } => {
                         register_mutation_lengths_match(&transform.mutation)

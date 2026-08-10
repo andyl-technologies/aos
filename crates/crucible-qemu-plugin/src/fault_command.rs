@@ -12,22 +12,26 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::NonNull;
 
 use crucible_shmem::{
-    DequeuedFaultCommand, FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
-    FAULT_COMMAND_SEMANTIC_VERSION, FAULT_REGISTER_CAPABILITY_IMPULSE,
-    FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
-    FaultCapabilityScope, FaultCommandHeaderV1, FaultCommandKind, FaultCommandSlotV1,
-    FaultEventHeaderV1, FaultEventOutcomeV1, FaultEventSlotV1, FaultPayloadArenaHeader,
-    FaultRegisterCapabilityManifestV1, FaultRegisterCapabilityRowV1, FaultRegisterGroupV1,
-    FaultRegisterMutationEvidenceV1, FaultRegisterMutationKindV1, FaultResultHeaderV1,
-    FaultResultSlotV1, FaultResultStatus, FaultTargetManifestKind, FaultTargetManifestQueryV1,
-    FaultTransportError, HARD_FAULT_PAYLOAD_BYTES, MappedFaultCommandTransportMut,
-    MappedFaultEventTransportMut, MappedFaultResultTransportMut, MappedSetupRegion,
-    MappedSetupRegionAccessError, NodeFaultOperationV1, NodeFaultPayloadV1, RingHeader,
+    DequeuedFaultCommand, FAULT_CAPABILITY_FEATURE_INSTRUCTION,
+    FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION, FAULT_COMMAND_SEMANTIC_VERSION,
+    FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError,
+    FaultBoundaryPhase, FaultCapabilityRowV1, FaultCapabilityScope, FaultCommandHeaderV1,
+    FaultCommandKind, FaultCommandSlotV1, FaultEventHeaderV1, FaultEventOutcomeV1,
+    FaultEventSlotV1, FaultExceptionEvidenceV1, FaultInstructionEvidenceOutcomeV1,
+    FaultInstructionEvidenceV1, FaultInstructionMutationKindV1, FaultInstructionPortIoEvidenceV1,
+    FaultPayloadArenaHeader, FaultRegisterCapabilityManifestV1, FaultRegisterCapabilityRowV1,
+    FaultRegisterGroupV1, FaultRegisterMutationEvidenceV1, FaultRegisterMutationKindV1,
+    FaultResultHeaderV1, FaultResultSlotV1, FaultResultStatus, FaultTargetManifestKind,
+    FaultTargetManifestQueryV1, FaultTerminalEvidenceV1, FaultTransportError,
+    HARD_FAULT_PAYLOAD_BYTES, MappedFaultCommandTransportMut, MappedFaultEventTransportMut,
+    MappedFaultResultTransportMut, MappedSetupRegion, MappedSetupRegionAccessError,
+    NodeFaultOperationV1, NodeFaultPayloadV1, NodeFaultTargetKindV1, RingHeader,
     can_enqueue_fault_event, can_enqueue_fault_result, dequeue_fault_command,
     encode_fault_capability_manifest, enqueue_fault_event, enqueue_fault_result,
     fault_capability_manifest_digest, fault_register_cpu_model_digest_v1,
     fault_register_manifest_digest_v1, node_fault_field,
 };
+use sha2::Digest as _;
 use thiserror::Error;
 
 /// QEMU symbol that copies the immutable sorted fault capability registry.
@@ -59,6 +63,9 @@ pub const QEMU_PLUGIN_CRUCIBLE_FAULT_REGISTER_BIND_ARCHITECTURE_SYMBOL: &str =
 /// QEMU symbol that seals the complete register identity map.
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_REGISTER_BINDINGS_SEAL_SYMBOL: &str =
     "qemu_plugin_crucible_fault_register_bindings_seal";
+/// QEMU symbol that copies the immutable instruction decoder manifest.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_INSTRUCTION_MANIFEST_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_instruction_manifest";
 
 const CAPABILITIES_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_capabilities\0";
 const SUBMIT_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_submit\0";
@@ -73,6 +80,7 @@ const REGISTER_BIND_ARCHITECTURE_SYMBOL_C: &[u8] =
     b"qemu_plugin_crucible_fault_register_bind_architecture\0";
 const REGISTER_BINDINGS_SEAL_SYMBOL_C: &[u8] =
     b"qemu_plugin_crucible_fault_register_bindings_seal\0";
+const INSTRUCTION_MANIFEST_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_instruction_manifest\0";
 const CAPABILITY_HASH_DOMAIN: &[u8] = b"crucible.qemu-fault-capability.v1\0";
 
 #[repr(C)]
@@ -175,6 +183,7 @@ type QemuFaultRegisterManifestFn =
 type QemuFaultRegisterBindFn = extern "C" fn(*const u8, u32) -> c_int;
 type QemuFaultRegisterBindArchitectureFn = extern "C" fn(*const u8) -> c_int;
 type QemuFaultRegisterBindingsSealFn = extern "C" fn() -> c_int;
+type QemuFaultInstructionManifestFn = extern "C" fn(*mut u8, usize, *mut u8, *mut u16) -> usize;
 
 /// Resolved, closed QEMU fault registry operations.
 #[derive(Clone, Copy)]
@@ -191,6 +200,7 @@ pub(crate) struct QemuFaultCommandApis {
     register_bind: QemuFaultRegisterBindFn,
     register_bind_architecture: QemuFaultRegisterBindArchitectureFn,
     register_bindings_seal: QemuFaultRegisterBindingsSealFn,
+    instruction_manifest: QemuFaultInstructionManifestFn,
 }
 
 impl QemuFaultCommandApis {
@@ -229,6 +239,10 @@ impl QemuFaultCommandApis {
             register_bindings_seal: resolve_symbol(
                 REGISTER_BINDINGS_SEAL_SYMBOL_C,
                 QEMU_PLUGIN_CRUCIBLE_FAULT_REGISTER_BINDINGS_SEAL_SYMBOL,
+            )?,
+            instruction_manifest: resolve_symbol(
+                INSTRUCTION_MANIFEST_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_INSTRUCTION_MANIFEST_SYMBOL,
             )?,
         })
     }
@@ -328,6 +342,41 @@ impl QemuFaultCommandApis {
         .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
     }
 
+    fn instruction_manifest(self) -> Result<InstructionEvidenceIdentity, FaultCommandBridgeError> {
+        let mut sha256 = [0_u8; 32];
+        let mut architecture = 0_u16;
+        let required = (self.instruction_manifest)(
+            std::ptr::null_mut(),
+            0,
+            sha256.as_mut_ptr(),
+            &mut architecture,
+        );
+        if required == 0 || required > 16_384 || sha256 == [0; 32] {
+            return Err(FaultCommandBridgeError::InstructionManifestCount { required });
+        }
+        let mut manifest = vec![0_u8; required];
+        let mut copied_sha256 = [0_u8; 32];
+        let mut copied_architecture = 0_u16;
+        let observed = (self.instruction_manifest)(
+            manifest.as_mut_ptr(),
+            manifest.len(),
+            copied_sha256.as_mut_ptr(),
+            &mut copied_architecture,
+        );
+        if observed != required
+            || copied_sha256 != sha256
+            || copied_architecture != architecture
+            || sha2::Sha256::digest(&manifest).as_slice() != sha256
+        {
+            return Err(FaultCommandBridgeError::InstructionManifestChanged);
+        }
+        Ok(InstructionEvidenceIdentity {
+            architecture: FaultCapabilityScope::from_u16(architecture)
+                .map_err(|_source| FaultCommandBridgeError::InstructionManifestChanged)?,
+            manifest_sha256: sha256,
+        })
+    }
+
     fn bind_register_manifest(
         self,
         manifest: &FaultRegisterCapabilityManifestV1,
@@ -379,8 +428,19 @@ impl QemuFaultCommandApis {
             register_bind: test_register_bind,
             register_bind_architecture: test_register_bind_architecture,
             register_bindings_seal: test_register_bindings_seal,
+            instruction_manifest: test_instruction_manifest,
         }
     }
+}
+
+#[cfg(test)]
+extern "C" fn test_instruction_manifest(
+    _manifest: *mut u8,
+    _capacity: usize,
+    _sha256: *mut u8,
+    _architecture: *mut u16,
+) -> usize {
+    0
 }
 
 #[cfg(test)]
@@ -683,6 +743,47 @@ struct RegisterEvidenceIdentity {
 }
 
 #[derive(Clone)]
+struct InstructionEvidenceIdentity {
+    architecture: FaultCapabilityScope,
+    manifest_sha256: [u8; 32],
+}
+
+#[derive(Clone)]
+struct InstructionCommandExpectation {
+    operation: NodeFaultOperationV1,
+    binding_hash: [u8; 32],
+    generation: u64,
+    action_hash: [u8; 32],
+    target_hash: [u8; 32],
+    vcpu_index: u32,
+    model_phase: u16,
+    pc_start: u64,
+    pc_length: u64,
+    instruction_bytes: Option<Vec<u8>>,
+    opcode_class: Option<u32>,
+    input_state_sha256: Option<[u8; 32]>,
+    mutation_kind: FaultInstructionMutationKindV1,
+    replay_total: u32,
+    next_replay_ordinal: u32,
+    register_mutation: Option<RegisterMutationExpectation>,
+}
+
+#[derive(Clone)]
+struct ExceptionCommandExpectation {
+    binding_hash: [u8; 32],
+    generation: u64,
+    action_hash: [u8; 32],
+    target_hash: [u8; 32],
+    architecture: FaultCapabilityScope,
+    model_phase: u16,
+    vcpu_index: u32,
+    vector: u32,
+    syndrome: u64,
+    fault_address: Option<u64>,
+    before_instruction: bool,
+}
+
+#[derive(Clone)]
 struct RegisterMutationExpectation {
     vcpu_index: u32,
     numeric_id: u32,
@@ -875,8 +976,12 @@ pub(crate) struct FaultCommandBridge {
     capability_queries: BTreeSet<u64>,
     register_manifest_payload: Option<Vec<u8>>,
     register_evidence_identity: Option<RegisterEvidenceIdentity>,
+    instruction_evidence_identity: Option<InstructionEvidenceIdentity>,
     register_commands: BTreeMap<u64, RegisterCommandExpectation>,
     active_register_bindings: BTreeMap<[u8; 32], u64>,
+    instruction_commands: BTreeMap<u64, InstructionCommandExpectation>,
+    active_instruction_bindings: BTreeMap<[u8; 32], u64>,
+    exception_commands: BTreeMap<u64, ExceptionCommandExpectation>,
     pending_command: Option<DequeuedFaultCommand>,
 }
 
@@ -936,6 +1041,23 @@ impl FaultCommandBridge {
         } else {
             (None, None)
         };
+        let instruction_evidence_identity = if rows.iter().any(|row| {
+            matches!(
+                row.command_kind,
+                FaultCommandKind::CpuInstructionTransform | FaultCommandKind::CpuException
+            ) && row.required_feature_bits & FAULT_CAPABILITY_FEATURE_INSTRUCTION != 0
+        }) {
+            let identity = apis.instruction_manifest()?;
+            if register_evidence_identity
+                .as_ref()
+                .is_some_and(|register| register.architecture != identity.architecture)
+            {
+                return Err(FaultCommandBridgeError::InstructionManifestChanged);
+            }
+            Some(identity)
+        } else {
+            None
+        };
         let capability_payload = encode_fault_capability_manifest(&rows)
             .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
         let commands = StableFaultCommandTransport::new(
@@ -964,8 +1086,12 @@ impl FaultCommandBridge {
             capability_queries: BTreeSet::new(),
             register_manifest_payload,
             register_evidence_identity,
+            instruction_evidence_identity,
             register_commands: BTreeMap::new(),
             active_register_bindings: BTreeMap::new(),
+            instruction_commands: BTreeMap::new(),
+            active_instruction_bindings: BTreeMap::new(),
+            exception_commands: BTreeMap::new(),
             pending_command: None,
         })
     }
@@ -1146,6 +1272,25 @@ impl FaultCommandBridge {
         } else {
             None
         };
+        let instruction_expectation =
+            if header.command_kind == FaultCommandKind::CpuInstructionTransform {
+                let identity = self
+                    .register_evidence_identity
+                    .as_ref()
+                    .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+                Some(instruction_command_expectation(
+                    payload,
+                    header.binding_hash,
+                    identity,
+                )?)
+            } else {
+                None
+            };
+        let exception_expectation = if header.command_kind == FaultCommandKind::CpuException {
+            Some(exception_command_expectation(payload, header.binding_hash)?)
+        } else {
+            None
+        };
         let Some(target_icount) = header.target_icount.checked_sub(logical_icount_offset) else {
             return self.publish_local_rejection(
                 header.command_kind as u16,
@@ -1198,6 +1343,14 @@ impl FaultCommandBridge {
         }
         if let Some(expectation) = register_expectation {
             self.register_commands
+                .insert(header.command_sequence, expectation);
+        }
+        if let Some(expectation) = instruction_expectation {
+            self.instruction_commands
+                .insert(header.command_sequence, expectation);
+        }
+        if let Some(expectation) = exception_expectation {
+            self.exception_commands
                 .insert(header.command_sequence, expectation);
         }
         Ok(())
@@ -1364,6 +1517,19 @@ impl FaultCommandBridge {
                     self.register_commands.remove(&result.command_sequence);
                 }
             }
+            if result.command_kind == FaultCommandKind::CpuInstructionTransform as u16 {
+                track_instruction_result(
+                    &mut self.instruction_commands,
+                    &mut self.active_instruction_bindings,
+                    result.command_sequence,
+                    result.status,
+                )?;
+            }
+            if result.command_kind == FaultCommandKind::CpuException as u16
+                && result.status != FaultResultStatus::Applied as u16
+            {
+                self.exception_commands.remove(&result.command_sequence);
+            }
         }
     }
 
@@ -1386,14 +1552,17 @@ impl FaultCommandBridge {
                     capacity: payload_capacity,
                 });
             }
-            let published_payload_len =
-                if peeked.command_kind == FaultCommandKind::CpuRegisterTransform as u16 {
-                    peeked_payload_len
-                        .checked_add(128)
-                        .ok_or(FaultCommandBridgeError::PayloadCapacity)?
-                } else {
-                    peeked_payload_len
-                };
+            let published_payload_len = if matches!(
+                peeked.command_kind,
+                value if value == FaultCommandKind::CpuRegisterTransform as u16
+                    || value == FaultCommandKind::CpuInstructionTransform as u16
+            ) {
+                peeked_payload_len
+                    .checked_add(128)
+                    .ok_or(FaultCommandBridgeError::PayloadCapacity)?
+            } else {
+                peeked_payload_len
+            };
             if !self.events.can_enqueue(published_payload_len)? {
                 return Ok(false);
             }
@@ -1441,6 +1610,17 @@ impl FaultCommandBridge {
             {
                 return Err(FaultCommandBridgeError::RegisterEvidence);
             }
+            let instruction_command = self
+                .instruction_commands
+                .get(&event.rule_command_sequence)
+                .cloned();
+            let exception_command = self
+                .exception_commands
+                .get(&event.rule_command_sequence)
+                .cloned();
+            let instruction_terminal = event.command_kind
+                == FaultCommandKind::CpuInstructionTransform as u16
+                && FaultTerminalEvidenceV1::has_magic(&payload);
             let published_payload =
                 if event.command_kind == FaultCommandKind::CpuRegisterTransform as u16 {
                     let identity = self
@@ -1460,9 +1640,56 @@ impl FaultCommandBridge {
                             .and_then(|command| command.mutation.as_ref())
                             .ok_or(FaultCommandBridgeError::RegisterEvidence)?,
                     )?
+                } else if event.command_kind == FaultCommandKind::CpuInstructionTransform as u16 {
+                    let command = instruction_command
+                        .as_ref()
+                        .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+                    if instruction_terminal {
+                        translate_terminal_instruction_evidence(&payload, &event, command)?
+                    } else {
+                        translate_instruction_evidence(
+                            &payload,
+                            self.instruction_evidence_identity
+                                .as_ref()
+                                .ok_or(FaultCommandBridgeError::InstructionEvidence)?,
+                            self.register_evidence_identity
+                                .as_ref()
+                                .ok_or(FaultCommandBridgeError::InstructionEvidence)?,
+                            logical_icount_offset,
+                            &event,
+                            command,
+                        )?
+                    }
+                } else if event.command_kind == FaultCommandKind::CpuException as u16 {
+                    translate_exception_evidence(
+                        &payload,
+                        self.instruction_evidence_identity
+                            .as_ref()
+                            .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
+                        logical_icount_offset,
+                        &event,
+                        exception_command
+                            .as_ref()
+                            .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
+                    )?
                 } else {
                     payload
                 };
+            if event.command_kind == FaultCommandKind::CpuInstructionTransform as u16 {
+                if instruction_terminal {
+                    track_terminal_instruction_event(
+                        &mut self.instruction_commands,
+                        &mut self.active_instruction_bindings,
+                        event.rule_command_sequence,
+                    )?;
+                } else {
+                    track_instruction_event(
+                        &mut self.instruction_commands,
+                        event.rule_command_sequence,
+                        &published_payload,
+                    )?;
+                }
+            }
             let header = FaultEventHeaderV1 {
                 command_kind: command_kind(event.command_kind)?,
                 outcome: event_outcome(event.outcome)?,
@@ -1488,6 +1715,9 @@ impl FaultCommandBridge {
                 if command.operation == NodeFaultOperationV1::Apply {
                     self.register_commands.remove(&event.rule_command_sequence);
                 }
+            }
+            if event.command_kind == FaultCommandKind::CpuException as u16 {
+                self.exception_commands.remove(&event.rule_command_sequence);
             }
         }
     }
@@ -1549,6 +1779,96 @@ impl FaultCommandBridge {
         };
         self.results.enqueue(header, payload)
     }
+}
+
+/// Updates bridge-side instruction expectations after QEMU publishes a command result.
+///
+/// A terminal one-shot `Apply` result deliberately retains its expectation until
+/// the corresponding applied or fail-closed evidence event has been translated
+/// and published.
+fn track_instruction_result(
+    commands: &mut BTreeMap<u64, InstructionCommandExpectation>,
+    active_bindings: &mut BTreeMap<[u8; 32], u64>,
+    command_sequence: u64,
+    status: u16,
+) -> Result<(), FaultCommandBridgeError> {
+    let command = commands
+        .get(&command_sequence)
+        .cloned()
+        .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+    if status == FaultResultStatus::Applied as u16 {
+        match command.operation {
+            NodeFaultOperationV1::Upsert => {
+                if let Some(prior) = active_bindings.insert(command.binding_hash, command_sequence)
+                {
+                    if prior != command_sequence {
+                        commands.remove(&prior);
+                    }
+                }
+            }
+            NodeFaultOperationV1::Remove => {
+                if let Some(prior) = active_bindings.remove(&command.binding_hash) {
+                    commands.remove(&prior);
+                }
+                commands.remove(&command_sequence);
+            }
+            NodeFaultOperationV1::Apply => {}
+        }
+    } else if command.operation != NodeFaultOperationV1::Apply
+        || status != FaultResultStatus::InternalError as u16
+    {
+        commands.remove(&command_sequence);
+    }
+    Ok(())
+}
+
+/// Advances exact replay-event correlation and releases terminal one-shot state.
+fn track_instruction_event(
+    commands: &mut BTreeMap<u64, InstructionCommandExpectation>,
+    command_sequence: u64,
+    payload: &[u8],
+) -> Result<(), FaultCommandBridgeError> {
+    let evidence = FaultInstructionEvidenceV1::decode(payload)
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    let command = commands
+        .get_mut(&command_sequence)
+        .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+    if evidence.replay_ordinal != command.next_replay_ordinal
+        || evidence.replay_total != command.replay_total
+    {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    let terminal = evidence.outcome != FaultInstructionEvidenceOutcomeV1::Applied
+        || evidence.mutation_kind != FaultInstructionMutationKindV1::Replay
+        || evidence.replay_ordinal == evidence.replay_total;
+    if terminal {
+        if command.operation == NodeFaultOperationV1::Apply {
+            commands.remove(&command_sequence);
+        } else {
+            command.next_replay_ordinal = 0;
+        }
+    } else {
+        command.next_replay_ordinal = command
+            .next_replay_ordinal
+            .checked_add(1)
+            .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+    }
+    Ok(())
+}
+
+/// Releases the command identity correlated with one global terminal event.
+fn track_terminal_instruction_event(
+    commands: &mut BTreeMap<u64, InstructionCommandExpectation>,
+    active_bindings: &mut BTreeMap<[u8; 32], u64>,
+    command_sequence: u64,
+) -> Result<(), FaultCommandBridgeError> {
+    let command = commands
+        .remove(&command_sequence)
+        .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+    if active_bindings.get(&command.binding_hash) == Some(&command_sequence) {
+        active_bindings.remove(&command.binding_hash);
+    }
+    Ok(())
 }
 
 fn target_manifest_capability_row(
@@ -1654,6 +1974,280 @@ fn register_command_expectation(
             value: field(node_fault_field::P7)?.value.clone(),
         }),
     })
+}
+
+fn instruction_command_expectation(
+    payload: &[u8],
+    binding_hash: [u8; 32],
+    identity: &RegisterEvidenceIdentity,
+) -> Result<InstructionCommandExpectation, FaultCommandBridgeError> {
+    let decoded = NodeFaultPayloadV1::decode(payload)
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    let field = |tag| {
+        decoded
+            .fields
+            .iter()
+            .find(|field| field.tag == tag)
+            .ok_or(FaultCommandBridgeError::InstructionEvidence)
+    };
+    let u32_field = |tag| {
+        field(tag)?
+            .value
+            .as_slice()
+            .try_into()
+            .map(u32::from_le_bytes)
+            .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)
+    };
+    let selector = policy_json(&field(node_fault_field::P1)?.value, false)?;
+    let selector = selector
+        .as_object()
+        .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+    let pc_start = json_u64(selector.get("pc_start"))?;
+    let pc_length = json_u64(selector.get("pc_length"))?;
+    if pc_length == 0 || pc_start.checked_add(pc_length).is_none() {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    let instruction_bytes = match selector.get("instruction_bytes") {
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(value)) => Some(hex_bytes(value)?),
+        _ => return Err(FaultCommandBridgeError::InstructionEvidence),
+    };
+    if instruction_bytes
+        .as_ref()
+        .is_some_and(|bytes| bytes.is_empty() || bytes.len() > 32)
+    {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    let opcode_class = match selector.get("opcode_class") {
+        Some(serde_json::Value::Null) => None,
+        value => Some(
+            u32::try_from(json_u64(value)?)
+                .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?,
+        ),
+    };
+    let input_state_sha256 = match selector.get("input_state_sha256") {
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(value)) => Some(
+            hex_bytes(value)?
+                .try_into()
+                .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?,
+        ),
+        _ => return Err(FaultCommandBridgeError::InstructionEvidence),
+    };
+    let vcpu_index = u32_field(node_fault_field::T1)?;
+    let mutation_kind = match u32_field(node_fault_field::P2)? {
+        1 => FaultInstructionMutationKindV1::ResultCorrupt,
+        2 => FaultInstructionMutationKindV1::Skip,
+        3 => FaultInstructionMutationKindV1::Replay,
+        _ => return Err(FaultCommandBridgeError::InstructionEvidence),
+    };
+    let replay_total = u32_field(node_fault_field::P5)?;
+    let register_mutation = if mutation_kind == FaultInstructionMutationKindV1::ResultCorrupt {
+        let register_identity: [u8; 32] = field(node_fault_field::P3)?
+            .value
+            .as_slice()
+            .try_into()
+            .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+        let row = identity
+            .rows
+            .iter()
+            .find(|row| crucible_shmem::fault_object_id_hash_v1(&row.name) == register_identity)
+            .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+        let mutation = policy_json(&field(node_fault_field::P4)?.value, false)?;
+        Some(result_register_expectation(vcpu_index, row, &mutation)?)
+    } else {
+        None
+    };
+    Ok(InstructionCommandExpectation {
+        operation: decoded.operation,
+        binding_hash,
+        generation: decoded.generation,
+        action_hash: decoded.action_hash,
+        target_hash: decoded.target_hash,
+        vcpu_index,
+        model_phase: decoded.model_phase,
+        pc_start,
+        pc_length,
+        instruction_bytes,
+        opcode_class,
+        input_state_sha256,
+        mutation_kind,
+        replay_total,
+        next_replay_ordinal: 0,
+        register_mutation,
+    })
+}
+
+fn exception_command_expectation(
+    payload: &[u8],
+    binding_hash: [u8; 32],
+) -> Result<ExceptionCommandExpectation, FaultCommandBridgeError> {
+    let decoded = NodeFaultPayloadV1::decode(payload)
+        .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?;
+    let field = |tag| {
+        decoded
+            .fields
+            .iter()
+            .find(|field| field.tag == tag)
+            .ok_or(FaultCommandBridgeError::ExceptionEvidence)
+    };
+    if decoded.operation != NodeFaultOperationV1::Apply {
+        return Err(FaultCommandBridgeError::ExceptionEvidence);
+    }
+    let exception = policy_json(&field(node_fault_field::P1)?.value, true)?;
+    let exception = exception
+        .as_object()
+        .ok_or(FaultCommandBridgeError::ExceptionEvidence)?;
+    let architecture = match exception
+        .get("architecture")
+        .and_then(|value| value.as_str())
+    {
+        Some("x86_64") => FaultCapabilityScope::X86_64,
+        Some("aarch64") => FaultCapabilityScope::Aarch64,
+        _ => return Err(FaultCommandBridgeError::ExceptionEvidence),
+    };
+    let fault_address = match exception.get("fault_address") {
+        Some(serde_json::Value::Null) => None,
+        value => {
+            Some(json_u64(value).map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?)
+        }
+    };
+    let vcpu_index = field(node_fault_field::T1)?
+        .value
+        .as_slice()
+        .try_into()
+        .map(u32::from_le_bytes)
+        .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?;
+    Ok(ExceptionCommandExpectation {
+        binding_hash,
+        generation: decoded.generation,
+        action_hash: decoded.action_hash,
+        target_hash: decoded.target_hash,
+        architecture,
+        model_phase: decoded.model_phase,
+        vcpu_index,
+        vector: u32::try_from(
+            json_u64(exception.get("vector"))
+                .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?,
+        )
+        .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?,
+        syndrome: json_u64(exception.get("syndrome"))
+            .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?,
+        fault_address,
+        before_instruction: exception
+            .get("before_instruction")
+            .and_then(|value| value.as_bool())
+            .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
+    })
+}
+
+fn result_register_expectation(
+    vcpu_index: u32,
+    row: &FaultRegisterCapabilityRowV1,
+    mutation: &serde_json::Value,
+) -> Result<RegisterMutationExpectation, FaultCommandBridgeError> {
+    let root = mutation
+        .as_object()
+        .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+    let kind = root
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+    let parameters = root
+        .get("parameters")
+        .and_then(|value| value.as_object())
+        .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+    let width_bytes = usize::try_from(row.width_bits)
+        .ok()
+        .and_then(|bits| bits.checked_add(7))
+        .map(|bits| bits / 8)
+        .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+    let (mutation_kind, mask, value) = match kind {
+        "bit_flip" => (
+            FaultRegisterMutationKindV1::BitFlip,
+            hex_json(parameters.get("mask"))?,
+            vec![0],
+        ),
+        "stuck" => (
+            FaultRegisterMutationKindV1::Stuck,
+            hex_json(parameters.get("mask"))?,
+            hex_json(parameters.get("value"))?,
+        ),
+        "replace" => {
+            let value = hex_json(parameters.get("value"))?;
+            let mut mask = vec![u8::MAX; width_bytes];
+            if row.width_bits % 8 != 0 {
+                mask[width_bytes - 1] = (1_u8 << (row.width_bits % 8)) - 1;
+            }
+            (FaultRegisterMutationKindV1::Replace, mask, value)
+        }
+        _ => return Err(FaultCommandBridgeError::InstructionEvidence),
+    };
+    if mask.len() != width_bytes
+        || (mutation_kind != FaultRegisterMutationKindV1::BitFlip && value.len() != width_bytes)
+    {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    Ok(RegisterMutationExpectation {
+        vcpu_index,
+        numeric_id: row.numeric_id,
+        model_phase: 12,
+        mutation_kind,
+        first_bit: 0,
+        bit_count: row.width_bits,
+        mask,
+        value,
+    })
+}
+
+fn policy_json(
+    bytes: &[u8],
+    exception: bool,
+) -> Result<serde_json::Value, FaultCommandBridgeError> {
+    let invalid = || {
+        if exception {
+            FaultCommandBridgeError::ExceptionEvidence
+        } else {
+            FaultCommandBridgeError::InstructionEvidence
+        }
+    };
+    let json = bytes.strip_prefix(b"CRUCJSN1").ok_or_else(invalid)?;
+    serde_json::from_slice(json).map_err(|_source| invalid())
+}
+
+fn json_u64(value: Option<&serde_json::Value>) -> Result<u64, FaultCommandBridgeError> {
+    value
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(FaultCommandBridgeError::InstructionEvidence)
+}
+
+fn hex_json(value: Option<&serde_json::Value>) -> Result<Vec<u8>, FaultCommandBridgeError> {
+    value
+        .and_then(serde_json::Value::as_str)
+        .ok_or(FaultCommandBridgeError::InstructionEvidence)
+        .and_then(hex_bytes)
+}
+
+fn hex_bytes(value: &str) -> Result<Vec<u8>, FaultCommandBridgeError> {
+    if value.len() % 2 != 0 {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let nibble = |byte: u8| match byte {
+                b'0'..=b'9' => Some(byte - b'0'),
+                b'a'..=b'f' => Some(byte - b'a' + 10),
+                b'A'..=b'F' => Some(byte - b'A' + 10),
+                _ => None,
+            };
+            nibble(pair[0])
+                .zip(nibble(pair[1]))
+                .map(|(high, low)| high << 4 | low)
+                .ok_or(FaultCommandBridgeError::InstructionEvidence)
+        })
+        .collect()
 }
 
 fn translate_register_evidence(
@@ -1820,6 +2414,369 @@ fn translate_register_evidence(
         .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)
 }
 
+/// Validates a generic terminal record that replaced instruction evidence.
+fn translate_terminal_instruction_evidence(
+    raw: &[u8],
+    event: &QemuFaultEvent,
+    expectation: &InstructionCommandExpectation,
+) -> Result<Vec<u8>, FaultCommandBridgeError> {
+    let evidence = FaultTerminalEvidenceV1::decode(raw)
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    if event.outcome != FaultEventOutcomeV1::Error as u16
+        || event.binding_hash != expectation.binding_hash
+        || event.generation != expectation.generation
+        || event.action_hash != expectation.action_hash
+        || event.target_hash != expectation.target_hash
+        || event.model_phase != expectation.model_phase
+        || event.target_kind != NodeFaultTargetKindV1::Vcpu as u16
+        || evidence.attempted_payload_sha256 != event.opportunity_hash
+    {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    Ok(raw.to_vec())
+}
+
+fn translate_instruction_evidence(
+    raw: &[u8],
+    identity: &InstructionEvidenceIdentity,
+    register_identity: &RegisterEvidenceIdentity,
+    logical_icount_offset: u64,
+    event: &QemuFaultEvent,
+    expectation: &InstructionCommandExpectation,
+) -> Result<Vec<u8>, FaultCommandBridgeError> {
+    const HEADER: usize = 608;
+    let invalid = |_| FaultCommandBridgeError::InstructionEvidence;
+    if raw.len() < HEADER
+        || raw[..8] != *b"CRUCINS1"
+        || raw_u16(raw, 8).map_err(invalid)? != 3
+        || raw[600..608].iter().any(|byte| *byte != 0)
+        || event.binding_hash != expectation.binding_hash
+        || event.generation != expectation.generation
+        || event.action_hash != expectation.action_hash
+        || event.target_hash != expectation.target_hash
+        || event.model_phase != expectation.model_phase
+        || event.target_kind != NodeFaultTargetKindV1::Vcpu as u16
+        || raw_u64(raw, 48).map_err(invalid)? != event.observed_icount
+        || raw[96..128] != event.before_hash
+        || raw[128..160] != event.after_hash
+        || raw[192..224] != identity.manifest_sha256
+    {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    let raw_digest: [u8; 32] = sha2::Sha256::digest(raw).into();
+    if raw_digest != event.opportunity_hash {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    let before_cpu: [u8; 32] = raw[416..448]
+        .try_into()
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    let after_cpu: [u8; 32] = raw[448..480]
+        .try_into()
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    let before_ram: [u8; 32] = raw[288..320]
+        .try_into()
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    let after_ram: [u8; 32] = raw[320..352]
+        .try_into()
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    let before_device: [u8; 32] = raw[352..384]
+        .try_into()
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    let after_device: [u8; 32] = raw[384..416]
+        .try_into()
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    if instruction_system_digest(
+        before_cpu,
+        before_ram,
+        before_device,
+        raw_u64(raw, 480).map_err(invalid)?,
+        raw_u64(raw, 496).map_err(invalid)?,
+    ) != event.before_hash
+        || instruction_system_digest(
+            after_cpu,
+            after_ram,
+            after_device,
+            raw_u64(raw, 488).map_err(invalid)?,
+            raw_u64(raw, 504).map_err(invalid)?,
+        ) != event.after_hash
+    {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    let architecture = FaultCapabilityScope::from_u16(raw_u16(raw, 10).map_err(invalid)?)
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    if architecture != identity.architecture || architecture != register_identity.architecture {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    let mutation_kind = match raw_u32(raw, 12).map_err(invalid)? {
+        1 => FaultInstructionMutationKindV1::ResultCorrupt,
+        2 => FaultInstructionMutationKindV1::Skip,
+        3 => FaultInstructionMutationKindV1::Replay,
+        _ => return Err(FaultCommandBridgeError::InstructionEvidence),
+    };
+    let outcome = match event.outcome {
+        value if value == FaultEventOutcomeV1::Applied as u16 => {
+            FaultInstructionEvidenceOutcomeV1::Applied
+        }
+        value if value == FaultEventOutcomeV1::Suppressed as u16 => {
+            FaultInstructionEvidenceOutcomeV1::Suppressed
+        }
+        value if value == FaultEventOutcomeV1::Error as u16 => {
+            FaultInstructionEvidenceOutcomeV1::Error
+        }
+        _ => return Err(FaultCommandBridgeError::InstructionEvidence),
+    };
+    if outcome == FaultInstructionEvidenceOutcomeV1::Applied {
+        if expectation
+            .input_state_sha256
+            .is_some_and(|expected| raw[568..600] != expected)
+        {
+            return Err(FaultCommandBridgeError::InstructionEvidence);
+        }
+    } else if outcome == FaultInstructionEvidenceOutcomeV1::Suppressed
+        && (expectation.input_state_sha256.is_none()
+            || raw[96..128] != raw[128..160]
+            || expectation.input_state_sha256 == raw[568..600].try_into().ok())
+    {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    let instruction_len = usize::try_from(raw_u32(raw, 56).map_err(invalid)?)
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    let detail_len = usize::try_from(raw_u32(raw, 60).map_err(invalid)?)
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    let expected_len = HEADER
+        .checked_add(instruction_len)
+        .and_then(|length| length.checked_add(detail_len))
+        .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+    let destination_count = usize::try_from(raw_u32(raw, 164).map_err(invalid)?)
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    let page_count = usize::try_from(raw_u32(raw, 528).map_err(invalid)?)
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+    if raw.len() != expected_len
+        || destination_count > 4
+        || !(1..=2).contains(&page_count)
+        || raw_u32(raw, 160).map_err(invalid)? != expectation.vcpu_index
+        || mutation_kind != expectation.mutation_kind
+        || raw_u32(raw, 20).map_err(invalid)? != expectation.replay_total
+        || raw_u32(raw, 532).map_err(invalid)?
+            != u32::from(expectation.input_state_sha256.is_some())
+        || raw[536..568] != expectation.input_state_sha256.unwrap_or([0; 32])
+    {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    let pc = raw_u64(raw, 32).map_err(invalid)?;
+    if pc < expectation.pc_start
+        || pc >= expectation.pc_start + expectation.pc_length
+        || expectation
+            .instruction_bytes
+            .as_ref()
+            .is_some_and(|expected| expected.as_slice() != &raw[HEADER..HEADER + instruction_len])
+        || expectation
+            .opcode_class
+            .is_some_and(|expected| expected != raw_u32(raw, 24).unwrap_or(0))
+    {
+        return Err(FaultCommandBridgeError::InstructionEvidence);
+    }
+    let raw_detail = &raw[HEADER + instruction_len..];
+    let detail = match (outcome, &expectation.register_mutation, mutation_kind) {
+        (
+            FaultInstructionEvidenceOutcomeV1::Applied,
+            Some(register),
+            FaultInstructionMutationKindV1::ResultCorrupt,
+        ) => {
+            let translated = translate_register_evidence(
+                raw_detail,
+                register_identity,
+                logical_icount_offset,
+                event.observed_icount,
+                Some(12),
+                event.before_hash,
+                event.after_hash,
+                register,
+            )?;
+            if !(0..destination_count)
+                .any(|index| raw_u32(raw, 168 + index * 4).ok() == Some(register.numeric_id))
+            {
+                return Err(FaultCommandBridgeError::InstructionEvidence);
+            }
+            translated
+        }
+        (
+            FaultInstructionEvidenceOutcomeV1::Applied,
+            None,
+            FaultInstructionMutationKindV1::Replay,
+        ) if raw_u32(raw, 24).map_err(invalid)? == 0x0100_0008 => {
+            let transcript = FaultInstructionPortIoEvidenceV1::decode(raw_detail)
+                .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
+            if transcript.entries.iter().any(|entry| !entry.completed) {
+                return Err(FaultCommandBridgeError::InstructionEvidence);
+            }
+            transcript
+                .encode()
+                .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?
+        }
+        (
+            FaultInstructionEvidenceOutcomeV1::Applied,
+            None,
+            FaultInstructionMutationKindV1::Skip | FaultInstructionMutationKindV1::Replay,
+        ) if raw_detail.is_empty() => Vec::new(),
+        (FaultInstructionEvidenceOutcomeV1::Suppressed, _, _) if raw_detail.is_empty() => {
+            Vec::new()
+        }
+        (FaultInstructionEvidenceOutcomeV1::Error, _, _) if raw_detail.len() <= 32 => {
+            raw_detail.to_vec()
+        }
+        _ => return Err(FaultCommandBridgeError::InstructionEvidence),
+    };
+    let observed_icount = event
+        .observed_icount
+        .checked_add(logical_icount_offset)
+        .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+    let evidence = FaultInstructionEvidenceV1 {
+        architecture,
+        mutation_kind,
+        outcome,
+        replay_ordinal: raw_u32(raw, 16).map_err(invalid)?,
+        replay_total: raw_u32(raw, 20).map_err(invalid)?,
+        opcode_class: raw_u32(raw, 24).map_err(invalid)?,
+        flags: raw_u32(raw, 28).map_err(invalid)?,
+        pc,
+        physical_address: raw_u64(raw, 40).map_err(invalid)?,
+        observed_icount,
+        vcpu_index: raw_u32(raw, 160).map_err(invalid)?,
+        destinations: (0..destination_count)
+            .map(|index| raw_u32(raw, 168 + index * 4).map_err(invalid))
+            .collect::<Result<_, _>>()?,
+        instruction_sha256: raw[64..96]
+            .try_into()
+            .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?,
+        before_state_sha256: event.before_hash,
+        after_state_sha256: event.after_hash,
+        manifest_sha256: identity.manifest_sha256,
+        before_cpu_sha256: before_cpu,
+        after_cpu_sha256: after_cpu,
+        input_state_sha256: expectation.input_state_sha256,
+        matched_input_state_sha256: raw[568..600]
+            .try_into()
+            .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?,
+        code_page_bases: (0..page_count)
+            .map(|index| raw_u64(raw, 512 + index * 8).map_err(invalid))
+            .collect::<Result<_, _>>()?,
+        code_page_sha256: (0..page_count)
+            .map(|index| {
+                raw.get(224 + index * 32..256 + index * 32)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or(FaultCommandBridgeError::InstructionEvidence)
+            })
+            .collect::<Result<_, _>>()?,
+        before_ram_sha256: before_ram,
+        after_ram_sha256: after_ram,
+        before_device_sha256: before_device,
+        after_device_sha256: after_device,
+        before_ram_bytes: raw_u64(raw, 480).map_err(invalid)?,
+        after_ram_bytes: raw_u64(raw, 488).map_err(invalid)?,
+        before_device_bytes: raw_u64(raw, 496).map_err(invalid)?,
+        after_device_bytes: raw_u64(raw, 504).map_err(invalid)?,
+        instruction_bytes: raw[HEADER..HEADER + instruction_len].to_vec(),
+        detail,
+    };
+    evidence
+        .encode()
+        .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)
+}
+
+fn translate_exception_evidence(
+    raw: &[u8],
+    identity: &InstructionEvidenceIdentity,
+    logical_icount_offset: u64,
+    event: &QemuFaultEvent,
+    expectation: &ExceptionCommandExpectation,
+) -> Result<Vec<u8>, FaultCommandBridgeError> {
+    let invalid = |_| FaultCommandBridgeError::ExceptionEvidence;
+    if raw.len() != 192
+        || raw[..8] != *b"CRUCEXC1"
+        || raw_u16(raw, 8).map_err(invalid)? != 2
+        || event.binding_hash != expectation.binding_hash
+        || event.generation != expectation.generation
+        || event.action_hash != expectation.action_hash
+        || event.target_hash != expectation.target_hash
+        || event.model_phase != expectation.model_phase
+        || event.target_kind != NodeFaultTargetKindV1::Vcpu as u16
+        || event.outcome != FaultEventOutcomeV1::Applied as u16
+        || raw_u64(raw, 56).map_err(invalid)? != event.observed_icount
+        || raw[96..128] != event.before_hash
+        || raw[128..160] != event.after_hash
+        || raw[14..16].iter().any(|byte| *byte != 0)
+        || raw[52..56].iter().any(|byte| *byte != 0)
+        || raw[77..80].iter().any(|byte| *byte != 0)
+        || raw[160..192].iter().any(|byte| *byte != 0)
+    {
+        return Err(FaultCommandBridgeError::ExceptionEvidence);
+    }
+    let raw_digest: [u8; 32] = sha2::Sha256::digest(raw).into();
+    let architecture = FaultCapabilityScope::from_u16(raw_u16(raw, 10).map_err(invalid)?)
+        .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?;
+    let has_address = raw[48] == 1;
+    if raw_digest != event.opportunity_hash
+        || architecture != identity.architecture
+        || architecture != expectation.architecture
+        || raw_u16(raw, 12).map_err(invalid)? != expectation.model_phase
+        || raw_u32(raw, 16).map_err(invalid)? != expectation.vcpu_index
+        || raw_u32(raw, 20).map_err(invalid)? != expectation.vector
+        || raw_u64(raw, 24).map_err(invalid)? != expectation.syndrome
+        || has_address != expectation.fault_address.is_some()
+        || raw_u64(raw, 32).map_err(invalid)? != expectation.fault_address.unwrap_or(0)
+        || raw[49] != u8::from(expectation.before_instruction)
+        || raw[50] != 0
+        || raw[51] != 1
+        || raw_u32(raw, 72).map_err(invalid)? != expectation.vector
+        || raw[76] != u8::from(has_address)
+        || raw_u64(raw, 80).map_err(invalid)? != expectation.syndrome
+        || raw_u64(raw, 88).map_err(invalid)? != expectation.fault_address.unwrap_or(0)
+    {
+        return Err(FaultCommandBridgeError::ExceptionEvidence);
+    }
+    let evidence = FaultExceptionEvidenceV1 {
+        architecture,
+        model_phase: expectation.model_phase,
+        vcpu_index: expectation.vcpu_index,
+        vector: expectation.vector,
+        syndrome: expectation.syndrome,
+        fault_address: expectation.fault_address,
+        before_instruction: expectation.before_instruction,
+        command_icount: raw_u64(raw, 40)
+            .map_err(invalid)?
+            .checked_add(logical_icount_offset)
+            .ok_or(FaultCommandBridgeError::CoordinateOverflow)?,
+        delivered_icount: event
+            .observed_icount
+            .checked_add(logical_icount_offset)
+            .ok_or(FaultCommandBridgeError::CoordinateOverflow)?,
+        entry_pc: raw_u64(raw, 64).map_err(invalid)?,
+        before_sha256: event.before_hash,
+        after_sha256: event.after_hash,
+    };
+    evidence
+        .encode()
+        .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)
+}
+
+fn instruction_system_digest(
+    cpu_sha256: [u8; 32],
+    ram_sha256: [u8; 32],
+    device_sha256: [u8; 32],
+    ram_bytes: u64,
+    device_bytes: u64,
+) -> [u8; 32] {
+    let mut digest = sha2::Sha256::new();
+    digest.update(b"crucible.instruction-state.v1\0");
+    digest.update(cpu_sha256);
+    digest.update(ram_sha256);
+    digest.update(device_sha256);
+    digest.update(ram_bytes.to_le_bytes());
+    digest.update(device_bytes.to_le_bytes());
+    digest.finalize().into()
+}
+
 fn raw_u16(bytes: &[u8], offset: usize) -> Result<u16, FaultCommandBridgeError> {
     bytes
         .get(offset..offset + 2)
@@ -1950,6 +2907,21 @@ pub enum FaultCommandBridgeError {
     /// QEMU returned malformed or identity-inconsistent register evidence.
     #[error("QEMU register mutation evidence is invalid")]
     RegisterEvidence,
+    /// The instruction manifest reported an invalid byte count.
+    #[error("QEMU instruction manifest reported invalid byte count {required}")]
+    InstructionManifestCount {
+        /// Reported manifest byte count.
+        required: usize,
+    },
+    /// The instruction manifest changed between identity and copy calls.
+    #[error("QEMU instruction manifest changed during bridge initialization")]
+    InstructionManifestChanged,
+    /// QEMU returned malformed or command-inconsistent instruction evidence.
+    #[error("QEMU instruction mutation evidence is invalid")]
+    InstructionEvidence,
+    /// QEMU returned malformed or command-inconsistent exception evidence.
+    #[error("QEMU delivered-exception evidence is invalid")]
+    ExceptionEvidence,
     /// A process-lifetime capability string pointer was null.
     #[error("QEMU fault capability field `{field}` is null")]
     CapabilityStringNull {
@@ -2199,8 +3171,12 @@ mod tests {
             capability_queries: BTreeSet::new(),
             register_manifest_payload: None,
             register_evidence_identity: None,
+            instruction_evidence_identity: None,
             register_commands: BTreeMap::new(),
             active_register_bindings: BTreeMap::new(),
+            instruction_commands: BTreeMap::new(),
+            active_instruction_bindings: BTreeMap::new(),
+            exception_commands: BTreeMap::new(),
             pending_command: None,
         };
         let command = |kind, sequence, node_hash| FaultCommandHeaderV1 {
@@ -2515,6 +3491,420 @@ mod tests {
                 &expectation,
             ),
             Err(FaultCommandBridgeError::RegisterEvidence)
+        ));
+    }
+
+    fn instruction_evidence_fixture() -> (
+        Vec<u8>,
+        InstructionEvidenceIdentity,
+        RegisterEvidenceIdentity,
+        QemuFaultEvent,
+        InstructionCommandExpectation,
+    ) {
+        const HEADER: usize = 608;
+        let instruction = [0x90_u8];
+        let mut raw = vec![0_u8; HEADER + instruction.len()];
+        raw[..8].copy_from_slice(b"CRUCINS1");
+        raw[8..10].copy_from_slice(&3_u16.to_le_bytes());
+        raw[10..12].copy_from_slice(&(FaultCapabilityScope::X86_64 as u16).to_le_bytes());
+        raw[12..16].copy_from_slice(&(FaultInstructionMutationKindV1::Skip as u32).to_le_bytes());
+        raw[24..28].copy_from_slice(&0x0100_0001_u32.to_le_bytes());
+        raw[32..40].copy_from_slice(&0x1000_u64.to_le_bytes());
+        raw[40..48].copy_from_slice(&0x2000_u64.to_le_bytes());
+        raw[48..56].copy_from_slice(&17_u64.to_le_bytes());
+        raw[56..60].copy_from_slice(&1_u32.to_le_bytes());
+        raw[64..96].copy_from_slice(&sha2::Sha256::digest(instruction));
+        raw[192..224].fill(3);
+        raw[224..256].fill(4);
+        raw[288..320].fill(5);
+        raw[320..352].fill(6);
+        raw[352..384].fill(7);
+        raw[384..416].fill(8);
+        raw[416..448].fill(1);
+        raw[448..480].fill(2);
+        raw[480..488].copy_from_slice(&4096_u64.to_le_bytes());
+        raw[488..496].copy_from_slice(&4096_u64.to_le_bytes());
+        raw[496..504].copy_from_slice(&128_u64.to_le_bytes());
+        raw[504..512].copy_from_slice(&128_u64.to_le_bytes());
+        let before_state = instruction_system_digest([1; 32], [5; 32], [7; 32], 4096, 128);
+        let after_state = instruction_system_digest([2; 32], [6; 32], [8; 32], 4096, 128);
+        raw[96..128].copy_from_slice(&before_state);
+        raw[128..160].copy_from_slice(&after_state);
+        raw[568..600].copy_from_slice(&before_state);
+        raw[512..520].copy_from_slice(&0x2000_u64.to_le_bytes());
+        raw[528..532].copy_from_slice(&1_u32.to_le_bytes());
+        raw[HEADER] = instruction[0];
+        let identity = InstructionEvidenceIdentity {
+            architecture: FaultCapabilityScope::X86_64,
+            manifest_sha256: [3; 32],
+        };
+        let register_identity = RegisterEvidenceIdentity {
+            architecture: FaultCapabilityScope::X86_64,
+            manifest_digest: [9; 32],
+            cpu_model_digest: [10; 32],
+            rows: Vec::new(),
+        };
+        let expectation = InstructionCommandExpectation {
+            operation: NodeFaultOperationV1::Upsert,
+            binding_hash: [12; 32],
+            generation: 3,
+            action_hash: [13; 32],
+            target_hash: [14; 32],
+            vcpu_index: 0,
+            model_phase: 11,
+            pc_start: 0x1000,
+            pc_length: 1,
+            instruction_bytes: Some(instruction.to_vec()),
+            opcode_class: Some(0x0100_0001),
+            input_state_sha256: None,
+            mutation_kind: FaultInstructionMutationKindV1::Skip,
+            replay_total: 0,
+            next_replay_ordinal: 0,
+            register_mutation: None,
+        };
+        let event = QemuFaultEvent {
+            command_kind: FaultCommandKind::CpuInstructionTransform as u16,
+            outcome: FaultEventOutcomeV1::Applied as u16,
+            model_phase: 11,
+            target_kind: NodeFaultTargetKindV1::Vcpu as u16,
+            reserved: 0,
+            event_sequence: 1,
+            rule_command_sequence: 2,
+            observed_icount: 17,
+            generation: 3,
+            binding_hash: [12; 32],
+            opportunity_hash: sha2::Sha256::digest(&raw).into(),
+            action_hash: [13; 32],
+            target_hash: [14; 32],
+            before_hash: before_state,
+            after_hash: after_state,
+        };
+        (raw, identity, register_identity, event, expectation)
+    }
+
+    #[test]
+    fn instruction_apply_terminal_results_retain_expectation_until_evidence_event() {
+        let (_raw, _identity, _register_identity, event, mut expectation) =
+            instruction_evidence_fixture();
+        expectation.operation = NodeFaultOperationV1::Apply;
+        for status in [FaultResultStatus::Applied, FaultResultStatus::InternalError] {
+            let mut commands = BTreeMap::from([(event.rule_command_sequence, expectation.clone())]);
+            let mut active_bindings = BTreeMap::new();
+
+            track_instruction_result(
+                &mut commands,
+                &mut active_bindings,
+                event.rule_command_sequence,
+                status as u16,
+            )
+            .unwrap_or_else(|error| {
+                panic!("terminal Apply result must remain correlatable: {error}")
+            });
+
+            assert!(commands.contains_key(&event.rule_command_sequence));
+            assert!(active_bindings.is_empty());
+            commands.remove(&event.rule_command_sequence);
+            assert!(commands.is_empty());
+        }
+    }
+
+    #[test]
+    fn instruction_resource_terminal_translates_and_releases_correlation() {
+        let (_raw, _identity, _register_identity, mut event, mut expectation) =
+            instruction_evidence_fixture();
+        let attempted_sha256 = [9_u8; 32];
+        let mut terminal = [0_u8; crucible_shmem::FAULT_TERMINAL_EVIDENCE_V1_BYTES];
+
+        terminal[..8].copy_from_slice(&crucible_shmem::FAULT_QUEUE_TERMINAL_EVIDENCE_MAGIC_V1);
+        terminal[8..12].copy_from_slice(
+            &(crucible_shmem::FaultTerminalReasonV1::EventCapacity as u32).to_le_bytes(),
+        );
+        terminal[12..16].copy_from_slice(&15_u32.to_le_bytes());
+        terminal[16..20].copy_from_slice(&16_u32.to_le_bytes());
+        terminal[20..22].copy_from_slice(&(FaultEventOutcomeV1::Applied as u16).to_le_bytes());
+        terminal[24..32].copy_from_slice(&608_u64.to_le_bytes());
+        terminal[32..64].copy_from_slice(&attempted_sha256);
+        terminal[66..68].copy_from_slice(&1_u16.to_le_bytes());
+        event.outcome = FaultEventOutcomeV1::Error as u16;
+        event.opportunity_hash = attempted_sha256;
+        expectation.operation = NodeFaultOperationV1::Apply;
+
+        assert_eq!(
+            translate_terminal_instruction_evidence(&terminal, &event, &expectation)
+                .expect("correlated terminal evidence"),
+            terminal
+        );
+        let mut commands = BTreeMap::from([(event.rule_command_sequence, expectation)]);
+        let mut active_bindings = BTreeMap::new();
+        track_terminal_instruction_event(
+            &mut commands,
+            &mut active_bindings,
+            event.rule_command_sequence,
+        )
+        .expect("terminal event correlation");
+        assert!(commands.is_empty());
+
+        let mut wrong_hash = event;
+        wrong_hash.opportunity_hash[0] ^= 1;
+        let (_, _, _, _, expectation) = instruction_evidence_fixture();
+        assert!(matches!(
+            translate_terminal_instruction_evidence(&terminal, &wrong_hash, &expectation),
+            Err(FaultCommandBridgeError::InstructionEvidence)
+        ));
+    }
+
+    #[test]
+    fn instruction_replay_events_require_exact_sequence_and_terminalize_once() {
+        let (raw, identity, register_identity, event, mut expectation) =
+            instruction_evidence_fixture();
+        let canonical = translate_instruction_evidence(
+            &raw,
+            &identity,
+            &register_identity,
+            0,
+            &event,
+            &expectation,
+        )
+        .unwrap_or_else(|error| panic!("translate replay-sequence fixture: {error}"));
+        let mut evidence = FaultInstructionEvidenceV1::decode(&canonical)
+            .unwrap_or_else(|error| panic!("decode replay-sequence fixture: {error}"));
+        evidence.mutation_kind = FaultInstructionMutationKindV1::Replay;
+        evidence.replay_total = 2;
+        expectation.operation = NodeFaultOperationV1::Apply;
+        expectation.mutation_kind = FaultInstructionMutationKindV1::Replay;
+        expectation.replay_total = 2;
+
+        let mut commands = BTreeMap::from([(event.rule_command_sequence, expectation.clone())]);
+        for ordinal in 0..=2 {
+            evidence.replay_ordinal = ordinal;
+            let payload = evidence
+                .encode()
+                .unwrap_or_else(|error| panic!("encode replay ordinal {ordinal}: {error}"));
+            track_instruction_event(&mut commands, event.rule_command_sequence, &payload)
+                .unwrap_or_else(|error| panic!("track replay ordinal {ordinal}: {error}"));
+            assert_eq!(commands.is_empty(), ordinal == 2);
+        }
+
+        let mut commands = BTreeMap::from([(event.rule_command_sequence, expectation.clone())]);
+        evidence.replay_ordinal = 1;
+        let out_of_order = evidence
+            .encode()
+            .unwrap_or_else(|error| panic!("encode out-of-order replay: {error}"));
+        assert!(matches!(
+            track_instruction_event(&mut commands, event.rule_command_sequence, &out_of_order,),
+            Err(FaultCommandBridgeError::InstructionEvidence)
+        ));
+
+        evidence.replay_ordinal = 0;
+        evidence.outcome = FaultInstructionEvidenceOutcomeV1::Applied;
+        let first = evidence
+            .encode()
+            .unwrap_or_else(|error| panic!("encode first replay event: {error}"));
+        track_instruction_event(&mut commands, event.rule_command_sequence, &first)
+            .unwrap_or_else(|error| panic!("track first replay event: {error}"));
+        evidence.replay_ordinal = 1;
+        evidence.outcome = FaultInstructionEvidenceOutcomeV1::Error;
+        let error = evidence
+            .encode()
+            .unwrap_or_else(|error| panic!("encode fail-closed replay event: {error}"));
+        track_instruction_event(&mut commands, event.rule_command_sequence, &error)
+            .unwrap_or_else(|error| panic!("track fail-closed replay event: {error}"));
+        assert!(commands.is_empty());
+    }
+
+    #[test]
+    fn instruction_bridge_rejects_uncorrelated_private_evidence() {
+        let (raw, identity, register_identity, event, expectation) = instruction_evidence_fixture();
+        assert!(
+            translate_instruction_evidence(
+                &raw,
+                &identity,
+                &register_identity,
+                5,
+                &event,
+                &expectation,
+            )
+            .is_ok()
+        );
+
+        for mutate in [(608_usize, 0xcc_u8), (24, 2), (416, 9)] {
+            let mut malformed = raw.clone();
+            malformed[mutate.0] = mutate.1;
+            let mut correlated_event = event;
+            correlated_event.opportunity_hash = sha2::Sha256::digest(&malformed).into();
+            assert!(matches!(
+                translate_instruction_evidence(
+                    &malformed,
+                    &identity,
+                    &register_identity,
+                    5,
+                    &correlated_event,
+                    &expectation,
+                ),
+                Err(FaultCommandBridgeError::InstructionEvidence)
+            ));
+        }
+
+        let mut wrong_generation = event;
+        wrong_generation.generation += 1;
+        assert!(matches!(
+            translate_instruction_evidence(
+                &raw,
+                &identity,
+                &register_identity,
+                5,
+                &wrong_generation,
+                &expectation,
+            ),
+            Err(FaultCommandBridgeError::InstructionEvidence)
+        ));
+    }
+
+    #[test]
+    fn instruction_bridge_requires_actual_device_io_for_device_replay() {
+        let (mut raw, identity, register_identity, mut event, mut expectation) =
+            instruction_evidence_fixture();
+        let transcript = FaultInstructionPortIoEvidenceV1 {
+            entries: vec![crucible_shmem::FaultInstructionPortIoEntryV1 {
+                direction: crucible_shmem::FaultInstructionPortIoDirectionV1::Write,
+                port: 0xe9,
+                value: vec![b'X'],
+                completed: true,
+            }],
+        }
+        .encode()
+        .expect("valid device-I/O transcript");
+        raw[12..16].copy_from_slice(&(FaultInstructionMutationKindV1::Replay as u32).to_le_bytes());
+        raw[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        raw[24..28].copy_from_slice(&0x0100_0008_u32.to_le_bytes());
+        raw[28..32].copy_from_slice(&(1_u32 << 5).to_le_bytes());
+        raw[60..64].copy_from_slice(&(transcript.len() as u32).to_le_bytes());
+        raw[608] = 0xee;
+        raw[64..96].copy_from_slice(&sha2::Sha256::digest([0xee]));
+        raw.extend_from_slice(&transcript);
+        event.opportunity_hash = sha2::Sha256::digest(&raw).into();
+        expectation.instruction_bytes = Some(vec![0xee]);
+        expectation.opcode_class = Some(0x0100_0008);
+        expectation.mutation_kind = FaultInstructionMutationKindV1::Replay;
+        expectation.replay_total = 1;
+
+        let canonical = translate_instruction_evidence(
+            &raw,
+            &identity,
+            &register_identity,
+            5,
+            &event,
+            &expectation,
+        )
+        .expect("device replay with an authenticated transaction");
+        let decoded = FaultInstructionEvidenceV1::decode(&canonical)
+            .expect("canonical device-replay evidence");
+        assert_eq!(
+            FaultInstructionPortIoEvidenceV1::decode(&decoded.detail)
+                .expect("canonical nested transcript")
+                .entries[0]
+                .port,
+            0xe9
+        );
+
+        raw.truncate(609);
+        raw[60..64].fill(0);
+        event.opportunity_hash = sha2::Sha256::digest(&raw).into();
+        assert!(matches!(
+            translate_instruction_evidence(
+                &raw,
+                &identity,
+                &register_identity,
+                5,
+                &event,
+                &expectation,
+            ),
+            Err(FaultCommandBridgeError::InstructionEvidence)
+        ));
+    }
+
+    fn exception_evidence_fixture() -> (
+        Vec<u8>,
+        InstructionEvidenceIdentity,
+        QemuFaultEvent,
+        ExceptionCommandExpectation,
+    ) {
+        let mut raw = vec![0_u8; 192];
+        raw[..8].copy_from_slice(b"CRUCEXC1");
+        raw[8..10].copy_from_slice(&2_u16.to_le_bytes());
+        raw[10..12].copy_from_slice(&(FaultCapabilityScope::X86_64 as u16).to_le_bytes());
+        raw[12..14].copy_from_slice(&2_u16.to_le_bytes());
+        raw[20..24].copy_from_slice(&6_u32.to_le_bytes());
+        raw[40..48].copy_from_slice(&10_u64.to_le_bytes());
+        raw[49] = 1;
+        raw[51] = 1;
+        raw[56..64].copy_from_slice(&17_u64.to_le_bytes());
+        raw[64..72].copy_from_slice(&0x3000_u64.to_le_bytes());
+        raw[72..76].copy_from_slice(&6_u32.to_le_bytes());
+        raw[96..128].fill(1);
+        raw[128..160].fill(2);
+        let identity = InstructionEvidenceIdentity {
+            architecture: FaultCapabilityScope::X86_64,
+            manifest_sha256: [3; 32],
+        };
+        let expectation = ExceptionCommandExpectation {
+            binding_hash: [12; 32],
+            generation: 4,
+            action_hash: [13; 32],
+            target_hash: [14; 32],
+            architecture: FaultCapabilityScope::X86_64,
+            model_phase: 2,
+            vcpu_index: 0,
+            vector: 6,
+            syndrome: 0,
+            fault_address: None,
+            before_instruction: true,
+        };
+        let event = QemuFaultEvent {
+            command_kind: FaultCommandKind::CpuException as u16,
+            outcome: FaultEventOutcomeV1::Applied as u16,
+            model_phase: 2,
+            target_kind: NodeFaultTargetKindV1::Vcpu as u16,
+            reserved: 0,
+            event_sequence: 1,
+            rule_command_sequence: 2,
+            observed_icount: 17,
+            generation: 4,
+            binding_hash: [12; 32],
+            opportunity_hash: sha2::Sha256::digest(&raw).into(),
+            action_hash: [13; 32],
+            target_hash: [14; 32],
+            before_hash: [1; 32],
+            after_hash: [2; 32],
+        };
+        (raw, identity, event, expectation)
+    }
+
+    #[test]
+    fn exception_bridge_requires_proven_architectural_delivery() {
+        let (raw, identity, event, expectation) = exception_evidence_fixture();
+        assert!(translate_exception_evidence(&raw, &identity, 5, &event, &expectation).is_ok());
+
+        let mut wrong_delivery = raw.clone();
+        wrong_delivery[72] = 7;
+        let mut correlated_event = event;
+        correlated_event.opportunity_hash = sha2::Sha256::digest(&wrong_delivery).into();
+        assert!(matches!(
+            translate_exception_evidence(
+                &wrong_delivery,
+                &identity,
+                5,
+                &correlated_event,
+                &expectation,
+            ),
+            Err(FaultCommandBridgeError::ExceptionEvidence)
+        ));
+
+        let mut not_applied = event;
+        not_applied.outcome = FaultEventOutcomeV1::Suppressed as u16;
+        assert!(matches!(
+            translate_exception_evidence(&raw, &identity, 5, &not_applied, &expectation),
+            Err(FaultCommandBridgeError::ExceptionEvidence)
         ));
     }
 }
