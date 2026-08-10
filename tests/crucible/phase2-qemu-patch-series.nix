@@ -385,6 +385,13 @@
       capability = "exact x86-64 and AArch64 instruction result, skip, replay, and architectural exception faults";
     }
     {
+      file = "0053-crucible-interrupt-faults.patch";
+      catalogName = "crucible-interrupt-faults";
+      class = "D";
+      enforces = "QFP-IRQ-1,QFP-IRQ-2,FAULT-ORDER";
+      capability = "manifest-bound interrupt drop, delay, duplication, replacement, and bounded storms through realized x86-64 and AArch64 controllers";
+    }
+    {
       file = "0060-crucible-block-typed-errors.patch";
       catalogName = "crucible-block-typed-errors";
       class = "F";

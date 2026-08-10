@@ -56,6 +56,32 @@ the typed exception contract in patch 0054. `controller_version` is the exact
 printable realized implementation identity exported by QEMU, not a user-chosen
 label.
 
+Patch 0053 constructs this manifest from devices that actually realized. Family
+registration is accepted only before the manifest is first read; a device that
+tries to appear later is rejected instead of silently widening an authenticated
+run. The host then binds SHA-256 identities for every row and seals the complete
+table before any rule can be installed. Missing bindings, duplicate bindings,
+row reordering, target-set drift, or a controller-version mismatch fail setup.
+
+The implemented controller hooks advertise these model phases:
+
+| Realized controller path | Families | Advertised phase |
+| --- | --- | --- |
+| local APIC | fixed edge/level, IPI, timer | `route`, `deliver` |
+| local APIC NMI | NMI | `route` |
+| IOAPIC to local APIC | edge/level IOAPIC | `route`, `deliver` |
+| PCI MSI/MSI-X to local APIC | MSI, MSI-X | `route`, `deliver` |
+| i8259 PIC acknowledge | edge/level PIC | `deliver` |
+| GICv2 CPU interface | SGI, PPI, SPI, architectural timer | `deliver` |
+| GICv3 CPU interface | SGI, PPI, SPI, architectural timer, realized LPI | `deliver` |
+
+`deliver` is the controller's transactional acknowledge-and-deliver point: the
+implementation snapshots the pending selection, applies the disposition, and
+either commits the architecture controller transition or restores/re-pends the
+event according to the authenticated row. It is not callback suppression after
+the interrupt has already become guest-visible. Phases absent from a row are
+rejected at rule admission.
+
 ## Rule and event identity
 
 The resolved target selects one source ID, controller, vector/type, target vCPU,
@@ -82,6 +108,22 @@ per-command policy. Edge-triggered duplicate/replacement creates new edge
 events. Delayed interrupts always preserve the original priority/routing
 snapshot. Unsupported source/phase combinations are rejected before install.
 
+Replacement and deferred release re-enter normal controller arbitration. They
+do not write directly over a pending vector. The APIC checks both IRR and ISR
+destination state and preserves trigger-mode state; PIC release resolves the
+actual IRQ line before checking pending state; GICv2/GICv3 validate the target,
+INTID domain, enablement, and controller-specific pending representation. A
+collision or route that became invalid after admission emits a terminal fault
+result and leaves the pre-existing controller event untouched.
+
+Each pending event carries source sequence and routing generation provenance.
+APIC, PIC, GICv2, and ordinary GICv3 events store it with controller state;
+GICv3 LPIs and deferred events use a bounded sparse provenance table keyed by
+family, target, and INTID. LPI delivery validates the live property and pending
+tables, and provenance follows an ITS-directed LPI move. The central release
+phase prevents a delayed or duplicate child from recursively matching the rule
+that created it.
+
 ## Storms
 
 A storm rule carries a positive period, positive burst, and positive finite
@@ -91,6 +133,14 @@ CPU/queue service. Maximum events obey the
 [resource contract](../13-resource-and-performance-bounds.md). An unbounded
 storm is modeled by a temporal signal issuing bounded generations, never by an
 unbounded QEMU queue.
+
+Storm injection uses the same registered injector and route validator as an
+ordinary controller event. APIC priority is the vector high nibble; PIC maps
+the full authenticated `0..=255` vector domain deterministically to IRQ line
+`vector & 15` with priority `vector & 7`; GICv2 SGI storms use the lowest
+realized boot vCPU as their deterministic source. Completed storms release
+their timer and target array while retaining only the small completed-rule
+marker needed to prevent re-arming the same generation.
 
 ## Ordering
 
@@ -107,6 +157,14 @@ matched rules/decisions, original/final phase state, queued release coordinate,
 controller pending/active digests, target vCPU/RR cursor, guest exception entry,
 and fingerprint. Patch 0059 serializes rules, delayed/storm queues, source
 sequences, controller-associated fault state, and partial acknowledgements.
+
+Patch 0053 already places controller-resident provenance in the corresponding
+APIC, PIC, GICv2, and GICv3 VMState descriptions. Patch 0059 owns the complete
+cross-component migration transaction for the sparse LPI/deferred provenance
+table, source/routing counters, pending command/impulse commit, delayed timers,
+storm progress and target lists, and queued deterministic IPI provenance. Until
+0059 is present, save admission must reject a run with any of that global fault
+state live.
 
 ## Live microtests
 
