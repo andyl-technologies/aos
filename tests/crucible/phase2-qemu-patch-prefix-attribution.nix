@@ -288,6 +288,10 @@
       kind = "interface";
       symbols = ["qemu_plugin_crucible_fault_instruction_manifest"];
     };
+    "0053-crucible-interrupt-faults.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_fault_interrupt_manifest"];
+    };
     "0060-crucible-block-typed-errors.patch" = {
       kind = "recorded";
       symbols = [];

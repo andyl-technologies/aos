@@ -1,38 +1,5 @@
-From 44140ee97e8f3ee1b87570dbb2c7a2d57c590200 Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Mon, 10 Aug 2026 02:45:50 -0700
-Subject: [PATCH] crucible: add instruction and exception faults
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- MAINTAINERS                              |    2 +
- accel/tcg/cpu-exec.c                     |   84 +-
- accel/tcg/translator.c                   |   17 +-
- include/exec/translator.h                |    2 +
- include/hw/core/cpu.h                    |    7 +
- include/qemu/crucible-fault.h            |   83 +-
- include/qemu/qemu-plugin.h               |   22 +-
- plugins/crucible-fault-instruction.c     | 2825 ++++++++++++++++++++++
- plugins/crucible-fault-node.c            |  294 ++-
- plugins/crucible-fault-register.c        |  188 +-
- plugins/crucible-fault.c                 |   97 +-
- plugins/meson.build                      |    3 +-
- system/ioport.c                          |   42 +-
- target/arm/helper.c                      |   28 +
- target/arm/ptw.c                         |   63 +-
- target/arm/tcg/translate-a64.c           |    7 +-
- target/i386/tcg/seg_helper.c             |    4 +
- target/i386/tcg/system/excp_helper.c     |   43 +-
- target/i386/tcg/system/misc_helper.c     |   56 +-
- target/i386/tcg/translate.c              |    3 +
- tests/tcg/plugins/crucible-instruction.c | 1773 ++++++++++++++
- tests/tcg/plugins/meson.build            |    2 +-
- 22 files changed, 5546 insertions(+), 99 deletions(-)
- create mode 100644 plugins/crucible-fault-instruction.c
- create mode 100644 tests/tcg/plugins/crucible-instruction.c
-
 diff --git a/MAINTAINERS b/MAINTAINERS
-index b5b12db2e42d7640e652b35ba5bc1cb2a2b8d949..ac1b6993b30ace26709bd0d71078b4dedfe47858 100644
+index b5b12db..ac1b699 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
 @@ -3839,7 +3839,9 @@ S: Maintained
@@ -46,7 +13,7 @@ index b5b12db2e42d7640e652b35ba5bc1cb2a2b8d949..ac1b6993b30ace26709bd0d71078b4de
  F: tests/functional/test_aarch64_tcg_plugins.py
  F: contrib/plugins/
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index 777ccacd02c2a86ac1a933db761bce3fb676244d..55c096523e811c9b73281e212e9be85a1b4e060a 100644
+index 777ccac..55c0965 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
 @@ -532,6 +532,8 @@ static void cpu_exec_longjmp_cleanup(CPUState *cpu)
@@ -216,7 +183,7 @@ index 777ccacd02c2a86ac1a933db761bce3fb676244d..55c096523e811c9b73281e212e9be85a
                  last_tb = NULL;
              }
 diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
-index d56305f9767bed98cf651dbc988eda0f8fc729e3..633961198315ee75a353f480bc9ebc1745ab0cc9 100644
+index d56305f..6339611 100644
 --- a/accel/tcg/translator.c
 +++ b/accel/tcg/translator.c
 @@ -113,7 +113,8 @@ bool translator_is_same_page(const DisasContextBase *db, vaddr addr)
@@ -258,7 +225,7 @@ index d56305f9767bed98cf651dbc988eda0f8fc729e3..633961198315ee75a353f480bc9ebc17
          if (db->is_jmp != DISAS_NEXT) {
              break;
 diff --git a/include/exec/translator.h b/include/exec/translator.h
-index 545fcff191f994a9dc2957c0f2d94895ebe7e678..70575d097e14ecd3165a51c6b3a63f20ef04336e 100644
+index 545fcff..70575d0 100644
 --- a/include/exec/translator.h
 +++ b/include/exec/translator.h
 @@ -59,6 +59,7 @@ typedef enum DisasJumpType {
@@ -278,7 +245,7 @@ index 545fcff191f994a9dc2957c0f2d94895ebe7e678..70575d097e14ecd3165a51c6b3a63f20
      void *host_addr[2];
  
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index 1d4589fd4d1bdef89cf63e9dcc5afe78bac68c69..c330074822cc365ea9ab39a4c43e3f5403557b63 100644
+index 1d4589f..c330074 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -796,6 +796,13 @@ typedef enum CPUFaultExceptionRecord {
@@ -296,7 +263,7 @@ index 1d4589fd4d1bdef89cf63e9dcc5afe78bac68c69..c330074822cc365ea9ab39a4c43e3f54
      CPUFaultExceptionArchitecture architecture;
      CPUFaultExceptionRecord record;
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 1622d08dbcdf4db1677ae76d4054d529b14bbaeb..4ff51630a6f1db9eb58a7d00246f24856ad808e1 100644
+index 1622d08..4ff5163 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -16,6 +16,10 @@
@@ -447,7 +414,7 @@ index 1622d08dbcdf4db1677ae76d4054d529b14bbaeb..4ff51630a6f1db9eb58a7d00246f2485
  #define QEMU_CRUCIBLE_FAULT_MEMORY_RULES_ACTIVE_DECLARED
  bool qemu_crucible_fault_memory_rules_active(void);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 63c6619c3620b2cefbd3c88b58e1022136768380..a3645bf1a6871c6caed8b986559f899dc93a1c2b 100644
+index 63c6619..a3645bf 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -966,9 +966,9 @@ int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,
@@ -488,7 +455,7 @@ index 63c6619c3620b2cefbd3c88b58e1022136768380..a3645bf1a6871c6caed8b986559f899d
  int qemu_plugin_crucible_fault_register_bind_architecture(
 diff --git a/plugins/crucible-fault-instruction.c b/plugins/crucible-fault-instruction.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..8c56d0d15e44bf18e0c5fda084a9db876535650f
+index 0000000..8c56d0d
 --- /dev/null
 +++ b/plugins/crucible-fault-instruction.c
 @@ -0,0 +1,2825 @@
@@ -3318,7 +3285,7 @@ index 0000000000000000000000000000000000000000..8c56d0d15e44bf18e0c5fda084a9db87
 +    return true;
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 6c36ed529b2947eb29097fe8428710dea4858748..76b092a32bca6203de04eb29fb224ae8f4cc6203 100644
+index 6c36ed5..76b092a 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -104,6 +104,8 @@ struct QemuCrucibleFaultRule {
@@ -3881,7 +3848,7 @@ index 6c36ed529b2947eb29097fe8428710dea4858748..76b092a32bca6203de04eb29fb224ae8
                              qdict_get_qdict(policy, "parameters"),
                              "exception"),
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
-index 94b81ffc78a54e498bd2773bb5027f79389b70e2..1eaae5e4baf6800eabbf45a270142ba765f7753d 100644
+index 94b81ff..1eaae5e 100644
 --- a/plugins/crucible-fault-register.c
 +++ b/plugins/crucible-fault-register.c
 @@ -11,6 +11,8 @@
@@ -4121,7 +4088,7 @@ index 94b81ffc78a54e498bd2773bb5027f79389b70e2..1eaae5e4baf6800eabbf45a270142ba7
  
  void qemu_crucible_fault_register_execution_begin(CPUState *cpu)
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index 6e96e52f2b4f23d29731c6b6330191183c1039de..8f34479d112daf33ae649f299aaf01d2c202a53e 100644
+index 6e96e52..8f34479 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
 @@ -43,6 +43,7 @@ static QTAILQ_HEAD(, CrucibleCompletedFault) crucible_completed_faults =
@@ -4284,7 +4251,7 @@ index 6e96e52f2b4f23d29731c6b6330191183c1039de..8f34479d112daf33ae649f299aaf01d2
          }
      }
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 550ed0deea25d9eb352f8c3341f6678b31acc567..75bafa1d4da50e146a1c9ed9d27aa2f4d763d4c5 100644
+index 550ed0d..75bafa1 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -61,6 +61,7 @@ endif
@@ -4297,7 +4264,7 @@ index 550ed0deea25d9eb352f8c3341f6678b31acc567..75bafa1d4da50e146a1c9ed9d27aa2f4
  
  common_ss.add(files('loader.c', 'api.c', 'core.c'))
 diff --git a/system/ioport.c b/system/ioport.c
-index 55c2a752396514ae792daa37545574dfc4921230..ff2dfeecbf0fe68828e441813e4c6a11c75dc461 100644
+index 55c2a75..ff2dfee 100644
 --- a/system/ioport.c
 +++ b/system/ioport.c
 @@ -30,6 +30,7 @@
@@ -4396,7 +4363,7 @@ index 55c2a752396514ae792daa37545574dfc4921230..ff2dfeecbf0fe68828e441813e4c6a11
      trace_cpu_in(addr, 'l', val);
      return val;
 diff --git a/target/arm/helper.c b/target/arm/helper.c
-index bb445e30cd15228bf83048392e67ab7392d190eb..72dba9ce57d31da2384c1579d7d24c1884a3ed71 100644
+index bb445e3..72dba9c 100644
 --- a/target/arm/helper.c
 +++ b/target/arm/helper.c
 @@ -8,6 +8,7 @@
@@ -4449,7 +4416,7 @@ index bb445e30cd15228bf83048392e67ab7392d190eb..72dba9ce57d31da2384c1579d7d24c18
          cs->interrupt_request |= CPU_INTERRUPT_EXITTB;
      }
 diff --git a/target/arm/ptw.c b/target/arm/ptw.c
-index b42acb36bcd01659ef5cd12893b1b421c06571ce..5e32dfb467f1e407ee3f02f7497b3f433dcc915c 100644
+index b42acb3..5e32dfb 100644
 --- a/target/arm/ptw.c
 +++ b/target/arm/ptw.c
 @@ -3730,15 +3730,44 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
@@ -4540,7 +4507,7 @@ index b42acb36bcd01659ef5cd12893b1b421c06571ce..5e32dfb467f1e407ee3f02f7497b3f43
  }
  
 diff --git a/target/arm/tcg/translate-a64.c b/target/arm/tcg/translate-a64.c
-index 39014325df180c72dd26a4e9f8c7b2618793863a..151298e3566942011b50c4fbea5468c5fe58c36d 100644
+index 3901432..151298e 100644
 --- a/target/arm/tcg/translate-a64.c
 +++ b/target/arm/tcg/translate-a64.c
 @@ -10339,7 +10339,12 @@ static void aarch64_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
@@ -4558,7 +4525,7 @@ index 39014325df180c72dd26a4e9f8c7b2618793863a..151298e3566942011b50c4fbea5468c5
          default:
          case DISAS_UPDATE_EXIT:
 diff --git a/target/i386/tcg/seg_helper.c b/target/i386/tcg/seg_helper.c
-index 71962113fb803c47280c96812df9d1efb400c21b..b923000593ecd088da6db677352306fca739062d 100644
+index 7196211..b923000 100644
 --- a/target/i386/tcg/seg_helper.c
 +++ b/target/i386/tcg/seg_helper.c
 @@ -21,6 +21,7 @@
@@ -4580,7 +4547,7 @@ index 71962113fb803c47280c96812df9d1efb400c21b..b923000593ecd088da6db677352306fc
  
  void do_interrupt_x86_hardirq(CPUX86State *env, int intno, int is_hw)
 diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
-index 22e9dbc843124a54cf7ce7580956ad34e48a0fe6..5763a151872305e48444d777a10a6c8cf044f12e 100644
+index 22e9dbc..5763a15 100644
 --- a/target/i386/tcg/system/excp_helper.c
 +++ b/target/i386/tcg/system/excp_helper.c
 @@ -729,12 +729,47 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
@@ -4636,7 +4603,7 @@ index 22e9dbc843124a54cf7ce7580956ad34e48a0fe6..5763a151872305e48444d777a10a6c8c
  
  void x86_cpu_inject_fault_exception(
 diff --git a/target/i386/tcg/system/misc_helper.c b/target/i386/tcg/system/misc_helper.c
-index ce18c75b9f3bf41c1db0439a303912cd8eebb9b7..d2734345e1e2bbc4d78e48e3f3bd416a87a51a73 100644
+index ce18c75b..d273434 100644
 --- a/target/i386/tcg/system/misc_helper.c
 +++ b/target/i386/tcg/system/misc_helper.c
 @@ -18,6 +18,8 @@
@@ -4733,7 +4700,7 @@ index ce18c75b9f3bf41c1db0439a303912cd8eebb9b7..d2734345e1e2bbc4d78e48e3f3bd416a
  
  target_ulong helper_read_cr8(CPUX86State *env)
 diff --git a/target/i386/tcg/translate.c b/target/i386/tcg/translate.c
-index a8935f487aa8d42a0757ff5246724a531bce01a3..d77748b54a2e14a8f6d7fb0b113d5eac35d7ab81 100644
+index a8935f4..d77748b 100644
 --- a/target/i386/tcg/translate.c
 +++ b/target/i386/tcg/translate.c
 @@ -3850,6 +3850,9 @@ static void i386_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
@@ -4748,7 +4715,7 @@ index a8935f487aa8d42a0757ff5246724a531bce01a3..d77748b54a2e14a8f6d7fb0b113d5eac
      case DISAS_EOB_NEXT:
 diff --git a/tests/tcg/plugins/crucible-instruction.c b/tests/tcg/plugins/crucible-instruction.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..eb88c4987cdbe2495256493639b5826af2f9c73f
+index 0000000..eb88c49
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-instruction.c
 @@ -0,0 +1,1773 @@
@@ -6526,7 +6493,7 @@ index 0000000000000000000000000000000000000000..eb88c4987cdbe2495256493639b5826a
 +    return 0;
 +}
 diff --git a/tests/tcg/plugins/meson.build b/tests/tcg/plugins/meson.build
-index 6b2c7aa5a326fb07b415bbc2fd8d91058b6d39f0..97ad9e7abcef98966d2f5540870ead60954cd1bf 100644
+index 6b2c7aa..97ad9e7 100644
 --- a/tests/tcg/plugins/meson.build
 +++ b/tests/tcg/plugins/meson.build
 @@ -1,7 +1,7 @@
@@ -6538,6 +6505,3 @@ index 6b2c7aa5a326fb07b415bbc2fd8d91058b6d39f0..97ad9e7abcef98966d2f5540870ead60
                 'empty', 'inline', 'insn', 'mem',
                 'reset', 'syscall']
      if host_os == 'windows'
--- 
-2.54.0
-
