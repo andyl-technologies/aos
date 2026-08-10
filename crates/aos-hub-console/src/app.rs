@@ -41,12 +41,18 @@ pub fn App() -> impl IntoView {
     let popstate = window_event_listener(ev::popstate, move |_| route.set(current_route()));
     on_cleanup(move || popstate.remove());
     let csrf = shell_meta("aos-session-csrf").unwrap_or_default();
+    let session_scope = Memo::new(move |_| {
+        route
+            .get()
+            .map(|current_route| current_route.base_path.clone())
+    });
     let session = LocalResource::new(move || {
         // Browser-session tokens carry permissions for one exact management
-        // route. Re-exchange them whenever pushState or popstate changes that
-        // route; server authorization remains authoritative during the brief
-        // transition.
-        let _ = route.get();
+        // scope. Sibling settings pages share one permission set, so changing
+        // only the page must not invalidate the session and replace the shell
+        // with its loading fallback. Crossing a resource root still exchanges
+        // a token for the new authorization scope.
+        let _ = session_scope.get();
         let csrf = csrf.clone();
         async move { ApiClient::from_browser_session(&csrf).await }
     });
@@ -56,7 +62,7 @@ pub fn App() -> impl IntoView {
             Some(route) => {
                 let fallback_route = route.clone();
                 view! {
-                    <Suspense fallback=move || view! { <LoadingShell route=fallback_route.clone()/> }>
+                    <Transition fallback=move || view! { <LoadingShell route=fallback_route.clone()/> }>
                         {move || {
                             let route = route.clone();
                             Suspend::new(async move {
@@ -73,7 +79,7 @@ pub fn App() -> impl IntoView {
                                 }
                             })
                         }}
-                    </Suspense>
+                    </Transition>
                 }.into_any()
             },
             None => view! {

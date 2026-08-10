@@ -74,10 +74,16 @@ transport rejects a repeated non-empty token, so a server pagination cycle
 fails visibly instead of spinning or silently truncating the resource graph.
 Malformed tokens are rejected even when the selected inventory is empty.
 
-The browser exchanges its short-lived management session again after every
-client-side history transition. Route permissions therefore always describe
-the exact current scope; a permission union obtained for a global inventory is
-never reused to render an organization, registry, or cache editor.
+The browser exchanges its short-lived management session when client-side
+history crosses a canonical settings-scope root. Sibling pages under one
+instance, organization, registry, or cache root share the same permission set
+and retain the mounted shell during navigation. Route permissions therefore
+always describe the exact current scope; a permission union obtained for a
+global inventory is never reused to render an organization, registry, or cache
+editor. When a scope crossing does require a new session, the application
+retains the previous shell through the transition instead of replacing the
+viewport with a loading page. Destination workflows own localized loading
+states for their panels.
 
 Every durable desired-state mutation follows one interaction:
 

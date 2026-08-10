@@ -1116,6 +1116,19 @@ mod tests {
     }
 
     #[test]
+    fn sibling_pages_share_one_session_scope() {
+        let caches = ConsoleRoute::resolve("/acme/main/-/settings/caches")
+            .expect("registry cache settings route must resolve");
+        let delivery = ConsoleRoute::resolve("/acme/main/-/settings/delivery")
+            .expect("registry delivery settings route must resolve");
+        let other_registry = ConsoleRoute::resolve("/acme/other/-/settings/delivery")
+            .expect("second registry route must resolve");
+
+        assert_eq!(caches.base_path, delivery.base_path);
+        assert_ne!(caches.base_path, other_registry.base_path);
+    }
+
+    #[test]
     fn every_page_is_backed_by_a_declared_web_workflow() {
         let manifest: serde_json::Value = serde_json::from_str(include_str!(
             "../../../docs/rfcs/0012-hub-surface-topology/hub-control-plane-capabilities-v1.json"
