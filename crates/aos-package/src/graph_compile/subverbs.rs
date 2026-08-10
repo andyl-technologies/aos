@@ -985,6 +985,7 @@ mod subverb_tests {
             registry: "test".into(),
             origin: RuntimePackageOrigin::Registry,
             store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example".into(),
+            config_dependency_outputs: BTreeMap::new(),
             closure: vec![RuntimeClosurePin {
                 store_path_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                 store_path: Some("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example".into()),

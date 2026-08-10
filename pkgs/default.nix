@@ -136,6 +136,7 @@
         metaJson = builtins.toJSON (authoredConfigMeta // {
           declares = lib.unique (authoredConfigMeta.declares ++ generatedExposeDeclares);
         });
+        dependencyOutputs = preparedAuthoredConfigModule.dependencyOutputs;
       }
       else if hasGeneratedExposeConfig
       then {
@@ -147,7 +148,9 @@
           owns_roots = [];
           contributes = [];
           provides_capabilities = [];
+          dependencies = [];
         };
+        dependencyOutputs = {};
       }
       else if hasConfigModule
       then preparedAuthoredConfigModule
@@ -233,6 +236,7 @@
       then {
         config = configArtifact;
         configModule = configArtifact;
+        configModuleDependencies = preparedConfigModule.dependencyOutputs;
       }
       else {};
     lowerArgs =

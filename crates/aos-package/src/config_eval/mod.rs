@@ -776,7 +776,7 @@ where
                     authorization,
                     outputs: PackageOutputs {
                         self_output: Some(authenticated_module.runtime_output.to_string()),
-                        dependencies: BTreeMap::new(),
+                        dependencies: authenticated_module.module.dependency_outputs.clone(),
                     },
                 });
                 trace.push(IterRecord {
@@ -828,6 +828,7 @@ where
         seed.config_realization = resolved.config_realization.clone();
         seed.authorization = PackageAuthorization::from_module(resolved.module);
         seed.outputs.self_output = Some(resolved.runtime_output.to_string());
+        seed.outputs.dependencies = resolved.module.dependency_outputs.clone();
         if seed.config_output_nar_hash.is_none() {
             seed.config_output_nar_hash = Some(resolved.module.config_output.nar_hash.clone());
         }
@@ -869,19 +870,19 @@ fn assign_runtime_outputs(members: &mut [WorkingSetMember], runtime: &runtime::R
     for member in members {
         if let Some(package) = runtime.packages.get(&member.package) {
             member.outputs.self_output = Some(package.store_path.clone());
+            member.outputs.dependencies = package.config_dependency_outputs.clone();
+            for dependency in runtime.edges.get(&member.package).into_iter().flatten() {
+                if let Some(pin) = runtime.packages.get(dependency) {
+                    member
+                        .outputs
+                        .dependencies
+                        .entry(dependency.clone())
+                        .or_insert_with(|| pin.store_path.clone());
+                }
+            }
+        } else {
+            member.outputs.dependencies.clear();
         }
-        member.outputs.dependencies = runtime
-            .edges
-            .get(&member.package)
-            .into_iter()
-            .flatten()
-            .filter_map(|dependency| {
-                runtime
-                    .packages
-                    .get(dependency)
-                    .map(|pin| (dependency.clone(), pin.store_path.clone()))
-            })
-            .collect();
     }
 }
 

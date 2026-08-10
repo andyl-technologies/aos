@@ -573,6 +573,7 @@ mod tests {
                 references: vec![],
             },
             evaluation_base_lib: None,
+            dependency_outputs: BTreeMap::new(),
             module_abi_compat: abi,
             declares: declares.iter().map(|s| s.to_string()).collect(),
             declaration_schema: vec![],

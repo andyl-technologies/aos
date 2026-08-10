@@ -27,7 +27,7 @@
 //! source_nar_hash = "sha256:…"
 //! ```
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -2119,6 +2119,13 @@ pub struct ConfigModuleMeta {
     /// registries produced before the binding was introduced stay readable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evaluation_base_lib: Option<ConfigOutputMeta>,
+    /// Exact runtime dependency outputs exposed to the module by name.
+    ///
+    /// Publishers authenticate these paths as members of the package runtime
+    /// closure. Evaluators pass only this map, rather than an ambient package
+    /// set, so interpolation remains builder-free and reproducible.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dependency_outputs: BTreeMap<String, String>,
     /// Base-lib ABI range this module is compatible with (inclusive).
     pub module_abi_compat: ModuleAbiCompat,
     /// Option paths this module *declares* (its `provides`), computed by an

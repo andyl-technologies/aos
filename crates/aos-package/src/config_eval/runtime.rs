@@ -60,6 +60,9 @@ pub struct RuntimePackagePin {
     pub origin: RuntimePackageOrigin,
     /// Exact runtime output store path.
     pub store_path: String,
+    /// Config-module dependency outputs authenticated by package metadata.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_dependency_outputs: BTreeMap<String, String>,
     /// Complete authenticated closure, keyed by input-addressed store hash.
     pub closure: Vec<RuntimeClosurePin>,
     /// Signed service exposure contract for this package.
@@ -271,6 +274,18 @@ pub fn resolve_runtime_with_local(
                 realisations,
             });
         }
+        if let Some(module) = &closure.root.config_module {
+            for (name, path) in &module.dependency_outputs {
+                let hash = store_path_hash(path);
+                if !members.iter().any(|member| member.store_path_hash == hash) {
+                    bail!(
+                        "package '{}@{}' config dependency '{name}' ({path}) is outside its authenticated runtime closure",
+                        closure.root.name,
+                        closure.root.version
+                    );
+                }
+            }
+        }
 
         let root_pin = members
             .iter()
@@ -373,6 +388,12 @@ pub fn resolve_runtime_with_local(
                 registry: closure.registry_name.clone(),
                 origin: RuntimePackageOrigin::Registry,
                 store_path: closure.root.store_path.clone(),
+                config_dependency_outputs: closure
+                    .root
+                    .config_module
+                    .as_ref()
+                    .map(|module| module.dependency_outputs.clone())
+                    .unwrap_or_default(),
                 closure: members,
                 expose: closure.root.expose.clone(),
                 expose_artifact: closure.root.expose_artifact.clone(),
@@ -395,6 +416,16 @@ pub fn resolve_runtime_with_local(
         }
         let closure = local_closure(package)
             .with_context(|| format!("validating image-local closure for '{name}'"))?;
+        if let Some(module) = &package.config_module {
+            for (dependency, path) in &module.dependency_outputs {
+                let hash = store_path_hash(path);
+                if !closure.iter().any(|member| member.store_path_hash == hash) {
+                    bail!(
+                        "image-local package '{name}' config dependency '{dependency}' ({path}) is outside its runtime closure"
+                    );
+                }
+            }
+        }
         let expose_artifact = package
             .expose_artifact
             .as_ref()
@@ -455,6 +486,11 @@ pub fn resolve_runtime_with_local(
                 registry: "image".to_string(),
                 origin: RuntimePackageOrigin::Image,
                 store_path: package.store_path.clone(),
+                config_dependency_outputs: package
+                    .config_module
+                    .as_ref()
+                    .map(|module| module.dependency_outputs.clone())
+                    .unwrap_or_default(),
                 closure,
                 expose: package.expose.clone(),
                 expose_artifact,

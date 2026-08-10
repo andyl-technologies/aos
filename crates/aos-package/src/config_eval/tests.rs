@@ -179,6 +179,7 @@ fn owner_module(root: &str, contributable: &[&str], abi: ModuleAbiCompat) -> Con
             references: vec![],
         },
         evaluation_base_lib: None,
+        dependency_outputs: BTreeMap::new(),
         module_abi_compat: abi,
         declares: vec![],
         declaration_schema: vec![],
@@ -385,6 +386,7 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
                 registry: "aos-core".to_string(),
                 origin: super::runtime::RuntimePackageOrigin::Registry,
                 store_path: output.to_string(),
+                config_dependency_outputs: BTreeMap::new(),
                 closure: vec![RuntimeClosurePin {
                     store_path_hash: "0000000000000000000000000000000a".to_string(),
                     store_path: Some(output.to_string()),
@@ -482,6 +484,7 @@ fn runtime_enrichment_preserves_authorized_image_store_ownership() {
                 registry: "aos-core".to_string(),
                 origin: super::runtime::RuntimePackageOrigin::Registry,
                 store_path: output.to_string(),
+                config_dependency_outputs: BTreeMap::new(),
                 closure: Vec::new(),
                 expose: None,
                 expose_artifact: None,
@@ -552,6 +555,7 @@ fn runtime_enrichment_projects_authenticated_units_and_enablement() {
                 registry: "aos-core".to_string(),
                 origin: super::runtime::RuntimePackageOrigin::Registry,
                 store_path: output.to_string(),
+                config_dependency_outputs: BTreeMap::new(),
                 closure: vec![
                     RuntimeClosurePin {
                         store_path_hash: "0000000000000000000000000000000a".to_string(),

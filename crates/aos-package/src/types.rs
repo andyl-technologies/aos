@@ -1056,6 +1056,15 @@ pub fn validate_config_module_meta(package_name: &str, module: &ConfigModuleMeta
         validate_config_output_meta(base_lib)
             .context("validating config-module evaluation base lib")?;
     }
+    for (name, path) in &module.dependency_outputs {
+        validate_package_name(name)
+            .with_context(|| format!("validating config dependency name {name:?}"))?;
+        validate_absolute_path(path, "config dependency output")
+            .with_context(|| format!("validating config dependency output for {name:?}"))?;
+        if store_path_hash_component(path).is_none() {
+            bail!("config dependency '{name}' output is not a Nix-style store path: {path}");
+        }
+    }
 
     if module.module_abi_compat.min > module.module_abi_compat.max {
         bail!(
@@ -5394,6 +5403,7 @@ pin = "v2026.02"
                 references: vec!["0000000000000000000000000000000b".to_string()],
             },
             evaluation_base_lib: None,
+            dependency_outputs: BTreeMap::new(),
             module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
             declares: vec![
                 "firewall.allowedTCPPorts".to_string(),
@@ -5421,6 +5431,25 @@ pin = "v2026.02"
         let serialized = toml::to_string(&module).expect("serialize");
         let parsed: ConfigModuleMeta = toml::from_str(&serialized).expect("deserialize");
         assert_eq!(parsed, module);
+    }
+
+    #[test]
+    fn config_module_dependency_outputs_round_trip_and_validate() {
+        let mut module = sample_config_module();
+        module.dependency_outputs.insert(
+            "bash".to_string(),
+            "/nix/store/0000000000000000000000000000000c-bash-5.2".to_string(),
+        );
+        validate_config_module_meta("firewall", &module).expect("valid dependency output");
+
+        let serialized = toml::to_string(&module).expect("serialize dependency output");
+        let parsed: ConfigModuleMeta = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(parsed.dependency_outputs, module.dependency_outputs);
+
+        module
+            .dependency_outputs
+            .insert("broken".to_string(), "relative/path".to_string());
+        assert!(validate_config_module_meta("firewall", &module).is_err());
     }
 
     #[test]
