@@ -1269,7 +1269,11 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     }
 
     let evaluator = native::NativeNixEvaluator::new(cmd.eval_root.clone(), cmd.verbose);
-    let fetcher = stock::SubstituterFetcher::new(cmd.verbose);
+    let fetcher = stock::SubstituterFetcher::new(
+        cmd.verbose,
+        resolver.registries(),
+        crate::types::ProfileScope::System,
+    );
 
     // Resolve the selected names before evaluation. This both pins the exact
     // runtime outputs and adds signed package-level dependencies (`requires`

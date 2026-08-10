@@ -448,6 +448,10 @@ in {
             -c gpg.ssh.program='${pkgs.openssh}/bin/ssh-keygen' \
             -c user.signingkey="$KEY" \
             commit -S -m 'publish: configuration ABI fixtures'
+          # The cache server has a private mount namespace. Stop it before
+          # mounting the publication disk so the restarted service sees the
+          # mounted tree rather than the directory it replaced.
+          systemctl stop aos-pkg-test-static-cache-server.target
           mkdir -p /var/lib/sysreg-cache
           ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -q /dev/sda
           ${pkgs.util-linux}/bin/mount /dev/sda /var/lib/sysreg-cache
@@ -462,6 +466,8 @@ in {
             --cache-priority 46 \
             --upload-url file:///var/lib/sysreg-cache/apm/registry-static/sysreg
           chmod -R a+rX /var/lib/sysreg-cache
+          systemctl start aos-pkg-test-static-cache-server.target
+          systemctl is-active --quiet test-static-cache-server.service
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
           chown -R aos-gitd:aos-gitd "$ORIGIN"
       """), timeout=1800)
@@ -485,7 +491,7 @@ in {
           f"printf '%s' {incompatible_encoded} | base64 -d > /run/rfc0011-incompatible.nix"
       )
       incompatible.succeed(f"""
-          {APM} switch \
+          {APM} -v switch \
             --from /run/rfc0011-incompatible.nix \
             --eval-root /run/rfc0011-incompatible-eval
       """, timeout=600)

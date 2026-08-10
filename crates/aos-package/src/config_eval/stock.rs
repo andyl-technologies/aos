@@ -30,7 +30,7 @@
 //! operator module seam) and each provider's config-only module
 //! imported by store path.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -41,6 +41,7 @@ use super::classify::{EvalClass, KillReason, classify};
 use super::system_roots::{ConfigModuleResolver, ResolvedConfigModule};
 use super::{ConfigOutputFetcher, EvalAttempt, NixEvaluator, SelectedProvider, WorkingSetMember};
 use crate::registry::RegistrySet;
+use crate::types::ProfileScope;
 
 /// The default on-host eval root that `aos-eval.service` prepares.
 pub const DEFAULT_EVAL_ROOT: &str = "/run/aos-eval";
@@ -449,22 +450,70 @@ fn is_nix_path_byte(b: u8) -> bool {
 /// Builder-gated: it requires a reachable registry substituter.
 pub struct SubstituterFetcher {
     verbose: u8,
+    substituters: Vec<String>,
 }
 
 impl SubstituterFetcher {
-    /// Creates a fetcher; `verbose > 0` forwards `-v` to `nix-store`.
-    pub fn new(verbose: u8) -> Self {
-        Self { verbose }
+    /// Creates a fetcher from the cache endpoints in a registry snapshot.
+    ///
+    /// Cache locations are taken from the already-authenticated local
+    /// registry clones rather than ambient Nix configuration. Cache signatures
+    /// are not used as an authority here: the selected output's NAR hash and
+    /// size are independently checked against signed registry metadata after
+    /// realization.
+    pub fn new(verbose: u8, registries: &RegistrySet, scope: ProfileScope) -> Self {
+        let registries_base = scope.registries_path();
+        let mut seen = HashSet::new();
+        let mut substituters = Vec::new();
+        for registry in registries.registries() {
+            let registry_dir = registries_base.join(&registry.config.name);
+            for cache in crate::registry_ops::resolve_mirrors_for_registry(
+                &registry_dir,
+                &registry.config,
+            ) {
+                let url = cache.url.trim_end_matches('/').to_string();
+                if !url.is_empty() && seen.insert(url.clone()) {
+                    substituters.push(url);
+                }
+            }
+        }
+        Self {
+            verbose,
+            substituters,
+        }
+    }
+}
+
+/// Configures a Nix realization against the authenticated registry cache set.
+fn configure_realise_command(
+    command: &mut Command,
+    store_path: &str,
+    substituters: &[String],
+    verbose: u8,
+) {
+    command.arg("--realise").arg(store_path);
+    if !substituters.is_empty() {
+        command
+            .args(["--option", "substituters"])
+            .arg(substituters.join(" "))
+            // Registry metadata pins the expected NAR identity, so an
+            // independently signed narinfo is optional for this fetch path.
+            .args(["--option", "require-sigs", "false"]);
+    }
+    if verbose > 0 {
+        command.arg("-v");
     }
 }
 
 impl ConfigOutputFetcher for SubstituterFetcher {
     fn fetch_config_output(&self, provider: &SelectedProvider<'_>) -> Result<()> {
         let mut cmd = command_from_path("nix-store")?;
-        cmd.arg("--realise").arg(provider.config_output);
-        if self.verbose > 0 {
-            cmd.arg("-v");
-        }
+        configure_realise_command(
+            &mut cmd,
+            provider.config_output,
+            &self.substituters,
+            self.verbose,
+        );
         let output = cmd
             .output()
             .context("failed to spawn `nix-store --realise`")?;
@@ -1091,6 +1140,39 @@ mod tests {
             command
                 .get_envs()
                 .all(|(name, _)| name != "AOS_AMBIENT_SENTINEL")
+        );
+    }
+
+    #[test]
+    fn realise_command_uses_registry_caches_without_delegating_trust() {
+        let mut command = Command::new("nix-store");
+        configure_realise_command(
+            &mut command,
+            "/nix/store/hash-config",
+            &[
+                "https://cache-one.example".to_string(),
+                "https://cache-two.example".to_string(),
+            ],
+            1,
+        );
+
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                "--realise",
+                "/nix/store/hash-config",
+                "--option",
+                "substituters",
+                "https://cache-one.example https://cache-two.example",
+                "--option",
+                "require-sigs",
+                "false",
+                "-v",
+            ]
         );
     }
 }
