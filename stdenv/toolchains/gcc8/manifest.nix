@@ -274,30 +274,9 @@ in {
         ac_cv_file__dev_ptmx=yes \
         ac_cv_file__dev_ptc=no
     '';
-    postConfigure =
-      if hostPlatform.config == "aarch64-unknown-linux-gnu"
-      then ''
-        # This bootstrap interpreter intentionally contains only the static
-        # modules declared in Setup.local. Remove both shared-module build
-        # prerequisites and the install-time dependency, which otherwise makes
-        # native AArch64 builds probe optional host libraries such as libffi.
-        sed -i \
-          -e '/^build_all:/s/ oldsharedmods sharedmods / /' \
-          -e '/^sharedinstall:/,/^$/c\sharedinstall:' \
-          Makefile
-      ''
-      else ''
-        sed -i '/^build_all:/s/ sharedmods / /' Makefile
-      '';
-    postBuild =
-      if hostPlatform.config == "aarch64-unknown-linux-gnu"
-      then ''
-        # sharedmods normally creates pybuilddir.txt and the platform sysconfig
-        # module as a side effect. The static-only build still needs that module
-        # while installing the standard library.
-        ./python -E -S -m sysconfig --generate-posix-vars
-      ''
-      else "";
+    postConfigure = ''
+      sed -i '/^build_all:/s/ sharedmods / /' Makefile
+    '';
     installScript = ''
       make install SHAREDMODS=""
     '';

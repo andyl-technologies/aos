@@ -29,9 +29,7 @@ It preserves per-architecture logs, GDB transcripts, complete landed runtime
 coordinates, guest-channel transcripts, package build information, and an
 aggregate `result` file. `--help` reports the architectures retained by that
 suite; `all` fails closed unless both x86_64 and AArch64 assets are present.
-The x86_64 Crucible suite retains its cross-built AArch64 kernel and root image,
-including the same fork-activated guest agent used for exec, PTY, and SSH. A
-suite built without that retained guest closure may add AArch64 assets by setting
+On a native-only package, an operator may add retained AArch64 assets by setting
 `CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64`,
 `CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64`, and
 `CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64` together. The runner passes

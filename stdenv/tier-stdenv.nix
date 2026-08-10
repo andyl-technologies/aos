@@ -44,7 +44,7 @@
   };
 
   ccWrapper = import ./cc-wrapper.nix {
-    inherit buildPlatform storeDir hostPlatform staticDefault staticNoPie;
+    inherit storeDir hostPlatform staticDefault staticNoPie;
     shell = shellPath;
     coreutils = tc.coreutils;
     cc = tc.gcc;
@@ -109,15 +109,6 @@
       // {
         buildDeps = (args.buildDeps or []) ++ [ccWrapper] ++ initialPath;
         system = args.system or system;
-        # Cross-transition toolchains become target-native after the bootstrap
-        # compiler is available. Nix still schedules their derivations on the
-        # physical builder, while binfmt executes the target-native shell and
-        # tools used by each package build. Reconstruct the execution system
-        # from the constraints because post-cross platform records deliberately
-        # retain the scheduler's system string.
-        buildExecutionSystem =
-          args.buildExecutionSystem
-          or (lib.mkPlatformFromConstraints hostPlatform.constraints).system;
         shell = args.shell or shellPath;
         storeDir = args.storeDir or storeDir;
         stdenv = stdenvDrv;

@@ -517,9 +517,8 @@
     system = "x86_64-linux";
   };
   executionCompatibilityUsesBuildExecutionSystem = let
-    force = attrs: (derivationLibForExecutionCompatibility.mkDerivation attrs).drvPath;
     compatible = builtins.tryEval (
-      force {
+      derivationLibForExecutionCompatibility.mkDerivation {
         pname = "execution-compatible-with-build-system";
         buildExecutionSystem = "aarch64-linux";
         meta.execute = {
@@ -529,7 +528,7 @@
       }
     );
     schedulingSystemOnly = builtins.tryEval (
-      force {
+      derivationLibForExecutionCompatibility.mkDerivation {
         pname = "execution-compatible-only-with-scheduling-system";
         buildExecutionSystem = "aarch64-linux";
         meta.execute = {
@@ -544,101 +543,6 @@
     else if schedulingSystemOnly.success
     then throw "meta.execute must not be checked against the Nix scheduling system"
     else "ok";
-
-  dependencyCompatibilityUsesExecutionAndSchedulingSystems = let
-    force = attrs: (derivationLibForExecutionCompatibility.mkDerivation attrs).drvPath;
-    executionDep = derivationLibForExecutionCompatibility.mkDerivation {
-      pname = "aarch64-execution-dependency";
-      buildExecutionSystem = "aarch64-linux";
-      meta.execute = {
-        cpu = "aarch64";
-        os = "linux";
-      };
-    };
-    schedulerDep = derivationLibForExecutionCompatibility.mkDerivation {
-      pname = "x86-scheduler-dependency";
-      meta.execute = {
-        cpu = "x86_64";
-        os = "linux";
-      };
-    };
-    incompatibleDep = derivationLibForExecutionCompatibility.mkDerivation {
-      pname = "riscv-incompatible-dependency";
-      buildExecutionSystem = "riscv64-linux";
-      meta.execute = {
-        cpu = "riscv64";
-        os = "linux";
-      };
-    };
-    targetToolchain = derivationLibForExecutionCompatibility.mkDerivation {
-      pname = "aarch64-target-toolchain";
-      buildExecutionSystem = "aarch64-linux";
-      meta = {
-        execute = {
-          cpu = "aarch64";
-          os = "linux";
-        };
-        target = {
-          cpu = "aarch64";
-          os = "linux";
-        };
-      };
-    };
-    wrongTargetToolchain = derivationLibForExecutionCompatibility.mkDerivation {
-      pname = "wrong-target-toolchain";
-      buildExecutionSystem = "aarch64-linux";
-      meta = {
-        execute = {
-          cpu = "aarch64";
-          os = "linux";
-        };
-        target = {
-          cpu = "x86_64";
-          os = "linux";
-        };
-      };
-    };
-    mixed = builtins.tryEval (force {
-      pname = "mixed-cross-dependencies";
-      buildExecutionSystem = "aarch64-linux";
-      buildDeps = [executionDep schedulerDep targetToolchain];
-    });
-    thirdArchitecture = builtins.tryEval (force {
-      pname = "incompatible-cross-dependency";
-      buildExecutionSystem = "aarch64-linux";
-      buildDeps = [incompatibleDep];
-    });
-    wrongTarget = builtins.tryEval (force {
-      pname = "wrong-target-cross-dependency";
-      buildExecutionSystem = "aarch64-linux";
-      buildDeps = [wrongTargetToolchain];
-    });
-  in
-    if !mixed.success
-    then throw "cross derivations must accept execution-native and scheduler-native build dependencies"
-    else if thirdArchitecture.success
-    then throw "cross derivations must reject build dependencies for an unrelated architecture"
-    else if wrongTarget.success
-    then throw "cross derivations must reject toolchains targeting a different output architecture"
-    else "ok";
-
-  crucibleRetainsAarch64GuestPackageSet =
-    if lib.system != "x86_64-linux"
-    then "not-applicable"
-    else let
-      guests = pkgs.guestPackageSets."aarch64-linux" or null;
-    in
-      if guests == null
-      then throw "x86_64 Crucible package set must retain AArch64 guest packages"
-      else if guests.hostPlatform.constraints.cpu != "aarch64"
-      then throw "retained Crucible guest package set must target AArch64"
-      else if !(guests ? linux-crucible) || !(guests ? crucible-fixtures)
-      then throw "retained AArch64 package set must provide Crucible kernel and root image"
-      else if guests.crucible-fixtures.system != "x86_64-linux"
-      then throw "retained AArch64 guest artifacts must remain x86_64-scheduled"
-      else if guests.ccWrapperSystem != "x86_64-linux"
-      then throw "retained AArch64 compiler wrapper must remain x86_64-scheduled"
-      else "ok";
 in
   # Use a raw derivation with AOS bash so we don't pull in host tools. The
   # builtins.toJSON calls still force the system config at instantiation time;
@@ -755,8 +659,6 @@ in
         echo "systemd gate:   $security_units workload services under threshold $security_threshold; $security_skipped allowlisted unconfined package(s) skipped: ''${security_skipped_names:-none}"
         echo "package policy: baked profile (${packagePolicyModule}), preset requires bundle (${packagePolicyRejectsPresetWithoutBundle}), target mismatch (${packagePolicyRejectsWrongTarget})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
-        echo "dependencies:   mixed execution/scheduler identities (${dependencyCompatibilityUsesExecutionAndSchedulingSystems})"
-        echo "crucible:       retained AArch64 guest packages (${crucibleRetainsAarch64GuestPackageSet})"
 
         # Force the build attributes to ensure they evaluate
         echo "toplevel:       ${system.config.system.build.toplevel.name}"

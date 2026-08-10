@@ -143,14 +143,8 @@ in
           CFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
           LDFLAGS_FOR_TARGET="-L${crossGlibc}/lib -static"
 
-        make -j"$NIX_BUILD_CORES" all-target-libstdc++-v3 \
-          CFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
-          CXXFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
-          LDFLAGS_FOR_TARGET="-L${crossGlibc}/lib -static"
-
         make install-gcc
         make install-target-libgcc
-        make install-target-libstdc++-v3
 
         # Create expected symlinks
         test -f "$out/bin/gcc" && test ! -f "$out/bin/${hostPlatform.config}-gcc" && \

@@ -18,17 +18,13 @@
   binutils_,
   shell,
   coreutils,
-  buildPlatform,
   hostPlatform,
   storeDir ? "/nix/store",
   defaultHardening ? "",
   staticDefault ? false,
   staticNoPie ? false,
 }: let
-  # The wrapper is a build-time program. Its scripts invoke the target
-  # compiler and encode host ABI details, but Nix must schedule creation of
-  # those scripts on the physical build platform.
-  system = buildPlatform.system;
+  system = hostPlatform.system;
   targetTriple = hostPlatform.config;
   dynamicLinker = "${libc}/lib/${hostPlatform.dynamicLinker}";
   libcDev = libc.dev or libc;

@@ -1614,20 +1614,13 @@ complete from model-double evidence.
   out-of-check runner also accepts an explicit AArch64 kernel, root image, and
   kernel command-line triplet and passes it through to the production lifecycle;
   these are required implementation prerequisites, not substitutes for the
-  remaining live gate. The x86_64-to-AArch64 package transition now preserves
-  separate Nix scheduling and logical execution identities: fixed-output source
-  acquisition remains x86_64-scheduled, scheduler-native bootstrap helpers and
-  AArch64-native tools are both validated, and post-transition tools execute
-  through the registered binfmt handler. The x86_64 suite retains the resulting
-  AArch64 `linux-crucible` and `crucible-fixtures` outputs. That root image
-  contains the same fork-activated `crucible-guest` agent and OpenSSH bridge as
-  the native fixture, rather than the earlier phase-zero boot-only image. The
-  packaged acceptance wrapper clears external AArch64 asset overrides and
-  records the retained kernel, root-image, and command-line paths in build
-  information, so a claimed packaged pass cannot silently substitute operator
-  files. Pure evaluation covers scheduler/execution dependency compatibility
-  and the retained asset derivations; build and live acceptance evidence remain
-  required below.
+  remaining live gate. The currently evaluated AArch64 package path cannot
+  supply those assets: native evaluation stops in the phase-zero coreutils
+  bootstrap, while the x86_64-to-AArch64 form assigns a target compiler wrapper
+  to a build-platform dependency. The existing phase-zero AArch64 boot image
+  also lacks the guest agent and root filesystem required by exec, PTY, and SSH.
+  These are external asset/toolchain packaging blockers; this debugger change
+  neither modifies nor works around them.
   The suite now ships an out-of-check manual runner that exercises both retained
   architectures through the public CLI: repeated read-only GDB snapshots,
   non-empty reverse history, full landed-coordinate replay equality, queued
@@ -1650,7 +1643,6 @@ complete from model-double evidence.
   packaged-suite x86_64 execution outside the Nix checks now passes every
   listed matrix assertion, including non-empty reverse history, landed-coordinate
   equality, atomic replacement, scheduler run control, hardware-breakpoint
-  retention, and guest exec/PTY/SSH. That execution predates the retained
-  AArch64 guest closure. The newly retained pair has not yet completed the same
-  packaged live matrix, so the successful x86_64 evidence does not close the
-  cross-architecture task.
+  retention, and guest exec/PTY/SSH. No retained AArch64 kernel/root-image pair
+  was available to the suite, so that successful x86_64 evidence does not close
+  the cross-architecture task.

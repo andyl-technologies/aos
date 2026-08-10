@@ -46,44 +46,8 @@
     targetPlatform = hostPlatform;
   };
 
-  # The host-side x86_64 Crucible suite retains an AArch64 kernel and root
-  # image built by the existing cross transition. Those guest artifacts are
-  # target programs; the controller, QEMU, plugin, and debugger remain native
-  # host programs from the outer package set.
-  aarch64GuestPackages =
-    if crossSystem == null && system == "x86_64-linux"
-    then let
-      guestSystem = "aarch64-linux";
-      guestPlatform = lib.mkPlatform guestSystem;
-      guestStdenv = import ./stdenv {
-        inherit buildPlatform;
-        hostPlatform = guestPlatform;
-        targetPlatform = guestPlatform;
-      };
-      guestPackages = import ./pkgs {
-        # Library derivations are scheduler-side. Target selection belongs to
-        # guestStdenv.hostPlatform; using the guest ISA here would incorrectly
-        # send fixed-output source fetches to AArch64-only builders.
-        inherit lib;
-        stdenv = guestStdenv;
-      };
-    in
-      # Only the audited retained guest artifacts form public package-set
-      # surface. The complete target package set remains an implementation
-      # detail used to construct these closures.
-      {
-        inherit (guestStdenv) hostPlatform;
-        inherit (guestPackages) linux-crucible crucible-fixtures;
-        ccWrapperSystem = guestStdenv.cc.system;
-      }
-    else null;
-  guestPackageSets =
-    if aarch64GuestPackages != null
-    then {"aarch64-linux" = aarch64GuestPackages;}
-    else {};
-
   # All packages are built hermetically from source using only stdenv.
-  pkgs = import ./pkgs {inherit lib stdenv guestPackageSets;};
+  pkgs = import ./pkgs {inherit lib stdenv;};
 
   # Auto-discovered module list.
   modules = import ./modules;

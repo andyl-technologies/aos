@@ -62,32 +62,8 @@
         needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
       }
       {
-        label = "suite records retained matrix architectures";
-        needle = "debugger_live_matrix_architectures=" + "$" + "{liveDebuggerMatrixArchitectures}";
-      }
-      {
-        label = "suite records any externally supplied matrix architectures";
-        needle = "debugger_live_matrix_external_architectures=";
-      }
-      {
-        label = "suite retains the AArch64 guest kernel";
-        needle = "aarch64Guests.linux-crucible";
-      }
-      {
-        label = "suite retains the AArch64 guest root image";
-        needle = "aarch64Guests.crucible-fixtures";
-      }
-      {
-        label = "packaged matrix rejects an external AArch64 kernel override";
-        needle = "CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64 \\";
-      }
-      {
-        label = "packaged matrix rejects an external AArch64 root-image override";
-        needle = "CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64 \\";
-      }
-      {
-        label = "packaged matrix rejects an external AArch64 command-line override";
-        needle = "CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64";
+        label = "suite records the external AArch64 matrix path";
+        needle = "debugger_live_matrix_external_architectures=aarch64";
       }
       {
         label = "runtime QEMU wrapper configuration";

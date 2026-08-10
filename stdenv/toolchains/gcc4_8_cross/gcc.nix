@@ -49,19 +49,15 @@ in
               export PATH="${prev.coreutils}/bin:${crossGccStage2}/bin:${crossBinutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin:${prev.m4}/bin:${prev.flex}/bin:${prev.bison}/bin:${prev.texinfo}/bin"
               export CONFIG_SHELL="${prev.bash}/bin/bash"
 
-              mkdir -p "$TMPDIR/gcc-4.8.5"
-              (cd ${gccSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5" && tar xf -)
+              cp -r ${gccSrc} "$TMPDIR/gcc-4.8.5"
               chmod -R u+w "$TMPDIR/gcc-4.8.5"
 
               # In-tree GMP, MPFR, MPC
-              mkdir -p "$TMPDIR/gcc-4.8.5/gmp"
-              (cd ${gmpSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5/gmp" && tar xf -)
+              cp -r ${gmpSrc} "$TMPDIR/gcc-4.8.5/gmp"
               chmod -R u+w "$TMPDIR/gcc-4.8.5/gmp"
-              mkdir -p "$TMPDIR/gcc-4.8.5/mpfr"
-              (cd ${mpfrSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5/mpfr" && tar xf -)
+              cp -r ${mpfrSrc} "$TMPDIR/gcc-4.8.5/mpfr"
               chmod -R u+w "$TMPDIR/gcc-4.8.5/mpfr"
-              mkdir -p "$TMPDIR/gcc-4.8.5/mpc"
-              (cd ${mpcSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5/mpc" && tar xf -)
+              cp -r ${mpcSrc} "$TMPDIR/gcc-4.8.5/mpc"
               chmod -R u+w "$TMPDIR/gcc-4.8.5/mpc"
 
               SRC="$TMPDIR/gcc-4.8.5"
@@ -92,13 +88,6 @@ in
               for item in "${crossGlibc}/include"/*; do
                 ln -sf "$item" "$out/${targetPlatform.config}/sys-include/"
               done
-              ln -sf \
-                "${crossGccStage2}/${hostPlatform.config}/sys-include/c++" \
-                "$out/${targetPlatform.config}/sys-include/c++"
-              mkdir -p "$out/include"
-              ln -sf \
-                "${crossGccStage2}/${hostPlatform.config}/sys-include/c++" \
-                "$out/include/c++"
               # Copy linux headers
               cp -r ${linuxHeaders}/include/linux "$out/${targetPlatform.config}/sys-include/" 2>/dev/null || true
               cp -r ${linuxHeaders}/include/asm "$out/${targetPlatform.config}/sys-include/" 2>/dev/null || true
@@ -131,23 +120,12 @@ in
                 --disable-multilib --disable-bootstrap \
                 --disable-libssp --disable-libgomp --disable-libmudflap \
                 --disable-libsanitizer \
-                --disable-lto --disable-plugin \
                 --program-transform-name=
 
               # Patch SYSTEM_HEADER_DIR
               make configure-gcc
               ${prev.sed}/bin/sed -i \
                 "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = ${crossGlibc}/include|" \
-                gcc/Makefile
-
-              # GCC 4.8 builds these optional LTO binutils wrappers even when
-              # plugins are disabled. They require target libstdc++ headers,
-              # which cannot exist until this target-native compiler does.
-              ${prev.sed}/bin/sed -i \
-                -e 's/[[:space:]]*lto-wrapper$(exeext)//' \
-                -e 's/[[:space:]]*gcc-ar$(exeext) gcc-nm$(exeext) gcc-ranlib$(exeext)//' \
-                -e 's/[[:space:]]*install-lto-wrapper//' \
-                -e 's/[[:space:]]*install-gcc-ar//' \
                 gcc/Makefile
 
               # Canadian cross: xgcc is target-arch and can't run on x86_64 build machine,
@@ -171,28 +149,12 @@ in
         #endif
         SYSLIM
 
-              # Carry the target runtime support from the cross compiler. The
-              # Canadian-cross xgcc cannot run on the scheduler to rebuild it.
+              # Copy libgcc.a from cross-compiler (can't build it in Canadian cross —
+              # xgcc is target-arch, can't run on x86_64 build machine)
               GCCLIB="$out/lib/gcc/${targetPlatform.config}/4.8.5"
               mkdir -p "$GCCLIB"
-              for f in \
-                "${crossGccStage2}/lib/gcc/${hostPlatform.config}/4.8.5/"crt*.o \
-                "${crossGccStage2}/lib/gcc/${hostPlatform.config}/4.8.5/"libgcc*.a; do
-                test -f "$f" && cp "$f" "$GCCLIB/"
-              done
-              test -f "$GCCLIB/libgcc_eh.a" || \
-                "${crossBinutils}/bin/${hostPlatform.config}-ar" crs "$GCCLIB/libgcc_eh.a"
-
-              # GCC searches lib64 through "$target/lib/../lib64", so the
-              # intermediate lib directory must exist even when it is empty.
-              mkdir -p \
-                "$out/${targetPlatform.config}/lib" \
-                "$out/${targetPlatform.config}/lib64"
-              for f in \
-                "${crossGccStage2}/${hostPlatform.config}/lib64/"libstdc++*.a \
-                "${crossGccStage2}/${hostPlatform.config}/lib64/"libsupc++*.a; do
-                test -f "$f" && ln -sf "$f" "$out/${targetPlatform.config}/lib64/"
-              done
+              cp "${crossGccStage2}/lib/gcc/${hostPlatform.config}/4.8.5/libgcc.a" "$GCCLIB/" 2>/dev/null || true
+              "${crossBinutils}/bin/${hostPlatform.config}-ar" crs "$GCCLIB/libgcc_eh.a"
 
               # Symlink binutils tools so native gcc can find as/ld
               mkdir -p "$out/${targetPlatform.config}/bin"

@@ -142,21 +142,6 @@ in
         "$SPEC_DIR/specs" 2>/dev/null || true
       ${prev.sed}/bin/sed -i '/^\*link_gcc_c_sequence:$/{n; s|.*|%{!shared:%{!nostdlib:--start-group}} %G %L %{!shared:%{!nostdlib:--end-group}}|}' \
         "$SPEC_DIR/specs" 2>/dev/null || true
-
-      ${
-        if hostPlatform.config == "aarch64-unknown-linux-gnu"
-        then ''
-          # GCC 8's AArch64 frontends deterministically crash in the
-          # printf-return-value pass on valid binutils and glibc sources. Its
-          # gate also considers both format warnings, so close every gate
-          # input while leaving the rest of the -O2 pipeline unchanged.
-          ${prev.sed}/bin/sed -i \
-            -e '/^\*cc1:$/{n; s|^|-fno-printf-return-value -Wno-format-overflow -Wno-format-truncation |}' \
-            -e '/^\*cc1plus:$/{n; s|^|-fno-printf-return-value -Wno-format-overflow -Wno-format-truncation |}' \
-            "$SPEC_DIR/specs"
-        ''
-        else ""
-      }
     '';
     finalMessage = "GCC 8.5.0 installed to $out";
     meta = {
