@@ -116,6 +116,10 @@
     else if system.config.systemd.services.aos-eval.serviceConfig ? SuccessExitStatus
     then throw "aos-eval failures must remain visible as failed units"
     else if
+      system.config.systemd.services.aos-eval.environment.XDG_CACHE_HOME
+      != "/var/cache/aos/nix-eval"
+    then throw "aos-eval.service must direct Nix client caches to its writable cache directory"
+    else if
       !(builtins.elem
         "@system-service"
         system.config.systemd.services.aos-eval.serviceConfig.SystemCallFilter)
