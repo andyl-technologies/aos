@@ -1273,6 +1273,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         cmd.verbose,
         resolver.registries(),
         crate::types::ProfileScope::System,
+        cmd.eval_root.join("nix-cache"),
     );
 
     // Resolve the selected names before evaluation. This both pins the exact

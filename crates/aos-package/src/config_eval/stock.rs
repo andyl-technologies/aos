@@ -451,6 +451,7 @@ fn is_nix_path_byte(b: u8) -> bool {
 pub struct SubstituterFetcher {
     verbose: u8,
     substituters: Vec<String>,
+    nix_cache_dir: PathBuf,
 }
 
 impl SubstituterFetcher {
@@ -461,17 +462,20 @@ impl SubstituterFetcher {
     /// not used as an authority here: the selected output's NAR hash and size
     /// are independently checked against signed registry metadata after
     /// realization.
-    pub fn new(verbose: u8, registries: &RegistrySet, scope: ProfileScope) -> Self {
+    pub fn new(
+        verbose: u8,
+        registries: &RegistrySet,
+        scope: ProfileScope,
+        nix_cache_dir: impl Into<PathBuf>,
+    ) -> Self {
         let registries_base = scope.registries_path();
         let mut seen = HashSet::new();
         let mut substituters = Vec::new();
         for registry in registries.registries() {
             let registry_name = &registry.config.name;
             let registry_dir = registries_base.join(registry_name);
-            let mirrors = crate::registry_ops::resolve_mirrors_for_registry(
-                &registry_dir,
-                &registry.config,
-            );
+            let mirrors =
+                crate::registry_ops::resolve_mirrors_for_registry(&registry_dir, &registry.config);
             if verbose > 0 && mirrors.is_empty() {
                 eprintln!(
                     "config-eval: registry '{registry_name}' has no cache endpoints in {}",
@@ -493,6 +497,7 @@ impl SubstituterFetcher {
         Self {
             verbose,
             substituters,
+            nix_cache_dir: nix_cache_dir.into(),
         }
     }
 }
@@ -502,8 +507,10 @@ fn configure_realise_command(
     command: &mut Command,
     store_path: &str,
     substituters: &[String],
+    nix_cache_dir: &Path,
     verbose: u8,
 ) {
+    command.env("XDG_CACHE_HOME", nix_cache_dir);
     command.arg("--realise").arg(store_path);
     if !substituters.is_empty() {
         command
@@ -520,11 +527,15 @@ fn configure_realise_command(
 
 impl ConfigOutputFetcher for SubstituterFetcher {
     fn fetch_config_output(&self, provider: &SelectedProvider<'_>) -> Result<()> {
+        std::fs::create_dir_all(&self.nix_cache_dir).with_context(|| {
+            format!("creating Nix client cache {}", self.nix_cache_dir.display())
+        })?;
         let mut cmd = command_from_path("nix-store")?;
         configure_realise_command(
             &mut cmd,
             provider.config_output,
             &self.substituters,
+            &self.nix_cache_dir,
             self.verbose,
         );
         let output = cmd
@@ -1166,6 +1177,7 @@ mod tests {
                 "https://cache-one.example".to_string(),
                 "https://cache-two.example".to_string(),
             ],
+            Path::new("/run/aos-eval/nix-cache"),
             1,
         );
 
@@ -1187,5 +1199,9 @@ mod tests {
                 "-v",
             ]
         );
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "XDG_CACHE_HOME"
+                && value.is_some_and(|value| value == "/run/aos-eval/nix-cache")
+        }));
     }
 }
