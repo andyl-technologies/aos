@@ -114,7 +114,7 @@ in {
       extraDisks = [
         {
           interface = "scsi";
-          sizeMiB = 4096;
+          sizeMiB = 8192;
           serial = "aos-cache";
         }
       ];
@@ -446,13 +446,13 @@ in {
           mkdir -p /var/lib/sysreg-cache
           ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -q /dev/sda
           ${pkgs.util-linux}/bin/mount /dev/sda /var/lib/sysreg-cache
+          export XDG_CACHE_HOME=/var/lib/sysreg-cache
           {APR} release 1.0.0 \
             --registry sysreg \
             --key-id release \
             --jobs 1 \
-            --cache-url http://registry:8000/sysreg-cache \
-            --cache-priority 46 \
-            --upload-url file:///var/lib/sysreg-cache
+            --cache-url http://registry:8000/sysreg-cache/apm/registry-static/sysreg \
+            --cache-priority 46
           chmod -R a+rX /var/lib/sysreg-cache
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
           chown -R aos-gitd:aos-gitd "$ORIGIN"
