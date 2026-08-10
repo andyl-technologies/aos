@@ -194,11 +194,12 @@ in {
             echo "aos-firstboot-reeval: image transition intent disagrees with authenticated generation $target" >&2
             exit 1
           fi
-          if [ "$target" -eq "$running" ]; then
-            state_update='.default = $running'
-          else
-            state_update='.default = $running | .pending = null'
-          fi
+          # Authentication makes it safe to discard the selection journal,
+          # but only the delayed boot-commit service may complete the image
+          # transition. In particular, preserve a failed candidate as pending
+          # after automatic fallback so boot commit restores the known-good
+          # firmware default after host configuration has activated.
+          state_update='.default = $running'
           ${pkgs.jq}/bin/jq --argjson running "$running" "$state_update" \
             "$image_state" > "''${image_state}.new"
           ${pkgs.coreutils}/bin/sync "''${image_state}.new"
