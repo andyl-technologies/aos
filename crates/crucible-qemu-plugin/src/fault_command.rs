@@ -1666,12 +1666,12 @@ fn translate_register_evidence(
     expected_after: [u8; 32],
     expectation: &RegisterMutationExpectation,
 ) -> Result<Vec<u8>, FaultCommandBridgeError> {
-    const HEADER: usize = 128;
+    const HEADER: usize = 160;
     if raw.len() < HEADER
         || raw[..8] != *b"CRUCQRW1"
         || raw_u16(raw, 8)? != 1
         || raw[14..16] != [0, 0]
-        || raw[124..128].iter().any(|byte| *byte != 0)
+        || raw[156..160].iter().any(|byte| *byte != 0)
     {
         return Err(FaultCommandBridgeError::RegisterEvidence);
     }
@@ -1693,7 +1693,7 @@ fn translate_register_evidence(
         .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)?;
     let mask_len = usize::try_from(raw_u32(raw, 52)?)
         .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)?;
-    let value_len = usize::try_from(raw_u32(raw, 120)?)
+    let value_len = usize::try_from(raw_u32(raw, 152)?)
         .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)?;
     if raw.len()
         != HEADER
@@ -1721,6 +1721,12 @@ fn translate_register_evidence(
     let after_start = before_start + before_len;
     let mask_start = after_start + after_len;
     let value_start = mask_start + mask_len;
+    let execution_fingerprint: [u8; 32] = raw[88..120]
+        .try_into()
+        .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)?;
+    let baseline_fingerprint: [u8; 32] = raw[120..152]
+        .try_into()
+        .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)?;
     let numeric_id = raw_u32(raw, 20)?;
     let row = identity
         .rows
@@ -1768,6 +1774,11 @@ fn translate_register_evidence(
         || bit_count != expectation.bit_count
         || raw[mask_start..value_start] != expectation.mask
         || raw[value_start..] != expectation.value
+        || execution_fingerprint == [0; 32]
+        || baseline_fingerprint == [0; 32]
+        || ((baseline_fingerprint != execution_fingerprint)
+            != (raw[before_start..after_start] != raw[after_start..mask_start]))
+        || (expected_model_phase.is_none() && baseline_fingerprint == execution_fingerprint)
     {
         return Err(FaultCommandBridgeError::RegisterEvidence);
     }
@@ -1798,9 +1809,7 @@ fn translate_register_evidence(
         cpu_model_digest: identity.cpu_model_digest,
         before_sha256: expected_before,
         after_sha256: expected_after,
-        execution_fingerprint_sha256: raw[88..120]
-            .try_into()
-            .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)?,
+        execution_fingerprint_sha256: execution_fingerprint,
         before: raw[before_start..after_start].to_vec(),
         after: raw[after_start..mask_start].to_vec(),
         mask: raw[mask_start..value_start].to_vec(),
@@ -2354,7 +2363,7 @@ mod tests {
     fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
         use sha2::{Digest as _, Sha256};
 
-        const HEADER: usize = 128;
+        const HEADER: usize = 160;
         let before = [0_u8; 8];
         let mut after = before;
         after[0] = 1;
@@ -2405,7 +2414,8 @@ mod tests {
         raw[72..80].copy_from_slice(&256_u64.to_le_bytes());
         raw[80..88].copy_from_slice(&256_u64.to_le_bytes());
         raw[88..120].fill(3);
-        raw[120..124].copy_from_slice(&1_u32.to_le_bytes());
+        raw[120..152].fill(4);
+        raw[152..156].copy_from_slice(&1_u32.to_le_bytes());
         raw[HEADER..HEADER + before.len()].copy_from_slice(&before);
         raw[HEADER + before.len()..HEADER + before.len() + after.len()].copy_from_slice(&after);
         raw[HEADER + before.len() + after.len()] = 1;
@@ -2423,6 +2433,38 @@ mod tests {
             )
             .is_ok()
         );
+
+        raw[120..152].fill(3);
+        assert!(matches!(
+            translate_register_evidence(
+                &raw,
+                &identity,
+                0,
+                256,
+                Some(12),
+                expected_before,
+                expected_after,
+                &expectation,
+            ),
+            Err(FaultCommandBridgeError::RegisterEvidence)
+        ));
+        raw[120..152].fill(4);
+
+        raw[88..120].fill(0);
+        assert!(matches!(
+            translate_register_evidence(
+                &raw,
+                &identity,
+                0,
+                256,
+                Some(12),
+                expected_before,
+                expected_after,
+                &expectation,
+            ),
+            Err(FaultCommandBridgeError::RegisterEvidence)
+        ));
+        raw[88..120].fill(3);
 
         raw[16..20].copy_from_slice(&1_u32.to_le_bytes());
         raw[64..72].copy_from_slice(&1_u64.to_le_bytes());
