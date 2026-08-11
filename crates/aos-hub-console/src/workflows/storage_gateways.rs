@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
@@ -151,8 +151,10 @@ fn StorageGateways(client: ApiClient, scope: GatewayScope, creation_only: bool) 
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">"Direct storage delivery"</p>
-                        <h2>"Storage gateways"</h2>
-                        <p>"Each gateway exposes one storage binding through an exact endpoint generation and access policy."</p>
+                        <div class="section-title">
+                            <h2>"Storage gateways"</h2>
+                            <HelpTooltip term="Storage gateways" summary="Each gateway exposes one storage binding through an exact endpoint generation and access policy."/>
+                        </div>
                     </div>
                     {create_href.map(|href| view! { <a class="button" href=href>"Create storage gateway"</a> })}
                 </div>

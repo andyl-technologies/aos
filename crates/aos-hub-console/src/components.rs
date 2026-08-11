@@ -7,6 +7,40 @@
 
 use leptos::prelude::*;
 
+/// Renders secondary guidance through the shared attached-help popover.
+///
+/// The concise heading remains visible while the explanation stays available
+/// on hover, keyboard focus, or click. The `title` attribute provides a native
+/// fallback when JavaScript is unavailable.
+#[component]
+pub fn HelpTooltip(
+    /// Human-readable name for the concept being explained.
+    term: &'static str,
+    /// Concise explanation shown in the help card.
+    summary: &'static str,
+) -> impl IntoView {
+    view! {
+        <span class="help">
+            <button
+                type="button"
+                class="help-mark"
+                aria-label=format!("About {term}")
+                aria-expanded="false"
+                title=summary
+            >
+                "?"
+            </button>
+            <span class="help-card" role="tooltip">
+                <span class="help-head">
+                    {term}
+                    <span class="help-tag">"about"</span>
+                </span>
+                <span class="help-sum">{summary}</span>
+            </span>
+        </span>
+    }
+}
+
 /// Renders one compact lifecycle or health state.
 #[component]
 pub fn StatusBadge(

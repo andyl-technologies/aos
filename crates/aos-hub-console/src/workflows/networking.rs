@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
@@ -108,7 +108,7 @@ fn Domains(
     view! {
         <div class="workflow-stack">
             {(!creation_only).then(|| view! { <section class="panel resource-panel">
-                <div class="section-heading"><div><p class="section-kicker">"Naming and certificates"</p><h2>"Domains"</h2><p>"Domains capture DNS and certificate intent. Endpoints choose a domain and a network boundary independently."</p></div>{create_href.map(|href| view! { <a class="button" href=href>"Add domain"</a> })}</div>
+                <div class="section-heading"><div><p class="section-kicker">"Naming and certificates"</p><div class="section-title"><h2>"Domains"</h2><HelpTooltip term="Domains" summary="Domains capture DNS and certificate intent. Endpoints choose a domain and a network boundary independently."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Add domain"</a> })}</div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading domains…"</p> }>
                     {move || { let client = inventory_client.clone(); Suspend::new(async move {
                         match inventory.await.as_ref() {
@@ -181,7 +181,7 @@ fn DomainCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
         });
     });
 
-    view! { <section class="panel editor-panel"><h2>"Add domain"</h2><form class="editor-form" on:submit=on_plan><label class="full-field"><span>"Hostname"</span><input required placeholder="packages.example.com" autocomplete="off" prop:value=move || hostname.get() on:input=move |event| hostname.set(event_target_value(&event))/><small>"Hostname identity is immutable. Configure DNS and certificates after creation."</small></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel editor-panel"><h2>"Add domain"</h2><form class="editor-form" on:submit=on_plan><label class="full-field"><span>"Hostname"<HelpTooltip term="Hostname" summary="Hostname identity is immutable. Configure DNS and certificates after creation."/></span><input required placeholder="packages.example.com" autocomplete="off" prop:value=move || hostname.get() on:input=move |event| hostname.set(event_target_value(&event))/></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]

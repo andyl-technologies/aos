@@ -190,28 +190,20 @@ fn ManagementShell(
                 </details>
                 <main id="main-content" class="settings-body">
                     <h1>{page_label}</h1>
-                    <p class="management-context">
-                        <span>{scope_kind(&route.scope)}</span>
-                        " · "
-                        <strong>{context}</strong>
-                        " · "
-                        <span>{route.page.workflow}</span>
-                    </p>
                     <ContextRail route=route.clone()/>
                     <ResourceWorkflow route=workflow_route client=client/>
                 </main>
             </div>
-            <footer class="statline">
-                "AOS Hub management · Connect / ProtoJSON"
-                {(!footer_links.is_empty()).then(|| view! {
+            {(!footer_links.is_empty()).then(|| view! {
+                <footer class="statline">
                     <span class="footer-links">
                         {footer_links.into_iter().enumerate().map(|(index, (label, href))| view! {
                             {(index > 0).then_some(" · ")}
                             <a href=href>{label}</a>
                         }).collect_view()}
                     </span>
-                })}
-            </footer>
+                </footer>
+            })}
         </div>
     }
 }
@@ -392,17 +384,6 @@ fn shell_meta(name: &str) -> Option<String> {
         .query_selector(&format!("meta[name='{name}']"))
         .ok()??
         .get_attribute("content")
-}
-
-fn scope_kind(scope: &ConsoleScope) -> &'static str {
-    match scope {
-        ConsoleScope::Instance => "Instance",
-        ConsoleScope::Caches => "Directory",
-        ConsoleScope::Organizations => "Directory",
-        ConsoleScope::Organization { .. } => "Organization",
-        ConsoleScope::Registry { .. } => "Registry",
-        ConsoleScope::Cache { .. } => "Binary cache",
-    }
 }
 
 fn scope_title(scope: &ConsoleScope) -> String {

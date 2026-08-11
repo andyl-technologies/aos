@@ -10,7 +10,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
@@ -109,7 +109,7 @@ fn DeliveryEndpoints(
         }
     });
     let view_client = client.clone();
-    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><h2>"Delivery endpoints"</h2><p>"Endpoints bind one stable host identity to exact network-boundary and listener/TLS generations."</p></div>{create_href.map(|href| view! { <a class="button" href=href>"Create delivery endpoint"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading delivery endpoints…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No delivery endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <DeliveryEndpointCard client=client.clone() endpoint=endpoint/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <DeliveryEndpointCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
+    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><div class="section-title"><h2>"Delivery endpoints"</h2><HelpTooltip term="Delivery endpoints" summary="Endpoints bind one stable host identity to exact network-boundary and listener or TLS generations."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create delivery endpoint"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading delivery endpoints…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No delivery endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <DeliveryEndpointCard client=client.clone() endpoint=endpoint/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <DeliveryEndpointCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
 }
 
 #[derive(Clone, Debug)]
