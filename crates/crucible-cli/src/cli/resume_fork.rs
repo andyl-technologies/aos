@@ -1005,6 +1005,11 @@ where
         let Some(command) = parse_interactive_session_command_line(&line)? else {
             continue;
         };
+        if interactive_stream_command(command)?.is_none() {
+            write_interactive_payload_required(writer, command)?;
+            writer.flush()?;
+            continue;
+        }
         let boundary =
             acknowledge_resumed_actor_command_kind(sender, live, command, acknowledged_commands)
                 .await?;
