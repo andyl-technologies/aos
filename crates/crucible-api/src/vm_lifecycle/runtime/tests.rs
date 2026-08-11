@@ -78,9 +78,32 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         .unwrap_or_else(|error| panic!("test trigger plan should lower: {error}"))
         .into_event_graph();
     let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root");
+    let nodes = ProductionNodeSet::new();
+    let fault_runtime = ProductionFaultRuntime::new(
+        source.plan().fault_signals().clone(),
+        None,
+        SignalBoundarySnapshot::default(),
+        scenario.id(),
+        &nodes,
+    )
+    .unwrap_or_else(|error| panic!("test fault runtime should build: {error}"));
+    let fault_runtime = Arc::new(std::sync::Mutex::new(fault_runtime));
+    let fault_evaluation_cursor = Arc::new(std::sync::Mutex::new(
+        ProductionFaultEvaluationCursor::default(),
+    ));
+    let storage_fault_observations = Arc::new(std::sync::Mutex::new(
+        storage_faults::ProductionFaultObservationJournal::default(),
+    ));
+    let interceptor = ProductionFaultNetworkInterceptor::with_shared_runtime(
+        Arc::clone(&fault_runtime),
+        Arc::clone(&fault_evaluation_cursor),
+        Arc::clone(&storage_fault_observations),
+        source.world().fault_topology().clone(),
+        source.world().links().to_vec(),
+    );
 
     ProductionVmLifecycleLoop {
-        inner: BackendQuantumLoop::new(scheduler, ProductionNodeSet::new()),
+        inner: BackendQuantumLoop::with_network_output_interceptor(scheduler, nodes, interceptor),
         trigger_graph,
         trigger_state: EventGraphState::default(),
         trigger_world: source.world().clone(),
@@ -91,6 +114,13 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         initial_lifecycle_observations_pending: true,
         branch: None,
         launch_configs: BTreeMap::new(),
+        block_bindings: BTreeMap::new(),
+        ninep_bindings: BTreeMap::new(),
+        block_devices: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+        storage_fault_observations,
+        fault_runtime,
+        fault_evaluation_cursor,
+        icount_shift: 0,
         node_indexes: BTreeMap::new(),
         scenario,
         source: source.clone(),

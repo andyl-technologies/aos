@@ -1796,6 +1796,7 @@ mod tests {
                 retired_instructions: None,
             },
             cause: BindingActionCause::Signal,
+            expected_precondition: None,
         }
     }
 
@@ -1834,6 +1835,7 @@ mod tests {
                 retired_instructions: None,
             },
             cause: BindingActionCause::Signal,
+            expected_precondition: None,
         }
     }
 
@@ -1916,6 +1918,7 @@ mod tests {
                 retired_instructions: None,
             },
             cause: BindingActionCause::Signal,
+            expected_precondition: None,
         }
     }
 
@@ -1949,6 +1952,7 @@ mod tests {
                 retired_instructions: None,
             },
             cause: BindingActionCause::Signal,
+            expected_precondition: None,
         }
     }
 
@@ -2042,6 +2046,7 @@ mod tests {
                 retired_instructions: None,
             },
             cause: BindingActionCause::Opportunity(ContentHash::from_bytes(b"control-opportunity")),
+            expected_precondition: None,
         }
     }
 

@@ -589,8 +589,7 @@ impl ProductionFaultRuntime {
                             value: u64::MAX,
                         }
                     })?;
-                    self.resource_limits
-                        .reserve("event_records", retained, 1)?;
+                    self.resource_limits.reserve("event_records", retained, 1)?;
                     if self
                         .qemu_issued_actions
                         .insert(identity, action.clone())
@@ -606,11 +605,13 @@ impl ProductionFaultRuntime {
                     }
                     if action.kind == BindingActionKind::UpsertPersistent {
                         self.qemu_active_rule_ids.retain(|active_id| {
-                            self.qemu_issued_actions.get(active_id).is_none_or(|active| {
-                                active.binding != action.binding
-                                    || active.target != action.target
-                                    || active.phase != action.phase
-                            })
+                            self.qemu_issued_actions
+                                .get(active_id)
+                                .is_none_or(|active| {
+                                    active.binding != action.binding
+                                        || active.target != action.target
+                                        || active.phase != action.phase
+                                })
                         });
                         self.qemu_active_rule_ids.insert(identity);
                     }
@@ -618,11 +619,13 @@ impl ProductionFaultRuntime {
                 BindingActionKind::RemovePersistent => {
                     let prior_len = self.qemu_active_rule_ids.len();
                     self.qemu_active_rule_ids.retain(|active_id| {
-                        self.qemu_issued_actions.get(active_id).is_none_or(|active| {
-                            active.binding != action.binding
-                                || active.target != action.target
-                                || active.phase != action.phase
-                        })
+                        self.qemu_issued_actions
+                            .get(active_id)
+                            .is_none_or(|active| {
+                                active.binding != action.binding
+                                    || active.target != action.target
+                                    || active.phase != action.phase
+                            })
                     });
                     if self.qemu_active_rule_ids.len() == prior_len {
                         return Err(BackendError::Rejected {
@@ -1798,7 +1801,10 @@ mod tests {
         runtime
             .update_qemu_action_ledger(std::slice::from_ref(&impulse))
             .unwrap_or_else(|error| panic!("impulse should enter issued ledger: {error}"));
-        assert_eq!(runtime.qemu_issued_actions.get(&impulse.id()), Some(&impulse));
+        assert_eq!(
+            runtime.qemu_issued_actions.get(&impulse.id()),
+            Some(&impulse)
+        );
 
         let mut persistent = impulse.clone();
         persistent.kind = BindingActionKind::UpsertPersistent;
@@ -1820,9 +1826,11 @@ mod tests {
             "recovery evidence names the issued upsert after removal"
         );
         assert!(runtime.qemu_active_rule_ids.is_empty());
-        assert!(runtime
-            .update_qemu_action_ledger(std::slice::from_ref(&remove))
-            .is_err());
+        assert!(
+            runtime
+                .update_qemu_action_ledger(std::slice::from_ref(&remove))
+                .is_err()
+        );
     }
 
     fn pending_qemu_observation() -> FaultObservation {

@@ -47,6 +47,7 @@ fn action() -> ResolvedBindingAction {
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
+        expected_precondition: None,
     }
 }
 
@@ -1144,6 +1145,7 @@ fn rf_channel_uses_geometry_tables_and_exact_sinr_profile() {
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
+        expected_precondition: None,
     };
     let opportunity = FaultOpportunity::new(
         action.target.clone(),
