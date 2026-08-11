@@ -303,7 +303,6 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                     args,
                     self.target_architecture,
                     self.execution_model.smp_vcpus(),
-                    capabilities.icount_raw,
                     capabilities.request_shutdown,
                 )
                 .map_err(|source| {

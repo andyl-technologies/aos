@@ -1879,6 +1879,10 @@ register.
     virtual payload, admits the marker at the live callback boundary, reaches
     the exact host-published ceiling, and tears down normally.
   - **Fallback:** none.
+  - **Superseded:** this is historical instruction-ABI-v3 evidence only. The
+    pre-execution plugin callback observed HLT before the guest took its
+    architectural exception, so the one-shot result did not prove a sustained
+    EL0 agent. Instruction ABI v4 requires a new HINT-based result.
 
 - **RISK-10 / RISK-11 / T-RISK-3 — S4 shmem visibility is icount-not-wallclock**
   - **Status:** PASS; the measured §13.9 shared-memory visibility discipline

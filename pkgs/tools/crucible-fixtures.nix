@@ -26,7 +26,9 @@
     {
       "x86_64-linux" = "ttyS0";
       "aarch64-linux" = "ttyAMA0";
-    }.${stdenv.hostPlatform.system}
+    }.${
+      stdenv.hostPlatform.system
+    }
     or (throw "crucible-fixtures: unsupported system '${stdenv.hostPlatform.system}'");
 
   fixtureClosureDeps = [
@@ -255,6 +257,12 @@ in
           CRUCIBLE_ENTROPY_SEED_FILE=${entropySeedFileName}
           CRUCIBLE_MAC_DERIVATION=sha256-root-image-sha256
           ENV
+          doorbell_instruction_abi_version=$(sed -n \
+            's/^doorbell_instruction_abi_version=\([0-9][0-9]*\)$/\1/p' \
+            ${crucible-guest}/nix-support/crucible-guest-build-info)
+          test -n "$doorbell_instruction_abi_version"
+          printf 'CRUCIBLE_DOORBELL_INSTRUCTION_ABI_VERSION=%s\n' \
+            "$doorbell_instruction_abi_version" >> rootfs/etc/crucible-fixture.env
 
           cat > rootfs/init <<'INIT'
           #!/bin/sh
@@ -462,6 +470,7 @@ in
 
           cat > "$out/nix-support/crucible-fixtures" <<INFO
           package=crucible-fixtures
+          doorbell_instruction_abi_version=$doorbell_instruction_abi_version
           root_image=${rootImageRelativePath}
           root_image_sha256=$root_hash
           read_only_base=true
