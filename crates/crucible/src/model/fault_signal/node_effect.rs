@@ -75,6 +75,14 @@ pub enum NodeWatchdogPolicy {
         timeout_nanos: PositiveU64,
         /// Lifecycle transition performed at timeout.
         transition: NodeLifecycleTransition,
+        /// Virtual downtime applied by the lifecycle transition.
+        downtime_nanos: u64,
+        /// Boot/restart policy applied by the lifecycle transition.
+        boot_policy: NodeBootPolicy,
+        /// Volatile-state treatment applied by the lifecycle transition.
+        volatile_state_policy: NodeStatePolicy,
+        /// Device-state treatment applied by the lifecycle transition.
+        device_state_policy: NodeStatePolicy,
     },
 }
 
@@ -965,6 +973,33 @@ impl NodeEffectSpecification {
             }
             Self::Lifecycle {
                 volatile_state_policy: NodeStatePolicy::DeviceReset,
+                ..
+            } => Err(invalid()),
+            Self::Hang {
+                watchdog_policy:
+                    NodeWatchdogPolicy::TransitionAfter {
+                        transition,
+                        boot_policy: NodeBootPolicy::RequireReady { exhausted, .. },
+                        ..
+                    },
+                ..
+            } if !matches!(
+                transition,
+                NodeLifecycleTransition::Boot
+                    | NodeLifecycleTransition::Reset
+                    | NodeLifecycleTransition::PowerCycle
+            ) || !matches!(
+                exhausted,
+                NodeLifecycleTransition::Crash
+                    | NodeLifecycleTransition::PowerOff
+                    | NodeLifecycleTransition::PermanentFailure
+            ) => Err(invalid()),
+            Self::Hang {
+                watchdog_policy:
+                    NodeWatchdogPolicy::TransitionAfter {
+                        volatile_state_policy: NodeStatePolicy::DeviceReset,
+                        ..
+                    },
                 ..
             } => Err(invalid()),
             Self::Hang {
