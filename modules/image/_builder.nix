@@ -309,12 +309,11 @@
                 esp/EFI/Linux/${espUkiFilename}.measurement.sig
             ''}
 
-            # sd-boot configuration. The `default aos-*.efi` glob is the
-            # FIRST-INSTALL FALLBACK only: it picks the lexically-highest match.
-            # For A/B rollout, name UKIs with a boot-counting
-            # tries-suffix (auto-demoting a bad new image) and pins durable
-            # rollback via `bootctl set-default` at runtime, which overrides the
-            # glob's lexical preference.
+            # sd-boot configuration. The `default aos-*.efi` pattern selects
+            # the newest live counted image while sorting an exhausted image
+            # behind the known-good slot. Staging clears any exact persistent
+            # default so this fallback ordering remains effective; explicit
+            # rollback pins a known-good entry with `bootctl set-default`.
             cat > esp/loader/loader.conf <<LOADER
             default aos-*.efi
             timeout 3

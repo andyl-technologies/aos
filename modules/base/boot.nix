@@ -70,9 +70,10 @@ in {
     ## tries-suffix `aos-<name>-<version>+<tries>.efi`. sd-boot decrements the
     ## counter on each boot attempt and auto-demotes (`+0-<tries>`) a UKI that
     ## fails to boot, so a bad new image falls back to the other A/B slot
-    ## without operator action. Durable rollback to an older slot is then
-    ## `bootctl set-default` (apm, at runtime), NOT the `default aos-*.efi`
-    ## lexically-highest glob, which remains only the first-install fallback.
+    ## without operator action. Staging clears any exact persistent default so
+    ## the `default aos-*.efi` loader pattern can sort the exhausted entry
+    ## behind the known-good slot. Explicit rollback to an older good slot uses
+    ## `bootctl set-default` at runtime.
     ##
     ## The default of three attempts enables automatic fallback on every image.
     ## `null` is retained only as an explicit compatibility escape hatch.
@@ -83,9 +84,10 @@ in {
         sd-boot boot-counting tries suffix for durable image rollback. When
         set to N, the ESP UKI is named
         `aos-<name>-<version>+N.efi`; sd-boot assesses the boot and demotes a
-        UKI that fails to start, falling back to the other A/B slot. Durable
-        rollback is `bootctl set-default`, not the lexical glob. Set `null`
-        only for compatibility with boot managers that lack boot counting.
+        UKI that fails to start, falling back to the other A/B slot. Staging
+        relies on the loader's `aos-*.efi` pattern while explicit rollback uses
+        `bootctl set-default`. Set `null` only for compatibility with boot
+        managers that lack boot counting.
       '';
     };
 

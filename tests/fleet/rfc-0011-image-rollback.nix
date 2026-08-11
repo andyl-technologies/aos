@@ -582,6 +582,12 @@ in {
       print("=== stage candidate ===\n" + out)
       assert "Secure Boot catalog validation passed" in out, out
       assert "Staging inactive A/B image slot" in out, out
+      # An exact LoaderEntryDefault would keep selecting the counted UKI even
+      # after sd-boot marks it bad. Staging must leave selection to the
+      # image-owned aos-*.efi pattern so exhaustion can fall back to slot A.
+      target.fail(
+          f"test -e /sys/firmware/efi/efivars/LoaderEntryDefault-{SB_GUID}"
+      )
       assert_boot_read_only()
 
       staged = image_state()
