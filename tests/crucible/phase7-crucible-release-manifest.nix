@@ -14,6 +14,7 @@
   defaultChecks = builtins.readFile ./default.nix;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
+  doorbellAbi = builtins.readFile ../../crates/crucible-protocol/src/doorbell_abi.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
 
@@ -38,6 +39,11 @@
     "guest-host protocol version"
     "pub const CONTROL_PROTOCOL_VERSION: u32 = "
     protocolLib;
+  doorbellInstructionAbiVersion =
+    sourceConst
+    "doorbell instruction ABI version"
+    "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = "
+    doorbellAbi;
   rpcProtocolMajor = sourceConst "RPC ABI major version" "pub const RPC_PROTOCOL_MAJOR: u16 = " apiRpcAbi;
   rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;
   rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
@@ -315,6 +321,10 @@
         needle = "pub const CONTROL_PROTOCOL_VERSION: u32 = ";
       }
       {
+        label = "manifest records doorbell instruction ABI source";
+        needle = "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = ";
+      }
+      {
         label = "manifest records RPC ABI source";
         needle = "pub const RPC_PROTOCOL_MAJOR: u16 = ";
       }
@@ -445,6 +455,10 @@
         needle = "guest_host_protocol_abi=${guestHostProtocolAbi}";
       }
       {
+        label = "doorbell instruction ABI";
+        needle = "doorbell_instruction_abi_version=${doorbellInstructionAbiVersion}";
+      }
+      {
         label = "RPC ABI";
         needle = "rpc_abi=${rpcAbi}";
       }
@@ -558,6 +572,7 @@ in
           grep -q "^qemu_build_id=$QEMU_BUILD_ID$" "$manifest_env"
           grep -q "^shmem_abi=$SHMEM_ABI$" "$manifest_env"
           grep -q "^guest_host_protocol_abi=$GUEST_HOST_PROTOCOL_ABI$" "$manifest_env"
+          grep -q '^doorbell_instruction_abi_version=4$' "$manifest_env"
           grep -q "^rpc_abi=$RPC_ABI$" "$manifest_env"
           grep -q '^reproducibility_timestamp_policy=no-wall-clock-timestamps$' "$manifest_env"
           grep -q '^boundary_crates_license=MIT$' "$manifest_env"

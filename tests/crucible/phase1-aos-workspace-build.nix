@@ -29,7 +29,17 @@
     {
       "x86_64-linux" = "qemu-system-x86_64";
       "aarch64-linux" = "qemu-system-aarch64";
-    }.${pkgs.stdenv.hostPlatform.system}
+    }.${
+      pkgs.stdenv.hostPlatform.system
+    }
+    or (throw "crucible phase1 AOS workspace build does not support ${pkgs.stdenv.hostPlatform.system}");
+  nativeGuestArchitecture =
+    {
+      "x86_64-linux" = "x86_64";
+      "aarch64-linux" = "aarch64";
+    }.${
+      pkgs.stdenv.hostPlatform.system
+    }
     or (throw "crucible phase1 AOS workspace build does not support ${pkgs.stdenv.hostPlatform.system}");
 in
   if attrFailures != []
@@ -66,6 +76,14 @@ in
             test -x ${packages.crucible}/bin/crucible-debugger-live-fixture
             test -x ${packages.crucible}/bin/crucible-debugger-live-matrix
             test -x ${packages.crucible}/bin/gdbserver
+            ${packages.crucible}/bin/crucible-debugger-live-fixture \
+              ${nativeGuestArchitecture} \
+              ${pkgs.linux-crucible}/boot/vmlinuz-${pkgs.linux-crucible.version} \
+              ${pkgs.crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4 \
+              'console=crucible-fixture provenance=exact' \
+              "$PWD/debugger-live.scenario.toml"
+            grep -Fx 'cmdline = "console=crucible-fixture provenance=exact"' \
+              "$PWD/debugger-live.scenario.toml"
             test -f ${packages.crucible}/share/licenses/crucible/Apache-2.0.txt
             test -f ${packages.crucible}/share/licenses/crucible/MIT.txt
             test -f ${packages.crucible}/share/licenses/crucible/GPL-2.0-only.txt
@@ -132,6 +150,8 @@ in
             grep -q '^guest_host_protocol_version=1$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^guest_host_protocol_abi=crucible-guest-host-channel-v1$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^doorbell_instruction_abi_version=4$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^rpc_abi_version=5.0.0$' \
               ${packages.crucible}/nix-support/crucible-build-info

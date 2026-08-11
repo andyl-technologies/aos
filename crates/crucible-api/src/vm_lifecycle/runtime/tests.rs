@@ -12,6 +12,50 @@ fn node() -> NodeId {
     }
 }
 
+#[test]
+fn recorded_control_boundary_waits_until_every_node_reaches_the_exact_time() {
+    let node_a = node();
+    let node_b = NodeId {
+        name: String::from("vm-b"),
+    };
+    let expected = BTreeMap::from([
+        (node_a.clone(), VirtualTime { ticks: 17 }),
+        (node_b.clone(), VirtualTime { ticks: 23 }),
+    ]);
+
+    assert_eq!(
+        classify_recorded_control_boundary(
+            &expected,
+            &BTreeMap::from([
+                (node_a.clone(), VirtualTime { ticks: 16 }),
+                (node_b.clone(), VirtualTime { ticks: 23 }),
+            ]),
+        ),
+        RecordedControlBoundary::Pending
+    );
+    assert_eq!(
+        classify_recorded_control_boundary(&expected, &expected),
+        RecordedControlBoundary::Ready
+    );
+    assert_eq!(
+        classify_recorded_control_boundary(
+            &expected,
+            &BTreeMap::from([
+                (node_a.clone(), VirtualTime { ticks: 18 }),
+                (node_b, VirtualTime { ticks: 22 }),
+            ]),
+        ),
+        RecordedControlBoundary::Bypassed
+    );
+    assert_eq!(
+        classify_recorded_control_boundary(
+            &expected,
+            &BTreeMap::from([(node_a, VirtualTime { ticks: 17 })]),
+        ),
+        RecordedControlBoundary::Bypassed
+    );
+}
+
 fn initially_violated_scenario() -> ScenarioDefForm {
     let base = crucible::crash_restart_scenario()
         .unwrap_or_else(|error| panic!("built-in scenario should validate: {error}"))

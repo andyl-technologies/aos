@@ -91,6 +91,19 @@ pub enum LiveWhiteboxError {
     /// QEMU rejected a requested register read.
     #[error("QEMU register read failed in live white-box callback")]
     RegisterRead,
+    /// QEMU could not provide the non-mutating instruction callback coordinate.
+    #[error("QEMU could not observe the exact live white-box instruction icount")]
+    IcountObservation,
+    /// Translation metadata could not be represented in callback userdata.
+    #[error(
+        "live white-box instruction location tb_insns={tb_insns} index={index} is not representable"
+    )]
+    InstructionLocationOverflow {
+        /// Number of instructions in the translated block.
+        tb_insns: usize,
+        /// Zero-based instruction index in the translated block.
+        index: usize,
+    },
     /// A guest-provided payload length did not fit the host address size.
     #[error("guest white-box payload length {len} does not fit host usize")]
     PayloadLengthOverflow {

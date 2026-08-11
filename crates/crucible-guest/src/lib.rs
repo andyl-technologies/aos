@@ -23,8 +23,8 @@
 pub mod guest_introspection_agent;
 
 pub use crucible_protocol::{
-    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
-    WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE, WHITEBOX_DOORBELL_ABIS,
+    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
+    WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT, WHITEBOX_DOORBELL_ABIS,
     WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT, WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
     WHITEBOX_DOORBELL_FRAME_MAGIC, WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE,
     WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION, WHITEBOX_DOORBELL_KIND_ASSERTION,
@@ -41,7 +41,7 @@ pub use crucible_protocol::{
     WhiteboxDoorbellTrapAbi, WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent,
     WhiteboxMarkerDetail, WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError,
     WhiteboxMarkerPayloadEncodeError, WhiteboxRandomRequestBody, decode_whitebox_marker_payload,
-    encode_aarch64_hlt_instruction, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
+    encode_aarch64_hint_instruction, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
     encode_whitebox_marker_payload_body, encode_x86_64_out_imm8_al_instruction,
     whitebox_doorbell_abi_for_architecture,
 };
@@ -554,7 +554,7 @@ fn native_doorbell_abi() -> Result<WhiteboxDoorbellAbi, GuestEmitterError> {
 fn ring_doorbell(trap: WhiteboxDoorbellTrapAbi, frame: &mut [u8]) -> Result<(), GuestEmitterError> {
     match trap {
         WhiteboxDoorbellTrapAbi::X86PortIo { port } => ring_x86_64(port, frame),
-        WhiteboxDoorbellTrapAbi::Aarch64Hlt { immediate } => ring_aarch64(immediate, frame),
+        WhiteboxDoorbellTrapAbi::Aarch64Hint { immediate } => ring_aarch64(immediate, frame),
     }
 }
 
@@ -606,10 +606,10 @@ fn enable_x86_64_port_io(port: u16) -> Result<(), GuestEmitterError> {
     }
 }
 
-fn ring_aarch64(immediate: u16, frame: &mut [u8]) -> Result<(), GuestEmitterError> {
+fn ring_aarch64(immediate: u8, frame: &mut [u8]) -> Result<(), GuestEmitterError> {
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
-        if immediate != WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE {
+        if immediate != WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT {
             return Err(GuestEmitterError::Transport {
                 message: format!(
                     "aarch64 doorbell immediate {immediate:#x} does not match shared ABI"
@@ -624,7 +624,7 @@ fn ring_aarch64(immediate: u16, frame: &mut [u8]) -> Result<(), GuestEmitterErro
         // and the reserved immediate is checked against the shared ABI table.
         unsafe {
             core::arch::asm!(
-                "hlt #0x04c1",
+                "hint #0x4c",
                 in("x0") pointer,
                 in("x1") len,
                 options(nostack)

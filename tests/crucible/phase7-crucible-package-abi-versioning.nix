@@ -204,6 +204,10 @@
         needle = "guest_host_protocol_abi=crucible-guest-host-channel-v" + "$" + "{guestHostProtocolVersion}";
       }
       {
+        label = "CLI build-info doorbell instruction ABI";
+        needle = "doorbell_instruction_abi_version=" + "$" + "{doorbellInstructionAbiVersion}";
+      }
+      {
         label = "CLI build-info RPC ABI";
         needle = "rpc_abi_version=" + "$" + "{rpcProtocolMajor}." + "$" + "{rpcProtocolMinor}." + "$" + "{rpcProtocolPatch}";
       }

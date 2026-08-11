@@ -45,14 +45,18 @@ in
 
           grep -Fxq PASS "$LIVE_RESULT"
           grep -Fxq 'status=complete' "$LIVE_RESULT"
-          grep -Fxq 'aarch64_doorbell_instruction=hlt-0x04c1' "$LIVE_RESULT"
+          grep -Fxq 'aarch64_doorbell_instruction=hint-0x4c' "$LIVE_RESULT"
+          grep -Fxq 'aarch64_repeated_doorbells=2' "$LIVE_RESULT"
+          grep -Fxq 'aarch64_adjacent_marker_icounts=true' "$LIVE_RESULT"
+          grep -Fxq 'aarch64_marker_icounts_reproducible=true' "$LIVE_RESULT"
+          grep -Fxq 'aarch64_whitebox_off_inert=true' "$LIVE_RESULT"
           grep -Fxq 'aarch64_payload_registers=x0,x1' "$LIVE_RESULT"
           grep -Fxq 'aarch64_live_marker_observed=true' "$LIVE_RESULT"
           grep -Fxq 'aarch64_boot_barrier_ceiling_enforced=true' "$LIVE_RESULT"
           grep -Fxq PASS "$LIVE_AARCH64_RESULT"
           grep -Fxq 'whitebox=on' "$LIVE_AARCH64_RESULT"
-          grep -Fxq 'whitebox_setup_region=aarch64-hlt-04c1' "$LIVE_AARCH64_RESULT"
-          grep -Fxq 'whitebox_marker_count=1' "$LIVE_AARCH64_RESULT"
+          grep -Fxq 'whitebox_setup_region=aarch64-hint-4c-inert' "$LIVE_AARCH64_RESULT"
+          grep -Fxq 'whitebox_marker_count=2' "$LIVE_AARCH64_RESULT"
           grep -Fxq 'whitebox_marker_point=hot-path' "$LIVE_AARCH64_RESULT"
           grep -Fxq 'boot_barrier_ceiling_enforced=true' "$LIVE_AARCH64_RESULT"
           grep -Fxq 'orderly_child_exit=true' "$LIVE_AARCH64_RESULT"
@@ -75,6 +79,9 @@ in
             echo qemu_aarch64_softmmu_target=true
             echo qemu_system_aarch64_available=true
             echo production_aarch64_doorbell_trap_implemented=true
+            echo instruction_abi_version=4
+            echo repeated_doorbells=2
+            echo adjacent_marker_icounts=true
             echo whitebox_on_trap_tested=true
             echo whitebox_off_inertness_tested=true
             echo marker_icount_reproducible="$marker_icount"

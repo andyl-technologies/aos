@@ -7,6 +7,34 @@ mod debug_evidence;
 
 use debug_evidence::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecordedControlBoundary {
+    Pending,
+    Ready,
+    Bypassed,
+}
+
+fn classify_recorded_control_boundary(
+    expected: &BTreeMap<NodeId, VirtualTime>,
+    observed: &BTreeMap<NodeId, VirtualTime>,
+) -> RecordedControlBoundary {
+    let mut pending = false;
+    for (node, expected_at) in expected {
+        let Some(observed_at) = observed.get(node) else {
+            return RecordedControlBoundary::Bypassed;
+        };
+        if observed_at > expected_at {
+            return RecordedControlBoundary::Bypassed;
+        }
+        pending |= observed_at < expected_at;
+    }
+    if pending {
+        RecordedControlBoundary::Pending
+    } else {
+        RecordedControlBoundary::Ready
+    }
+}
+
 impl ProductionVmLifecycleLoop {
     /// Returns the number of QEMU processes currently owned by this lifecycle.
     #[must_use]
@@ -220,24 +248,39 @@ impl ProductionVmLifecycleLoop {
             }
             let control = match controls.get(control_index) {
                 Some(recorded) if recorded.configuration == configuration => {
-                    let boundary_matches = recorded.node_times.iter().all(|(node, expected)| {
-                        replay.inner.backend().node_now(node).is_ok()
-                            && replay
-                                .inner
-                                .loop_impl()
-                                .scheduler_time_for_node(node)
-                                .is_ok_and(|at| at == *expected)
-                    });
-                    if !boundary_matches {
-                        let _ = replay.shutdown();
-                        return Err(SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "whole-world debug replay reached control {} at the wrong node-time boundary",
-                                control_index
-                            ),
-                        });
+                    let mut observed = BTreeMap::new();
+                    for node in recorded.node_times.keys() {
+                        if replay.inner.backend().node_now(node).is_err() {
+                            let _ = replay.shutdown();
+                            return Err(SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "whole-world debug replay cannot observe node `{}` for control {}",
+                                    node.name, control_index
+                                ),
+                            });
+                        }
+                        let at = match replay.inner.loop_impl().scheduler_time_for_node(node) {
+                            Ok(at) => at,
+                            Err(error) => {
+                                let _ = replay.shutdown();
+                                return Err(error);
+                            }
+                        };
+                        observed.insert(node.clone(), at);
                     }
-                    recorded.control.clone()
+                    match classify_recorded_control_boundary(&recorded.node_times, &observed) {
+                        RecordedControlBoundary::Pending => Vec::new(),
+                        RecordedControlBoundary::Ready => recorded.control.clone(),
+                        RecordedControlBoundary::Bypassed => {
+                            let _ = replay.shutdown();
+                            return Err(SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "whole-world debug replay bypassed control {} node-time boundary",
+                                    control_index
+                                ),
+                            });
+                        }
+                    }
                 }
                 Some(recorded)
                     if recorded.configuration.schedule.len() <= configuration.schedule.len() =>

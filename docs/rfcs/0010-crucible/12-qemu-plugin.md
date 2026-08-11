@@ -1098,9 +1098,15 @@ component that makes that purity true *inside* the QEMU process.
   into the host event log and proves the live host-to-guest app-random reply
   path. The same gate now builds and boots the AOS `qemu-system-aarch64`
   target with a raw `virt` guest, recognizes only the frozen
-  `hlt #0x04c1` encoding, reads `x0`/`x1`, decodes the same golden marker,
+  `hint #0x4c` encoding, reads `x0`/`x1`, decodes the same golden marker,
   enforces the exact scheduler ceiling, and tears down normally. Both
-  architecture adapters therefore exercise the production callback path.
+  architecture adapters therefore exercise the production callback path. The
+  adapter observes QEMU's non-mutating icount from the translation block's
+  entry callback, caches it per vCPU with the translated block length, and has
+  the later instruction callback validate that metadata before adding the
+  instruction index. It never invokes either the TB-entry helper outside its
+  documented callback context or the committing raw-icount reader while the
+  translation block is executing.
 - [x] **T-PLUG-15** Implement the optional coverage hook: a registration-time
   opt-in TCG-exec basic-block map with zero cost when off and no effect on `S`/`T`
   or fingerprints; emit coverage as observational output. — satisfies [PLUG-35],
