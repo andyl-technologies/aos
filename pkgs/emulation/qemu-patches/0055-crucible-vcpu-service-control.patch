@@ -230,10 +230,10 @@ index 7b1f756..ec77da2 100644
      case CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE:
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
 new file mode 100644
-index 0000000..dbab2d9
+index 0000000..ff1e179
 --- /dev/null
 +++ b/plugins/crucible-fault-vcpu-service.c
-@@ -0,0 +1,921 @@
+@@ -0,0 +1,950 @@
 +/*
 + * Crucible deterministic vCPU service and fixed-topology eligibility faults
 + *
@@ -641,6 +641,8 @@ index 0000000..dbab2d9
 +    uint32_t vcpu, uint32_t old_state, const CrucibleVcpuService *service,
 +    const QemuCrucibleFaultRule *transition_rule,
 +    QemuCrucibleFaultEventReservation **event_reservation);
++static void crucible_vcpu_interrupt_window(CPUState *cpu,
++                                           CrucibleVcpuService *service);
 +
 +void qemu_crucible_fault_vcpu_service_rules_changed(
 +    const QemuCrucibleFaultRule *transition_rule,
@@ -688,6 +690,13 @@ index 0000000..dbab2d9
 +                                                  new_service)) {
 +                crucible_vcpu_service_preserve_ledger(new_service,
 +                                                      old_service);
++            } else {
++                CPUState *cpu = qemu_get_cpu(i);
++
++                if (!cpu) {
++                    abort();
++                }
++                crucible_vcpu_interrupt_window(cpu, old_service);
 +            }
 +            if (old_state != new_service->state) {
 +                if (!transition_rule || !event_reservation ||
@@ -849,7 +858,8 @@ index 0000000..dbab2d9
 +                                       CrucibleVcpuService *service,
 +                                       uint64_t remainder_before,
 +                                       int64_t virtual_before,
-+                                       int64_t virtual_after)
++                                       int64_t virtual_after,
++                                       bool configuration_interrupted)
 +{
 +    struct qemu_plugin_rr_cursor rr = { 0 };
 +    uint8_t evidence[CRUCIBLE_VCPU_SERVICE_EVIDENCE_BYTES] = { 0 };
@@ -897,7 +907,9 @@ index 0000000..dbab2d9
 +    stq_le_p(evidence + 160, rr.current_vcpu);
 +    stq_le_p(evidence + 168, rr.cursor_position);
 +    stq_le_p(evidence + 176, rr.rr_switch_quantum);
-+    stl_le_p(evidence + 184, service->grant_own != 0);
++    stl_le_p(evidence + 184,
++             (service->grant_own != 0) |
++             (configuration_interrupted ? 2U : 0U));
 +    stl_le_p(evidence + 188, service->grant_borrowed != 0);
 +    crucible_vcpu_sha256(evidence, 64, before_hash);
 +    crucible_vcpu_sha256(evidence, 160, after_hash);
@@ -963,12 +975,29 @@ index 0000000..dbab2d9
 +    if (delay != 0) {
 +        icount_advance_virtual_time_to_ns(after);
 +    }
-+    crucible_vcpu_window_event(cpu, service, remainder_before, before, after);
++    crucible_vcpu_window_event(cpu, service, remainder_before, before, after,
++                               false);
 +    service->window_credit = 0;
 +    service->window_retired = 0;
 +    service->denied_pending = 0;
 +    service->window_own_retired = 0;
 +    service->window_borrowed_retired = 0;
++}
++
++static void crucible_vcpu_interrupt_window(CPUState *cpu,
++                                           CrucibleVcpuService *service)
++{
++    int64_t now;
++
++    if (!service->window_reservation) {
++        return;
++    }
++    now = icount_get_observed();
++    service->grant_own = 0;
++    service->grant_borrowed = 0;
++    crucible_vcpu_window_event(cpu, service,
++                               service->window_remainder_before,
++                               now, now, true);
 +}
 +
 +static bool crucible_vcpu_refill(CPUState *cpu,
