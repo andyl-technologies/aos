@@ -26,7 +26,8 @@ The output directory must not exist. The matrix clears debugger backend and boot
 asset overrides, generates each scenario from the BLAKE3 identities of the
 packaged kernel and root image, and uses only the public daemon and CLI surfaces.
 It preserves per-architecture logs, GDB transcripts, complete landed runtime
-coordinates, guest-channel transcripts, package build information, and an
+coordinates, guest-channel transcripts, the exact canonical kernel command line
+alongside kernel/root-image identities, package build information, and an
 aggregate `result` file. `--help` reports the architectures retained by that
 suite; `all` fails closed unless both x86_64 and AArch64 assets are present.
 On a native-only package, an operator may add retained AArch64 assets by setting
