@@ -5,9 +5,13 @@
 //! socket while the quantum is in flight, while this spool withholds the bytes
 //! until [`crate::QemuNode`] assigns the completed scheduler boundary.
 
+use std::io::Read;
+use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
+
+use crate::QemuAsyncDriverRuntimeError;
 
 /// Maximum console output retained between scheduler observation boundaries.
 ///
@@ -15,6 +19,46 @@ use thiserror::Error;
 /// memory growth. Exceeding it aborts the bounded node step instead of silently
 /// losing observational evidence.
 pub(crate) const MAX_CONSOLE_OBSERVATION_BYTES: usize = 16 * 1024 * 1024;
+
+/// Owns the output-only console descriptor drained between scheduler polls.
+pub(crate) struct QemuConsoleObservationReader {
+    output: UnixStream,
+    spool: QemuConsoleObservationSpool,
+}
+
+impl QemuConsoleObservationReader {
+    /// Configures an output-only console stream for non-blocking observation.
+    pub(crate) fn new(
+        output: UnixStream,
+        spool: QemuConsoleObservationSpool,
+    ) -> Result<Self, std::io::Error> {
+        output.set_nonblocking(true)?;
+        Ok(Self { output, spool })
+    }
+
+    /// Drains currently available bytes without assigning scheduler time.
+    pub(crate) fn drain_available(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match self.output.read(&mut buffer) {
+                Ok(0) => return Ok(()),
+                Ok(count) => self.spool.append(&buffer[..count]).map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "stage QEMU console output",
+                        source.to_string(),
+                    )
+                })?,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) => {
+                    return Err(QemuAsyncDriverRuntimeError::new(
+                        "read QEMU console output",
+                        error.to_string(),
+                    ));
+                }
+            }
+        }
+    }
+}
 
 /// Shared console bytes staged by host-I/O polling for the next boundary.
 #[derive(Clone, Default)]
@@ -82,6 +126,7 @@ pub(crate) enum QemuConsoleObservationSpoolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn spool_preserves_order_and_clears_at_boundary() -> Result<(), Box<dyn std::error::Error>> {
@@ -105,6 +150,42 @@ mod tests {
             Err(QemuConsoleObservationSpoolError::Capacity { .. })
         ));
         assert_eq!(spool.take()?, retained);
+        Ok(())
+    }
+
+    #[test]
+    fn reader_releases_backpressure_and_preserves_bytes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (mut writer, output) = UnixStream::pair()?;
+        writer.set_nonblocking(true)?;
+        let payload = (0..(1024 * 1024))
+            .map(|index| u8::try_from(index % 251))
+            .collect::<Result<Vec<_>, _>>()?;
+        let spool = QemuConsoleObservationSpool::new();
+        let mut reader = QemuConsoleObservationReader::new(output, spool.clone())?;
+        let mut written = 0;
+        let mut observed_backpressure = false;
+
+        while written < payload.len() {
+            match writer.write(&payload[written..]) {
+                Ok(0) => {
+                    return Err(std::io::Error::other(
+                        "console writer made no progress without WouldBlock",
+                    )
+                    .into());
+                }
+                Ok(count) => written += count,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    observed_backpressure = true;
+                    reader.drain_available()?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        reader.drain_available()?;
+
+        assert!(observed_backpressure);
+        assert_eq!(spool.take()?, payload);
         Ok(())
     }
 }
