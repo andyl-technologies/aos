@@ -651,6 +651,7 @@ pub struct QemuNode {
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
     console_observation: Option<QemuConsoleObservation>,
     fault_capabilities: Vec<FaultCapabilityRowV1>,
+    ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
     next_fault_command_sequence: u64,
     next_fault_event_sequence: u64,
     fault_event_terminal_failure: Option<String>,
@@ -824,6 +825,7 @@ impl QemuNode {
             pending_network_outputs: Vec::new(),
             console_observation: None,
             fault_capabilities: Vec::new(),
+            ready_markers: std::collections::BTreeSet::new(),
             // Sequence 1 is consumed by the mandatory setup-time capability
             // query before a live node can be constructed.
             next_fault_command_sequence: 2,
@@ -846,6 +848,24 @@ impl QemuNode {
     #[must_use]
     pub fn fault_capabilities(&self) -> &[FaultCapabilityRowV1] {
         &self.fault_capabilities
+    }
+
+    /// Installs the launch-bound guest ready-marker manifest.
+    #[must_use]
+    pub fn with_ready_markers(
+        mut self,
+        ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
+    ) -> Self {
+        self.ready_markers = ready_markers;
+        self
+    }
+
+    /// Returns the exact launch-bound guest ready-marker manifest.
+    #[must_use]
+    pub const fn ready_markers(
+        &self,
+    ) -> &std::collections::BTreeSet<crucible::model::FaultObjectId> {
+        &self.ready_markers
     }
 
     /// Reserves the next strictly increasing host command sequence.

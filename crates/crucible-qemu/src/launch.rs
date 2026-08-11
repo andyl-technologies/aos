@@ -536,6 +536,10 @@ impl QemuLaunchCommand {
             "fault_capability_manifest_v1={}",
             lower_hex(self.fault_capability_requirement.digest())
         ));
+        lines.push(format!(
+            "ready_marker_manifest_v1={}",
+            lower_hex(self.fault_capability_requirement.ready_marker_digest())
+        ));
         for (index, argument) in self.args.iter().enumerate() {
             lines.push(format!("argv[{index}]={argument}"));
         }

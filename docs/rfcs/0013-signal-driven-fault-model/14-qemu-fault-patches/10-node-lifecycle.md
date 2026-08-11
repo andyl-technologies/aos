@@ -92,7 +92,10 @@ fatal and recovered only by restoring the pre-boundary checkpoint.
 count, exact virtual retry delay, and terminal `crash`, `power_off`, or
 `permanent_failure` transition. The capability manifest may expose native
 pre-release, reset-vector, firmware-handoff, and guest ready-point markers; an
-unmanifested marker is rejected. Repeated/intermittent reset behavior is a
+unmanifested marker is rejected before QEMU receives the lifecycle command. The
+canonically ordered `world.node_fault_capabilities.ready_markers` set is bound
+into launch identity, retained across the host/plugin setup boundary, and
+checked independently for every selected live node. Repeated/intermittent reset behavior is a
 temporal signal producing repeated lifecycle commands, not hidden retry logic.
 
 The GPL-side Crucible plugin reports a decoded guest event marker directly to
@@ -118,6 +121,14 @@ from version 1. The extension is exhaustive:
 | 208 | 8 | exact virtual retry delay in nanoseconds |
 | 216 | 8 | exact virtual ready deadline, or `UINT64_MAX` when none was armed |
 | 224 | 32 | SHA-256 of the exact UTF-8 ready-marker bytes, or all zeroes |
+
+Every terminal path uses the same canonical after-state digest:
+`SHA-256("CRUCTRM1" || transition_le32 || pre_exit_qemu_state_sha256)`, with
+zero padding between the transition and fingerprint exactly as encoded by the
+48-byte `CRUCTRM1` material. Direct terminal commands and exhausted ready-policy
+retries both record the final RAM/device byte counts and the independently
+measured pre-exit QEMU state fingerprint before deriving that terminal digest;
+neither hashes a partially filled evidence buffer as a substitute for state.
 
 ## Hang scopes
 

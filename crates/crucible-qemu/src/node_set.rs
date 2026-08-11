@@ -290,6 +290,19 @@ impl QemuNodeSet {
             })
     }
 
+    /// Reports whether one live node's launch manifest admits a guest ready marker.
+    #[must_use]
+    pub fn admits_ready_marker(
+        &self,
+        node: &crucible::model::FaultObjectId,
+        marker: &crucible::model::FaultObjectId,
+    ) -> bool {
+        self.nodes
+            .iter()
+            .find(|(id, _node)| id.name == node.as_str())
+            .is_some_and(|(_id, node)| node.ready_markers().contains(marker))
+    }
+
     /// Derives the node capability manifest common to every live QEMU process.
     ///
     /// # Errors

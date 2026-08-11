@@ -46,6 +46,7 @@ pub struct QemuHostPluginSetup {
     fault_capability_digest: [u8; 32],
     register_manifest: Option<FaultRegisterCapabilityManifestV1>,
     interrupt_manifest: Option<FaultInterruptCapabilityManifestV1>,
+    ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
 }
 
 impl QemuHostPluginSetup {
@@ -95,6 +96,14 @@ impl QemuHostPluginSetup {
     #[must_use]
     pub const fn interrupt_manifest(&self) -> Option<&FaultInterruptCapabilityManifestV1> {
         self.interrupt_manifest.as_ref()
+    }
+
+    /// Returns the launch-bound guest markers eligible to complete ready policies.
+    #[must_use]
+    pub const fn ready_markers(
+        &self,
+    ) -> &std::collections::BTreeSet<crucible::model::FaultObjectId> {
+        &self.ready_markers
     }
 
     /// Returns the retained host shared-memory descriptor.
@@ -363,6 +372,7 @@ pub fn complete_qemu_host_plugin_setup(
         fault_capability_digest: admitted_capability_digest,
         register_manifest,
         interrupt_manifest,
+        ready_markers: required_capabilities.ready_markers().clone(),
     })
 }
 

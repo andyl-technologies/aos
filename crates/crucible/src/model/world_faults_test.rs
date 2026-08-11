@@ -220,6 +220,7 @@ fn node_capabilities_with_register(register: WorldNodeRegister) -> WorldNodeFaul
         interrupts: Vec::new(),
         clock_sources: Vec::new(),
         accelerators: Vec::new(),
+        ready_markers: Vec::new(),
         semantic_version: 1,
     }
 }
