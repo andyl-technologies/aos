@@ -51,6 +51,23 @@ plan obeys the same closed cross-field rules as a direct lifecycle command;
 there are no default state-loss policies. There are no restart-source, queue,
 clock, boot-stage, or other opaque policy IDs.
 
+Watchdogs due at the same virtual coordinate form one atomic composition set.
+The adapter snapshots the full set before changing any hang or lifecycle state,
+records every member's recovery at that coordinate, and applies exactly one
+resolved transition. Transition severity is, from weakest to strongest,
+`boot < reset < power_cycle < crash < power_off < permanent_failure`.
+Downtime is the maximum requested downtime, volatile `clear` dominates
+`preserve`, and device treatment is ordered
+`preserve < device_reset < clear`. Equal-severity transition winners are chosen
+by the lexicographically smallest binding hash; this tie-break changes only the
+event identity because all mutable policies have already been composed. Every
+non-winning watchdog emits `CRUCWDC1` composition evidence binding its requested
+plan, resolved plan, deadline, contributor, and winner. Container iteration
+order is never observable and downtime is advanced only once. Recovery,
+composition, and lifecycle evidence all retain the same safe-boundary raw
+icount; deferred machine-reset completion must not restamp the lifecycle event
+with a later post-reset coordinate.
+
 ## Reset and power semantics
 
 - `reset` invokes deterministic architecture/machine reset after applying the

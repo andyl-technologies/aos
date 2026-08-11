@@ -169,10 +169,17 @@ in
                 node)
                   smp=1
                   plugin_args="architecture=$architecture_id"
+                  pass_marker="CRUCIBLE_NODE_HANG_LIVE_PASS architecture=$architecture_id"
                   ;;
                 runnable-vcpu)
                   smp=2
                   plugin_args="architecture=$architecture_id,scope=vcpu1,initial_virtual_time=10000"
+                  pass_marker="CRUCIBLE_NODE_HANG_LIVE_PASS architecture=$architecture_id"
+                  ;;
+                simultaneous)
+                  smp=2
+                  plugin_args="architecture=$architecture_id,scope=simultaneous,initial_virtual_time=10000"
+                  pass_marker="CRUCIBLE_NODE_HANG_COMPOSITION_LIVE_PASS architecture=$architecture_id"
                   ;;
                 *)
                   echo "unknown hang scope: $scope" >&2
@@ -195,16 +202,16 @@ in
                 return 1
               fi
               cat "$log"
-              grep -Fq \
-                "CRUCIBLE_NODE_HANG_LIVE_PASS architecture=$architecture_id" \
-                "$log"
-              test "$(grep -Fc CRUCIBLE_NODE_HANG_LIVE_PASS "$log")" -eq 1
+              grep -Fq "$pass_marker" "$log"
+              test "$(grep -Fc "$pass_marker" "$log")" -eq 1
             }
 
             run_hang x86_64 2 node
             run_hang aarch64 3 node
             run_hang x86_64 2 runnable-vcpu
             run_hang aarch64 3 runnable-vcpu
+            run_hang x86_64 2 simultaneous
+            run_hang aarch64 3 simultaneous
           '';
         }
         {
@@ -224,6 +231,7 @@ in
               printf 'device_policies=preserve,clear,device_reset\n'
               printf 'hang_scopes=node,vcpus\n'
               printf 'watchdog_deadline_axes=stalled,runnable-with-time-bias\n'
+              printf 'watchdog_composition=atomic-severity-lattice\n'
               printf 'watchdog=transition_after-reset\n'
               printf 'recovery=transactional-remove\n'
             } > "$out/result"

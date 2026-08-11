@@ -1,5 +1,12 @@
+From 07076468bc114b7d3e6aaad5d5b26e6bd5a24ff1 Mon Sep 17 00:00:00 2001
+From: Dylan Plecki <dylan@andyl.com>
+Date: Mon, 1 Jan 2001 00:00:01 +0000
+Subject: [PATCH] crucible: hand exact checkpoint boundaries to VM stop
+
+Signed-off-by: Dylan Plecki <dylan@andyl.com>
+
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 8502efe..5617692 100644
+index 8502efe20ee8d0d7e12882ad754d394fe5e53aea..56176924cb17d852dbc9af688d765783889f8053 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -232,6 +232,9 @@ static void rr_crucible_sim_sync_vcpu_halt_callbacks(void)
@@ -257,7 +264,7 @@ index 8502efe..5617692 100644
  
          if (cpu && cpu->exit_request) {
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
-index 702e9bf..d4e5c8d 100644
+index 702e9bf1810f79af46a5eee885f2ebbbc04d6381..d4e5c8d678ffd5d44dd9b327f140112fa6519eb9 100644
 --- a/accel/tcg/tcg-accel-ops-sim-shmem.c
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
 @@ -4,6 +4,7 @@
@@ -318,7 +325,7 @@ index 702e9bf..d4e5c8d 100644
  
      return UINT64_MAX;
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 02dfd45..819a468 100644
+index 02dfd45e302a22b7d10f7f29f4312a25b682f11a..819a46860beec6ca353e08e48b7fdf8a2d427696 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -190,6 +190,14 @@ extern void *qemu_plugin_vcpu_idle_resume_userdata;
@@ -373,7 +380,7 @@ index 02dfd45..819a468 100644
      uint64_t event_id, uint64_t delivery_icount, unsigned int src_vcpu,
      unsigned int dst_vcpu, unsigned int delivery_mode, unsigned int vector)
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 687a7fd..1f9d34f 100644
+index 687a7fd3b15d7cbfa30afb5f2c3790272f6642ce..1f9d34f1f7868a3d5ac31feb813177ab427c9eaa 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1042,6 +1042,23 @@ int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,
@@ -401,7 +408,7 @@ index 687a7fd..1f9d34f 100644
   * qemu_plugin_crucible_single_threaded_rr() - report the live sim execution mode
   *
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 1ca44fb..094f118 100644
+index 1ca44fbd72f423e231b4bc59eee8e7148feb227d..094f118acbbc0c9c951ac07ae83e23686e678b47 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
 @@ -14,6 +14,7 @@
@@ -457,7 +464,7 @@ index 1ca44fb..094f118 100644
      /* if there is a dump in background, we should wait until the dump
       * finished */
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 39e92ce..fa09645 100644
+index 39e92ceabb20a001b2aff51448d1a8e990fff934..fa096458866969f1cbd461f4dd4ebadf917df12c 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -335,6 +335,103 @@ void qemu_plugin_force_vcpu_exit(void)
@@ -598,7 +605,7 @@ index 39e92ce..fa09645 100644
  }
  
 diff --git a/system/cpus.c b/system/cpus.c
-index bdaa7bb..b6a796e 100644
+index bdaa7bba2fb29dd19f15c34a6a633e82b506c3b8..b6a796ec655a686ecb6e0ee50fe24eb24af7d0ae 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
 @@ -308,6 +308,9 @@ static int do_vm_stop(RunState state, bool send_stop)
