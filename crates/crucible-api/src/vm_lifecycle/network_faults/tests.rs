@@ -48,12 +48,12 @@ fn production_journal_sequence_never_reuses_an_a_b_a_coordinate() {
 use crucible::model::{
     BindingActionCause, BindingMapping, BindingObservabilityPolicy, BindingSampling,
     BindingSearchPolicy, EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest, EvaluatedSignal,
-    FaultBinding, FaultDirection, FaultOperation, InverseCdfTable, NetworkInFlightPolicy,
-    ResolvedFaultTarget, ResolvedMappingOutput, ResolvedTargetSet, SampleObservation,
-    SignalChoiceContext, SignalCoordinate, SignalDomain, SignalEvaluationError, SignalId,
-    SignalNode, SignalNodeKind, SignalResourceLimits, SignalShape, SignalSourceSpecification,
-    SignalUnit, SignalValue, SignalValueType, TargetSelector, WorldNetworkInterface,
-    WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
+    FaultBinding, FaultDirection, FaultOperation, FaultResourceLimits, InverseCdfTable,
+    NetworkInFlightPolicy, ResolvedFaultTarget, ResolvedMappingOutput, ResolvedTargetSet,
+    SampleObservation, SignalChoiceContext, SignalCoordinate, SignalDomain, SignalEvaluationError,
+    SignalId, SignalNode, SignalNodeKind, SignalResourceLimits, SignalShape,
+    SignalSourceSpecification, SignalUnit, SignalValue, SignalValueType, TargetSelector,
+    WorldNetworkInterface, WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
 };
 use crucible::{
     BackendNetworkOutput, Icount, LinkDef, MemoryDagStore, QuantumLoop, ReadyPoint,
@@ -79,6 +79,7 @@ impl crucible::model::SignalArtifactProvider for NoArtifacts {
         _same_coordinate_sequence: u64,
         _choice: &SignalChoiceContext,
         _inputs: &[EvaluatedSignal],
+        _resource_limits: FaultResourceLimits,
     ) -> Result<EvaluatedSignal, SignalEvaluationError> {
         Err(SignalEvaluationError::ArtifactSourceRequired(
             node.id.clone(),
@@ -991,6 +992,7 @@ fn association_control_event(values: [i64; 2]) -> boundary::QueuedNetworkControl
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
+        expected_precondition: None,
     };
     let bytes = values
         .into_iter()
@@ -1055,6 +1057,7 @@ fn typed_control_transform_action(
             retired_instructions: None,
         },
         cause: BindingActionCause::Opportunity(ContentHash::from_bytes(b"control-opportunity")),
+        expected_precondition: None,
     }
 }
 
@@ -1183,6 +1186,7 @@ fn forwarder_and_contact_replacements_execute_only_within_world_contracts() {
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
+        expected_precondition: None,
     };
     let forwarder_event = boundary::QueuedNetworkControlEvent {
         sequence: 0,
@@ -1231,6 +1235,7 @@ fn forwarder_and_contact_replacements_execute_only_within_world_contracts() {
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
+        expected_precondition: None,
     };
     let contact_event = boundary::QueuedNetworkControlEvent {
         sequence: 0,

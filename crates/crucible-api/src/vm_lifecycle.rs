@@ -166,6 +166,7 @@ pub struct ProductionVmLifecycleLoop {
     terminal_verdict: Option<QuantumTerminalVerdict>,
     initial_lifecycle_observations_pending: bool,
     branch: Option<ProductionVmBranchConfig>,
+    launch_configs: BTreeMap<NodeId, ProductionLiveNodeStepGateConfig>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
     block_devices: storage_faults::ProductionBlockDevices,
@@ -320,6 +321,23 @@ pub fn build_production_vm_lifecycle_loop(
         .with_completion_timeout(config.completion_timeout)
         .with_console_capture()
         .with_second_run_host_load(false);
+        if let Some(capabilities) = source
+            .world()
+            .fault_topology()
+            .node_capabilities
+            .iter()
+            .find(|capabilities| capabilities.node.as_str() == vm.id.name.as_str())
+        {
+            if !capabilities.ready_markers.is_empty()
+                && vm.white_box != crucible::WhiteBoxPolicy::Enabled
+            {
+                return Err(loop_factory_error(format!(
+                    "QEMU node `{}` declares guest ready markers but its authenticated white-box guest event channel is disabled",
+                    vm.id.name
+                )));
+            }
+            launch = launch.with_fault_capabilities(capabilities.clone());
+        }
         if vm.white_box == crucible::WhiteBoxPolicy::Enabled {
             launch = launch.with_app_random(production_app_random_launch_config(
                 scenario,
@@ -564,6 +582,7 @@ pub fn build_production_vm_lifecycle_loop(
         terminal_verdict: None,
         initial_lifecycle_observations_pending: true,
         branch: config.branch.clone(),
+        launch_configs,
         block_bindings,
         ninep_bindings,
         block_devices,

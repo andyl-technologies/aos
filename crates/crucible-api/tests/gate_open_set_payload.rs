@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use crucible::test_support::condition_payload_entry_for_test;
 use crucible::{
-    Decision, EventAttributeValue, EventPayload, NodeId, RngDecision, RngStreamId,
-    SchedulerEventLogClass, SchedulerEventLogPayload, VirtualTime, event_kind_catalog,
+    Decision, EventAttributeValue, EventPayload, RngDecision, RngStreamId, SchedulerEventLogClass,
+    SchedulerEventLogPayload, VirtualTime, event_kind_catalog,
 };
 use crucible_api::{
     OPEN_SET_CAPABILITY_CATEGORIES, OpenSetAttributeValue, OpenSetPayload, OpenSetPayloadCategory,
@@ -27,7 +27,7 @@ fn open_set_payload_model_runs_named_checks() {
     assert_event_payload_conversion_reuses_event_log_catalog();
     assert_unknown_event_kinds_are_opaque();
     assert_send_validation_uses_typed_unsupported_and_invalid_argument();
-    assert_existing_command_fault_and_breakpoint_vocabularies_are_adapted();
+    assert_existing_command_and_breakpoint_vocabularies_are_adapted();
 }
 
 #[test]
@@ -41,7 +41,6 @@ fn assert_capabilities_advertise_dotted_categories_and_kinds() {
     let capabilities = current_open_set_capabilities();
     assert!(!capabilities.commands.is_empty());
     assert!(!capabilities.breakpoints.is_empty());
-    assert!(!capabilities.faults.is_empty());
     assert_eq!(
         capabilities.event_payloads.len(),
         event_kind_catalog().len()
@@ -61,12 +60,6 @@ fn assert_capabilities_advertise_dotted_categories_and_kinds() {
     );
     assert!(
         capabilities
-            .faults
-            .iter()
-            .any(|schema| schema.kind == "crucible.fault.network.partition")
-    );
-    assert!(
-        capabilities
             .event_payloads
             .iter()
             .any(|schema| schema.kind == "crucible.event.rng_draw")
@@ -76,7 +69,6 @@ fn assert_capabilities_advertise_dotted_categories_and_kinds() {
         .commands
         .iter()
         .chain(capabilities.breakpoints.iter())
-        .chain(capabilities.faults.iter())
         .chain(capabilities.event_payloads.iter())
     {
         assert!(schema.kind.starts_with(schema.category.prefix()));
@@ -191,18 +183,6 @@ fn assert_send_validation_uses_typed_unsupported_and_invalid_argument() {
         Err(OpenSetPayloadError::UnsupportedKind {
             category: OpenSetPayloadCategory::Command,
             kind: String::from("crucible.cmd.future-command"),
-        })
-    );
-
-    let unsupported_fault = validate_open_set_send_payload(
-        OpenSetPayloadCategory::Fault,
-        &OpenSetPayload::empty("crucible.fault.future-fault"),
-    );
-    assert_eq!(
-        unsupported_fault,
-        Err(OpenSetPayloadError::UnsupportedKind {
-            category: OpenSetPayloadCategory::Fault,
-            kind: String::from("crucible.fault.future-fault"),
         })
     );
 

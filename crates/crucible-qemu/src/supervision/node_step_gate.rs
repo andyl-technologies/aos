@@ -217,6 +217,7 @@ pub struct QemuLiveNodeStepGateConfig {
     completion_timeout: Duration,
     second_run_host_load: bool,
     console_capture: bool,
+    fault_capabilities: Option<crucible::model::WorldNodeFaultCapabilities>,
 }
 
 #[derive(Clone, Debug)]
@@ -286,6 +287,7 @@ impl QemuLiveNodeStepGateConfig {
             completion_timeout: Duration::from_secs(240),
             second_run_host_load: true,
             console_capture: false,
+            fault_capabilities: None,
         }
     }
 
@@ -330,6 +332,7 @@ impl QemuLiveNodeStepGateConfig {
             completion_timeout: Duration::from_secs(240),
             second_run_host_load: true,
             console_capture: false,
+            fault_capabilities: None,
         }
     }
 
@@ -541,6 +544,16 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub const fn with_console_capture(mut self) -> Self {
         self.console_capture = true;
+        self
+    }
+
+    /// Returns this configuration bound to one exact World fault manifest.
+    #[must_use]
+    pub fn with_fault_capabilities(
+        mut self,
+        capabilities: crucible::model::WorldNodeFaultCapabilities,
+    ) -> Self {
+        self.fault_capabilities = Some(capabilities);
         self
     }
 
@@ -1159,13 +1172,30 @@ pub(super) fn build_live_node(
         .map_err(|source| QemuLiveNodeStepGateError::QmpChannelConfig { source })?;
     let vm = vm_launch_config(config, identity.node);
     let plugin = live_node_plugin_config(config, &profile, &vm, run_directory, identity.node)?;
-    let mut command = QemuLaunchCommandBuilder::new_for_live_gate(
-        profile,
-        vm,
-        path_text(&config.qemu_executable),
-        plugin,
-        crate::LivePluginGuestArchitecture::X86_64,
-    )
+    let mut command = match &config.fault_capabilities {
+        Some(capabilities) => {
+            let requirement = crate::QemuFaultCapabilityRequirement::current_v1_for_node(
+                capabilities,
+            )
+            .map_err(|_source| QemuLiveNodeStepGateError::LaunchCommand {
+                source: QemuLaunchCommandError::InvalidFaultCapabilityRequirement,
+            })?;
+            QemuLaunchCommandBuilder::new(
+                profile,
+                vm,
+                path_text(&config.qemu_executable),
+                plugin,
+                requirement,
+            )
+        }
+        None => QemuLaunchCommandBuilder::new_for_live_gate(
+            profile,
+            vm,
+            path_text(&config.qemu_executable),
+            plugin,
+            config.architecture,
+        ),
+    }
     .with_qmp(qmp_config.clone());
     if config.whitebox == QemuLaunchPluginSwitch::On {
         command = command.with_debug_guest_activation_endpoint();
