@@ -38,6 +38,15 @@ runner passes that exact asset set to both scenario generation and the
 production lifecycle. Partial overrides and instruction-ABI mismatches fail
 before QEMU starts or an evidence directory is claimed as passing.
 
+The live qualification matrix proves more than boot success. A passing
+per-architecture `result` records non-empty reverse history, repeated complete
+landed runtime coordinates, stable GDB attachment across atomic
+controller/gateway replacement, scheduler-owned continue and single-step,
+fork-time guest exec, PTY and SSH, and typed closure of an active stream during
+reposition. The AArch64 instruction-ABI-v4 qualification and the combined
+x86_64/AArch64 matrix have passed this complete surface. Treat a partial manual
+probe as diagnostic evidence, not as a substitute for that result file.
+
 ## Interactive run control
 
 Start paused at genesis and read commands from standard input:

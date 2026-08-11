@@ -798,7 +798,7 @@ S10 procedure (aarch64):
   white-box ON:  emitter rings doorbell(payload P) ->
                  plugin traps synchronously; reads P at trap icount;
                  emits §16.5 frame; marker_icount reproducible across 2 runs
-  white-box OFF: same instruction is inert (normal guest exception, not trapped)
+  white-box OFF: same instruction retires as an inert architectural hint
   pass iff payload read == P, marker icount reproducible, and inert when disabled
 ```
 
@@ -1598,7 +1598,16 @@ QEMU invoked the plugin before executing HLT, so this one-shot marker appeared
 to pass even though an EL0 guest agent could not return for its next request.
 Instruction ABI v4 therefore supersedes HLT with inert `hint #0x4c`; repeated
 doorbells, white-box-off inertness, and a sustained guest agent are required
-before this risk can be retired again.
+before this risk can be retired again. The v4 rerun satisfies those requirements:
+the production loaded-QEMU gate observed adjacent markers at icounts 8 and 9,
+reproduced both coordinates on a second run, completed at icount 16000000, and
+proved the same instruction remains inert with white-box disabled. The packaged
+live debugger matrix then booted the retained AArch64 Linux guest and exercised
+non-empty reverse history, repeatable whole-runtime replacement, scheduler run
+control, and successful fork-time argv exec, PTY, and SSH channels. The guest
+returned `aarch64` through both exec and SSH, so this is sustained-agent evidence
+rather than another one-shot callback observation. A combined matrix repeated
+the complete workflow for x86_64 and AArch64 in one invocation.
 The spike records `whitebox_on_trap_tested=true`,
 `whitebox_off_inertness_tested=true`, a numeric
 `marker_icount_reproducible`, `payload_read_result=pass`,
@@ -1854,7 +1863,7 @@ never tolerated). Results live in the decision register (31).
   forces re-gating; full upstream-vs-patched inertness remains a later
   `gate:qemu-inert` obligation because the current patch series intentionally
   changes icount behavior. — satisfies [RISK-16], [DET-35], [INV-7]; spec §30.10.
-- [ ] **T-RISK-10** Re-run **S10** for instruction ABI v4: the aarch64 doorbell
+- [x] **T-RISK-10** Re-run **S10** for instruction ABI v4: the aarch64 doorbell
   is observed synchronously at the exact
   retirement icount, carries its register payload, yields a reproducible marker
   icount, and is inert when disabled; fall back to aarch64-black-box-only if no
@@ -1863,7 +1872,12 @@ never tolerated). Results live in the decision register (31).
   two adjacent `hint #0x4c` markers through `x0`/`x1`, prove exact pre-retirement
   coordinates and white-box-off inertness, and complete normal teardown. The
   full AArch64 debugger matrix must additionally prove sustained guest-agent
-  polling. — satisfies [RISK-17], [GHC-16]; spec §30.11.
+  polling. The production gate observed adjacent icounts 8 and 9 identically in
+  two runs and completed normally with white-box on and off. The retained-asset
+  AArch64 matrix proved non-empty reverse history, atomic runtime replacement,
+  scheduler run control, argv exec, PTY, SSH, and typed stream closure; the
+  combined x86_64/AArch64 matrix also passed. — satisfies [RISK-17], [GHC-16];
+  spec §30.11.
 - [x] **T-RISK-11** Run the **ABI-drift** spike: deliberately drift a field offset
   and confirm the generated-header diff, bilateral static asserts, and golden
   vector catch it on at least one side. — satisfies [RISK-18], [SHM-31]; spec
