@@ -304,8 +304,11 @@ run_ssh_client() {
 gdb_window_is_clean() {
   local file=$1
   local label=$2
+  # RSP errors are exactly `E` plus a two-digit errno. Keep this bounded: an
+  # AArch64 `g` reply is a long hex register payload and may legitimately begin
+  # with bytes such as `e0`.
   if grep -Eiq \
-    'Remote replied unexpectedly|Remote connection closed|Ignoring packet error|Timed out|protocol error|Remote communication error|received: "E[0-9a-f]+"|received: ""|not supported' \
+    'Remote replied unexpectedly|Remote connection closed|Ignoring packet error|Timed out|protocol error|Remote communication error|received: "E[[:xdigit:]]{2}"|received: ""|not supported' \
     "$file"; then
     fail "$label observed a GDB/RSP transport error"
   fi
@@ -315,7 +318,7 @@ gdb_replacement_window_is_stable() {
   local file=$1
   local label=$2
   if grep -Eiq \
-    'Remote replied unexpectedly|Remote connection closed|Timed out|protocol error|Remote communication error|received: "E[0-9a-f]+"|received: ""|not supported' \
+    'Remote replied unexpectedly|Remote connection closed|Timed out|protocol error|Remote communication error|received: "E[[:xdigit:]]{2}"|received: ""|not supported' \
     "$file"; then
     fail "$label observed a fatal GDB/RSP transport error"
   fi
