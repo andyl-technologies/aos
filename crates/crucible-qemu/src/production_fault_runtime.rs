@@ -159,6 +159,29 @@ pub enum ProductionFaultRuntimeError {
     ResourceLimit(#[from] FaultResourceLimitError),
 }
 
+/// One fully authenticated node lifecycle decision awaiting host application.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuNodeLifecycleDecision {
+    /// Scheduler node whose exact process generation produced the event.
+    pub node: NodeId,
+    /// Resolved action identity carried by the QEMU event.
+    pub action: ContentHash,
+    /// Transition requested by the authored node effect.
+    pub requested_transition: NodeLifecycleTransition,
+    /// Effective terminal transition after retry or fail-closed resolution.
+    pub effective_transition: NodeLifecycleTransition,
+    /// Closed terminal cause tag from `CRUCLIF1` version 4.
+    pub cause: u32,
+    /// Exit status required from this child, or `None` for a live transition.
+    pub expected_exit_code: Option<i32>,
+    /// QEMU-observed instruction coordinate for the terminal decision.
+    pub observed_icount: u64,
+    /// Measured pre-exit state digest when QEMU could produce one.
+    pub pre_exit_hash: Option<ContentHash>,
+    /// Authenticated QEMU event evidence digest.
+    pub event_evidence: ContentHash,
+}
+
 /// Owning signal runtime coupled to host devices and live patched QEMU.
 #[derive(Clone)]
 pub struct ProductionFaultRuntime {
@@ -172,6 +195,8 @@ pub struct ProductionFaultRuntime {
     qemu_active_rule_ids: BTreeSet<ContentHash>,
     pending_qemu_observations: Vec<FaultObservation>,
     pending_qemu_events: BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+    pending_node_lifecycle: Vec<QemuNodeLifecycleDecision>,
+    pending_node_boot: BTreeSet<NodeId>,
 }
 
 impl ProductionFaultRuntime {
@@ -216,6 +241,8 @@ impl ProductionFaultRuntime {
             qemu_active_rule_ids: BTreeSet::new(),
             pending_qemu_observations: Vec::new(),
             pending_qemu_events: BTreeMap::new(),
+            pending_node_lifecycle: Vec::new(),
+            pending_node_boot: BTreeSet::new(),
         })
     }
 
@@ -324,6 +351,8 @@ impl ProductionFaultRuntime {
             qemu_active_rule_ids,
             pending_qemu_observations,
             pending_qemu_events,
+            pending_node_lifecycle: Vec::new(),
+            pending_node_boot: BTreeSet::new(),
         })
     }
 
@@ -455,6 +484,8 @@ impl ProductionFaultRuntime {
         evaluation.observations = qemu_observations;
         self.emitted_events
             .extend(evaluation.emitted_events.iter().cloned());
+        self.pending_node_boot
+            .extend(node_boot_requests(&evaluation.actions)?);
         Ok(evaluation)
     }
 
@@ -487,6 +518,7 @@ impl ProductionFaultRuntime {
             &nodes.fault_event_sequences(),
         )?;
         let mut observations = Vec::new();
+        let mut lifecycle_decisions = BTreeMap::new();
         for (node, events) in &self.pending_qemu_events {
             for event in events {
                 let action_identity = ContentHash {
@@ -526,11 +558,17 @@ impl ProductionFaultRuntime {
                     .into());
                 }
                 validate_node_event_evidence(event, action)?;
-                let process_exit_code = terminal_lifecycle_exit_code(event)
-                    .map(|expected| {
-                        nodes.await_intended_lifecycle_exit(node, expected, action_identity)
-                    })
-                    .transpose()?;
+                if let Some(decision) = node_lifecycle_decision(node, action_identity, event)
+                    && lifecycle_decisions.insert(node.clone(), decision).is_some()
+                {
+                    return Err(BackendError::Rejected {
+                        message: format!(
+                            "QEMU node `{}` produced more than one lifecycle decision in one boundary",
+                            node.name
+                        ),
+                    }
+                    .into());
+                }
                 let opportunity =
                     (event.header.opportunity_hash != [0; 32]).then_some(ContentHash {
                         bytes: event.header.opportunity_hash,
@@ -546,10 +584,6 @@ impl ProductionFaultRuntime {
                 evidence.extend_from_slice(&event.header.after_hash);
                 evidence.extend_from_slice(&event.header.evidence_hash);
                 evidence.extend_from_slice(&event.payload);
-                if let Some(exit_code) = process_exit_code {
-                    evidence.extend_from_slice(b"CRUCHEX1");
-                    evidence.extend_from_slice(&exit_code.to_le_bytes());
-                }
                 observations.push(FaultObservation {
                     semantic_version: crucible::model::FAULT_RUNTIME_STATE_VERSION,
                     kind: if event.header.outcome == crucible_shmem::FaultEventOutcomeV1::Passed {
@@ -576,6 +610,8 @@ impl ProductionFaultRuntime {
             &BTreeMap::new(),
             self.resource_limits,
         )?;
+        self.pending_node_lifecycle
+            .extend(lifecycle_decisions.into_values());
         self.pending_qemu_observations.extend(observations);
         self.pending_qemu_events.clear();
         Ok(())
@@ -771,7 +807,7 @@ impl ProductionFaultRuntime {
         &self,
         nodes: &mut QemuNodeSet,
     ) -> Result<ProductionFaultRuntimeCheckpoint, ProductionFaultRuntimeError> {
-        if nodes.has_pending_fault_events()? {
+        if nodes.has_pending_fault_events()? || !self.pending_node_lifecycle.is_empty() {
             return Err(ProductionFaultRuntimeError::PendingQemuFaultEvents);
         }
         validate_production_event_state(
@@ -866,6 +902,38 @@ impl ProductionFaultRuntime {
         &self.emitted_events
     }
 
+    /// Returns node lifecycle decisions after the enclosing boundary commits.
+    ///
+    /// The caller must supervise every returned decision before another fault
+    /// boundary, scheduler quantum, or checkpoint. Decisions are published only
+    /// after the complete drained event batch and its resource reservations have
+    /// validated, so taking them never exposes a partially authenticated batch.
+    #[must_use]
+    pub fn node_lifecycle_decisions(&self) -> &[QemuNodeLifecycleDecision] {
+        &self.pending_node_lifecycle
+    }
+
+    /// Acknowledges that every pending terminal lifecycle decision was
+    /// independently supervised to its exact process status.
+    ///
+    /// Callers must invoke this method only after all decisions returned by
+    /// [`Self::node_lifecycle_decisions`] have completed successfully. A
+    /// supervision error deliberately leaves the decisions pending so the
+    /// continuation cannot checkpoint or advance as though the outcome were
+    /// known.
+    pub fn acknowledge_node_lifecycle_decisions(&mut self) {
+        self.pending_node_lifecycle.clear();
+    }
+
+    /// Takes nodes whose committed lifecycle action requests a boot.
+    ///
+    /// The host uses this edge to resume a natively paused power-off
+    /// generation before the scheduler can select it again.
+    #[must_use]
+    pub fn take_node_boot_requests(&mut self) -> BTreeSet<NodeId> {
+        std::mem::take(&mut self.pending_node_boot)
+    }
+
     /// Removes committed host impulses for exact device-opportunity execution.
     ///
     /// Callers must apply the returned actions before evaluating another fault
@@ -891,8 +959,16 @@ impl ProductionFaultRuntime {
     }
 }
 
-const LIFECYCLE_EVIDENCE_BYTES: usize = 288;
+const LIFECYCLE_EVIDENCE_BYTES: usize = 304;
 const HANG_EVIDENCE_BYTES: usize = 192;
+const LIFECYCLE_TERMINAL_CAUSE_NONE: u32 = 0;
+const LIFECYCLE_TERMINAL_CAUSE_DIRECT: u32 = 1;
+const LIFECYCLE_TERMINAL_CAUSE_READY_EXHAUSTED: u32 = 2;
+const LIFECYCLE_TERMINAL_CAUSE_FAIL_CLOSED: u32 = 3;
+const LIFECYCLE_TERMINAL_PRE_EXIT_VALID: u32 = 1 << 0;
+const LIFECYCLE_TERMINAL_EXIT_REQUIRED: u32 = 1 << 1;
+const LIFECYCLE_TERMINAL_KNOWN_FLAGS: u32 =
+    LIFECYCLE_TERMINAL_PRE_EXIT_VALID | LIFECYCLE_TERMINAL_EXIT_REQUIRED;
 
 fn validate_node_event_evidence(
     event: &DequeuedFaultEvent,
@@ -926,16 +1002,86 @@ fn validate_node_event_evidence(
     }
 }
 
-fn terminal_lifecycle_exit_code(event: &DequeuedFaultEvent) -> Option<i32> {
-    if event.header.outcome != FaultEventOutcomeV1::Applied
-        || event.payload.get(0..8) != Some(b"CRUCLIF1")
-    {
+fn node_lifecycle_decision(
+    node: &NodeId,
+    action_identity: ContentHash,
+    event: &DequeuedFaultEvent,
+) -> Option<QemuNodeLifecycleDecision> {
+    if event.payload.get(0..8) != Some(b"CRUCLIF1") {
         return None;
     }
-    match read_u16(&event.payload, 10)? {
-        2 => Some(70),
-        4 => Some(71),
-        6 => Some(72),
+    let requested_transition =
+        lifecycle_transition_from_tag(u32::from(read_u16(&event.payload, 10)?))?;
+    let effective_transition = lifecycle_transition_from_tag(read_u32(&event.payload, 288)?)?;
+    let flags = read_u32(&event.payload, 296)?;
+    let expected_exit_code = if flags & LIFECYCLE_TERMINAL_EXIT_REQUIRED != 0 {
+        Some(match effective_transition {
+            NodeLifecycleTransition::Crash => 70,
+            NodeLifecycleTransition::PowerOff => 71,
+            NodeLifecycleTransition::PermanentFailure => 72,
+            _ => return None,
+        })
+    } else {
+        None
+    };
+    let pre_exit_hash = if flags & 1 != 0 {
+        Some(ContentHash {
+            bytes: event.payload[256..288].try_into().ok()?,
+        })
+    } else {
+        None
+    };
+    Some(QemuNodeLifecycleDecision {
+        node: node.clone(),
+        action: action_identity,
+        requested_transition,
+        effective_transition,
+        cause: read_u32(&event.payload, 292)?,
+        expected_exit_code,
+        observed_icount: event.header.observed_icount,
+        pre_exit_hash,
+        event_evidence: ContentHash {
+            bytes: event.header.evidence_hash,
+        },
+    })
+}
+
+fn node_boot_requests(
+    actions: &[ResolvedBindingAction],
+) -> Result<BTreeSet<NodeId>, ProductionFaultRuntimeError> {
+    let mut nodes = BTreeSet::new();
+    for action in actions {
+        let EffectSpecification::Node(NodeEffectSpecification::Lifecycle {
+            transition: NodeLifecycleTransition::Boot,
+            ..
+        }) = action.effect.specification()
+        else {
+            continue;
+        };
+        let crucible::model::ResolvedFaultTarget::Node { node } = &action.target else {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "boot lifecycle action `{}` resolved to a non-node target",
+                    action.binding
+                ),
+            }
+            .into());
+        };
+        nodes.insert(NodeId {
+            name: node.as_str().to_owned(),
+        });
+    }
+    Ok(nodes)
+}
+
+const fn lifecycle_transition_from_tag(tag: u32) -> Option<NodeLifecycleTransition> {
+    match tag {
+        1 => Some(NodeLifecycleTransition::Boot),
+        2 => Some(NodeLifecycleTransition::Crash),
+        3 => Some(NodeLifecycleTransition::Reset),
+        4 => Some(NodeLifecycleTransition::PowerOff),
+        5 => Some(NodeLifecycleTransition::PowerCycle),
+        6 => Some(NodeLifecycleTransition::PermanentFailure),
         _ => None,
     }
 }
@@ -947,7 +1093,7 @@ fn validate_lifecycle_evidence(
     let bytes = event.payload.as_slice();
     if bytes.len() != LIFECYCLE_EVIDENCE_BYTES
         || bytes.get(0..8) != Some(b"CRUCLIF1")
-        || read_u16(bytes, 8) != Some(3)
+        || read_u16(bytes, 8) != Some(4)
         || !matches!(
             event.header.outcome,
             FaultEventOutcomeV1::Applied | FaultEventOutcomeV1::Error
@@ -988,25 +1134,30 @@ fn validate_lifecycle_evidence(
         || virtual_before.checked_add(downtime) != Some(virtual_after)
         || read_u64(bytes, 48).is_none_or(|value| value == 0)
         || read_u64(bytes, 56).is_none_or(|value| value == 0)
-        || read_u64(bytes, 112).is_none_or(|value| value == 0)
-        || read_u64(bytes, 120).is_none_or(|value| value == 0)
     {
         return false;
     }
-    let pre_exit_hash = bytes.get(256..288);
-    let terminal_evidence_is_valid = if matches!(transition, 2 | 4 | 6) {
-        pre_exit_hash.is_some_and(|hash| {
-            let mut material = [0_u8; 48];
-            material[0..8].copy_from_slice(b"CRUCTRM1");
-            material[8..12].copy_from_slice(&u32::from(transition).to_le_bytes());
-            material[16..48].copy_from_slice(hash);
-            let derived: [u8; 32] = Sha256::digest(material).into();
-            hash != [0_u8; 32] && derived == event.header.after_hash
-        })
-    } else {
-        pre_exit_hash == Some([0_u8; 32].as_slice())
+    let Some(effective_transition) = read_u32(bytes, 288) else {
+        return false;
     };
-    if !terminal_evidence_is_valid {
+    let Some(terminal_cause) = read_u32(bytes, 292) else {
+        return false;
+    };
+    let Some(terminal_flags) = read_u32(bytes, 296) else {
+        return false;
+    };
+    if !(1..=6).contains(&effective_transition)
+        || terminal_flags & !LIFECYCLE_TERMINAL_KNOWN_FLAGS != 0
+        || bytes.get(300..304) != Some([0_u8; 4].as_slice())
+        || !validate_lifecycle_terminal_shape(
+            event,
+            bytes,
+            transition,
+            effective_transition,
+            terminal_cause,
+            terminal_flags,
+        )
+    {
         return false;
     }
     match effect {
@@ -1017,17 +1168,119 @@ fn validate_lifecycle_evidence(
             volatile_state_policy,
             device_state_policy,
         } => {
+            let boot_is_valid = validate_boot_evidence(bytes, boot_policy);
             transition == lifecycle_tag(*expected_transition)
                 && downtime == *downtime_nanos
                 && volatile_policy == state_policy_tag(*volatile_state_policy)
                 && device_policy == state_policy_tag(*device_state_policy)
-                && validate_boot_evidence(bytes, boot_policy)
+                && boot_is_valid
+                && validate_lifecycle_terminal_policy(
+                    boot_policy,
+                    effective_transition,
+                    terminal_cause,
+                )
         }
         NodeEffectSpecification::Hang {
-            watchdog_policy: NodeWatchdogPolicy::TransitionAfter { .. },
+            watchdog_policy: NodeWatchdogPolicy::TransitionAfter { boot_policy, .. },
             ..
-        } => validate_boot_evidence_shape(bytes),
+        } => {
+            validate_boot_evidence_shape(bytes)
+                && validate_lifecycle_terminal_policy(
+                    boot_policy,
+                    effective_transition,
+                    terminal_cause,
+                )
+        }
         _ => false,
+    }
+}
+
+fn validate_lifecycle_terminal_shape(
+    event: &DequeuedFaultEvent,
+    bytes: &[u8],
+    requested_transition: u16,
+    effective_transition: u32,
+    cause: u32,
+    flags: u32,
+) -> bool {
+    let pre_exit = bytes.get(256..288);
+    let pre_exit_valid = flags & LIFECYCLE_TERMINAL_PRE_EXIT_VALID != 0;
+    let exit_required = flags & LIFECYCLE_TERMINAL_EXIT_REQUIRED != 0;
+    let effective_is_terminal = matches!(effective_transition, 2 | 4 | 6);
+    let digest_is_valid = pre_exit_valid
+        && pre_exit.is_some_and(|hash| {
+            let mut material = [0_u8; 48];
+            material[0..8].copy_from_slice(b"CRUCTRM1");
+            material[8..12].copy_from_slice(&effective_transition.to_le_bytes());
+            material[16..48].copy_from_slice(hash);
+            let derived: [u8; 32] = Sha256::digest(material).into();
+            hash != [0_u8; 32] && derived == event.header.after_hash
+        });
+
+    match cause {
+        LIFECYCLE_TERMINAL_CAUSE_NONE => {
+            event.header.outcome == FaultEventOutcomeV1::Applied
+                && effective_transition == u32::from(requested_transition)
+                && flags == 0
+                && pre_exit == Some([0_u8; 32].as_slice())
+                && lifecycle_after_counts_are_nonzero(bytes)
+        }
+        LIFECYCLE_TERMINAL_CAUSE_DIRECT => {
+            event.header.outcome == FaultEventOutcomeV1::Applied
+                && matches!(requested_transition, 2 | 4 | 6)
+                && effective_transition == u32::from(requested_transition)
+                && flags == LIFECYCLE_TERMINAL_PRE_EXIT_VALID | LIFECYCLE_TERMINAL_EXIT_REQUIRED
+                && digest_is_valid
+                && lifecycle_after_counts_are_nonzero(bytes)
+        }
+        LIFECYCLE_TERMINAL_CAUSE_READY_EXHAUSTED => {
+            event.header.outcome == FaultEventOutcomeV1::Applied
+                && effective_is_terminal
+                && flags == LIFECYCLE_TERMINAL_PRE_EXIT_VALID | LIFECYCLE_TERMINAL_EXIT_REQUIRED
+                && digest_is_valid
+                && lifecycle_after_counts_are_nonzero(bytes)
+        }
+        LIFECYCLE_TERMINAL_CAUSE_FAIL_CLOSED => {
+            event.header.outcome == FaultEventOutcomeV1::Error
+                && effective_transition
+                    == u32::from(lifecycle_tag(NodeLifecycleTransition::PermanentFailure))
+                && exit_required
+                && if pre_exit_valid {
+                    digest_is_valid && lifecycle_after_counts_are_nonzero(bytes)
+                } else {
+                    pre_exit == Some([0_u8; 32].as_slice())
+                        && event.header.after_hash == event.header.before_hash
+                        && read_u64(bytes, 112) == Some(0)
+                        && read_u64(bytes, 120) == Some(0)
+                }
+        }
+        _ => false,
+    }
+}
+
+fn lifecycle_after_counts_are_nonzero(bytes: &[u8]) -> bool {
+    read_u64(bytes, 112).is_some_and(|value| value > 0)
+        && read_u64(bytes, 120).is_some_and(|value| value > 0)
+}
+
+fn validate_lifecycle_terminal_policy(
+    boot_policy: &NodeBootPolicy,
+    effective_transition: u32,
+    cause: u32,
+) -> bool {
+    match cause {
+        LIFECYCLE_TERMINAL_CAUSE_READY_EXHAUSTED => matches!(
+            boot_policy,
+            NodeBootPolicy::RequireReady { exhausted, .. }
+                if effective_transition == u32::from(lifecycle_tag(*exhausted))
+        ),
+        LIFECYCLE_TERMINAL_CAUSE_FAIL_CLOSED => {
+            matches!(
+                boot_policy,
+                NodeBootPolicy::RequireReady { .. } | NodeBootPolicy::Immediate
+            )
+        }
+        _ => true,
     }
 }
 
@@ -1758,7 +2011,7 @@ mod tests {
         };
         let mut after_hash = [6_u8; 32];
         payload[0..8].copy_from_slice(b"CRUCLIF1");
-        payload[8..10].copy_from_slice(&3_u16.to_le_bytes());
+        payload[8..10].copy_from_slice(&4_u16.to_le_bytes());
         payload[10..12].copy_from_slice(&transition.to_le_bytes());
         payload[12..16].copy_from_slice(&1_u32.to_le_bytes());
         payload[16..20].copy_from_slice(&2_u32.to_le_bytes());
@@ -1778,10 +2031,37 @@ mod tests {
         payload[120..128].copy_from_slice(&128_u64.to_le_bytes());
         payload[128..160].copy_from_slice(&before_hash);
         payload[160..192].copy_from_slice(&after_hash);
-        payload[192..196].copy_from_slice(&1_u32.to_le_bytes());
-        payload[196..200].copy_from_slice(&1_u32.to_le_bytes());
-        payload[200..204].copy_from_slice(&1_u32.to_le_bytes());
-        payload[216..224].copy_from_slice(&u64::MAX.to_le_bytes());
+        let boot_policy = match action.effect.specification() {
+            EffectSpecification::Node(NodeEffectSpecification::Lifecycle {
+                boot_policy, ..
+            }) => boot_policy,
+            other => panic!("test lifecycle action contains {other:?}"),
+        };
+        match boot_policy {
+            NodeBootPolicy::Immediate => {
+                payload[192..196].copy_from_slice(&1_u32.to_le_bytes());
+                payload[196..200].copy_from_slice(&1_u32.to_le_bytes());
+                payload[200..204].copy_from_slice(&1_u32.to_le_bytes());
+                payload[216..224].copy_from_slice(&u64::MAX.to_le_bytes());
+            }
+            NodeBootPolicy::RequireReady {
+                ready_marker,
+                maximum_attempts,
+                retry_delay_nanos,
+                exhausted,
+            } => {
+                payload[192..196].copy_from_slice(&2_u32.to_le_bytes());
+                payload[196..200].copy_from_slice(&1_u32.to_le_bytes());
+                payload[200..204].copy_from_slice(&maximum_attempts.get().to_le_bytes());
+                payload[204..208]
+                    .copy_from_slice(&u32::from(lifecycle_tag(*exhausted)).to_le_bytes());
+                payload[208..216].copy_from_slice(&retry_delay_nanos.to_le_bytes());
+                payload[216..224].copy_from_slice(&4200_u64.to_le_bytes());
+                let marker_hash: [u8; 32] = Sha256::digest(ready_marker.as_str().as_bytes()).into();
+                payload[224..256].copy_from_slice(&marker_hash);
+            }
+        }
+        payload[288..292].copy_from_slice(&u32::from(transition).to_le_bytes());
         if matches!(transition, 2 | 4 | 6) {
             let pre_exit_hash = [9_u8; 32];
             let mut material = [0_u8; 48];
@@ -1791,6 +2071,11 @@ mod tests {
             after_hash = Sha256::digest(material).into();
             payload[160..192].copy_from_slice(&after_hash);
             payload[256..288].copy_from_slice(&pre_exit_hash);
+            payload[292..296].copy_from_slice(&LIFECYCLE_TERMINAL_CAUSE_DIRECT.to_le_bytes());
+            payload[296..300].copy_from_slice(
+                &(LIFECYCLE_TERMINAL_PRE_EXIT_VALID | LIFECYCLE_TERMINAL_EXIT_REQUIRED)
+                    .to_le_bytes(),
+            );
         }
         DequeuedFaultEvent {
             header: crucible_shmem::FaultEventHeaderV1 {
@@ -1852,11 +2137,105 @@ mod tests {
         let crash = lifecycle_action(NodeLifecycleTransition::Crash, NodeBootPolicy::Immediate);
         let event = lifecycle_event(&crash);
         assert!(validate_node_event_evidence(&event, &crash).is_ok());
-        assert_eq!(terminal_lifecycle_exit_code(&event), Some(70));
+        let decision = node_lifecycle_decision(
+            &NodeId {
+                name: "node-a".to_owned(),
+            },
+            crash.id(),
+            &event,
+        )
+        .unwrap_or_else(|| panic!("terminal event should produce a supervision decision"));
+        assert_eq!(decision.expected_exit_code, Some(70));
+        assert_eq!(
+            decision.requested_transition,
+            NodeLifecycleTransition::Crash
+        );
+        assert_eq!(
+            decision.effective_transition,
+            NodeLifecycleTransition::Crash
+        );
 
         let mut substituted = event.clone();
         substituted.payload[256] ^= 1;
         assert!(validate_node_event_evidence(&substituted, &crash).is_err());
+    }
+
+    #[test]
+    fn ready_exhaustion_names_the_effective_terminal_transition() {
+        let reset = lifecycle_action(
+            NodeLifecycleTransition::Reset,
+            NodeBootPolicy::RequireReady {
+                ready_marker: object_id("guest-ready"),
+                maximum_attempts: crucible::model::BoundedCount::new(
+                    CountLimit::LargeStateEntries,
+                    2,
+                )
+                .unwrap_or_else(|error| panic!("test attempt count should be valid: {error}")),
+                retry_delay_nanos: 4096,
+                exhausted: NodeLifecycleTransition::PowerOff,
+            },
+        );
+        let mut event = lifecycle_event(&reset);
+        let pre_exit_hash = [11_u8; 32];
+        let mut material = [0_u8; 48];
+        material[0..8].copy_from_slice(b"CRUCTRM1");
+        material[8..12].copy_from_slice(
+            &u32::from(lifecycle_tag(NodeLifecycleTransition::PowerOff)).to_le_bytes(),
+        );
+        material[16..48].copy_from_slice(&pre_exit_hash);
+        let after_hash: [u8; 32] = Sha256::digest(material).into();
+        event.payload[196..200].copy_from_slice(&2_u32.to_le_bytes());
+        event.payload[160..192].copy_from_slice(&after_hash);
+        event.payload[256..288].copy_from_slice(&pre_exit_hash);
+        event.payload[288..292].copy_from_slice(
+            &u32::from(lifecycle_tag(NodeLifecycleTransition::PowerOff)).to_le_bytes(),
+        );
+        event.payload[292..296]
+            .copy_from_slice(&LIFECYCLE_TERMINAL_CAUSE_READY_EXHAUSTED.to_le_bytes());
+        event.payload[296..300].copy_from_slice(
+            &(LIFECYCLE_TERMINAL_PRE_EXIT_VALID | LIFECYCLE_TERMINAL_EXIT_REQUIRED).to_le_bytes(),
+        );
+        event.header.after_hash = after_hash;
+        assert!(validate_node_event_evidence(&event, &reset).is_ok());
+
+        let decision = node_lifecycle_decision(
+            &NodeId {
+                name: "node-a".to_owned(),
+            },
+            reset.id(),
+            &event,
+        )
+        .unwrap_or_else(|| panic!("exhaustion should produce a supervision decision"));
+        assert_eq!(
+            decision.requested_transition,
+            NodeLifecycleTransition::Reset
+        );
+        assert_eq!(
+            decision.effective_transition,
+            NodeLifecycleTransition::PowerOff
+        );
+        assert_eq!(decision.expected_exit_code, Some(71));
+    }
+
+    #[test]
+    fn fail_closed_lifecycle_accepts_an_explicit_missing_pre_exit_measurement() {
+        let reset = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
+        let mut event = lifecycle_event(&reset);
+        event.header.outcome = FaultEventOutcomeV1::Error;
+        event.header.after_hash = event.header.before_hash;
+        event.payload[112..120].fill(0);
+        event.payload[120..128].fill(0);
+        event.payload[160..192].copy_from_slice(&event.header.before_hash);
+        event.payload[288..292].copy_from_slice(
+            &u32::from(lifecycle_tag(NodeLifecycleTransition::PermanentFailure)).to_le_bytes(),
+        );
+        event.payload[292..296]
+            .copy_from_slice(&LIFECYCLE_TERMINAL_CAUSE_FAIL_CLOSED.to_le_bytes());
+        event.payload[296..300].copy_from_slice(&LIFECYCLE_TERMINAL_EXIT_REQUIRED.to_le_bytes());
+        assert!(validate_node_event_evidence(&event, &reset).is_ok());
+
+        event.payload[256] = 1;
+        assert!(validate_node_event_evidence(&event, &reset).is_err());
     }
 
     #[test]

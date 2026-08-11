@@ -50,6 +50,8 @@ pub enum QemuNodeLifecycleState {
     Running,
     /// The node has completed the shutdown escalation and reaped the child.
     ShutdownRequested,
+    /// The child cannot participate after an ambiguous supervision outcome.
+    Quarantined,
 }
 
 /// A frame emitted by the QEMU node over the shared-memory hot path.
@@ -129,6 +131,12 @@ impl QemuNodeChild {
     #[must_use]
     pub const fn reaped(&self) -> bool {
         self.reaped
+    }
+
+    /// Returns the operating-system process identifier of the owned child.
+    #[must_use]
+    pub fn process_id(&self) -> u32 {
+        self.child.id()
     }
 
     /// Polls for a natural child exit without sending a signal.
@@ -549,6 +557,26 @@ pub trait QemuQmpMachineControlChannel: Send {
     ///
     /// Returns [`QemuNodeChannelError`] when QEMU cannot confirm the running state.
     fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError>;
+
+    /// Completes an authenticated terminal lifecycle transition without
+    /// expecting QEMU to resume guest execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot acknowledge the
+    /// terminal completion command.
+    fn complete_terminal_lifecycle_exit(
+        &mut self,
+        action: crucible::ContentHash,
+        evidence: crucible::ContentHash,
+        process_generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        let _ = (action, evidence, process_generation);
+        Err(QemuNodeChannelError::new(
+            "complete terminal lifecycle exit",
+            "terminal lifecycle completion is unavailable",
+        ))
+    }
 
     /// Saves VMState under the supplied checkpoint identity.
     ///
@@ -1162,6 +1190,12 @@ impl QemuNode {
         self.child.reaped()
     }
 
+    /// Returns the operating-system process identifier of this QEMU generation.
+    #[must_use]
+    pub fn process_id(&self) -> u32 {
+        self.child.process_id()
+    }
+
     /// Waits for the exact child to complete a terminal lifecycle fault.
     ///
     /// The authenticated fault event is only a declaration that QEMU has
@@ -1181,20 +1215,27 @@ impl QemuNode {
     ) -> Result<i32, QemuNodeError> {
         let started = Instant::now();
         loop {
-            match self.child.try_wait_natural_exit().map_err(|source| {
-                QemuNodeError::fault_command(format!(
-                    "wait for intended lifecycle exit {}: {source}",
-                    action.to_hex()
-                ))
-            })? {
+            let status = match self.child.try_wait_natural_exit() {
+                Ok(status) => status,
+                Err(source) => {
+                    self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
+                    return Err(QemuNodeError::fault_command(format!(
+                        "wait for intended lifecycle exit {}: {source}",
+                        action.to_hex()
+                    )));
+                }
+            };
+            match status {
                 Some(status) => {
-                    let actual = status.code().ok_or_else(|| {
-                        QemuNodeError::fault_command(format!(
+                    let Some(actual) = status.code() else {
+                        self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
+                        return Err(QemuNodeError::fault_command(format!(
                             "intended lifecycle exit {} terminated without an exit code: {status}",
                             action.to_hex()
-                        ))
-                    })?;
+                        )));
+                    };
                     if actual != expected_exit_code {
+                        self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
                         return Err(QemuNodeError::fault_command(format!(
                             "intended lifecycle exit {} returned {actual}, expected {expected_exit_code}",
                             action.to_hex()
@@ -1204,9 +1245,10 @@ impl QemuNode {
                     return Ok(actual);
                 }
                 None if started.elapsed() < self.async_policy.advance_completion_timeout => {
-                    std::thread::yield_now();
+                    std::thread::sleep(Duration::from_millis(1));
                 }
                 None => {
+                    self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
                     return Err(QemuNodeError::fault_command(format!(
                         "intended lifecycle exit {} did not complete within {:?}",
                         action.to_hex(),
@@ -1215,6 +1257,39 @@ impl QemuNode {
                 }
             }
         }
+    }
+
+    /// Instructs patched QEMU to complete a previously authenticated terminal
+    /// lifecycle decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the node is not running or QEMU cannot
+    /// acknowledge the terminal completion command. A failed acknowledgement
+    /// quarantines the node because the process outcome is then ambiguous.
+    pub fn complete_terminal_lifecycle_exit(
+        &mut self,
+        action: crucible::ContentHash,
+        evidence: crucible::ContentHash,
+        process_generation: u64,
+    ) -> Result<(), QemuNodeError> {
+        if self.lifecycle_state != QemuNodeLifecycleState::Running {
+            return Err(QemuNodeError::fault_command(
+                "terminal lifecycle completion requires a running node",
+            ));
+        }
+        if let Err(source) = self
+            .channels
+            .qmp_machine_control
+            .complete_terminal_lifecycle_exit(action, evidence, process_generation)
+        {
+            self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
+            return Err(QemuNodeError::from_channel(
+                QemuNodeChannelPlane::QmpMachineControl,
+                source,
+            ));
+        }
+        Ok(())
     }
 
     /// Returns the fixed channel roles owned by this node.
@@ -1442,6 +1517,50 @@ impl QemuNode {
         node: &NodeId,
         checkpoint: Checkpoint,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
+        self.capture_exact_snapshot_inner(node, checkpoint, true)
+    }
+
+    /// Captures the post-mutation restart state for a terminal lifecycle fault.
+    ///
+    /// QEMU remains paused after a successful capture. The caller must next
+    /// authorize terminal completion and supervise the exact child exit; it
+    /// must never issue an ordinary resume to this process generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] under the same conditions as
+    /// [`Self::capture_exact_snapshot`]. A failed terminal capture deliberately
+    /// leaves QEMU paused because `cont` is already bound to process exit.
+    pub fn capture_terminal_lifecycle_snapshot(
+        &mut self,
+        node: &NodeId,
+        checkpoint: Checkpoint,
+    ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
+        self.capture_exact_snapshot_inner(node, checkpoint, false)
+    }
+
+    /// Prevalidates terminal snapshot identity and boundary prerequisites.
+    ///
+    /// This read-only check lets a multi-node lifecycle transaction reject all
+    /// known configuration and boundary failures before pausing its first VM.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the node is not running at the exact
+    /// checkpoint boundary or cannot safely enter checkpoint capture.
+    pub fn prevalidate_terminal_lifecycle_snapshot(
+        &mut self,
+        node: &NodeId,
+        checkpoint: &Checkpoint,
+    ) -> Result<(), QemuNodeError> {
+        self.validate_exact_snapshot_boundary(node, checkpoint)
+    }
+
+    fn validate_exact_snapshot_boundary(
+        &mut self,
+        node: &NodeId,
+        checkpoint: &Checkpoint,
+    ) -> Result<(), QemuNodeError> {
         if self.lifecycle_state != QemuNodeLifecycleState::Running {
             return Err(QemuNodeError::checkpoint(
                 "exact snapshot capture requires a running QEMU node",
@@ -1476,6 +1595,16 @@ impl QemuNode {
                 observed_icount.retired, self.last_observed_time.ticks
             )));
         }
+        Ok(())
+    }
+
+    fn capture_exact_snapshot_inner(
+        &mut self,
+        node: &NodeId,
+        checkpoint: Checkpoint,
+        resume_after_capture: bool,
+    ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
+        self.validate_exact_snapshot_boundary(node, &checkpoint)?;
         self.host_io_runtime
             .quiesce_for_checkpoint(self.async_policy.qmp_command_timeout)
             .map_err(|source| {
@@ -1552,6 +1681,7 @@ impl QemuNode {
         })();
         let snapshot = match capture_result {
             Ok(snapshot) => snapshot,
+            Err(error) if !resume_after_capture => return Err(error),
             Err(error) => {
                 let resume = self.channels.qmp_machine_control.resume_after_checkpoint();
                 return match resume {
@@ -1580,7 +1710,9 @@ impl QemuNode {
                 ))),
             };
         }
-        if let Err(source) = self.channels.qmp_machine_control.resume_after_checkpoint() {
+        if resume_after_capture
+            && let Err(source) = self.channels.qmp_machine_control.resume_after_checkpoint()
+        {
             return self.handle_qmp_channel_error(source);
         }
         Ok(snapshot)
@@ -1639,6 +1771,15 @@ impl QemuNode {
             })
     }
 
+    /// Boots a restored generation that was intentionally left powered off.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when QMP cannot confirm the running state.
+    pub fn boot_powered_off_generation(&mut self) -> Result<(), QemuNodeError> {
+        self.resume_after_restore()
+    }
+
     /// Prevents a partially assembled restored node from leaking its child.
     pub(crate) fn reap_failed_realization(&mut self) -> Result<(), QemuShutdownTargetError> {
         self.child.force_kill_and_reap_failed_realization()
@@ -1679,20 +1820,38 @@ impl QemuNode {
     /// subsequent restore proves that no state survived in the old process.
     #[cfg(target_os = "linux")]
     pub(crate) fn force_crash_and_reap_for_gate(&mut self) -> Result<(), QemuNodeError> {
+        self.force_quarantine_and_reap()
+    }
+
+    /// Force-kills and reaps an indeterminate process generation.
+    ///
+    /// This containment path deliberately sends no graceful guest or plugin
+    /// command: ambiguity must not execute additional modeled behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the process cannot be killed or remains
+    /// unreaped after the bounded wait.
+    #[cfg(target_os = "linux")]
+    pub fn force_quarantine_and_reap(&mut self) -> Result<(), QemuNodeError> {
+        if self.child_reaped() {
+            return Ok(());
+        }
         self.child.send_sigkill().map_err(|error| {
-            QemuNodeError::checkpoint(format!("force checkpoint crash: {error}"))
+            QemuNodeError::checkpoint(format!("force quarantine kill: {error}"))
         })?;
         match self
             .child
             .reap(self.shutdown_policy.reap_wait)
-            .map_err(|error| QemuNodeError::checkpoint(format!("reap checkpoint crash: {error}")))?
-        {
+            .map_err(|error| {
+                QemuNodeError::checkpoint(format!("reap quarantined child: {error}"))
+            })? {
             QemuReap::Reaped => {
                 self.lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
                 Ok(())
             }
             QemuReap::StillAlive => Err(QemuNodeError::checkpoint(
-                "force-killed checkpoint process remained alive past the reap deadline",
+                "force-killed quarantined process remained alive past the reap deadline",
             )),
         }
     }

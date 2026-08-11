@@ -189,14 +189,14 @@ pub use node_factory::{
     QemuNodeFactoryError, QemuNodeFactoryRuntime, QemuNodeRestoreAdmission, QemuNodeRestorePlan,
     QemuQmpExactSnapshotControlChannel, QemuWarmRestoreLaunchError,
     build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
-    spawn_setup_and_restore_qemu_node,
+    build_qemu_node_from_restored_checkpoint_paused, spawn_setup_and_restore_qemu_node,
 };
-pub use node_set::QemuNodeSet;
 #[cfg(target_os = "linux")]
 pub use node_set::QemuNodeSetBlockBoundaryCheckpoint;
+pub use node_set::{QemuNodeSet, QemuNodeTerminalReplacementPlan};
 pub use production_fault_runtime::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionFaultRuntimeError,
-    ProductionNetworkStateCheckpoint,
+    ProductionNetworkStateCheckpoint, QemuNodeLifecycleDecision,
 };
 pub use production_fault_sink::ProductionFaultActionSink;
 pub use qmp::{
@@ -317,7 +317,8 @@ pub use supervision::{
     QemuLiveNetworkIoServicerError, QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError,
     QemuLiveNodeStepQuantum, QemuLiveNodeStepReport, QemuLiveNodeStepSchedule,
     QemuNinepFaultCoordinator, QemuSharedBlockDevice, launch_qemu_live_node,
-    launch_qemu_live_node_exact_snapshot, launch_qemu_live_node_restored, run_qemu_live_9p_io_gate,
-    run_qemu_live_block_io_gate, run_qemu_live_block_node_gate, run_qemu_live_exact_snapshot_gate,
+    launch_qemu_live_node_exact_snapshot, launch_qemu_live_node_exact_snapshot_paused,
+    launch_qemu_live_node_restored, run_qemu_live_9p_io_gate, run_qemu_live_block_io_gate,
+    run_qemu_live_block_node_gate, run_qemu_live_exact_snapshot_gate,
     run_qemu_live_host_parallel_gate, run_qemu_live_network_io_gate, run_qemu_live_node_step_gate,
 };

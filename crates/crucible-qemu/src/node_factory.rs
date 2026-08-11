@@ -59,6 +59,16 @@ where
         self.vmstate.resume_after_checkpoint()
     }
 
+    fn complete_terminal_lifecycle_exit(
+        &mut self,
+        action: crucible::ContentHash,
+        evidence: crucible::ContentHash,
+        process_generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .complete_terminal_lifecycle_exit(action, evidence, process_generation)
+    }
+
     fn save_checkpoint_vmstate(
         &mut self,
         checkpoint: &Checkpoint,
@@ -603,6 +613,47 @@ where
     A: SchedulerSendAuthorizer + 'static,
     R: QemuHostIoRuntime + 'static,
 {
+    build_qemu_node_from_restored_checkpoint_inner(child, setup, qmp, restore, runtime, true)
+}
+
+/// Restores QEMU VMState into a scheduler-facing node that remains paused.
+///
+/// This is the power-off realization path. It performs the complete restore
+/// handshake, including the one bounded run needed to acknowledge logical-time
+/// calibration, but does not resume the guest after the final native stop.
+///
+/// # Errors
+///
+/// Returns [`QemuNodeFactoryError`] under the same conditions as
+/// [`build_qemu_node_from_restored_checkpoint`].
+pub fn build_qemu_node_from_restored_checkpoint_paused<S, A, R>(
+    child: QemuNodeChild,
+    setup: QemuHostPluginSetup,
+    qmp: QemuQmpVmStateControlChannel<S>,
+    restore: QemuNodeRestorePlan<'_>,
+    runtime: QemuNodeFactoryRuntime<A, R>,
+) -> Result<QemuNode, QemuNodeFactoryError>
+where
+    S: QmpTimeoutStream + 'static,
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+{
+    build_qemu_node_from_restored_checkpoint_inner(child, setup, qmp, restore, runtime, false)
+}
+
+fn build_qemu_node_from_restored_checkpoint_inner<S, A, R>(
+    mut child: QemuNodeChild,
+    setup: QemuHostPluginSetup,
+    mut qmp: QemuQmpVmStateControlChannel<S>,
+    restore: QemuNodeRestorePlan<'_>,
+    runtime: QemuNodeFactoryRuntime<A, R>,
+    resume_guest: bool,
+) -> Result<QemuNode, QemuNodeFactoryError>
+where
+    S: QmpTimeoutStream + 'static,
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+{
     let QemuNodeFactoryRuntime {
         shmem_config,
         send_authorizer,
@@ -815,7 +866,7 @@ where
             return Err(reap_failed_restored_node(&mut node, primary));
         }
     }
-    if let Err(source) = node.resume_after_restore() {
+    if resume_guest && let Err(source) = node.resume_after_restore() {
         let primary = QemuNodeFactoryError::CheckpointResume {
             source: QemuNodeChannelError::new("resume restored QEMU", source.to_string()),
         };

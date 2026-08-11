@@ -45,6 +45,8 @@ pub const QMP_QUERY_STATUS_COMMAND: &str = "query-status";
 pub const QMP_STOP_COMMAND: &str = "stop";
 /// QMP command used to resume guest execution after a lifecycle boundary.
 pub const QMP_CONT_COMMAND: &str = "cont";
+/// QMP command that authorizes one authenticated terminal lifecycle exit.
+pub const QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND: &str = "crucible-complete-terminal-lifecycle";
 /// QMP command name used for reading configured vCPU indexes.
 pub const QMP_QUERY_CPUS_FAST_COMMAND: &str = "query-cpus-fast";
 /// QMP command name used for graceful QEMU termination.
@@ -346,6 +348,30 @@ where
             });
         }
         Ok(complete)
+    }
+
+    /// Completes an authenticated terminal lifecycle transition.
+    ///
+    /// This dedicated command never resumes guest execution. Patched QEMU
+    /// validates the action, evidence, and process generation before scheduling
+    /// the transition-specific exit. Repeating the same request is idempotent.
+    /// The owning process supervisor must independently reap and verify that
+    /// exact child after this method returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when QEMU does not acknowledge the command.
+    pub fn complete_terminal_lifecycle_exit(
+        &mut self,
+        action: crucible::ContentHash,
+        evidence: crucible::ContentHash,
+        process_generation: u64,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        self.send_command(QmpCommand::CompleteTerminalLifecycle {
+            action,
+            evidence,
+            process_generation,
+        })
     }
 
     /// Returns the exact sorted set of configured vCPU indexes.
@@ -863,6 +889,8 @@ pub enum QmpCommandKind {
     Stop,
     /// Resume guest execution.
     Cont,
+    /// Authenticated terminal lifecycle completion.
+    CompleteTerminalLifecycle,
     /// Configured vCPU topology query.
     QueryCpusFast,
     /// Graceful QEMU quit.
@@ -881,6 +909,7 @@ impl QmpCommandKind {
             Self::QueryStatus => QMP_QUERY_STATUS_COMMAND,
             Self::Stop => QMP_STOP_COMMAND,
             Self::Cont => QMP_CONT_COMMAND,
+            Self::CompleteTerminalLifecycle => QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
             Self::QueryCpusFast => QMP_QUERY_CPUS_FAST_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
         }
@@ -926,6 +955,11 @@ enum QmpCommand<'a> {
     QueryStatus,
     Stop,
     Cont,
+    CompleteTerminalLifecycle {
+        action: crucible::ContentHash,
+        evidence: crucible::ContentHash,
+        process_generation: u64,
+    },
     QueryCpusFast,
     Quit,
 }
@@ -942,6 +976,7 @@ impl QmpCommand<'_> {
             Self::QueryStatus => QmpCommandKind::QueryStatus,
             Self::Stop => QmpCommandKind::Stop,
             Self::Cont => QmpCommandKind::Cont,
+            Self::CompleteTerminalLifecycle { .. } => QmpCommandKind::CompleteTerminalLifecycle,
             Self::QueryCpusFast => QmpCommandKind::QueryCpusFast,
             Self::Quit => QmpCommandKind::Quit,
         }
@@ -981,6 +1016,18 @@ impl QmpCommand<'_> {
             }),
             Self::Cont => json!({
                 "execute": QMP_CONT_COMMAND,
+            }),
+            Self::CompleteTerminalLifecycle {
+                action,
+                evidence,
+                process_generation,
+            } => json!({
+                "execute": QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
+                "arguments": {
+                    "action-sha256": action.to_hex(),
+                    "evidence-sha256": evidence.to_hex(),
+                    "process-generation": process_generation,
+                },
             }),
             Self::QueryCpusFast => json!({
                 "execute": QMP_QUERY_CPUS_FAST_COMMAND,

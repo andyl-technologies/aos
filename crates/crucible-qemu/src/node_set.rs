@@ -5,7 +5,7 @@
 //! steps, inputs, preemptions, fingerprints, debugger requests, and shutdown to
 //! the corresponding live [`QemuNode`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crucible::{
     BackendEffect, BackendError, BackendNetworkOutput, BackendSnapshot, Decision,
@@ -20,12 +20,18 @@ use crucible_shmem::{
 use crate::QemuNode;
 use crate::QemuVmSnapshot;
 
+/// A fully validated, no-fail terminal node-generation map update.
+pub struct QemuNodeTerminalReplacementPlan {
+    replacements: BTreeMap<NodeId, Option<QemuNode>>,
+}
+
 /// Maximum early-pause reissues for one scheduler-selected node step.
 const MAX_STEP_REISSUES: u32 = 64;
 
 /// A deterministic node-addressed collection of live QEMU backends.
 pub struct QemuNodeSet {
     nodes: BTreeMap<NodeId, QemuNode>,
+    permanently_closed: BTreeSet<NodeId>,
 }
 
 /// Exact per-node block state captured around one scheduler boundary.
@@ -121,6 +127,7 @@ impl QemuNodeSet {
     pub const fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
+            permanently_closed: BTreeSet::new(),
         }
     }
 
@@ -128,6 +135,7 @@ impl QemuNodeSet {
     ///
     /// Returns the prior node when `node` was already present.
     pub fn insert(&mut self, node: NodeId, backend: QemuNode) -> Option<QemuNode> {
+        self.permanently_closed.remove(&node);
         self.nodes.insert(node, backend)
     }
 
@@ -137,6 +145,139 @@ impl QemuNodeSet {
     /// node into the authoritative lifecycle at the same configuration.
     pub fn take(&mut self, node: &NodeId) -> Option<QemuNode> {
         self.nodes.remove(node)
+    }
+
+    /// Atomically replaces or removes a validated set of node generations.
+    ///
+    /// A `Some` replacement installs a prepared generation; `None` closes the
+    /// node permanently. Validation completes before ownership of the current
+    /// map changes, and the subsequent map reconstruction has no fallible step.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when a node appears twice or does not name an
+    /// authoritative current generation. The node set is unchanged on error.
+    pub fn prepare_terminal_replacements(
+        &self,
+        replacements: Vec<(NodeId, Option<QemuNode>)>,
+    ) -> Result<QemuNodeTerminalReplacementPlan, BackendError> {
+        let mut staged = BTreeMap::new();
+        for (node, replacement) in replacements {
+            if !self.nodes.contains_key(&node) {
+                return Err(BackendError::Rejected {
+                    message: format!(
+                        "terminal replacement has no authoritative node `{}`",
+                        node.name
+                    ),
+                });
+            }
+            if staged.insert(node.clone(), replacement).is_some() {
+                return Err(BackendError::Rejected {
+                    message: format!("terminal replacement repeats node `{}`", node.name),
+                });
+            }
+        }
+
+        Ok(QemuNodeTerminalReplacementPlan {
+            replacements: staged,
+        })
+    }
+
+    /// Validates that every retiring QEMU generation has been reaped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when a node is absent or still owns a live or
+    /// unreaped child process.
+    pub fn validate_terminal_exits_reaped(&self, nodes: &[NodeId]) -> Result<(), BackendError> {
+        for node in nodes {
+            let backend = self.nodes.get(node).ok_or_else(|| BackendError::Rejected {
+                message: format!("terminal exit has no authoritative node `{}`", node.name),
+            })?;
+            if !backend.child_reaped() {
+                return Err(BackendError::Rejected {
+                    message: format!(
+                        "terminal replacement for `{}` preceded old-child reap",
+                        node.name
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Boots one prepared power-off process generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or QMP cannot resume
+    /// the restored guest.
+    pub fn boot_powered_off_generation(&mut self, node: &NodeId) -> Result<(), BackendError> {
+        self.node_mut(node)?
+            .boot_powered_off_generation()
+            .map_err(BackendError::from)
+    }
+
+    /// Contains and removes a set of indeterminate QEMU generations.
+    ///
+    /// Each process still present is force-killed and synchronously reaped;
+    /// graceful control paths are intentionally not used for an ambiguous
+    /// lifecycle transaction. An already removed generation is already
+    /// contained and is therefore idempotently accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when any present process cannot be killed and
+    /// reaped. All named nodes are removed even when one cleanup reports an
+    /// error.
+    #[cfg(target_os = "linux")]
+    pub fn quarantine_terminal_nodes(&mut self, nodes: &[NodeId]) -> Result<(), BackendError> {
+        let mut first_error = None;
+        for node in nodes {
+            if let Some(mut backend) = self.nodes.remove(node)
+                && let Err(error) = backend.force_quarantine_and_reap()
+                && first_error.is_none()
+            {
+                first_error = Some(error.to_string());
+            }
+        }
+        first_error.map_or(Ok(()), |message| {
+            Err(BackendError::Rejected {
+                message: format!("terminal lifecycle quarantine failed: {message}"),
+            })
+        })
+    }
+
+    /// Commits a previously validated terminal generation update.
+    ///
+    /// This operation has no fallible step. It returns the retired generations
+    /// so the caller can verify that terminal-exit supervision reaped them.
+    #[must_use]
+    pub fn commit_terminal_replacements(
+        &mut self,
+        plan: QemuNodeTerminalReplacementPlan,
+    ) -> Vec<(NodeId, QemuNode)> {
+        let mut staged = plan.replacements;
+        let current = std::mem::take(&mut self.nodes);
+        let mut retired = Vec::with_capacity(staged.len());
+        for (node, backend) in current {
+            match staged.remove(&node) {
+                Some(Some(replacement)) => {
+                    retired.push((node.clone(), backend));
+                    self.permanently_closed.remove(&node);
+                    self.nodes.insert(node, replacement);
+                }
+                Some(None) => {
+                    self.permanently_closed.insert(node.clone());
+                    self.nodes.insert(node, backend);
+                }
+                None => {
+                    self.nodes.insert(node, backend);
+                }
+            }
+        }
+        debug_assert!(staged.is_empty());
+        retired
     }
 
     /// Captures one live node's complete exact snapshot at a completed boundary.
@@ -153,6 +294,41 @@ impl QemuNodeSet {
         self.node_mut(node)?
             .capture_exact_snapshot(node, checkpoint)
             .map_err(BackendError::from)
+    }
+
+    /// Captures one terminal lifecycle transition without resuming QEMU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or its exact VMState and
+    /// host-I/O continuation cannot be captured at the completed boundary.
+    pub fn capture_terminal_lifecycle_snapshot(
+        &mut self,
+        node: &NodeId,
+        checkpoint: crucible::Checkpoint,
+    ) -> Result<QemuVmSnapshot, BackendError> {
+        self.node_mut(node)?
+            .capture_terminal_lifecycle_snapshot(node, checkpoint)
+            .map_err(BackendError::from)
+    }
+
+    /// Prevalidates every node in a terminal snapshot batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when any node is absent or not at the exact
+    /// checkpoint boundary. No node is paused or otherwise mutated.
+    pub fn prevalidate_terminal_lifecycle_snapshots(
+        &mut self,
+        nodes: &[NodeId],
+        checkpoint: &crucible::Checkpoint,
+    ) -> Result<(), BackendError> {
+        for node in nodes {
+            self.node_mut(node)?
+                .prevalidate_terminal_lifecycle_snapshot(node, checkpoint)
+                .map_err(BackendError::from)?;
+        }
+        Ok(())
     }
 
     /// Deletes one exact VMState artifact after an uncommitted capture.
@@ -282,6 +458,14 @@ impl QemuNodeSet {
         &self,
         node: &NodeId,
     ) -> Result<&[FaultCapabilityRowV1], BackendError> {
+        if self.permanently_closed.contains(node) {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` is permanently failed and cannot accept faults",
+                    node.name
+                ),
+            });
+        }
         self.nodes
             .get(node)
             .map(QemuNode::fault_capabilities)
@@ -451,6 +635,43 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
+    /// Returns the operating-system process identifier for one QEMU node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when `node` is absent or permanently closed.
+    pub fn process_id(&self, node: &NodeId) -> Result<u32, BackendError> {
+        if self.permanently_closed.contains(node) {
+            return Err(BackendError::Rejected {
+                message: format!("QEMU node `{}` is permanently closed", node.name),
+            });
+        }
+        self.nodes
+            .get(node)
+            .map(QemuNode::process_id)
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!("unknown QEMU node `{}`", node.name),
+            })
+    }
+
+    /// Completes one authenticated terminal lifecycle decision over QMP.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when `node` is absent or QEMU cannot
+    /// acknowledge the completion command.
+    pub fn complete_terminal_lifecycle_exit(
+        &mut self,
+        node: &NodeId,
+        action: crucible::ContentHash,
+        evidence: crucible::ContentHash,
+        process_generation: u64,
+    ) -> Result<(), BackendError> {
+        self.node_mut(node)?
+            .complete_terminal_lifecycle_exit(action, evidence, process_generation)
+            .map_err(BackendError::from)
+    }
+
     /// Reports whether any node has an event awaiting runtime admission.
     ///
     /// # Errors
@@ -582,6 +803,11 @@ impl QemuNodeSet {
     }
 
     fn node_mut(&mut self, node: &NodeId) -> Result<&mut QemuNode, BackendError> {
+        if self.permanently_closed.contains(node) {
+            return Err(BackendError::Rejected {
+                message: format!("QEMU node `{}` is permanently failed", node.name),
+            });
+        }
         self.nodes
             .get_mut(node)
             .ok_or_else(|| BackendError::Rejected {
@@ -768,7 +994,10 @@ impl SimulationBackend for QemuNodeSet {
 
     fn shutdown(&mut self) -> Result<(), BackendError> {
         let mut first_error = None;
-        for node in self.nodes.values_mut() {
+        for (id, node) in &mut self.nodes {
+            if self.permanently_closed.contains(id) {
+                continue;
+            }
             if let Err(error) = SimulationBackend::shutdown(node)
                 && first_error.is_none()
             {

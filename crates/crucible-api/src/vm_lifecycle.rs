@@ -7,6 +7,8 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::fs::File;
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,7 +19,8 @@ use crate::vm_resume::{
     PRODUCTION_ROOT_OVERLAY_FILE_NAME, PRODUCTION_VMSTATE_FILE_NAME, ProductionAppRandomConfig,
     ProductionGdbstubChannelConfig, ProductionGuestArchitecture, ProductionLiveNodeStepGateConfig,
     ProductionNodeSet, ProductionPluginSwitch, ProductionRootImageFormat,
-    launch_production_live_node,
+    launch_production_live_node, launch_production_live_node_exact_snapshot,
+    launch_production_live_node_exact_snapshot_paused,
 };
 use crucible::model::{FaultCoordinate, SignalArtifactProvider, SignalBoundarySnapshot};
 use crucible::{
@@ -29,12 +32,13 @@ use crucible::{
     HostAssertionOutcome, HostAssertionOutcomeKind, Icount, NodeId, NodeLifecycle, ObservableEvent,
     QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RuntimeState, ScenarioDef,
     ScenarioDefForm, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
-    SchedulerLivenessScenario, SchedulerState, SearchFrontierChoices, Seed, Shift, SimDuration,
-    SimInstant, SimulationBackend, SingleScheduler, VirtualTime, VmArchitecture, World,
+    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerState, SearchFrontierChoices, Seed,
+    Shift, SimDuration, SimInstant, SimulationBackend, SingleScheduler, VirtualTime,
+    VmArchitecture, World,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
-    QemuVmSnapshot,
+    QemuNode, QemuNodeLifecycleDecision, QemuVmSnapshot,
 };
 
 use crate::LifecycleApiError;
@@ -154,6 +158,58 @@ struct ProductionVmRecordedControl {
     control: Vec<ControlOperation>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProductionNodeServiceState {
+    Running,
+    PoweredOff,
+    PermanentlyFailed,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProductionLifecycleJournalPhase {
+    Idle,
+    Intent,
+    Prepared,
+    ExitsReaped,
+    Committed,
+    Quarantined,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ProductionLifecycleJournalNode {
+    node: String,
+    process_id: u32,
+    current_generation: u64,
+    next_generation: u64,
+    transition: String,
+    action_sha256: String,
+    evidence_sha256: String,
+    expected_exit_code: i32,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ProductionLifecycleCompletedExit {
+    transaction: u64,
+    node: String,
+    process_id: u32,
+    generation: u64,
+    transition: String,
+    action_sha256: String,
+    evidence_sha256: String,
+    expected_exit_code: i32,
+    observed_exit_code: i32,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ProductionLifecycleJournal {
+    version: u32,
+    transaction: u64,
+    phase: ProductionLifecycleJournalPhase,
+    nodes: Vec<ProductionLifecycleJournalNode>,
+    completed_exits: Vec<ProductionLifecycleCompletedExit>,
+}
+
 /// Lifecycle loop backed by an authoritative scheduler and live QEMU node set.
 pub struct ProductionVmLifecycleLoop {
     inner:
@@ -175,6 +231,10 @@ pub struct ProductionVmLifecycleLoop {
     fault_evaluation_cursor: network_faults::SharedProductionFaultEvaluationCursor,
     icount_shift: u8,
     node_indexes: BTreeMap<NodeId, usize>,
+    node_run_directories: BTreeMap<NodeId, PathBuf>,
+    node_generations: BTreeMap<NodeId, u64>,
+    node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
+    lifecycle_journal: ProductionLifecycleJournal,
     scenario: ScenarioDef,
     source: ScenarioDefForm,
     config: ProductionVmLifecycleConfig,
@@ -266,6 +326,9 @@ pub fn build_production_vm_lifecycle_loop(
     let mut block_bindings = BTreeMap::new();
     let mut ninep_bindings = BTreeMap::new();
     let mut node_indexes = BTreeMap::new();
+    let mut node_run_directories = BTreeMap::new();
+    let mut node_generations = BTreeMap::new();
+    let mut node_service_states = BTreeMap::new();
     let mut debug_backend_paths = BTreeMap::new();
     let mut initial_ticks = None;
     let scenario_seed = scenario.seed().bytes();
@@ -391,6 +454,9 @@ pub fn build_production_vm_lifecycle_loop(
         }
         launch_configs.insert(vm.id.clone(), launch.clone());
         node_indexes.insert(vm.id.clone(), index);
+        node_run_directories.insert(vm.id.clone(), node_directory.clone());
+        node_generations.insert(vm.id.clone(), 1);
+        node_service_states.insert(vm.id.clone(), ProductionNodeServiceState::Running);
         let mut backend = launch_production_live_node(
             &launch,
             &node_directory,
@@ -591,6 +657,16 @@ pub fn build_production_vm_lifecycle_loop(
         fault_evaluation_cursor,
         icount_shift: first.icount_shift,
         node_indexes,
+        node_run_directories,
+        node_generations,
+        node_service_states,
+        lifecycle_journal: ProductionLifecycleJournal {
+            version: 1,
+            transaction: 0,
+            phase: ProductionLifecycleJournalPhase::Idle,
+            nodes: Vec::new(),
+            completed_exits: Vec::new(),
+        },
         scenario: scenario.clone(),
         source: source.clone(),
         config: config.clone(),
@@ -604,6 +680,12 @@ pub fn build_production_vm_lifecycle_loop(
         debug_runtime_evidence: Vec::new(),
         _run_directory: run_directory,
     };
+    if let Err(error) = lifecycle.persist_lifecycle_journal() {
+        let _ = lifecycle.inner.shutdown();
+        return Err(loop_factory_error(format!(
+            "initialize lifecycle transaction journal: {error}"
+        )));
+    }
     if let Err(error) = lifecycle.capture_debug_runtime_evidence() {
         let _ = lifecycle.inner.shutdown();
         return Err(loop_factory_error(format!(
