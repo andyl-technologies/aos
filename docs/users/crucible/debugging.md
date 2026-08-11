@@ -90,8 +90,12 @@ after `stop`.
 
 The current parser accepts only the keyword; it does not parse payloads for a
 duration, fault, query selector, savepoint label, or fork override. Use the
-top-level `save`, `resume`, and `fork` commands for parameterized workflows. The
-argumentless mutation keywords primarily exercise the session control surface.
+top-level `save`, `resume`, and `fork` commands for parameterized workflows and
+put deterministic fault injection and healing in the scenario plan. Because an
+interactive fault cannot safely invent a target or tag, argumentless
+`inject-fault` and `heal-fault` return an agent-readable
+`status=rejected reason=unsupported detail=payload-required` acknowledgement.
+The session remains live and continues reading later commands.
 
 An interactive live-QEMU `fork` is intentionally transient: its final report
 retains checkpoint and oracle evidence but marks its reproduction artifact

@@ -375,10 +375,15 @@ where
         let Some(command) = parse_interactive_session_command_line(&line)? else {
             continue;
         };
+        let Some(model_command) = interactive_stream_command(command)? else {
+            write_interactive_payload_required(writer, command)?;
+            writer.flush()?;
+            continue;
+        };
         let response = acknowledge_stream_command_payload(
             control,
             command_id,
-            cli_stream_command(command)?,
+            model_command,
             acknowledged_commands,
         )
         .await?;
@@ -488,12 +493,46 @@ pub(super) fn cli_stream_command(command: SessionCommandKind) -> Result<SessionC
             reply: CommandReply::discard(),
         });
     }
+    if matches!(
+        command,
+        SessionCommandKind::InjectFault | SessionCommandKind::HealFault
+    ) {
+        return Err(usage_error(format!(
+            "session command `{}` requires a typed fault payload",
+            session_command_name(command)
+        )));
+    }
     command.representative_command().ok_or_else(|| {
         backend_error(format!(
             "session command `{}` is not supported",
             session_command_name(command)
         ))
     })
+}
+
+pub(super) fn interactive_stream_command(
+    command: SessionCommandKind,
+) -> Result<Option<SessionCommand>, CliError> {
+    if matches!(
+        command,
+        SessionCommandKind::InjectFault | SessionCommandKind::HealFault
+    ) {
+        Ok(None)
+    } else {
+        cli_stream_command(command).map(Some)
+    }
+}
+
+pub(super) fn write_interactive_payload_required<W: Write>(
+    writer: &mut W,
+    command: SessionCommandKind,
+) -> Result<(), CliError> {
+    writeln!(
+        writer,
+        "interactive-ack\tcommand={}\tstatus=rejected\treason=unsupported\tdetail=payload-required",
+        session_command_name(command)
+    )?;
+    Ok(())
 }
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.

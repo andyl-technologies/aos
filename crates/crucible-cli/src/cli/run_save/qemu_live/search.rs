@@ -15,6 +15,18 @@ struct QemuSearchFinding {
     fingerprints: Vec<crucible::FingerprintSample>,
 }
 
+fn reproduction_fingerprint_sample(
+    index: usize,
+    sample: &crucible::FingerprintSample,
+) -> VerifyFingerprintSample {
+    VerifyFingerprintSample {
+        index: index as u64,
+        instruction: sample.at.ticks,
+        node: sample.node.name.clone(),
+        digest: cli_digest_from_engine_hash(sample.fingerprint.hash),
+    }
+}
+
 fn search_finding_reproduction_artifact_bytes(
     backend_plan: &BackendSelectionPlan,
     plan: &SearchDriverPlan,
@@ -27,12 +39,7 @@ fn search_finding_reproduction_artifact_bytes(
         .fingerprints
         .iter()
         .enumerate()
-        .map(|(index, sample)| VerifyFingerprintSample {
-            index: index as u64,
-            instruction: sample.at.ticks,
-            node: sample.node.name.clone(),
-            digest: format_content_hash_ref(sample.fingerprint.hash),
-        })
+        .map(|(index, sample)| reproduction_fingerprint_sample(index, sample))
         .collect::<Vec<_>>();
     if fingerprints.is_empty() {
         return Err(artifact_error(
@@ -812,4 +819,35 @@ fn qemu_search_cache_frontier(
     graph
         .cache_snapshot(&frontier.configuration, checkpoint)
         .map_err(|error| backend_error(format!("cache live QEMU search frontier: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_search_uses_the_reproduction_artifact_digest_namespace() {
+        let hash = crucible::ContentHash::from_canonical_material("live-search", "fingerprint");
+        let sample = crucible::FingerprintSample {
+            node: crucible::NodeId {
+                name: String::from("vm-a"),
+            },
+            at: crucible::VirtualTime { ticks: 17 },
+            fingerprint: crucible::ExecutionFingerprint { hash },
+        };
+
+        let rendered = reproduction_fingerprint_sample(3, &sample);
+
+        assert_eq!(rendered.index, 3);
+        assert_eq!(rendered.instruction, 17);
+        assert_eq!(rendered.node, "vm-a");
+        assert_eq!(
+            rendered.digest,
+            format!("{CONTENT_ADDRESS_PREFIX}{}", hash.to_hex())
+        );
+        assert_eq!(
+            format_content_hash_ref(hash),
+            format!("blake3:{}", hash.to_hex())
+        );
+    }
 }
