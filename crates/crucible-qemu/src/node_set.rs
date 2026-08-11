@@ -433,6 +433,24 @@ impl QemuNodeSet {
         Ok(())
     }
 
+    /// Verifies and reaps one child after authenticated terminal lifecycle evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when `node` is absent, does not terminate by
+    /// the bounded supervision deadline, or returns a status other than the
+    /// transition-specific `expected_exit_code`.
+    pub fn await_intended_lifecycle_exit(
+        &mut self,
+        node: &NodeId,
+        expected_exit_code: i32,
+        action: crucible::ContentHash,
+    ) -> Result<i32, BackendError> {
+        self.node_mut(node)?
+            .await_intended_lifecycle_exit(expected_exit_code, action)
+            .map_err(BackendError::from)
+    }
+
     /// Reports whether any node has an event awaiting runtime admission.
     ///
     /// # Errors

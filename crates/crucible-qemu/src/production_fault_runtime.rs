@@ -487,7 +487,7 @@ impl ProductionFaultRuntime {
             &nodes.fault_event_sequences(),
         )?;
         let mut observations = Vec::new();
-        for events in self.pending_qemu_events.values() {
+        for (node, events) in &self.pending_qemu_events {
             for event in events {
                 let action_identity = ContentHash {
                     bytes: event.header.action_hash,
@@ -526,6 +526,11 @@ impl ProductionFaultRuntime {
                     .into());
                 }
                 validate_node_event_evidence(event, action)?;
+                let process_exit_code = terminal_lifecycle_exit_code(event)
+                    .map(|expected| {
+                        nodes.await_intended_lifecycle_exit(node, expected, action_identity)
+                    })
+                    .transpose()?;
                 let opportunity =
                     (event.header.opportunity_hash != [0; 32]).then_some(ContentHash {
                         bytes: event.header.opportunity_hash,
@@ -541,6 +546,10 @@ impl ProductionFaultRuntime {
                 evidence.extend_from_slice(&event.header.after_hash);
                 evidence.extend_from_slice(&event.header.evidence_hash);
                 evidence.extend_from_slice(&event.payload);
+                if let Some(exit_code) = process_exit_code {
+                    evidence.extend_from_slice(b"CRUCHEX1");
+                    evidence.extend_from_slice(&exit_code.to_le_bytes());
+                }
                 observations.push(FaultObservation {
                     semantic_version: crucible::model::FAULT_RUNTIME_STATE_VERSION,
                     kind: if event.header.outcome == crucible_shmem::FaultEventOutcomeV1::Passed {
@@ -882,7 +891,7 @@ impl ProductionFaultRuntime {
     }
 }
 
-const LIFECYCLE_EVIDENCE_BYTES: usize = 256;
+const LIFECYCLE_EVIDENCE_BYTES: usize = 288;
 const HANG_EVIDENCE_BYTES: usize = 192;
 
 fn validate_node_event_evidence(
@@ -917,6 +926,20 @@ fn validate_node_event_evidence(
     }
 }
 
+fn terminal_lifecycle_exit_code(event: &DequeuedFaultEvent) -> Option<i32> {
+    if event.header.outcome != FaultEventOutcomeV1::Applied
+        || event.payload.get(0..8) != Some(b"CRUCLIF1")
+    {
+        return None;
+    }
+    match read_u16(&event.payload, 10)? {
+        2 => Some(70),
+        4 => Some(71),
+        6 => Some(72),
+        _ => None,
+    }
+}
+
 fn validate_lifecycle_evidence(
     event: &DequeuedFaultEvent,
     effect: &NodeEffectSpecification,
@@ -924,7 +947,7 @@ fn validate_lifecycle_evidence(
     let bytes = event.payload.as_slice();
     if bytes.len() != LIFECYCLE_EVIDENCE_BYTES
         || bytes.get(0..8) != Some(b"CRUCLIF1")
-        || read_u16(bytes, 8) != Some(2)
+        || read_u16(bytes, 8) != Some(3)
         || !matches!(
             event.header.outcome,
             FaultEventOutcomeV1::Applied | FaultEventOutcomeV1::Error
@@ -968,6 +991,22 @@ fn validate_lifecycle_evidence(
         || read_u64(bytes, 112).is_none_or(|value| value == 0)
         || read_u64(bytes, 120).is_none_or(|value| value == 0)
     {
+        return false;
+    }
+    let pre_exit_hash = bytes.get(256..288);
+    let terminal_evidence_is_valid = if matches!(transition, 2 | 4 | 6) {
+        pre_exit_hash.is_some_and(|hash| {
+            let mut material = [0_u8; 48];
+            material[0..8].copy_from_slice(b"CRUCTRM1");
+            material[8..12].copy_from_slice(&u32::from(transition).to_le_bytes());
+            material[16..48].copy_from_slice(hash);
+            let derived: [u8; 32] = Sha256::digest(material).into();
+            hash != [0_u8; 32] && derived == event.header.after_hash
+        })
+    } else {
+        pre_exit_hash == Some([0_u8; 32].as_slice())
+    };
+    if !terminal_evidence_is_valid {
         return false;
     }
     match effect {
@@ -1671,12 +1710,15 @@ mod tests {
             .unwrap_or_else(|error| panic!("test signal ID should be valid: {error}"))
     }
 
-    fn lifecycle_action(boot_policy: NodeBootPolicy) -> ResolvedBindingAction {
+    fn lifecycle_action(
+        transition: NodeLifecycleTransition,
+        boot_policy: NodeBootPolicy,
+    ) -> ResolvedBindingAction {
         let effect = EffectRequest::new(
             EFFECT_SEMANTIC_VERSION,
             EffectLifetime::Impulse,
             EffectSpecification::Node(NodeEffectSpecification::Lifecycle {
-                transition: NodeLifecycleTransition::Reset,
+                transition,
                 downtime_nanos: 32,
                 boot_policy,
                 volatile_state_policy: NodeStatePolicy::Preserve,
@@ -1708,10 +1750,16 @@ mod tests {
     fn lifecycle_event(action: &ResolvedBindingAction) -> DequeuedFaultEvent {
         let mut payload = vec![0_u8; LIFECYCLE_EVIDENCE_BYTES];
         let before_hash = [5_u8; 32];
-        let after_hash = [6_u8; 32];
+        let transition = match action.effect.specification() {
+            EffectSpecification::Node(NodeEffectSpecification::Lifecycle {
+                transition, ..
+            }) => lifecycle_tag(*transition),
+            other => panic!("test lifecycle action contains {other:?}"),
+        };
+        let mut after_hash = [6_u8; 32];
         payload[0..8].copy_from_slice(b"CRUCLIF1");
-        payload[8..10].copy_from_slice(&2_u16.to_le_bytes());
-        payload[10..12].copy_from_slice(&3_u16.to_le_bytes());
+        payload[8..10].copy_from_slice(&3_u16.to_le_bytes());
+        payload[10..12].copy_from_slice(&transition.to_le_bytes());
         payload[12..16].copy_from_slice(&1_u32.to_le_bytes());
         payload[16..20].copy_from_slice(&2_u32.to_le_bytes());
         payload[20..24].copy_from_slice(&1_u32.to_le_bytes());
@@ -1734,6 +1782,16 @@ mod tests {
         payload[196..200].copy_from_slice(&1_u32.to_le_bytes());
         payload[200..204].copy_from_slice(&1_u32.to_le_bytes());
         payload[216..224].copy_from_slice(&u64::MAX.to_le_bytes());
+        if matches!(transition, 2 | 4 | 6) {
+            let pre_exit_hash = [9_u8; 32];
+            let mut material = [0_u8; 48];
+            material[0..8].copy_from_slice(b"CRUCTRM1");
+            material[8..12].copy_from_slice(&u32::from(transition).to_le_bytes());
+            material[16..48].copy_from_slice(&pre_exit_hash);
+            after_hash = Sha256::digest(material).into();
+            payload[160..192].copy_from_slice(&after_hash);
+            payload[256..288].copy_from_slice(&pre_exit_hash);
+        }
         DequeuedFaultEvent {
             header: crucible_shmem::FaultEventHeaderV1 {
                 command_kind: crucible_shmem::FaultCommandKind::NodeLifecycle,
@@ -1765,7 +1823,7 @@ mod tests {
 
     #[test]
     fn typed_lifecycle_evidence_rejects_policy_and_marker_mismatch() {
-        let immediate = lifecycle_action(NodeBootPolicy::Immediate);
+        let immediate = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
         let event = lifecycle_event(&immediate);
         assert!(validate_node_event_evidence(&event, &immediate).is_ok());
 
@@ -1773,14 +1831,32 @@ mod tests {
         corrupt.payload[12..16].copy_from_slice(&2_u32.to_le_bytes());
         assert!(validate_node_event_evidence(&corrupt, &immediate).is_err());
 
-        let ready = lifecycle_action(NodeBootPolicy::RequireReady {
-            ready_marker: object_id("guest-ready"),
-            maximum_attempts: crucible::model::BoundedCount::new(CountLimit::LargeStateEntries, 2)
+        let ready = lifecycle_action(
+            NodeLifecycleTransition::Reset,
+            NodeBootPolicy::RequireReady {
+                ready_marker: object_id("guest-ready"),
+                maximum_attempts: crucible::model::BoundedCount::new(
+                    CountLimit::LargeStateEntries,
+                    2,
+                )
                 .unwrap_or_else(|error| panic!("test attempt count should be valid: {error}")),
-            retry_delay_nanos: 4096,
-            exhausted: NodeLifecycleTransition::PermanentFailure,
-        });
+                retry_delay_nanos: 4096,
+                exhausted: NodeLifecycleTransition::PermanentFailure,
+            },
+        );
         assert!(validate_node_event_evidence(&event, &ready).is_err());
+    }
+
+    #[test]
+    fn terminal_lifecycle_evidence_reconstructs_the_pre_exit_digest() {
+        let crash = lifecycle_action(NodeLifecycleTransition::Crash, NodeBootPolicy::Immediate);
+        let event = lifecycle_event(&crash);
+        assert!(validate_node_event_evidence(&event, &crash).is_ok());
+        assert_eq!(terminal_lifecycle_exit_code(&event), Some(70));
+
+        let mut substituted = event.clone();
+        substituted.payload[256] ^= 1;
+        assert!(validate_node_event_evidence(&substituted, &crash).is_err());
     }
 
     #[test]
@@ -1797,7 +1873,7 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
 
-        let impulse = lifecycle_action(NodeBootPolicy::Immediate);
+        let impulse = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
         runtime
             .update_qemu_action_ledger(std::slice::from_ref(&impulse))
             .unwrap_or_else(|error| panic!("impulse should enter issued ledger: {error}"));

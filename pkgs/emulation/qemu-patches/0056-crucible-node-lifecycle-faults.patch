@@ -491,10 +491,10 @@ index 58761d8..0df53f1 100644
  
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000..b7b6fb3
+index 0000000..310a425
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
-@@ -0,0 +1,1555 @@
+@@ -0,0 +1,1558 @@
 +/*
 + * Crucible deterministic node lifecycle and hang faults
 + *
@@ -525,7 +525,7 @@ index 0000000..b7b6fb3
 +#include "system/cpu-timers.h"
 +#include "system/runstate.h"
 +
-+#define CRUCIBLE_LIFECYCLE_EVIDENCE_BYTES 256
++#define CRUCIBLE_LIFECYCLE_EVIDENCE_BYTES 288
 +#define CRUCIBLE_LIFECYCLE_EXIT_CRASH 70
 +#define CRUCIBLE_LIFECYCLE_EXIT_POWER_OFF 71
 +#define CRUCIBLE_LIFECYCLE_EXIT_PERMANENT_FAILURE 72
@@ -1040,7 +1040,7 @@ index 0000000..b7b6fb3
 +    crucible_lifecycle_evidence_begin(
 +        bytes, rule, transition, downtime, volatile_policy, device_policy,
 +        observed_icount, virtual_before, ram_bytes, device_bytes);
-+    stw_le_p(bytes + 8, 2);
++    stw_le_p(bytes + 8, 3);
 +    stl_le_p(bytes + 192, plan->boot_policy);
 +    stl_le_p(bytes + 196, 1);
 +    stl_le_p(bytes + 200, plan->maximum_attempts);
@@ -1092,6 +1092,7 @@ index 0000000..b7b6fb3
 +        memcpy(terminal_material + 16, current_hash, 32);
 +        crucible_lifecycle_sha256(
 +            terminal_material, sizeof(terminal_material), after_hash);
++        memcpy(bytes + 256, current_hash, sizeof(current_hash));
 +    }
 +    stq_le_p(bytes + 112, ram_bytes);
 +    stq_le_p(bytes + 120, device_bytes);
@@ -1847,6 +1848,8 @@ index 0000000..b7b6fb3
 +                memcpy(material + 16, current_hash, 32);
 +                crucible_lifecycle_sha256(
 +                    material, sizeof(material), terminal_hash);
++                memcpy(pending->evidence + 256,
++                       current_hash, sizeof(current_hash));
 +                stl_le_p(pending->evidence + 196, pending->attempt);
 +                stl_le_p(pending->evidence + 204, transition);
 +                stq_le_p(pending->evidence + 112, ram_bytes);
