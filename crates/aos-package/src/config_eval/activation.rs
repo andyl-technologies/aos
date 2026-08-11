@@ -1144,6 +1144,7 @@ mod tests {
                 number: 1,
                 slot: crate::types::ImageSlot::A,
                 uki_path: "EFI/Linux/aos-test+3.efi".to_string(),
+                uki_source_path: None,
                 toplevel: toplevel.to_string_lossy().into_owned(),
                 package_name: "aos-system".to_string(),
                 version: "1".to_string(),

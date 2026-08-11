@@ -151,10 +151,7 @@
       inherit version cmdline;
       kernel = system.config.system.build.kernel;
       initrd = system.config.system.build.initrd;
-      # The toplevel now ships a top-level `os-release` symlink (named-
-      # output layout from spec v12 §1); the previous `etc/os-release`
-      # path is gone along with the rest of `${toplevel}/etc/`.
-      osRelease = "${system.config.system.build.toplevel}/os-release";
+      osRelease = ukiOsRelease;
       secureBootKey =
         if sb.enable
         then sb.dbKey
@@ -188,22 +185,42 @@
   ukiAStoreFilename = "aos-${name}-slot-a-${version}.efi";
   ukiBStoreFilename = "aos-${name}-slot-b-${version}.efi";
 
-  ukiFilename = "aos-${name}-${version}.efi";
+  ukiFilename = "aos-generation-0000000001.efi";
+
+  # Type-2 boot entries normally derive their sort key and version from ID and
+  # VERSION_ID in the embedded .osrel section. Package versions are display
+  # identifiers, not a reliable ordering for a machine's local A/B history.
+  # Keep the measured AOS identity fields while omitting those two sort inputs;
+  # sd-boot then orders live entries by the monotonic installed filename below.
+  # The root filesystem's /etc/os-release remains the complete user-facing
+  # document and is unaffected.
+  ukiOsRelease = pkgs.writeText "aos-uki-os-release" ''
+    NAME="${name}"
+    VERSION="${version}"
+    PRETTY_NAME="${name} ${version}"
+    HOME_URL="https://aos.dev"
+    BUG_REPORT_URL="https://aos.dev/issues"
+    AOS_STATE_VERSION=${system.config.aos.system.stateVersion}
+    AOS_MODULE_ABI=${toString system.config.aos.system.moduleAbi}
+    AOS_BASELIB_DIGEST=sha256:${builtins.hashString "sha256" (toString system.config.aos.config.evalAtBoot.baseLib)}
+  '';
 
   # sd-boot boot-counting tries suffix for durable image
   # rollback. When `aos.boot.bootCountingTries` is set, the UKI staged into the
-  # ESP is named `aos-<name>-<version>+<tries>.efi`; sd-boot decrements the
+  # ESP is named `aos-generation-0000000001+<tries>.efi`; sd-boot decrements the
   # counter on each boot attempt and auto-demotes a UKI that fails to boot, so a
   # bad new image falls back to the other A/B slot without operator action.
-  # Durable rollback to an older slot is `bootctl set-default` (apm, runtime),
-  # NOT the lexically-highest `default aos-*.efi` glob, which stays only the
-  # first-install fallback. The file inside the `uki` derivation keeps its
-  # un-suffixed name; only the ESP copy carries the suffix.
+  # Runtime staging replaces the generation component with the persistent
+  # image-generation number. This makes a new candidate sort ahead of the
+  # previous slot regardless of the package's human version string, while an
+  # exhausted candidate still sorts behind every live entry. Durable rollback
+  # to an older slot uses `bootctl set-default`; the image-owned
+  # `default aos-*.efi` pattern provides automatic fallback.
   bootCountingTries = system.config.aos.boot.bootCountingTries;
   espUkiFilename =
     if bootCountingTries == null
     then ukiFilename
-    else "aos-${name}-${version}+${toString bootCountingTries}.efi";
+    else "aos-generation-0000000001+${toString bootCountingTries}.efi";
 
   imageDrv = pkgs.mkDerivation ({
       name = "aos-image-${name}";

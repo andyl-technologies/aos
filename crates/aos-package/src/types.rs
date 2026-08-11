@@ -2984,10 +2984,18 @@ pub struct ImageGeneration {
     pub number: u32,
     /// A/B slot this UKI occupies.
     pub slot: ImageSlot,
-    /// ESP-relative path of this generation's UKI, e.g.
-    /// `EFI/Linux/aos-2026.06.1+3.efi` (the `+N` is the sd-boot boot-counting
-    /// tries-suffix; see build-spec §5.2).
+    /// ESP-relative installed path of this generation's UKI, e.g.
+    /// `EFI/Linux/aos-generation-0000000002+3.efi` (the `+N` is the sd-boot
+    /// boot-counting tries-suffix; see build-spec §5.2).
     pub uki_path: String,
+    /// Canonical UKI path authenticated by the immutable toplevel metadata.
+    ///
+    /// Runtime staging assigns [`Self::uki_path`] from the local monotonic
+    /// image generation so boot ordering does not depend on a human package
+    /// version. This field retains the signed source identity. Older and seed
+    /// records omit it when the installed and canonical paths are identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uki_source_path: Option<String>,
     /// Store path of the sysroot toplevel this image was built from.
     pub toplevel: String,
     /// Sysroot package name (provenance, migrated from legacy state).
@@ -5652,6 +5660,7 @@ provenance = "provenance/firewall.jsonl"
                     number: 1,
                     slot: ImageSlot::A,
                     uki_path: "EFI/Linux/aos-2026.06.1+3.efi".into(),
+                    uki_source_path: None,
                     toplevel: "/nix/store/top1-server".into(),
                     package_name: "server".into(),
                     version: "2026.06.1".into(),
@@ -5669,6 +5678,7 @@ provenance = "provenance/firewall.jsonl"
                     number: 2,
                     slot: ImageSlot::B,
                     uki_path: "EFI/Linux/aos-2026.06.2+3.efi".into(),
+                    uki_source_path: Some("EFI/Linux/aos-canonical+3.efi".into()),
                     toplevel: "/nix/store/top2-server".into(),
                     package_name: "server".into(),
                     version: "2026.06.2".into(),
@@ -5692,6 +5702,10 @@ provenance = "provenance/firewall.jsonl"
         assert_eq!(running.module_abi, 1);
         assert!(running.admits_pin(1));
         assert!(!running.admits_pin(2));
+        assert_eq!(
+            parsed.generations[1].uki_source_path.as_deref(),
+            Some("EFI/Linux/aos-canonical+3.efi")
+        );
     }
 
     fn sample_package_meta() -> PackageMeta {
