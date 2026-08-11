@@ -146,9 +146,11 @@ apm rollback --system --image --generation N --reboot
 ```
 
 The running kernel does not change until reboot. On the selected image's first
-boot, AOS re-evaluates the authoritative metadata input, or its hash-checked
-last-known-good copy, against that image's base library. It commits the rebound
-configuration before making the image the durable successful default.
+boot, AOS re-evaluates the exact inputs retained by the active configuration
+generation against that image's base library. This preserves the machine's
+current intent instead of reverting to its original provisioning metadata. AOS
+commits the rebound configuration before making the image the durable
+successful default.
 
 ## Interpret configuration activation results
 
