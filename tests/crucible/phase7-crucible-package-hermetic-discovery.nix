@@ -206,6 +206,10 @@
         needle = ''grep '^cmdline = ' "$fixture" >>"$directory/asset-identities"'';
       }
       {
+        label = "GDB error detection cannot alias long AArch64 register payloads";
+        needle = ''received: "E[[:xdigit:]]{2}"'';
+      }
+      {
         label = "read-only GDB state comparison";
         needle = ''files_equal "$directory/read-only-before.gdb" "$directory/read-only-after.gdb"'';
       }
@@ -224,6 +228,12 @@
       {
         label = "SSH transcript is retained";
         needle = ''--record-transcript $directory/ssh.crgt'';
+      }
+    ]
+    ++ forbiddenFor "examples/codex-skills/crucible-debugger/scripts/live-matrix.sh" liveDebuggerMatrix [
+      {
+        label = "unbounded GDB error-packet match";
+        needle = ''received: "E[0-9a-f]+"'';
       }
     ]
     ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
