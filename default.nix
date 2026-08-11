@@ -94,9 +94,27 @@
       then args.packageModules
       else [];
     systemModules = builtins.filter builtins.isPath moduleList;
+    # Determine the resolved image ABI from the complete caller module list.
+    # The base library bundles only source-backed system modules, so without
+    # carrying this value explicitly an inline image override would leave the
+    # runtime image and its evaluator library on different ABIs.
+    moduleAbi = (lib.evalModules {
+      modules =
+        modules
+        ++ moduleList
+        ++ [
+          {
+            aos.config.evalAtBoot = {
+              baseLib = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
+              baseLibAbiHash = "sha256:${builtins.concatStringsSep "" (builtins.genList (_: "0") 64)}";
+            };
+          }
+        ];
+      inherit pkgs lib specialArgs operatorModules packageModules;
+    }).config.aos.system.moduleAbi;
     baseLib = mkBaseLib {
       baseModules = modules;
-      inherit systemModules systemName;
+      inherit systemModules systemName moduleAbi;
     };
   in
     lib.evalModules {

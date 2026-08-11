@@ -35,6 +35,9 @@
   baseModules,
   ## The image variant's own module list (e.g. `[ ./systems/server.nix ]`).
   systemModules,
+  ## The ABI resolved from the image's complete module list, including inline
+  ## image settings that cannot be copied into the source-backed library.
+  moduleAbi,
   ## A short name for the variant, used only in the derivation name.
   systemName ? "system",
 }: let
@@ -43,7 +46,10 @@
   # Evaluate the schema first so the ABI hash is available to the complete
   # image-baseline evaluation below without introducing a recursive value.
   schemaEval = lib.evalModules {
-    modules = baseModules ++ systemModules;
+    modules =
+      baseModules
+      ++ systemModules
+      ++ [{aos.system.moduleAbi = lib.mkForce moduleAbi;}];
     inherit pkgs lib;
   };
 
@@ -56,7 +62,6 @@
   optionSchema = builtins.sort (a: b: builtins.head a < builtins.head b) (
     builtins.map (decl: [decl.pathStr decl.typeSig]) schemaEval._optionDecls
   );
-  moduleAbi = schemaEval.config.aos.system.moduleAbi;
   abiHash = "sha256:${builtins.hashString "sha256" (builtins.toJSON {
     abi = moduleAbi;
     schema = optionSchema;
@@ -74,6 +79,7 @@
       ++ systemModules
       ++ [
         {
+          aos.system.moduleAbi = lib.mkForce moduleAbi;
           aos.config.evalAtBoot = {
             baseLib = baseLibOut;
             baseLibAbiHash = abiHash;
@@ -164,9 +170,13 @@
   in
     "[\n"
     + lib.concatMapStringsSep "\n" (m: "  ${rel m}") systemModules
+    + "\n  ./module-abi.nix"
     + "\n]\n";
 
   systemModulesFile = builtins.toFile "system-modules.nix" systemModulesNix;
+  moduleAbiFile = builtins.toFile "module-abi.nix" ''
+    {aos.system.moduleAbi = ${toString moduleAbi};}
+  '';
 in
   pkgs.runCommand "aos-base-lib-${systemName}" {
     passthru = {inherit frozenArtifacts optionSchema moduleAbi abiHash;};
@@ -201,6 +211,7 @@ in
       -e "s|sha256:$placeholderBaseLibDigest|sha256:$actual_base_lib_digest|g" \
       "$imageManifestPath" > "$out/image-manifest.json"
     cp ${systemModulesFile} "$out/system-modules.nix"
+    cp ${moduleAbiFile} "$out/module-abi.nix"
 
     echo ${lib.escapeShellArg systemName} > "$out/system-name"
     echo ${lib.escapeShellArg abiHash} > "$out/abi-hash"

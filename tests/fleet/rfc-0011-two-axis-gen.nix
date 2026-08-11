@@ -21,6 +21,22 @@
       # Keep the candidate image focused on that contract instead of baking
       # unused optional host-policy closures into the OTA payload.
       aos.image.hostConfigClosures = lib.mkForce [];
+      # Both targets must reach the authenticated registry before their
+      # retained configuration can be rebound to the new image ABI.
+      environment.etc."systemd/network/10-fleet-target.network".text = ''
+        [Match]
+        MACAddress=52:54:00:12:00:03
+
+        [Network]
+        Address=192.168.50.12/24
+      '';
+      environment.etc."systemd/network/10-fleet-incompatible.network".text = ''
+        [Match]
+        MACAddress=52:54:00:12:00:01
+
+        [Network]
+        Address=192.168.50.10/24
+      '';
     }
   ];
   abi2Top = abi2.config.system.build.toplevel;
@@ -132,7 +148,10 @@ in {
       system = targetBase;
       bootMode = "image";
       imageDiskMiB = 24576;
-      memoryMiB = 4096;
+      # Importing the complete authenticated system closure briefly runs APM
+      # and nix-store together. Leave enough headroom for both processes so
+      # the lifecycle assertion is not sensitive to reclaim timing.
+      memoryMiB = 6144;
       tpm = true;
       packages = ["aos-test-agent"];
       metadata."host.nix" = ''
@@ -149,7 +168,7 @@ in {
       system = targetBase;
       bootMode = "image";
       imageDiskMiB = 24576;
-      memoryMiB = 4096;
+      memoryMiB = 6144;
       tpm = true;
       packages = ["aos-test-agent"];
       metadata."host.nix" = ''
@@ -506,11 +525,11 @@ in {
       incompatible_attestation = generation_attestation(
           incompatible, incompatible_initial_number
       )
-      release = incompatible_attestation["inputs"]["config_modules"]["release"]
-      assert release["registry"] == "sysreg", release
-      assert release["release_tag"] == "1.0.0", release
-      assert release["tag_signer_key"], release
-      assert release["realization"].startswith("sha256:"), release
+      modules = incompatible_attestation["inputs"]["config_modules"]
+      assert modules["registry"] == "sysreg", modules
+      assert modules["release_tag"] == "1.0.0", modules
+      assert modules["tag_signer_key"], modules
+      assert modules["realization"].startswith("sha256:"), modules
       assert_live(incompatible, "axis-incompatible", "incompatible")
 
       # Image staging is image-only: neither host has re-evaluated before the
@@ -522,7 +541,17 @@ in {
       # units re-evaluate and activate against the ABI-2 base library.
       target.reboot(timeout=600)
       target.wait_until_succeeds(
-          "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
+          "systemctl is-active --quiet multi-user.target", timeout=600
+      )
+      target.succeed(
+          "systemctl is-active --quiet aos-image-boot-commit.service || { "
+          "systemctl status --no-pager aos-firstboot-reeval.service "
+          "aos-eval.service aos-graph-compile.service aos-activate.service "
+          "aos-image-boot-commit.service; "
+          "journalctl -b --no-pager -u aos-firstboot-reeval.service "
+          "-u aos-eval.service -u aos-graph-compile.service "
+          "-u aos-activate.service -u aos-image-boot-commit.service; "
+          "exit 1; }"
       )
       target.succeed("systemctl is-active --quiet aos-config.target")
       booted_images = image_state(target)
