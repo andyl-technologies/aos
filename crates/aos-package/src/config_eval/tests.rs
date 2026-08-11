@@ -1332,6 +1332,7 @@ fn retained_manifest_abi_bands_gate_cross_abi_rollback() {
 
     let error = super::validate_retained_manifest_inputs(&source, &retained).unwrap_err();
     assert!(error.to_string().contains("does not admit"), "{error:#}");
+    assert!(error.to_string().contains("example"), "{error:#}");
 
     retained.to_module_abi = 1;
     super::validate_retained_manifest_inputs(&source, &retained).unwrap();

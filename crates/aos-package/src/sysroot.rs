@@ -65,8 +65,9 @@ use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::{filter_missing, import_nar};
 use crate::types::{
-    ConfigGeneration, ConfigGenerationState, ImageGeneration, ImageGenerationState, ImageSlot,
-    PackageMeta, ProfileScope, ReactivationPlan, SysrootImageEntry, SysrootUkiEntry, UkiSlot,
+    ConfigGeneration, ConfigGenerationState, CrossAbiReEvalInputs, ImageGeneration,
+    ImageGenerationState, ImageSlot, PackageMeta, ProfileScope, ReactivationPlan,
+    SysrootImageEntry, SysrootUkiEntry, UkiSlot,
 };
 use crate::unit_diff::{self, UnitDiff};
 use crate::verify::{verify_download_hash, verify_downloads, verify_nar_hash};
@@ -657,6 +658,61 @@ fn reeval_and_activate_config_generation(
             switch_lock_held: true,
             ..crate::config_eval::activation::ActivateConfigParams::default()
         },
+    )
+}
+
+/// Re-evaluates the active configuration against the image that actually booted.
+///
+/// Image transitions retain the exact host input, facts, config modules, and
+/// authenticated package pins from the active configuration generation. This
+/// function evaluates those immutable inputs with the running image's base
+/// library and writes a candidate manifest and graph for the normal boot-time
+/// fetch, compile, and activation pipeline.
+///
+/// # Errors
+///
+/// Returns an error when there is no active configuration generation, the
+/// running image identity is inconsistent, a retained input is unavailable or
+/// incompatible with the running module ABI, or evaluation fails.
+pub fn reeval_active_config_for_boot(
+    profile_path: &Path,
+    eval_root: PathBuf,
+    out: PathBuf,
+    verbose: u8,
+) -> Result<()> {
+    let state = load_generation_state_readonly(profile_path)?;
+    let active = state
+        .generations
+        .iter()
+        .find(|generation| generation.number == state.current)
+        .context("no active system configuration generation")?;
+    if active.config_module_paths.len() != active.config_module_packages.len() {
+        bail!(
+            "config-gen {} has {} retained modules but {} authenticated package identities",
+            active.number,
+            active.config_module_paths.len(),
+            active.config_module_packages.len()
+        );
+    }
+
+    let running = running_image_generation()?;
+    let retained = CrossAbiReEvalInputs {
+        config_module_paths: active.config_module_paths.clone(),
+        config_module_packages: active.config_module_packages.clone(),
+        host_nix_ref: active.host_nix_ref.clone(),
+        facts_hash: active.facts_hash.clone(),
+        facts_ref: active.facts_ref.clone(),
+        from_module_abi: active.module_abi_pinned,
+        to_module_abi: running.module_abi,
+    };
+    let source_manifest = validate_generation_manifest(profile_path, active)?;
+    crate::config_eval::reeval_cross_abi(
+        &retained,
+        Path::new(&running.evaluator_ref),
+        &source_manifest,
+        eval_root,
+        out,
+        verbose,
     )
 }
 

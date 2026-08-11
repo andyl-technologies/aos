@@ -542,6 +542,16 @@ pub enum PackageCommand {
         #[arg(long = "image-default-host")]
         image_default_host: bool,
     },
+    /// Hidden: re-evaluate the active config on a newly booted image.
+    #[command(name = "__eval-retained", hide = true)]
+    EvalRetained {
+        /// Where to write the converged manifest (only on success)
+        #[arg(long, default_value = config_eval::stock::DEFAULT_MANIFEST_PATH)]
+        out: PathBuf,
+        /// The eval root holding generated evaluator inputs
+        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
+        eval_root: PathBuf,
+    },
     /// Apply a converged config manifest into a per-generation `/etc` lower.
     ///
     /// Reads `--manifest` (an `aos.config-manifest/v1` document), writes its
@@ -2385,6 +2395,20 @@ pub async fn run(
         return result;
     }
 
+    if let PackageCommand::EvalRetained { out, eval_root } = command {
+        let verbose = u8::from(printer.mode() == OutputMode::Verbose);
+        let result = sysroot::reeval_active_config_for_boot(
+            &ProfileScope::System.profile_path(),
+            eval_root.clone(),
+            out.clone(),
+            verbose,
+        );
+        if let Err(error) = &result {
+            exit_for_eval_failure(error, verbose);
+        }
+        return result;
+    }
+
     // `apm __materialize`: apply a converged manifest's
     // /etc tree into a per-generation lower. Called by `activate` on the new
     // path after the configuration fixpoint has converged.
@@ -2992,6 +3016,9 @@ pub async fn run(
         }
         PackageCommand::Eval { .. } => {
             unreachable!("Eval is handled before ApmConfig::load")
+        }
+        PackageCommand::EvalRetained { .. } => {
+            unreachable!("EvalRetained is handled before ApmConfig::load")
         }
         PackageCommand::Materialize { .. } => {
             unreachable!("Materialize is handled before ApmConfig::load")

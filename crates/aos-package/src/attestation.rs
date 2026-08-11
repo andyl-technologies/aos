@@ -1371,8 +1371,14 @@ fn strip_sha256(s: &str) -> &str {
 /// Binds a generation record to the independently published ready-phase PCR
 /// value, or to the live canonical value when booting an uncataloged seed.
 fn ready_pcr11_value(expected: Option<&str>, live: &str) -> Result<String> {
-    if expected.is_some_and(|value| !ct_eq(strip_sha256(value), strip_sha256(live))) {
-        bail!("live ready-phase PCR 11 does not match the published image expectation");
+    if let Some(expected) = expected {
+        if !ct_eq(strip_sha256(expected), strip_sha256(live)) {
+            bail!(
+                "live ready-phase PCR 11 does not match the published image expectation (expected {}, live {})",
+                strip_sha256(expected),
+                strip_sha256(live)
+            );
+        }
     }
     Ok(expected.unwrap_or(live).to_string())
 }
@@ -1463,7 +1469,11 @@ mod tests {
             ready_pcr11_value(Some(PCR11_HEX), &live).unwrap(),
             PCR11_HEX
         );
-        assert!(ready_pcr11_value(Some(&format!("sha256:{}", "aa".repeat(32))), &live).is_err());
+        let error = ready_pcr11_value(Some(&format!("sha256:{}", "aa".repeat(32))), &live)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&"aa".repeat(32)), "{error}");
+        assert!(error.contains(PCR11_HEX), "{error}");
     }
 
     fn sample_inputs() -> AttestationInputs {

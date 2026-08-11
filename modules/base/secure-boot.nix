@@ -438,12 +438,23 @@ in {
             # up a temporary PLAIN ext4 /var so the system reaches
             # multi-user and an operator/test can enroll PK/KEK/db; the
             # first enforcing boot below replaces it with the sealed volume.
-            # The measured-boot repart plan leaves /var raw, so create the
-            # temporary filesystem here.
-            # -F forces past any stale signature in the freshly-carved
-            # partition.
-            klog "SB not enforcing yet — formatting plain ext4 /var (sealed once enforcing)"
-            "$mkfs" -qF -L var "$dev"
+            # The measured-boot repart plan initially leaves /var raw. Format
+            # it once, but preserve that filesystem across further Setup Mode
+            # boots so staged image and configuration state remains durable.
+            fs_type=$(${pkgs.util-linux}/sbin/blkid -p -s TYPE -o value "$dev" 2>/dev/null || true)
+            case "$fs_type" in
+              "")
+                klog "SB not enforcing yet — formatting plain ext4 /var (sealed once enforcing)"
+                "$mkfs" -q -L var "$dev"
+                ;;
+              ext4)
+                klog "SB not enforcing yet — preserving existing plain ext4 /var"
+                ;;
+              *)
+                klog "SB not enforcing yet — refusing unexpected /var filesystem type: $fs_type"
+                exit 1
+                ;;
+            esac
             exit 0
           fi
 
