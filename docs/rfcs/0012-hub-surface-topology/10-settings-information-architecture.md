@@ -76,7 +76,8 @@ The management application does not define a second visual system. Its shell
 loads the same first-party stylesheet and progressive-enhancement script as the
 public browse, login, and account pages. It renders the existing `masthead`,
 `settings`, `settings-nav`, `settings-body`, `button`, form-control, table,
-badge, attached-help, and optional legal-footer primitives directly. Its content-addressed supplemental
+badge, attached-help, statline footer, and optional legal-link primitives
+directly. Its content-addressed supplemental
 stylesheet may lay out workflow-specific structures, but it must not redefine
 theme tokens, typography, page chrome, controls, focus treatment, elevation, or
 responsive navigation.

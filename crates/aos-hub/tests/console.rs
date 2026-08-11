@@ -271,6 +271,7 @@ async fn canonical_management_links_serve_one_authenticated_shell() {
             "aos-site-tos-url",
             "aos-site-privacy-url",
             "aos-site-support-url",
+            "aos-app-version",
         ] {
             assert!(body.contains(&format!("name=\"{chrome_field}\"")), "{path}");
         }

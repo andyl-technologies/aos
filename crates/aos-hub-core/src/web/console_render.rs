@@ -223,7 +223,7 @@ pub fn set_app_version(label: impl Into<String>) {
 
 /// The footer application label, defaulting to `aos-hub <version>`.
 #[must_use]
-fn app_version() -> &'static str {
+pub(crate) fn app_version() -> &'static str {
     APP_VERSION
         .get()
         .map(String::as_str)
