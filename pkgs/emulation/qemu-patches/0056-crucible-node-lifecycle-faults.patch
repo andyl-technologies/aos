@@ -1,35 +1,3 @@
-From c0e8d3d6e5f148e45fab6d6fac11d254c908d80f Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Mon, 10 Aug 2026 21:50:40 -0700
-Subject: [PATCH] crucible: add deterministic node lifecycle control
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- accel/tcg/tcg-accel-ops-rr.c          |  111 +-
- hw/intc/apic_common.c                 |    1 +
- hw/intc/arm_gic_common.c              |    1 +
- hw/intc/arm_gicv3_common.c            |    1 +
- hw/intc/i8259_common.c                |    1 +
- hw/intc/ioapic_common.c               |    1 +
- hw/rtc/mc146818rtc.c                  |    1 +
- hw/rtc/pl031.c                        |    1 +
- hw/timer/arm_timer.c                  |    1 +
- hw/timer/hpet.c                       |    1 +
- hw/timer/i8254_common.c               |    1 +
- include/hw/qdev-core.h                |    7 +
- include/qemu/crucible-fault.h         |   14 +
- include/qemu/qemu-plugin.h            |   14 +
- migration/savevm.c                    |   50 +-
- migration/savevm.h                    |    6 +
- plugins/crucible-fault-lifecycle.c    | 1541 +++++++++++++++++++++++++
- plugins/crucible-fault-node.c         |   70 +-
- plugins/crucible-fault-vcpu-service.c |    5 +
- plugins/crucible-fault.c              |    7 +
- plugins/meson.build                   |    3 +-
- system/runstate.c                     |    2 +
- 22 files changed, 1830 insertions(+), 10 deletions(-)
- create mode 100644 plugins/crucible-fault-lifecycle.c
-
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 index 8bc1b21..8502efe 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
@@ -523,10 +491,10 @@ index 58761d8..0df53f1 100644
  
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000..8d620d1
+index 0000000..b7b6fb3
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
-@@ -0,0 +1,1541 @@
+@@ -0,0 +1,1555 @@
 +/*
 + * Crucible deterministic node lifecycle and hang faults
 + *
@@ -1111,8 +1079,22 @@ index 0000000..8d620d1
 +        return QEMU_CRUCIBLE_FAULT_IMPULSE_DEFERRED;
 +    }
 +
-+    memcpy(bytes + 112, "terminal", 8);
-+    crucible_lifecycle_sha256(bytes, sizeof(bytes), after_hash);
++    {
++        uint8_t current_hash[32];
++        uint8_t terminal_material[48] = { 0 };
++
++        if (!crucible_lifecycle_snapshot(
++                current_hash, &ram_bytes, &device_bytes)) {
++            return -EIO;
++        }
++        memcpy(terminal_material, "CRUCTRM1", 8);
++        stl_le_p(terminal_material + 8, transition);
++        memcpy(terminal_material + 16, current_hash, 32);
++        crucible_lifecycle_sha256(
++            terminal_material, sizeof(terminal_material), after_hash);
++    }
++    stq_le_p(bytes + 112, ram_bytes);
++    stq_le_p(bytes + 120, device_bytes);
 +    memcpy(bytes + 128, before_hash, 32);
 +    memcpy(bytes + 160, after_hash, 32);
 +    g_byte_array_append(evidence, bytes, sizeof(bytes));

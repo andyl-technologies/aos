@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "446cd74cd8bfbbd0919f824692ef92322ebd5f910067ecbe6a0aa703af5e8deb";
+  patchBranchBundleSha256 = "fcbabaf713df5591062511f434049c4d6eb5dc746356cbb1312db675b1f9ed3f";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "294c2ef1c9118f4fc960e82931d49ff2a56d0f11";
+  patchBranchHeadCommit = "3d944c9d8ab138425a6f2a8a8b6bb7b0ffe48f3a";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -521,8 +521,8 @@ let
     {
       file = "0056-crucible-node-lifecycle-faults.patch";
       branchSubject = "crucible: add deterministic node lifecycle control";
-      branchCommit = "c0e8d3d6e5f148e45fab6d6fac11d254c908d80f";
-      branchTree = "25ded24181496ea0e359d3a225d9818f818f6491";
+      branchCommit = "d921b887ee5010dfe4517b8dbc914e13974faf1e";
+      branchTree = "ede1feb749081cc87ca1620d1936d50ad1ec9676";
       catalogName = "crucible-node-lifecycle-faults";
       class = "D";
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
@@ -530,8 +530,8 @@ let
     }
     {
       file = "0060-crucible-block-typed-errors.patch";
-      branchCommit = "e617d50e8f5563bd2f45524b41cb7007bfae697a";
-      branchTree = "098e58127abd5284de9ebd09ce2562cf56db0b56";
+      branchCommit = "3267e1aed30a5b78df62e33dc068a0ae44b7613d";
+      branchTree = "a6c81f6df469b26bd90cd112d8c4cc15683596f1";
       catalogName = "crucible-block-typed-errors";
       class = "F";
       enforces = "STOR-RESULT,IO-8,PATCH-26";
@@ -539,8 +539,8 @@ let
     }
     {
       file = "0061-crucible-block-discard.patch";
-      branchCommit = "2de1aab6c4e88d314669a09ed52f80cfe17462dd";
-      branchTree = "0ada4af2570255ad1a0269033a77f7b12b5aedad";
+      branchCommit = "e526ca992b63959a9a5a67dafee6a606d479fc9b";
+      branchTree = "298921a7a2939515db0aa0b8f86523d3292b939c";
       catalogName = "crucible-block-discard";
       class = "F";
       enforces = "STOR-DISCARD,DET-16,PATCH-26";
@@ -549,8 +549,8 @@ let
     {
       file = "0062-crucible-block-transport-reset.patch";
       branchSubject = "crucible: add transactional block transport reset";
-      branchCommit = "dec39c2e6495d02045916648f576dfb4fb6b9d78";
-      branchTree = "2798231cd003fe24c7303146d33d11f7aca5f825";
+      branchCommit = "6f435b15aac9d36ac4daa8f3b32ca755e30d13bc";
+      branchTree = "999ad7f3ce6292bae9a21f93f0b35278099bbc9c";
       catalogName = "crucible-block-transport-reset";
       class = "F";
       enforces = "STOR-RESET,STOR-RESULT,DET-16,PATCH-26";
@@ -559,8 +559,8 @@ let
     {
       file = "0063-crucible-plugin-vmstop.patch";
       branchSubject = "crucible: hand exact checkpoint boundaries to VM stop";
-      branchCommit = "294c2ef1c9118f4fc960e82931d49ff2a56d0f11";
-      branchTree = "fd8b845e72fc06766092aec5ed8ca46e672b92f6";
+      branchCommit = "3d944c9d8ab138425a6f2a8a8b6bb7b0ffe48f3a";
+      branchTree = "96d6a4c9b940b5f3d2abbcba372fa31b69951c93";
       catalogName = "crucible-plugin-vmstop";
       class = "D";
       enforces = "DET-1,INV-10,QEMU-43";

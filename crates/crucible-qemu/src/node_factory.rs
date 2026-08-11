@@ -276,6 +276,7 @@ struct PreparedQemuNodeSetup {
     plugin_control: QemuHostPluginSetup,
     shmem_hot_path: QemuMappedQuantumShmemHotPath,
     fault_capabilities: Vec<crucible_shmem::FaultCapabilityRowV1>,
+    ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
 }
 
 /// Runtime inputs shared by cold and warm QEMU node factory paths.
@@ -860,6 +861,7 @@ where
     validate_setup_slot_matches_config(&setup, &shmem_config)?;
 
     let fault_capabilities = setup.fault_capabilities().to_vec();
+    let ready_markers = setup.ready_markers().clone();
 
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuNodeFactoryError::SetupRegionMap { source })?;
@@ -870,6 +872,7 @@ where
         plugin_control: setup,
         shmem_hot_path,
         fault_capabilities,
+        ready_markers,
     })
 }
 
@@ -902,6 +905,7 @@ where
         host_io_runtime,
     )
     .with_fault_capabilities(prepared_setup.fault_capabilities)
+    .with_ready_markers(prepared_setup.ready_markers)
 }
 
 fn validate_setup_slot_matches_config(

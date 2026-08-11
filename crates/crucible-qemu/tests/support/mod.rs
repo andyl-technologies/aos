@@ -67,6 +67,7 @@ pub fn x86_fault_node(node_name: &str, realized_cpu_type: &str) -> WorldNodeFaul
         interrupts: Vec::new(),
         clock_sources: Vec::new(),
         accelerators: Vec::new(),
+        ready_markers: Vec::new(),
         semantic_version: 1,
     }
 }

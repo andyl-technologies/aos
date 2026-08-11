@@ -5,9 +5,9 @@
 //! launch identity and is reused unchanged for admission and replay.
 
 use crucible::model::{
-    FaultPhase, WorldNodeArchitecture, WorldNodeFaultCapabilities, WorldNodeInterruptDeliveryDrop,
-    WorldNodeInterruptFamily, WorldNodeInterruptPolarity, WorldNodeInterruptTrigger,
-    WorldNodeRegisterGroup, WorldNodeRegisterSideEffect,
+    FaultObjectId, FaultPhase, WorldNodeArchitecture, WorldNodeFaultCapabilities,
+    WorldNodeInterruptDeliveryDrop, WorldNodeInterruptFamily, WorldNodeInterruptPolarity,
+    WorldNodeInterruptTrigger, WorldNodeRegisterGroup, WorldNodeRegisterSideEffect,
 };
 use crucible_shmem::{
     DEFAULT_FAULT_COMMAND_CAPACITY, FAULT_CAPABILITY_FEATURE_INTERRUPT,
@@ -33,6 +33,7 @@ pub struct QemuFaultCapabilityRequirement {
     rows: Vec<FaultCapabilityRowV1>,
     digest: [u8; 32],
     target_manifest: Option<QemuTargetManifestRequirement>,
+    ready_markers: std::collections::BTreeSet<FaultObjectId>,
     world_bound: bool,
 }
 
@@ -224,6 +225,7 @@ impl QemuFaultCapabilityRequirement {
                 exact_register_manifest: None,
                 exact_interrupt_manifest: None,
             }),
+            ready_markers: std::collections::BTreeSet::new(),
             world_bound: false,
         }
     }
@@ -444,6 +446,12 @@ impl QemuFaultCapabilityRequirement {
         requirement.rows =
             requirement.rows_for_manifests(Some(&manifest), interrupt_manifest.as_ref())?;
         requirement.digest = fault_capability_manifest_digest(&requirement.rows)?;
+        requirement.ready_markers = node
+            .ready_markers
+            .iter()
+            .map(|marker| FaultObjectId::parse(marker.as_str()))
+            .collect::<Result<_, _>>()
+            .map_err(|_error| FaultAbiError::CapabilityInvariant)?;
         requirement.world_bound = true;
         Ok(requirement)
     }
@@ -495,6 +503,7 @@ impl QemuFaultCapabilityRequirement {
             rows,
             digest: *hasher.finalize().as_bytes(),
             target_manifest: None,
+            ready_markers: std::collections::BTreeSet::new(),
             world_bound: false,
         }
     }
@@ -515,6 +524,24 @@ impl QemuFaultCapabilityRequirement {
     #[must_use]
     pub const fn target_manifest(&self) -> Option<&QemuTargetManifestRequirement> {
         self.target_manifest.as_ref()
+    }
+
+    /// Returns the exact guest event markers admitted for ready-policy completion.
+    #[must_use]
+    pub const fn ready_markers(&self) -> &std::collections::BTreeSet<FaultObjectId> {
+        &self.ready_markers
+    }
+
+    /// Returns a digest of the exact ready-marker manifest.
+    #[must_use]
+    pub fn ready_marker_digest(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"crucible.qemu-ready-marker-manifest.v1\0");
+        for marker in &self.ready_markers {
+            hasher.update(marker.as_str().as_bytes());
+            hasher.update(&[0]);
+        }
+        *hasher.finalize().as_bytes()
     }
 
     /// Reports whether this requirement came from an admitted World node.
@@ -723,6 +750,7 @@ mod tests {
             interrupts: Vec::new(),
             clock_sources: Vec::new(),
             accelerators: Vec::new(),
+            ready_markers: Vec::new(),
             semantic_version: 1,
         }
     }
@@ -840,7 +868,13 @@ mod tests {
                 read_only_mask: vec![0x80],
             }],
         };
-        let node = world_node_for_manifest(&manifest);
+        let mut node = world_node_for_manifest(&manifest);
+        let baseline = QemuFaultCapabilityRequirement::current_v1_for_node(&node)
+            .unwrap_or_else(|error| panic!("baseline World manifest should bind: {error}"));
+        node.ready_markers.push(
+            SignalId::parse("guest-ready")
+                .unwrap_or_else(|error| panic!("test marker should be canonical: {error}")),
+        );
         let requirement = QemuFaultCapabilityRequirement::current_v1_for_node(&node)
             .unwrap_or_else(|error| panic!("world manifest should bind: {error}"));
 
@@ -861,6 +895,15 @@ mod tests {
             requirement
                 .rows_for_manifests(Some(&manifest), None)
                 .is_ok()
+        );
+        assert!(requirement.ready_markers().contains(
+            &FaultObjectId::parse("guest-ready").unwrap_or_else(|error| {
+                panic!("test ready marker should be canonical: {error}")
+            })
+        ));
+        assert_ne!(
+            requirement.ready_marker_digest(),
+            baseline.ready_marker_digest()
         );
         let mut changed = manifest.clone();
         changed.rows[0].name = "rbx".to_owned();

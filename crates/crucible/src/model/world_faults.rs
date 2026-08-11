@@ -2717,6 +2717,8 @@ pub struct WorldNodeFaultCapabilities {
     pub clock_sources: Vec<WorldNodeClockSource>,
     /// Registered accelerator devices.
     pub accelerators: Vec<WorldNodeAccelerator>,
+    /// Exact guest event markers eligible to satisfy node-ready policies.
+    pub ready_markers: Vec<SignalId>,
     /// Exact capability schema semantic version.
     pub semantic_version: u16,
 }
@@ -2923,6 +2925,11 @@ impl WorldNodeFaultCapabilities {
                 .all(|device| device.semantic_version == 1),
             "node accelerator semantic version",
         )?;
+        require(
+            !self.ready_markers.windows(2).any(|pair| pair[0] >= pair[1]),
+            "node ready-marker manifest",
+        )?;
+        hard_count(&self.ready_markers, "node ready markers", 65_536)?;
         hard_count(&self.accelerators, "node accelerators", 1_024)
     }
 }

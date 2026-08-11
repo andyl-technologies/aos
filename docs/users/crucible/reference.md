@@ -428,6 +428,7 @@ complete encoded register manifest, represented in TOML as
 | `interrupts` | Array | Fully routed interrupt targets. May be empty. |
 | `clock_sources` | Array | Guest-visible clock sources. May be empty. |
 | `accelerators` | Array | Declared accelerator devices. May be empty; sensor devices are not accepted. |
+| `ready_markers` | Canonically ordered unique string array | Exact guest event-marker names allowed to complete `require_ready`; an undeclared marker rejects the run before boot. May be empty. |
 | `semantic_version` | `1` | Capability schema version. |
 
 #### Register rows
@@ -494,6 +495,12 @@ Register side-effect values are exhaustive:
 | `[[world.node_fault_capabilities.interrupts]]` | All interrupt-row fields below | One exact source-to-controller route and its mutation contract. |
 | `[[world.node_fault_capabilities.clock_sources]]` | `id`, `semantic_version=1`, `monotonic` | One registered guest clock and whether reads must remain monotonic. |
 | `[[world.node_fault_capabilities.accelerators]]` | `id`, `kind`, `semantic_version=1`, `capability_manifest` | One `gpu`, `tpu`, or `fpga` fault device plus its exact content-addressed capability manifest. |
+
+`ready_markers` is part of the content-addressed QEMU launch contract. Each
+entry names a decoded guest `event` marker, not an assertion, lifecycle,
+coverage, or random-request marker. The host carries the exact set admitted by
+the World through setup and node construction, and rejects a lifecycle or
+watchdog action whose `ready_marker` is absent from the selected live node.
 
 Interrupt rows are exhaustive realized-machine contracts. Every field is
 required; there are no inferred controller defaults. A scenario is rejected

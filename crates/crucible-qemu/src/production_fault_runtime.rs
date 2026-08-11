@@ -13,12 +13,14 @@ use crucible::model::{
     FaultAdapterManifests, FaultCapabilityId, FaultCapabilityManifest, FaultCoordinate,
     FaultExecutionError, FaultObjectId, FaultObservation, FaultObservationKind, FaultOpportunity,
     FaultReplayMode, FaultResourceLimitError, FaultResourceLimits, FaultRuntimeCheckpoint,
-    FaultSignalPlan, HostFaultActionSink, HostFaultActionState, OwnedFaultExecutionRuntime,
-    ReferencedSignalEvent, ResolvedBindingAction, ResolvedEffectTrace, SignalArtifactProvider,
-    SignalBoundarySnapshot,
+    FaultSignalPlan, HostFaultActionSink, HostFaultActionState, NodeBootPolicy,
+    NodeEffectSpecification, NodeHangScope, NodeLifecycleTransition, NodeStatePolicy,
+    NodeWatchdogPolicy, OwnedFaultExecutionRuntime, ReferencedSignalEvent, ResolvedBindingAction,
+    ResolvedEffectTrace, SignalArtifactProvider, SignalBoundarySnapshot,
 };
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
-use crucible_shmem::DequeuedFaultEvent;
+use crucible_shmem::{DequeuedFaultEvent, FaultEventOutcomeV1};
+use sha2::{Digest as _, Sha256};
 
 use crate::{ProductionFaultActionSink, QemuNodeSet};
 
@@ -183,6 +185,7 @@ impl ProductionFaultRuntime {
         scenario_seed: ContentHash,
         nodes: &QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
+        validate_ready_marker_admission(&plan, nodes)?;
         let manifests = production_manifests(nodes)?;
         let plan_id = plan.id();
         let resource_limits = plan.resource_limits();
@@ -225,6 +228,7 @@ impl ProductionFaultRuntime {
         checkpoint: ProductionFaultRuntimeCheckpoint,
         nodes: &mut QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
+        validate_ready_marker_admission(&plan, nodes)?;
         let manifests = production_manifests(nodes)?;
         let plan_id = plan.id();
         let resource_limits = plan.resource_limits();
@@ -499,6 +503,7 @@ impl ProductionFaultRuntime {
                     }
                     .into());
                 }
+                validate_node_event_evidence(event, action)?;
                 let opportunity =
                     (event.header.opportunity_hash != [0; 32]).then_some(ContentHash {
                         bytes: event.header.opportunity_hash,
@@ -815,6 +820,267 @@ impl ProductionFaultRuntime {
             .as_ref()
             .map(OwnedFaultExecutionRuntime::scenario_seed)
     }
+}
+
+const LIFECYCLE_EVIDENCE_BYTES: usize = 256;
+const HANG_EVIDENCE_BYTES: usize = 192;
+
+fn validate_node_event_evidence(
+    event: &DequeuedFaultEvent,
+    action: &ResolvedBindingAction,
+) -> Result<(), ProductionFaultRuntimeError> {
+    let EffectSpecification::Node(effect) = action.effect.specification() else {
+        return Ok(());
+    };
+    let valid = match event.header.command_kind {
+        crucible_shmem::FaultCommandKind::NodeLifecycle => {
+            validate_lifecycle_evidence(event, effect)
+        }
+        crucible_shmem::FaultCommandKind::NodeHang
+            if event.payload.get(0..8) == Some(b"CRUCLIF1") =>
+        {
+            validate_lifecycle_evidence(event, effect)
+        }
+        crucible_shmem::FaultCommandKind::NodeHang => validate_hang_evidence(event, effect),
+        _ => true,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(BackendError::Rejected {
+            message: format!(
+                "QEMU fault event {} contains malformed or inconsistent typed evidence",
+                event.header.event_sequence
+            ),
+        }
+        .into())
+    }
+}
+
+fn validate_lifecycle_evidence(
+    event: &DequeuedFaultEvent,
+    effect: &NodeEffectSpecification,
+) -> bool {
+    let bytes = event.payload.as_slice();
+    if bytes.len() != LIFECYCLE_EVIDENCE_BYTES
+        || bytes.get(0..8) != Some(b"CRUCLIF1")
+        || read_u16(bytes, 8) != Some(2)
+        || !matches!(
+            event.header.outcome,
+            FaultEventOutcomeV1::Applied | FaultEventOutcomeV1::Error
+        )
+        || read_u64(bytes, 24) != Some(event.header.observed_icount)
+        || bytes.get(64..96) != Some(event.header.binding_hash.as_slice())
+        || bytes.get(128..160) != Some(event.header.before_hash.as_slice())
+        || bytes.get(160..192) != Some(event.header.after_hash.as_slice())
+    {
+        return false;
+    }
+    let Some(transition) = read_u16(bytes, 10) else {
+        return false;
+    };
+    let Some(volatile_policy) = read_u32(bytes, 12) else {
+        return false;
+    };
+    let Some(device_policy) = read_u32(bytes, 16) else {
+        return false;
+    };
+    let Some(preserved_domains) = read_u32(bytes, 20) else {
+        return false;
+    };
+    let Some(virtual_before) = read_u64(bytes, 32) else {
+        return false;
+    };
+    let Some(downtime) = read_u64(bytes, 40) else {
+        return false;
+    };
+    let Some(virtual_after) = read_u64(bytes, 96) else {
+        return false;
+    };
+    if !(1..=6).contains(&transition)
+        || !(1..=2).contains(&volatile_policy)
+        || !(1..=3).contains(&device_policy)
+        || preserved_domains
+            != u32::from(volatile_policy == 1) | (u32::from(device_policy == 1) << 1)
+        || virtual_before.checked_add(downtime) != Some(virtual_after)
+        || read_u64(bytes, 48).is_none_or(|value| value == 0)
+        || read_u64(bytes, 56).is_none_or(|value| value == 0)
+        || read_u64(bytes, 112).is_none_or(|value| value == 0)
+        || read_u64(bytes, 120).is_none_or(|value| value == 0)
+    {
+        return false;
+    }
+    match effect {
+        NodeEffectSpecification::Lifecycle {
+            transition: expected_transition,
+            downtime_nanos,
+            boot_policy,
+            volatile_state_policy,
+            device_state_policy,
+        } => {
+            transition == lifecycle_tag(*expected_transition)
+                && downtime == *downtime_nanos
+                && volatile_policy == state_policy_tag(*volatile_state_policy)
+                && device_policy == state_policy_tag(*device_state_policy)
+                && validate_boot_evidence(bytes, boot_policy)
+        }
+        NodeEffectSpecification::Hang {
+            watchdog_policy: NodeWatchdogPolicy::TransitionAfter { .. },
+            ..
+        } => validate_boot_evidence_shape(bytes),
+        _ => false,
+    }
+}
+
+fn validate_boot_evidence(bytes: &[u8], policy: &NodeBootPolicy) -> bool {
+    match policy {
+        NodeBootPolicy::Immediate => {
+            read_u32(bytes, 192) == Some(1)
+                && read_u32(bytes, 196) == Some(1)
+                && read_u32(bytes, 200) == Some(1)
+                && read_u32(bytes, 204) == Some(0)
+                && read_u64(bytes, 208) == Some(0)
+                && read_u64(bytes, 216) == Some(u64::MAX)
+                && bytes.get(224..256) == Some([0_u8; 32].as_slice())
+        }
+        NodeBootPolicy::RequireReady {
+            ready_marker,
+            maximum_attempts,
+            retry_delay_nanos,
+            exhausted,
+        } => {
+            let marker_hash: [u8; 32] = Sha256::digest(ready_marker.as_str().as_bytes()).into();
+            read_u32(bytes, 192) == Some(2)
+                && read_u32(bytes, 196)
+                    .is_some_and(|attempt| attempt > 0 && attempt <= maximum_attempts.get())
+                && read_u32(bytes, 200) == Some(maximum_attempts.get())
+                && read_u32(bytes, 204) == Some(u32::from(lifecycle_tag(*exhausted)))
+                && read_u64(bytes, 208) == Some(*retry_delay_nanos)
+                && read_u64(bytes, 216).is_some_and(|deadline| deadline != u64::MAX)
+                && bytes.get(224..256) == Some(marker_hash.as_slice())
+        }
+    }
+}
+
+fn validate_boot_evidence_shape(bytes: &[u8]) -> bool {
+    match read_u32(bytes, 192) {
+        Some(1) => {
+            read_u32(bytes, 196) == Some(1)
+                && read_u32(bytes, 200) == Some(1)
+                && read_u32(bytes, 204) == Some(0)
+                && read_u64(bytes, 208) == Some(0)
+                && read_u64(bytes, 216) == Some(u64::MAX)
+                && bytes.get(224..256) == Some([0_u8; 32].as_slice())
+        }
+        Some(2) => {
+            read_u32(bytes, 196).is_some_and(|attempt| attempt > 0)
+                && read_u32(bytes, 200).is_some_and(|maximum| maximum > 0)
+                && read_u32(bytes, 196) <= read_u32(bytes, 200)
+                && read_u32(bytes, 204).is_some_and(|transition| (2..=6).contains(&transition))
+                && read_u64(bytes, 216).is_some_and(|deadline| deadline != u64::MAX)
+                && bytes.get(224..256).is_some_and(|hash| hash != [0_u8; 32])
+        }
+        _ => false,
+    }
+}
+
+fn validate_hang_evidence(event: &DequeuedFaultEvent, effect: &NodeEffectSpecification) -> bool {
+    let NodeEffectSpecification::Hang {
+        scope,
+        watchdog_policy,
+        ..
+    } = effect
+    else {
+        return false;
+    };
+    let bytes = event.payload.as_slice();
+    if bytes.len() != HANG_EVIDENCE_BYTES || event.header.outcome != FaultEventOutcomeV1::Applied {
+        return false;
+    }
+    match bytes.get(0..8) {
+        Some(b"CRUCHNG1") => {
+            read_u16(bytes, 8) == Some(1)
+                && read_u16(bytes, 10).is_some_and(|kind| kind == 1 || kind == 2)
+                && read_u32(bytes, 12) == Some(hang_scope_tag(scope))
+                && read_u64(bytes, 56) == Some(event.header.observed_icount)
+                && read_u64(bytes, 48) == Some(event.header.generation)
+                && bytes.get(64..96) == Some(event.header.binding_hash.as_slice())
+                && bytes.get(96..128) == Some(event.header.action_hash.as_slice())
+                && bytes.get(128..160) == Some(event.header.before_hash.as_slice())
+                && bytes.get(160..192) == Some(event.header.after_hash.as_slice())
+        }
+        Some(b"CRUCWDC1") => {
+            let NodeWatchdogPolicy::TransitionAfter {
+                transition,
+                downtime_nanos,
+                volatile_state_policy,
+                device_state_policy,
+                ..
+            } = watchdog_policy
+            else {
+                return false;
+            };
+            read_u16(bytes, 8) == Some(1)
+                && read_u16(bytes, 10) == Some(lifecycle_tag(*transition))
+                && read_u16(bytes, 12).is_some_and(|value| (1..=6).contains(&value))
+                && read_u32(bytes, 16) == Some(state_policy_tag(*volatile_state_policy))
+                && read_u32(bytes, 20) == Some(state_policy_tag(*device_state_policy))
+                && read_u32(bytes, 24).is_some_and(|value| (1..=2).contains(&value))
+                && read_u32(bytes, 28).is_some_and(|value| (1..=3).contains(&value))
+                && read_u64(bytes, 32) == Some(*downtime_nanos)
+                && read_u64(bytes, 48) == read_u64(bytes, 56)
+                && bytes.get(64..96) == Some(event.header.binding_hash.as_slice())
+                && bytes.get(128..160) == Some(event.header.action_hash.as_slice())
+                && bytes.get(96..128).is_some_and(|hash| hash != [0_u8; 32])
+                && bytes.get(160..192).is_some_and(|hash| hash != [0_u8; 32])
+        }
+        _ => false,
+    }
+}
+
+const fn lifecycle_tag(value: NodeLifecycleTransition) -> u16 {
+    match value {
+        NodeLifecycleTransition::Boot => 1,
+        NodeLifecycleTransition::Crash => 2,
+        NodeLifecycleTransition::Reset => 3,
+        NodeLifecycleTransition::PowerOff => 4,
+        NodeLifecycleTransition::PowerCycle => 5,
+        NodeLifecycleTransition::PermanentFailure => 6,
+    }
+}
+
+const fn state_policy_tag(value: NodeStatePolicy) -> u32 {
+    match value {
+        NodeStatePolicy::Preserve => 1,
+        NodeStatePolicy::Clear => 2,
+        NodeStatePolicy::DeviceReset => 3,
+    }
+}
+
+const fn hang_scope_tag(value: &NodeHangScope) -> u32 {
+    match value {
+        NodeHangScope::Node => 1,
+        NodeHangScope::Vcpus(_) => 2,
+        NodeHangScope::Device(_) => 3,
+    }
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        bytes.get(offset..offset + 2)?.try_into().ok()?,
+    ))
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(
+        bytes.get(offset..offset + 8)?.try_into().ok()?,
+    ))
 }
 
 fn validate_production_event_state(
@@ -1200,6 +1466,54 @@ fn production_manifests(
     })
 }
 
+fn validate_ready_marker_admission(
+    plan: &FaultSignalPlan,
+    nodes: &QemuNodeSet,
+) -> Result<(), ProductionFaultRuntimeError> {
+    for binding in plan.bindings() {
+        let EffectSpecification::Node(effect) = binding.effect().specification() else {
+            continue;
+        };
+        let marker = match effect {
+            NodeEffectSpecification::Lifecycle {
+                boot_policy: NodeBootPolicy::RequireReady { ready_marker, .. },
+                ..
+            }
+            | NodeEffectSpecification::Hang {
+                watchdog_policy:
+                    NodeWatchdogPolicy::TransitionAfter {
+                        boot_policy: NodeBootPolicy::RequireReady { ready_marker, .. },
+                        ..
+                    },
+                ..
+            } => ready_marker,
+            _ => continue,
+        };
+        for target in binding.selector().resolved().targets() {
+            let crucible::model::ResolvedFaultTarget::Node { node } = target else {
+                return Err(BackendError::Rejected {
+                    message: format!(
+                        "ready-marker binding `{}` contains a non-node target",
+                        binding.id()
+                    ),
+                }
+                .into());
+            };
+            if !nodes.admits_ready_marker(node, marker) {
+                return Err(BackendError::Rejected {
+                    message: format!(
+                        "ready marker `{}` is absent from live node `{}` launch manifest",
+                        marker.as_str(),
+                        node.as_str()
+                    ),
+                }
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn host_production_manifest(
     backend: &str,
     effects: impl IntoIterator<Item = EffectKind>,
@@ -1234,16 +1548,16 @@ fn hex_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crucible::model::{
-        BindingEventParent, BindingMapping, BindingMappingRegistry, BindingObservabilityPolicy,
-        BindingSampling, BindingSearchPolicy, EFFECT_SEMANTIC_VERSION, EffectKind, EffectLifetime,
-        EffectRequest, EffectSpecification, EvaluatedSignal, FaultBinding, FaultDirection,
-        FaultPhase, InverseCdfTable, NetworkAvailabilityState, NetworkEffectSpecification,
-        NetworkInFlightPolicy, PositiveU64, ResolvedFaultTarget, ResolvedTargetSet,
-        SampleObservation, SignalChoiceContext, SignalCoordinate, SignalDomain,
-        SignalEvaluationError, SignalId, SignalNode, SignalNodeKind, SignalPoint,
-        SignalResourceLimits, SignalShape, SignalSourceSpecification, SignalUnit, SignalValue,
-        SignalValueType, StateTransitionTableDeclaration, StorageEffectSpecification,
-        TargetSelector,
+        BindingActionCause, BindingEventParent, BindingMapping, BindingMappingRegistry,
+        BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy, CountLimit,
+        EFFECT_SEMANTIC_VERSION, EffectKind, EffectLifetime, EffectRequest, EffectSpecification,
+        EvaluatedSignal, FaultBinding, FaultDirection, FaultPhase, InverseCdfTable,
+        NetworkAvailabilityState, NetworkEffectSpecification, NetworkInFlightPolicy, PositiveU64,
+        ResolvedFaultTarget, ResolvedMappingOutput, ResolvedTargetSet, SampleObservation,
+        SignalChoiceContext, SignalCoordinate, SignalDomain, SignalEvaluationError, SignalId,
+        SignalNode, SignalNodeKind, SignalPoint, SignalResourceLimits, SignalShape,
+        SignalSourceSpecification, SignalUnit, SignalValue, SignalValueType,
+        StateTransitionTableDeclaration, StorageEffectSpecification, TargetSelector,
     };
 
     struct NoArtifacts;
@@ -1280,6 +1594,118 @@ mod tests {
     fn signal_id(value: &str) -> SignalId {
         SignalId::parse(value)
             .unwrap_or_else(|error| panic!("test signal ID should be valid: {error}"))
+    }
+
+    fn lifecycle_action(boot_policy: NodeBootPolicy) -> ResolvedBindingAction {
+        let effect = EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Impulse,
+            EffectSpecification::Node(NodeEffectSpecification::Lifecycle {
+                transition: NodeLifecycleTransition::Reset,
+                downtime_nanos: 32,
+                boot_policy,
+                volatile_state_policy: NodeStatePolicy::Preserve,
+                device_state_policy: NodeStatePolicy::Clear,
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test lifecycle effect should be valid: {error}"));
+        ResolvedBindingAction {
+            kind: BindingActionKind::Apply,
+            binding: object_id("node-reset"),
+            target: ResolvedFaultTarget::Node {
+                node: object_id("node-a"),
+            },
+            phase: FaultPhase::Boundary,
+            effect: Arc::new(effect),
+            mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
+            mapped_digest: ContentHash::from_bytes(b"node-reset-mapping"),
+            transition_sequence: 1,
+            opportunity: None,
+            coordinate: FaultCoordinate {
+                virtual_nanos: 100,
+                retired_instructions: Some(44),
+            },
+            cause: BindingActionCause::Signal,
+            expected_precondition: None,
+        }
+    }
+
+    fn lifecycle_event(action: &ResolvedBindingAction) -> DequeuedFaultEvent {
+        let mut payload = vec![0_u8; LIFECYCLE_EVIDENCE_BYTES];
+        let before_hash = [5_u8; 32];
+        let after_hash = [6_u8; 32];
+        payload[0..8].copy_from_slice(b"CRUCLIF1");
+        payload[8..10].copy_from_slice(&2_u16.to_le_bytes());
+        payload[10..12].copy_from_slice(&3_u16.to_le_bytes());
+        payload[12..16].copy_from_slice(&1_u32.to_le_bytes());
+        payload[16..20].copy_from_slice(&2_u32.to_le_bytes());
+        payload[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        payload[24..32].copy_from_slice(&44_u64.to_le_bytes());
+        payload[32..40].copy_from_slice(&100_u64.to_le_bytes());
+        payload[40..48].copy_from_slice(&32_u64.to_le_bytes());
+        payload[48..56].copy_from_slice(&4096_u64.to_le_bytes());
+        payload[56..64].copy_from_slice(&128_u64.to_le_bytes());
+        let binding_hash = ContentHash::from_canonical_material(
+            "crucible.fault-binding.v1",
+            action.binding.as_str(),
+        );
+        payload[64..96].copy_from_slice(&binding_hash.bytes);
+        payload[96..104].copy_from_slice(&132_u64.to_le_bytes());
+        payload[112..120].copy_from_slice(&4096_u64.to_le_bytes());
+        payload[120..128].copy_from_slice(&128_u64.to_le_bytes());
+        payload[128..160].copy_from_slice(&before_hash);
+        payload[160..192].copy_from_slice(&after_hash);
+        payload[192..196].copy_from_slice(&1_u32.to_le_bytes());
+        payload[196..200].copy_from_slice(&1_u32.to_le_bytes());
+        payload[200..204].copy_from_slice(&1_u32.to_le_bytes());
+        payload[216..224].copy_from_slice(&u64::MAX.to_le_bytes());
+        DequeuedFaultEvent {
+            header: crucible_shmem::FaultEventHeaderV1 {
+                command_kind: crucible_shmem::FaultCommandKind::NodeLifecycle,
+                outcome: FaultEventOutcomeV1::Applied,
+                event_sequence: 1,
+                rule_command_sequence: 2,
+                observed_icount: 44,
+                model_phase: 1,
+                target_kind: 1,
+                generation: 1,
+                binding_hash: binding_hash.bytes,
+                opportunity_hash: [2; 32],
+                action_hash: action.id().bytes,
+                target_hash: ContentHash::from_canonical_material(
+                    "crucible.resolved-fault-target.v1",
+                    &action.target.canonical_material(),
+                )
+                .bytes,
+                before_hash,
+                after_hash,
+                evidence_hash: Sha256::digest(&payload).into(),
+                payload_hash: *blake3::hash(&payload).as_bytes(),
+                payload_offset: 0,
+                payload_length: LIFECYCLE_EVIDENCE_BYTES as u32,
+            },
+            payload,
+        }
+    }
+
+    #[test]
+    fn typed_lifecycle_evidence_rejects_policy_and_marker_mismatch() {
+        let immediate = lifecycle_action(NodeBootPolicy::Immediate);
+        let event = lifecycle_event(&immediate);
+        assert!(validate_node_event_evidence(&event, &immediate).is_ok());
+
+        let mut corrupt = event.clone();
+        corrupt.payload[12..16].copy_from_slice(&2_u32.to_le_bytes());
+        assert!(validate_node_event_evidence(&corrupt, &immediate).is_err());
+
+        let ready = lifecycle_action(NodeBootPolicy::RequireReady {
+            ready_marker: object_id("guest-ready"),
+            maximum_attempts: crucible::model::BoundedCount::new(CountLimit::LargeStateEntries, 2)
+                .unwrap_or_else(|error| panic!("test attempt count should be valid: {error}")),
+            retry_delay_nanos: 4096,
+            exhausted: NodeLifecycleTransition::PermanentFailure,
+        });
+        assert!(validate_node_event_evidence(&event, &ready).is_err());
     }
 
     fn pending_qemu_observation() -> FaultObservation {
