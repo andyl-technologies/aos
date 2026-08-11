@@ -34,6 +34,14 @@ missing, unknown, out-of-order, oversized, truncated, trailing, wrong-version,
 nonzero-reserved, or digest-mismatched input fails restore before live state is
 changed.
 
+The registry is closed for each installed patch prefix, not only for the final
+series. Patch 0067 requires exactly its eight registered core sections. Patch
+0068 adds and requires `clock`; patch 0069 adds and requires `accelerator`.
+Consequently, applying and testing any prefix never leaves save admission
+waiting for a section that only a later patch can register. Patch identities
+and the aggregate digest reject checkpoints from a different prefix; there is
+no legacy or partial-section restore path.
+
 ## Transactional restore
 
 Restore is a prepare/commit transaction:

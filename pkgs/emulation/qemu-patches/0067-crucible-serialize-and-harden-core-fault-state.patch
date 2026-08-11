@@ -4479,10 +4479,10 @@ index 1327286..cee1a53 100644
  type_init(crucible_vcpu_service_register)
 diff --git a/plugins/crucible-fault-vmstate.c b/plugins/crucible-fault-vmstate.c
 new file mode 100644
-index 0000000..565e68c
+index 0000000..629eb40
 --- /dev/null
 +++ b/plugins/crucible-fault-vmstate.c
-@@ -0,0 +1,516 @@
+@@ -0,0 +1,514 @@
 +/*
 + * Crucible aggregate fault VMState transaction
 + *
@@ -4528,8 +4528,6 @@ index 0000000..565e68c
 +static bool crucible_fault_vmstate_has_expected_deferred;
 +
 +static const char *const crucible_fault_vmstate_required[] = {
-+    "accelerator",
-+    "clock",
 +    "command",
 +    "cpu",
 +    "hardware-error",

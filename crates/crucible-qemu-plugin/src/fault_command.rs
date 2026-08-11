@@ -4482,9 +4482,88 @@ fn clock_json_i64_table(value: &serde_json::Value) -> Option<Vec<i64>> {
         .collect()
 }
 
+fn clock_timer_opportunity(
+    source_id: [u8; 32],
+    arm_sequence: u64,
+    phase: u16,
+    role: u16,
+    index: u32,
+    transform_generation: u64,
+) -> u64 {
+    let mut material = [0_u8; 64];
+    material[..8].copy_from_slice(b"CRUCTMR1");
+    material[8..40].copy_from_slice(&source_id);
+    material[40..48].copy_from_slice(&arm_sequence.to_le_bytes());
+    material[48..50].copy_from_slice(&phase.to_le_bytes());
+    material[50..52].copy_from_slice(&role.to_le_bytes());
+    material[52..56].copy_from_slice(&index.to_le_bytes());
+    material[56..64].copy_from_slice(&transform_generation.to_le_bytes());
+    let digest = sha2::Sha256::digest(material);
+    let mut selected = [0_u8; 8];
+    selected.copy_from_slice(&digest[..8]);
+    match u64::from_le_bytes(selected) {
+        0 => u64::MAX,
+        opportunity => opportunity,
+    }
+}
+
+fn clock_timer_table_index(
+    binding_hash: [u8; 32],
+    source_id: [u8; 32],
+    timer_opportunity: u64,
+    count: usize,
+) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let mut material = [0_u8; 80];
+    material[..8].copy_from_slice(b"CRUCKEY1");
+    material[8..40].copy_from_slice(&binding_hash);
+    material[40..72].copy_from_slice(&source_id);
+    material[72..80].copy_from_slice(&timer_opportunity.to_le_bytes());
+    let digest = sha2::Sha256::digest(material);
+    let selected = u64::from_le_bytes(digest[..8].try_into().ok()?);
+    usize::try_from(selected % u64::try_from(count).ok()?).ok()
+}
+
+fn validate_clock_timer_observation(
+    observation: &FaultClockObservationV1,
+    source_id: [u8; 32],
+    transform_generation: u64,
+) -> Option<(u16, i64)> {
+    let FaultClockObservationV1::TimerTransition {
+        role,
+        index,
+        opportunity_phase,
+        jitter_contribution,
+        timer_opportunity,
+        arm_sequence,
+        ..
+    } = observation
+    else {
+        return None;
+    };
+    if !matches!(*opportunity_phase, 29 | 30)
+        || *timer_opportunity
+            != clock_timer_opportunity(
+                source_id,
+                *arm_sequence,
+                *opportunity_phase,
+                *role,
+                *index,
+                transform_generation,
+            )
+    {
+        return None;
+    }
+    Some((*opportunity_phase, *jitter_contribution))
+}
+
 fn validate_clock_observation_parameters(
     observation: &FaultClockObservationV1,
     expectation: &ClockCommandExpectation,
+    source_id: [u8; 32],
+    transform_generation: u64,
 ) -> bool {
     match (&expectation.parameters, observation) {
         (ClockCommandParameters::Remove, _) => false,
@@ -4605,9 +4684,39 @@ fn validate_clock_observation_parameters(
                 && sequences[1].checked_sub(sequences[0]) == Some(1)
         }),
         (
-            ClockCommandParameters::Transform { .. },
-            FaultClockObservationV1::TimerTransition { .. },
-        ) => true,
+            ClockCommandParameters::Transform {
+                kind,
+                unsigned_value,
+                process,
+                ..
+            },
+            FaultClockObservationV1::TimerTransition {
+                timer_opportunity, ..
+            },
+        ) => validate_clock_timer_observation(observation, source_id, transform_generation)
+            .is_some_and(|(phase, contribution)| {
+                if phase != expectation.model_phase {
+                    return false;
+                }
+                if *kind != 5 {
+                    return contribution == 0;
+                }
+                process
+                    .as_ref()
+                    .and_then(clock_json_i64_table)
+                    .and_then(|values| {
+                        let index = clock_timer_table_index(
+                            expectation.binding_hash,
+                            source_id,
+                            *timer_opportunity,
+                            values.len(),
+                        )?;
+                        values.get(index).copied()
+                    })
+                    .is_some_and(|selected| {
+                        selected == contribution && selected.unsigned_abs() <= *unsigned_value
+                    })
+            }),
         (
             ClockCommandParameters::SourceState {
                 transition,
@@ -4702,7 +4811,8 @@ fn validate_clock_observation_parameters(
         (
             ClockCommandParameters::SourceState { .. },
             FaultClockObservationV1::TimerTransition { .. },
-        ) => true,
+        ) => validate_clock_timer_observation(observation, source_id, transform_generation)
+            .is_some_and(|(_, contribution)| contribution == 0),
         _ => false,
     }
 }
@@ -4904,7 +5014,8 @@ fn translate_clock_evidence(
         }
         b"CRUCCTE1"
             if raw[14..16].iter().all(|byte| *byte == 0)
-                && raw[224..].iter().all(|byte| *byte == 0) =>
+                && raw[226..232].iter().all(|byte| *byte == 0)
+                && raw[256..].iter().all(|byte| *byte == 0) =>
         {
             (
                 88,
@@ -4930,6 +5041,10 @@ fn translate_clock_evidence(
                         raw_u64(raw, 48).map_err(invalid)?,
                         raw_u64(raw, 72).map_err(invalid)?,
                     ],
+                    opportunity_phase: raw_u16(raw, 224).map_err(invalid)?,
+                    jitter_contribution: raw_u64(raw, 232).map_err(invalid)? as i64,
+                    timer_opportunity: raw_u64(raw, 240).map_err(invalid)?,
+                    arm_sequence: raw_u64(raw, 248).map_err(invalid)?,
                 },
             )
         }
@@ -4961,7 +5076,7 @@ fn translate_clock_evidence(
         || !expectation.source_ids.contains(&source_id)
         || before_hash != event.before_hash
         || after_hash != event.after_hash
-        || !validate_clock_observation_parameters(&observation, expectation)
+        || !validate_clock_observation_parameters(&observation, expectation, source_id, generation)
         || !validate_clock_read_architecture(&observation, row)
     {
         return Err(FaultCommandBridgeError::ClockEvidence);
@@ -5017,7 +5132,12 @@ fn translate_clock_impulse_event_evidence(
             row.source_kind == source_kind
                 && crucible_shmem::fault_object_id_hash_v1(&row.id) == source_id
         })
-        || !validate_clock_observation_parameters(&observation, expectation)
+        || !validate_clock_observation_parameters(
+            &observation,
+            expectation,
+            source_id,
+            raw_u64(raw, 72).map_err(invalid)?,
+        )
     {
         return Err(FaultCommandBridgeError::ClockEvidence);
     }
@@ -5117,7 +5237,12 @@ fn translate_clock_impulse_evidence(
             row.source_kind == source_kind
                 && crucible_shmem::fault_object_id_hash_v1(&row.id) == source_id
         })
-        || !validate_clock_observation_parameters(&observation, expectation)
+        || !validate_clock_observation_parameters(
+            &observation,
+            expectation,
+            source_id,
+            raw_u64(raw, 72).map_err(invalid)?,
+        )
     {
         return Err(FaultCommandBridgeError::ClockEvidence);
     }
@@ -6730,11 +6855,18 @@ mod tests {
         raw[64..72].copy_from_slice(&210_u64.to_le_bytes());
         raw[72..80].copy_from_slice(&5_u64.to_le_bytes());
         raw[80..88].copy_from_slice(&5_u64.to_le_bytes());
-        raw[88..120].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.id));
+        let source_id = crucible_shmem::fault_object_id_hash_v1(&row.id);
+        raw[88..120].copy_from_slice(&source_id);
         raw[120..152].copy_from_slice(&[6; 32]);
         raw[152..184].copy_from_slice(&[7; 32]);
         raw[184..216].copy_from_slice(&[8; 32]);
         raw[216..224].copy_from_slice(&9_u64.to_le_bytes());
+        raw[224..226].copy_from_slice(&30_u16.to_le_bytes());
+        let arm_sequence = 2_u64;
+        raw[240..248].copy_from_slice(
+            &clock_timer_opportunity(source_id, arm_sequence, 30, 1, 3, 5).to_le_bytes(),
+        );
+        raw[248..256].copy_from_slice(&arm_sequence.to_le_bytes());
         let event = QemuFaultEvent {
             command_kind: FaultCommandKind::ClockTransform as u16,
             outcome: FaultEventOutcomeV1::Applied as u16,
@@ -6754,7 +6886,7 @@ mod tests {
             command_kind: FaultCommandKind::ClockTransform as u16,
             binding_hash: [6; 32],
             model_phase: 30,
-            source_ids: vec![crucible_shmem::fault_object_id_hash_v1(&row.id)],
+            source_ids: vec![source_id],
             parameters: ClockCommandParameters::Transform {
                 kind: 1,
                 signed_value: 1,
@@ -6774,11 +6906,14 @@ mod tests {
             decoded.observation,
             FaultClockObservationV1::TimerTransition { sequence: 8, .. }
         ));
-        raw[224] = 1;
-        assert!(matches!(
-            translate_clock_evidence(&raw, &manifest, &event, 22, &expectation),
-            Err(FaultCommandBridgeError::ClockEvidence)
-        ));
+        for offset in [224, 232, 240, 248] {
+            let mut corrupt = raw.clone();
+            corrupt[offset] ^= 1;
+            assert!(matches!(
+                translate_clock_evidence(&corrupt, &manifest, &event, 22, &expectation),
+                Err(FaultCommandBridgeError::ClockEvidence)
+            ));
+        }
     }
 
     #[test]
