@@ -206,6 +206,7 @@ pub struct QemuLiveNodeStepGateConfig {
     icount_shift: u8,
     rr_switch_quantum: u64,
     scenario_seed: u64,
+    process_generation: u64,
     whitebox: QemuLaunchPluginSwitch,
     app_random: Option<QemuLaunchAppRandomConfig>,
     coverage: QemuLaunchPluginSwitch,
@@ -276,6 +277,7 @@ impl QemuLiveNodeStepGateConfig {
             icount_shift: 0,
             rr_switch_quantum: GATE_RR_SWITCH_QUANTUM,
             scenario_seed: 0,
+            process_generation: 1,
             whitebox: QemuLaunchPluginSwitch::Off,
             app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
@@ -321,6 +323,7 @@ impl QemuLiveNodeStepGateConfig {
             icount_shift: 0,
             rr_switch_quantum: GATE_RR_SWITCH_QUANTUM,
             scenario_seed: 0,
+            process_generation: 1,
             whitebox: QemuLaunchPluginSwitch::Off,
             app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
@@ -403,6 +406,13 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub const fn with_scenario_seed(mut self, scenario_seed: u64) -> Self {
         self.scenario_seed = scenario_seed;
+        self
+    }
+
+    /// Returns this configuration with its immutable process generation.
+    #[must_use]
+    pub const fn with_process_generation(mut self, process_generation: u64) -> Self {
+        self.process_generation = process_generation;
         self
     }
 

@@ -15,8 +15,9 @@ operation. Ordinary VM resume is never overloaded and cannot authorize exit.
 | `evidence-sha256` | 64 lowercase hexadecimal characters naming the exact `CRUCLIF1` evidence bytes |
 | `process-generation` | Nonzero host-supervised generation of the exact owned QEMU child |
 
-QEMU compares both digests with the single pending terminal decision. The first
-matching request binds the generation and schedules the transition-specific
+QEMU compares both digests with the single pending terminal decision and
+compares the request generation with the immutable value provisioned at process
+launch by patch 0066. A matching request schedules the transition-specific
 process exit. An identical retry succeeds without scheduling another exit. A
 different generation or digest, malformed digest, absent decision, unsupported
 build, or second decision fails without resuming the VM.
@@ -28,10 +29,11 @@ owned child and verify status `70`, `71`, or `72` before committing supervision.
 ## State and recovery
 
 Patch 0059 serializes the pending decision, both digests, authorization state,
-and bound process generation. Restoring an unauthorized decision permits the
-same command. Restoring an authorized decision preserves idempotence and never
-permits guest execution. The host transaction journal independently records the
-request and observed child status.
+and launch-provisioned process generation. Restore rejects a snapshot whose
+generation differs from the process launch contract. Restoring an unauthorized
+decision permits the same command. Restoring an authorized decision preserves
+idempotence and never permits guest execution. The host transaction journal
+independently records the request and observed child status.
 
 ## Live gates
 

@@ -116,7 +116,7 @@ pub(super) fn ownership() -> PluginTimeControlOwnership {
 
 pub(super) fn registration_ready() -> crate::PluginRegistrationReady {
     let mut sequence = PluginRegistrationSequence::new();
-    let args = PluginArgs::parse("simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111")
+    let args = PluginArgs::parse("simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1")
         .unwrap_or_else(|error| panic!("test args should parse: {error}"));
     let mut setup_ack = None;
     for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {

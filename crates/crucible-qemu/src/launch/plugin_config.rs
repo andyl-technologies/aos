@@ -142,6 +142,7 @@ pub struct QemuLaunchPluginConfig {
     plugin_path: String,
     slot: u32,
     fault_node_hash: [u8; 32],
+    process_generation: u64,
     whitebox: QemuLaunchPluginSwitch,
     whitebox_setup: Option<QemuWhiteboxSetupValidation>,
     app_random: Option<QemuLaunchAppRandomConfig>,
@@ -160,6 +161,7 @@ impl QemuLaunchPluginConfig {
             plugin_path: plugin_path.into(),
             slot,
             fault_node_hash: qemu_fault_target_hash(&standalone_identity),
+            process_generation: 1,
             whitebox: QemuLaunchPluginSwitch::Off,
             whitebox_setup: None,
             app_random: None,
@@ -181,6 +183,19 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub const fn fault_node_hash(&self) -> [u8; 32] {
         self.fault_node_hash
+    }
+
+    /// Returns a config bound to one nonzero host-supervised process generation.
+    #[must_use]
+    pub const fn with_process_generation(mut self, process_generation: u64) -> Self {
+        self.process_generation = process_generation;
+        self
+    }
+
+    /// Returns the generation provisioned before this process accepts faults.
+    #[must_use]
+    pub const fn process_generation(&self) -> u64 {
+        self.process_generation
     }
 
     /// Returns a config with the white-box hook switch set.
@@ -304,6 +319,10 @@ impl QemuLaunchPluginConfig {
                 "{PLUGIN_ARG_FAULT_NODE_HASH}={}",
                 lowercase_hex(&self.fault_node_hash)
             ),
+            format!(
+                "{PLUGIN_ARG_PROCESS_GENERATION}={}",
+                self.process_generation
+            ),
             format!("{PLUGIN_ARG_SHMEMFD}={FIXED_PLUGIN_SHMEM_FD}"),
             format!("{PLUGIN_ARG_WAKEFD}={FIXED_PLUGIN_WAKE_FD}"),
             format!("{PLUGIN_ARG_WHITEBOX}={}", self.whitebox),
@@ -386,6 +405,9 @@ impl QemuLaunchPluginConfig {
         validate_fd(PLUGIN_ARG_SIMFD, FIXED_PLUGIN_SIM_FD)?;
         validate_fd(PLUGIN_ARG_SHMEMFD, FIXED_PLUGIN_SHMEM_FD)?;
         validate_fd(PLUGIN_ARG_WAKEFD, FIXED_PLUGIN_WAKE_FD)?;
+        if self.process_generation == 0 {
+            return Err(QemuLaunchCommandError::ZeroProcessGeneration);
+        }
         match (self.whitebox, self.whitebox_setup.as_ref()) {
             (QemuLaunchPluginSwitch::Off, None) | (QemuLaunchPluginSwitch::On, Some(_)) => {}
             (QemuLaunchPluginSwitch::On, None) => {
@@ -516,6 +538,23 @@ mod tests {
             encode_stream_positions(&positions),
             "6170702d72616e646f6d2f6e6f64653a313a612f73747265616d3a343a62657461:1;\
              6170702d72616e646f6d2f6e6f64653a313a612f73747265616d3a353a616c706861:2"
+        );
+    }
+
+    #[test]
+    fn process_generation_is_canonical_and_nonzero() {
+        let config = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
+            .with_process_generation(42);
+
+        assert_eq!(config.process_generation(), 42);
+        assert!(config.plugin_args_raw().contains("process_generation=42"));
+        assert_eq!(config.validate(), Ok(()));
+
+        let zero = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
+            .with_process_generation(0);
+        assert_eq!(
+            zero.validate(),
+            Err(QemuLaunchCommandError::ZeroProcessGeneration)
         );
     }
 }

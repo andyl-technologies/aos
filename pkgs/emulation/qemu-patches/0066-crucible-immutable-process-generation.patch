@@ -1,0 +1,96 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 1b9201e..6486f49 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -2091,6 +2091,19 @@ struct qemu_plugin_crucible_fault_result {
+     uint8_t evidence_hash[32];
+ };
+ 
++/**
++ * qemu_plugin_crucible_lifecycle_set_process_generation() - bind generation
++ * @process_generation: nonzero host-provisioned process generation
++ *
++ * Binds the immutable generation before fault commands are admitted.  A second
++ * call, including one that repeats the same value, is rejected.
++ *
++ * Returns zero on success or a negative errno value on failure.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_lifecycle_set_process_generation(
++    uint64_t process_generation);
++
+ /**
+  * struct qemu_plugin_crucible_fault_event - one real rule occurrence
+  *
+diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
+index 5dba33f..1ecf099 100644
+--- a/plugins/crucible-fault-lifecycle.c
++++ b/plugins/crucible-fault-lifecycle.c
+@@ -117,7 +117,7 @@ static uint32_t crucible_lifecycle_terminal_transition;
+ static bool crucible_lifecycle_terminal_exit_requested;
+ static uint8_t crucible_lifecycle_terminal_action_sha256[32];
+ static uint8_t crucible_lifecycle_terminal_evidence_sha256[32];
+-static uint64_t crucible_lifecycle_terminal_process_generation;
++static uint64_t crucible_lifecycle_process_generation;
+ 
+ static void crucible_lifecycle_sha256(const uint8_t *data, size_t length,
+                                       uint8_t digest[32]);
+@@ -181,7 +181,6 @@ static void crucible_lifecycle_stage_terminal(
+ 
+     crucible_lifecycle_terminal_transition = transition;
+     crucible_lifecycle_terminal_exit_requested = false;
+-    crucible_lifecycle_terminal_process_generation = 0;
+     memcpy(crucible_lifecycle_terminal_action_sha256,
+            qemu_crucible_fault_rule_action_hash(rule), 32);
+     crucible_lifecycle_sha256(
+@@ -189,6 +188,23 @@ static void crucible_lifecycle_stage_terminal(
+         crucible_lifecycle_terminal_evidence_sha256);
+ }
+ 
++int qemu_plugin_crucible_lifecycle_set_process_generation(
++    uint64_t process_generation)
++{
++    if (!crucible_lifecycle_mode()) {
++        return -EPERM;
++    }
++    if (process_generation == 0) {
++        return -EINVAL;
++    }
++    if (crucible_lifecycle_process_generation != 0 ||
++        crucible_lifecycle_terminal_transition != 0) {
++        return -EALREADY;
++    }
++    crucible_lifecycle_process_generation = process_generation;
++    return 0;
++}
++
+ int qemu_plugin_crucible_lifecycle_complete_terminal_exit(
+     const char *action_sha256, const char *evidence_sha256,
+     uint64_t process_generation, bool *already_authorized,
+@@ -209,6 +225,10 @@ int qemu_plugin_crucible_lifecycle_complete_terminal_exit(
+         crucible_lifecycle_terminal_transition == 0) {
+         return -ENOENT;
+     }
++    if (crucible_lifecycle_process_generation == 0 ||
++        process_generation != crucible_lifecycle_process_generation) {
++        return -EACCES;
++    }
+     code = crucible_lifecycle_terminal_exit_code(
+         crucible_lifecycle_terminal_transition);
+     if (code == 0 ||
+@@ -218,15 +238,10 @@ int qemu_plugin_crucible_lifecycle_complete_terminal_exit(
+         return -EACCES;
+     }
+     if (crucible_lifecycle_terminal_exit_requested) {
+-        if (process_generation !=
+-            crucible_lifecycle_terminal_process_generation) {
+-            return -EACCES;
+-        }
+         *already_authorized = true;
+         *exit_code = code;
+         return 0;
+     }
+-    crucible_lifecycle_terminal_process_generation = process_generation;
+     crucible_lifecycle_terminal_exit_requested = true;
+     qemu_system_shutdown_request_with_code(
+         SHUTDOWN_CAUSE_HOST_ERROR, code);

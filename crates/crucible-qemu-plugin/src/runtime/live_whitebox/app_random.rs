@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn branch_reseed_restarts_every_plugin_stream_at_cursor_zero() {
         let args = PluginArgs::parse(
-            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=8,app_random_node=node-a,app_random_branch_seed=29,app_random_branch_after=1",
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=8,app_random_node=node-a,app_random_branch_seed=29,app_random_branch_after=1",
         )
         .unwrap_or_else(|error| panic!("branch configuration should parse: {error}"));
         let config = args

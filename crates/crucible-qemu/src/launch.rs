@@ -97,6 +97,7 @@ const DEFAULT_RR_SWITCH_QUANTUM: u64 = 4096;
 const PLUGIN_ARG_SIMFD: &str = "simfd";
 const PLUGIN_ARG_SLOT: &str = "slot";
 const PLUGIN_ARG_FAULT_NODE_HASH: &str = "fault_node_hash";
+const PLUGIN_ARG_PROCESS_GENERATION: &str = "process_generation";
 const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
 const PLUGIN_ARG_WAKEFD: &str = "wakefd";
 const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
