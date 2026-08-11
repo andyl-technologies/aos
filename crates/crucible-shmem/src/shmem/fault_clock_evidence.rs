@@ -112,6 +112,14 @@ pub enum FaultClockObservationV1 {
         new_deadlines: [u64; 2],
         /// Old and new transform generations.
         generations: [u64; 2],
+        /// Actual timer opportunity phase: arm or fire.
+        opportunity_phase: u16,
+        /// Deterministic jitter contribution selected for this binding.
+        jitter_contribution: i64,
+        /// Stable timer opportunity used to select the jitter contribution.
+        timer_opportunity: u64,
+        /// Device-local arm sequence used to derive the timer opportunity.
+        arm_sequence: u64,
     },
     /// One durable one-shot offset, drift, or jump mutation.
     Impulse {
@@ -372,11 +380,18 @@ impl FaultClockEvidenceV1 {
                 old_deadlines,
                 new_deadlines,
                 generations,
+                opportunity_phase,
+                jitter_contribution,
+                timer_opportunity,
+                arm_sequence,
             } => {
                 let removed = matches!(*action, 2 | 4);
                 if !(1..=5).contains(role)
                     || !(1..=4).contains(action)
                     || *sequence == 0
+                    || !matches!(*opportunity_phase, 29 | 30)
+                    || *timer_opportunity == 0
+                    || *arm_sequence == 0
                     || (removed
                         != (new_deadlines[0] == 0
                             && new_deadlines[1] == u64::MAX
@@ -399,6 +414,10 @@ impl FaultClockEvidenceV1 {
                         generations[1],
                     ],
                 );
+                body[72..74].copy_from_slice(&opportunity_phase.to_le_bytes());
+                body[80..88].copy_from_slice(&(*jitter_contribution as u64).to_le_bytes());
+                body[88..96].copy_from_slice(&timer_opportunity.to_le_bytes());
+                body[96..104].copy_from_slice(&arm_sequence.to_le_bytes());
             }
             FaultClockObservationV1::Impulse {
                 transform_kind,
@@ -533,6 +552,10 @@ impl FaultClockEvidenceV1 {
                 old_deadlines: [u64_at(body, 24)?, u64_at(body, 32)?],
                 new_deadlines: [u64_at(body, 40)?, u64_at(body, 48)?],
                 generations: [u64_at(body, 56)?, u64_at(body, 64)?],
+                opportunity_phase: u16_at(body, 72)?,
+                jitter_contribution: u64_at(body, 80)? as i64,
+                timer_opportunity: u64_at(body, 88)?,
+                arm_sequence: u64_at(body, 96)?,
             },
             5 => FaultClockObservationV1::Impulse {
                 transform_kind: u32_at(body, 0)?,
@@ -680,6 +703,10 @@ mod tests {
                 old_deadlines: [11, 12],
                 new_deadlines: [13, 14],
                 generations: [8, 9],
+                opportunity_phase: 30,
+                jitter_contribution: -2,
+                timer_opportunity: 15,
+                arm_sequence: 14,
             },
             FaultClockObservationV1::Impulse {
                 transform_kind: 2,
@@ -724,6 +751,10 @@ mod tests {
             old_deadlines: [11, 12],
             new_deadlines: [13, 14],
             generations: [8, 9],
+            opportunity_phase: 30,
+            jitter_contribution: -2,
+            timer_opportunity: 15,
+            arm_sequence: 14,
         });
         let mut encoded = value
             .encode()

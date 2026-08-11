@@ -23,6 +23,19 @@ For the realized machine QEMU reports each guest-visible clock/timer source:
 - ACPI/paravirtual clocks realized by the machine;
 - device clocks explicitly registered for the fault API.
 
+For the supported `sim` accelerator, QEMU 10.0 realizes no KVM-backed
+paravirtual clock: x86 `kvmclock` rejects realization without KVM, Hyper-V
+reference time is implemented by the KVM backend, and AArch64 pvtime is
+initialized only by KVM. Those sources are therefore absent from the realized
+manifest rather than silently modeled as TSC or the architectural counter. The
+patch does implement the closed device-clock registration surface; a device is
+listed only after its production read/domain/timer callbacks register. The
+built-in realized sources in this patch are TSC, CMOS RTC, PIT, HPET, local
+APIC timer, ACPI PM timer, ARM generic counter/timers, and PL031. Adding a
+fault-capable paravirtual or other device clock requires a real source
+registration and VMState implementation in that device; a manifest-only row is
+invalid.
+
 Rows include source ID, base clock domain, width/wrap, read phase, programmable
 timer relationship, monotonicity requirement, frequency representation,
 architecture/device scope, and VMState coverage. A source not in the manifest
@@ -81,10 +94,14 @@ for timers made overdue. No timer fires in a consumer's past.
 Jitter on a clock read does not implicitly jitter timer firing. Timer jitter is
 drawn from the same retained transform only when its declared phase is `arm` or
 `fire`. An `arm` draw is consumed while the deadline is programmed. A `fire`
-draw is prospectively derived from the immutable timer-transition sequence so
-QEMU can schedule the callback, but the fire opportunity and its evidence are
-consumed only when the callback actually runs. Replacement, removal, or any
-other rearm recomputes the prospective target from the then-active bindings.
+draw is prospectively derived from an immutable timer arm sequence so QEMU can
+schedule the callback, but that sequence is device-local rather than
+source-global: every concrete timer owns a monotonically increasing arm
+sequence in its VMState. The fire opportunity and its evidence are consumed
+only when the callback actually runs. Replacement, removal, migration restore,
+or any other internal rearm preserves that arm sequence while recomputing the
+prospective target from the then-active bindings. Unrelated timers therefore
+cannot perturb a timer's draw, and migration cannot consume or repeat it.
 
 ## Source failure and synchronization
 
@@ -110,6 +127,10 @@ normalized-nanosecond and architectural register/counter values, source width
 and wrap action, anchors,
 offset/rate/jump/freeze/jitter contributors, read opportunity, monotonicity/wrap
 action, timer old/new deadline and action, source transition, and fingerprints.
+Timer evidence also carries the actual arm/fire phase, device-local arm
+sequence, derived timer-opportunity key, and selected jitter contribution. The
+host independently recomputes both SHA-256 derivations and the exact table
+selection; changing any causal field rejects the record.
 Impulse result and event evidence decode to the same typed record. Recurring
 read, wander, source-transition, and timer evidence is accepted only for an
 active retained command, and all records are checked against the command kind,
