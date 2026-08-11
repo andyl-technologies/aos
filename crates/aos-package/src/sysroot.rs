@@ -529,8 +529,10 @@ pub async fn install_system(
     // Image generations are never activated into the running root. When the
     // two-axis image state exists, import the authenticated OTA
     // payload, write only the inactive root/hash slot, publish its counted UKI
-    // last, and make it the durable next boot. First-boot evaluation under the
-    // new image creates the config generation after reboot.
+    // last, and let the loader's AOS entry pattern select it. Leaving no exact
+    // persistent override is essential: sd-boot can then sort an exhausted
+    // counted entry behind the known-good slot. First-boot evaluation under
+    // the new image creates the config generation after reboot.
     let image_profile = Path::new(IMAGE_PROFILE_DIR);
     // Non-A/B upgrades do not enter the image-staging branch below. Validate
     // their recorded Secure Boot facts before creating a generation or
@@ -577,14 +579,14 @@ pub async fn install_system(
                 &closure.registry_name,
                 image,
                 &image_store,
-                |entry| {
+                |_entry| {
                     let status = std::process::Command::new("bootctl")
                         .arg("set-default")
-                        .arg(entry)
+                        .arg("")
                         .status()
-                        .context("running bootctl set-default for staged image")?;
+                        .context("clearing the exact boot default for staged image")?;
                     if !status.success() {
-                        bail!("bootctl set-default failed with {status}");
+                        bail!("clearing the exact boot default failed with {status}");
                     }
                     Ok(())
                 },
