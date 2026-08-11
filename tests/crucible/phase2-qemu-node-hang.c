@@ -200,7 +200,6 @@ static void validate_recovery(void)
 {
     struct qemu_plugin_crucible_fault_event event;
     uint8_t evidence[HANG_EVIDENCE_BYTES];
-    size_t unused = 0;
 
     poll_event(evidence, &event);
     if (memcmp(evidence, "CRUCHNG1", 8) != 0 ||
@@ -210,6 +209,14 @@ static void validate_recovery(void)
             activation_deadline) {
         fail("hang recovery evidence was malformed");
     }
+}
+
+static void validate_no_event(void)
+{
+    struct qemu_plugin_crucible_fault_event event;
+    uint8_t evidence[HANG_EVIDENCE_BYTES];
+    size_t unused = 0;
+
     if (qemu_plugin_crucible_fault_event_poll(
             &event, evidence, sizeof(evidence), &unused) != 0) {
         fail("hang lifecycle emitted an unexpected extra event");
@@ -274,6 +281,7 @@ static void completion(void *opaque)
         result.command_sequence == 3) {
         g_printerr("CRUCIBLE_NODE_HANG_STAGE prepared-recovery observed=%" G_GUINT64_FORMAT "\n",
                    result.observed_icount);
+        validate_recovery();
         validate_watchdog();
         submit_commit(4, result.observed_icount + 16, result.before_hash,
                       remove_payload, remove_payload_len);
@@ -287,7 +295,7 @@ static void completion(void *opaque)
                    result.observed_icount, result.applied_icount);
         fail("hang recovery transaction did not complete");
     }
-    validate_recovery();
+    validate_no_event();
     g_printerr("CRUCIBLE_NODE_HANG_STAGE recovered observed=%" G_GUINT64_FORMAT "\n",
                result.observed_icount);
     finished = true;
