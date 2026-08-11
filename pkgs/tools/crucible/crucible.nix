@@ -359,10 +359,12 @@
           ${lib.optionalString (stdenv.hostPlatform.system == "x86_64-linux") ''
             export CRUCIBLE_MATRIX_KERNEL_X86_64="${linux-crucible}/boot/vmlinuz-${linux-crucible.version}"
             export CRUCIBLE_MATRIX_ROOT_IMAGE_X86_64="${crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4"
+            export CRUCIBLE_MATRIX_KERNEL_CMDLINE_X86_64="${linux-crucible.passthru.crucibleFixtureKernelCmdline} init=/init"
           ''}
           ${lib.optionalString (stdenv.hostPlatform.system == "aarch64-linux") ''
             export CRUCIBLE_MATRIX_KERNEL_AARCH64="${linux-crucible}/boot/vmlinuz-${linux-crucible.version}"
             export CRUCIBLE_MATRIX_ROOT_IMAGE_AARCH64="${crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4"
+            export CRUCIBLE_KERNEL_CMDLINE_AARCH64="${linux-crucible.passthru.crucibleFixtureKernelCmdline} init=/init"
           ''}
           export PATH="${coreutils}/bin:${grep}/bin:${sed}/bin:${util-linux}/bin:${bash}/bin"
           exec ${bash}/bin/bash "$out/share/aos/crucible/debugger-live-matrix.sh" "\$@"

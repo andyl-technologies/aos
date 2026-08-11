@@ -198,6 +198,14 @@
         needle = "export CRUCIBLE_KERNEL_CMDLINE_AARCH64=";
       }
       {
+        label = "fixture identity uses the selected kernel command line";
+        needle = ''"$guest_architecture" "$kernel" "$root_image" "$kernel_cmdline" "$fixture"'';
+      }
+      {
+        label = "kernel command line is retained with asset identities";
+        needle = ''grep '^cmdline = ' "$fixture" >>"$directory/asset-identities"'';
+      }
+      {
         label = "read-only GDB state comparison";
         needle = ''files_equal "$directory/read-only-before.gdb" "$directory/read-only-after.gdb"'';
       }

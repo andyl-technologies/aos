@@ -31,7 +31,8 @@ AArch64, supply `CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64`,
 `CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64`, and
 `CRUCIBLE_MATRIX_EXTERNAL_DOORBELL_INSTRUCTION_ABI_AARCH64=4` together. The
 runner rejects an asset set whose instruction ABI differs from the packaged
-plugin before starting QEMU; the retained evidence records its identities. Use
+plugin before starting QEMU; the retained evidence records its kernel and root
+identities, exact canonical kernel command line, and instruction ABI. Use
 `--output NEW-DIR` when the evidence
 location must be stable; check `--help` before requesting `all` on a suite that
 may retain only its native guest architecture.

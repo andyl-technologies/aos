@@ -478,22 +478,25 @@ run_architecture() {
   local relay_port=$((daemon_port + 1))
   local endpoint="http://127.0.0.1:$daemon_port"
   local registers='pc sp x29 x0'
-  local kernel root_image
+  local kernel root_image kernel_cmdline
   if [[ "$guest_architecture" == x86_64 ]]; then
     registers='rip rsp rbp rax'
     kernel=${CRUCIBLE_MATRIX_KERNEL_X86_64:?x86_64 kernel is not packaged}
     root_image=${CRUCIBLE_MATRIX_ROOT_IMAGE_X86_64:?x86_64 root image is not packaged}
+    kernel_cmdline=${CRUCIBLE_MATRIX_KERNEL_CMDLINE_X86_64:?x86_64 kernel command line is not packaged}
   else
     kernel=${CRUCIBLE_MATRIX_KERNEL_AARCH64:?AArch64 kernel is not packaged}
     root_image=${CRUCIBLE_MATRIX_ROOT_IMAGE_AARCH64:?AArch64 root image is not packaged}
+    kernel_cmdline=${CRUCIBLE_KERNEL_CMDLINE_AARCH64:?AArch64 kernel command line is not packaged}
   fi
   mkdir -p "$directory"
   local fixture="$directory/scenario.toml"
   progress "$guest_architecture:generate-fixture"
   timeout -k 5s "$stage_timeout_seconds" "$CRUCIBLE_MATRIX_FIXTURE_GENERATOR" \
-    "$guest_architecture" "$kernel" "$root_image" "$fixture"
+    "$guest_architecture" "$kernel" "$root_image" "$kernel_cmdline" "$fixture"
   grep '^kernel = "blake3:' "$fixture" >"$directory/asset-identities"
   grep '^root_image = "blake3:' "$fixture" >>"$directory/asset-identities"
+  grep '^cmdline = ' "$fixture" >>"$directory/asset-identities"
   printf 'doorbell_instruction_abi=%s\n' \
     "$CRUCIBLE_MATRIX_DOORBELL_INSTRUCTION_ABI_VERSION" >>"$directory/asset-identities"
 

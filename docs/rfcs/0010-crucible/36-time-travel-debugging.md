@@ -1229,7 +1229,10 @@ stream on reposition. The AArch64 exec and SSH probes both reported `aarch64`.
 The admitted AArch64 kernel and root image were bound in the aggregate evidence
 as `blake3:38ea5e76ba4dba2acaf0d64fed3722c9acfa7df9033bb4e01473e19c6763aa9f`
 and `blake3:5c9cca533f89c3df7f59ba189779dab38bb7c18b9438fb8b58d1ed3bef0ee9c7`
-with doorbell instruction ABI v4.
+with doorbell instruction ABI v4. The canonical scenario and aggregate asset
+identity also retain the exact selected kernel command line, so the boot tuple
+can be reconstructed from the evidence without consulting invocation-local
+environment variables.
 
 Independent boots may batch observational console entries differently. That is
 not a causal replay difference: the acceptance comparison follows OBS-15 and
