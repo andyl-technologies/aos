@@ -4,12 +4,17 @@ use super::*;
 
 impl ProductionVmLifecycleConfig {
     /// Builds a local-QEMU lifecycle configuration with bounded defaults.
+    ///
+    /// `run_state_root` must be a durable writable directory. Each scenario
+    /// receives an isolated process manifest and lifecycle journal beneath it;
+    /// there is no ephemeral recovery fallback.
     #[must_use]
     pub fn new(
         executable: impl Into<PathBuf>,
         plugin: impl Into<PathBuf>,
         kernel: impl Into<PathBuf>,
         root_image: impl Into<PathBuf>,
+        run_state_root: impl Into<PathBuf>,
     ) -> Self {
         Self::new_for_guest_architecture(
             executable,
@@ -17,10 +22,13 @@ impl ProductionVmLifecycleConfig {
             VmArchitecture::X86_64,
             kernel,
             root_image,
+            run_state_root,
         )
     }
 
     /// Builds a local-QEMU lifecycle configuration for one native guest architecture.
+    ///
+    /// `run_state_root` has the same durable recovery contract as [`Self::new`].
     #[must_use]
     pub fn new_for_guest_architecture(
         executable: impl Into<PathBuf>,
@@ -28,6 +36,7 @@ impl ProductionVmLifecycleConfig {
         architecture: VmArchitecture,
         kernel: impl Into<PathBuf>,
         root_image: impl Into<PathBuf>,
+        run_state_root: impl Into<PathBuf>,
     ) -> Self {
         let mut guest_assets = BTreeMap::new();
         guest_assets.insert(
@@ -46,6 +55,7 @@ impl ProductionVmLifecycleConfig {
             initrd: None,
             kernel_cmdline_prefix: None,
             root_image_format: ProductionRootImageFormat::Qcow2,
+            run_state_root: run_state_root.into(),
             run_ceiling_icount: DEFAULT_RUN_CEILING_ICOUNT,
             quantum_budget: DEFAULT_QUANTUM_BUDGET,
             rendezvous_interval_icount: None,

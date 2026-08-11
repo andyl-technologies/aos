@@ -918,6 +918,13 @@ pub(crate) fn production_qemu_lifecycle_config(
         option_env!("CRUCIBLE_AOS_ROOT_IMAGE"),
         "root image",
     )?;
+    let run_state_root = std::env::var_os("CRUCIBLE_RUN_STATE_ROOT")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            backend_error(
+                "production QEMU lifecycle requires CRUCIBLE_RUN_STATE_ROOT for durable process recovery",
+            )
+        })?;
     let native_guest_architecture = live_qemu_native_guest_architecture()?;
     let mut config = production_api::ProductionVmLifecycleConfig::new_for_guest_architecture(
         qemu,
@@ -925,6 +932,7 @@ pub(crate) fn production_qemu_lifecycle_config(
         native_guest_architecture,
         kernel,
         root_image,
+        run_state_root,
     )
     .with_root_image_format(production_api::ProductionRootImageFormat::Raw)
     .with_run_ceiling_icount(PRODUCTION_CLI_RUN_CEILING_ICOUNT)

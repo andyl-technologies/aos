@@ -122,12 +122,16 @@ one packaged root image. Override them process-wide with:
 ```text
 CRUCIBLE_KERNEL
 CRUCIBLE_ROOT_IMAGE
+CRUCIBLE_RUN_STATE_ROOT writable durable directory
 CRUCIBLE_INITRD          optional
 CRUCIBLE_KERNEL_CMDLINE
 ```
 
 The package supplies compile-time defaults for the kernel, root image, and
-kernel command line. Per-node kernel and root-image references remain part of
+kernel command line. `CRUCIBLE_RUN_STATE_ROOT` has no ephemeral fallback: it
+retains the per-run process manifest and lifecycle journal used to detect a
+concurrent owner, contain an interrupted QEMU generation, and fail closed on a
+corrupt recovery record. Per-node kernel and root-image references remain part of
 scenario identity, but current production launch configuration does not select
 different host files for different nodes. Do not document heterogeneous guest
 images as an operationally supported workflow yet.

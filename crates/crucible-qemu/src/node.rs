@@ -13,6 +13,9 @@ use std::process::Child;
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
+use std::path::PathBuf;
+
+#[cfg(target_os = "linux")]
 use crucible::model::{FaultCoordinate, ResolvedBindingAction};
 use crucible::{
     AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendNetworkOutput,
@@ -42,6 +45,111 @@ use crate::{
 
 mod error;
 pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
+
+/// Stable Linux identity for one launched QEMU process generation.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QemuProcessIdentity {
+    /// Operating-system process identifier.
+    pub process_id: u32,
+    /// Linux `/proc` start-time ticks, which prevent PID-reuse confusion.
+    pub start_time_ticks: u64,
+    /// Canonical executable reached through `/proc/<pid>/exe`.
+    pub executable: PathBuf,
+}
+
+/// Returns the current Linux identity for `process_id`, when it still exists.
+///
+/// # Errors
+///
+/// Returns [`QemuNodeError`] when `/proc` exists for the PID but its identity
+/// cannot be read or decoded.
+#[cfg(target_os = "linux")]
+pub fn linux_process_identity(
+    process_id: u32,
+) -> Result<Option<QemuProcessIdentity>, QemuNodeError> {
+    let proc_directory = PathBuf::from("/proc").join(process_id.to_string());
+    let stat = match std::fs::read_to_string(proc_directory.join("stat")) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(QemuNodeError::fault_command(format!(
+                "read process identity for PID {process_id}: {error}"
+            )));
+        }
+    };
+    let suffix = stat
+        .rsplit_once(") ")
+        .map(|(_, suffix)| suffix)
+        .ok_or_else(|| {
+            QemuNodeError::fault_command(format!("malformed /proc/{process_id}/stat"))
+        })?;
+    let start_time_ticks = suffix
+        .split_ascii_whitespace()
+        .nth(19)
+        .ok_or_else(|| {
+            QemuNodeError::fault_command(format!("missing start time in /proc/{process_id}/stat"))
+        })?
+        .parse::<u64>()
+        .map_err(|error| {
+            QemuNodeError::fault_command(format!(
+                "invalid start time in /proc/{process_id}/stat: {error}"
+            ))
+        })?;
+    let executable = match std::fs::read_link(proc_directory.join("exe")) {
+        Ok(executable) => executable,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(QemuNodeError::fault_command(format!(
+                "read executable identity for PID {process_id}: {error}"
+            )));
+        }
+    };
+    Ok(Some(QemuProcessIdentity {
+        process_id,
+        start_time_ticks,
+        executable,
+    }))
+}
+
+/// Force-kills a surviving QEMU only when its complete recorded identity matches.
+///
+/// A missing process or a reused PID is already contained and succeeds. An
+/// exact match receives `SIGKILL`, after which this function waits until the
+/// identity disappears or changes.
+///
+/// # Errors
+///
+/// Returns [`QemuNodeError`] when `/proc` cannot be validated, signaling fails,
+/// or the matching process remains present through `timeout`.
+#[cfg(target_os = "linux")]
+pub fn quarantine_orphaned_qemu_process(
+    expected: &QemuProcessIdentity,
+    timeout: Duration,
+) -> Result<(), QemuNodeError> {
+    if linux_process_identity(expected.process_id)?.as_ref() != Some(expected) {
+        return Ok(());
+    }
+    signal_child(
+        expected.process_id,
+        libc::SIGKILL,
+        "kill orphaned QEMU generation",
+    )
+    .map_err(|error| QemuNodeError::fault_command(error.to_string()))?;
+    let started = Instant::now();
+    loop {
+        if linux_process_identity(expected.process_id)?.as_ref() != Some(expected) {
+            return Ok(());
+        }
+        if started.elapsed() >= timeout {
+            return Err(QemuNodeError::fault_command(format!(
+                "orphaned QEMU PID {} remained present through {:?}",
+                expected.process_id, timeout
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
 
 /// Lifecycle state tracked by the host wrapper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1194,6 +1302,22 @@ impl QemuNode {
     #[must_use]
     pub fn process_id(&self) -> u32 {
         self.child.process_id()
+    }
+
+    /// Returns the complete Linux identity of this QEMU process generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when `/proc` cannot be read or no longer names
+    /// this child.
+    #[cfg(target_os = "linux")]
+    pub fn process_identity(&self) -> Result<QemuProcessIdentity, QemuNodeError> {
+        linux_process_identity(self.process_id())?.ok_or_else(|| {
+            QemuNodeError::fault_command(format!(
+                "QEMU child PID {} has no live process identity",
+                self.process_id()
+            ))
+        })
     }
 
     /// Waits for the exact child to complete a terminal lifecycle fault.

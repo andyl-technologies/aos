@@ -460,15 +460,25 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         if let Some(gateway_shutdown) = gateway_shutdown {
             gateway_shutdown?;
         }
+        let events = shutdown?;
+        self.run_manifest.clean_shutdown = true;
+        self.persist_run_manifest()?;
         if let Some(error) = pending_error {
-            shutdown?;
             return Err(error);
         }
-        shutdown
+        Ok(events)
     }
 }
 
 impl ProductionVmLifecycleLoop {
+    fn persist_run_manifest(&self) -> Result<(), SchedulerError> {
+        persist_atomic_json(
+            &self._run_directory.path().join("run-manifest.json"),
+            &self.run_manifest,
+        )
+        .map_err(|message| SchedulerError::BoundaryViolation { message })
+    }
+
     pub(super) fn persist_lifecycle_journal(&self) -> Result<(), SchedulerError> {
         let path = self._run_directory.path().join("lifecycle-journal.json");
         let next = self._run_directory.path().join("lifecycle-journal.next");
@@ -510,9 +520,6 @@ impl ProductionVmLifecycleLoop {
     ) -> Result<(), SchedulerError> {
         let mut nodes = Vec::new();
         for decision in decisions {
-            let Some(expected_exit_code) = decision.expected_exit_code else {
-                continue;
-            };
             let current_generation = self
                 .node_generations
                 .get(&decision.node)
@@ -523,11 +530,11 @@ impl ProductionVmLifecycleLoop {
                         decision.node.name
                     ),
                 })?;
-            let next_generation = if decision.effective_transition
-                == crucible::model::NodeLifecycleTransition::PermanentFailure
-            {
-                current_generation
-            } else {
+            let next_generation = if matches!(
+                decision.effective_transition,
+                crucible::model::NodeLifecycleTransition::Crash
+                    | crucible::model::NodeLifecycleTransition::PowerOff
+            ) {
                 current_generation.checked_add(1).ok_or_else(|| {
                     SchedulerError::BoundaryViolation {
                         message: format!(
@@ -536,17 +543,20 @@ impl ProductionVmLifecycleLoop {
                         ),
                     }
                 })?
+            } else {
+                current_generation
             };
-            let process_id = self.inner.backend().process_id(&decision.node)?;
+            let current_process = self.inner.backend().process_identity(&decision.node)?;
             nodes.push(ProductionLifecycleJournalNode {
                 node: decision.node.name.clone(),
-                process_id,
+                current_process,
+                replacement_process: None,
                 current_generation,
                 next_generation,
                 transition: format!("{:?}", decision.effective_transition),
                 action_sha256: decision.action.to_hex(),
                 evidence_sha256: decision.event_evidence.to_hex(),
-                expected_exit_code,
+                expected_exit_code: decision.expected_exit_code,
             });
         }
         if nodes.is_empty() {
@@ -570,6 +580,51 @@ impl ProductionVmLifecycleLoop {
     ) -> Result<(), SchedulerError> {
         self.lifecycle_journal.phase = phase;
         self.persist_lifecycle_journal()
+    }
+
+    fn record_prepared_lifecycle_processes(
+        &mut self,
+        prepared: &[PreparedTerminalReplacement],
+    ) -> Result<(), SchedulerError> {
+        for item in prepared {
+            let identity = item
+                .replacement
+                .as_ref()
+                .map(QemuNode::process_identity)
+                .transpose()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "capture staged process identity for `{}`: {error}",
+                        item.decision.node.name
+                    ),
+                })?;
+            let journal_node = self
+                .lifecycle_journal
+                .nodes
+                .iter_mut()
+                .find(|node| node.node == item.decision.node.name)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "staged lifecycle node `{}` has no journal identity",
+                        item.decision.node.name
+                    ),
+                })?;
+            journal_node.replacement_process = identity;
+            match &journal_node.replacement_process {
+                Some(identity) => {
+                    self.run_manifest
+                        .staged_processes
+                        .insert(item.decision.node.name.clone(), identity.clone());
+                }
+                None => {
+                    self.run_manifest
+                        .staged_processes
+                        .remove(&item.decision.node.name);
+                }
+            }
+        }
+        self.persist_run_manifest()?;
+        self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::Prepared)
     }
 
     fn retain_completed_lifecycle_exits(
@@ -606,7 +661,7 @@ impl ProductionVmLifecycleLoop {
                 .push(ProductionLifecycleCompletedExit {
                     transaction: self.lifecycle_journal.transaction,
                     node: decision.node.name.clone(),
-                    process_id: journal_node.process_id,
+                    process: journal_node.current_process.clone(),
                     generation: journal_node.current_generation,
                     transition: format!("{:?}", decision.effective_transition),
                     action_sha256: decision.action.to_hex(),
@@ -624,17 +679,16 @@ impl ProductionVmLifecycleLoop {
         decisions: &[QemuNodeLifecycleDecision],
         primary: impl std::fmt::Display,
     ) -> SchedulerError {
-        let terminal_nodes = decisions
+        let affected_nodes = decisions
             .iter()
-            .filter(|decision| decision.expected_exit_code.is_some())
             .map(|decision| decision.node.clone())
             .collect::<Vec<_>>();
         let journal = self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::Quarantined);
         let quarantine = self
             .inner
             .backend_mut()
-            .quarantine_terminal_nodes(&terminal_nodes);
-        let activities = terminal_nodes
+            .quarantine_terminal_nodes(&affected_nodes);
+        let activities = affected_nodes
             .iter()
             .cloned()
             .map(|node| (node, SchedulerNodeActivity::Done))
@@ -1093,7 +1147,7 @@ impl ProductionVmLifecycleLoop {
 
     fn commit_terminal_replacements(
         &mut self,
-        mut prepared: Vec<PreparedTerminalReplacement>,
+        prepared: &mut Vec<PreparedTerminalReplacement>,
     ) -> Result<(), SchedulerError> {
         if prepared.is_empty() {
             return Ok(());
@@ -1110,7 +1164,7 @@ impl ProductionVmLifecycleLoop {
             })
             .collect::<Vec<_>>();
         let mut block_handles = Vec::new();
-        for item in &prepared {
+        for item in prepared.iter() {
             if let Some(binding) = self.block_bindings.get(&item.decision.node)
                 && let Some(replacement) = &item.replacement
             {
@@ -1125,14 +1179,14 @@ impl ProductionVmLifecycleLoop {
                 block_handles.push((binding.device_hash(), handle));
             }
         }
-        let replacement_values = prepared
-            .iter_mut()
-            .map(|item| (item.decision.node.clone(), item.replacement.take()))
-            .collect();
+        let replacement_nodes = prepared
+            .iter()
+            .map(|item| item.decision.node.clone())
+            .collect::<Vec<_>>();
         let plan = self
             .inner
             .backend()
-            .prepare_terminal_replacements(replacement_values)?;
+            .prepare_terminal_replacements(&replacement_nodes)?;
         let mut block_devices =
             self.block_devices
                 .lock()
@@ -1142,15 +1196,45 @@ impl ProductionVmLifecycleLoop {
         self.inner
             .loop_impl_mut()
             .set_vm_node_activities(&activities)?;
-        let retired = self.inner.backend_mut().commit_terminal_replacements(plan);
+        let replacement_values = prepared
+            .iter_mut()
+            .map(|item| (item.decision.node.clone(), item.replacement.take()))
+            .collect();
+        let retired = self
+            .inner
+            .backend_mut()
+            .commit_terminal_replacements(plan, replacement_values);
         debug_assert!(retired.iter().all(|(_, node)| node.child_reaped()));
         for (device, handle) in block_handles {
             block_devices.insert(device, handle);
         }
         drop(block_devices);
 
-        for item in prepared {
+        for item in prepared.drain(..) {
             let node = item.decision.node;
+            match item.service_state {
+                ProductionNodeServiceState::PermanentlyFailed => {
+                    self.run_manifest.processes.remove(&node.name);
+                }
+                ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => {
+                    let identity = self
+                        .lifecycle_journal
+                        .nodes
+                        .iter()
+                        .find(|journal_node| journal_node.node == node.name)
+                        .and_then(|journal_node| journal_node.replacement_process.clone())
+                        .ok_or_else(|| SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "committed replacement for `{}` lost its process identity",
+                                node.name
+                            ),
+                        })?;
+                    self.run_manifest
+                        .processes
+                        .insert(node.name.clone(), identity);
+                }
+            }
+            self.run_manifest.staged_processes.remove(&node.name);
             self.node_service_states
                 .insert(node.clone(), item.service_state);
             self.node_run_directories
@@ -1164,7 +1248,7 @@ impl ProductionVmLifecycleLoop {
                 );
             }
         }
-        Ok(())
+        self.persist_run_manifest()
     }
 
     fn supervise_terminal_lifecycle_exits(
@@ -1240,14 +1324,14 @@ impl ProductionVmLifecycleLoop {
     ) -> Result<(), SchedulerError> {
         for node in requests {
             match self.node_service_states.get(node).copied() {
-                Some(ProductionNodeServiceState::Running) => {}
-                Some(ProductionNodeServiceState::PoweredOff) => {
-                    self.inner.backend_mut().boot_powered_off_generation(node)?;
-                    self.inner
-                        .loop_impl_mut()
-                        .set_vm_node_activity(node, SchedulerNodeActivity::Runnable)?;
-                    self.node_service_states
-                        .insert(node.clone(), ProductionNodeServiceState::Running);
+                Some(ProductionNodeServiceState::PoweredOff) => {}
+                Some(ProductionNodeServiceState::Running) => {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "boot requires powered-off node `{}`, but it is already running",
+                            node.name
+                        ),
+                    });
                 }
                 Some(ProductionNodeServiceState::PermanentlyFailed) => {
                     return Err(SchedulerError::BoundaryViolation {
@@ -1263,6 +1347,21 @@ impl ProductionVmLifecycleLoop {
                     });
                 }
             }
+        }
+        for node in requests {
+            self.inner.backend_mut().boot_powered_off_generation(node)?;
+        }
+        let activities = requests
+            .iter()
+            .cloned()
+            .map(|node| (node, SchedulerNodeActivity::Runnable))
+            .collect::<Vec<_>>();
+        self.inner
+            .loop_impl_mut()
+            .set_vm_node_activities(&activities)?;
+        for node in requests {
+            self.node_service_states
+                .insert(node.clone(), ProductionNodeServiceState::Running);
         }
         Ok(())
     }
@@ -1501,7 +1600,7 @@ impl ProductionVmLifecycleLoop {
             )?
         };
         let (decisions, boot_requests) = {
-            let mut runtime =
+            let runtime =
                 self.fault_runtime
                     .lock()
                     .map_err(|_| SchedulerError::BoundaryViolation {
@@ -1509,15 +1608,15 @@ impl ProductionVmLifecycleLoop {
                     })?;
             (
                 runtime.node_lifecycle_decisions().to_vec(),
-                runtime.take_node_boot_requests(),
+                runtime.node_boot_requests().clone(),
             )
         };
-        self.activate_node_boot_requests(&boot_requests)?;
-        let has_terminal = decisions
-            .iter()
-            .any(|decision| decision.expected_exit_code.is_some());
-        if has_terminal {
+        let has_lifecycle = !decisions.is_empty();
+        if has_lifecycle {
             self.begin_terminal_lifecycle_transaction(&decisions)?;
+        }
+        if let Err(error) = self.activate_node_boot_requests(&boot_requests) {
+            return Err(self.quarantine_terminal_lifecycle_transaction(&decisions, error));
         }
         let mut prepared = match self.prepare_terminal_replacements(&decisions) {
             Ok(prepared) => prepared,
@@ -1527,10 +1626,8 @@ impl ProductionVmLifecycleLoop {
                 );
             }
         };
-        if has_terminal {
-            if let Err(error) =
-                self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::Prepared)
-            {
+        if has_lifecycle {
+            if let Err(error) = self.record_prepared_lifecycle_processes(&prepared) {
                 return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
                     &decisions,
                     &mut prepared,
@@ -1563,7 +1660,7 @@ impl ProductionVmLifecycleLoop {
                 error,
             ));
         }
-        if has_terminal {
+        if has_lifecycle {
             if let Err(error) =
                 self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::ExitsReaped)
             {
@@ -1574,32 +1671,29 @@ impl ProductionVmLifecycleLoop {
                 ));
             }
         }
-        if let Err(error) = self.commit_terminal_replacements(prepared) {
-            return Err(self.quarantine_terminal_lifecycle_transaction(&decisions, error));
+        if let Err(error) = self.commit_terminal_replacements(&mut prepared) {
+            return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                &decisions,
+                &mut prepared,
+                error,
+            ));
         }
-        if has_terminal {
+        if has_lifecycle {
             if let Err(error) =
                 self.retain_completed_lifecycle_exits(&decisions, &observed_exit_codes)
             {
                 return Err(self.quarantine_terminal_lifecycle_transaction(&decisions, error));
             }
         }
-        for decision in &decisions {
-            if decision.expected_exit_code.is_none()
-                && decision.effective_transition == crucible::model::NodeLifecycleTransition::Boot
-            {
-                self.inner
-                    .loop_impl_mut()
-                    .set_vm_node_activity(&decision.node, SchedulerNodeActivity::Runnable)?;
-            }
-        }
         if !decisions.is_empty() {
-            self.fault_runtime
-                .lock()
-                .map_err(|_| SchedulerError::BoundaryViolation {
-                    message: String::from("production fault runtime lock is poisoned"),
-                })?
-                .acknowledge_node_lifecycle_decisions();
+            let mut runtime =
+                self.fault_runtime
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from("production fault runtime lock is poisoned"),
+                    })?;
+            runtime.acknowledge_node_lifecycle_decisions();
+            runtime.acknowledge_node_boot_requests();
         }
         Ok(append)
     }

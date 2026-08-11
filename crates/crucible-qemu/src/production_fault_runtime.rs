@@ -925,13 +925,18 @@ impl ProductionFaultRuntime {
         self.pending_node_lifecycle.clear();
     }
 
-    /// Takes nodes whose committed lifecycle action requests a boot.
+    /// Returns nodes whose committed lifecycle action requests a boot.
     ///
     /// The host uses this edge to resume a natively paused power-off
     /// generation before the scheduler can select it again.
     #[must_use]
-    pub fn take_node_boot_requests(&mut self) -> BTreeSet<NodeId> {
-        std::mem::take(&mut self.pending_node_boot)
+    pub fn node_boot_requests(&self) -> &BTreeSet<NodeId> {
+        &self.pending_node_boot
+    }
+
+    /// Acknowledges boot requests after every requested node is activated.
+    pub fn acknowledge_node_boot_requests(&mut self) {
+        self.pending_node_boot.clear();
     }
 
     /// Removes committed host impulses for exact device-opportunity execution.

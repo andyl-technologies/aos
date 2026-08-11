@@ -224,9 +224,10 @@ mod tests {
 
     #[test]
     fn scheduler_step_bound_counts_quanta_instead_of_instruction_slices() {
-        let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root")
-            .with_run_ceiling_icount(12_000_000_000)
-            .with_quantum_budget(16);
+        let config =
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state")
+                .with_run_ceiling_icount(12_000_000_000)
+                .with_quantum_budget(16);
 
         assert_eq!(config.maximum_scheduler_quanta(2), 19);
     }

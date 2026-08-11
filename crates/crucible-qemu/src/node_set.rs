@@ -18,11 +18,13 @@ use crucible_shmem::{
 };
 
 use crate::QemuNode;
+#[cfg(target_os = "linux")]
+use crate::QemuProcessIdentity;
 use crate::QemuVmSnapshot;
 
 /// A fully validated, no-fail terminal node-generation map update.
 pub struct QemuNodeTerminalReplacementPlan {
-    replacements: BTreeMap<NodeId, Option<QemuNode>>,
+    nodes: BTreeSet<NodeId>,
 }
 
 /// Maximum early-pause reissues for one scheduler-selected node step.
@@ -159,10 +161,10 @@ impl QemuNodeSet {
     /// authoritative current generation. The node set is unchanged on error.
     pub fn prepare_terminal_replacements(
         &self,
-        replacements: Vec<(NodeId, Option<QemuNode>)>,
+        replacements: &[NodeId],
     ) -> Result<QemuNodeTerminalReplacementPlan, BackendError> {
-        let mut staged = BTreeMap::new();
-        for (node, replacement) in replacements {
+        let mut staged = BTreeSet::new();
+        for node in replacements {
             if !self.nodes.contains_key(&node) {
                 return Err(BackendError::Rejected {
                     message: format!(
@@ -171,16 +173,14 @@ impl QemuNodeSet {
                     ),
                 });
             }
-            if staged.insert(node.clone(), replacement).is_some() {
+            if !staged.insert(node.clone()) {
                 return Err(BackendError::Rejected {
                     message: format!("terminal replacement repeats node `{}`", node.name),
                 });
             }
         }
 
-        Ok(QemuNodeTerminalReplacementPlan {
-            replacements: staged,
-        })
+        Ok(QemuNodeTerminalReplacementPlan { nodes: staged })
     }
 
     /// Validates that every retiring QEMU generation has been reaped.
@@ -256,12 +256,13 @@ impl QemuNodeSet {
     pub fn commit_terminal_replacements(
         &mut self,
         plan: QemuNodeTerminalReplacementPlan,
+        mut replacements: BTreeMap<NodeId, Option<QemuNode>>,
     ) -> Vec<(NodeId, QemuNode)> {
-        let mut staged = plan.replacements;
+        debug_assert_eq!(plan.nodes, replacements.keys().cloned().collect());
         let current = std::mem::take(&mut self.nodes);
-        let mut retired = Vec::with_capacity(staged.len());
+        let mut retired = Vec::with_capacity(replacements.len());
         for (node, backend) in current {
-            match staged.remove(&node) {
+            match replacements.remove(&node) {
                 Some(Some(replacement)) => {
                     retired.push((node.clone(), backend));
                     self.permanently_closed.remove(&node);
@@ -276,7 +277,7 @@ impl QemuNodeSet {
                 }
             }
         }
-        debug_assert!(staged.is_empty());
+        debug_assert!(replacements.is_empty());
         retired
     }
 
@@ -652,6 +653,28 @@ impl QemuNodeSet {
             .ok_or_else(|| BackendError::Rejected {
                 message: format!("unknown QEMU node `{}`", node.name),
             })
+    }
+
+    /// Returns the complete Linux process identity for one QEMU node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when `node` is absent, permanently closed, or
+    /// its `/proc` identity cannot be captured.
+    #[cfg(target_os = "linux")]
+    pub fn process_identity(&self, node: &NodeId) -> Result<QemuProcessIdentity, BackendError> {
+        if self.permanently_closed.contains(node) {
+            return Err(BackendError::Rejected {
+                message: format!("QEMU node `{}` is permanently closed", node.name),
+            });
+        }
+        self.nodes
+            .get(node)
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!("unknown QEMU node `{}`", node.name),
+            })?
+            .process_identity()
+            .map_err(BackendError::from)
     }
 
     /// Completes one authenticated terminal lifecycle decision over QMP.
