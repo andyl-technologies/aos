@@ -60,7 +60,7 @@ use crucible::{
 };
 use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
 
-use crate::console_observation::QemuConsoleObservationSpool;
+use crate::console_observation::{QemuConsoleObservationReader, QemuConsoleObservationSpool};
 use crate::supervision::QemuLiveHostIoRuntime;
 use crate::{
     CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
@@ -772,9 +772,21 @@ pub(super) fn build_live_node(
     )
     .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?;
     let runtime = match (console_observation, console_spool.as_ref()) {
-        (Some(output), Some(spool)) => runtime
-            .with_console_observation(output, spool.clone())
-            .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?,
+        (Some(output), Some(spool)) => {
+            let reader =
+                QemuConsoleObservationReader::new(output, spool.clone()).map_err(|source| {
+                    QemuLiveNodeStepGateError::prime(
+                        "configure console observation",
+                        QemuNodeChannelError::new(
+                            "configure QEMU console stream",
+                            source.to_string(),
+                        ),
+                    )
+                })?;
+            runtime
+                .with_console_observation(reader)
+                .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?
+        }
         (None, None) => runtime,
         _ => {
             return Err(QemuLiveNodeStepGateError::prime(
