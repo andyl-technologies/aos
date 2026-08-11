@@ -95,6 +95,12 @@
       # production systems retain the normal service limit.
       systemd.services.aos-eval.serviceConfig.RuntimeMaxSec =
         lib.mkForce "600s";
+      # A resolver blocked in the synthetic multicast network can remain in
+      # uninterruptible I/O while systemd tears the guest down. Do not spend
+      # the production-wide stop timeout on that unrelated test transport
+      # artifact before exercising the next boot.
+      systemd.services."systemd-resolved".serviceConfig.TimeoutStopSec =
+        lib.mkForce "10s";
     }
   ];
   abi1BaseLib = targetBase.config.aos.config.evalAtBoot.baseLib;
@@ -111,7 +117,10 @@
 in {
   name = "rfc-0011-two-axis-gen";
   timeout = 5400;
-  bootTimeout = 600;
+  # Three concurrent Secure Boot guests can spend several minutes in firmware
+  # when a KVM builder is under I/O pressure. Keep the initial readiness budget
+  # separate from the tighter per-transition reboot assertions below.
+  bootTimeout = 1200;
 
   machines = {
     registry = {
@@ -634,8 +643,8 @@ in {
       assert failed_images["running"] == incompatible_candidate, failed_images
       assert failed_images["pending"] == incompatible_candidate, failed_images
       incompatible.succeed(
-          "systemctl show -p ActiveState --value "
-          "aos-image-boot-commit.service | grep -Fx inactive"
+          "test \"$(systemctl show -p ActiveState --value "
+          "aos-image-boot-commit.service)\" = inactive"
       )
     '';
 }
