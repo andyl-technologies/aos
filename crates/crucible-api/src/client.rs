@@ -65,7 +65,8 @@ const WATCH_ATTACH_RPC_PATH: &str = "/crucible.rpc/watch";
 const SEND_COMMAND_RPC_PATH: &str = "/crucible.rpc/send";
 const RPC_CONTENT_TYPE: &str = "application/vnd.crucible.rpc";
 const RPC_STREAM_EVENT_CHANNEL_CAPACITY: usize = 16;
-const RPC_STREAM_PENDING_FRAME_CAPACITY: usize = 16;
+const RPC_STREAM_PENDING_FRAME_CAPACITY: usize =
+    crucible_session::SESSION_EVENT_LOG_BROADCAST_CAPACITY;
 
 /// Boxed asynchronous result returned by [`ControlClient`] methods.
 pub type ControlClientFuture<'a, T> =
