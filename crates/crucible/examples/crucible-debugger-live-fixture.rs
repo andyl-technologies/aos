@@ -27,14 +27,6 @@ fn parse_architecture(value: &str) -> Result<VmArchitecture, IoError> {
     }
 }
 
-fn fixture_kernel_cmdline(architecture: VmArchitecture) -> String {
-    let console = match architecture {
-        VmArchitecture::X86_64 => "ttyS0",
-        VmArchitecture::Aarch64 => "ttyAMA0",
-    };
-    format!("console={console} reboot=k panic=1 root=/dev/vda ro init=/init")
-}
-
 fn file_reference(path: &Path) -> Result<ContentAddressedBlobRef, IoError> {
     let file = fs::File::open(path).map_err(|source| {
         IoError::new(
@@ -53,33 +45,37 @@ fn main() -> Result<(), Box<dyn Error>> {
         .next()
         .and_then(|value| value.into_string().ok())
         .unwrap_or_else(|| String::from("crucible-debugger-live-fixture"));
-    let architecture = args
-        .next()
-        .ok_or_else(|| usage_error(format!("usage: {program} ARCH KERNEL ROOT-IMAGE OUTPUT")))?;
-    let kernel = args
-        .next()
-        .ok_or_else(|| usage_error(format!("usage: {program} ARCH KERNEL ROOT-IMAGE OUTPUT")))?;
-    let root_image = args
-        .next()
-        .ok_or_else(|| usage_error(format!("usage: {program} ARCH KERNEL ROOT-IMAGE OUTPUT")))?;
-    let output = args
-        .next()
-        .ok_or_else(|| usage_error(format!("usage: {program} ARCH KERNEL ROOT-IMAGE OUTPUT")))?;
+    let usage = || {
+        usage_error(format!(
+            "usage: {program} ARCH KERNEL ROOT-IMAGE KERNEL-CMDLINE OUTPUT"
+        ))
+    };
+    let architecture = args.next().ok_or_else(&usage)?;
+    let kernel = args.next().ok_or_else(&usage)?;
+    let root_image = args.next().ok_or_else(&usage)?;
+    let kernel_cmdline = args.next().ok_or_else(&usage)?;
+    let output = args.next().ok_or_else(&usage)?;
     if args.next().is_some() {
-        return Err(usage_error(format!("usage: {program} ARCH KERNEL ROOT-IMAGE OUTPUT")).into());
+        return Err(usage().into());
     }
 
     let architecture = architecture
         .to_str()
         .ok_or_else(|| usage_error("architecture is not valid UTF-8"))?;
     let architecture = parse_architecture(architecture)?;
+    let kernel_cmdline = kernel_cmdline
+        .into_string()
+        .map_err(|_| usage_error("kernel command line is not valid UTF-8"))?;
+    if kernel_cmdline.is_empty() {
+        return Err(usage_error("kernel command line must not be empty").into());
+    }
     let node = WorldNode {
         id: NodeId {
             name: String::from("debuggee"),
         },
         arch: architecture,
         memory_mib: 256,
-        cmdline: fixture_kernel_cmdline(architecture),
+        cmdline: kernel_cmdline,
         ready_point: ReadyPoint::ConsoleMarker {
             marker: String::from("CRUCIBLE_DEBUG_ACTIVATION_READER_READY"),
         },

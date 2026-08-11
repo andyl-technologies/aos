@@ -35,6 +35,7 @@ use crucible_shmem::{
 use thiserror::Error;
 
 use super::block_io_servicer::{BlockIoDiagnostics, QemuLiveBlockIoServicer};
+use crate::console_observation::QemuConsoleObservationReader;
 use crate::quantum::idle_state_from_snapshot;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuHostIoRuntime};
@@ -64,6 +65,7 @@ pub struct QemuLiveHostIoRuntime {
     poll_interval: Duration,
     advance_wait_deadline: AdvanceWaitDeadline,
     block: Option<BlockIoServicing>,
+    console: Option<QemuConsoleObservationReader>,
 }
 
 /// The participant half of the runtime: a block servicer plus its diagnostic sink.
@@ -137,6 +139,7 @@ impl QemuLiveHostIoRuntime {
             poll_interval,
             advance_wait_deadline: AdvanceWaitDeadline::default(),
             block: None,
+            console: None,
         })
     }
 
@@ -158,6 +161,28 @@ impl QemuLiveHostIoRuntime {
             diagnostics,
         });
         self
+    }
+
+    /// Attaches an output-only QEMU console reader and its boundary spool.
+    ///
+    /// The stream is drained during every in-flight advance poll so guest
+    /// console backpressure cannot prevent QEMU from reaching its scheduler
+    /// ceiling. Bytes remain in `spool` until the node emits them at that exact
+    /// completed boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveHostIoRuntimeError::DuplicateConsole`] when a console
+    /// is already attached.
+    pub(crate) fn with_console_observation(
+        mut self,
+        reader: QemuConsoleObservationReader,
+    ) -> Result<Self, QemuLiveHostIoRuntimeError> {
+        if self.console.is_some() {
+            return Err(QemuLiveHostIoRuntimeError::DuplicateConsole);
+        }
+        self.console = Some(reader);
+        Ok(self)
     }
 
     /// Signals QEMU's plugin wake eventfd with the exact eight-byte counter write.
@@ -208,6 +233,7 @@ impl QemuLiveHostIoRuntime {
         let attempts = bounded_poll_attempts(remaining, self.poll_interval);
         let mut previous_icount = None;
         for attempt in 0..attempts {
+            self.service_console_output()?;
             let snapshot = self
                 .region
                 .node_slot(self.vm_slot)
@@ -221,6 +247,7 @@ impl QemuLiveHostIoRuntime {
             let idle = idle_state_from_snapshot(snapshot);
             match classify_quantum_boundary(&idle, snapshot.max_advance_icount) {
                 QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. } => {
+                    self.service_console_output()?;
                     return Ok(QemuAsyncWaitOutcome::Completed);
                 }
                 QuantumBoundary::Pending => {
@@ -238,6 +265,14 @@ impl QemuLiveHostIoRuntime {
             }
         }
         Ok(QemuAsyncWaitOutcome::TimedOut)
+    }
+
+    /// Drains all currently available console bytes into boundary staging.
+    fn service_console_output(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let Some(console) = &mut self.console else {
+            return Ok(());
+        };
+        console.drain_available()
     }
 
     /// Services the block-I/O ring at the guest's observed icount, if attached.
@@ -335,6 +370,9 @@ pub enum QemuLiveHostIoRuntimeError {
     /// The configured poll interval was zero.
     #[error("host-I/O runtime poll interval must be nonzero")]
     ZeroPollInterval,
+    /// More than one console stream was attached to one node runtime.
+    #[error("QEMU host-I/O runtime already has a console stream")]
+    DuplicateConsole,
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! Live QEMU adapters for the optional per-architecture white-box doorbell.
 //!
 //! The adapter recognizes the single-source x86_64 `out 0xe7,al` or aarch64
-//! `hlt #0x04c1` encoding during translation and installs an execution callback
+//! `hint #0x4c` encoding during translation and installs an execution callback
 //! only on that dedicated instruction. The admitted path reads the architecture's
 //! `(pointer, length)` payload registers and delegates bounded frame decoding to
 //! [`crate::PluginWhiteboxDoorbell`].
@@ -15,9 +15,9 @@ use crucible_shmem::MAX_FRAME_DATA;
 
 use crate::{
     GuestMemoryAddressSpace, GuestMemoryRange, GuestMemoryReadError, GuestMemoryReader,
-    PluginAppRandomConfig, PluginSwitch, PluginWhiteboxDoorbell, QemuIcountRawFn, QemuPluginId,
+    PluginAppRandomConfig, PluginSwitch, PluginWhiteboxDoorbell, QemuPluginId,
     QemuPluginTargetArchitecture, QemuPluginTb, QemuRequestShutdownFn,
-    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
+    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
     WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
     WhiteboxDoorbellCapabilities, WhiteboxDoorbellRegistrationPlan, WhiteboxDoorbellSetupResources,
     WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent, WhiteboxMarkerSinkError,
@@ -28,16 +28,19 @@ mod api;
 mod app_random;
 mod error;
 mod guest_introspection;
+mod location;
 mod marker;
 pub(crate) use api::LiveWhiteboxApis;
 use api::{QemuPluginRegDescriptor, QemuPluginRegister};
 use app_random::LiveAppRandomState;
 pub use error::LiveWhiteboxError;
 use error::write_stderr;
+use location::{LiveWhiteboxInstructionLocation, LiveWhiteboxTbEntry};
 use marker::LiveMarkerSink;
 pub(crate) use marker::LiveWhiteboxMarkerShmemProducer;
 
 const QEMU_PLUGIN_CB_R_REGS: c_int = 1;
+const QEMU_PLUGIN_CB_NO_REGS: c_int = 0;
 const MAX_LIVE_WHITEBOX_VCPUS: usize = 64;
 
 static LIVE_WHITEBOX_STATE: AtomicPtr<LiveWhiteboxState> = AtomicPtr::new(std::ptr::null_mut());
@@ -60,8 +63,8 @@ pub(crate) struct LiveWhiteboxState {
     architecture: QemuPluginTargetArchitecture,
     doorbell: PluginWhiteboxDoorbell,
     registers: [LiveWhiteboxRegisters; MAX_LIVE_WHITEBOX_VCPUS],
+    tb_entries: [LiveWhiteboxTbEntry; MAX_LIVE_WHITEBOX_VCPUS],
     vcpu_count: usize,
-    icount_raw: QemuIcountRawFn,
     request_shutdown: QemuRequestShutdownFn,
     marker_sink: LiveMarkerSink,
     app_random: Option<LiveAppRandomState>,
@@ -116,7 +119,6 @@ impl LiveWhiteboxState {
         apis: LiveWhiteboxApis,
         target: LiveWhiteboxTarget,
         vcpu_count: u32,
-        icount_raw: QemuIcountRawFn,
         request_shutdown: QemuRequestShutdownFn,
         shmem: LiveWhiteboxShmem,
         app_random_config: Option<&PluginAppRandomConfig>,
@@ -127,7 +129,7 @@ impl LiveWhiteboxState {
                 crate::WhiteboxSetupAttestation::X86Port00e7UnclaimedV1
             }
             QemuPluginTargetArchitecture::Aarch64 => {
-                crate::WhiteboxSetupAttestation::Aarch64Hlt04c1UnclaimedV1
+                crate::WhiteboxSetupAttestation::Aarch64Hint4cInertV1
             }
         };
         if target.setup_attestation != Some(expected_attestation) {
@@ -188,8 +190,8 @@ impl LiveWhiteboxState {
             architecture,
             doorbell,
             registers: [LiveWhiteboxRegisters::default(); MAX_LIVE_WHITEBOX_VCPUS],
+            tb_entries: [LiveWhiteboxTbEntry::default(); MAX_LIVE_WHITEBOX_VCPUS],
             vcpu_count,
-            icount_raw,
             request_shutdown,
             marker_sink: LiveMarkerSink::new(shmem.marker_output),
             app_random,
@@ -272,7 +274,11 @@ impl LiveWhiteboxState {
         Ok(())
     }
 
-    fn service(&mut self, vcpu_index: usize) -> Result<(), LiveWhiteboxError> {
+    fn service(
+        &mut self,
+        vcpu_index: usize,
+        location: LiveWhiteboxInstructionLocation,
+    ) -> Result<(), LiveWhiteboxError> {
         if vcpu_index >= self.vcpu_count {
             return Err(LiveWhiteboxError::UnexpectedVcpu {
                 vcpu_index,
@@ -298,7 +304,9 @@ impl LiveWhiteboxState {
                 maximum: MAX_FRAME_DATA,
             });
         }
-        let current_icount = (self.icount_raw)();
+        // The preceding callback at this TB's entry captured QEMU's exact,
+        // non-mutating coordinate in the API context where it is valid.
+        let current_icount = location.current_icount(self.tb_entries[vcpu_index])?;
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
             vcpu_index as u32,
             current_icount,
@@ -330,6 +338,25 @@ impl LiveWhiteboxState {
                 message: source.to_string(),
             })
         }
+    }
+
+    fn observe_tb_entry(
+        &mut self,
+        vcpu_index: usize,
+        tb_insns: u32,
+    ) -> Result<(), LiveWhiteboxError> {
+        if vcpu_index >= self.vcpu_count {
+            return Err(LiveWhiteboxError::UnexpectedVcpu {
+                vcpu_index,
+                vcpu_count: self.vcpu_count,
+            });
+        }
+        let mut icount = 0;
+        if (self.apis.icount_at_tb_entry)(u64::from(tb_insns), &mut icount) != 0 {
+            return Err(LiveWhiteboxError::IcountObservation);
+        }
+        self.tb_entries[vcpu_index] = LiveWhiteboxTbEntry { tb_insns, icount };
+        Ok(())
     }
 
     fn read_register_u64(
@@ -420,6 +447,7 @@ extern "C" fn crucible_qemu_plugin_live_whitebox_tb_trans_cb(
     // the validated single-threaded RR execution model serializes callbacks.
     let state = unsafe { state.as_mut() };
     let count = (state.apis.tb_n_insns)(tb);
+    let mut registered_entry_callback = false;
     for index in 0..count {
         let insn = (state.apis.tb_get_insn)(tb, index);
         if insn.is_null() {
@@ -429,22 +457,38 @@ extern "C" fn crucible_qemu_plugin_live_whitebox_tb_trans_cb(
         let copied = (state.apis.insn_data)(insn, bytes.as_mut_ptr().cast(), bytes.len());
         let trap_bytes: &[u8] = match state.architecture {
             QemuPluginTargetArchitecture::X86_64 => &WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
-            QemuPluginTargetArchitecture::Aarch64 => &WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
+            QemuPluginTargetArchitecture::Aarch64 => &WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
         };
         if bytes[..copied.min(bytes.len())] == *trap_bytes {
+            let location = match LiveWhiteboxInstructionLocation::new(count, index) {
+                Ok(location) => location,
+                Err(error) => {
+                    state.fail_loud(&error);
+                    return;
+                }
+            };
+            if !registered_entry_callback {
+                (state.apis.register_tb_exec_cb)(
+                    tb,
+                    Some(crucible_qemu_plugin_live_whitebox_tb_exec_cb),
+                    QEMU_PLUGIN_CB_NO_REGS,
+                    location.tb_userdata(),
+                );
+                registered_entry_callback = true;
+            }
             (state.apis.register_insn_exec_cb)(
                 insn,
                 Some(crucible_qemu_plugin_live_whitebox_insn_exec_cb),
                 QEMU_PLUGIN_CB_R_REGS,
-                std::ptr::null_mut(),
+                location.into_userdata(),
             );
         }
     }
 }
 
-extern "C" fn crucible_qemu_plugin_live_whitebox_insn_exec_cb(
+extern "C" fn crucible_qemu_plugin_live_whitebox_tb_exec_cb(
     vcpu_index: c_uint,
-    _userdata: *mut c_void,
+    userdata: *mut c_void,
 ) {
     let Some(mut state) = NonNull::new(LIVE_WHITEBOX_STATE.load(Ordering::Acquire)) else {
         return;
@@ -452,7 +496,26 @@ extern "C" fn crucible_qemu_plugin_live_whitebox_insn_exec_cb(
     // SAFETY: publication retains the state for QEMU's process lifetime, and
     // the validated single-threaded RR execution model serializes callbacks.
     let state = unsafe { state.as_mut() };
-    if let Err(error) = state.service(vcpu_index as usize) {
+    let tb_insns = LiveWhiteboxInstructionLocation::tb_insns_from_userdata(userdata);
+    if let Err(error) =
+        tb_insns.and_then(|tb_insns| state.observe_tb_entry(vcpu_index as usize, tb_insns))
+    {
+        state.fail_loud(&error);
+    }
+}
+
+extern "C" fn crucible_qemu_plugin_live_whitebox_insn_exec_cb(
+    vcpu_index: c_uint,
+    userdata: *mut c_void,
+) {
+    let Some(mut state) = NonNull::new(LIVE_WHITEBOX_STATE.load(Ordering::Acquire)) else {
+        return;
+    };
+    // SAFETY: publication retains the state for QEMU's process lifetime, and
+    // the validated single-threaded RR execution model serializes callbacks.
+    let state = unsafe { state.as_mut() };
+    let location = LiveWhiteboxInstructionLocation::from_userdata(userdata);
+    if let Err(error) = location.and_then(|location| state.service(vcpu_index as usize, location)) {
         state.fail_loud(&error);
     }
 }

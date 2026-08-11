@@ -6,9 +6,7 @@
 //! keeping per-quantum timing and frame traffic on the shared-memory channel.
 
 use std::any::Any;
-use std::io::Read as _;
 use std::net::SocketAddr;
-use std::os::unix::net::UnixStream;
 use std::process::Child;
 use std::time::Duration;
 
@@ -25,6 +23,7 @@ use crucible_shmem::{
 // crucible-lint: allow host-nondeterminism-state -- node transport exposes untrusted causal records for scheduler validation.
 use crucible::Decision;
 
+use crate::console_observation::QemuConsoleObservationSpool;
 use crate::shutdown::{
     QemuChildWait, QemuReap, QemuShutdownPolicy, QemuShutdownReport, QemuShutdownRung,
     QemuShutdownTarget, QemuShutdownTargetError, shutdown_qemu_child, signal_child, wait_child,
@@ -507,7 +506,7 @@ impl QemuNodeChannels {
 /// Reader for QEMU's output-only per-node console stream.
 struct QemuConsoleObservation {
     node: NodeId,
-    output: UnixStream,
+    spool: QemuConsoleObservationSpool,
 }
 
 /// Host-side wrapper exposing one QEMU child as a synchronous scheduler node.
@@ -607,22 +606,14 @@ impl QemuNode {
         }
     }
 
-    /// Returns this node with output-only console bytes exposed as observations.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the QEMU console stream cannot be
-    /// configured for non-blocking boundary reads.
-    pub fn with_console_observation(
+    /// Returns this node with staged console bytes exposed as observations.
+    pub(crate) fn with_console_observation(
         mut self,
         node: NodeId,
-        output: UnixStream,
-    ) -> Result<Self, QemuNodeChannelError> {
-        output.set_nonblocking(true).map_err(|error| {
-            QemuNodeChannelError::new("configure QEMU console stream", error.to_string())
-        })?;
-        self.console_observation = Some(QemuConsoleObservation { node, output });
-        Ok(self)
+        spool: QemuConsoleObservationSpool,
+    ) -> Self {
+        self.console_observation = Some(QemuConsoleObservation { node, spool });
+        self
     }
 
     /// Attaches a configured mediated gdbstub channel to this node wrapper.
@@ -1057,20 +1048,12 @@ impl SimulationBackend for QemuNode {
                 ))
             })?;
         if let Some(console) = self.console_observation.as_mut() {
-            let mut bytes = Vec::new();
-            let mut buffer = [0_u8; 4096];
-            loop {
-                match console.output.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(count) => bytes.extend_from_slice(&buffer[..count]),
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(error) => {
-                        return Err(BackendError::Rejected {
-                            message: format!("read QEMU console output: {error}"),
-                        });
-                    }
-                }
-            }
+            let bytes = console
+                .spool
+                .take()
+                .map_err(|error| BackendError::Rejected {
+                    message: format!("take staged QEMU console output: {error}"),
+                })?;
             if !bytes.is_empty() {
                 events.push(ObservableEvent::console_output(
                     self.console_observation_boundary,
@@ -1866,14 +1849,14 @@ mod tests {
     #[test]
     fn qemu_node_stamps_polled_console_at_the_scheduler_boundary() -> Result<(), Box<dyn Error>> {
         let log = shared_log();
-        let (mut console_writer, console_reader) = UnixStream::pair()?;
-        std::io::Write::write_all(&mut console_writer, b"guest output")?;
+        let spool = QemuConsoleObservationSpool::new();
+        spool.append(b"guest output")?;
         let mut node = scripted_node_with_options(
             log,
             ScriptedNodeOptions::default(),
             [QemuAsyncWaitOutcome::Completed],
         )?
-        .with_console_observation(node_id("vm-a"), console_reader)?;
+        .with_console_observation(node_id("vm-a"), spool);
 
         let boundary = VirtualTime { ticks: 97 };
         SimulationBackend::step_to(&mut node, boundary)?;

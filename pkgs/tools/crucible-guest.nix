@@ -61,8 +61,13 @@ in
         exit 1
       fi
 
+      doorbell_instruction_abi_version=$(sed -n \
+        's/^pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = \([0-9][0-9]*\);$/\1/p' \
+        crucible-protocol/src/doorbell_abi.rs)
+      test -n "$doorbell_instruction_abi_version"
+
       mkdir -p "$out/nix-support"
-      cat > "$out/nix-support/crucible-guest-build-info" <<'INFO'
+      cat > "$out/nix-support/crucible-guest-build-info" <<INFO
       package=crucible-guest
       build_system=mkCargoPackage
       cargo_deps=fetchCargoDeps
@@ -71,6 +76,7 @@ in
       rustflags=-C target-feature=+crt-static
       cargo_build_target=host-triple-explicit
       packaged_guest_system=${lib.system}
+      doorbell_instruction_abi_version=$doorbell_instruction_abi_version
       instruction_abi_architectures=x86_64,aarch64
       abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS
       frame_source=crucible-protocol::doorbell_frame

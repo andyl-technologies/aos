@@ -60,6 +60,7 @@ use crucible::{
 };
 use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
 
+use crate::console_observation::{QemuConsoleObservationReader, QemuConsoleObservationSpool};
 use crate::supervision::QemuLiveHostIoRuntime;
 use crate::{
     CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
@@ -179,6 +180,7 @@ impl Default for QemuLiveNodeStepSchedule {
 #[derive(Clone, Debug)]
 pub struct QemuLiveNodeStepGateConfig {
     architecture: LivePluginGuestArchitecture,
+    doorbell_instruction_abi_version: u16,
     qemu_executable: PathBuf,
     plugin: PathBuf,
     kernel: PathBuf,
@@ -230,6 +232,8 @@ impl QemuLiveNodeStepGateConfig {
     ) -> Self {
         Self {
             architecture: LivePluginGuestArchitecture::X86_64,
+            doorbell_instruction_abi_version:
+                crucible_protocol::WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
             qemu_executable: qemu_executable.into(),
             plugin: plugin.into(),
             kernel: kernel.into(),
@@ -270,6 +274,8 @@ impl QemuLiveNodeStepGateConfig {
     ) -> Self {
         Self {
             architecture: LivePluginGuestArchitecture::X86_64,
+            doorbell_instruction_abi_version:
+                crucible_protocol::WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
             qemu_executable: qemu_executable.into(),
             plugin: plugin.into(),
             kernel: kernel.into(),
@@ -303,6 +309,13 @@ impl QemuLiveNodeStepGateConfig {
         architecture: LivePluginGuestArchitecture,
     ) -> Self {
         self.architecture = architecture;
+        self
+    }
+
+    /// Returns this configuration with the retained guest's doorbell instruction ABI.
+    #[must_use]
+    pub const fn with_doorbell_instruction_abi_version(mut self, version: u16) -> Self {
+        self.doorbell_instruction_abi_version = version;
         self
     }
 
@@ -748,6 +761,9 @@ pub(super) fn build_live_node(
             )
         })?;
 
+    let console_spool = console_observation
+        .as_ref()
+        .map(|_stream| QemuConsoleObservationSpool::new());
     let runtime = QemuLiveHostIoRuntime::from_shmem_fd(
         setup.shmem_as_fd(),
         setup.wake_as_fd(),
@@ -755,6 +771,33 @@ pub(super) fn build_live_node(
         GATE_SLOT,
     )
     .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?;
+    let runtime = match (console_observation, console_spool.as_ref()) {
+        (Some(output), Some(spool)) => {
+            let reader =
+                QemuConsoleObservationReader::new(output, spool.clone()).map_err(|source| {
+                    QemuLiveNodeStepGateError::prime(
+                        "configure console observation",
+                        QemuNodeChannelError::new(
+                            "configure QEMU console stream",
+                            source.to_string(),
+                        ),
+                    )
+                })?;
+            runtime
+                .with_console_observation(reader)
+                .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?
+        }
+        (None, None) => runtime,
+        _ => {
+            return Err(QemuLiveNodeStepGateError::prime(
+                "configure console observation",
+                QemuNodeChannelError::new(
+                    "configure QEMU console stream",
+                    "console stream and staging spool disagreed",
+                ),
+            ));
+        }
+    };
     let priming_network_outputs = prime_guest_off_boot_barrier(
         &setup,
         config.completion_timeout,
@@ -801,12 +844,8 @@ pub(super) fn build_live_node(
     if let Some(gdbstub) = &config.gdbstub {
         node = node.with_gdbstub(gdbstub.clone());
     }
-    if let Some(console_observation) = console_observation {
-        node = node
-            .with_console_observation(node_id(identity.node), console_observation)
-            .map_err(|source| {
-                QemuLiveNodeStepGateError::prime("configure console observation", source)
-            })?;
+    if let Some(console_spool) = console_spool {
+        node = node.with_console_observation(node_id(identity.node), console_spool);
     }
     if !restoring_checkpoint {
         node.retain_priming_network_outputs(priming_network_outputs);
