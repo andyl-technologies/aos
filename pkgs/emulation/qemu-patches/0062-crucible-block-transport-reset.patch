@@ -1,5 +1,12 @@
+From 7314034224830fa9775bba376f5ddf7a0fb2a8de Mon Sep 17 00:00:00 2001
+From: Dylan Plecki <dylan@andyl.com>
+Date: Mon, 1 Jan 2001 00:00:01 +0000
+Subject: [PATCH] crucible: add transactional block transport reset
+
+Signed-off-by: Dylan Plecki <dylan@andyl.com>
+
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index afc442b..157a655 100644
+index afc442b021f68fd37e7550881c0a93bd14fe4c9a..157a6559664f0845514ca1a0af840c8ed7ef0763 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -15,6 +15,9 @@
@@ -648,7 +655,7 @@ index afc442b..157a655 100644
  
  static void bdrv_crucible_shmem_init(void)
 diff --git a/block/io.c b/block/io.c
-index 1ba8d1a..d2e5041 100644
+index 1ba8d1aeea14079b2cd40bfdee901010e808e588..d2e5041e85a93f7a4346d2896b8e4b05dfd34b86 100644
 --- a/block/io.c
 +++ b/block/io.c
 @@ -3533,6 +3533,12 @@ bdrv_parent_cb_resize(BlockDriverState *bs)
@@ -665,7 +672,7 @@ index 1ba8d1a..d2e5041 100644
   * Truncate file to 'offset' bytes (needed only for file protocols)
   *
 diff --git a/hw/block/virtio-blk.c b/hw/block/virtio-blk.c
-index b69d099..9bf1347 100644
+index b69d0997a55cc9056fbaa517d546d8d949e9683b..9bf1347b6427e08c63ad31e4ffa6b14c43f5780d 100644
 --- a/hw/block/virtio-blk.c
 +++ b/hw/block/virtio-blk.c
 @@ -74,8 +74,19 @@ static int virtio_blk_handle_rw_error(VirtIOBlockReq *req, int error,
@@ -904,7 +911,7 @@ index b69d099..9bf1347 100644
  
  static const Property virtio_blk_properties[] = {
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index ea6d5f9..91caba2 100644
+index ea6d5f934dd279eb78d65c02e1c3fcbe284c8017..91caba2e83ebfa8d7bb5b1b5d4c730af727dca54 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
 @@ -2111,19 +2111,30 @@ typedef struct VirtQueueElementOld {
@@ -968,7 +975,7 @@ index ea6d5f9..91caba2 100644
                                  VirtQueueElement *elem)
  {
 diff --git a/include/block/block_int-common.h b/include/block/block_int-common.h
-index ebb4e56..deeb3e8 100644
+index ebb4e56a503b29e4fb7c9de9f6859886bbe77802..deeb3e800a6b414c36075833220cab7fce089a23 100644
 --- a/include/block/block_int-common.h
 +++ b/include/block/block_int-common.h
 @@ -379,6 +379,13 @@ struct BlockDriver {
@@ -986,7 +993,7 @@ index ebb4e56..deeb3e8 100644
       * Try to get @bs's logical and physical block size.
       * On success, store them in @bsz and return zero.
 diff --git a/include/block/block_int-io.h b/include/block/block_int-io.h
-index 4a7cf2b..401b0ee 100644
+index 4a7cf2b4fdc02b761d6a270a6cd4b3bb759aaf9b..401b0ee027dbba61f262ee07f0b038ba5575e43d 100644
 --- a/include/block/block_int-io.h
 +++ b/include/block/block_int-io.h
 @@ -130,6 +130,12 @@ bdrv_co_refresh_total_sectors(BlockDriverState *bs, int64_t hint);
@@ -1003,7 +1010,7 @@ index 4a7cf2b..401b0ee 100644
  BdrvChild * GRAPH_RDLOCK bdrv_filter_child(BlockDriverState *bs);
  BdrvChild * GRAPH_RDLOCK bdrv_filter_or_cow_child(BlockDriverState *bs);
 diff --git a/include/hw/virtio/virtio-blk.h b/include/hw/virtio/virtio-blk.h
-index 3d8dee7..881c160 100644
+index 3d8dee7ec15848e59b87c055045a070b6967e62c..881c16031741439734670a34c23592bf87064368 100644
 --- a/include/hw/virtio/virtio-blk.h
 +++ b/include/hw/virtio/virtio-blk.h
 @@ -56,6 +56,7 @@ struct VirtIOBlock {
@@ -1015,7 +1022,7 @@ index 3d8dee7..881c160 100644
      unsigned short sector_mask;
      bool original_wce;
 diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
-index 006d49b..15c9f88 100644
+index 006d49b125b1b6811a0038c4938b498df2b499dc..15c9f88d40aa7d970a74c26e812befdbabe32299 100644
 --- a/include/hw/virtio/virtio.h
 +++ b/include/hw/virtio/virtio.h
 @@ -273,6 +273,8 @@ void virtqueue_map(VirtIODevice *vdev, VirtQueueElement *elem);
@@ -1028,7 +1035,7 @@ index 006d49b..15c9f88 100644
                                  VirtQueueElement *elem);
  int virtqueue_avail_bytes(VirtQueue *vq, unsigned int in_bytes,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 2dade19..687a7fd 100644
+index 2dade19d6658391051ee9b4027109df877be65a0..687a7fd3b15d7cbfa30afb5f2c3790272f6642ce 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -220,7 +220,8 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
@@ -1169,7 +1176,7 @@ index 2dade19..687a7fd 100644
   * qemu_plugin_register_blk_wait_cb() - register the shmem block wait hook
   * @wait_cb: callback fired before a pending block coroutine parks
 diff --git a/qapi/block-core.json b/qapi/block-core.json
-index b193778..724dc27 100644
+index b1937780e198a957ad42050da0dcf78eb81528ca..724dc27682aab5323affd5272b1e300449c4b47f 100644
 --- a/qapi/block-core.json
 +++ b/qapi/block-core.json
 @@ -3184,6 +3184,8 @@
