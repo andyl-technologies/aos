@@ -22,8 +22,9 @@
 //! this runtime treats a non-advance await as an immediate host-liveness yield.
 
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::BorrowedFd;
+use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -35,6 +36,7 @@ use crucible_shmem::{
 use thiserror::Error;
 
 use super::block_io_servicer::{BlockIoDiagnostics, QemuLiveBlockIoServicer};
+use crate::console_observation::QemuConsoleObservationSpool;
 use crate::quantum::idle_state_from_snapshot;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuHostIoRuntime};
@@ -64,12 +66,19 @@ pub struct QemuLiveHostIoRuntime {
     poll_interval: Duration,
     advance_wait_deadline: AdvanceWaitDeadline,
     block: Option<BlockIoServicing>,
+    console: Option<ConsoleServicing>,
 }
 
 /// The participant half of the runtime: a block servicer plus its diagnostic sink.
 struct BlockIoServicing {
     servicer: QemuLiveBlockIoServicer,
     diagnostics: Arc<BlockIoDiagnostics>,
+}
+
+/// The output-only console reader and its boundary staging spool.
+struct ConsoleServicing {
+    output: UnixStream,
+    spool: QemuConsoleObservationSpool,
 }
 
 impl QemuLiveHostIoRuntime {
@@ -137,6 +146,7 @@ impl QemuLiveHostIoRuntime {
             poll_interval,
             advance_wait_deadline: AdvanceWaitDeadline::default(),
             block: None,
+            console: None,
         })
     }
 
@@ -158,6 +168,34 @@ impl QemuLiveHostIoRuntime {
             diagnostics,
         });
         self
+    }
+
+    /// Attaches an output-only QEMU console stream and its boundary spool.
+    ///
+    /// The stream is drained during every in-flight advance poll so guest
+    /// console backpressure cannot prevent QEMU from reaching its scheduler
+    /// ceiling. Bytes remain in `spool` until the node emits them at that exact
+    /// completed boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveHostIoRuntimeError::ConfigureConsole`] when the stream
+    /// cannot be made non-blocking, or
+    /// [`QemuLiveHostIoRuntimeError::DuplicateConsole`] when a console is
+    /// already attached.
+    pub(crate) fn with_console_observation(
+        mut self,
+        output: UnixStream,
+        spool: QemuConsoleObservationSpool,
+    ) -> Result<Self, QemuLiveHostIoRuntimeError> {
+        if self.console.is_some() {
+            return Err(QemuLiveHostIoRuntimeError::DuplicateConsole);
+        }
+        output
+            .set_nonblocking(true)
+            .map_err(|source| QemuLiveHostIoRuntimeError::ConfigureConsole { source })?;
+        self.console = Some(ConsoleServicing { output, spool });
+        Ok(self)
     }
 
     /// Signals QEMU's plugin wake eventfd with the exact eight-byte counter write.
@@ -208,6 +246,7 @@ impl QemuLiveHostIoRuntime {
         let attempts = bounded_poll_attempts(remaining, self.poll_interval);
         let mut previous_icount = None;
         for attempt in 0..attempts {
+            self.service_console_output()?;
             let snapshot = self
                 .region
                 .node_slot(self.vm_slot)
@@ -221,6 +260,7 @@ impl QemuLiveHostIoRuntime {
             let idle = idle_state_from_snapshot(snapshot);
             match classify_quantum_boundary(&idle, snapshot.max_advance_icount) {
                 QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. } => {
+                    self.service_console_output()?;
                     return Ok(QemuAsyncWaitOutcome::Completed);
                 }
                 QuantumBoundary::Pending => {
@@ -238,6 +278,14 @@ impl QemuLiveHostIoRuntime {
             }
         }
         Ok(QemuAsyncWaitOutcome::TimedOut)
+    }
+
+    /// Drains all currently available console bytes into boundary staging.
+    fn service_console_output(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let Some(console) = &mut self.console else {
+            return Ok(());
+        };
+        drain_console_stream(&mut console.output, &console.spool)
     }
 
     /// Services the block-I/O ring at the guest's observed icount, if attached.
@@ -335,11 +383,44 @@ pub enum QemuLiveHostIoRuntimeError {
     /// The configured poll interval was zero.
     #[error("host-I/O runtime poll interval must be nonzero")]
     ZeroPollInterval,
+    /// The console stream could not be made non-blocking.
+    #[error("configure QEMU console stream failed: {source}")]
+    ConfigureConsole {
+        /// Underlying stream configuration error.
+        source: std::io::Error,
+    },
+    /// More than one console stream was attached to one node runtime.
+    #[error("QEMU host-I/O runtime already has a console stream")]
+    DuplicateConsole,
+}
+
+/// Drains one non-blocking console stream without assigning a scheduler time.
+fn drain_console_stream(
+    output: &mut UnixStream,
+    spool: &QemuConsoleObservationSpool,
+) -> Result<(), QemuAsyncDriverRuntimeError> {
+    let mut buffer = [0_u8; 8192];
+    loop {
+        match output.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(count) => spool.append(&buffer[..count]).map_err(|source| {
+                QemuAsyncDriverRuntimeError::new("stage QEMU console output", source.to_string())
+            })?,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+            Err(error) => {
+                return Err(QemuAsyncDriverRuntimeError::new(
+                    "read QEMU console output",
+                    error.to_string(),
+                ));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixStream;
 
     #[test]
     fn bounded_poll_attempts_is_at_least_one() {
@@ -371,5 +452,41 @@ mod tests {
             bounded_poll_attempts(Duration::from_millis(1), Duration::ZERO),
             1000
         );
+    }
+
+    #[test]
+    fn console_drain_releases_backpressure_and_preserves_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut writer, mut reader) = UnixStream::pair()?;
+        writer.set_nonblocking(true)?;
+        reader.set_nonblocking(true)?;
+        let payload = (0..(1024 * 1024))
+            .map(|index| u8::try_from(index % 251))
+            .collect::<Result<Vec<_>, _>>()?;
+        let spool = QemuConsoleObservationSpool::new();
+        let mut written = 0;
+        let mut observed_backpressure = false;
+
+        while written < payload.len() {
+            match writer.write(&payload[written..]) {
+                Ok(0) => {
+                    return Err(std::io::Error::other(
+                        "console writer made no progress without WouldBlock",
+                    )
+                    .into());
+                }
+                Ok(count) => written += count,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    observed_backpressure = true;
+                    drain_console_stream(&mut reader, &spool)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        drain_console_stream(&mut reader, &spool)?;
+
+        assert!(observed_backpressure);
+        assert_eq!(spool.take()?, payload);
+        Ok(())
     }
 }
