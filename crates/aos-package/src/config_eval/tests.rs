@@ -1350,6 +1350,69 @@ fn retained_manifest_abi_bands_gate_cross_abi_rollback() {
     );
 }
 
+fn retained_identity_inputs(
+    host_nix: &std::path::Path,
+) -> (
+    materialize::ConfigManifest,
+    crate::types::CrossAbiReEvalInputs,
+) {
+    let mut source: materialize::ConfigManifest = serde_json::from_str(include_str!(
+        "../../tests/fixtures/config_manifest/manifest.json"
+    ))
+    .unwrap();
+    let host_nix = host_nix.to_string_lossy().into_owned();
+    source.inputs.host_nix.store_path = host_nix.clone();
+    source.inputs.host_nix.content_hash = super::sha256_identity(b"{}\n");
+    let retained = crate::types::CrossAbiReEvalInputs {
+        config_module_paths: source.inputs.config_modules.store_paths.clone(),
+        config_module_packages: source.inputs.config_modules.package_names.clone(),
+        host_nix_ref: host_nix,
+        facts_hash: source.inputs.instance_facts.facts_hash.clone(),
+        facts_ref: source.inputs.instance_facts.store_path.clone(),
+        from_module_abi: 1,
+        to_module_abi: 1,
+    };
+    (source, retained)
+}
+
+#[test]
+fn retained_identity_rejects_modified_host_module_bytes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host_nix = tmp.path().join("host.nix");
+    std::fs::write(&host_nix, b"{ services.sshd.enable = true; }\n").unwrap();
+    let (source, retained) = retained_identity_inputs(&host_nix);
+    let expected_nar = source.inputs.config_modules.nar_hashes[0].clone();
+
+    let error = super::validate_retained_content_identities(&source, &retained, |_| {
+        Ok(expected_nar.clone())
+    })
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("retained host.nix bytes"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn retained_identity_rejects_modified_config_module_nar() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host_nix = tmp.path().join("host.nix");
+    std::fs::write(&host_nix, b"{}\n").unwrap();
+    let (source, retained) = retained_identity_inputs(&host_nix);
+
+    let error = super::validate_retained_content_identities(&source, &retained, |_| {
+        Ok(format!("sha256:{}", "f".repeat(64)))
+    })
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not match authenticated NAR hash"),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("example"), "{error:#}");
+}
+
 #[test]
 fn evaluator_identity_uses_decoded_store_path_hash() {
     let path = PathBuf::from(format!("/nix/store/{}-aos/bin/apm", "0".repeat(32)));

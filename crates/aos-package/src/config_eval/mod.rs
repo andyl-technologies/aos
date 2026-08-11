@@ -50,6 +50,7 @@ pub mod system_roots;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
@@ -2284,8 +2285,6 @@ pub fn reeval_cross_abi(
     remove_if_present(&out)?;
     let graph_out = out.with_file_name("graph.json");
     remove_if_present(&graph_out)?;
-    validate_cross_abi_inputs(retained, running_base_lib)?;
-
     let source_bytes = std::fs::read(source_manifest)
         .with_context(|| format!("reading retained manifest {}", source_manifest.display()))?;
     let source: materialize::ConfigManifest = serde_json::from_slice(&source_bytes)
@@ -2294,6 +2293,7 @@ pub fn reeval_cross_abi(
         .validate()
         .with_context(|| format!("validating retained manifest {}", source_manifest.display()))?;
     validate_retained_manifest_inputs(&source, retained)?;
+    validate_cross_abi_inputs(retained, running_base_lib, &source)?;
 
     let working_set = retained_cross_abi_working_set(&source, retained)?;
     let evaluator = native::NativeNixEvaluator::new(eval_root, verbose);
@@ -2447,6 +2447,7 @@ fn validate_retained_manifest_inputs(
 fn validate_cross_abi_inputs(
     retained: &crate::types::CrossAbiReEvalInputs,
     running_base_lib: &Path,
+    source: &materialize::ConfigManifest,
 ) -> Result<()> {
     for (kind, path) in std::iter::once(("running base library", running_base_lib))
         .chain(std::iter::once((
@@ -2480,7 +2481,82 @@ fn validate_cross_abi_inputs(
     if sha256_identity(&normalized_bytes) != retained.facts_hash {
         anyhow::bail!("retained facts bytes do not match the recorded facts_hash");
     }
+    validate_retained_content_identities(source, retained, retained_store_path_nar_hash)?;
     Ok(())
+}
+
+/// Verifies the exact retained host and config-module bytes before evaluation.
+///
+/// The source manifest is already authenticated by the generation record. Its
+/// hashes therefore remain the authority; a fresh image must prove that every
+/// retained input still matches those identities rather than carrying the old
+/// claims into a newly evaluated generation.
+fn validate_retained_content_identities<F>(
+    source: &materialize::ConfigManifest,
+    retained: &crate::types::CrossAbiReEvalInputs,
+    mut nar_hash: F,
+) -> Result<()>
+where
+    F: FnMut(&Path) -> Result<String>,
+{
+    let host_bytes = std::fs::read(&retained.host_nix_ref)
+        .with_context(|| format!("reading retained host.nix {}", retained.host_nix_ref))?;
+    let actual_host_hash = sha256_identity(&host_bytes);
+    if !crate::verify::sha256_hashes_equal(&actual_host_hash, &source.inputs.host_nix.content_hash)?
+    {
+        anyhow::bail!(
+            "retained host.nix bytes do not match recorded content hash: expected {}, got {}",
+            source.inputs.host_nix.content_hash,
+            actual_host_hash,
+        );
+    }
+
+    if retained.config_module_paths.len() != source.inputs.config_modules.nar_hashes.len() {
+        anyhow::bail!("retained config-module paths and authenticated NAR hashes differ in count");
+    }
+    for ((path, package), expected) in retained
+        .config_module_paths
+        .iter()
+        .zip(&retained.config_module_packages)
+        .zip(&source.inputs.config_modules.nar_hashes)
+    {
+        let actual = nar_hash(Path::new(path))
+            .with_context(|| format!("hashing retained config module {package} at {path}"))?;
+        if !crate::verify::sha256_hashes_equal(&actual, expected)? {
+            anyhow::bail!(
+                "retained config module {package} at {path} does not match authenticated NAR hash: expected {expected}, got {actual}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Recomputes a store path's NAR hash from its current bytes.
+fn retained_store_path_nar_hash(path: &Path) -> Result<String> {
+    let mut child = std::process::Command::new("nix-store")
+        .envs(aos_core::nix::aos_nix_env())
+        .arg("--dump")
+        .arg(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("running nix-store --dump {}", path.display()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("nix-store --dump did not provide stdout")?;
+    let hash = crate::verify::sha256_stream(stdout);
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("waiting for nix-store --dump {}", path.display()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "nix-store --dump failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    hash
 }
 
 /// Evaluates the closed host package-selection projection before resolution.

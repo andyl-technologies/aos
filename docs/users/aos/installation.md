@@ -73,6 +73,14 @@ space for first-boot state:
 Allow more than 6 GiB beyond the image itself: the fixed provisioning marker
 and partition alignment need space in addition to the 2 GiB swap and 4 GiB
 `/var` minimum. The fleet tests use 16 GiB disks.
+
+> [!WARNING]
+> A measured-boot image started in UEFI Setup Mode uses a temporary plaintext
+> `/var` so keys can be enrolled. The first boot with Secure Boot enforcing
+> replaces it with TPM-sealed storage and erases everything written there.
+> Complete enrollment and that first enforcing boot before applying host
+> configuration, installing packages, or staging image updates.
+
 If a raw file is enlarged before boot, relocate its backup GPT header after
 resizing:
 

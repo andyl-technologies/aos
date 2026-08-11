@@ -439,8 +439,10 @@ in {
             # multi-user and an operator/test can enroll PK/KEK/db; the
             # first enforcing boot below replaces it with the sealed volume.
             # The measured-boot repart plan initially leaves /var raw. Format
-            # it once, but preserve that filesystem across further Setup Mode
-            # boots so staged image and configuration state remains durable.
+            # it once and preserve it across further Setup Mode boots so key
+            # enrollment can complete without repeated formatting. This
+            # plaintext state remains disposable: the first enforcing boot
+            # replaces it with the sealed volume below.
             fs_type=$(${pkgs.util-linux}/sbin/blkid -p -s TYPE -o value "$dev" 2>/dev/null || true)
             case "$fs_type" in
               "")
