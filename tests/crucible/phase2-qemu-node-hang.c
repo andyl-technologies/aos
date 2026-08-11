@@ -8,7 +8,7 @@
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
-#define HANG_EVIDENCE_BYTES 192
+#define HANG_EVIDENCE_BYTES 256
 #define WATCHDOG_TIMEOUT_NANOS 32
 #define WATCHDOG_DOWNTIME_NANOS 8
 
@@ -193,7 +193,7 @@ static void poll_event(uint8_t evidence[HANG_EVIDENCE_BYTES],
     if (status != 1 ||
         event->command_kind != CRUCIBLE_FAULT_COMMAND_NODE_HANG ||
         event->outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
-        evidence_len != HANG_EVIDENCE_BYTES) {
+        (evidence_len != 192 && evidence_len != HANG_EVIDENCE_BYTES)) {
         fprintf(stderr,
                 "hang event poll: status=%d kind=%u outcome=%u "
                 "evidence_len=%zu magic=%.8s observed=%" PRIu64 "\n",

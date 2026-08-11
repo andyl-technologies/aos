@@ -1,12 +1,16 @@
-From d25f97733ec1580690b9fd556a8e9fada480ea00 Mon Sep 17 00:00:00 2001
+From 2de1aab6c4e88d314669a09ed52f80cfe17462dd Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] 0061-crucible-block-discard
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
+---
+ block/crucible-shmem.c     | 21 +++++++++++++++++++++
+ include/qemu/qemu-plugin.h |  7 ++++---
+ 2 files changed, 25 insertions(+), 3 deletions(-)
 
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index 178851578690164d67e3dbb3aa06739e42d6a9be..afc442b021f68fd37e7550881c0a93bd14fe4c9a 100644
+index 1788515..afc442b 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -357,6 +357,26 @@ crucible_shmem_co_flush(BlockDriverState *bs)
@@ -45,7 +49,7 @@ index 178851578690164d67e3dbb3aa06739e42d6a9be..afc442b021f68fd37e7550881c0a93bd
  };
  
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index bfff4a83aab42941379640d785b290b31dff5f33..2dade19d6658391051ee9b4027109df877be65a0 100644
+index 627f986..853254e 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -222,9 +222,9 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata

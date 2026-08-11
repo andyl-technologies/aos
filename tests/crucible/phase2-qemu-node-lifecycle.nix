@@ -95,6 +95,7 @@ in
               architecture_id="$2"
               volatile_policy="$3"
               device_policy="$4"
+              boot_policy="''${5:-immediate}"
               case "$architecture" in
                 x86_64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
@@ -111,7 +112,11 @@ in
                   exit 1
                   ;;
               esac
-              log="logs/$architecture-$volatile_policy-$device_policy.log"
+              plugin_args="architecture=$architecture_id,volatile_policy=$volatile_policy,device_policy=$device_policy"
+              if test "$boot_policy" = require_ready; then
+                plugin_args="$plugin_args,boot_policy=require_ready"
+              fi
+              log="logs/$architecture-$volatile_policy-$device_policy-$boot_policy.log"
               if ! timeout 120 "$qemu_binary" \
                   $machine_args \
                   -accel sim \
@@ -121,7 +126,7 @@ in
                   -serial none \
                   -monitor none \
                   -kernel "$guest" \
-                  -plugin "$PWD/crucible-node-lifecycle.so,architecture=$architecture_id,volatile_policy=$volatile_policy,device_policy=$device_policy" \
+                  -plugin "$PWD/crucible-node-lifecycle.so,$plugin_args" \
                   > "$log" 2>&1; then
                 cat "$log" >&2
                 return 1
@@ -139,6 +144,8 @@ in
                 run_reset aarch64 3 "$volatile_policy" "$device_policy"
               done
             done
+            run_reset x86_64 2 1 1 require_ready
+            run_reset aarch64 3 1 1 require_ready
           '';
         }
         {
@@ -233,6 +240,7 @@ in
               printf 'watchdog_deadline_axes=stalled,runnable-with-time-bias\n'
               printf 'watchdog_composition=atomic-severity-lattice\n'
               printf 'watchdog=transition_after-reset\n'
+              printf 'boot_policy=require_ready-live-guest-callback\n'
               printf 'recovery=transactional-remove\n'
             } > "$out/result"
           '';

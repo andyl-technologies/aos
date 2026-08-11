@@ -7,11 +7,13 @@
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
-#define LIFECYCLE_EVIDENCE_BYTES 192
+#define LIFECYCLE_EVIDENCE_BYTES 256
 
 static uint16_t architecture;
 static uint32_t volatile_policy;
 static uint32_t device_policy;
+static bool require_ready;
+static bool ready_observed;
 static bool finished;
 static uint8_t *payload;
 static size_t payload_len;
@@ -73,7 +75,8 @@ static void append_field(GByteArray *bytes, uint16_t tag, uint16_t type,
 
 static uint8_t *build_payload(size_t *length)
 {
-    static const uint8_t boot_policy[] =
+    const char *boot_policy = require_ready ?
+        "CRUCJSN1{\"kind\":\"require_ready\",\"parameters\":{\"exhausted\":\"permanent_failure\",\"maximum_attempts\":2,\"ready_marker\":\"guest-ready\",\"retry_delay_nanos\":4096}}" :
         "CRUCJSN1{\"kind\":\"immediate\"}";
     g_autoptr(GByteArray) bytes = g_byte_array_sized_new(256);
     uint8_t header[CRUCIBLE_NODE_FAULT_PAYLOAD_HEADER_V1_BYTES] = { 0 };
@@ -109,7 +112,7 @@ static uint8_t *build_payload(size_t *length)
                  downtime, sizeof(downtime));
     append_field(bytes, CRUCIBLE_NODE_FAULT_FIELD_P3,
                  CRUCIBLE_NODE_FAULT_FIELD_TYPE_BYTES,
-                 boot_policy, sizeof(boot_policy) - 1);
+                 boot_policy, strlen(boot_policy));
     put_u32(volatile_state, volatile_policy);
     append_field(bytes, CRUCIBLE_NODE_FAULT_FIELD_P4,
                  CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
@@ -137,6 +140,7 @@ static void validate_event(void)
         event.outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
         evidence_len != sizeof(evidence) ||
         memcmp(evidence, "CRUCLIF1", 8) != 0 ||
+        get_u16(evidence + 8) != 2 ||
         get_u16(evidence + 10) != 3 ||
         get_u32(evidence + 12) != volatile_policy ||
         get_u32(evidence + 16) != device_policy ||
@@ -148,6 +152,13 @@ static void validate_event(void)
         get_u64(evidence + 48) == 0 || get_u64(evidence + 56) == 0 ||
         get_u64(evidence + 112) == 0 || get_u64(evidence + 120) == 0) {
         fail("reset event or lifecycle evidence was absent or malformed");
+    }
+    if (get_u32(evidence + 192) != (require_ready ? 2U : 1U) ||
+        get_u32(evidence + 196) != 1 ||
+        get_u32(evidence + 200) != (require_ready ? 2U : 1U) ||
+        get_u64(evidence + 208) != (require_ready ? 4096U : 0U) ||
+        (require_ready && get_u64(evidence + 216) == UINT64_MAX)) {
+        fail("boot policy evidence was absent or malformed");
     }
     if ((volatile_policy == 1 && get_u64(evidence + 104) != 0) ||
         (volatile_policy == 2 && get_u64(evidence + 104) == 0)) {
@@ -186,7 +197,8 @@ static void completion(void *opaque)
     }
     if (result.status != CRUCIBLE_FAULT_STATUS_APPLIED ||
         result.command_sequence != 2 ||
-        result.applied_icount < result.observed_icount) {
+        result.applied_icount < result.observed_icount ||
+        (require_ready && !ready_observed)) {
         fail("reset did not complete through the deferred command path");
     }
     validate_event();
@@ -194,6 +206,34 @@ static void completion(void *opaque)
     g_printerr("CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS architecture=%u volatile_policy=%u device_policy=%u\n",
                architecture, volatile_policy, device_policy);
     qemu_plugin_request_shutdown(0);
+}
+
+static void ready_tb_exec(unsigned int vcpu_index, void *opaque)
+{
+    int status;
+
+    (void)vcpu_index;
+    (void)opaque;
+    if (!require_ready || ready_observed) {
+        return;
+    }
+    ready_observed = true;
+    status = qemu_plugin_crucible_fault_ready_marker(
+        "guest-ready", strlen("guest-ready"), qemu_plugin_icount_raw());
+    if (status < 0) {
+        fail("QEMU rejected a live guest ready-marker observation");
+    }
+    if (status == 0) {
+        ready_observed = false;
+    }
+}
+
+static void ready_tb_translate(qemu_plugin_id_t id,
+                               struct qemu_plugin_tb *tb)
+{
+    (void)id;
+    qemu_plugin_register_vcpu_tb_exec_cb(
+        tb, ready_tb_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
 }
 
 static void at_exit(qemu_plugin_id_t id, void *opaque)
@@ -230,12 +270,19 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     bool found = false;
 
     (void)info;
-    if (argc != 3) {
-        fail("expected architecture, volatile policy, and device policy");
+    if (argc != 3 && argc != 4) {
+        fail("expected architecture, state policies, and optional boot policy");
     }
     architecture = parse_u64_arg(argv[0], "architecture=");
     volatile_policy = parse_u64_arg(argv[1], "volatile_policy=");
     device_policy = parse_u64_arg(argv[2], "device_policy=");
+    if (argc == 4) {
+        if (strcmp(argv[3], "boot_policy=require_ready") != 0) {
+            fail("optional boot policy is invalid");
+        }
+        require_ready = true;
+        qemu_plugin_register_vcpu_tb_trans_cb(id, ready_tb_translate);
+    }
     if (architecture < QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 ||
         architecture > QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64 ||
         volatile_policy > 2 || device_policy > 3) {

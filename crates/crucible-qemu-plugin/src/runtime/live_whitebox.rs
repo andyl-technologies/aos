@@ -20,8 +20,8 @@ use crate::{
     WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
     WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
     WhiteboxDoorbellCapabilities, WhiteboxDoorbellRegistrationPlan, WhiteboxDoorbellSetupResources,
-    WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent, WhiteboxMarkerSinkError,
-    handle_whitebox_doorbell_callback,
+    WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent, WhiteboxMarkerPayload,
+    WhiteboxMarkerSinkError, handle_whitebox_doorbell_callback,
 };
 
 mod api;
@@ -319,16 +319,31 @@ impl LiveWhiteboxState {
         } else if app_random::is_request(&payload) {
             self.handle_app_random(&mut reader, event, current_icount, vcpu_index)
         } else {
-            handle_whitebox_doorbell_callback(
+            let marker = handle_whitebox_doorbell_callback(
                 &self.doorbell,
                 &mut reader,
                 &mut self.marker_sink,
                 event,
             )
-            .map(|_marker| ())
             .map_err(|source| LiveWhiteboxError::Callback {
                 message: source.to_string(),
-            })
+            })?;
+            if let WhiteboxMarkerPayload::Event(event) = marker.decoded_payload() {
+                let status = (self.apis.fault_ready_marker)(
+                    event.name.as_ptr().cast(),
+                    event.name.len(),
+                    marker.marker_icount(),
+                );
+                if status < 0 {
+                    return Err(LiveWhiteboxError::Callback {
+                        message: format!(
+                            "QEMU rejected ready-marker observation `{}` with status {status}",
+                            event.name
+                        ),
+                    });
+                }
+            }
+            Ok(())
         }
     }
 

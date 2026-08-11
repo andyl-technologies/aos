@@ -95,6 +95,30 @@ pre-release, reset-vector, firmware-handoff, and guest ready-point markers; an
 unmanifested marker is rejected. Repeated/intermittent reset behavior is a
 temporal signal producing repeated lifecycle commands, not hidden retry logic.
 
+The GPL-side Crucible plugin reports a decoded guest event marker directly to
+QEMU at the event's exact raw icount. QEMU compares it with the pending marker;
+the Apache host neither synthesizes readiness nor races shared-memory polling
+against reset completion. A nonmatching event remains an ordinary observation.
+For `require_ready`, reset completion arms the exact virtual retry deadline,
+the first matching event completes the original deferred lifecycle command,
+and a missed deadline performs another native machine reset. The final missed
+deadline executes `exhausted`. Failure to restore preserved reset state is a
+fail-closed permanent failure and never resumes the partially reset machine.
+
+`CRUCLIF1` version 2 is 256 bytes. Its first 192 bytes retain the lifecycle,
+state-policy, timing, affected-byte-count, and before/after fingerprint fields
+from version 1. The extension is exhaustive:
+
+| Offset | Width | Field |
+| ---: | ---: | --- |
+| 192 | 4 | boot policy: `1 = immediate`, `2 = require_ready` |
+| 196 | 4 | one-based attempt that produced this result |
+| 200 | 4 | configured maximum attempt count |
+| 204 | 4 | terminal exhaustion transition, or zero for `immediate` |
+| 208 | 8 | exact virtual retry delay in nanoseconds |
+| 216 | 8 | exact virtual ready deadline, or `UINT64_MAX` when none was armed |
+| 224 | 32 | SHA-256 of the exact UTF-8 ready-marker bytes, or all zeroes |
+
 ## Hang scopes
 
 Selected-vCPU hang stops exactly the sorted numeric vCPU set while allowing
