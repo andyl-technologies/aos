@@ -864,7 +864,7 @@ impl FaultInterruptCapabilityManifestV1 {
             usize::try_from(u32_at(bytes, 16)?).map_err(|_| FaultAbiError::CapabilityInvariant)?;
         let body_len =
             usize::try_from(u32_at(bytes, 20)?).map_err(|_| FaultAbiError::PayloadLimit)?;
-        if row_count > HARD_FAULT_TARGET_MANIFEST_ROWS {
+        if row_count == 0 || row_count > HARD_FAULT_TARGET_MANIFEST_ROWS {
             return Err(FaultAbiError::CapabilityInvariant);
         }
         let expected_len = FAULT_INTERRUPT_MANIFEST_HEADER_V1_BYTES
@@ -1273,6 +1273,36 @@ pub struct FaultHardwareErrorCapabilityManifestV1 {
 }
 
 impl FaultHardwareErrorCapabilityManifestV1 {
+    fn validate_completeness(&self) -> Result<(), FaultAbiError> {
+        if self.rows.is_empty() {
+            return Ok(());
+        }
+        let has = |id: &str| self.rows.iter().any(|row| row.id == id);
+        let required: &[&str] = match self.architecture {
+            FaultCapabilityScope::X86_64 => &[
+                "x86.machine-check.corrected",
+                "x86.machine-check.recoverable",
+                "x86.machine-check.fatal",
+            ],
+            FaultCapabilityScope::Aarch64 => &[
+                "aarch64.ras.synchronous",
+                "aarch64.ras.synchronous-fatal",
+                "aarch64.ras.asynchronous",
+                "aarch64.ras.asynchronous-fatal",
+            ],
+            _ => return Err(FaultAbiError::CapabilityInvariant),
+        };
+        if required.iter().any(|id| !has(id)) {
+            return Err(FaultAbiError::CapabilityInvariant);
+        }
+        let has_corrected_memory = has("memory.ecc.corrected");
+        let has_uncorrectable_memory = has("memory.ecc.uncorrectable");
+        if has_corrected_memory != has_uncorrectable_memory {
+            return Err(FaultAbiError::CapabilityInvariant);
+        }
+        Ok(())
+    }
+
     /// Encodes a canonical self-authenticating hardware-error manifest.
     ///
     /// # Errors
@@ -1283,12 +1313,12 @@ impl FaultHardwareErrorCapabilityManifestV1 {
         if !matches!(
             self.architecture,
             FaultCapabilityScope::X86_64 | FaultCapabilityScope::Aarch64
-        ) || self.rows.is_empty()
-            || self.rows.len() > HARD_FAULT_TARGET_MANIFEST_ROWS
+        ) || self.rows.len() > HARD_FAULT_TARGET_MANIFEST_ROWS
             || self.rows.windows(2).any(|pair| pair[0].id >= pair[1].id)
         {
             return Err(FaultAbiError::CapabilityInvariant);
         }
+        self.validate_completeness()?;
         let mut body = Vec::new();
         for row in &self.rows {
             row.encode(self.architecture, &mut body)?;
@@ -1343,7 +1373,7 @@ impl FaultHardwareErrorCapabilityManifestV1 {
             usize::try_from(u32_at(bytes, 16)?).map_err(|_| FaultAbiError::CapabilityInvariant)?;
         let body_len =
             usize::try_from(u32_at(bytes, 20)?).map_err(|_| FaultAbiError::PayloadLimit)?;
-        if row_count == 0 || row_count > HARD_FAULT_TARGET_MANIFEST_ROWS {
+        if row_count > HARD_FAULT_TARGET_MANIFEST_ROWS {
             return Err(FaultAbiError::CapabilityInvariant);
         }
         if bytes.len()
@@ -2021,6 +2051,17 @@ mod tests {
         }
     }
 
+    fn complete_x86_hardware_rows() -> Vec<FaultHardwareErrorCapabilityRowV1> {
+        let mut fatal = hardware_row("x86.machine-check.fatal", false);
+        fatal.error_class = FaultHardwareErrorClassV1::Fatal;
+        fatal.status_required |= 1 << 57;
+        vec![
+            hardware_row("x86.machine-check.corrected", true),
+            fatal,
+            hardware_row("x86.machine-check.recoverable", false),
+        ]
+    }
+
     #[test]
     fn query_codec_rejects_unknown_kinds_and_reserved_bytes() {
         let query = FaultTargetManifestQueryV1 {
@@ -2243,10 +2284,7 @@ mod tests {
     fn hardware_error_manifest_round_trips_real_mca_rows() {
         let manifest = FaultHardwareErrorCapabilityManifestV1 {
             architecture: FaultCapabilityScope::X86_64,
-            rows: vec![
-                hardware_row("x86.machine-check.corrected", true),
-                hardware_row("x86.machine-check.recoverable", false),
-            ],
+            rows: complete_x86_hardware_rows(),
         };
         let encoded = manifest
             .encode()
@@ -2254,6 +2292,18 @@ mod tests {
         assert_eq!(
             FaultHardwareErrorCapabilityManifestV1::decode(&encoded),
             Ok(manifest)
+        );
+
+        let empty = FaultHardwareErrorCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            rows: Vec::new(),
+        };
+        let encoded_empty = empty
+            .encode()
+            .unwrap_or_else(|error| panic!("empty realized manifest should encode: {error}"));
+        assert_eq!(
+            FaultHardwareErrorCapabilityManifestV1::decode(&encoded_empty),
+            Ok(empty)
         );
     }
 
@@ -2285,9 +2335,12 @@ mod tests {
             Err(FaultAbiError::CapabilityInvariant)
         );
 
-        let mut missing_vmstate = hardware_row("x86.machine-check.corrected", true);
-        missing_vmstate.vmstate = false;
-        assert!(manifest(missing_vmstate).encode().is_ok());
+        let mut missing_vmstate = FaultHardwareErrorCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            rows: complete_x86_hardware_rows(),
+        };
+        missing_vmstate.rows[0].vmstate = false;
+        assert!(missing_vmstate.encode().is_ok());
 
         let mut invalid_mask = hardware_row("x86.machine-check.corrected", true);
         invalid_mask.status_allowed = 0;
@@ -2305,7 +2358,10 @@ mod tests {
         };
         assert_eq!(unsorted.encode(), Err(FaultAbiError::CapabilityInvariant));
 
-        let valid = manifest(hardware_row("x86.machine-check.corrected", true));
+        let valid = FaultHardwareErrorCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            rows: complete_x86_hardware_rows(),
+        };
         let mut corrupt = valid
             .encode()
             .unwrap_or_else(|error| panic!("hardware manifest should encode: {error}"));

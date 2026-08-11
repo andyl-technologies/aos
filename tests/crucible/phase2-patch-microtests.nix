@@ -363,6 +363,12 @@
       };
     }
     {
+      patch = "0055-crucible-vcpu-service-control.patch";
+      check = import ./phase2-qemu-vcpu-service.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
       patch = "0060-crucible-block-typed-errors.patch";
       check = import ./phase1-qemu-block-shmem.nix {
         inherit pkgs lib qemuPackage;

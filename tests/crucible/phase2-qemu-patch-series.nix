@@ -399,6 +399,13 @@
       capability = "manifest-bound x86 machine-check, AArch64 RAS, and realized memory ECC delivery with transactional evidence";
     }
     {
+      file = "0055-crucible-vcpu-service-control.patch";
+      catalogName = "crucible-vcpu-service-control";
+      class = "D";
+      enforces = "QFP-VCPU-1,QFP-VCPU-2,FAULT-ORDER";
+      capability = "exact rational vCPU service, fixed-topology stall and offline state, bounded work conservation, and replay evidence";
+    }
+    {
       file = "0060-crucible-block-typed-errors.patch";
       catalogName = "crucible-block-typed-errors";
       class = "F";
