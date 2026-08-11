@@ -771,7 +771,7 @@ flag rather than the patch.
 ## 30.11 S10 — multi-arch doorbell works on aarch64
 
 The doorbell is defined per architecture ([GHC-15] x86_64 port I/O, [GHC-16]
-aarch64 reserved-immediate `HLT`/`BRK`/`hvc`). The x86 form is the well-trodden
+aarch64 reserved-immediate `HINT`). The x86 form is the well-trodden
 path; this spike verifies the aarch64 form traps synchronously and carries its
 payload, so multi-arch support is real from day one rather than aspirational.
 
@@ -790,8 +790,8 @@ under TCG `-icount` with the plugin loaded. Have the emitter ring the aarch64
 doorbell with a known payload; confirm the plugin traps it synchronously, reads the
 payload at the trap icount, and produces the §16.5 frame with the correct marker
 icount ([GHC-13]). Run twice to confirm the marker icount is reproducible. Then
-disable white-box mode and confirm the same instruction is inert (delivered to the
-guest as a normal exception, not intercepted, [GHC-17]).
+disable white-box mode and confirm the same instruction retires inertly without
+being intercepted ([GHC-17]).
 
 ```text
 S10 procedure (aarch64):
@@ -829,13 +829,14 @@ x86-specific).
 
 ### Fallback
 
-If the chosen reserved-immediate instruction does not trap precisely, select a
-different aarch64 trappable instruction (the candidate set in [GHC-16]: a different
-`BRK`/`HLT` immediate, or an `hvc` with a reserved immediate). If no aarch64
-instruction traps synchronously with a readable payload, aarch64 ships **black-box
-only** (full determinism, faults, coverage, observable-I/O properties via S1) with
-white-box deferred — a fidelity reduction confined to one optional channel on one
-architecture.
+If the chosen reserved-immediate instruction cannot be observed precisely while
+still retiring inertly at EL0, select another reserved `HINT` encoding. An
+exception-class instruction is not an acceptable fallback merely because its
+pre-execution callback is observable: the live gate must also prove repeated
+doorbells from a sustained guest agent. If no aarch64 instruction satisfies both
+requirements, aarch64 ships **black-box only** (full determinism, faults,
+coverage, observable-I/O properties via S1) with white-box deferred — a fidelity
+reduction confined to one optional channel on one architecture.
 
 ## 30.11a S11 — deterministic multi-vCPU under single-threaded RR-TCG + icount
 
@@ -1583,16 +1584,21 @@ disabled, and emits a manifest-derived QEMU build identity. The run reported
 result, and `gate:qemu-inert` owns the separate upstream-vs-patched sim-off
 inertness proof.
 
-**RISK-17** is retired by `T-RISK-10`.
+The original **RISK-17** result is historical instruction-ABI-v3 evidence.
 `checks.crucible.phase0.s10Aarch64Doorbell` consumes the real-backend
 `checks.crucible.phase2.qemuLiveWhiteboxDoorbell` result. The active
 `qemu-crucible` package records
 `qemu_target_list=x86_64-softmmu,aarch64-softmmu`,
 `qemu_aarch64_softmmu_target=true`, `qemu_system_aarch64_available=true`, and
 `production_aarch64_doorbell_trap_implemented=true`. A raw AArch64 `virt` guest
-executes the frozen `hlt #0x04c1` instruction, the production Rust plugin reads
+executed the frozen `hlt #0x04c1` instruction, and the production Rust plugin read
 the `x0`/`x1` virtual pointer and length synchronously, admits `hot-path` at the
 observed trap icount, reaches the exact scheduler ceiling, and exits normally.
+QEMU invoked the plugin before executing HLT, so this one-shot marker appeared
+to pass even though an EL0 guest agent could not return for its next request.
+Instruction ABI v4 therefore supersedes HLT with inert `hint #0x4c`; repeated
+doorbells, white-box-off inertness, and a sustained guest agent are required
+before this risk can be retired again.
 The spike records `whitebox_on_trap_tested=true`,
 `whitebox_off_inertness_tested=true`, a numeric
 `marker_icount_reproducible`, `payload_read_result=pass`,
@@ -1848,14 +1854,16 @@ never tolerated). Results live in the decision register (31).
   forces re-gating; full upstream-vs-patched inertness remains a later
   `gate:qemu-inert` obligation because the current patch series intentionally
   changes icount behavior. — satisfies [RISK-16], [DET-35], [INV-7]; spec §30.10.
-- [x] **T-RISK-10** Run **S10**: aarch64 doorbell traps synchronously at the exact
+- [ ] **T-RISK-10** Re-run **S10** for instruction ABI v4: the aarch64 doorbell
+  is observed synchronously at the exact
   retirement icount, carries its register payload, yields a reproducible marker
   icount, and is inert when disabled; fall back to aarch64-black-box-only if no
   instruction traps precisely. The AOS-built `qemu-system-aarch64` target now
-  boots a raw `virt` guest through the production plugin; the live gate observes
-  the frozen `hlt #0x04c1` marker through `x0`/`x1`, enforces the exact ceiling,
-  and completes normal teardown. No fallback is active. — satisfies [RISK-17],
-  [GHC-16]; spec §30.11.
+  must boot a raw `virt` guest through the production plugin, observe at least
+  two adjacent `hint #0x4c` markers through `x0`/`x1`, prove exact pre-retirement
+  coordinates and white-box-off inertness, and complete normal teardown. The
+  full AArch64 debugger matrix must additionally prove sustained guest-agent
+  polling. — satisfies [RISK-17], [GHC-16]; spec §30.11.
 - [x] **T-RISK-11** Run the **ABI-drift** spike: deliberately drift a field offset
   and confirm the generated-header diff, bilateral static asserts, and golden
   vector catch it on at least one side. — satisfies [RISK-18], [SHM-31]; spec

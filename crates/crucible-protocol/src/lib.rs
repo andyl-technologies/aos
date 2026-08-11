@@ -52,13 +52,13 @@ pub use codec_fuzz::{
     run_control_codec_fuzz_target,
 };
 pub use doorbell_abi::{
-    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
-    WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE, WHITEBOX_DOORBELL_ABIS,
+    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
+    WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT, WHITEBOX_DOORBELL_ABIS,
     WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION, WHITEBOX_DOORBELL_X86_64_ABI,
     WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
     WhiteboxDoorbellAbi, WhiteboxDoorbellArchitecture, WhiteboxDoorbellInstruction,
-    WhiteboxDoorbellTrapAbi, encode_aarch64_hlt_instruction, encode_x86_64_out_imm8_al_instruction,
-    whitebox_doorbell_abi_for_architecture,
+    WhiteboxDoorbellTrapAbi, encode_aarch64_hint_instruction,
+    encode_x86_64_out_imm8_al_instruction, whitebox_doorbell_abi_for_architecture,
 };
 pub use doorbell_frame::{
     GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS, WHITEBOX_DOORBELL_FRAME_HEADER_LEN,

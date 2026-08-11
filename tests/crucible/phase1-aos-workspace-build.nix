@@ -29,7 +29,9 @@
     {
       "x86_64-linux" = "qemu-system-x86_64";
       "aarch64-linux" = "qemu-system-aarch64";
-    }.${pkgs.stdenv.hostPlatform.system}
+    }.${
+      pkgs.stdenv.hostPlatform.system
+    }
     or (throw "crucible phase1 AOS workspace build does not support ${pkgs.stdenv.hostPlatform.system}");
 in
   if attrFailures != []
@@ -132,6 +134,8 @@ in
             grep -q '^guest_host_protocol_version=1$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^guest_host_protocol_abi=crucible-guest-host-channel-v1$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^doorbell_instruction_abi_version=4$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^rpc_abi_version=5.0.0$' \
               ${packages.crucible}/nix-support/crucible-build-info

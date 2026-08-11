@@ -180,6 +180,7 @@ impl Default for QemuLiveNodeStepSchedule {
 #[derive(Clone, Debug)]
 pub struct QemuLiveNodeStepGateConfig {
     architecture: LivePluginGuestArchitecture,
+    doorbell_instruction_abi_version: u16,
     qemu_executable: PathBuf,
     plugin: PathBuf,
     kernel: PathBuf,
@@ -231,6 +232,8 @@ impl QemuLiveNodeStepGateConfig {
     ) -> Self {
         Self {
             architecture: LivePluginGuestArchitecture::X86_64,
+            doorbell_instruction_abi_version:
+                crucible_protocol::WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
             qemu_executable: qemu_executable.into(),
             plugin: plugin.into(),
             kernel: kernel.into(),
@@ -271,6 +274,8 @@ impl QemuLiveNodeStepGateConfig {
     ) -> Self {
         Self {
             architecture: LivePluginGuestArchitecture::X86_64,
+            doorbell_instruction_abi_version:
+                crucible_protocol::WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
             qemu_executable: qemu_executable.into(),
             plugin: plugin.into(),
             kernel: kernel.into(),
@@ -304,6 +309,13 @@ impl QemuLiveNodeStepGateConfig {
         architecture: LivePluginGuestArchitecture,
     ) -> Self {
         self.architecture = architecture;
+        self
+    }
+
+    /// Returns this configuration with the retained guest's doorbell instruction ABI.
+    #[must_use]
+    pub const fn with_doorbell_instruction_abi_version(mut self, version: u16) -> Self {
+        self.doorbell_instruction_abi_version = version;
         self
     }
 

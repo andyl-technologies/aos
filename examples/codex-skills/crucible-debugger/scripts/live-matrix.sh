@@ -9,14 +9,23 @@ set -euo pipefail
 : "${CRUCIBLE_MATRIX_FIXTURE_GENERATOR:?packaged fixture generator is required}"
 : "${CRUCIBLE_MATRIX_BUILD_INFO:?packaged build information is required}"
 : "${CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES:?supported architectures are required}"
+: "${CRUCIBLE_MATRIX_DOORBELL_INSTRUCTION_ABI_VERSION:?doorbell instruction ABI version is required}"
+[[ "$CRUCIBLE_MATRIX_DOORBELL_INSTRUCTION_ABI_VERSION" == 4 ]] || {
+  printf 'unsupported packaged doorbell instruction ABI: %s (expected 4)\n' \
+    "$CRUCIBLE_MATRIX_DOORBELL_INSTRUCTION_ABI_VERSION" >&2
+  exit 64
+}
 
 available_architectures=$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES
 external_aarch64_kernel=${CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64:-}
 external_aarch64_root=${CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64:-}
 external_aarch64_cmdline=${CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64:-}
-if [[ -n "$external_aarch64_kernel" || -n "$external_aarch64_root" || -n "$external_aarch64_cmdline" ]]; then
-  [[ -n "$external_aarch64_kernel" && -n "$external_aarch64_root" && -n "$external_aarch64_cmdline" ]] \
-    || { printf 'external AArch64 kernel, root image, and kernel command line must be supplied together\n' >&2; exit 64; }
+external_aarch64_doorbell_abi=${CRUCIBLE_MATRIX_EXTERNAL_DOORBELL_INSTRUCTION_ABI_AARCH64:-}
+if [[ -n "$external_aarch64_kernel" || -n "$external_aarch64_root" || -n "$external_aarch64_cmdline" || -n "$external_aarch64_doorbell_abi" ]]; then
+  [[ -n "$external_aarch64_kernel" && -n "$external_aarch64_root" && -n "$external_aarch64_cmdline" && -n "$external_aarch64_doorbell_abi" ]] \
+    || { printf 'external AArch64 kernel, root image, kernel command line, and doorbell ABI must be supplied together\n' >&2; exit 64; }
+  [[ "$external_aarch64_doorbell_abi" == "$CRUCIBLE_MATRIX_DOORBELL_INSTRUCTION_ABI_VERSION" ]] \
+    || { printf 'external AArch64 doorbell ABI %s does not match packaged ABI %s\n' "$external_aarch64_doorbell_abi" "$CRUCIBLE_MATRIX_DOORBELL_INSTRUCTION_ABI_VERSION" >&2; exit 64; }
   CRUCIBLE_MATRIX_KERNEL_AARCH64=$external_aarch64_kernel
   CRUCIBLE_MATRIX_ROOT_IMAGE_AARCH64=$external_aarch64_root
   export CRUCIBLE_KERNEL_AARCH64=$external_aarch64_kernel
@@ -190,10 +199,15 @@ wait_for_count() {
   local pattern=$2
   local expected=$3
   local process_id=$4
+  local diagnostic_file=${5:-}
   local attempts=0
   local maximum_attempts=$((stage_timeout_seconds * 10))
   while [[ $(grep -Fc "$pattern" "$file" 2>/dev/null || true) -lt $expected ]]; do
     if ! kill -0 "$process_id" 2>/dev/null; then
+      if [[ -n "$diagnostic_file" && -s "$diagnostic_file" ]]; then
+        printf 'process diagnostic from %s:\n' "$diagnostic_file" >&2
+        sed -n '1,160p' "$diagnostic_file" >&2
+      fi
       fail "process $process_id exited before $expected '$pattern' records appeared in $file"
     fi
     attempts=$((attempts + 1))
@@ -480,6 +494,8 @@ run_architecture() {
     "$guest_architecture" "$kernel" "$root_image" "$fixture"
   grep '^kernel = "blake3:' "$fixture" >"$directory/asset-identities"
   grep '^root_image = "blake3:' "$fixture" >>"$directory/asset-identities"
+  printf 'doorbell_instruction_abi=%s\n' \
+    "$CRUCIBLE_MATRIX_DOORBELL_INSTRUCTION_ABI_VERSION" >>"$directory/asset-identities"
 
   progress "$guest_architecture:start-daemon"
   setsid "$CRUCIBLE_MATRIX_CRUCIBLE" serve \
@@ -515,14 +531,13 @@ run_architecture() {
     printf 'step\n' >&3
   done
   printf 'query\n' >&3
-  wait_for_count "$directory/run.out" interactive-ack 66 "$run_pid"
+  wait_for_count "$directory/run.out" interactive-ack 66 "$run_pid" "$directory/run.err"
 
   debug_command "$endpoint" "$session" --read-only reverse-step quantum \
     >"$directory/reverse-baseline.out" 2>"$directory/reverse-baseline.err"
   require_landed_evidence "$directory/reverse-baseline.out" "baseline reverse"
-  local baseline_events baseline_time baseline_generation baseline_sequence
+  local baseline_events baseline_generation baseline_sequence
   baseline_events=$(field_value "$directory/reverse-baseline.out" landed-event-log-events)
-  baseline_time=$(field_value "$directory/reverse-baseline.out" landed-virtual-time)
   baseline_generation=$(field_value "$directory/reverse-baseline.out" gateway-generation)
   baseline_sequence=$(field_value "$directory/reverse-baseline.out" target-event-sequence)
   [[ "$baseline_events" =~ ^[1-9][0-9]*$ ]] \
@@ -650,7 +665,10 @@ run_architecture() {
   exec 4>"$channel_fifo"
   channel_fd_open=true
   wait_for_pattern "$directory/reposition-close.out" CRUCIBLE_CHANNEL_READY "$channel_pid"
-  debug_command "$endpoint" "$session" --allow-mutate goto "vtime:$baseline_time" \
+  # A virtual time can name more than one scheduler boundary after fork-time
+  # run control. Use the already-proven event coordinate so this exercise tests
+  # stream closure, rather than the CLI's intentional ambiguous-time rejection.
+  debug_command "$endpoint" "$session" --allow-mutate goto "event:$baseline_sequence" \
     >"$directory/reposition-stream.out" 2>"$directory/reposition-stream.err"
   exec 4>&-
   channel_fd_open=false
@@ -706,6 +724,7 @@ done
   printf 'architectures=%s\n' "${selected_architectures// /,}"
   printf 'available_architectures=%s\n' "$available_architectures"
   printf 'packaged_architectures=%s\n' "$CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES"
+  printf 'doorbell_instruction_abi=%s\n' "$CRUCIBLE_MATRIX_DOORBELL_INSTRUCTION_ABI_VERSION"
   printf 'build_info=crucible-build-info\n'
   for selected in $selected_architectures; do
     printf 'evidence.%s=%s/result\n' "$selected" "$selected"
