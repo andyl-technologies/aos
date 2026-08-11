@@ -60,6 +60,7 @@ use crucible::{
 };
 use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
 
+use crate::console_observation::QemuConsoleObservationSpool;
 use crate::supervision::QemuLiveHostIoRuntime;
 use crate::{
     CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
@@ -748,6 +749,9 @@ pub(super) fn build_live_node(
             )
         })?;
 
+    let console_spool = console_observation
+        .as_ref()
+        .map(|_stream| QemuConsoleObservationSpool::new());
     let runtime = QemuLiveHostIoRuntime::from_shmem_fd(
         setup.shmem_as_fd(),
         setup.wake_as_fd(),
@@ -755,6 +759,21 @@ pub(super) fn build_live_node(
         GATE_SLOT,
     )
     .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?;
+    let runtime = match (console_observation, console_spool.as_ref()) {
+        (Some(output), Some(spool)) => runtime
+            .with_console_observation(output, spool.clone())
+            .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?,
+        (None, None) => runtime,
+        _ => {
+            return Err(QemuLiveNodeStepGateError::prime(
+                "configure console observation",
+                QemuNodeChannelError::new(
+                    "configure QEMU console stream",
+                    "console stream and staging spool disagreed",
+                ),
+            ));
+        }
+    };
     let priming_network_outputs = prime_guest_off_boot_barrier(
         &setup,
         config.completion_timeout,
@@ -801,12 +820,8 @@ pub(super) fn build_live_node(
     if let Some(gdbstub) = &config.gdbstub {
         node = node.with_gdbstub(gdbstub.clone());
     }
-    if let Some(console_observation) = console_observation {
-        node = node
-            .with_console_observation(node_id(identity.node), console_observation)
-            .map_err(|source| {
-                QemuLiveNodeStepGateError::prime("configure console observation", source)
-            })?;
+    if let Some(console_spool) = console_spool {
+        node = node.with_console_observation(node_id(identity.node), console_spool);
     }
     if !restoring_checkpoint {
         node.retain_priming_network_outputs(priming_network_outputs);
