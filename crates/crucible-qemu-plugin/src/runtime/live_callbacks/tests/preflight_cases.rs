@@ -9,7 +9,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
     let execution_model =
         QemuPluginExecutionModel::validate(2, crate::QemuTcgThreading::SingleThreadedRoundRobin)
             .unwrap_or_else(|error| panic!("test model should validate: {error}"));
-    let args = PluginArgs::parse("simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111")
+    let args = PluginArgs::parse("simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1")
         .unwrap_or_else(|error| panic!("test arguments should parse: {error}"));
     let missing_preemption = LiveVcpuTimeCallbackRegistrar::new(
         1,

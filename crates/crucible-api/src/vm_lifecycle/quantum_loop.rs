@@ -962,7 +962,8 @@ impl ProductionVmLifecycleLoop {
                         decision.node.name
                     ),
                 })?
-                .with_run_directory(&run_directory);
+                .with_run_directory(&run_directory)
+                .with_process_generation(generation);
             if let Some(debug) = &self.config.debug
                 && (debug.all_nodes
                     || debug

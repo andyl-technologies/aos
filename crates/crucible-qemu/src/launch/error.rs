@@ -7,6 +7,9 @@ use super::QemuPreSpawnLaunchValidationError;
 /// Reports an invalid QEMU launch command.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuLaunchCommandError {
+    /// A process generation cannot use the reserved zero value.
+    #[error("QEMU plugin process generation must be nonzero")]
+    ZeroProcessGeneration,
     /// App-random was configured without enabling the white-box callback.
     #[error("app-random QEMU launch requires white-box mode")]
     AppRandomWhileWhiteboxDisabled,

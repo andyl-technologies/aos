@@ -72,6 +72,12 @@ interrupted owner disappears, Crucible verifies or contains every recorded
 process before admitting a new run. Missing, malformed, or version-mismatched
 recovery records fail closed.
 
+Every QEMU child also receives a nonzero, monotonically increasing process
+generation before the plugin accepts fault commands. Terminal lifecycle
+authorization, durable supervision records, and restored fault state must all
+name that exact generation. A request or checkpoint from an earlier child is
+rejected rather than being applied to its replacement.
+
 Output-format values:
 
 | Value | Meaning |

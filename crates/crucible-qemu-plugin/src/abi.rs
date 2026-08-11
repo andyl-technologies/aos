@@ -92,6 +92,9 @@ pub const QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL: &str = "qemu_plugin_request_vmstop"
 pub const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL: &str = "qemu_plugin_register_wake_fd";
 /// QEMU plugin API symbol used to request a clean or fail-loud process shutdown.
 pub const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL: &str = "qemu_plugin_request_shutdown";
+/// QEMU plugin API symbol that binds the immutable process generation.
+pub const QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL: &str =
+    "qemu_plugin_crucible_lifecycle_set_process_generation";
 /// QEMU plugin API symbol used to register shmem block submit/poll callbacks.
 pub const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL: &str = "qemu_plugin_register_blk_cb";
 /// QEMU plugin API symbol used to register asynchronous block transport events.
@@ -122,6 +125,8 @@ const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL_C: &[u8] = b"qemu_plugin_force_vcpu_exi
 const QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL_C: &[u8] = b"qemu_plugin_request_vmstop\0";
 const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL_C: &[u8] = b"qemu_plugin_register_wake_fd\0";
 const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL_C: &[u8] = b"qemu_plugin_request_shutdown\0";
+const QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_lifecycle_set_process_generation\0";
 const QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_tcg_exec_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL_C: &[u8] =
     b"qemu_plugin_register_vcpu_tb_trans_cb\0";
@@ -325,6 +330,8 @@ pub type QemuRequestVmstopFn = extern "C" fn() -> c_int;
 pub type QemuRegisterWakeFdFn = extern "C" fn(c_int) -> c_int;
 /// QEMU shutdown request function; nonzero selects the fail-loud host-error path.
 pub type QemuRequestShutdownFn = extern "C" fn(c_int);
+/// QEMU immutable process-generation provisioning function.
+pub type QemuSetProcessGenerationFn = extern "C" fn(u64) -> c_int;
 /// TCG-exec callback body passed to QEMU's registration export.
 pub type QemuTcgExecCbFn = extern "C" fn(c_uint, u64, *mut c_void);
 /// QEMU TCG-exec callback registration exported by `crucible-plugin-tcg-exec-cb`.
@@ -779,6 +786,14 @@ pub enum QemuPluginAbiError {
     RuntimeApiCapability {
         /// Missing QEMU symbol.
         symbol: &'static str,
+    },
+    /// QEMU rejected the launch-provisioned process generation.
+    #[error("QEMU rejected process generation {generation} with status {status}")]
+    ProcessGenerationProvision {
+        /// Generation supplied by the launch profile.
+        generation: u64,
+        /// Negative errno status returned by QEMU.
+        status: c_int,
     },
 }
 
@@ -1468,6 +1483,33 @@ pub const fn resolve_qemu_request_vmstop_symbol() -> Option<QemuRequestVmstopFn>
     None
 }
 
+/// Resolves QEMU's immutable process-generation provisioning export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_set_process_generation_symbol() -> Option<QemuSetProcessGenerationFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name. The QEMU
+    // patch exports the exact `extern "C" fn(u64) -> c_int` ABI.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null symbol has the declaration documented above.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuSetProcessGenerationFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's immutable process-generation provisioning export.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_set_process_generation_symbol() -> Option<QemuSetProcessGenerationFn> {
+    None
+}
+
 /// Resolves QEMU's wake-fd registration export from the loaded process.
 #[cfg(unix)]
 #[must_use]
@@ -2033,6 +2075,7 @@ fn install_owned_boundary(
     let request_vmstop = resolve_qemu_request_vmstop_symbol();
     let register_wake_fd = resolve_qemu_register_wake_fd_symbol();
     let request_shutdown = resolve_qemu_request_shutdown_symbol();
+    let set_process_generation = resolve_qemu_set_process_generation_symbol();
     let register_tcg_exec_cb = resolve_qemu_register_tcg_exec_cb_symbol();
     let register_vcpu_init = resolve_qemu_register_vcpu_init_cb_symbol();
     let register_vcpu_idle_resume = resolve_qemu_register_vcpu_idle_resume_cb_symbol();
@@ -2066,6 +2109,18 @@ fn install_owned_boundary(
     let request_shutdown =
         require_runtime_api(request_shutdown, QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL)?;
     let request_vmstop = require_runtime_api(request_vmstop, QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL)?;
+    let set_process_generation = require_runtime_api(
+        set_process_generation,
+        QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL,
+    )?;
+    let generation_status = set_process_generation(boundary.args.process_generation());
+    if generation_status != 0 {
+        return Err(QemuPluginAbiError::ProcessGenerationProvision {
+            generation: boundary.args.process_generation(),
+            status: generation_status,
+        }
+        .into());
+    }
     let basic_block_coverage = if boundary.args.coverage().is_on() {
         Some(resolve_qemu_basic_block_coverage_apis()?)
     } else {

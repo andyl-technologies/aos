@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "e276c5f54a3a4c3757647bf1c1877edb7c5e982bd8e5112b326e5f0bef474678";
+  patchBranchBundleSha256 = "ace510d62c23d4f2737354abd76f1ae85bc2fa51e7fcf93cf29fe14402884bf0";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "e2ddff3965b6623784f0d4c887f173bbe653cbc8";
+  patchBranchHeadCommit = "2162a5ea46636206734be52f17e6e594cab69bc7";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -585,6 +585,16 @@ let
       class = "D";
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
       capability = "dedicated idempotent QAPI terminal authorization bound to action, evidence, and process generation without guest resume";
+    }
+    {
+      file = "0066-crucible-immutable-process-generation.patch";
+      branchSubject = "crucible: provision immutable process generations";
+      branchCommit = "2162a5ea46636206734be52f17e6e594cab69bc7";
+      branchTree = "c2a23c0ede4ad50b6affa24f9b2bc7852a576e3f";
+      catalogName = "crucible-immutable-process-generation";
+      class = "D";
+      enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
+      capability = "launch-time immutable process generation provisioning before fault-command admission";
     }
   ];
   catalogOnlyCapabilities = [

@@ -7,7 +7,7 @@ fn registration_coverage_off_installs_no_callback_without_capability() {
     let mut sequence = PluginRegistrationSequence::new();
     record_steps_through_wake_fd(&mut sequence);
     let args = registration_args(
-        "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,coverage=off",
+        "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,coverage=off",
     );
 
     let capabilities = sequence

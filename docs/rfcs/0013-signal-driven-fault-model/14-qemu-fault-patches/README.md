@@ -1,6 +1,6 @@
 # 14 — QEMU fault-mutation patch series
 
-The complete node adapter and its exact-checkpoint handoff require seventeen new single-purpose patches after the
+The complete node adapter and its exact-checkpoint handoff require twenty new single-purpose patches after the
 currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
 has its own specification in this directory and remains part of the one atomic
 RFC-0013 implementation PR.
@@ -35,6 +35,7 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0063-crucible-plugin-vmstop`](17-plugin-vmstop.md) | Exact plugin-boundary handoff into QEMU's native paused runstate | Determinism-critical lifecycle |
 | [`0064-crucible-terminal-lifecycle-completion`](18-terminal-lifecycle-completion.md) | Two-phase authenticated lifecycle event and QMP-authorized process exit | Determinism-critical lifecycle |
 | [`0065-crucible-authenticated-terminal-lifecycle`](19-authenticated-terminal-lifecycle.md) | Dedicated idempotent terminal authorization bound to action, evidence, and process generation | Determinism-critical lifecycle |
+| [`0066-crucible-immutable-process-generation`](20-immutable-process-generation.md) | Launch-time immutable process identity used by terminal authorization and restore validation | Determinism-critical lifecycle |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
@@ -48,8 +49,10 @@ handoff required to capture and restore all of that state at an exact boundary.
 It does not alter the fault command ABI or rewrite any historical patch commit.
 Patch `0064` uses that paused boundary for the separately authorized terminal
 lifecycle completion. Patch `0065` replaces the provisional `cont` overload
-with a dedicated QAPI command that can never resume guest execution.
-Patch `0064` is the terminal patch in the ordered series.
+with a dedicated QAPI command that can never resume guest execution. Patch
+`0066` removes request-time generation binding: the host provisions an immutable
+nonzero generation while the plugin installs, before any fault command can be
+admitted.
 
 ## 14.2 Process and license boundary
 

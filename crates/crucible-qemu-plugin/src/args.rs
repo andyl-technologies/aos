@@ -4,7 +4,7 @@
 //! `-plugin` shared-object path:
 //!
 //! ```text
-//! -plugin /nix/store/.../crucible-qemu-plugin.so,simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=off,coverage=off
+//! -plugin /nix/store/.../crucible-qemu-plugin.so,simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,whitebox=off,coverage=off
 //! ```
 //!
 //! This module owns only the safe, typed parsing contract. The FFI registration
@@ -31,6 +31,8 @@ pub const PLUGIN_ARG_SIMFD: &str = "simfd";
 pub const PLUGIN_ARG_SLOT: &str = "slot";
 /// The required 32-byte lowercase-hex fault target identity.
 pub const PLUGIN_ARG_FAULT_NODE_HASH: &str = "fault_node_hash";
+/// The required nonzero host-supervised process generation.
+pub const PLUGIN_ARG_PROCESS_GENERATION: &str = "process_generation";
 /// The optional pre-inherited shared-memory fd argument key.
 pub const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
 /// The optional pre-inherited wake fd argument key.
@@ -77,6 +79,7 @@ pub struct PluginArgs {
     sim_fd: i32,
     slot: u32,
     fault_node_hash: [u8; 32],
+    process_generation: u64,
     inherited_fds: Option<PluginInheritedFds>,
     whitebox: PluginSwitch,
     whitebox_setup: Option<WhiteboxSetupAttestation>,
@@ -102,6 +105,7 @@ impl PluginArgs {
         let sim_fd = parse_required_fd(&parsed, PLUGIN_ARG_SIMFD)?;
         let slot = parse_required_u32(&parsed, PLUGIN_ARG_SLOT)?;
         let fault_node_hash = parse_required_hash(&parsed, PLUGIN_ARG_FAULT_NODE_HASH)?;
+        let process_generation = parse_required_process_generation(&parsed)?;
         let whitebox = parse_optional_switch(&parsed, PLUGIN_ARG_WHITEBOX)?;
         let whitebox_setup = whitebox::parse(&parsed, whitebox)?;
         let app_random = app_random::parse(&parsed, whitebox)?;
@@ -118,6 +122,7 @@ impl PluginArgs {
             sim_fd,
             slot,
             fault_node_hash,
+            process_generation,
             inherited_fds,
             whitebox,
             whitebox_setup,
@@ -145,6 +150,12 @@ impl PluginArgs {
     #[must_use]
     pub const fn fault_node_hash(&self) -> [u8; 32] {
         self.fault_node_hash
+    }
+
+    /// Returns the nonzero generation provisioned for this process.
+    #[must_use]
+    pub const fn process_generation(&self) -> u64 {
+        self.process_generation
     }
 
     /// Returns optional pre-inherited setup descriptors.
@@ -283,6 +294,12 @@ pub enum PluginArgsParseError {
     InvalidSlot {
         /// Key whose value was rejected.
         key: &'static str,
+        /// Rejected value.
+        value: String,
+    },
+    /// The process generation was zero or not an unsigned integer.
+    #[error("plugin process generation is invalid: `{value}`")]
+    InvalidProcessGeneration {
         /// Rejected value.
         value: String,
     },
@@ -447,6 +464,22 @@ fn parse_required_u32(
         })
 }
 
+fn parse_required_process_generation(
+    parsed: &ParsedPluginArgs<'_>,
+) -> Result<u64, PluginArgsParseError> {
+    let Some(value) = parsed.value(PLUGIN_ARG_PROCESS_GENERATION) else {
+        return Err(PluginArgsParseError::MissingRequiredKey {
+            key: PLUGIN_ARG_PROCESS_GENERATION,
+        });
+    };
+    match value.parse::<u64>() {
+        Ok(generation) if generation != 0 => Ok(generation),
+        _ => Err(PluginArgsParseError::InvalidProcessGeneration {
+            value: value.to_owned(),
+        }),
+    }
+}
+
 fn parse_required_hash(
     parsed: &ParsedPluginArgs<'_>,
     key: &'static str,
@@ -566,6 +599,7 @@ fn is_known_key(key: &str) -> bool {
         PLUGIN_ARG_SIMFD
             | PLUGIN_ARG_SLOT
             | PLUGIN_ARG_FAULT_NODE_HASH
+            | PLUGIN_ARG_PROCESS_GENERATION
             | PLUGIN_ARG_SHMEMFD
             | PLUGIN_ARG_WAKEFD
             | PLUGIN_ARG_WHITEBOX
