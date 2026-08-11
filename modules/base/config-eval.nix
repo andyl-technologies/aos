@@ -535,6 +535,22 @@ in {
         # failed evaluation non-fatal to boot, so downstream path conditions
         # must never be satisfiable by a same-boot stale manifest or graph.
         rm -f "${cfg.manifest}" /run/aos/graph.json
+        config_state=/var/lib/profiles/system/state.json
+        if [ -e /run/aos/image-reeval-required ] \
+          && ${pkgs.jq}/bin/jq -e \
+            '(.current > 0) and (.current as $current | any(.generations[]; .number == $current))' \
+            "$config_state" >/dev/null; then
+          # Rebind the exact active configuration intent to the image that
+          # actually booted. Persistent platform metadata may still contain
+          # the machine's original provisioning input, so it cannot be used as
+          # the authority for an image transition after runtime config changes.
+          # Generation zero has no retained input and follows the normal
+          # provisioning path below on an image's initial seed boot.
+          ${pkgs.aos}/bin/apm __eval-retained \
+            --out "${cfg.manifest}" \
+            --eval-root /run/aos-eval || exit 1
+          exit 0
+        fi
         # Confirm delivered bytes against the initrd authorization result. If
         # neither metadata nor the durable last-known-good cache supplied an
         # operator module, use a narrowly marked image-authored empty module.

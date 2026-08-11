@@ -319,7 +319,7 @@ class AgentClient:
                 _write_all(sock, ping_frame, time.monotonic() + 2)
                 self._read_frame(sock, time.monotonic() + 2)
                 consecutive_down = 0  # still up
-            except (OSError, TimeoutError, AgentProtocolError):
+            except (OSError, TimeoutError, AgentProtocolError, _ProtocolMidstream):
                 consecutive_down += 1
                 if consecutive_down >= 2:
                     self._reset_conn()

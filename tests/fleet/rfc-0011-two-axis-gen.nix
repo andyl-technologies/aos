@@ -13,6 +13,7 @@
 }: let
   abi2 = mkSystem [
     ../../systems/server-verity.nix
+    ../../systems/_fleet-transition-test.nix
     {
       aos.system.version = "9999.0.0-rfc0011-abi2";
       aos.system.moduleAbi = 2;
@@ -86,6 +87,7 @@
   # package part of the test images themselves.
   targetBase = mkSystem [
     ../../systems/server-verity.nix
+    ../../systems/_fleet-transition-test.nix
     {
       environment.systemPackages = [pkgs.git];
       # This acceptance test runs three guests while generating and serving a
@@ -148,10 +150,10 @@ in {
       system = targetBase;
       bootMode = "image";
       imageDiskMiB = 24576;
-      # Importing the complete authenticated system closure briefly runs APM
-      # and nix-store together. Leave enough headroom for both processes so
-      # the lifecycle assertion is not sensitive to reclaim timing.
-      memoryMiB = 6144;
+      # Importing the complete authenticated system closure briefly runs APM,
+      # nix-store, and the boot evaluator together. Avoid swapping core system
+      # services while the test immediately exercises a real reboot.
+      memoryMiB = 8192;
       tpm = true;
       packages = ["aos-test-agent"];
       metadata."host.nix" = ''
@@ -168,7 +170,7 @@ in {
       system = targetBase;
       bootMode = "image";
       imageDiskMiB = 24576;
-      memoryMiB = 6144;
+      memoryMiB = 8192;
       tpm = true;
       packages = ["aos-test-agent"];
       metadata."host.nix" = ''

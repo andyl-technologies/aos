@@ -2424,16 +2424,21 @@ fn validate_retained_manifest_inputs(
             "retained generation inputs disagree with its manifest; cross-ABI rollback refused"
         );
     }
-    if source
+    if let Some((package, compat)) = source
         .inputs
         .config_modules
-        .module_abi_compat
+        .package_names
         .iter()
-        .any(|compat| retained.to_module_abi < compat.min || retained.to_module_abi > compat.max)
+        .zip(&source.inputs.config_modules.module_abi_compat)
+        .find(|(_, compat)| {
+            retained.to_module_abi < compat.min || retained.to_module_abi > compat.max
+        })
     {
         anyhow::bail!(
-            "a retained config module does not admit running module ABI {}; cross-ABI rollback refused",
-            retained.to_module_abi
+            "retained config module {package} does not admit running module ABI {}; admitted range is {}..={}; cross-ABI rollback refused",
+            retained.to_module_abi,
+            compat.min,
+            compat.max,
         );
     }
     Ok(())
