@@ -17,6 +17,14 @@
     inherit lib pkgs;
   };
   baseLib = system.config.aos.config.evalAtBoot.baseLib;
+  abiOverrideSystem = mkSystem [
+    ../../systems/server.nix
+    {aos.system.moduleAbi = 2;}
+  ];
+  baseLibFollowsImageAbi =
+    if abiOverrideSystem.config.aos.config.evalAtBoot.baseLib.passthru.moduleAbi == 2
+    then "2"
+    else throw "the base library ABI must follow inline image module overrides";
   # The kernel-lockdown option was removed: SECURITY_LOCKDOWN_LSM selects
   # MODULE_SIG, whose default key generation breaks third-party
   # bit-reproducibility of the public base image. Fail loudly at eval time
@@ -982,6 +990,7 @@ in
 
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "config artifacts: $artifact_count frozen closure root(s) verified"
+        echo "base-lib ABI:    follows image module overrides (${baseLibFollowsImageAbi})"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
