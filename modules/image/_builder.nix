@@ -151,7 +151,7 @@
       inherit version cmdline;
       kernel = system.config.system.build.kernel;
       initrd = system.config.system.build.initrd;
-      osRelease = ukiOsRelease;
+      osRelease = "${ukiOsRelease}/os-release";
       secureBootKey =
         if sb.enable
         then sb.dbKey
@@ -194,16 +194,20 @@
   # sd-boot then orders live entries by the monotonic installed filename below.
   # The root filesystem's /etc/os-release remains the complete user-facing
   # document and is unaffected.
-  ukiOsRelease = pkgs.writeText "aos-uki-os-release" ''
-    NAME="${name}"
-    VERSION="${version}"
-    PRETTY_NAME="${name} ${version}"
-    HOME_URL="https://aos.dev"
-    BUG_REPORT_URL="https://aos.dev/issues"
-    AOS_STATE_VERSION=${system.config.aos.system.stateVersion}
-    AOS_MODULE_ABI=${toString system.config.aos.system.moduleAbi}
-    AOS_BASELIB_DIGEST=sha256:${builtins.hashString "sha256" (toString system.config.aos.config.evalAtBoot.baseLib)}
-  '';
+  ukiOsRelease = pkgs.writeTextFile {
+    name = "aos-uki-os-release";
+    destination = "/os-release";
+    text = ''
+      NAME="${name}"
+      VERSION="${version}"
+      PRETTY_NAME="${name} ${version}"
+      HOME_URL="https://aos.dev"
+      BUG_REPORT_URL="https://aos.dev/issues"
+      AOS_STATE_VERSION=${system.config.aos.system.stateVersion}
+      AOS_MODULE_ABI=${toString system.config.aos.system.moduleAbi}
+      AOS_BASELIB_DIGEST=sha256:${builtins.hashString "sha256" (toString system.config.aos.config.evalAtBoot.baseLib)}
+    '';
+  };
 
   # sd-boot boot-counting tries suffix for durable image
   # rollback. When `aos.boot.bootCountingTries` is set, the UKI staged into the
