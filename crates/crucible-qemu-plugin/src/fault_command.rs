@@ -583,7 +583,7 @@ impl QemuFaultCommandApis {
     ) -> Result<FaultHardwareErrorCapabilityManifestV1, FaultCommandBridgeError> {
         let mut architecture = 0_u16;
         let required = (self.hardware_error_manifest)(std::ptr::null_mut(), 0, &mut architecture);
-        if required == 0 || required > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS {
+        if required > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS {
             return Err(FaultCommandBridgeError::HardwareErrorManifestCount { required });
         }
         let empty = QemuFaultHardwareErrorCapability {
@@ -3565,9 +3565,6 @@ fn translate_hardware_exception_evidence(
         || raw_u64(raw, 32).map_err(invalid)? != expectation.fault_address.unwrap_or(0)
         || raw[48] != u8::from(expectation.fault_address.is_some())
         || raw[49] != u8::from(expectation.before_instruction)
-        || raw_u32(raw, 72).map_err(invalid)? != expectation.vector
-        || raw_u64(raw, 80).map_err(invalid)? != expectation.syndrome
-        || raw_u64(raw, 88).map_err(invalid)? != expectation.fault_address.unwrap_or(0)
         || raw_u32(raw, BEFORE_STATE + 8).map_err(invalid)? != expectation.architecture as u32
         || raw_u32(raw, AFTER_STATE + 8).map_err(invalid)? != expectation.architecture as u32
     {
@@ -3608,8 +3605,20 @@ fn translate_hardware_exception_evidence(
                 || raw[201] != u8::from(expected_address.is_some())
                 || raw[202] != u8::from(expected_misc.is_some())
                 || raw[203] != 0
-                || raw[204] != u8::from(row.error_class == FaultHardwareErrorClassV1::Fatal)
+                || raw[204] != 0
                 || raw[50] != u8::from(expectation.maskable)
+                || (*expected_corrected
+                    && (raw_u64(raw, 64).map_err(invalid)? != 0
+                        || raw_u32(raw, 72).map_err(invalid)? != 0
+                        || raw[76] != 0
+                        || raw_u64(raw, 80).map_err(invalid)? != 0
+                        || raw_u64(raw, 88).map_err(invalid)? != 0))
+                || (!*expected_corrected
+                    && (raw_u32(raw, 72).map_err(invalid)? != expectation.vector
+                        || raw[76] != u8::from(expectation.fault_address.is_some())
+                        || raw_u64(raw, 80).map_err(invalid)? != expectation.syndrome
+                        || raw_u64(raw, 88).map_err(invalid)?
+                            != expectation.fault_address.unwrap_or(0)))
                 || bank < row.bank_number
                 || bank >= row.bank_number + row.bank_count
                 || status & row.status_required != row.status_required
@@ -3651,6 +3660,18 @@ fn translate_hardware_exception_evidence(
                 || raw[204] != u8::from(*expected_fatal)
                 || *expected_fatal != (row.error_class == FaultHardwareErrorClassV1::Fatal)
                 || raw[50] != u8::from(row.maskable)
+                || (*expected_corrected
+                    && (raw_u64(raw, 64).map_err(invalid)? != 0
+                        || raw_u32(raw, 72).map_err(invalid)? != 0
+                        || raw[76] != 0
+                        || raw_u64(raw, 80).map_err(invalid)? != 0
+                        || raw_u64(raw, 88).map_err(invalid)? != 0))
+                || (!*expected_corrected
+                    && (raw_u32(raw, 72).map_err(invalid)? != expectation.vector
+                        || raw[76] != u8::from(expectation.fault_address.is_some())
+                        || raw_u64(raw, 80).map_err(invalid)? != expectation.syndrome
+                        || raw_u64(raw, 88).map_err(invalid)?
+                            != expectation.fault_address.unwrap_or(0)))
                 || (asynchronous
                     && raw_u64(raw, AFTER_STATE + 104).map_err(invalid)?
                         != raw_u64(raw, 184).map_err(invalid)?)
@@ -4363,6 +4384,92 @@ mod tests {
         FAULT_COMMAND_FLAG_NONE, FAULT_COMMAND_SEMANTIC_VERSION, dequeue_fault_result,
         enqueue_fault_command,
     };
+
+    fn complete_x86_hardware_manifest(
+        recoverable: FaultHardwareErrorCapabilityRowV1,
+    ) -> FaultHardwareErrorCapabilityManifestV1 {
+        let mut corrected = recoverable.clone();
+        corrected.id = "x86.machine-check.corrected".to_owned();
+        corrected.error_class = FaultHardwareErrorClassV1::Corrected;
+        corrected.visibility_mask = crucible_shmem::FAULT_HARDWARE_ERROR_VISIBILITY_TELEMETRY;
+        corrected.status_required = 1_u64 << 63;
+        corrected.corrected = true;
+        let mut fatal = recoverable.clone();
+        fatal.id = "x86.machine-check.fatal".to_owned();
+        fatal.error_class = FaultHardwareErrorClassV1::Fatal;
+        fatal.status_required |= 1_u64 << 57;
+        FaultHardwareErrorCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            rows: vec![corrected, fatal, recoverable],
+        }
+    }
+
+    fn complete_aarch64_hardware_manifest(
+        corrected_memory: FaultHardwareErrorCapabilityRowV1,
+    ) -> FaultHardwareErrorCapabilityManifestV1 {
+        let ras = |id: &str, class, maskable: bool| FaultHardwareErrorCapabilityRowV1 {
+            id: id.to_owned(),
+            bank: "aarch64.ras.delivery-state".to_owned(),
+            channel: "aarch64.memory.channel".to_owned(),
+            rank: "aarch64.memory.rank".to_owned(),
+            firmware: "aarch64-ras".to_owned(),
+            state: if maskable {
+                "aarch64-disr-serror".to_owned()
+            } else {
+                "aarch64-esr-far-data-abort".to_owned()
+            },
+            record_kind: FaultHardwareErrorRecordKindV1::Aarch64Ras,
+            error_class: class,
+            mechanism: FaultHardwareErrorMechanismV1::Aarch64Ras,
+            visibility_mask: crucible_shmem::FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION,
+            bank_number: 0,
+            bank_count: 1,
+            vector: if maskable { 47 } else { 3 },
+            status_required: 0,
+            status_allowed: 0,
+            syndrome_required: 0x10,
+            syndrome_allowed: u32::MAX.into(),
+            model_phase_mask: 1 << (11 - 1),
+            privilege_mask: crucible_shmem::FAULT_HARDWARE_ERROR_PRIVILEGE_V1_MASK,
+            corrected: false,
+            maskable,
+            vmstate: true,
+        };
+        let mut uncorrectable_memory = corrected_memory.clone();
+        uncorrectable_memory.id = "memory.ecc.uncorrectable".to_owned();
+        uncorrectable_memory.error_class = FaultHardwareErrorClassV1::Recoverable;
+        uncorrectable_memory.visibility_mask =
+            crucible_shmem::FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION;
+        uncorrectable_memory.corrected = false;
+        let rows = vec![
+            ras(
+                "aarch64.ras.asynchronous",
+                FaultHardwareErrorClassV1::Asynchronous,
+                true,
+            ),
+            ras(
+                "aarch64.ras.asynchronous-fatal",
+                FaultHardwareErrorClassV1::Fatal,
+                true,
+            ),
+            ras(
+                "aarch64.ras.synchronous",
+                FaultHardwareErrorClassV1::Synchronous,
+                false,
+            ),
+            ras(
+                "aarch64.ras.synchronous-fatal",
+                FaultHardwareErrorClassV1::Fatal,
+                false,
+            ),
+            corrected_memory,
+            uncorrectable_memory,
+        ];
+        FaultHardwareErrorCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::Aarch64,
+            rows,
+        }
+    }
 
     #[test]
     fn bridge_accepts_every_canonical_qemu_result_status() {
@@ -5215,10 +5322,7 @@ mod tests {
             maskable: false,
             vmstate: true,
         };
-        let manifest = FaultHardwareErrorCapabilityManifestV1 {
-            architecture: FaultCapabilityScope::X86_64,
-            rows: vec![row.clone()],
-        }
+        let manifest = complete_x86_hardware_manifest(row.clone())
         .encode()
         .expect("valid x86 hardware manifest");
         let expectation = ExceptionCommandExpectation {
@@ -5270,6 +5374,7 @@ mod tests {
         raw[288..320].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.bank));
         raw[320..352].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.channel));
         raw[352..384].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.rank));
+        raw[384..388].copy_from_slice(&2_u32.to_le_bytes());
         for offset in [392_usize, 520] {
             raw[offset..offset + 8].copy_from_slice(b"CRUCHCS1");
             raw[offset + 8..offset + 12]
@@ -5343,16 +5448,14 @@ mod tests {
             maskable: false,
             vmstate: true,
         };
-        let manifest = FaultHardwareErrorCapabilityManifestV1 {
-            architecture: FaultCapabilityScope::Aarch64,
-            rows: vec![row.clone()],
-        }
+        let manifest = complete_aarch64_hardware_manifest(row.clone())
         .encode()
         .expect("valid GHES manifest");
         let mut raw = vec![0_u8; 1376];
         raw[..8].copy_from_slice(b"CRUCHWE1");
         raw[8..10].copy_from_slice(&1_u16.to_le_bytes());
         raw[10..12].copy_from_slice(&(FaultCapabilityScope::Aarch64 as u16).to_le_bytes());
+        raw[12..16].copy_from_slice(&4_u32.to_le_bytes());
         raw[16..24].copy_from_slice(&17_u64.to_le_bytes());
         raw[24..32].copy_from_slice(&address.to_le_bytes());
         raw[32..40].copy_from_slice(&syndrome.to_le_bytes());

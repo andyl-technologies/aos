@@ -296,6 +296,10 @@
       kind = "interface";
       symbols = ["qemu_plugin_crucible_fault_hardware_error_manifest"];
     };
+    "0055-crucible-vcpu-service-control.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
     "0060-crucible-block-typed-errors.patch" = {
       kind = "recorded";
       symbols = [];
