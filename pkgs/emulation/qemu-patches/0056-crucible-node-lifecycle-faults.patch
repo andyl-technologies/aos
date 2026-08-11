@@ -1,3 +1,141 @@
+diff --git a/hw/intc/apic_common.c b/hw/intc/apic_common.c
+index 7bddd0f..7033020 100644
+--- a/hw/intc/apic_common.c
++++ b/hw/intc/apic_common.c
+@@ -509,6 +509,7 @@ static void apic_common_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+ 
++    dc->crucible_volatile_state = true;
+     device_class_set_legacy_reset(dc, apic_reset_common);
+     device_class_set_props(dc, apic_properties_common);
+     dc->realize = apic_common_realize;
+diff --git a/hw/intc/arm_gic_common.c b/hw/intc/arm_gic_common.c
+index 99c0858..620d00c 100644
+--- a/hw/intc/arm_gic_common.c
++++ b/hw/intc/arm_gic_common.c
+@@ -417,6 +417,7 @@ static void arm_gic_common_class_init(ObjectClass *klass, void *data)
+     ResettableClass *rc = RESETTABLE_CLASS(klass);
+     ARMLinuxBootIfClass *albifc = ARM_LINUX_BOOT_IF_CLASS(klass);
+ 
++    dc->crucible_volatile_state = true;
+     rc->phases.hold = arm_gic_common_reset_hold;
+     dc->realize = arm_gic_common_realize;
+     device_class_set_props(dc, arm_gic_common_properties);
+diff --git a/hw/intc/arm_gicv3_common.c b/hw/intc/arm_gicv3_common.c
+index 12f56cf..25464c7 100644
+--- a/hw/intc/arm_gicv3_common.c
++++ b/hw/intc/arm_gicv3_common.c
+@@ -722,6 +722,7 @@ static void arm_gicv3_common_class_init(ObjectClass *klass, void *data)
+     ResettableClass *rc = RESETTABLE_CLASS(klass);
+     ARMLinuxBootIfClass *albifc = ARM_LINUX_BOOT_IF_CLASS(klass);
+ 
++    dc->crucible_volatile_state = true;
+     rc->phases.hold = arm_gicv3_common_reset_hold;
+     dc->realize = arm_gicv3_common_realize;
+     device_class_set_props(dc, arm_gicv3_common_properties);
+diff --git a/hw/intc/i8259_common.c b/hw/intc/i8259_common.c
+index ce8756c..e0d38e1 100644
+--- a/hw/intc/i8259_common.c
++++ b/hw/intc/i8259_common.c
+@@ -244,6 +244,7 @@ static void pic_common_class_init(ObjectClass *klass, void *data)
+     DeviceClass *dc = DEVICE_CLASS(klass);
+     InterruptStatsProviderClass *ic = INTERRUPT_STATS_PROVIDER_CLASS(klass);
+ 
++    dc->crucible_volatile_state = true;
+     dc->vmsd = &vmstate_pic_common;
+     device_class_set_props(dc, pic_properties_common);
+     dc->realize = pic_common_realize;
+diff --git a/hw/intc/ioapic_common.c b/hw/intc/ioapic_common.c
+index 7698963..a6abec5 100644
+--- a/hw/intc/ioapic_common.c
++++ b/hw/intc/ioapic_common.c
+@@ -202,6 +202,7 @@ static void ioapic_common_class_init(ObjectClass *klass, void *data)
+     DeviceClass *dc = DEVICE_CLASS(klass);
+     InterruptStatsProviderClass *ic = INTERRUPT_STATS_PROVIDER_CLASS(klass);
+ 
++    dc->crucible_volatile_state = true;
+     dc->realize = ioapic_common_realize;
+     dc->vmsd = &vmstate_ioapic_common;
+     ic->print_info = ioapic_print_info;
+diff --git a/hw/rtc/mc146818rtc.c b/hw/rtc/mc146818rtc.c
+index e322fc2..d727879 100644
+--- a/hw/rtc/mc146818rtc.c
++++ b/hw/rtc/mc146818rtc.c
+@@ -1024,6 +1024,7 @@ static void rtc_class_initfn(ObjectClass *klass, void *data)
+     ResettableClass *rc = RESETTABLE_CLASS(klass);
+     AcpiDevAmlIfClass *adevc = ACPI_DEV_AML_IF_CLASS(klass);
+ 
++    dc->crucible_volatile_state = true;
+     dc->realize = rtc_realizefn;
+     dc->vmsd = &vmstate_rtc;
+     rc->phases.enter = rtc_reset_enter;
+diff --git a/hw/rtc/pl031.c b/hw/rtc/pl031.c
+index ed439bd..29c87a3 100644
+--- a/hw/rtc/pl031.c
++++ b/hw/rtc/pl031.c
+@@ -336,6 +336,7 @@ static void pl031_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+ 
++    dc->crucible_volatile_state = true;
+     dc->vmsd = &vmstate_pl031;
+     device_class_set_props(dc, pl031_properties);
+ }
+diff --git a/hw/timer/arm_timer.c b/hw/timer/arm_timer.c
+index 1213b77..c972392 100644
+--- a/hw/timer/arm_timer.c
++++ b/hw/timer/arm_timer.c
+@@ -396,6 +396,7 @@ static void sp804_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *k = DEVICE_CLASS(klass);
+ 
++    k->crucible_volatile_state = true;
+     k->realize = sp804_realize;
+     device_class_set_props(k, sp804_properties);
+     k->vmsd = &vmstate_sp804;
+diff --git a/hw/timer/hpet.c b/hw/timer/hpet.c
+index ccb97b6..14dafd9 100644
+--- a/hw/timer/hpet.c
++++ b/hw/timer/hpet.c
+@@ -740,6 +740,7 @@ static void hpet_device_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+ 
++    dc->crucible_volatile_state = true;
+     dc->realize = hpet_realize;
+     device_class_set_legacy_reset(dc, hpet_reset);
+     dc->vmsd = &vmstate_hpet;
+diff --git a/hw/timer/i8254_common.c b/hw/timer/i8254_common.c
+index 29105af..900b0e1 100644
+--- a/hw/timer/i8254_common.c
++++ b/hw/timer/i8254_common.c
+@@ -246,6 +246,7 @@ static void pit_common_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+ 
++    dc->crucible_volatile_state = true;
+     dc->realize = pit_common_realize;
+     dc->vmsd = &vmstate_pit_common;
+     /*
+diff --git a/include/hw/qdev-core.h b/include/hw/qdev-core.h
+index 530f3da..bed976a 100644
+--- a/include/hw/qdev-core.h
++++ b/include/hw/qdev-core.h
+@@ -160,6 +160,13 @@ struct DeviceClass {
+     bool user_creatable;
+     bool hotpluggable;
+ 
++    /*
++     * Crucible treats architectural interrupt and guest-clock devices as
++     * volatile machine state rather than peripheral state. Classes set this
++     * only when every VMState field belongs to that architectural domain.
++     */
++    bool crucible_volatile_state;
++
+     /* callbacks */
+     /**
+      * @legacy_reset: deprecated device reset method pointer
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 index 8b3eced..2ee6525 100644
 --- a/include/qemu/crucible-fault.h
@@ -15,12 +153,123 @@ index 8b3eced..2ee6525 100644
  
  /*
   * Architecture interrupt-controller interception contract.  These objects are
+diff --git a/migration/savevm.c b/migration/savevm.c
+index 3c3c64d..238a29e 100644
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -28,6 +28,8 @@
+ 
+ #include "qemu/osdep.h"
+ #include "hw/boards.h"
++#include "hw/core/cpu.h"
++#include "hw/qdev-core.h"
+ #include "net/net.h"
+ #include "migration.h"
+ #include "migration/snapshot.h"
+@@ -247,11 +249,48 @@ typedef struct SaveStateEntry {
+     int load_section_id;
+     const SaveVMHandlers *ops;
+     const VMStateDescription *vmsd;
++    VMStateIf *obj;
+     void *opaque;
+     CompatEntry *compat;
+     int is_ram;
+ } SaveStateEntry;
+ 
++static uint32_t crucible_lifecycle_state_domain(const SaveStateEntry *se)
++{
++    const char *name = se->vmsd ? se->vmsd->name : se->idstr;
++    Object *object;
++    DeviceState *device;
++
++    if (!se->obj) {
++        if (strcmp(name, "globalstate") == 0 ||
++            strcmp(name, "replay") == 0 ||
++            strcmp(name, "crucible-shmem") == 0) {
++            return QEMU_CRUCIBLE_LIFECYCLE_STATE_CONTROL;
++        }
++        if (strcmp(name, "cpu") == 0 ||
++            g_str_has_prefix(name, "cpu/") ||
++            strcmp(name, "cpu_common") == 0 ||
++            g_str_has_prefix(name, "cpu_common/") ||
++            strcmp(name, "timer") == 0 ||
++            g_str_has_prefix(name, "timer/") ||
++            strcmp(name, "arm_timer") == 0 ||
++            strcmp(name, "apic") == 0 ||
++            g_str_has_prefix(name, "apic/")) {
++            return QEMU_CRUCIBLE_LIFECYCLE_STATE_VOLATILE;
++        }
++        return QEMU_CRUCIBLE_LIFECYCLE_STATE_DEVICE;
++    }
++    object = OBJECT(se->obj);
++    if (object_dynamic_cast(object, TYPE_CPU)) {
++        return QEMU_CRUCIBLE_LIFECYCLE_STATE_VOLATILE;
++    }
++    device = object_dynamic_cast(object, TYPE_DEVICE) ? DEVICE(object) : NULL;
++    if (device && DEVICE_GET_CLASS(device)->crucible_volatile_state) {
++        return QEMU_CRUCIBLE_LIFECYCLE_STATE_VOLATILE;
++    }
++    return QEMU_CRUCIBLE_LIFECYCLE_STATE_DEVICE;
++}
++
+ typedef struct SaveState {
+     QTAILQ_HEAD(, SaveStateEntry) handlers;
+     SaveStateEntry *handler_pri_head[MIG_PRI_MAX + 1];
+@@ -911,6 +950,7 @@ int vmstate_register_with_alias_id(VMStateIf *obj, uint32_t instance_id,
+     se->section_id = savevm_state.global_section_id++;
+     se->opaque = opaque;
+     se->vmsd = vmsd;
++    se->obj = obj;
+     se->alias_id = alias_id;
+ 
+     if (obj) {
+@@ -1803,6 +1843,14 @@ void qemu_savevm_live_state(QEMUFile *f)
+ }
+ 
+ int qemu_save_device_state(QEMUFile *f)
++{
++    return qemu_save_device_state_domains(
++        f, QEMU_CRUCIBLE_LIFECYCLE_STATE_VOLATILE |
++           QEMU_CRUCIBLE_LIFECYCLE_STATE_DEVICE |
++           QEMU_CRUCIBLE_LIFECYCLE_STATE_CONTROL);
++}
++
++int qemu_save_device_state_domains(QEMUFile *f, uint32_t domains)
+ {
+     MigrationState *ms = migrate_get_current();
+     Error *local_err = NULL;
+@@ -1817,7 +1865,7 @@ int qemu_save_device_state(QEMUFile *f)
+     QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
+         int ret;
+ 
+-        if (se->is_ram) {
++        if (se->is_ram || !(crucible_lifecycle_state_domain(se) & domains)) {
+             continue;
+         }
+         ret = vmstate_save(f, se, NULL, &local_err);
+diff --git a/migration/savevm.h b/migration/savevm.h
+index 58761d8..0df53f1 100644
+--- a/migration/savevm.h
++++ b/migration/savevm.h
+@@ -62,6 +62,12 @@ void qemu_savevm_send_postcopy_ram_discard(QEMUFile *f, const char *name,
+ void qemu_savevm_send_colo_enable(QEMUFile *f);
+ void qemu_savevm_live_state(QEMUFile *f);
+ int qemu_save_device_state(QEMUFile *f);
++enum QemuCrucibleLifecycleStateDomain {
++    QEMU_CRUCIBLE_LIFECYCLE_STATE_VOLATILE = 1U << 0,
++    QEMU_CRUCIBLE_LIFECYCLE_STATE_DEVICE = 1U << 1,
++    QEMU_CRUCIBLE_LIFECYCLE_STATE_CONTROL = 1U << 2,
++};
++int qemu_save_device_state_domains(QEMUFile *f, uint32_t domains);
+ int qemu_savevm_crucible_schema_sha256(uint8_t digest[32],
+                                        uint64_t *sections_out);
+ 
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000..14ee9dc
+index 0000000..a34f8f3
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
-@@ -0,0 +1,483 @@
+@@ -0,0 +1,586 @@
 +/*
 + * Crucible deterministic node lifecycle and hang faults
 + *
@@ -35,6 +284,9 @@ index 0000000..14ee9dc
 +#include "exec/ramblock.h"
 +#include "exec/tb-flush.h"
 +#include "hw/core/cpu.h"
++#include "io/channel-buffer.h"
++#include "migration/qemu-file.h"
++#include "migration/savevm.h"
 +#include "qemu/accel.h"
 +#include "qemu/bswap.h"
 +#include "qemu/crucible-fault.h"
@@ -67,6 +319,8 @@ index 0000000..14ee9dc
 +    uint64_t observed_icount;
 +    uint8_t before_hash[32];
 +    uint8_t evidence[CRUCIBLE_LIFECYCLE_EVIDENCE_BYTES];
++    uint8_t *preserved_state;
++    size_t preserved_state_len;
 +} CrucibleLifecyclePendingReset;
 +
 +typedef struct CrucibleHangApply {
@@ -154,6 +408,84 @@ index 0000000..14ee9dc
 +    return true;
 +}
 +
++static int crucible_lifecycle_capture_state(uint32_t domains,
++                                            uint8_t **state,
++                                            size_t *state_len)
++{
++    QIOChannelBuffer *buffer;
++    QEMUFile *file;
++    int status;
++    int close_status;
++
++    *state = NULL;
++    *state_len = 0;
++    if (domains == 0) {
++        return 0;
++    }
++    buffer = qio_channel_buffer_new(4096);
++    file = qemu_file_new_output(QIO_CHANNEL(buffer));
++    status = qemu_save_device_state_domains(file, domains);
++    if (status == 0) {
++        status = qemu_fflush(file);
++    }
++    if (status == 0) {
++        status = qemu_file_get_error(file);
++    }
++    if (status == 0 && buffer->usage == 0) {
++        status = -EIO;
++    }
++    if (status == 0) {
++        *state = g_memdup2(buffer->data, buffer->usage);
++        *state_len = buffer->usage;
++    }
++    close_status = qemu_fclose(file);
++    object_unref(OBJECT(buffer));
++    if (status == 0 && close_status != 0) {
++        status = close_status;
++    }
++    if (status != 0) {
++        g_clear_pointer(state, g_free);
++        *state_len = 0;
++    }
++    return status;
++}
++
++static int crucible_lifecycle_restore_state(const uint8_t *state,
++                                            size_t state_len)
++{
++    QIOChannelBuffer *buffer;
++    QEMUFile *file;
++    int status;
++    int close_status;
++
++    if (!state_len) {
++        return 0;
++    }
++    if (state_len < 8 || ldl_be_p(state) != QEMU_VM_FILE_MAGIC ||
++        ldl_be_p(state + 4) != QEMU_VM_FILE_VERSION) {
++        return -EINVAL;
++    }
++    state += 8;
++    state_len -= 8;
++    buffer = qio_channel_buffer_new(state_len);
++    memcpy(buffer->data, state, state_len);
++    buffer->usage = state_len;
++    file = qemu_file_new_input(QIO_CHANNEL(buffer));
++    status = qemu_load_device_state(file);
++    close_status = qemu_fclose(file);
++    object_unref(OBJECT(buffer));
++    return status == 0 ? close_status : status;
++}
++
++static void crucible_lifecycle_pending_clear(
++    CrucibleLifecyclePendingReset *pending)
++{
++    qemu_crucible_fault_event_reservation_release(pending->reservation);
++    qemu_crucible_fault_rule_unref(pending->rule);
++    g_free(pending->preserved_state);
++    memset(pending, 0, sizeof(*pending));
++}
++
 +static int crucible_lifecycle_clear_ram_block(RAMBlock *block, void *opaque)
 +{
 +    uint64_t *cleared = opaque;
@@ -231,8 +563,11 @@ index 0000000..14ee9dc
 +    QemuCrucibleFaultEventReservation **event_reservation)
 +{
 +    uint8_t bytes[CRUCIBLE_LIFECYCLE_EVIDENCE_BYTES] = { 0 };
++    g_autofree uint8_t *preserved_state = NULL;
 +    uint32_t transition, volatile_policy, device_policy;
++    uint32_t preserved_domains = 0;
 +    uint64_t downtime, ram_bytes, device_bytes, cleared = 0;
++    size_t preserved_state_len = 0;
 +    int64_t virtual_before = icount_get_observed();
 +    int64_t virtual_after;
 +    bool reset_transition;
@@ -249,6 +584,28 @@ index 0000000..14ee9dc
 +                                      &device_bytes)) {
 +        return -EINVAL;
 +    }
++    reset_transition = transition == CRUCIBLE_LIFECYCLE_BOOT ||
++                       transition == CRUCIBLE_LIFECYCLE_RESET ||
++                       transition == CRUCIBLE_LIFECYCLE_POWER_CYCLE;
++    if (reset_transition) {
++        CrucibleLifecyclePendingReset *pending =
++            &crucible_lifecycle_pending_reset;
++
++        if (pending->rule || !event_reservation || !*event_reservation) {
++            return -EBUSY;
++        }
++        if (volatile_policy == 1) {
++            preserved_domains |= QEMU_CRUCIBLE_LIFECYCLE_STATE_VOLATILE;
++        }
++        if (device_policy == 1) {
++            preserved_domains |= QEMU_CRUCIBLE_LIFECYCLE_STATE_DEVICE;
++        }
++        if (crucible_lifecycle_capture_state(
++                preserved_domains, &preserved_state,
++                &preserved_state_len) != 0) {
++            return -EIO;
++        }
++    }
 +    if (crucible_lifecycle_advance_downtime(
 +            downtime, &virtual_after) != 0) {
 +        return -EOVERFLOW;
@@ -261,22 +618,19 @@ index 0000000..14ee9dc
 +        observed_icount, virtual_before, ram_bytes, device_bytes);
 +    stq_le_p(bytes + 96, virtual_after);
 +    stq_le_p(bytes + 104, cleared);
-+    reset_transition = transition == CRUCIBLE_LIFECYCLE_BOOT ||
-+                       transition == CRUCIBLE_LIFECYCLE_RESET ||
-+                       transition == CRUCIBLE_LIFECYCLE_POWER_CYCLE;
++    stl_le_p(bytes + 20, preserved_domains);
 +    if (reset_transition) {
 +        CrucibleLifecyclePendingReset *pending =
 +            &crucible_lifecycle_pending_reset;
 +
-+        if (pending->rule || !event_reservation || !*event_reservation) {
-+            return -EBUSY;
-+        }
 +        pending->rule = qemu_crucible_fault_rule_copy(rule);
 +        pending->reservation = *event_reservation;
 +        *event_reservation = NULL;
 +        pending->observed_icount = observed_icount;
 +        memcpy(pending->before_hash, before_hash, 32);
 +        memcpy(pending->evidence, bytes, sizeof(bytes));
++        pending->preserved_state = g_steal_pointer(&preserved_state);
++        pending->preserved_state_len = preserved_state_len;
 +        qemu_system_reset_request(SHUTDOWN_CAUSE_HOST_QMP_SYSTEM_RESET);
 +        return QEMU_CRUCIBLE_FAULT_IMPULSE_DEFERRED;
 +    }
@@ -317,12 +671,12 @@ index 0000000..14ee9dc
 +    if (!pending->rule) {
 +        return;
 +    }
-+    if (!crucible_lifecycle_snapshot(after_hash, &ram_bytes, &device_bytes)) {
++    if (crucible_lifecycle_restore_state(
++            pending->preserved_state, pending->preserved_state_len) != 0 ||
++        !crucible_lifecycle_snapshot(after_hash, &ram_bytes, &device_bytes)) {
 +        qemu_crucible_fault_fail_deferred(
 +            pending->rule, pending->observed_icount, pending->before_hash);
-+        qemu_crucible_fault_event_reservation_release(pending->reservation);
-+        qemu_crucible_fault_rule_unref(pending->rule);
-+        memset(pending, 0, sizeof(*pending));
++        crucible_lifecycle_pending_clear(pending);
 +        return;
 +    }
 +    stq_le_p(pending->evidence + 112, ram_bytes);
@@ -337,13 +691,11 @@ index 0000000..14ee9dc
 +        qemu_plugin_icount_raw(), opportunity_hash,
 +        pending->before_hash, after_hash,
 +        pending->evidence, sizeof(pending->evidence));
-+    qemu_crucible_fault_event_reservation_release(pending->reservation);
 +    qemu_crucible_fault_complete_deferred(
 +        pending->rule, pending->observed_icount,
 +        MAX(pending->observed_icount, qemu_plugin_icount_raw()),
 +        pending->before_hash, after_hash);
-+    qemu_crucible_fault_rule_unref(pending->rule);
-+    memset(pending, 0, sizeof(*pending));
++    crucible_lifecycle_pending_clear(pending);
 +}
 +
 +static bool crucible_lifecycle_vcpu_exists(uint32_t target)
