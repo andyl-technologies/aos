@@ -406,6 +406,13 @@
       capability = "exact rational vCPU service, fixed-topology stall and offline state, bounded work conservation, and replay evidence";
     }
     {
+      file = "0056-crucible-node-lifecycle-faults.patch";
+      catalogName = "crucible-node-lifecycle-faults";
+      class = "D";
+      enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
+      capability = "deterministic node lifecycle transitions and schedulable node or vCPU hangs with closed state treatment and replay evidence";
+    }
+    {
       file = "0060-crucible-block-typed-errors.patch";
       catalogName = "crucible-block-typed-errors";
       class = "F";

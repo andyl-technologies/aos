@@ -369,6 +369,12 @@
       };
     }
     {
+      patch = "0056-crucible-node-lifecycle-faults.patch";
+      check = import ./phase2-qemu-node-lifecycle.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
       patch = "0060-crucible-block-typed-errors.patch";
       check = import ./phase1-qemu-block-shmem.nix {
         inherit pkgs lib qemuPackage;
