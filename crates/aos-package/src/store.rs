@@ -1151,6 +1151,7 @@ mod tests {
             number,
             slot,
             uki_path: format!("EFI/Linux/aos-{number}.efi"),
+            uki_source_path: None,
             toplevel: format!("/nix/store/top-{number}"),
             package_name: "aos-system".to_string(),
             version: number.to_string(),

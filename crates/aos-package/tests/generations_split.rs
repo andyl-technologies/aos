@@ -29,6 +29,7 @@ fn rfc_0011_generation_axes_round_trip_independently() {
         number: 3,
         slot: ImageSlot::A,
         uki_path: "EFI/Linux/aos-3+3.efi".into(),
+        uki_source_path: None,
         toplevel: "/nix/store/top-aos".into(),
         package_name: "aos".into(),
         version: "3".into(),

@@ -582,7 +582,7 @@
                  .toplevel == $top and .package_name == $pn and .version == $ver
                  and .kernel_path == $kern and .evaluator_ref == $base
                  and .module_abi == $abi and .baselib_digest == $digest
-                 and .uki_path == $uki and .slot == $slot
+                 and ((.uki_source_path // .uki_path) == $uki) and .slot == $slot
                  and ((.root_verity_roothash // "") == $root_hash)
                  and ((.initrd_pcr11 == null)
                       or (.initrd_pcr11 != null and $initrd_pcr11 != ""

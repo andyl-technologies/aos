@@ -258,9 +258,13 @@ fn load_running_image_generation_from(
     let immutable_uki = read_toplevel_meta(toplevel_link, "uki-path")?;
     let immutable_package = read_toplevel_meta(toplevel_link, "package-name")?;
     let immutable_version = read_toplevel_meta(toplevel_link, "version")?;
+    let recorded_uki = running
+        .uki_source_path
+        .as_deref()
+        .unwrap_or(&running.uki_path);
     if immutable_abi != running.module_abi
         || immutable_digest != running.baselib_digest
-        || immutable_uki != running.uki_path
+        || immutable_uki != recorded_uki
         || immutable_package != running.package_name
         || immutable_version != running.version
     {
@@ -1685,7 +1689,7 @@ where
     // is touched. A merely relative path is not sufficient: image metadata
     // must never be able to overwrite loader configuration or another ESP
     // subtree, and every staged A/B candidate must carry a live boot count.
-    let entry_id = validate_staged_uki_path(&recorded_uki)?;
+    validate_staged_uki_path(&recorded_uki)?;
 
     if let Some(pending) = state.pending.and_then(|number| {
         state
@@ -1700,31 +1704,15 @@ where
                 pending.number
             );
         }
-        select_image_default_with(profile, &mut state, pending.number, &entry_id, select)?;
+        let pending_entry = resolve_installed_uki_entry(layout.boot_root, &pending.uki_path)?;
+        select_image_default_with(profile, &mut state, pending.number, &pending_entry, select)?;
         cleanup_replaced_slot_ukis(layout, &state, pending.slot, &pending.uki_path)?;
         return Ok(pending);
     }
 
-    // Copy the lower-backed running evaluator before the inactive slot is
-    // overwritten. The target closure arrived through Nix and is copied too,
-    // making both baselib roots physical `/var` retention rather than dangling
-    // symlinks into whichever immutable root happens to be mounted.
-    persist_store_closure_to_upper(&running.evaluator_ref, upper_store)?;
-    persist_store_closure_to_upper(&evaluator_ref, upper_store)?;
-    let reusable_uki = reusable_slot_uki_path(layout, &state, target_slot);
-    stage_slot_artifacts(
-        layout,
-        target_slot,
-        image_store,
-        image,
-        &recorded_uki,
-        reusable_uki.as_deref(),
-    )?;
-
-    // A failed counted-boot attempt leaves an authenticated generation record
-    // behind after fallback. Re-arm that record instead of appending a second
-    // entry for the same immutable toplevel: early boot deliberately requires
-    // a unique toplevel match when it authenticates the running image.
+    // Allocate the persistent image number before naming the ESP entry. The
+    // loader sorts this numeric identity rather than the package's display
+    // version, whose ordering may be intentionally non-semantic.
     let existing = state.generations.iter().position(|generation| {
         generation.toplevel == package.store_path && generation.slot == target_slot
     });
@@ -1743,10 +1731,34 @@ where
     let created_at = existing.map_or_else(chrono_iso8601_now, |index| {
         state.generations[index].created_at.clone()
     });
+    let installed_uki = generation_uki_path(&recorded_uki, number)?;
+    let entry_id = validate_staged_uki_path(&installed_uki)?;
+
+    // Copy the lower-backed running evaluator before the inactive slot is
+    // overwritten. The target closure arrived through Nix and is copied too,
+    // making both baselib roots physical `/var` retention rather than dangling
+    // symlinks into whichever immutable root happens to be mounted.
+    persist_store_closure_to_upper(&running.evaluator_ref, upper_store)?;
+    persist_store_closure_to_upper(&evaluator_ref, upper_store)?;
+    let reusable_uki = reusable_slot_uki_path(layout, &state, target_slot);
+    stage_slot_artifacts(
+        layout,
+        target_slot,
+        image_store,
+        image,
+        &installed_uki,
+        reusable_uki.as_deref(),
+    )?;
+
+    // A failed counted-boot attempt leaves an authenticated generation record
+    // behind after fallback. Re-arm that record instead of appending a second
+    // entry for the same immutable toplevel: early boot deliberately requires
+    // a unique toplevel match when it authenticates the running image.
     let generation = ImageGeneration {
         number,
         slot: target_slot,
-        uki_path: recorded_uki.clone(),
+        uki_path: installed_uki.clone(),
+        uki_source_path: (installed_uki != recorded_uki).then_some(recorded_uki.clone()),
         toplevel: package.store_path.clone(),
         package_name: package.name.clone(),
         version: package.version.clone(),
@@ -1779,7 +1791,7 @@ where
     let configs = load_generation_state_readonly(system_profile)?;
     crate::store::reconcile_baselib_gc_roots(profile, &state, &configs)?;
     select_image_default_with(profile, &mut state, number, &entry_id, select)?;
-    cleanup_replaced_slot_ukis(layout, &state, target_slot, &recorded_uki)?;
+    cleanup_replaced_slot_ukis(layout, &state, target_slot, &installed_uki)?;
     Ok(generation)
 }
 
@@ -2026,6 +2038,19 @@ fn validate_staged_uki_path(recorded: &str) -> Result<String> {
     Ok(file.to_string())
 }
 
+fn generation_uki_path(recorded: &str, generation: u32) -> Result<String> {
+    let entry = validate_staged_uki_path(recorded)?;
+    let stem = entry
+        .strip_suffix(".efi")
+        .context("target UKI entry must end in .efi")?;
+    let (_, tries) = stem
+        .rsplit_once('+')
+        .context("target UKI entry has no terminal boot-count suffix")?;
+    Ok(format!(
+        "EFI/Linux/aos-generation-{generation:010}+{tries}.efi"
+    ))
+}
+
 fn select_image_default_with<F>(
     profile: &Path,
     state: &mut ImageGenerationState,
@@ -2070,8 +2095,9 @@ where
     *state = prepared;
 
     // sd-boot renames counted entries before launching them (for example,
-    // `image+3.efi` becomes `image+2-1.efi`). Its durable default must use the
-    // stable entry ID so the selection continues to match across that rename.
+    // `image+3.efi` becomes `image+2-1.efi`). Selection therefore receives the
+    // stable entry ID even when the caller clears an older exact override and
+    // lets the image-owned pattern choose the newest live generation.
     select(&stable_entry_id)?;
     let mut committed = state.clone();
     committed.default = target;
@@ -4304,6 +4330,7 @@ mod tests {
                 number: 1,
                 slot: ImageSlot::A,
                 uki_path: "EFI/Linux/aos-server-1+3.efi".into(),
+                uki_source_path: None,
                 toplevel: toplevel.to_string_lossy().into_owned(),
                 package_name: "server".into(),
                 version: "1".into(),
@@ -4343,6 +4370,37 @@ mod tests {
         let mut state: ImageGenerationState =
             serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
         state.generations[0].uki_path = "EFI/Linux/attacker.efi".into();
+        std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+        let error = load_running_image_generation_from(
+            &image_profile,
+            &os_release,
+            &toplevel_link,
+            &cmdline,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("immutable toplevel metadata"));
+    }
+
+    #[test]
+    fn running_image_authenticates_the_canonical_uki_source_path() {
+        let (_tmp, image_profile, toplevel_link, os_release, cmdline) = running_identity_fixture();
+        let state_path = image_profile.join("state.json");
+        let mut state: ImageGenerationState =
+            serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+        state.generations[0].uki_path = "EFI/Linux/aos-generation-0000000001+3.efi".into();
+        state.generations[0].uki_source_path = Some("EFI/Linux/aos-server-1+3.efi".into());
+        std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+
+        let loaded = load_running_image_generation_from(
+            &image_profile,
+            &os_release,
+            &toplevel_link,
+            &cmdline,
+        )
+        .unwrap();
+        assert_eq!(loaded.uki_path, "EFI/Linux/aos-generation-0000000001+3.efi");
+
+        state.generations[0].uki_source_path = Some("EFI/Linux/attacker+3.efi".into());
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
         let error = load_running_image_generation_from(
             &image_profile,
@@ -4609,6 +4667,7 @@ mod tests {
             number,
             slot: ImageSlot::B,
             uki_path: format!("EFI/Linux/{uki_path}"),
+            uki_source_path: None,
             toplevel: format!("/nix/store/top-{number}"),
             package_name: "aos".into(),
             version: number.to_string(),
@@ -4969,6 +5028,7 @@ mod tests {
                 number: 4,
                 slot: ImageSlot::A,
                 uki_path: "EFI/Linux/aos+3.efi".into(),
+                uki_source_path: None,
                 toplevel: top.into(),
                 package_name: "aos-system".into(),
                 version: "1".into(),
@@ -5417,6 +5477,18 @@ mod tests {
                 "unexpectedly accepted {unsafe_path:?}"
             );
         }
+    }
+
+    #[test]
+    fn installed_uki_names_sort_by_persistent_image_generation() {
+        assert_eq!(
+            generation_uki_path("EFI/Linux/aos-test-2+3.efi", 2).unwrap(),
+            "EFI/Linux/aos-generation-0000000002+3.efi"
+        );
+        assert_eq!(
+            generation_uki_path("EFI/Linux/aos-0.1.0+7.efi", 42).unwrap(),
+            "EFI/Linux/aos-generation-0000000042+7.efi"
+        );
     }
 
     #[test]

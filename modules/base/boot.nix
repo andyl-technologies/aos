@@ -67,7 +67,7 @@ in {
     ## sd-boot boot-counting tries for durable image rollback.
     ##
     ## When non-null, the UKI staged into the ESP is named with the sd-boot
-    ## tries-suffix `aos-<name>-<version>+<tries>.efi`. sd-boot decrements the
+    ## tries-suffix `aos-generation-<number>+<tries>.efi`. sd-boot decrements the
     ## counter on each boot attempt and auto-demotes (`+0-<tries>`) a UKI that
     ## fails to boot, so a bad new image falls back to the other A/B slot
     ## without operator action. Staging clears any exact persistent default so
@@ -83,7 +83,7 @@ in {
       description = ''
         sd-boot boot-counting tries suffix for durable image rollback. When
         set to N, the ESP UKI is named
-        `aos-<name>-<version>+N.efi`; sd-boot assesses the boot and demotes a
+        `aos-generation-<number>+N.efi`; sd-boot assesses the boot and demotes a
         UKI that fails to start, falling back to the other A/B slot. Staging
         relies on the loader's `aos-*.efi` pattern while explicit rollback uses
         `bootctl set-default`. Set `null` only for compatibility with boot
