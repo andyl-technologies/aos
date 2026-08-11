@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
@@ -121,8 +121,10 @@ fn StorageBindings(
                 <div class="section-heading">
                     <div>
                         <p class="section-kicker">"Storage identity"</p>
-                        <h2>"Storage bindings"</h2>
-                        <p>"Bindings name provider storage and its capability/credential lifecycle. Placements decide which surfaces use each binding."</p>
+                        <div class="section-title">
+                            <h2>"Storage bindings"</h2>
+                            <HelpTooltip term="Storage bindings" summary="Bindings name provider storage and its capability or credential lifecycle. Placements decide which surfaces use each binding."/>
+                        </div>
                     </div>
                     {organization_slug.as_ref().filter(|_| can_create).map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/storage-bindings/new")>"Create storage binding"</a> })}
                 </div>

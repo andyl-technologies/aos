@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 #[derive(Clone, Copy)]
@@ -83,8 +83,10 @@ pub(super) fn RegistryImages(client: ApiClient, registry_id: String) -> impl Int
             <div class="section-heading">
                 <div>
                     <p class="section-kicker">"Verified disk artifacts"</p>
-                    <h2>"AOS system images"</h2>
-                    <p>"Choose a deployment target and download exact disk-image bytes from the signed release catalog."</p>
+                    <div class="section-title">
+                        <h2>"AOS system images"</h2>
+                        <HelpTooltip term="System images" summary="Choose a deployment target and download exact disk-image bytes from the signed release catalog."/>
+                    </div>
                 </div>
             </div>
             <form class="editor-form" on:submit=on_submit>

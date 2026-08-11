@@ -64,7 +64,11 @@ It contains:
 - a View surface / Exit settings link for registries and caches.
 
 The header does not repeat the selected navigation label. The page body begins
-with the selected page's `<h1>` and one sentence explaining its responsibility.
+with the selected page's `<h1>`. Secondary explanations belong on the shared
+attached-help `?` affordance beside the concept they explain, not in a repeated
+scope/workflow subtitle or introductory paragraph. Empty states, warnings,
+integrity guarantees, and destructive-action constraints remain visible
+because they affect the operator's immediate decision.
 
 ### Shared visual primitives
 
@@ -72,7 +76,7 @@ The management application does not define a second visual system. Its shell
 loads the same first-party stylesheet and progressive-enhancement script as the
 public browse, login, and account pages. It renders the existing `masthead`,
 `settings`, `settings-nav`, `settings-body`, `button`, form-control, table,
-badge, and `statline` primitives directly. Its content-addressed supplemental
+badge, attached-help, and optional legal-footer primitives directly. Its content-addressed supplemental
 stylesheet may lay out workflow-specific structures, but it must not redefine
 theme tokens, typography, page chrome, controls, focus treatment, elevation, or
 responsive navigation.
@@ -884,6 +888,12 @@ Forms use the existing visual style. Improve hierarchy through structure:
 - validation adjacent to the affected field;
 - one primary submit button with a precise verb; and
 - impact review before high-consequence apply.
+
+Explanatory copy that is useful only when learning a concept uses the shared
+question-mark help card. Hover and keyboard focus open it temporarily; click
+pins it; Escape or click-away closes it. The interaction is delegated from the
+document so it remains available after client-side route transitions. Inline
+text is reserved for current state, validation, safety, and consequences.
 
 The Leptos client updates previews and conditional fields, then submits typed
 requests to the canonical API. The server remains the sole validator and

@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
@@ -66,7 +66,7 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
     view! {
         <div class="workflow-stack">
             <section class="panel resource-panel">
-                <div class="section-heading"><div><p class="section-kicker">"Physical topology"</p><h2>"Storage & replicas"</h2><p>"Placements connect this logical surface to storage bindings; desired state and controller evidence are shown separately."</p></div></div>
+                <div class="section-heading"><div><p class="section-kicker">"Physical topology"</p><div class="section-title"><h2>"Storage & replicas"</h2><HelpTooltip term="Placements" summary="Placements connect this logical surface to storage bindings; desired state and controller evidence are shown separately."/></div></div></div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading placements…"</p> }>
                     {move || {
                         let client = view_client.clone();

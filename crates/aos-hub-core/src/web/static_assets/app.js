@@ -505,18 +505,23 @@
   // no-JS floor is the marker's native `title` tooltip.
   function initHelp() {
     var open = null; // currently-open .help-card
+    var openMark = null;
     var pinned = false;
 
     function close() {
       if (open) {
         open.classList.remove("open");
+        if (openMark) openMark.setAttribute("aria-expanded", "false");
         open = null;
+        openMark = null;
         pinned = false;
       }
     }
     function place(mark, card) {
       if (open && open !== card) close();
       open = card;
+      openMark = mark;
+      mark.setAttribute("aria-expanded", "true");
       card.classList.add("open"); // make it measurable
       var r = mark.getBoundingClientRect();
       var cw = card.offsetWidth;
@@ -534,39 +539,46 @@
       card.style.top = Math.round(top) + "px";
     }
 
-    document.querySelectorAll(".help").forEach(function (h) {
-      var mark = h.querySelector(".help-mark");
-      var card = h.querySelector(".help-card");
-      if (!mark || !card) return;
-      mark.setAttribute("aria-expanded", "false");
-      mark.addEventListener("mouseenter", function () {
-        if (!pinned) place(mark, card);
-      });
-      h.addEventListener("mouseleave", function () {
-        if (!pinned) close();
-      });
-      mark.addEventListener("focus", function () {
-        if (!pinned) place(mark, card);
-      });
-      mark.addEventListener("blur", function () {
-        if (!pinned) close();
-      });
-      mark.addEventListener("click", function (e) {
-        e.preventDefault();
-        if (pinned && open === card) {
-          close();
-        } else {
-          place(mark, card);
-          pinned = true;
-          mark.setAttribute("aria-expanded", "true");
-        }
-      });
+    function parts(target) {
+      var mark = target.closest && target.closest(".help-mark");
+      var help = mark && mark.closest(".help");
+      var card = help && help.querySelector(".help-card");
+      return mark && card ? { mark: mark, help: help, card: card } : null;
+    }
+
+    document.addEventListener("pointerover", function (e) {
+      var found = parts(e.target);
+      if (found && !pinned) place(found.mark, found.card);
+    });
+    document.addEventListener("pointerout", function (e) {
+      var help = e.target.closest && e.target.closest(".help");
+      if (help && !help.contains(e.relatedTarget) && !pinned) close();
+    });
+    document.addEventListener("focusin", function (e) {
+      var found = parts(e.target);
+      if (found && !pinned) place(found.mark, found.card);
+    });
+    document.addEventListener("focusout", function (e) {
+      var help = e.target.closest && e.target.closest(".help");
+      if (help && !help.contains(e.relatedTarget) && !pinned) close();
     });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") close();
     });
     document.addEventListener("click", function (e) {
-      if (open && !e.target.closest(".help")) close();
+      var found = parts(e.target);
+      if (!found) {
+        if (open) close();
+        return;
+      }
+      e.preventDefault();
+      if (pinned && open === found.card) {
+        close();
+      } else {
+        place(found.mark, found.card);
+        pinned = true;
+        found.mark.setAttribute("aria-expanded", "true");
+      }
     });
   }
 
