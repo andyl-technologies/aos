@@ -11,6 +11,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
 static uint16_t architecture;
 static uint32_t volatile_policy;
+static uint32_t device_policy;
 static bool finished;
 static uint8_t *payload;
 static size_t payload_len;
@@ -113,7 +114,7 @@ static uint8_t *build_payload(size_t *length)
     append_field(bytes, CRUCIBLE_NODE_FAULT_FIELD_P4,
                  CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
                  volatile_state, sizeof(volatile_state));
-    put_u32(device_state, 3);
+    put_u32(device_state, device_policy);
     append_field(bytes, CRUCIBLE_NODE_FAULT_FIELD_P5,
                  CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
                  device_state, sizeof(device_state));
@@ -138,7 +139,10 @@ static void validate_event(void)
         memcmp(evidence, "CRUCLIF1", 8) != 0 ||
         get_u16(evidence + 10) != 3 ||
         get_u32(evidence + 12) != volatile_policy ||
-        get_u32(evidence + 16) != 3 ||
+        get_u32(evidence + 16) != device_policy ||
+        get_u32(evidence + 20) !=
+            ((volatile_policy == 1 ? 1U : 0U) |
+             (device_policy == 1 ? 2U : 0U)) ||
         get_u64(evidence + 40) != 32 ||
         get_u64(evidence + 96) - get_u64(evidence + 32) != 32 ||
         get_u64(evidence + 48) == 0 || get_u64(evidence + 56) == 0 ||
@@ -187,8 +191,8 @@ static void completion(void *opaque)
     }
     validate_event();
     finished = true;
-    g_printerr("CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS architecture=%u volatile_policy=%u\n",
-               architecture, volatile_policy);
+    g_printerr("CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS architecture=%u volatile_policy=%u device_policy=%u\n",
+               architecture, volatile_policy, device_policy);
     qemu_plugin_request_shutdown(0);
 }
 
@@ -226,15 +230,16 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     bool found = false;
 
     (void)info;
-    if (argc != 2) {
-        fail("expected architecture and volatile policy");
+    if (argc != 3) {
+        fail("expected architecture, volatile policy, and device policy");
     }
     architecture = parse_u64_arg(argv[0], "architecture=");
     volatile_policy = parse_u64_arg(argv[1], "volatile_policy=");
+    device_policy = parse_u64_arg(argv[2], "device_policy=");
     if (architecture < QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 ||
         architecture > QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64 ||
-        volatile_policy > 2) {
-        fail("architecture or volatile policy is outside the test contract");
+        volatile_policy > 2 || device_policy > 3) {
+        fail("architecture or state policy is outside the test contract");
     }
     count = qemu_plugin_crucible_fault_capabilities(
         capabilities, G_N_ELEMENTS(capabilities));

@@ -87,6 +87,7 @@ in
               architecture="$1"
               architecture_id="$2"
               volatile_policy="$3"
+              device_policy="$4"
               case "$architecture" in
                 x86_64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
@@ -103,7 +104,7 @@ in
                   exit 1
                   ;;
               esac
-              log="logs/$architecture-$volatile_policy.log"
+              log="logs/$architecture-$volatile_policy-$device_policy.log"
               if ! timeout 120 "$qemu_binary" \
                   $machine_args \
                   -accel sim \
@@ -113,21 +114,23 @@ in
                   -serial none \
                   -monitor none \
                   -kernel "$guest" \
-                  -plugin "$PWD/crucible-node-lifecycle.so,architecture=$architecture_id,volatile_policy=$volatile_policy" \
+                  -plugin "$PWD/crucible-node-lifecycle.so,architecture=$architecture_id,volatile_policy=$volatile_policy,device_policy=$device_policy" \
                   > "$log" 2>&1; then
                 cat "$log" >&2
                 return 1
               fi
               cat "$log"
               grep -Fq \
-                "CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS architecture=$architecture_id volatile_policy=$volatile_policy" \
+                "CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS architecture=$architecture_id volatile_policy=$volatile_policy device_policy=$device_policy" \
                 "$log"
               test "$(grep -Fc CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS "$log")" -eq 1
             }
 
             for volatile_policy in 1 2; do
-              run_reset x86_64 2 "$volatile_policy"
-              run_reset aarch64 3 "$volatile_policy"
+              for device_policy in 1 2 3; do
+                run_reset x86_64 2 "$volatile_policy" "$device_policy"
+                run_reset aarch64 3 "$volatile_policy" "$device_policy"
+              done
             done
           '';
         }
@@ -145,7 +148,7 @@ in
               printf 'test_double=false\n'
               printf 'backend=actual-patched-qemu\n'
               printf 'volatile_policies=preserve,clear\n'
-              printf 'device_policy=device_reset\n'
+              printf 'device_policies=preserve,clear,device_reset\n'
             } > "$out/result"
           '';
         }
