@@ -5,7 +5,7 @@
 //! surface. An empty plan has no hidden evaluator and remains a valid inert
 //! production configuration.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crucible::model::{
@@ -37,8 +37,10 @@ pub struct ProductionFaultRuntimeCheckpoint {
     qemu_fault_sequences: BTreeMap<NodeId, u64>,
     /// Per-node fault-event continuation paired with the QEMU snapshots.
     qemu_fault_event_sequences: BTreeMap<NodeId, u64>,
-    /// Persistent QEMU rules needed to interpret later occurrence events.
-    qemu_active_rules: BTreeMap<ContentHash, ResolvedBindingAction>,
+    /// Issued QEMU actions needed to authenticate asynchronous occurrence events.
+    qemu_issued_actions: BTreeMap<ContentHash, ResolvedBindingAction>,
+    /// Issued persistent rules that remain installed in QEMU.
+    qemu_active_rule_ids: BTreeSet<ContentHash>,
     /// Scheduler-owned network queues, pending outputs, and transition ledger.
     network_state: Option<ProductionNetworkStateCheckpoint>,
     /// Referenced event occurrences retained for device recovery subscriptions.
@@ -166,7 +168,8 @@ pub struct ProductionFaultRuntime {
     host: HostFaultActionSink,
     restored_network_state: Option<ProductionNetworkStateCheckpoint>,
     emitted_events: Vec<ReferencedSignalEvent>,
-    qemu_active_rules: BTreeMap<ContentHash, ResolvedBindingAction>,
+    qemu_issued_actions: BTreeMap<ContentHash, ResolvedBindingAction>,
+    qemu_active_rule_ids: BTreeSet<ContentHash>,
     pending_qemu_observations: Vec<FaultObservation>,
     pending_qemu_events: BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
 }
@@ -209,7 +212,8 @@ impl ProductionFaultRuntime {
             host: HostFaultActionSink::new(resource_limits),
             restored_network_state: None,
             emitted_events: Vec::new(),
-            qemu_active_rules: BTreeMap::new(),
+            qemu_issued_actions: BTreeMap::new(),
+            qemu_active_rule_ids: BTreeSet::new(),
             pending_qemu_observations: Vec::new(),
             pending_qemu_events: BTreeMap::new(),
         })
@@ -244,7 +248,10 @@ impl ProductionFaultRuntime {
             &checkpoint.pending_qemu_events,
             &checkpoint.qemu_fault_event_sequences,
         )?;
-        validate_qemu_active_rules(&checkpoint.qemu_active_rules)?;
+        validate_qemu_action_ledger(
+            &checkpoint.qemu_issued_actions,
+            &checkpoint.qemu_active_rule_ids,
+        )?;
         if checkpoint.identity
             != production_checkpoint_identity(
                 plan.id(),
@@ -253,7 +260,8 @@ impl ProductionFaultRuntime {
                 &checkpoint.qemu_fingerprints,
                 &checkpoint.qemu_fault_sequences,
                 &checkpoint.qemu_fault_event_sequences,
-                &checkpoint.qemu_active_rules,
+                &checkpoint.qemu_issued_actions,
+                &checkpoint.qemu_active_rule_ids,
                 checkpoint.network_state.as_ref(),
                 &checkpoint.emitted_events,
                 &checkpoint.pending_qemu_observations,
@@ -281,7 +289,8 @@ impl ProductionFaultRuntime {
             .map_err(FaultExecutionError::from)?;
         let qemu_fault_sequences = checkpoint.qemu_fault_sequences;
         let qemu_fault_event_sequences = checkpoint.qemu_fault_event_sequences;
-        let qemu_active_rules = checkpoint.qemu_active_rules;
+        let qemu_issued_actions = checkpoint.qemu_issued_actions;
+        let qemu_active_rule_ids = checkpoint.qemu_active_rule_ids;
         let host = checkpoint.host;
         let restored_network_state = checkpoint.network_state;
         let emitted_events = checkpoint.emitted_events;
@@ -311,7 +320,8 @@ impl ProductionFaultRuntime {
             host: HostFaultActionSink::from_state(host, resource_limits),
             restored_network_state,
             emitted_events,
-            qemu_active_rules,
+            qemu_issued_actions,
+            qemu_active_rule_ids,
             pending_qemu_observations,
             pending_qemu_events,
         })
@@ -422,7 +432,19 @@ impl ProductionFaultRuntime {
             runtime.poison();
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
-        if let Err(error) = self.update_qemu_rule_registry(&evaluation.actions) {
+        if let Err(error) = self.update_qemu_action_ledger(&evaluation.actions) {
+            if let Some(runtime) = &mut self.runtime {
+                runtime.poison();
+            }
+            return Err(error);
+        }
+        // QEMU publishes typed occurrence evidence while committing a command.
+        // Drain again only after the issued-action ledger is committed so a
+        // one-shot lifecycle action and a persistent-rule removal can both be
+        // authenticated at the boundary that caused them. Delaying this until
+        // the next scheduler boundary would also lose terminal evidence when
+        // the command intentionally exits the child.
+        if let Err(error) = self.drain_qemu_observations(nodes, coordinate) {
             if let Some(runtime) = &mut self.runtime {
                 runtime.poison();
             }
@@ -471,11 +493,11 @@ impl ProductionFaultRuntime {
                     bytes: event.header.action_hash,
                 };
                 let action = self
-                    .qemu_active_rules
+                    .qemu_issued_actions
                     .get(&action_identity)
                     .ok_or_else(|| BackendError::Rejected {
                         message: format!(
-                            "QEMU fault event {} names unknown active action {}",
+                            "QEMU fault event {} names an action that was not issued {}",
                             event.header.event_sequence,
                             action_identity.to_hex()
                         ),
@@ -550,7 +572,7 @@ impl ProductionFaultRuntime {
         Ok(())
     }
 
-    fn update_qemu_rule_registry(
+    fn update_qemu_action_ledger(
         &mut self,
         actions: &[ResolvedBindingAction],
     ) -> Result<(), ProductionFaultRuntimeError> {
@@ -559,27 +581,59 @@ impl ProductionFaultRuntime {
             .filter(|action| matches!(action.effect.specification(), EffectSpecification::Node(_)))
         {
             match action.kind {
-                BindingActionKind::UpsertPersistent => {
-                    self.qemu_active_rules.insert(action.id(), action.clone());
-                }
-                BindingActionKind::RemovePersistent => {
-                    let prior_len = self.qemu_active_rules.len();
-                    self.qemu_active_rules.retain(|_, active| {
-                        active.binding != action.binding
-                            || active.target != action.target
-                            || active.phase != action.phase
-                    });
-                    if self.qemu_active_rules.len() == prior_len {
+                BindingActionKind::UpsertPersistent | BindingActionKind::Apply => {
+                    let identity = action.id();
+                    let retained = u64::try_from(self.qemu_issued_actions.len()).map_err(|_| {
+                        FaultResourceLimitError::Representation {
+                            field: "event_records",
+                            value: u64::MAX,
+                        }
+                    })?;
+                    self.resource_limits
+                        .reserve("event_records", retained, 1)?;
+                    if self
+                        .qemu_issued_actions
+                        .insert(identity, action.clone())
+                        .is_some()
+                    {
                         return Err(BackendError::Rejected {
                             message: format!(
-                                "QEMU removed unknown persistent rule for binding `{}`",
+                                "QEMU action identity {} was issued more than once",
+                                identity.to_hex()
+                            ),
+                        }
+                        .into());
+                    }
+                    if action.kind == BindingActionKind::UpsertPersistent {
+                        self.qemu_active_rule_ids.retain(|active_id| {
+                            self.qemu_issued_actions.get(active_id).is_none_or(|active| {
+                                active.binding != action.binding
+                                    || active.target != action.target
+                                    || active.phase != action.phase
+                            })
+                        });
+                        self.qemu_active_rule_ids.insert(identity);
+                    }
+                }
+                BindingActionKind::RemovePersistent => {
+                    let prior_len = self.qemu_active_rule_ids.len();
+                    self.qemu_active_rule_ids.retain(|active_id| {
+                        self.qemu_issued_actions.get(active_id).is_none_or(|active| {
+                            active.binding != action.binding
+                                || active.target != action.target
+                                || active.phase != action.phase
+                        })
+                    });
+                    if self.qemu_active_rule_ids.len() == prior_len {
+                        return Err(BackendError::Rejected {
+                            message: format!(
+                                "QEMU removed an unissued persistent rule for binding `{}`",
                                 action.binding.as_str()
                             ),
                         }
                         .into());
                     }
                 }
-                BindingActionKind::Apply => {}
             }
         }
         Ok(())
@@ -735,7 +789,8 @@ impl ProductionFaultRuntime {
             &qemu_fingerprints,
             &qemu_fault_sequences,
             &qemu_fault_event_sequences,
-            &self.qemu_active_rules,
+            &self.qemu_issued_actions,
+            &self.qemu_active_rule_ids,
             self.restored_network_state.as_ref(),
             &self.emitted_events,
             &self.pending_qemu_observations,
@@ -747,7 +802,8 @@ impl ProductionFaultRuntime {
             qemu_fingerprints,
             qemu_fault_sequences,
             qemu_fault_event_sequences,
-            qemu_active_rules: self.qemu_active_rules.clone(),
+            qemu_issued_actions: self.qemu_issued_actions.clone(),
+            qemu_active_rule_ids: self.qemu_active_rule_ids.clone(),
             network_state: self.restored_network_state.clone(),
             emitted_events: self.emitted_events.clone(),
             pending_qemu_observations: self.pending_qemu_observations.clone(),
@@ -776,7 +832,8 @@ impl ProductionFaultRuntime {
             &checkpoint.qemu_fingerprints,
             &checkpoint.qemu_fault_sequences,
             &checkpoint.qemu_fault_event_sequences,
-            &checkpoint.qemu_active_rules,
+            &checkpoint.qemu_issued_actions,
+            &checkpoint.qemu_active_rule_ids,
             checkpoint.network_state.as_ref(),
             &checkpoint.emitted_events,
             &checkpoint.pending_qemu_observations,
@@ -1363,7 +1420,8 @@ fn production_checkpoint_identity(
     qemu_fingerprints: &BTreeMap<NodeId, ContentHash>,
     qemu_fault_sequences: &BTreeMap<NodeId, u64>,
     qemu_fault_event_sequences: &BTreeMap<NodeId, u64>,
-    qemu_active_rules: &BTreeMap<ContentHash, ResolvedBindingAction>,
+    qemu_issued_actions: &BTreeMap<ContentHash, ResolvedBindingAction>,
+    qemu_active_rule_ids: &BTreeSet<ContentHash>,
     network_state: Option<&ProductionNetworkStateCheckpoint>,
     emitted_events: &[ReferencedSignalEvent],
     pending_qemu_observations: &[FaultObservation],
@@ -1423,23 +1481,37 @@ fn production_checkpoint_identity(
             material.extend_from_slice(&sequence.to_be_bytes());
         }
     }
-    for (identity, action) in qemu_active_rules {
+    for (identity, action) in qemu_issued_actions {
         material.extend_from_slice(&identity.bytes);
         material.extend_from_slice(&action.id().bytes);
     }
+    for identity in qemu_active_rule_ids {
+        material.extend_from_slice(&identity.bytes);
+    }
     Ok(ContentHash::from_canonical_material(
-        "crucible.production-fault-runtime-checkpoint.v6",
+        "crucible.production-fault-runtime-checkpoint.v7",
         &hex_bytes(&material),
     ))
 }
 
-fn validate_qemu_active_rules(
-    rules: &BTreeMap<ContentHash, ResolvedBindingAction>,
+fn validate_qemu_action_ledger(
+    actions: &BTreeMap<ContentHash, ResolvedBindingAction>,
+    active_rule_ids: &BTreeSet<ContentHash>,
 ) -> Result<(), ProductionFaultRuntimeError> {
-    if rules.iter().any(|(identity, action)| {
+    if actions.iter().any(|(identity, action)| {
         *identity != action.id()
-            || action.kind != BindingActionKind::UpsertPersistent
+            || !matches!(
+                action.kind,
+                BindingActionKind::UpsertPersistent | BindingActionKind::Apply
+            )
             || !matches!(action.effect.specification(), EffectSpecification::Node(_))
+    }) {
+        return Err(FaultExecutionError::CheckpointPresence.into());
+    }
+    if active_rule_ids.iter().any(|identity| {
+        actions
+            .get(identity)
+            .is_none_or(|action| action.kind != BindingActionKind::UpsertPersistent)
     }) {
         return Err(FaultExecutionError::CheckpointPresence.into());
     }
@@ -1706,6 +1778,51 @@ mod tests {
             exhausted: NodeLifecycleTransition::PermanentFailure,
         });
         assert!(validate_node_event_evidence(&event, &ready).is_err());
+    }
+
+    #[test]
+    fn qemu_action_ledger_retains_impulses_and_removed_rules_for_events() {
+        let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
+            .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));
+        let nodes = QemuNodeSet::new();
+        let mut runtime = ProductionFaultRuntime::new(
+            plan,
+            None,
+            SignalBoundarySnapshot::default(),
+            ContentHash::from_bytes(b"qemu-action-ledger"),
+            &nodes,
+        )
+        .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
+
+        let impulse = lifecycle_action(NodeBootPolicy::Immediate);
+        runtime
+            .update_qemu_action_ledger(std::slice::from_ref(&impulse))
+            .unwrap_or_else(|error| panic!("impulse should enter issued ledger: {error}"));
+        assert_eq!(runtime.qemu_issued_actions.get(&impulse.id()), Some(&impulse));
+
+        let mut persistent = impulse.clone();
+        persistent.kind = BindingActionKind::UpsertPersistent;
+        persistent.binding = object_id("node-hang");
+        persistent.transition_sequence = 2;
+        runtime
+            .update_qemu_action_ledger(std::slice::from_ref(&persistent))
+            .unwrap_or_else(|error| panic!("persistent rule should enter issued ledger: {error}"));
+
+        let mut remove = persistent.clone();
+        remove.kind = BindingActionKind::RemovePersistent;
+        remove.transition_sequence = 3;
+        runtime
+            .update_qemu_action_ledger(std::slice::from_ref(&remove))
+            .unwrap_or_else(|error| panic!("known rule should be removable: {error}"));
+        assert_eq!(
+            runtime.qemu_issued_actions.get(&persistent.id()),
+            Some(&persistent),
+            "recovery evidence names the issued upsert after removal"
+        );
+        assert!(runtime.qemu_active_rule_ids.is_empty());
+        assert!(runtime
+            .update_qemu_action_ledger(std::slice::from_ref(&remove))
+            .is_err());
     }
 
     fn pending_qemu_observation() -> FaultObservation {
