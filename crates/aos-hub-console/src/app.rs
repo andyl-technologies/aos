@@ -111,6 +111,7 @@ fn ManagementShell(
     let brand = shell_meta("aos-site-brand").unwrap_or_else(|| "AOS Hub".to_string());
     let tagline = shell_meta("aos-site-tagline").unwrap_or_default();
     let announcement = shell_meta("aos-site-announcement").unwrap_or_default();
+    let app_version = shell_meta("aos-app-version").unwrap_or_else(|| "aos-hub".to_string());
     let footer_links = [
         ("terms", shell_meta("aos-site-tos-url")),
         ("privacy", shell_meta("aos-site-privacy-url")),
@@ -194,16 +195,17 @@ fn ManagementShell(
                     <ResourceWorkflow route=workflow_route client=client/>
                 </main>
             </div>
-            {(!footer_links.is_empty()).then(|| view! {
-                <footer class="statline">
+            <footer class="statline">
+                {app_version}
+                {(!footer_links.is_empty()).then(|| view! {
                     <span class="footer-links">
                         {footer_links.into_iter().enumerate().map(|(index, (label, href))| view! {
                             {(index > 0).then_some(" · ")}
                             <a href=href>{label}</a>
                         }).collect_view()}
                     </span>
-                </footer>
-            })}
+                })}
+            </footer>
         </div>
     }
 }

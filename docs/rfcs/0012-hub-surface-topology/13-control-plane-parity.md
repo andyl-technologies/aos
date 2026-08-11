@@ -153,8 +153,9 @@ The server shell loads the Hub's established `style.css` and `app.js` before
 the content-addressed console assets. The client renders the same masthead,
 session links, settings navigation, page measure, controls, forms, tables,
 badges, attached-help behavior, focus behavior, responsive disclosure, and
-configured legal-footer primitives used by the server-rendered surfaces. The
-management shell does not expose transport implementation labels. Console CSS is strictly additive: packaging
+version statline with configured legal links used by the server-rendered
+surfaces. The management shell does not expose transport implementation
+labels. Console CSS is strictly additive: packaging
 fails if it declares a root theme, forces a color scheme, selects a replacement
 font, or introduces dashboard-style elevation. Public, login, account, and
 other existing server-rendered pages remain unchanged.
