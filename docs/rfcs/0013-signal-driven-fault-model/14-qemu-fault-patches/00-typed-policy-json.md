@@ -117,7 +117,7 @@ The numeric vCPU array is nonempty, strictly increasing, and contains at most
 
 ```json
 {"kind":"disabled"}
-{"kind":"transition_after","parameters":{"timeout_nanos":1000,"transition":"reset"}}
+{"kind":"transition_after","parameters":{"timeout_nanos":1000,"transition":"reset","downtime_nanos":0,"boot_policy":{"kind":"immediate"},"volatile_state_policy":"preserve","device_state_policy":"device_reset"}}
 ```
 
 The transition is exactly `boot`, `crash`, `reset`, `power_off`, `power_cycle`,

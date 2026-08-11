@@ -45,8 +45,11 @@ adapters; QEMU neither encodes nor silently chooses their policies.
 
 A hang command carries exactly `node`, sorted numeric `vcpus`, or one realized
 device scope; a recovery-event identity; and either a disabled watchdog or
-`transition_after { timeout_nanos, transition }`. There are no restart-source,
-queue, clock, boot-stage, or other opaque policy IDs.
+`transition_after { timeout_nanos, transition, downtime_nanos, boot_policy,
+volatile_state_policy, device_state_policy }`. The watchdog's nested lifecycle
+plan obeys the same closed cross-field rules as a direct lifecycle command;
+there are no default state-loss policies. There are no restart-source, queue,
+clock, boot-stage, or other opaque policy IDs.
 
 ## Reset and power semantics
 

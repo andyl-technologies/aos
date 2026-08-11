@@ -619,7 +619,7 @@ events. Unknown fields and values fail before QEMU state changes.
 | Type | Exhaustive values and required fields |
 | --- | --- |
 | boot policy | `immediate`; or `require_ready { ready_marker, maximum_attempts, retry_delay_nanos, exhausted }`, where `exhausted` is only `crash`, `power_off`, or `permanent_failure` |
-| watchdog | `disabled`; or `transition_after { timeout_nanos, transition }` |
+| watchdog | `disabled`; or `transition_after { timeout_nanos, transition, downtime_nanos, boot_policy, volatile_state_policy, device_state_policy }` |
 | occurrence | `every`; or `periodic { first, period, count }` using one-based ordinals |
 | service discipline | `work_conserving` or `strict_cap` |
 | memory access classes | independent booleans `fetch`, `cpu_load`, `cpu_store`, `dma_read`, `dma_write`, and `page_table_walk`; at least one is true; `page_table_walk` selects normal-RAM descriptor reads by the architecture MMU and requires a guest-physical target; optional `dma_device` is a canonical device identity and requires a DMA-only class set |
