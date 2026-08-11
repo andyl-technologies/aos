@@ -1,3 +1,87 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 8bc1b21..059cef9 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -32,6 +32,7 @@
+ #include "qemu/notify.h"
+ #include "qemu/guest-random.h"
+ #include "qemu/accel.h"
++#include "qemu/error-report.h"
+ #include "qemu/plugin.h"
+ #include "qemu/timer.h"
+ #include "exec/cpu-common.h"
+@@ -93,6 +94,45 @@ static CPUState *rr_crucible_sim_loop_cpu(CPUState *cpu)
+     return cpu;
+ }
+ 
++static bool rr_crucible_sim_service_available(void)
++{
++    CPUState *cpu;
++
++    CPU_FOREACH(cpu) {
++        if (qemu_crucible_fault_vcpu_service_eligible(cpu)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static bool rr_crucible_sim_advance_stalled_deadline(void)
++{
++    uint64_t deadline;
++    int64_t now;
++
++    if (!rr_crucible_sim_mode() ||
++        rr_crucible_sim_service_available()) {
++        return false;
++    }
++    deadline = qemu_crucible_fault_next_boundary_deadline(
++        CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY);
++    if (deadline == UINT64_MAX || deadline > INT64_MAX) {
++        return false;
++    }
++    now = icount_get_observed();
++    if (now < 0 || deadline < (uint64_t)now) {
++        error_report("Crucible stalled-node deadline regressed");
++        abort();
++    }
++    if (deadline != (uint64_t)now) {
++        icount_advance_virtual_time_to_ns(deadline);
++    }
++    qemu_crucible_fault_dispatch_boundary(
++        CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, qemu_plugin_icount_raw());
++    return true;
++}
++
+ static void rr_crucible_sim_reset_exit_request(CPUState *cpu)
+ {
+     if (!cpu) {
+@@ -658,6 +698,9 @@ static void *rr_cpu_thread_fn(void *arg)
+ 
+             if (!qemu_crucible_fault_vcpu_service_eligible(cpu)) {
+                 qemu_crucible_fault_vcpu_service_skipped(cpu);
++                if (rr_crucible_sim_advance_stalled_deadline()) {
++                    break;
++                }
+             } else if (cpu_can_run(cpu)) {
+                 if (rr_crucible_sim_run_tcg_batch(&cpu, &cpu_budget)) {
+                     break;
+@@ -683,6 +726,15 @@ static void *rr_cpu_thread_fn(void *arg)
+             rr_crucible_sim_reset_exit_request(cpu);
+         }
+ 
++        /*
++         * A control command can make the last runnable vCPU ineligible and
++         * request its exit in the same boundary callback.  In that case the
++         * loop above breaks before it reaches the ordinary eligibility check.
++         * Service the virtual deadline here as well, before entering an I/O
++         * wait that no guest execution can wake.
++         */
++        rr_crucible_sim_advance_stalled_deadline();
++
+         if (icount_enabled() && all_cpu_threads_idle()) {
+             /*
+              * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
 diff --git a/hw/intc/apic_common.c b/hw/intc/apic_common.c
 index 7bddd0f..7033020 100644
 --- a/hw/intc/apic_common.c
@@ -137,16 +221,38 @@ index 530f3da..bed976a 100644
      /**
       * @legacy_reset: deprecated device reset method pointer
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 8b3eced..2ee6525 100644
+index 8b3eced..565a84c 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
-@@ -243,6 +243,12 @@ void qemu_crucible_fault_vcpu_service_account(
+@@ -72,6 +72,7 @@ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
+                                            uint64_t observed_icount);
+ bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount);
+ uint64_t qemu_crucible_fault_next_icount(uint16_t phase);
++uint64_t qemu_crucible_fault_next_boundary_deadline(uint16_t phase);
+ int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
+                                          uint64_t current_icount,
+                                          int64_t budget);
+@@ -154,6 +155,9 @@ QemuCrucibleFaultEventReservation *
+ qemu_crucible_fault_event_reserve(size_t count);
+ void qemu_crucible_fault_event_reservation_consume(
+     QemuCrucibleFaultEventReservation *reservation);
++QemuCrucibleFaultEventReservation *
++qemu_crucible_fault_event_reservation_split(
++    QemuCrucibleFaultEventReservation *reservation, size_t count);
+ void qemu_crucible_fault_event_reservation_release(
+     QemuCrucibleFaultEventReservation *reservation);
+ 
+@@ -243,6 +247,16 @@ void qemu_crucible_fault_vcpu_service_account(
      CPUState *cpu, uint64_t before_icount, uint64_t after_icount,
      bool runnable_after);
  void qemu_crucible_fault_vcpu_service_event_terminal(void);
 +int qemu_crucible_fault_lifecycle_validate(
 +    const QemuCrucibleFaultRule *rule);
-+void qemu_crucible_fault_lifecycle_rules_changed(void);
++size_t qemu_crucible_fault_lifecycle_event_budget(
++    const QemuCrucibleFaultRule *rule);
++void qemu_crucible_fault_lifecycle_rules_changed(
++    const QemuCrucibleFaultRule *transition_rule,
++    QemuCrucibleFaultEventReservation **event_reservation);
 +bool qemu_crucible_fault_node_hung(void);
 +bool qemu_crucible_fault_vcpu_hung(uint32_t vcpu);
 +void qemu_crucible_fault_lifecycle_reset_complete(void);
@@ -266,10 +372,10 @@ index 58761d8..0df53f1 100644
  
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000..a34f8f3
+index 0000000..7b25d42
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
-@@ -0,0 +1,586 @@
+@@ -0,0 +1,1109 @@
 +/*
 + * Crucible deterministic node lifecycle and hang faults
 + *
@@ -296,6 +402,7 @@ index 0000000..a34f8f3
 +#include "qobject/qlist.h"
 +#include "qobject/qdict.h"
 +#include "qobject/qnum.h"
++#include "qobject/qstring.h"
 +#include "system/cpu-timers.h"
 +#include "system/runstate.h"
 +
@@ -303,6 +410,7 @@ index 0000000..a34f8f3
 +#define CRUCIBLE_LIFECYCLE_EXIT_CRASH 70
 +#define CRUCIBLE_LIFECYCLE_EXIT_POWER_OFF 71
 +#define CRUCIBLE_LIFECYCLE_EXIT_PERMANENT_FAILURE 72
++#define CRUCIBLE_HANG_EVIDENCE_BYTES 192
 +
 +enum CrucibleLifecycleTransition {
 +    CRUCIBLE_LIFECYCLE_BOOT = 1,
@@ -313,6 +421,19 @@ index 0000000..a34f8f3
 +    CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE = 6,
 +};
 +
++enum CrucibleHangEventKind {
++    CRUCIBLE_HANG_ACTIVATED = 1,
++    CRUCIBLE_HANG_RECOVERED = 2,
++    CRUCIBLE_HANG_WATCHDOG = 3,
++};
++
++typedef struct CrucibleLifecyclePlan {
++    uint32_t transition;
++    uint64_t downtime;
++    uint32_t volatile_policy;
++    uint32_t device_policy;
++} CrucibleLifecyclePlan;
++
 +typedef struct CrucibleLifecyclePendingReset {
 +    QemuCrucibleFaultRule *rule;
 +    QemuCrucibleFaultEventReservation *reservation;
@@ -321,7 +442,20 @@ index 0000000..a34f8f3
 +    uint8_t evidence[CRUCIBLE_LIFECYCLE_EVIDENCE_BYTES];
 +    uint8_t *preserved_state;
 +    size_t preserved_state_len;
++    bool complete_deferred;
 +} CrucibleLifecyclePendingReset;
++
++typedef struct CrucibleHangState {
++    QemuCrucibleFaultRule *rule;
++    QemuCrucibleFaultEventReservation *activation_reservation;
++    QemuCrucibleFaultEventReservation *watchdog_reservation;
++    QemuCrucibleFaultEventReservation *recovery_reservation;
++    uint64_t entered_icount;
++    uint64_t entered_virtual_ns;
++    uint64_t watchdog_deadline_ns;
++    bool watchdog_enabled;
++    bool watchdog_fired;
++} CrucibleHangState;
 +
 +typedef struct CrucibleHangApply {
 +    bool node_hung;
@@ -331,6 +465,8 @@ index 0000000..a34f8f3
 +static CrucibleLifecyclePendingReset crucible_lifecycle_pending_reset;
 +static bool crucible_lifecycle_node_hung;
 +static GArray *crucible_lifecycle_vcpu_hung;
++static GPtrArray *crucible_lifecycle_hangs;
++static uint64_t crucible_lifecycle_next_watchdog_ns = UINT64_MAX;
 +
 +static bool crucible_lifecycle_mode(void)
 +{
@@ -373,6 +509,105 @@ index 0000000..a34f8f3
 +    }
 +    *value = ldq_le_p(data);
 +    return true;
++}
++
++static bool crucible_lifecycle_json_u64(const QObject *object,
++                                        uint64_t *value)
++{
++    QNum *number = qobject_to(QNum, object);
++
++    return number && number->kind != QNUM_DOUBLE &&
++           qnum_get_try_uint(number, value);
++}
++
++static bool crucible_lifecycle_transition_name(const char *name,
++                                               uint32_t *transition)
++{
++    static const char *const names[] = {
++        NULL, "boot", "crash", "reset", "power_off", "power_cycle",
++        "permanent_failure",
++    };
++
++    if (!name) {
++        return false;
++    }
++    for (uint32_t value = CRUCIBLE_LIFECYCLE_BOOT;
++         value <= CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE; value++) {
++        if (strcmp(name, names[value]) == 0) {
++            *transition = value;
++            return true;
++        }
++    }
++    return false;
++}
++
++static bool crucible_lifecycle_state_policy(const QObject *object,
++                                            bool device,
++                                            uint32_t *policy)
++{
++    QString *string = qobject_to(QString, object);
++    const char *name = string ? qstring_get_str(string) : NULL;
++
++    if (name && strcmp(name, "preserve") == 0) {
++        *policy = 1;
++        return true;
++    }
++    if (name && strcmp(name, "clear") == 0) {
++        *policy = 2;
++        return true;
++    }
++    if (device && name && strcmp(name, "device_reset") == 0) {
++        *policy = 3;
++        return true;
++    }
++    return false;
++}
++
++static bool crucible_lifecycle_direct_plan(
++    const QemuCrucibleFaultRule *rule, CrucibleLifecyclePlan *plan)
++{
++    return crucible_lifecycle_u32(
++               rule, CRUCIBLE_NODE_FAULT_FIELD_P1, &plan->transition) &&
++           crucible_lifecycle_u64(
++               rule, CRUCIBLE_NODE_FAULT_FIELD_P2, &plan->downtime) &&
++           crucible_lifecycle_u32(
++               rule, CRUCIBLE_NODE_FAULT_FIELD_P4,
++               &plan->volatile_policy) &&
++           crucible_lifecycle_u32(
++               rule, CRUCIBLE_NODE_FAULT_FIELD_P5, &plan->device_policy);
++}
++
++static bool crucible_lifecycle_watchdog_plan(
++    const QemuCrucibleFaultRule *rule, CrucibleLifecyclePlan *plan,
++    uint64_t *timeout)
++{
++    QDict *watchdog = qobject_to(QDict, qemu_crucible_fault_rule_json(
++        rule, CRUCIBLE_NODE_FAULT_FIELD_P4));
++    QDict *parameters;
++    const char *kind;
++    QString *transition;
++
++    kind = watchdog ? qdict_get_try_str(watchdog, "kind") : NULL;
++    if (!kind || strcmp(kind, "transition_after") != 0) {
++        return false;
++    }
++    parameters = qdict_get_qdict(watchdog, "parameters");
++    transition = parameters ?
++        qobject_to(QString, qdict_get(parameters, "transition")) : NULL;
++    return parameters && transition &&
++           crucible_lifecycle_json_u64(
++               qdict_get(parameters, "timeout_nanos"), timeout) &&
++           *timeout != 0 &&
++           crucible_lifecycle_json_u64(
++               qdict_get(parameters, "downtime_nanos"), &plan->downtime) &&
++           crucible_lifecycle_transition_name(
++               qstring_get_str(transition), &plan->transition) &&
++           crucible_lifecycle_state_policy(
++               qdict_get(parameters, "volatile_state_policy"), false,
++               &plan->volatile_policy) &&
++           crucible_lifecycle_state_policy(
++               qdict_get(parameters, "device_state_policy"), true,
++               &plan->device_policy);
 +}
 +
 +static void crucible_lifecycle_sha256(const uint8_t *data, size_t length,
@@ -556,31 +791,27 @@ index 0000000..a34f8f3
 +    return 0;
 +}
 +
-+static int crucible_lifecycle_impulse(
++static int crucible_lifecycle_execute(
 +    const QemuCrucibleFaultRule *rule, uint64_t observed_icount,
++    const CrucibleLifecyclePlan *plan, bool complete_deferred,
 +    uint8_t before_hash[32], uint8_t after_hash[32], GByteArray *evidence,
 +    uint16_t *outcome,
 +    QemuCrucibleFaultEventReservation **event_reservation)
 +{
 +    uint8_t bytes[CRUCIBLE_LIFECYCLE_EVIDENCE_BYTES] = { 0 };
 +    g_autofree uint8_t *preserved_state = NULL;
-+    uint32_t transition, volatile_policy, device_policy;
++    uint32_t transition = plan->transition;
++    uint32_t volatile_policy = plan->volatile_policy;
++    uint32_t device_policy = plan->device_policy;
 +    uint32_t preserved_domains = 0;
-+    uint64_t downtime, ram_bytes, device_bytes, cleared = 0;
++    uint64_t downtime = plan->downtime;
++    uint64_t ram_bytes, device_bytes, cleared = 0;
 +    size_t preserved_state_len = 0;
 +    int64_t virtual_before = icount_get_observed();
 +    int64_t virtual_after;
 +    bool reset_transition;
 +
-+    if (!crucible_lifecycle_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P1,
-+                                &transition) ||
-+        !crucible_lifecycle_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_P2,
-+                                &downtime) ||
-+        !crucible_lifecycle_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P4,
-+                                &volatile_policy) ||
-+        !crucible_lifecycle_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P5,
-+                                &device_policy) ||
-+        !crucible_lifecycle_snapshot(before_hash, &ram_bytes,
++    if (!crucible_lifecycle_snapshot(before_hash, &ram_bytes,
 +                                      &device_bytes)) {
 +        return -EINVAL;
 +    }
@@ -631,6 +862,7 @@ index 0000000..a34f8f3
 +        memcpy(pending->evidence, bytes, sizeof(bytes));
 +        pending->preserved_state = g_steal_pointer(&preserved_state);
 +        pending->preserved_state_len = preserved_state_len;
++        pending->complete_deferred = complete_deferred;
 +        qemu_system_reset_request(SHUTDOWN_CAUSE_HOST_QMP_SYSTEM_RESET);
 +        return QEMU_CRUCIBLE_FAULT_IMPULSE_DEFERRED;
 +    }
@@ -661,6 +893,22 @@ index 0000000..a34f8f3
 +    return 0;
 +}
 +
++static int crucible_lifecycle_impulse(
++    const QemuCrucibleFaultRule *rule, uint64_t observed_icount,
++    uint8_t before_hash[32], uint8_t after_hash[32], GByteArray *evidence,
++    uint16_t *outcome,
++    QemuCrucibleFaultEventReservation **event_reservation)
++{
++    CrucibleLifecyclePlan plan;
++
++    if (!crucible_lifecycle_direct_plan(rule, &plan)) {
++        return -EINVAL;
++    }
++    return crucible_lifecycle_execute(
++        rule, observed_icount, &plan, true, before_hash, after_hash,
++        evidence, outcome, event_reservation);
++}
++
 +void qemu_crucible_fault_lifecycle_reset_complete(void)
 +{
 +    CrucibleLifecyclePendingReset *pending =
@@ -674,8 +922,23 @@ index 0000000..a34f8f3
 +    if (crucible_lifecycle_restore_state(
 +            pending->preserved_state, pending->preserved_state_len) != 0 ||
 +        !crucible_lifecycle_snapshot(after_hash, &ram_bytes, &device_bytes)) {
-+        qemu_crucible_fault_fail_deferred(
-+            pending->rule, pending->observed_icount, pending->before_hash);
++        if (pending->complete_deferred) {
++            qemu_crucible_fault_fail_deferred(
++                pending->rule, pending->observed_icount,
++                pending->before_hash);
++        } else {
++            memcpy(after_hash, pending->before_hash, sizeof(after_hash));
++            crucible_lifecycle_sha256(
++                pending->evidence, sizeof(pending->evidence),
++                opportunity_hash);
++            qemu_crucible_fault_event_reservation_consume(
++                pending->reservation);
++            qemu_crucible_fault_rule_event(
++                pending->rule, CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR,
++                qemu_plugin_icount_raw(), opportunity_hash,
++                pending->before_hash, after_hash,
++                pending->evidence, sizeof(pending->evidence));
++        }
 +        crucible_lifecycle_pending_clear(pending);
 +        return;
 +    }
@@ -691,10 +954,12 @@ index 0000000..a34f8f3
 +        qemu_plugin_icount_raw(), opportunity_hash,
 +        pending->before_hash, after_hash,
 +        pending->evidence, sizeof(pending->evidence));
-+    qemu_crucible_fault_complete_deferred(
-+        pending->rule, pending->observed_icount,
-+        MAX(pending->observed_icount, qemu_plugin_icount_raw()),
-+        pending->before_hash, after_hash);
++    if (pending->complete_deferred) {
++        qemu_crucible_fault_complete_deferred(
++            pending->rule, pending->observed_icount,
++            MAX(pending->observed_icount, qemu_plugin_icount_raw()),
++            pending->before_hash, after_hash);
++    }
 +    crucible_lifecycle_pending_clear(pending);
 +}
 +
@@ -713,12 +978,16 @@ index 0000000..a34f8f3
 +        return -ENOTSUP;
 +    }
 +    if (kind == CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE) {
++        CrucibleLifecyclePlan plan;
++
 +        return qemu_crucible_fault_rule_operation(rule) ==
 +                   CRUCIBLE_NODE_FAULT_OPERATION_APPLY &&
-+               crucible_lifecycle_u32(
-+                   rule, CRUCIBLE_NODE_FAULT_FIELD_P1, &value) &&
-+               value >= CRUCIBLE_LIFECYCLE_BOOT &&
-+               value <= CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE ? 0 : -EINVAL;
++               crucible_lifecycle_direct_plan(rule, &plan) &&
++               plan.transition >= CRUCIBLE_LIFECYCLE_BOOT &&
++               plan.transition <= CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE &&
++               plan.volatile_policy >= 1 && plan.volatile_policy <= 2 &&
++               plan.device_policy >= 1 && plan.device_policy <= 3 &&
++               plan.downtime <= INT64_MAX ? 0 : -EINVAL;
 +    }
 +    if (kind == CRUCIBLE_FAULT_COMMAND_NODE_HANG) {
 +        const QObject *object;
@@ -733,6 +1002,23 @@ index 0000000..a34f8f3
 +        if (!crucible_lifecycle_u32(
 +                rule, CRUCIBLE_NODE_FAULT_FIELD_P1, &value)) {
 +            return -EINVAL;
++        }
++        {
++            CrucibleLifecyclePlan plan;
++            uint64_t timeout;
++            QDict *watchdog = qobject_to(
++                QDict, qemu_crucible_fault_rule_json(
++                    rule, CRUCIBLE_NODE_FAULT_FIELD_P4));
++            const char *watchdog_kind =
++                watchdog ? qdict_get_try_str(watchdog, "kind") : NULL;
++
++            if (!watchdog_kind ||
++                (strcmp(watchdog_kind, "disabled") != 0 &&
++                 (!crucible_lifecycle_watchdog_plan(
++                      rule, &plan, &timeout) ||
++                  timeout > INT64_MAX || plan.downtime > INT64_MAX))) {
++                return -EINVAL;
++            }
 +        }
 +        if (value == 1) {
 +            return 0;
@@ -755,6 +1041,21 @@ index 0000000..a34f8f3
 +        return 0;
 +    }
 +    return -EINVAL;
++}
++
++size_t qemu_crucible_fault_lifecycle_event_budget(
++    const QemuCrucibleFaultRule *rule)
++{
++    CrucibleLifecyclePlan plan;
++    uint64_t timeout;
++
++    if (qemu_crucible_fault_rule_command_kind(rule) !=
++            CRUCIBLE_FAULT_COMMAND_NODE_HANG ||
++        qemu_crucible_fault_rule_operation(rule) !=
++            CRUCIBLE_NODE_FAULT_OPERATION_UPSERT) {
++        return 0;
++    }
++    return crucible_lifecycle_watchdog_plan(rule, &plan, &timeout) ? 3 : 2;
 +}
 +
 +static void crucible_lifecycle_apply_hang(
@@ -796,16 +1097,185 @@ index 0000000..a34f8f3
 +    }
 +}
 +
-+void qemu_crucible_fault_lifecycle_rules_changed(void)
++static void crucible_hang_state_free(gpointer opaque)
++{
++    CrucibleHangState *state = opaque;
++
++    if (!state) {
++        return;
++    }
++    if (state->activation_reservation) {
++        qemu_crucible_fault_event_reservation_release(
++            state->activation_reservation);
++    }
++    if (state->watchdog_reservation) {
++        qemu_crucible_fault_event_reservation_release(
++            state->watchdog_reservation);
++    }
++    if (state->recovery_reservation) {
++        qemu_crucible_fault_event_reservation_release(
++            state->recovery_reservation);
++    }
++    qemu_crucible_fault_rule_unref(state->rule);
++    g_free(state);
++}
++
++static void crucible_hang_digest(const GPtrArray *states,
++                                 uint8_t digest[32])
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    gsize digest_length = 32;
++
++    g_checksum_update(checksum, (const uint8_t *)"CRUCHGS1", 8);
++    if (states) {
++        for (guint index = 0; index < states->len; index++) {
++            CrucibleHangState *state = g_ptr_array_index(states, index);
++            uint8_t scalar[40] = { 0 };
++
++            stq_le_p(scalar, qemu_crucible_fault_rule_generation(
++                state->rule));
++            stq_le_p(scalar + 8, state->entered_icount);
++            stq_le_p(scalar + 16, state->entered_virtual_ns);
++            stq_le_p(scalar + 24, state->watchdog_deadline_ns);
++            scalar[32] = state->watchdog_enabled;
++            scalar[33] = state->watchdog_fired;
++            g_checksum_update(
++                checksum, qemu_crucible_fault_rule_binding_hash(state->rule),
++                32);
++            g_checksum_update(checksum, scalar, sizeof(scalar));
++        }
++    }
++    g_checksum_get_digest(checksum, digest, &digest_length);
++    g_assert(digest_length == 32);
++}
++
++static void crucible_hang_event(
++    CrucibleHangState *state, uint32_t event_kind,
++    QemuCrucibleFaultEventReservation **reservation,
++    const uint8_t before_hash[32], const uint8_t after_hash[32])
++{
++    uint8_t evidence[CRUCIBLE_HANG_EVIDENCE_BYTES] = { 0 };
++    uint8_t opportunity_hash[32];
++    uint32_t scope;
++    uint64_t now = icount_get_observed();
++
++    if (!reservation || !*reservation ||
++        !crucible_lifecycle_u32(
++            state->rule, CRUCIBLE_NODE_FAULT_FIELD_P1, &scope)) {
++        error_report("Crucible hang transition lacked reserved evidence");
++        abort();
++    }
++    memcpy(evidence, "CRUCHNG1", 8);
++    stw_le_p(evidence + 8, 1);
++    stw_le_p(evidence + 10, event_kind);
++    stl_le_p(evidence + 12, scope);
++    stq_le_p(evidence + 16, state->entered_icount);
++    stq_le_p(evidence + 24, state->entered_virtual_ns);
++    stq_le_p(evidence + 32, now);
++    stq_le_p(evidence + 40, state->watchdog_deadline_ns);
++    stq_le_p(evidence + 48,
++             qemu_crucible_fault_rule_generation(state->rule));
++    stq_le_p(evidence + 56, qemu_plugin_icount_raw());
++    memcpy(evidence + 64,
++           qemu_crucible_fault_rule_binding_hash(state->rule), 32);
++    memcpy(evidence + 96,
++           qemu_crucible_fault_rule_action_hash(state->rule), 32);
++    memcpy(evidence + 128, before_hash, 32);
++    memcpy(evidence + 160, after_hash, 32);
++    crucible_lifecycle_sha256(
++        evidence, sizeof(evidence), opportunity_hash);
++    qemu_crucible_fault_event_reservation_consume(*reservation);
++    qemu_crucible_fault_rule_event(
++        state->rule, CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED,
++        qemu_plugin_icount_raw(), opportunity_hash, before_hash, after_hash,
++        evidence, sizeof(evidence));
++    qemu_crucible_fault_event_reservation_release(*reservation);
++    *reservation = NULL;
++}
++
++typedef struct CrucibleHangRebuild {
++    GPtrArray *previous;
++    GPtrArray *next;
++    const QemuCrucibleFaultRule *transition_rule;
++    QemuCrucibleFaultEventReservation **event_reservation;
++} CrucibleHangRebuild;
++
++static CrucibleHangState *crucible_hang_previous_take(
++    CrucibleHangRebuild *rebuild, const QemuCrucibleFaultRule *rule)
++{
++    for (guint index = 0; index < rebuild->previous->len; index++) {
++        CrucibleHangState *state =
++            g_ptr_array_index(rebuild->previous, index);
++
++        if (qemu_crucible_fault_rule_generation(state->rule) ==
++                qemu_crucible_fault_rule_generation(rule) &&
++            memcmp(qemu_crucible_fault_rule_binding_hash(state->rule),
++                   qemu_crucible_fault_rule_binding_hash(rule), 32) == 0) {
++            return g_ptr_array_steal_index(rebuild->previous, index);
++        }
++    }
++    return NULL;
++}
++
++static void crucible_hang_rebuild_visit(
++    const QemuCrucibleFaultRule *rule, void *opaque)
++{
++    CrucibleHangRebuild *rebuild = opaque;
++    CrucibleHangState *state =
++        crucible_hang_previous_take(rebuild, rule);
++    CrucibleLifecyclePlan plan;
++    uint64_t timeout;
++
++    if (state) {
++        g_ptr_array_add(rebuild->next, state);
++        return;
++    }
++    if (!rebuild->transition_rule || !rebuild->event_reservation ||
++        !*rebuild->event_reservation ||
++        memcmp(qemu_crucible_fault_rule_binding_hash(rule),
++               qemu_crucible_fault_rule_binding_hash(
++                   rebuild->transition_rule), 32) != 0) {
++        error_report("Crucible hang activation lacked prepared evidence");
++        abort();
++    }
++    state = g_new0(CrucibleHangState, 1);
++    state->rule = qemu_crucible_fault_rule_copy(rule);
++    state->entered_icount = qemu_plugin_icount_raw();
++    state->entered_virtual_ns = icount_get_observed();
++    state->watchdog_enabled = crucible_lifecycle_watchdog_plan(
++        rule, &plan, &timeout);
++    if (state->watchdog_enabled) {
++        if (state->entered_virtual_ns > UINT64_MAX - timeout) {
++            error_report("Crucible watchdog deadline overflowed after prepare");
++            abort();
++        }
++        state->watchdog_deadline_ns = state->entered_virtual_ns + timeout;
++    } else {
++        state->watchdog_deadline_ns = UINT64_MAX;
++    }
++    {
++        state->activation_reservation =
++            qemu_crucible_fault_event_reservation_split(
++                *rebuild->event_reservation, 1);
++        state->recovery_reservation =
++            qemu_crucible_fault_event_reservation_split(
++                *rebuild->event_reservation, 1);
++        if (state->watchdog_enabled) {
++            state->watchdog_reservation =
++                qemu_crucible_fault_event_reservation_split(
++                    *rebuild->event_reservation, 1);
++        }
++    }
++    g_ptr_array_add(rebuild->next, state);
++}
++
++static void crucible_hang_effective_recompute(void)
 +{
 +    CPUState *cpu;
 +    guint count = 0;
 +    CrucibleHangApply apply = { 0 };
 +    GArray *next;
 +
-+    if (!crucible_lifecycle_mode()) {
-+        return;
-+    }
 +    CPU_FOREACH(cpu) {
 +        if (cpu->cpu_index < 0 || (guint)cpu->cpu_index != count) {
 +            abort();
@@ -818,14 +1288,80 @@ index 0000000..a34f8f3
 +    next = g_array_sized_new(false, true, sizeof(bool), count);
 +    g_array_set_size(next, count);
 +    apply.vcpu_hung = next;
-+    qemu_crucible_fault_rule_foreach(
-+        CRUCIBLE_FAULT_COMMAND_NODE_HANG,
-+        crucible_lifecycle_apply_hang, &apply);
++    if (crucible_lifecycle_hangs) {
++        for (guint index = 0;
++             index < crucible_lifecycle_hangs->len; index++) {
++            CrucibleHangState *state =
++                g_ptr_array_index(crucible_lifecycle_hangs, index);
++
++            if (!state->watchdog_fired) {
++                crucible_lifecycle_apply_hang(state->rule, &apply);
++            }
++        }
++    }
 +    if (crucible_lifecycle_vcpu_hung) {
 +        g_array_unref(crucible_lifecycle_vcpu_hung);
 +    }
 +    crucible_lifecycle_vcpu_hung = next;
 +    crucible_lifecycle_node_hung = apply.node_hung;
++}
++
++void qemu_crucible_fault_lifecycle_rules_changed(
++    const QemuCrucibleFaultRule *transition_rule,
++    QemuCrucibleFaultEventReservation **event_reservation)
++{
++    GPtrArray *previous;
++    GPtrArray *next_hangs;
++    CrucibleHangRebuild rebuild;
++    uint8_t before_hash[32], after_hash[32];
++
++    if (!crucible_lifecycle_mode()) {
++        return;
++    }
++    previous = crucible_lifecycle_hangs ?
++        crucible_lifecycle_hangs :
++        g_ptr_array_new_with_free_func(crucible_hang_state_free);
++    next_hangs = g_ptr_array_new_with_free_func(crucible_hang_state_free);
++    crucible_hang_digest(previous, before_hash);
++    rebuild = (CrucibleHangRebuild) {
++        .previous = previous,
++        .next = next_hangs,
++        .transition_rule = transition_rule,
++        .event_reservation = event_reservation,
++    };
++    qemu_crucible_fault_rule_foreach(
++        CRUCIBLE_FAULT_COMMAND_NODE_HANG,
++        crucible_hang_rebuild_visit, &rebuild);
++    crucible_hang_digest(next_hangs, after_hash);
++    for (guint index = 0; index < previous->len; index++) {
++        CrucibleHangState *state = g_ptr_array_index(previous, index);
++
++        crucible_hang_event(
++            state, CRUCIBLE_HANG_RECOVERED,
++            &state->recovery_reservation, before_hash, after_hash);
++    }
++    for (guint index = 0; index < next_hangs->len; index++) {
++        CrucibleHangState *state = g_ptr_array_index(next_hangs, index);
++        if (state->activation_reservation) {
++            crucible_hang_event(
++                state, CRUCIBLE_HANG_ACTIVATED,
++                &state->activation_reservation,
++                before_hash, after_hash);
++        }
++    }
++    g_ptr_array_unref(previous);
++    crucible_lifecycle_hangs = next_hangs;
++    crucible_lifecycle_next_watchdog_ns = UINT64_MAX;
++    for (guint index = 0; index < next_hangs->len; index++) {
++        CrucibleHangState *state = g_ptr_array_index(next_hangs, index);
++
++        if (state->watchdog_enabled && !state->watchdog_fired) {
++            crucible_lifecycle_next_watchdog_ns = MIN(
++                crucible_lifecycle_next_watchdog_ns,
++                state->watchdog_deadline_ns);
++        }
++    }
++    crucible_hang_effective_recompute();
 +}
 +
 +bool qemu_crucible_fault_node_hung(void)
@@ -838,6 +1374,95 @@ index 0000000..a34f8f3
 +    return crucible_lifecycle_vcpu_hung &&
 +           vcpu < crucible_lifecycle_vcpu_hung->len &&
 +           g_array_index(crucible_lifecycle_vcpu_hung, bool, vcpu);
++}
++
++static void crucible_lifecycle_watchdog_recompute(void)
++{
++    crucible_lifecycle_next_watchdog_ns = UINT64_MAX;
++    if (!crucible_lifecycle_hangs) {
++        return;
++    }
++    for (guint index = 0; index < crucible_lifecycle_hangs->len; index++) {
++        CrucibleHangState *state =
++            g_ptr_array_index(crucible_lifecycle_hangs, index);
++
++        if (state->watchdog_enabled && !state->watchdog_fired) {
++            crucible_lifecycle_next_watchdog_ns = MIN(
++                crucible_lifecycle_next_watchdog_ns,
++                state->watchdog_deadline_ns);
++        }
++    }
++}
++
++static void crucible_lifecycle_watchdog_boundary(
++    uint16_t phase, uint64_t observed_icount)
++{
++    uint64_t now;
++
++    if (phase != CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY ||
++        !crucible_lifecycle_mode() || !crucible_lifecycle_hangs ||
++        crucible_lifecycle_pending_reset.rule) {
++        return;
++    }
++    now = icount_get_observed();
++    for (guint index = 0; index < crucible_lifecycle_hangs->len; index++) {
++        CrucibleHangState *state =
++            g_ptr_array_index(crucible_lifecycle_hangs, index);
++        CrucibleLifecyclePlan plan;
++        g_autoptr(GByteArray) evidence = NULL;
++        uint8_t before_hash[32], after_hash[32], opportunity_hash[32];
++        uint64_t timeout;
++        uint16_t outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED;
++        int status;
++
++        if (!state->watchdog_enabled || state->watchdog_fired ||
++            state->watchdog_deadline_ns > now) {
++            continue;
++        }
++        if (!state->watchdog_reservation ||
++            !crucible_lifecycle_watchdog_plan(
++                state->rule, &plan, &timeout)) {
++            error_report("Crucible watchdog lost its prepared plan");
++            abort();
++        }
++        state->watchdog_fired = true;
++        crucible_hang_effective_recompute();
++        evidence = g_byte_array_new();
++        status = crucible_lifecycle_execute(
++            state->rule, observed_icount, &plan, false,
++            before_hash, after_hash, evidence, &outcome,
++            &state->watchdog_reservation);
++        if (status == QEMU_CRUCIBLE_FAULT_IMPULSE_DEFERRED) {
++            break;
++        }
++        if (status != 0 || evidence->len == 0) {
++            error_report("Crucible prepared watchdog transition failed");
++            abort();
++        }
++        crucible_lifecycle_sha256(
++            evidence->data, evidence->len, opportunity_hash);
++        qemu_crucible_fault_event_reservation_consume(
++            state->watchdog_reservation);
++        qemu_crucible_fault_rule_event(
++            state->rule, outcome, observed_icount, opportunity_hash,
++            before_hash, after_hash, evidence->data, evidence->len);
++        qemu_crucible_fault_event_reservation_release(
++            state->watchdog_reservation);
++        state->watchdog_reservation = NULL;
++        if (plan.transition == CRUCIBLE_LIFECYCLE_CRASH ||
++            plan.transition == CRUCIBLE_LIFECYCLE_POWER_OFF ||
++            plan.transition == CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE) {
++            break;
++        }
++    }
++    crucible_lifecycle_watchdog_recompute();
++}
++
++static uint64_t crucible_lifecycle_watchdog_deadline(uint16_t phase)
++{
++    return phase == CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY &&
++           crucible_lifecycle_mode() ?
++        crucible_lifecycle_next_watchdog_ns : UINT64_MAX;
 +}
 +
 +static void crucible_lifecycle_register(void)
@@ -853,11 +1478,15 @@ index 0000000..a34f8f3
 +        CRUCIBLE_FAULT_COMMAND_NODE_HANG,
 +        QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL, boundary,
 +        "qemu.node.hang.v1", NULL);
++    qemu_crucible_fault_boundary_observer_register(
++        crucible_lifecycle_watchdog_boundary);
++    qemu_crucible_fault_boundary_deadline_register(
++        crucible_lifecycle_watchdog_deadline);
 +}
 +
 +type_init(crucible_lifecycle_register)
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index ec77da2..431ffec 100644
+index ec77da2..ecaf099 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -1670,18 +1670,34 @@ static bool node_json_watchdog(const QObject *object)
@@ -915,23 +1544,45 @@ index ec77da2..431ffec 100644
      node_sha256(payload, payload_len, staging->request_hash);
      node_rules_digest_with(NULL, false, staging->before_hash);
      if (command->command_flags & CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) {
-@@ -3475,6 +3501,7 @@ static void node_commit(
+@@ -3330,6 +3356,19 @@ static int node_prepare(
+             return -ENOSPC;
+         }
+     }
++    if (staging->rule.operation ==
++            CRUCIBLE_NODE_FAULT_OPERATION_UPSERT &&
++        staging->rule.command_kind == CRUCIBLE_FAULT_COMMAND_NODE_HANG) {
++        size_t event_budget =
++            qemu_crucible_fault_lifecycle_event_budget(&staging->rule);
++
++        staging->event_reservation =
++            qemu_crucible_fault_event_reserve(event_budget);
++        if (!staging->event_reservation) {
++            result->status = CRUCIBLE_FAULT_STATUS_RESOURCE_LIMIT;
++            return -ENOSPC;
++        }
++    }
+     memcpy(result->before_hash, staging->before_hash, 32);
+     memcpy(result->after_hash, staging->after_hash, 32);
+     node_encode_evidence(staging, result_payload);
+@@ -3475,6 +3514,8 @@ static void node_commit(
          qemu_crucible_fault_interrupt_rules_changed();
          qemu_crucible_fault_vcpu_service_rules_changed(
              &staging->rule, &staging->event_reservation);
-+        qemu_crucible_fault_lifecycle_rules_changed();
++        qemu_crucible_fault_lifecycle_rules_changed(
++            &staging->rule, &staging->event_reservation);
          if (staging->event_reservation) {
              qemu_crucible_fault_event_reservation_release(
                  staging->event_reservation);
-@@ -3491,6 +3518,7 @@ static void node_commit(
+@@ -3491,6 +3532,8 @@ static void node_commit(
          qemu_crucible_fault_interrupt_rules_changed();
          qemu_crucible_fault_vcpu_service_rules_changed(
              &staging->rule, &staging->event_reservation);
-+        qemu_crucible_fault_lifecycle_rules_changed();
++        qemu_crucible_fault_lifecycle_rules_changed(
++            &staging->rule, &staging->event_reservation);
          if (staging->event_reservation) {
              qemu_crucible_fault_event_reservation_release(
                  staging->event_reservation);
-@@ -3595,6 +3623,11 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
+@@ -3595,6 +3638,11 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
          handler->capability.required_feature_bits =
              CRUCIBLE_FAULT_CAPABILITY_FEATURE_VCPU_SERVICE;
          break;
@@ -943,6 +1594,29 @@ index ec77da2..431ffec 100644
      case CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM:
      case CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE:
      case CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE:
+@@ -3813,6 +3861,22 @@ void qemu_crucible_fault_event_reservation_consume(
+     crucible_node_event_sequence_reserved--;
+ }
+ 
++QemuCrucibleFaultEventReservation *
++qemu_crucible_fault_event_reservation_split(
++    QemuCrucibleFaultEventReservation *reservation, size_t count)
++{
++    QemuCrucibleFaultEventReservation *split;
++
++    if (!reservation || count == 0 || count > reservation->remaining) {
++        error_report("Invalid Crucible fault-event reservation split");
++        abort();
++    }
++    split = g_new0(QemuCrucibleFaultEventReservation, 1);
++    split->remaining = count;
++    reservation->remaining -= count;
++    return split;
++}
++
+ void qemu_crucible_fault_event_reservation_release(
+     QemuCrucibleFaultEventReservation *reservation)
+ {
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
 index ff1e179..1327286 100644
 --- a/plugins/crucible-fault-vcpu-service.c
@@ -959,6 +1633,25 @@ index ff1e179..1327286 100644
      if (!crucible_vcpu_service_mode() || !service) {
          return true;
      }
+diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
+index 31b19e1..4a73572 100644
+--- a/plugins/crucible-fault.c
++++ b/plugins/crucible-fault.c
+@@ -685,6 +685,14 @@ uint64_t qemu_crucible_fault_next_icount(uint16_t phase)
+         }
+     }
+     g_mutex_unlock(&crucible_fault_lock);
++    next = MIN(next, qemu_crucible_fault_next_boundary_deadline(phase));
++    return next;
++}
++
++uint64_t qemu_crucible_fault_next_boundary_deadline(uint16_t phase)
++{
++    uint64_t next = UINT64_MAX;
++
+     for (guint i = 0;
+          crucible_boundary_deadlines && i < crucible_boundary_deadlines->len;
+          i++) {
 diff --git a/plugins/meson.build b/plugins/meson.build
 index 30ff5ba..3c76bd9 100644
 --- a/plugins/meson.build
