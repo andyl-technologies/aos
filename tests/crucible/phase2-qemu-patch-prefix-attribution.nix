@@ -292,6 +292,10 @@
       kind = "interface";
       symbols = ["qemu_plugin_crucible_fault_interrupt_manifest"];
     };
+    "0054-crucible-inject-architecture-hardware-errors.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_fault_hardware_error_manifest"];
+    };
     "0060-crucible-block-typed-errors.patch" = {
       kind = "recorded";
       symbols = [];

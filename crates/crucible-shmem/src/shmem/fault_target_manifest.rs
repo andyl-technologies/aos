@@ -31,6 +31,14 @@ pub const FAULT_INTERRUPT_MANIFEST_VERSION_V1: u16 = 1;
 pub const FAULT_INTERRUPT_MANIFEST_HEADER_V1_BYTES: usize = 56;
 /// Fixed interrupt row header length before identities and target vCPUs.
 pub const FAULT_INTERRUPT_ROW_HEADER_V1_BYTES: usize = 52;
+/// Magic prefix for a hardware-error capability manifest.
+pub const FAULT_HARDWARE_ERROR_MANIFEST_MAGIC_V1: [u8; 8] = *b"CRUCHWM1";
+/// Hardware-error manifest codec version.
+pub const FAULT_HARDWARE_ERROR_MANIFEST_VERSION_V1: u16 = 1;
+/// Fixed hardware-error manifest header length.
+pub const FAULT_HARDWARE_ERROR_MANIFEST_HEADER_V1_BYTES: usize = 56;
+/// Fixed hardware-error row header length before its six identities.
+pub const FAULT_HARDWARE_ERROR_ROW_HEADER_V1_BYTES: usize = 88;
 /// Maximum number of target rows returned by one QEMU process.
 pub const HARD_FAULT_TARGET_MANIFEST_ROWS: usize = 4_096;
 /// Maximum encoded target name or CPU-model identity length.
@@ -62,6 +70,8 @@ pub enum FaultTargetManifestKind {
     Register = 1,
     /// Fully routed interrupt rows for the realized machine.
     Interrupt = 2,
+    /// Architecture and platform hardware-error delivery rows.
+    HardwareError = 3,
 }
 
 impl FaultTargetManifestKind {
@@ -69,6 +79,7 @@ impl FaultTargetManifestKind {
         match value {
             1 => Ok(Self::Register),
             2 => Ok(Self::Interrupt),
+            3 => Ok(Self::HardwareError),
             _ => Err(FaultAbiError::CapabilityInvariant),
         }
     }
@@ -801,8 +812,7 @@ impl FaultInterruptCapabilityManifestV1 {
         if !matches!(
             self.architecture,
             FaultCapabilityScope::X86_64 | FaultCapabilityScope::Aarch64
-        ) || self.rows.is_empty()
-            || self.rows.len() > HARD_FAULT_TARGET_MANIFEST_ROWS
+        ) || self.rows.len() > HARD_FAULT_TARGET_MANIFEST_ROWS
             || self.rows.windows(2).any(|pair| pair[0].id >= pair[1].id)
         {
             return Err(FaultAbiError::CapabilityInvariant);
@@ -854,7 +864,7 @@ impl FaultInterruptCapabilityManifestV1 {
             usize::try_from(u32_at(bytes, 16)?).map_err(|_| FaultAbiError::CapabilityInvariant)?;
         let body_len =
             usize::try_from(u32_at(bytes, 20)?).map_err(|_| FaultAbiError::PayloadLimit)?;
-        if row_count == 0 || row_count > HARD_FAULT_TARGET_MANIFEST_ROWS {
+        if row_count > HARD_FAULT_TARGET_MANIFEST_ROWS {
             return Err(FaultAbiError::CapabilityInvariant);
         }
         let expected_len = FAULT_INTERRUPT_MANIFEST_HEADER_V1_BYTES
@@ -952,6 +962,474 @@ impl FaultInterruptCapabilityManifestV1 {
     }
 }
 
+/// Guest-visible hardware-error record family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u16)]
+pub enum FaultHardwareErrorRecordKindV1 {
+    /// x86 machine-check architecture record.
+    X86MachineCheck = 1,
+    /// AArch64 RAS exception record.
+    Aarch64Ras = 2,
+    /// Platform memory ECC record.
+    MemoryEcc = 3,
+}
+
+impl FaultHardwareErrorRecordKindV1 {
+    /// Decodes one registered record-family tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError::CapabilityInvariant`] for an unknown tag.
+    pub fn from_u16(value: u16) -> Result<Self, FaultAbiError> {
+        match value {
+            1 => Ok(Self::X86MachineCheck),
+            2 => Ok(Self::Aarch64Ras),
+            3 => Ok(Self::MemoryEcc),
+            _ => Err(FaultAbiError::CapabilityInvariant),
+        }
+    }
+}
+
+/// Severity or delivery class of one hardware-error row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u16)]
+pub enum FaultHardwareErrorClassV1 {
+    /// Corrected record without uncorrectable delivery.
+    Corrected = 1,
+    /// Recoverable uncorrectable error.
+    Recoverable = 2,
+    /// Fatal uncorrectable error linked to lifecycle handling.
+    Fatal = 3,
+    /// Synchronous AArch64 external abort.
+    Synchronous = 4,
+    /// Asynchronous AArch64 SError.
+    Asynchronous = 5,
+}
+
+impl FaultHardwareErrorClassV1 {
+    /// Decodes one registered error-class tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError::CapabilityInvariant`] for an unknown tag.
+    pub fn from_u16(value: u16) -> Result<Self, FaultAbiError> {
+        match value {
+            1 => Ok(Self::Corrected),
+            2 => Ok(Self::Recoverable),
+            3 => Ok(Self::Fatal),
+            4 => Ok(Self::Synchronous),
+            5 => Ok(Self::Asynchronous),
+            _ => Err(FaultAbiError::CapabilityInvariant),
+        }
+    }
+}
+
+/// Real guest-visible mechanism used to publish a hardware error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u16)]
+pub enum FaultHardwareErrorMechanismV1 {
+    /// x86 MCA banks and machine-check delivery.
+    X86Mca = 1,
+    /// ACPI APEI GHES memory error record.
+    AcpiGhes = 2,
+    /// AArch64 RAS synchronous abort or SError.
+    Aarch64Ras = 3,
+}
+
+impl FaultHardwareErrorMechanismV1 {
+    /// Decodes one registered delivery-mechanism tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError::CapabilityInvariant`] for an unknown tag.
+    pub fn from_u16(value: u16) -> Result<Self, FaultAbiError> {
+        match value {
+            1 => Ok(Self::X86Mca),
+            2 => Ok(Self::AcpiGhes),
+            3 => Ok(Self::Aarch64Ras),
+            _ => Err(FaultAbiError::CapabilityInvariant),
+        }
+    }
+}
+
+/// Publishes a guest-visible telemetry record without exception delivery.
+pub const FAULT_HARDWARE_ERROR_VISIBILITY_TELEMETRY: u16 = 1 << 0;
+/// Delivers a corrected-error interrupt when the realized mechanism supports it.
+pub const FAULT_HARDWARE_ERROR_VISIBILITY_INTERRUPT: u16 = 1 << 1;
+/// Delivers the complete architecture exception described by the command.
+pub const FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION: u16 = 1 << 2;
+/// Every hardware-error visibility bit understood by codec version 1.
+pub const FAULT_HARDWARE_ERROR_VISIBILITY_V1_MASK: u16 = (1 << 3) - 1;
+/// Every x86 CPL or AArch64 exception level represented by a manifest row.
+pub const FAULT_HARDWARE_ERROR_PRIVILEGE_V1_MASK: u16 = (1 << 4) - 1;
+
+/// One immutable architecture or platform hardware-error capability row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FaultHardwareErrorCapabilityRowV1 {
+    /// Stable row identity.
+    pub id: String,
+    /// Stable architecture bank or platform record identity.
+    pub bank: String,
+    /// Stable memory-channel identity.
+    pub channel: String,
+    /// Stable memory-rank identity.
+    pub rank: String,
+    /// Exact firmware or table prerequisite.
+    pub firmware: String,
+    /// Exact resulting QEMU and guest-visible state contract.
+    pub state: String,
+    /// Typed record family.
+    pub record_kind: FaultHardwareErrorRecordKindV1,
+    /// Error severity or AArch64 delivery class.
+    pub error_class: FaultHardwareErrorClassV1,
+    /// Real publication and delivery mechanism.
+    pub mechanism: FaultHardwareErrorMechanismV1,
+    /// Permitted telemetry, interrupt, and exception visibility modes.
+    pub visibility_mask: u16,
+    /// First numeric architecture bank or platform record.
+    pub bank_number: u32,
+    /// Number of consecutive banks or records in this row.
+    pub bank_count: u32,
+    /// Required architecture vector or exception class.
+    pub vector: u32,
+    /// Status bits that every request must set.
+    pub status_required: u64,
+    /// Complete mask of status bits a request may set.
+    pub status_allowed: u64,
+    /// Syndrome bits that every request must set.
+    pub syndrome_required: u64,
+    /// Complete mask of syndrome bits a request may set.
+    pub syndrome_allowed: u64,
+    /// Fault-model phases at which the row can apply.
+    pub model_phase_mask: u64,
+    /// x86 CPL or AArch64 EL bit set admitted by this row.
+    pub privilege_mask: u16,
+    /// Identifies a corrected rather than uncorrectable record.
+    pub corrected: bool,
+    /// Allows architecture masking to defer delivery.
+    pub maskable: bool,
+    /// Confirms that resulting architecture/platform state participates in VMState.
+    pub vmstate: bool,
+}
+
+impl FaultHardwareErrorCapabilityRowV1 {
+    fn validate(&self, architecture: FaultCapabilityScope) -> Result<(), FaultAbiError> {
+        let identities = [
+            self.id.as_str(),
+            self.bank.as_str(),
+            self.channel.as_str(),
+            self.rank.as_str(),
+            self.firmware.as_str(),
+            self.state.as_str(),
+        ];
+        let x86 = architecture == FaultCapabilityScope::X86_64;
+        let arm = architecture == FaultCapabilityScope::Aarch64;
+        let mechanism_matches = match self.mechanism {
+            FaultHardwareErrorMechanismV1::X86Mca => x86,
+            FaultHardwareErrorMechanismV1::AcpiGhes | FaultHardwareErrorMechanismV1::Aarch64Ras => {
+                arm
+            }
+        };
+        let record_matches = match self.record_kind {
+            FaultHardwareErrorRecordKindV1::X86MachineCheck => {
+                x86 && self.mechanism == FaultHardwareErrorMechanismV1::X86Mca
+            }
+            FaultHardwareErrorRecordKindV1::Aarch64Ras => {
+                arm && self.mechanism == FaultHardwareErrorMechanismV1::Aarch64Ras
+            }
+            FaultHardwareErrorRecordKindV1::MemoryEcc => matches!(
+                self.mechanism,
+                FaultHardwareErrorMechanismV1::X86Mca | FaultHardwareErrorMechanismV1::AcpiGhes
+            ),
+        };
+        let class_matches = match self.mechanism {
+            FaultHardwareErrorMechanismV1::X86Mca => matches!(
+                self.error_class,
+                FaultHardwareErrorClassV1::Corrected
+                    | FaultHardwareErrorClassV1::Recoverable
+                    | FaultHardwareErrorClassV1::Fatal
+            ),
+            FaultHardwareErrorMechanismV1::AcpiGhes => matches!(
+                self.error_class,
+                FaultHardwareErrorClassV1::Corrected | FaultHardwareErrorClassV1::Recoverable
+            ),
+            FaultHardwareErrorMechanismV1::Aarch64Ras => matches!(
+                self.error_class,
+                FaultHardwareErrorClassV1::Synchronous
+                    | FaultHardwareErrorClassV1::Asynchronous
+                    | FaultHardwareErrorClassV1::Fatal
+            ),
+        };
+        let visibility_valid = self.visibility_mask != 0
+            && self.visibility_mask & !FAULT_HARDWARE_ERROR_VISIBILITY_V1_MASK == 0
+            && if self.corrected {
+                self.visibility_mask
+                    & (FAULT_HARDWARE_ERROR_VISIBILITY_TELEMETRY
+                        | FAULT_HARDWARE_ERROR_VISIBILITY_INTERRUPT)
+                    != 0
+                    && self.visibility_mask & FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION == 0
+            } else {
+                self.visibility_mask == FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION
+            };
+        if identities
+            .iter()
+            .any(|identity| !valid_hardware_identity(identity))
+            || identities
+                .iter()
+                .any(|identity| identity.len() > HARD_FAULT_TARGET_NAME_BYTES)
+            || !mechanism_matches
+            || !record_matches
+            || !class_matches
+            || self.bank_count == 0
+            || self.bank_number.checked_add(self.bank_count).is_none()
+            || self.status_required & !self.status_allowed != 0
+            || self.syndrome_required & !self.syndrome_allowed != 0
+            || self.model_phase_mask == 0
+            || self.model_phase_mask & !FAULT_MODEL_PHASES_V1_MASK != 0
+            || self.privilege_mask == 0
+            || self.privilege_mask & !FAULT_HARDWARE_ERROR_PRIVILEGE_V1_MASK != 0
+            || !visibility_valid
+            || self.corrected != (self.error_class == FaultHardwareErrorClassV1::Corrected)
+            || (x86 && self.vector != 18)
+            || (arm && self.vector != if self.maskable { 47 } else { 3 })
+            || (self.maskable && self.mechanism != FaultHardwareErrorMechanismV1::Aarch64Ras)
+            || (self.error_class == FaultHardwareErrorClassV1::Asynchronous && !self.maskable)
+            || (self.error_class == FaultHardwareErrorClassV1::Synchronous && self.maskable)
+        {
+            return Err(FaultAbiError::CapabilityInvariant);
+        }
+        Ok(())
+    }
+
+    fn encode(
+        &self,
+        architecture: FaultCapabilityScope,
+        output: &mut Vec<u8>,
+    ) -> Result<(), FaultAbiError> {
+        self.validate(architecture)?;
+        let identities = [
+            self.id.as_str(),
+            self.bank.as_str(),
+            self.channel.as_str(),
+            self.rank.as_str(),
+            self.firmware.as_str(),
+            self.state.as_str(),
+        ];
+        let lengths = identities
+            .iter()
+            .map(|identity| {
+                u16::try_from(identity.len()).map_err(|_| FaultAbiError::CapabilityInvariant)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let identity_bytes = identities.iter().try_fold(0_usize, |total, identity| {
+            total
+                .checked_add(identity.len())
+                .ok_or(FaultAbiError::CapabilityInvariant)
+        })?;
+        let row_len = FAULT_HARDWARE_ERROR_ROW_HEADER_V1_BYTES
+            .checked_add(identity_bytes)
+            .ok_or(FaultAbiError::CapabilityInvariant)?;
+        output.extend_from_slice(&(self.record_kind as u16).to_le_bytes());
+        output.extend_from_slice(&(self.error_class as u16).to_le_bytes());
+        output.extend_from_slice(&(self.mechanism as u16).to_le_bytes());
+        output.extend_from_slice(&self.visibility_mask.to_le_bytes());
+        output.extend_from_slice(&self.bank_number.to_le_bytes());
+        output.extend_from_slice(&self.bank_count.to_le_bytes());
+        output.extend_from_slice(&self.vector.to_le_bytes());
+        output.extend_from_slice(&0_u32.to_le_bytes());
+        output.extend_from_slice(&self.status_required.to_le_bytes());
+        output.extend_from_slice(&self.status_allowed.to_le_bytes());
+        output.extend_from_slice(&self.syndrome_required.to_le_bytes());
+        output.extend_from_slice(&self.syndrome_allowed.to_le_bytes());
+        output.extend_from_slice(&self.model_phase_mask.to_le_bytes());
+        output.extend_from_slice(&self.privilege_mask.to_le_bytes());
+        output.push(u8::from(self.corrected));
+        output.push(u8::from(self.maskable));
+        output.push(u8::from(self.vmstate));
+        output.push(0);
+        for length in lengths {
+            output.extend_from_slice(&length.to_le_bytes());
+        }
+        output.extend_from_slice(&0_u16.to_le_bytes());
+        output.extend_from_slice(
+            &u32::try_from(row_len)
+                .map_err(|_| FaultAbiError::CapabilityInvariant)?
+                .to_le_bytes(),
+        );
+        for identity in identities {
+            output.extend_from_slice(identity.as_bytes());
+        }
+        Ok(())
+    }
+}
+
+/// Exact hardware-error manifest for one realized QEMU machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FaultHardwareErrorCapabilityManifestV1 {
+    /// Architecture scope of every row.
+    pub architecture: FaultCapabilityScope,
+    /// Canonically ordered hardware-error rows.
+    pub rows: Vec<FaultHardwareErrorCapabilityRowV1>,
+}
+
+impl FaultHardwareErrorCapabilityManifestV1 {
+    /// Encodes a canonical self-authenticating hardware-error manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError`] for invalid rows, architecture, ordering,
+    /// masks, identities, or payload size.
+    pub fn encode(&self) -> Result<Vec<u8>, FaultAbiError> {
+        if !matches!(
+            self.architecture,
+            FaultCapabilityScope::X86_64 | FaultCapabilityScope::Aarch64
+        ) || self.rows.is_empty()
+            || self.rows.len() > HARD_FAULT_TARGET_MANIFEST_ROWS
+            || self.rows.windows(2).any(|pair| pair[0].id >= pair[1].id)
+        {
+            return Err(FaultAbiError::CapabilityInvariant);
+        }
+        let mut body = Vec::new();
+        for row in &self.rows {
+            row.encode(self.architecture, &mut body)?;
+        }
+        let maximum_body_bytes = usize::try_from(crate::HARD_FAULT_PAYLOAD_BYTES)
+            .map_err(|_| FaultAbiError::PayloadLimit)?
+            .checked_sub(FAULT_HARDWARE_ERROR_MANIFEST_HEADER_V1_BYTES)
+            .ok_or(FaultAbiError::PayloadLimit)?;
+        if body.len() > maximum_body_bytes {
+            return Err(FaultAbiError::PayloadLimit);
+        }
+        let mut output =
+            Vec::with_capacity(FAULT_HARDWARE_ERROR_MANIFEST_HEADER_V1_BYTES + body.len());
+        output.extend_from_slice(&FAULT_HARDWARE_ERROR_MANIFEST_MAGIC_V1);
+        output.extend_from_slice(&FAULT_HARDWARE_ERROR_MANIFEST_VERSION_V1.to_le_bytes());
+        output.extend_from_slice(&(self.architecture as u16).to_le_bytes());
+        output.extend_from_slice(&0_u32.to_le_bytes());
+        output.extend_from_slice(
+            &u32::try_from(self.rows.len())
+                .map_err(|_| FaultAbiError::CapabilityInvariant)?
+                .to_le_bytes(),
+        );
+        output.extend_from_slice(
+            &u32::try_from(body.len())
+                .map_err(|_| FaultAbiError::PayloadLimit)?
+                .to_le_bytes(),
+        );
+        output.extend_from_slice(blake3::hash(&body).as_bytes());
+        output.extend_from_slice(&body);
+        Ok(output)
+    }
+
+    /// Decodes and authenticates a canonical hardware-error manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError`] for malformed framing, digest, fields,
+    /// identities, ordering, or noncanonical bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, FaultAbiError> {
+        if bytes.len() < FAULT_HARDWARE_ERROR_MANIFEST_HEADER_V1_BYTES
+            || bytes.len() > crate::HARD_FAULT_PAYLOAD_BYTES as usize
+            || bytes[..8] != FAULT_HARDWARE_ERROR_MANIFEST_MAGIC_V1
+        {
+            return Err(FaultAbiError::HeaderLength);
+        }
+        if u16_at(bytes, 8)? != FAULT_HARDWARE_ERROR_MANIFEST_VERSION_V1 || u32_at(bytes, 12)? != 0
+        {
+            return Err(FaultAbiError::Version);
+        }
+        let architecture = FaultCapabilityScope::from_u16(u16_at(bytes, 10)?)?;
+        let row_count =
+            usize::try_from(u32_at(bytes, 16)?).map_err(|_| FaultAbiError::CapabilityInvariant)?;
+        let body_len =
+            usize::try_from(u32_at(bytes, 20)?).map_err(|_| FaultAbiError::PayloadLimit)?;
+        if row_count == 0 || row_count > HARD_FAULT_TARGET_MANIFEST_ROWS {
+            return Err(FaultAbiError::CapabilityInvariant);
+        }
+        if bytes.len()
+            != FAULT_HARDWARE_ERROR_MANIFEST_HEADER_V1_BYTES
+                .checked_add(body_len)
+                .ok_or(FaultAbiError::PayloadLimit)?
+        {
+            return Err(FaultAbiError::HeaderLength);
+        }
+        let body = &bytes[FAULT_HARDWARE_ERROR_MANIFEST_HEADER_V1_BYTES..];
+        if bytes[24..56] != *blake3::hash(body).as_bytes() {
+            return Err(FaultAbiError::PayloadDigest);
+        }
+        let mut offset = 0;
+        let mut rows = Vec::with_capacity(row_count);
+        for _ in 0..row_count {
+            if body.len().saturating_sub(offset) < FAULT_HARDWARE_ERROR_ROW_HEADER_V1_BYTES {
+                return Err(FaultAbiError::HeaderLength);
+            }
+            let header = &body[offset..offset + FAULT_HARDWARE_ERROR_ROW_HEADER_V1_BYTES];
+            if u32_at(header, 20)? != 0 || header[69] != 0 || u16_at(header, 82)? != 0 {
+                return Err(FaultAbiError::ReservedNonzero);
+            }
+            let corrected = bool_at(header, 66)?;
+            let maskable = bool_at(header, 67)?;
+            let vmstate = bool_at(header, 68)?;
+            let lengths = [70, 72, 74, 76, 78, 80]
+                .into_iter()
+                .map(|field| u16_at(header, field).map(usize::from))
+                .collect::<Result<Vec<_>, _>>()?;
+            let row_len = usize::try_from(u32_at(header, 84)?)
+                .map_err(|_| FaultAbiError::CapabilityInvariant)?;
+            let calculated = lengths
+                .iter()
+                .try_fold(FAULT_HARDWARE_ERROR_ROW_HEADER_V1_BYTES, |total, length| {
+                    total.checked_add(*length)
+                });
+            if calculated != Some(row_len) || body.len().saturating_sub(offset) < row_len {
+                return Err(FaultAbiError::HeaderLength);
+            }
+            let mut cursor = offset + FAULT_HARDWARE_ERROR_ROW_HEADER_V1_BYTES;
+            let id = take_text(body, &mut cursor, lengths[0])?;
+            let bank = take_text(body, &mut cursor, lengths[1])?;
+            let channel = take_text(body, &mut cursor, lengths[2])?;
+            let rank = take_text(body, &mut cursor, lengths[3])?;
+            let firmware = take_text(body, &mut cursor, lengths[4])?;
+            let state = take_text(body, &mut cursor, lengths[5])?;
+            let row = FaultHardwareErrorCapabilityRowV1 {
+                id,
+                bank,
+                channel,
+                rank,
+                firmware,
+                state,
+                record_kind: FaultHardwareErrorRecordKindV1::from_u16(u16_at(header, 0)?)?,
+                error_class: FaultHardwareErrorClassV1::from_u16(u16_at(header, 2)?)?,
+                mechanism: FaultHardwareErrorMechanismV1::from_u16(u16_at(header, 4)?)?,
+                visibility_mask: u16_at(header, 6)?,
+                bank_number: u32_at(header, 8)?,
+                bank_count: u32_at(header, 12)?,
+                vector: u32_at(header, 16)?,
+                status_required: u64_at(header, 24)?,
+                status_allowed: u64_at(header, 32)?,
+                syndrome_required: u64_at(header, 40)?,
+                syndrome_allowed: u64_at(header, 48)?,
+                model_phase_mask: u64_at(header, 56)?,
+                privilege_mask: u16_at(header, 64)?,
+                corrected,
+                maskable,
+                vmstate,
+            };
+            row.validate(architecture)?;
+            rows.push(row);
+            offset += row_len;
+        }
+        if offset != body.len() {
+            return Err(FaultAbiError::HeaderLength);
+        }
+        let manifest = Self { architecture, rows };
+        if manifest.encode()?.as_slice() != bytes {
+            return Err(FaultAbiError::CapabilityInvariant);
+        }
+        Ok(manifest)
+    }
+}
+
 pub(crate) fn emit_fault_target_manifest_c_header(out: &mut String) {
     macro_rules! define {
         ($name:expr, $value:expr) => {
@@ -963,6 +1441,7 @@ pub(crate) fn emit_fault_target_manifest_c_header(out: &mut String) {
     out.push_str("#define CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_MAGIC_V1 \"CRUCFTQ1\"\n");
     out.push_str("#define CRUCIBLE_FAULT_REGISTER_MANIFEST_MAGIC_V1 \"CRUCRGM1\"\n");
     out.push_str("#define CRUCIBLE_FAULT_INTERRUPT_MANIFEST_MAGIC_V1 \"CRUCIRM1\"\n");
+    out.push_str("#define CRUCIBLE_FAULT_HARDWARE_ERROR_MANIFEST_MAGIC_V1 \"CRUCHWM1\"\n");
     define!(
         "CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_V1_BYTES",
         FAULT_TARGET_MANIFEST_QUERY_V1_BYTES
@@ -975,6 +1454,10 @@ pub(crate) fn emit_fault_target_manifest_c_header(out: &mut String) {
     define!(
         "CRUCIBLE_FAULT_TARGET_MANIFEST_KIND_INTERRUPT",
         FaultTargetManifestKind::Interrupt as u16
+    );
+    define!(
+        "CRUCIBLE_FAULT_TARGET_MANIFEST_KIND_HARDWARE_ERROR",
+        FaultTargetManifestKind::HardwareError as u16
     );
     define!("CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_MAGIC_OFFSET", 0);
     define!("CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_VERSION_OFFSET", 8);
@@ -993,6 +1476,133 @@ pub(crate) fn emit_fault_target_manifest_c_header(out: &mut String) {
         "CRUCIBLE_FAULT_REGISTER_ROW_HEADER_V1_BYTES",
         FAULT_REGISTER_ROW_HEADER_V1_BYTES
     );
+    define!(
+        "CRUCIBLE_FAULT_HARDWARE_ERROR_MANIFEST_VERSION_V1",
+        FAULT_HARDWARE_ERROR_MANIFEST_VERSION_V1
+    );
+    define!(
+        "CRUCIBLE_FAULT_HARDWARE_ERROR_MANIFEST_HEADER_V1_BYTES",
+        FAULT_HARDWARE_ERROR_MANIFEST_HEADER_V1_BYTES
+    );
+    define!(
+        "CRUCIBLE_FAULT_HARDWARE_ERROR_ROW_HEADER_V1_BYTES",
+        FAULT_HARDWARE_ERROR_ROW_HEADER_V1_BYTES
+    );
+    for (name, value) in [
+        (
+            "X86_MACHINE_CHECK",
+            FaultHardwareErrorRecordKindV1::X86MachineCheck as u16,
+        ),
+        (
+            "AARCH64_RAS",
+            FaultHardwareErrorRecordKindV1::Aarch64Ras as u16,
+        ),
+        (
+            "MEMORY_ECC",
+            FaultHardwareErrorRecordKindV1::MemoryEcc as u16,
+        ),
+    ] {
+        let _ = writeln!(
+            out,
+            "#define CRUCIBLE_FAULT_HARDWARE_ERROR_RECORD_{name} {value}"
+        );
+    }
+    for (name, value) in [
+        ("CORRECTED", FaultHardwareErrorClassV1::Corrected as u16),
+        ("RECOVERABLE", FaultHardwareErrorClassV1::Recoverable as u16),
+        ("FATAL", FaultHardwareErrorClassV1::Fatal as u16),
+        ("SYNCHRONOUS", FaultHardwareErrorClassV1::Synchronous as u16),
+        (
+            "ASYNCHRONOUS",
+            FaultHardwareErrorClassV1::Asynchronous as u16,
+        ),
+    ] {
+        let _ = writeln!(
+            out,
+            "#define CRUCIBLE_FAULT_HARDWARE_ERROR_CLASS_{name} {value}"
+        );
+    }
+    for (name, value) in [
+        ("X86_MCA", FaultHardwareErrorMechanismV1::X86Mca as u16),
+        ("ACPI_GHES", FaultHardwareErrorMechanismV1::AcpiGhes as u16),
+        (
+            "AARCH64_RAS",
+            FaultHardwareErrorMechanismV1::Aarch64Ras as u16,
+        ),
+    ] {
+        let _ = writeln!(
+            out,
+            "#define CRUCIBLE_FAULT_HARDWARE_ERROR_MECHANISM_{name} {value}"
+        );
+    }
+    define!(
+        "CRUCIBLE_FAULT_HARDWARE_ERROR_VISIBILITY_TELEMETRY",
+        FAULT_HARDWARE_ERROR_VISIBILITY_TELEMETRY
+    );
+    define!(
+        "CRUCIBLE_FAULT_HARDWARE_ERROR_VISIBILITY_INTERRUPT",
+        FAULT_HARDWARE_ERROR_VISIBILITY_INTERRUPT
+    );
+    define!(
+        "CRUCIBLE_FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION",
+        FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION
+    );
+    define!(
+        "CRUCIBLE_FAULT_HARDWARE_ERROR_VISIBILITY_V1_MASK",
+        FAULT_HARDWARE_ERROR_VISIBILITY_V1_MASK
+    );
+    define!(
+        "CRUCIBLE_FAULT_HARDWARE_ERROR_PRIVILEGE_V1_MASK",
+        FAULT_HARDWARE_ERROR_PRIVILEGE_V1_MASK
+    );
+    for (name, value) in [
+        ("MAGIC", 0),
+        ("VERSION", 8),
+        ("ARCHITECTURE", 10),
+        ("RESERVED", 12),
+        ("ROW_COUNT", 16),
+        ("BODY_LENGTH", 20),
+        ("BODY_DIGEST", 24),
+        ("BODY", 56),
+    ] {
+        let _ = writeln!(
+            out,
+            "#define CRUCIBLE_FAULT_HARDWARE_ERROR_MANIFEST_{name}_OFFSET {value}"
+        );
+    }
+    for (name, value) in [
+        ("RECORD_KIND", 0),
+        ("ERROR_CLASS", 2),
+        ("MECHANISM", 4),
+        ("VISIBILITY", 6),
+        ("BANK_NUMBER", 8),
+        ("BANK_COUNT", 12),
+        ("VECTOR", 16),
+        ("RESERVED0", 20),
+        ("STATUS_REQUIRED", 24),
+        ("STATUS_ALLOWED", 32),
+        ("SYNDROME_REQUIRED", 40),
+        ("SYNDROME_ALLOWED", 48),
+        ("MODEL_PHASE_MASK", 56),
+        ("PRIVILEGE_MASK", 64),
+        ("CORRECTED", 66),
+        ("MASKABLE", 67),
+        ("VMSTATE", 68),
+        ("RESERVED1", 69),
+        ("ID_LENGTH", 70),
+        ("BANK_LENGTH", 72),
+        ("CHANNEL_LENGTH", 74),
+        ("RANK_LENGTH", 76),
+        ("FIRMWARE_LENGTH", 78),
+        ("STATE_LENGTH", 80),
+        ("RESERVED2", 82),
+        ("LENGTH", 84),
+    ] {
+        let _ = writeln!(
+            out,
+            "#define CRUCIBLE_FAULT_HARDWARE_ERROR_ROW_{name}_OFFSET {value}"
+        );
+    }
     define!(
         "CRUCIBLE_FAULT_TARGET_MANIFEST_HARD_ROWS",
         HARD_FAULT_TARGET_MANIFEST_ROWS
@@ -1218,6 +1828,10 @@ fn valid_identity(value: &str) -> bool {
         && !bytes.windows(2).any(|pair| pair == b"--")
 }
 
+fn valid_hardware_identity(value: &str) -> bool {
+    !value.is_empty() && value.split('.').all(valid_identity)
+}
+
 fn valid_cpu_model(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= HARD_FAULT_TARGET_NAME_BYTES
@@ -1245,6 +1859,14 @@ fn u16_at(bytes: &[u8], offset: usize) -> Result<u16, FaultAbiError> {
         .get(offset..offset + 2)
         .ok_or(FaultAbiError::HeaderLength)?;
     Ok(u16::from_le_bytes([raw[0], raw[1]]))
+}
+
+fn bool_at(bytes: &[u8], offset: usize) -> Result<bool, FaultAbiError> {
+    match bytes.get(offset).copied() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err(FaultAbiError::CapabilityInvariant),
+    }
 }
 
 fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, FaultAbiError> {
@@ -1364,6 +1986,41 @@ mod tests {
         }
     }
 
+    fn hardware_row(id: &str, corrected: bool) -> FaultHardwareErrorCapabilityRowV1 {
+        FaultHardwareErrorCapabilityRowV1 {
+            id: id.to_owned(),
+            bank: "x86.mca.bank".to_owned(),
+            channel: "x86.memory.channel".to_owned(),
+            rank: "x86.memory.rank".to_owned(),
+            firmware: "x86-mca".to_owned(),
+            state: "x86-mca-bank-record".to_owned(),
+            record_kind: FaultHardwareErrorRecordKindV1::X86MachineCheck,
+            error_class: if corrected {
+                FaultHardwareErrorClassV1::Corrected
+            } else {
+                FaultHardwareErrorClassV1::Recoverable
+            },
+            mechanism: FaultHardwareErrorMechanismV1::X86Mca,
+            visibility_mask: if corrected {
+                FAULT_HARDWARE_ERROR_VISIBILITY_TELEMETRY
+            } else {
+                FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION
+            },
+            bank_number: 0,
+            bank_count: 10,
+            vector: 18,
+            status_required: 1 << 63,
+            status_allowed: u64::MAX,
+            syndrome_required: 0,
+            syndrome_allowed: u32::MAX.into(),
+            model_phase_mask: 1 << (11 - 1),
+            privilege_mask: FAULT_HARDWARE_ERROR_PRIVILEGE_V1_MASK,
+            corrected,
+            maskable: false,
+            vmstate: true,
+        }
+    }
+
     #[test]
     fn query_codec_rejects_unknown_kinds_and_reserved_bytes() {
         let query = FaultTargetManifestQueryV1 {
@@ -1377,6 +2034,13 @@ mod tests {
         assert_eq!(
             FaultTargetManifestQueryV1::decode(&interrupt_query.encode()),
             Ok(interrupt_query)
+        );
+        let hardware_query = FaultTargetManifestQueryV1 {
+            kind: FaultTargetManifestKind::HardwareError,
+        };
+        assert_eq!(
+            FaultTargetManifestQueryV1::decode(&hardware_query.encode()),
+            Ok(hardware_query)
         );
 
         let mut unknown = encoded;
@@ -1571,6 +2235,84 @@ mod tests {
         corrupt[last] ^= 1;
         assert_eq!(
             FaultInterruptCapabilityManifestV1::decode(&corrupt),
+            Err(FaultAbiError::PayloadDigest)
+        );
+    }
+
+    #[test]
+    fn hardware_error_manifest_round_trips_real_mca_rows() {
+        let manifest = FaultHardwareErrorCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            rows: vec![
+                hardware_row("x86.machine-check.corrected", true),
+                hardware_row("x86.machine-check.recoverable", false),
+            ],
+        };
+        let encoded = manifest
+            .encode()
+            .unwrap_or_else(|error| panic!("hardware manifest should encode: {error}"));
+        assert_eq!(
+            FaultHardwareErrorCapabilityManifestV1::decode(&encoded),
+            Ok(manifest)
+        );
+    }
+
+    #[test]
+    fn hardware_error_manifest_rejects_partial_or_mismatched_rows() {
+        let manifest = |row| FaultHardwareErrorCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            rows: vec![row],
+        };
+
+        let mut wrong_architecture = hardware_row("x86.machine-check.corrected", true);
+        wrong_architecture.mechanism = FaultHardwareErrorMechanismV1::Aarch64Ras;
+        assert_eq!(
+            manifest(wrong_architecture).encode(),
+            Err(FaultAbiError::CapabilityInvariant)
+        );
+
+        let mut wrong_class = hardware_row("x86.machine-check.corrected", true);
+        wrong_class.error_class = FaultHardwareErrorClassV1::Synchronous;
+        assert_eq!(
+            manifest(wrong_class).encode(),
+            Err(FaultAbiError::CapabilityInvariant)
+        );
+
+        let mut exception_corrected = hardware_row("x86.machine-check.corrected", true);
+        exception_corrected.visibility_mask = FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION;
+        assert_eq!(
+            manifest(exception_corrected).encode(),
+            Err(FaultAbiError::CapabilityInvariant)
+        );
+
+        let mut missing_vmstate = hardware_row("x86.machine-check.corrected", true);
+        missing_vmstate.vmstate = false;
+        assert!(manifest(missing_vmstate).encode().is_ok());
+
+        let mut invalid_mask = hardware_row("x86.machine-check.corrected", true);
+        invalid_mask.status_allowed = 0;
+        assert_eq!(
+            manifest(invalid_mask).encode(),
+            Err(FaultAbiError::CapabilityInvariant)
+        );
+
+        let unsorted = FaultHardwareErrorCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            rows: vec![
+                hardware_row("x86.machine-check.recoverable", false),
+                hardware_row("x86.machine-check.corrected", true),
+            ],
+        };
+        assert_eq!(unsorted.encode(), Err(FaultAbiError::CapabilityInvariant));
+
+        let valid = manifest(hardware_row("x86.machine-check.corrected", true));
+        let mut corrupt = valid
+            .encode()
+            .unwrap_or_else(|error| panic!("hardware manifest should encode: {error}"));
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 1;
+        assert_eq!(
+            FaultHardwareErrorCapabilityManifestV1::decode(&corrupt),
             Err(FaultAbiError::PayloadDigest)
         );
     }

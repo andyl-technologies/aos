@@ -175,7 +175,7 @@ AArch64 exception classes are at most 1,023. `record` is
 
 ```json
 {"kind":"x86_machine_check","parameters":{"address":4096,"bank":0,"corrected":false,"global_status":4,"misc":null,"status":1103806595072}}
-{"kind":"aarch64_ras","parameters":{"asynchronous":true,"corrected":false,"disr":1,"esr":2483027968,"far":4096}}
+{"kind":"aarch64_ras","parameters":{"asynchronous":true,"corrected":false,"fatal":false,"disr":1,"esr":2483027968,"far":4096}}
 ```
 
 For x86 machine check, vector is 18, status is nonzero, and record address equals

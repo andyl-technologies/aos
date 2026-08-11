@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **57 patches**. This count is checked against
+The carried series contains **58 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 

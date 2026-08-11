@@ -415,6 +415,7 @@ fn effect_fields(
             ]
         }
         NodeEffectSpecification::MemoryEccEvent {
+            target_vcpu,
             kind,
             address,
             syndrome,
@@ -430,6 +431,7 @@ fn effect_fields(
             id_field(P5, channel),
             id_field(P6, rank),
             json_field(P7, guest_visibility)?,
+            NodeFaultFieldV1::u32(P8, *target_vcpu),
         ],
         NodeEffectSpecification::MemoryRegionState {
             range,
@@ -1010,7 +1012,7 @@ mod tests {
             json!({"kind":"interrupt_disposition","parameters":{"mutation":{"kind":"delay","parameters":{"delay_nanos":10}}}}),
             json!({"kind":"interrupt_storm","parameters":{"source":"timer","vector":32,"period_nanos":100,"burst":2,"count":4,"routing":{"target_vcpus":[0],"priority":0,"retain_pending":true}}}),
             json!({"kind":"memory_access_transform","parameters":{"range":{"start":4096,"length":64},"accesses":{"fetch":false,"cpu_load":false,"cpu_store":true,"dma_read":false,"dma_write":false,"page_table_walk":false},"violate_atomicity":true,"mutation":{"kind":"torn_write","parameters":{"selector":"0f"}},"occurrence":{"kind":"every"}}}),
-            json!({"kind":"memory_ecc_event","parameters":{"kind":"corrected","address":4096,"syndrome":1,"bank":"bank-0","channel":"channel-0","rank":"rank-0","guest_visibility":{"kind":"telemetry_only"}}}),
+            json!({"kind":"memory_ecc_event","parameters":{"target_vcpu":0,"kind":"corrected","address":4096,"syndrome":1,"bank":"bank-0","channel":"channel-0","rank":"rank-0","guest_visibility":{"kind":"telemetry_only"}}}),
             json!({"kind":"memory_region_state","parameters":{"range":{"start":4096,"length":64},"kind":"retention","process":{"kind":"retention","parameters":{"interval_nanos":100,"decay_mask":"01"}}}}),
             json!({"kind":"memory_service","parameters":{"latency_nanos":10,"bandwidth_bytes_per_second":null,"operations_per_second":null,"sharing_scope":{"kind":"range"}}}),
             json!({"kind":"clock_transform","parameters":{"source":"clock-main","mutation":{"kind":"freeze","parameters":{"value_nanos":1000,"release":"resume_from_frozen"}},"monotonicity":"clamp_monotonic","overdue_timer_policy":"fire_at_boundary"}}),

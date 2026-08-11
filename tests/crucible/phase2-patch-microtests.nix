@@ -357,6 +357,12 @@
       };
     }
     {
+      patch = "0054-crucible-inject-architecture-hardware-errors.patch";
+      check = import ./phase2-qemu-hardware-error-faults.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
       patch = "0060-crucible-block-typed-errors.patch";
       check = import ./phase1-qemu-block-shmem.nix {
         inherit pkgs lib qemuPackage;
