@@ -372,6 +372,8 @@ pub enum NodeExceptionRecord {
         asynchronous: bool,
         /// Marks a corrected rather than uncorrectable record.
         corrected: bool,
+        /// Classifies an uncorrectable record as fatal for linked lifecycle handling.
+        fatal: bool,
     },
 }
 
@@ -804,6 +806,8 @@ pub enum NodeEffectSpecification {
     },
     /// Corrected or uncorrectable ECC event.
     MemoryEccEvent {
+        /// vCPU that receives any architecture-specific record or exception.
+        target_vcpu: u32,
         /// ECC result class.
         kind: MemoryEccKind,
         /// Resolved address.
@@ -1307,12 +1311,15 @@ fn exception_valid(exception: &NodeException) -> bool {
                 far,
                 asynchronous,
                 disr,
+                corrected,
+                fatal,
                 ..
             },
         ) => {
             exception.syndrome == *esr
                 && exception.fault_address == *far
                 && (!*asynchronous || disr.is_some())
+                && !(*corrected && *fatal)
         }
         _ => false,
     };

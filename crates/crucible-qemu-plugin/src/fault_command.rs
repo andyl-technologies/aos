@@ -12,13 +12,16 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::NonNull;
 
 use crucible_shmem::{
-    DequeuedFaultCommand, FAULT_CAPABILITY_FEATURE_INSTRUCTION, FAULT_CAPABILITY_FEATURE_INTERRUPT,
+    DequeuedFaultCommand, FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR,
+    FAULT_CAPABILITY_FEATURE_INSTRUCTION, FAULT_CAPABILITY_FEATURE_INTERRUPT,
     FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION, FAULT_COMMAND_SEMANTIC_VERSION,
     FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError,
     FaultBoundaryPhase, FaultCapabilityRowV1, FaultCapabilityScope, FaultCommandHeaderV1,
     FaultCommandKind, FaultCommandSlotV1, FaultEventHeaderV1, FaultEventOutcomeV1,
-    FaultEventSlotV1, FaultExceptionEvidenceV1, FaultInstructionEvidenceOutcomeV1,
-    FaultInstructionEvidenceV1, FaultInstructionMutationKindV1, FaultInstructionPortIoEvidenceV1,
+    FaultEventSlotV1, FaultExceptionEvidenceV1, FaultHardwareErrorCapabilityManifestV1,
+    FaultHardwareErrorCapabilityRowV1, FaultHardwareErrorClassV1, FaultHardwareErrorMechanismV1,
+    FaultHardwareErrorRecordKindV1, FaultInstructionEvidenceOutcomeV1, FaultInstructionEvidenceV1,
+    FaultInstructionMutationKindV1, FaultInstructionPortIoEvidenceV1,
     FaultInterruptCapabilityManifestV1, FaultInterruptCapabilityRowV1,
     FaultInterruptDeliveryDropV1, FaultInterruptFamilyV1, FaultInterruptPolarityV1,
     FaultInterruptTriggerV1, FaultPayloadArenaHeader, FaultRegisterCapabilityManifestV1,
@@ -77,6 +80,15 @@ pub const QEMU_PLUGIN_CRUCIBLE_FAULT_INTERRUPT_BIND_SYMBOL: &str =
 /// QEMU symbol that seals every interrupt identity row.
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_INTERRUPT_BINDINGS_SEAL_SYMBOL: &str =
     "qemu_plugin_crucible_fault_interrupt_bindings_seal";
+/// QEMU symbol that copies architecture and platform hardware-error rows.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_HARDWARE_ERROR_MANIFEST_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_hardware_error_manifest";
+/// QEMU symbol that binds one public hardware-error identity row.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_HARDWARE_ERROR_BIND_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_hardware_error_bind";
+/// QEMU symbol that seals every hardware-error identity row.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_HARDWARE_ERROR_BINDINGS_SEAL_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_hardware_error_bindings_seal";
 
 const CAPABILITIES_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_capabilities\0";
 const SUBMIT_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_submit\0";
@@ -96,6 +108,11 @@ const INTERRUPT_MANIFEST_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_interrup
 const INTERRUPT_BIND_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_interrupt_bind\0";
 const INTERRUPT_BINDINGS_SEAL_SYMBOL_C: &[u8] =
     b"qemu_plugin_crucible_fault_interrupt_bindings_seal\0";
+const HARDWARE_ERROR_MANIFEST_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_fault_hardware_error_manifest\0";
+const HARDWARE_ERROR_BIND_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_hardware_error_bind\0";
+const HARDWARE_ERROR_BINDINGS_SEAL_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_fault_hardware_error_bindings_seal\0";
 const CAPABILITY_HASH_DOMAIN: &[u8] = b"crucible.qemu-fault-capability.v1\0";
 
 #[repr(C)]
@@ -209,6 +226,35 @@ struct QemuFaultInterruptCapability {
     target_vcpu_count: usize,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct QemuFaultHardwareErrorCapability {
+    record_kind: u16,
+    error_class: u16,
+    mechanism: u16,
+    visibility_mask: u16,
+    bank_number: u32,
+    bank_count: u32,
+    vector: u32,
+    reserved0: u32,
+    status_required: u64,
+    status_allowed: u64,
+    syndrome_required: u64,
+    syndrome_allowed: u64,
+    model_phase_mask: u64,
+    privilege_mask: u16,
+    corrected: u8,
+    maskable: u8,
+    vmstate: u8,
+    reserved1: u8,
+    id: *const c_char,
+    bank: *const c_char,
+    channel: *const c_char,
+    rank: *const c_char,
+    firmware: *const c_char,
+    state: *const c_char,
+}
+
 type QemuFaultCapabilitiesFn = extern "C" fn(*mut QemuFaultCapability, usize) -> usize;
 type QemuFaultSubmitFn = extern "C" fn(*const QemuFaultCommand, *const u8, usize) -> c_int;
 type QemuFaultCancelFn = extern "C" fn(u64) -> c_int;
@@ -226,6 +272,11 @@ type QemuFaultInterruptManifestFn =
     extern "C" fn(*mut QemuFaultInterruptCapability, usize, *mut u16) -> usize;
 type QemuFaultInterruptBindFn = extern "C" fn(u32, *const u8, *const u8, *const u8) -> c_int;
 type QemuFaultInterruptBindingsSealFn = extern "C" fn() -> c_int;
+type QemuFaultHardwareErrorManifestFn =
+    extern "C" fn(*mut QemuFaultHardwareErrorCapability, usize, *mut u16) -> usize;
+type QemuFaultHardwareErrorBindFn =
+    extern "C" fn(u32, *const u8, *const u8, *const u8, *const u8, *const u8, *const u8) -> c_int;
+type QemuFaultHardwareErrorBindingsSealFn = extern "C" fn(*const u8) -> c_int;
 
 /// Resolved, closed QEMU fault registry operations.
 #[derive(Clone, Copy)]
@@ -246,6 +297,9 @@ pub(crate) struct QemuFaultCommandApis {
     interrupt_manifest: QemuFaultInterruptManifestFn,
     interrupt_bind: QemuFaultInterruptBindFn,
     interrupt_bindings_seal: QemuFaultInterruptBindingsSealFn,
+    hardware_error_manifest: QemuFaultHardwareErrorManifestFn,
+    hardware_error_bind: QemuFaultHardwareErrorBindFn,
+    hardware_error_bindings_seal: QemuFaultHardwareErrorBindingsSealFn,
 }
 
 impl QemuFaultCommandApis {
@@ -301,6 +355,18 @@ impl QemuFaultCommandApis {
                 INTERRUPT_BINDINGS_SEAL_SYMBOL_C,
                 QEMU_PLUGIN_CRUCIBLE_FAULT_INTERRUPT_BINDINGS_SEAL_SYMBOL,
             )?,
+            hardware_error_manifest: resolve_symbol(
+                HARDWARE_ERROR_MANIFEST_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_HARDWARE_ERROR_MANIFEST_SYMBOL,
+            )?,
+            hardware_error_bind: resolve_symbol(
+                HARDWARE_ERROR_BIND_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_HARDWARE_ERROR_BIND_SYMBOL,
+            )?,
+            hardware_error_bindings_seal: resolve_symbol(
+                HARDWARE_ERROR_BINDINGS_SEAL_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_HARDWARE_ERROR_BINDINGS_SEAL_SYMBOL,
+            )?,
         })
     }
 
@@ -351,7 +417,7 @@ impl QemuFaultCommandApis {
         let mut cpu_model = std::ptr::null();
         let required =
             (self.register_manifest)(std::ptr::null_mut(), 0, &mut architecture, &mut cpu_model);
-        if required == 0 || required > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS {
+        if required > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS {
             return Err(FaultCommandBridgeError::RegisterManifestCount { required });
         }
         let empty = QemuFaultRegisterCapability {
@@ -512,6 +578,108 @@ impl QemuFaultCommandApis {
         Ok(())
     }
 
+    fn hardware_error_manifest(
+        self,
+    ) -> Result<FaultHardwareErrorCapabilityManifestV1, FaultCommandBridgeError> {
+        let mut architecture = 0_u16;
+        let required = (self.hardware_error_manifest)(std::ptr::null_mut(), 0, &mut architecture);
+        if required == 0 || required > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS {
+            return Err(FaultCommandBridgeError::HardwareErrorManifestCount { required });
+        }
+        let empty = QemuFaultHardwareErrorCapability {
+            record_kind: 0,
+            error_class: 0,
+            mechanism: 0,
+            visibility_mask: 0,
+            bank_number: 0,
+            bank_count: 0,
+            vector: 0,
+            reserved0: 0,
+            status_required: 0,
+            status_allowed: 0,
+            syndrome_required: 0,
+            syndrome_allowed: 0,
+            model_phase_mask: 0,
+            privilege_mask: 0,
+            corrected: 0,
+            maskable: 0,
+            vmstate: 0,
+            reserved1: 0,
+            id: std::ptr::null(),
+            bank: std::ptr::null(),
+            channel: std::ptr::null(),
+            rank: std::ptr::null(),
+            firmware: std::ptr::null(),
+            state: std::ptr::null(),
+        };
+        let mut raw = vec![empty; required];
+        let observed =
+            (self.hardware_error_manifest)(raw.as_mut_ptr(), raw.len(), &mut architecture);
+        if observed != required {
+            return Err(FaultCommandBridgeError::HardwareErrorManifestChanged {
+                expected: required,
+                observed,
+            });
+        }
+        let manifest = FaultHardwareErrorCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::from_u16(architecture)
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+            rows: raw
+                .into_iter()
+                .map(hardware_error_capability_row)
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        FaultHardwareErrorCapabilityManifestV1::decode(
+            &manifest
+                .encode()
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        )
+        .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
+    }
+
+    fn bind_hardware_error_manifest(
+        self,
+        manifest: &FaultHardwareErrorCapabilityManifestV1,
+    ) -> Result<(), FaultCommandBridgeError> {
+        let manifest_payload = manifest
+            .encode()
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
+        let manifest_sha256: [u8; 32] = sha2::Sha256::digest(&manifest_payload).into();
+        for (index, row) in manifest.rows.iter().enumerate() {
+            let row_index = u32::try_from(index)
+                .map_err(|_source| FaultCommandBridgeError::HardwareErrorManifestRow)?;
+            let id = crucible_shmem::fault_object_id_hash_v1(&row.id);
+            let bank = crucible_shmem::fault_object_id_hash_v1(&row.bank);
+            let channel = crucible_shmem::fault_object_id_hash_v1(&row.channel);
+            let rank = crucible_shmem::fault_object_id_hash_v1(&row.rank);
+            let firmware = crucible_shmem::fault_object_id_hash_v1(&row.firmware);
+            let state = crucible_shmem::fault_object_id_hash_v1(&row.state);
+            let status = (self.hardware_error_bind)(
+                row_index,
+                id.as_ptr(),
+                bank.as_ptr(),
+                channel.as_ptr(),
+                rank.as_ptr(),
+                firmware.as_ptr(),
+                state.as_ptr(),
+            );
+            if status != 0 {
+                return Err(FaultCommandBridgeError::HardwareErrorManifestBind {
+                    row_index,
+                    status,
+                });
+            }
+        }
+        let status = (self.hardware_error_bindings_seal)(manifest_sha256.as_ptr());
+        if status != 0 {
+            return Err(FaultCommandBridgeError::HardwareErrorManifestBind {
+                row_index: 0,
+                status,
+            });
+        }
+        Ok(())
+    }
+
     fn bind_register_manifest(
         self,
         manifest: &FaultRegisterCapabilityManifestV1,
@@ -567,6 +735,9 @@ impl QemuFaultCommandApis {
             interrupt_manifest: test_interrupt_manifest,
             interrupt_bind: test_interrupt_bind,
             interrupt_bindings_seal: test_interrupt_bindings_seal,
+            hardware_error_manifest: test_hardware_error_manifest,
+            hardware_error_bind: test_hardware_error_bind,
+            hardware_error_bindings_seal: test_hardware_error_bindings_seal,
         }
     }
 }
@@ -723,6 +894,33 @@ extern "C" fn test_interrupt_bind(
 
 #[cfg(test)]
 extern "C" fn test_interrupt_bindings_seal() -> c_int {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_hardware_error_manifest(
+    _out: *mut QemuFaultHardwareErrorCapability,
+    _capacity: usize,
+    _architecture: *mut u16,
+) -> usize {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_hardware_error_bind(
+    _row_index: u32,
+    _id: *const u8,
+    _bank: *const u8,
+    _channel: *const u8,
+    _rank: *const u8,
+    _firmware: *const u8,
+    _state: *const u8,
+) -> c_int {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_hardware_error_bindings_seal(_manifest_sha256: *const u8) -> c_int {
     0
 }
 
@@ -887,6 +1085,46 @@ fn interrupt_capability_row(
     })
 }
 
+fn hardware_error_capability_row(
+    raw: QemuFaultHardwareErrorCapability,
+) -> Result<FaultHardwareErrorCapabilityRowV1, FaultCommandBridgeError> {
+    if raw.reserved0 != 0
+        || raw.reserved1 != 0
+        || raw.corrected > 1
+        || raw.maskable > 1
+        || raw.vmstate > 1
+    {
+        return Err(FaultCommandBridgeError::HardwareErrorManifestRow);
+    }
+    Ok(FaultHardwareErrorCapabilityRowV1 {
+        id: capability_text(raw.id, "hardware_error_id")?.to_owned(),
+        bank: capability_text(raw.bank, "hardware_error_bank")?.to_owned(),
+        channel: capability_text(raw.channel, "hardware_error_channel")?.to_owned(),
+        rank: capability_text(raw.rank, "hardware_error_rank")?.to_owned(),
+        firmware: capability_text(raw.firmware, "hardware_error_firmware")?.to_owned(),
+        state: capability_text(raw.state, "hardware_error_state")?.to_owned(),
+        record_kind: FaultHardwareErrorRecordKindV1::from_u16(raw.record_kind)
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        error_class: FaultHardwareErrorClassV1::from_u16(raw.error_class)
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        mechanism: FaultHardwareErrorMechanismV1::from_u16(raw.mechanism)
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        visibility_mask: raw.visibility_mask,
+        bank_number: raw.bank_number,
+        bank_count: raw.bank_count,
+        vector: raw.vector,
+        status_required: raw.status_required,
+        status_allowed: raw.status_allowed,
+        syndrome_required: raw.syndrome_required,
+        syndrome_allowed: raw.syndrome_allowed,
+        model_phase_mask: raw.model_phase_mask,
+        privilege_mask: raw.privilege_mask,
+        corrected: raw.corrected == 1,
+        maskable: raw.maskable == 1,
+        vmstate: raw.vmstate == 1,
+    })
+}
+
 fn capability_text(
     pointer: *const c_char,
     field: &'static str,
@@ -982,6 +1220,45 @@ struct ExceptionCommandExpectation {
     syndrome: u64,
     fault_address: Option<u64>,
     before_instruction: bool,
+    maskable: bool,
+    hardware_record: Option<HardwareExceptionExpectation>,
+}
+
+#[derive(Clone)]
+enum HardwareExceptionExpectation {
+    X86MachineCheck {
+        bank: u32,
+        status: u64,
+        global_status: u64,
+        address: Option<u64>,
+        misc: Option<u64>,
+        corrected: bool,
+    },
+    Aarch64Ras {
+        esr: u64,
+        far: Option<u64>,
+        disr: Option<u64>,
+        asynchronous: bool,
+        corrected: bool,
+        fatal: bool,
+    },
+}
+
+#[derive(Clone)]
+struct MemoryEccCommandExpectation {
+    binding_hash: [u8; 32],
+    generation: u64,
+    action_hash: [u8; 32],
+    target_hash: [u8; 32],
+    model_phase: u16,
+    target_vcpu: u32,
+    kind: u32,
+    address: u64,
+    syndrome: u64,
+    bank: [u8; 32],
+    channel: [u8; 32],
+    rank: [u8; 32],
+    visibility: serde_json::Value,
 }
 
 #[derive(Clone)]
@@ -1177,6 +1454,7 @@ pub(crate) struct FaultCommandBridge {
     capability_queries: BTreeSet<u64>,
     register_manifest_payload: Option<Vec<u8>>,
     interrupt_manifest_payload: Option<Vec<u8>>,
+    hardware_error_manifest_payload: Option<Vec<u8>>,
     register_evidence_identity: Option<RegisterEvidenceIdentity>,
     instruction_evidence_identity: Option<InstructionEvidenceIdentity>,
     register_commands: BTreeMap<u64, RegisterCommandExpectation>,
@@ -1184,6 +1462,7 @@ pub(crate) struct FaultCommandBridge {
     instruction_commands: BTreeMap<u64, InstructionCommandExpectation>,
     active_instruction_bindings: BTreeMap<[u8; 32], u64>,
     exception_commands: BTreeMap<u64, ExceptionCommandExpectation>,
+    memory_ecc_commands: BTreeMap<u64, MemoryEccCommandExpectation>,
     pending_command: Option<DequeuedFaultCommand>,
 }
 
@@ -1254,11 +1533,34 @@ impl FaultCommandBridge {
         } else {
             (None, None)
         };
+        let (hardware_error_manifest_payload, hardware_error_manifest_digest) = if rows
+            .iter()
+            .any(|row| row.required_feature_bits & FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR != 0)
+        {
+            let manifest = apis.hardware_error_manifest()?;
+            apis.bind_hardware_error_manifest(&manifest)?;
+            if register_evidence_identity
+                .as_ref()
+                .is_some_and(|register| register.architecture != manifest.architecture)
+            {
+                return Err(FaultCommandBridgeError::HardwareErrorManifestRow);
+            }
+            let payload = manifest
+                .encode()
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
+            (
+                Some(payload.clone()),
+                Some(*blake3::hash(&payload).as_bytes()),
+            )
+        } else {
+            (None, None)
+        };
         if let Some(register) = register_evidence_identity.as_ref() {
             rows.push(target_manifest_capability_row(
                 register.architecture,
                 register.manifest_digest,
                 interrupt_manifest_digest,
+                hardware_error_manifest_digest,
             ));
             rows.sort_by_key(|row| {
                 (
@@ -1315,6 +1617,7 @@ impl FaultCommandBridge {
             capability_queries: BTreeSet::new(),
             register_manifest_payload,
             interrupt_manifest_payload,
+            hardware_error_manifest_payload,
             register_evidence_identity,
             instruction_evidence_identity,
             register_commands: BTreeMap::new(),
@@ -1322,6 +1625,7 @@ impl FaultCommandBridge {
             instruction_commands: BTreeMap::new(),
             active_instruction_bindings: BTreeMap::new(),
             exception_commands: BTreeMap::new(),
+            memory_ecc_commands: BTreeMap::new(),
             pending_command: None,
         })
     }
@@ -1374,6 +1678,10 @@ impl FaultCommandBridge {
                         Some(FaultTargetManifestKind::Interrupt) => {
                             self.interrupt_manifest_payload.as_ref().map_or(0, Vec::len)
                         }
+                        Some(FaultTargetManifestKind::HardwareError) => self
+                            .hardware_error_manifest_payload
+                            .as_ref()
+                            .map_or(0, Vec::len),
                         None => 0,
                     }
                 }
@@ -1474,6 +1782,9 @@ impl FaultCommandBridge {
             let result_payload = match query.kind {
                 FaultTargetManifestKind::Register => self.register_manifest_payload.clone(),
                 FaultTargetManifestKind::Interrupt => self.interrupt_manifest_payload.clone(),
+                FaultTargetManifestKind::HardwareError => {
+                    self.hardware_error_manifest_payload.clone()
+                }
             };
             let Some(result_payload) = result_payload else {
                 return self.publish_local_rejection(
@@ -1522,6 +1833,14 @@ impl FaultCommandBridge {
             };
         let exception_expectation = if header.command_kind == FaultCommandKind::CpuException {
             Some(exception_command_expectation(payload, header.binding_hash)?)
+        } else {
+            None
+        };
+        let memory_ecc_expectation = if header.command_kind == FaultCommandKind::MemoryEccEvent {
+            Some(memory_ecc_command_expectation(
+                payload,
+                header.binding_hash,
+            )?)
         } else {
             None
         };
@@ -1585,6 +1904,10 @@ impl FaultCommandBridge {
         }
         if let Some(expectation) = exception_expectation {
             self.exception_commands
+                .insert(header.command_sequence, expectation);
+        }
+        if let Some(expectation) = memory_ecc_expectation {
+            self.memory_ecc_commands
                 .insert(header.command_sequence, expectation);
         }
         Ok(())
@@ -1764,6 +2087,11 @@ impl FaultCommandBridge {
             {
                 self.exception_commands.remove(&result.command_sequence);
             }
+            if result.command_kind == FaultCommandKind::MemoryEccEvent as u16
+                && result.status != FaultResultStatus::Applied as u16
+            {
+                self.memory_ecc_commands.remove(&result.command_sequence);
+            }
         }
     }
 
@@ -1852,6 +2180,10 @@ impl FaultCommandBridge {
                 .exception_commands
                 .get(&event.rule_command_sequence)
                 .cloned();
+            let memory_ecc_command = self
+                .memory_ecc_commands
+                .get(&event.rule_command_sequence)
+                .cloned();
             let instruction_terminal = event.command_kind
                 == FaultCommandKind::CpuInstructionTransform as u16
                 && FaultTerminalEvidenceV1::has_magic(&payload);
@@ -1895,16 +2227,39 @@ impl FaultCommandBridge {
                         )?
                     }
                 } else if event.command_kind == FaultCommandKind::CpuException as u16 {
-                    translate_exception_evidence(
+                    let command = exception_command
+                        .as_ref()
+                        .ok_or(FaultCommandBridgeError::ExceptionEvidence)?;
+                    if payload.len() == 648 {
+                        translate_hardware_exception_evidence(
+                            &payload,
+                            self.hardware_error_manifest_payload
+                                .as_deref()
+                                .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
+                            &event,
+                            command,
+                        )?
+                    } else {
+                        translate_exception_evidence(
+                            &payload,
+                            self.instruction_evidence_identity
+                                .as_ref()
+                                .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
+                            logical_icount_offset,
+                            &event,
+                            command,
+                        )?
+                    }
+                } else if event.command_kind == FaultCommandKind::MemoryEccEvent as u16 {
+                    translate_hardware_ecc_evidence(
                         &payload,
-                        self.instruction_evidence_identity
-                            .as_ref()
-                            .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
-                        logical_icount_offset,
+                        self.hardware_error_manifest_payload
+                            .as_deref()
+                            .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
                         &event,
-                        exception_command
+                        memory_ecc_command
                             .as_ref()
-                            .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
+                            .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
                     )?
                 } else {
                     payload
@@ -1952,6 +2307,10 @@ impl FaultCommandBridge {
             }
             if event.command_kind == FaultCommandKind::CpuException as u16 {
                 self.exception_commands.remove(&event.rule_command_sequence);
+            }
+            if event.command_kind == FaultCommandKind::MemoryEccEvent as u16 {
+                self.memory_ecc_commands
+                    .remove(&event.rule_command_sequence);
             }
         }
     }
@@ -2109,9 +2468,10 @@ fn target_manifest_capability_row(
     architecture: FaultCapabilityScope,
     register_manifest_digest: [u8; 32],
     interrupt_manifest_digest: Option<[u8; 32]>,
+    hardware_error_manifest_digest: Option<[u8; 32]>,
 ) -> FaultCapabilityRowV1 {
     let name = b"qemu.target-manifest.node.v1";
-    let schema = b"crucible.target-manifest-query.v1;kinds=register,interrupt";
+    let schema = b"crucible.target-manifest-query.v1;kinds=register,interrupt,hardware-error";
     let mut hasher = blake3::Hasher::new();
     hasher.update(CAPABILITY_HASH_DOMAIN);
     hasher.update(name);
@@ -2128,6 +2488,15 @@ fn target_manifest_capability_row(
             hasher.update(&[0]);
         }
     }
+    match hardware_error_manifest_digest {
+        Some(digest) => {
+            hasher.update(&[1]);
+            hasher.update(&digest);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
     FaultCapabilityRowV1 {
         command_kind: FaultCommandKind::QueryTargetManifest,
         semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
@@ -2136,7 +2505,9 @@ fn target_manifest_capability_row(
         maximum_payload_bytes: FAULT_TARGET_MANIFEST_QUERY_V1_BYTES as u32,
         maximum_pending_commands: 1,
         required_feature_bits: FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION
-            | interrupt_manifest_digest.map_or(0, |_digest| FAULT_CAPABILITY_FEATURE_INTERRUPT),
+            | interrupt_manifest_digest.map_or(0, |_digest| FAULT_CAPABILITY_FEATURE_INTERRUPT)
+            | hardware_error_manifest_digest
+                .map_or(0, |_digest| FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR),
         capability_hash: *hasher.finalize().as_bytes(),
     }
 }
@@ -2357,6 +2728,75 @@ fn exception_command_expectation(
             Some(json_u64(value).map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?)
         }
     };
+    let maskable = exception
+        .get("maskable")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or(FaultCommandBridgeError::ExceptionEvidence)?;
+    let record = exception
+        .get("record")
+        .and_then(serde_json::Value::as_object)
+        .ok_or(FaultCommandBridgeError::ExceptionEvidence)?;
+    let record_kind = record
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(FaultCommandBridgeError::ExceptionEvidence)?;
+    let optional_u64 = |value: Option<&serde_json::Value>| match value {
+        Some(serde_json::Value::Null) => Ok(None),
+        value => json_u64(value)
+            .map(Some)
+            .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence),
+    };
+    let hardware_record = match record_kind {
+        "architecture_default" if record.get("parameters").is_none() => None,
+        "x86_machine_check" => {
+            let parameters = record
+                .get("parameters")
+                .and_then(serde_json::Value::as_object)
+                .ok_or(FaultCommandBridgeError::ExceptionEvidence)?;
+            Some(HardwareExceptionExpectation::X86MachineCheck {
+                bank: u32::try_from(
+                    json_u64(parameters.get("bank"))
+                        .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?,
+                )
+                .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?,
+                status: json_u64(parameters.get("status"))
+                    .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?,
+                global_status: json_u64(parameters.get("global_status"))
+                    .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?,
+                address: optional_u64(parameters.get("address"))?,
+                misc: optional_u64(parameters.get("misc"))?,
+                corrected: parameters
+                    .get("corrected")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
+            })
+        }
+        "aarch64_ras" => {
+            let parameters = record
+                .get("parameters")
+                .and_then(serde_json::Value::as_object)
+                .ok_or(FaultCommandBridgeError::ExceptionEvidence)?;
+            Some(HardwareExceptionExpectation::Aarch64Ras {
+                esr: json_u64(parameters.get("esr"))
+                    .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)?,
+                far: optional_u64(parameters.get("far"))?,
+                disr: optional_u64(parameters.get("disr"))?,
+                asynchronous: parameters
+                    .get("asynchronous")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
+                corrected: parameters
+                    .get("corrected")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
+                fatal: parameters
+                    .get("fatal")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
+            })
+        }
+        _ => return Err(FaultCommandBridgeError::ExceptionEvidence),
+    };
     let vcpu_index = field(node_fault_field::T1)?
         .value
         .as_slice()
@@ -2383,6 +2823,64 @@ fn exception_command_expectation(
             .get("before_instruction")
             .and_then(|value| value.as_bool())
             .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
+        maskable,
+        hardware_record,
+    })
+}
+
+fn memory_ecc_command_expectation(
+    payload: &[u8],
+    binding_hash: [u8; 32],
+) -> Result<MemoryEccCommandExpectation, FaultCommandBridgeError> {
+    let decoded = NodeFaultPayloadV1::decode(payload)
+        .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?;
+    let field = |tag| {
+        decoded
+            .fields
+            .iter()
+            .find(|field| field.tag == tag)
+            .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)
+    };
+    if decoded.operation != NodeFaultOperationV1::Apply {
+        return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+    }
+    let u32_field = |tag| {
+        field(tag)?
+            .value
+            .as_slice()
+            .try_into()
+            .map(u32::from_le_bytes)
+            .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)
+    };
+    let u64_field = |tag| {
+        field(tag)?
+            .value
+            .as_slice()
+            .try_into()
+            .map(u64::from_le_bytes)
+            .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)
+    };
+    let hash_field = |tag| {
+        field(tag)?
+            .value
+            .as_slice()
+            .try_into()
+            .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)
+    };
+    Ok(MemoryEccCommandExpectation {
+        binding_hash,
+        generation: decoded.generation,
+        action_hash: decoded.action_hash,
+        target_hash: decoded.target_hash,
+        model_phase: decoded.model_phase,
+        target_vcpu: u32_field(node_fault_field::P8)?,
+        kind: u32_field(node_fault_field::P1)?,
+        address: u64_field(node_fault_field::P2)?,
+        syndrome: u64_field(node_fault_field::P3)?,
+        bank: hash_field(node_fault_field::P4)?,
+        channel: hash_field(node_fault_field::P5)?,
+        rank: hash_field(node_fault_field::P6)?,
+        visibility: policy_json(&field(node_fault_field::P7)?.value, true)?,
     })
 }
 
@@ -2971,8 +3469,9 @@ fn translate_exception_evidence(
         || has_address != expectation.fault_address.is_some()
         || raw_u64(raw, 32).map_err(invalid)? != expectation.fault_address.unwrap_or(0)
         || raw[49] != u8::from(expectation.before_instruction)
-        || raw[50] != 0
+        || raw[50] != u8::from(expectation.maskable)
         || raw[51] != 1
+        || expectation.hardware_record.is_some()
         || raw_u32(raw, 72).map_err(invalid)? != expectation.vector
         || raw[76] != u8::from(has_address)
         || raw_u64(raw, 80).map_err(invalid)? != expectation.syndrome
@@ -3003,6 +3502,482 @@ fn translate_exception_evidence(
     evidence
         .encode()
         .map_err(|_source| FaultCommandBridgeError::ExceptionEvidence)
+}
+
+fn translate_hardware_exception_evidence(
+    raw: &[u8],
+    manifest_payload: &[u8],
+    event: &QemuFaultEvent,
+    expectation: &ExceptionCommandExpectation,
+) -> Result<Vec<u8>, FaultCommandBridgeError> {
+    const BEFORE_STATE: usize = 392;
+    const AFTER_STATE: usize = 520;
+    let invalid = |_| FaultCommandBridgeError::HardwareErrorEvidence;
+    if raw.len() != 744
+        || raw[..8] != *b"CRUCEXC1"
+        || raw_u16(raw, 8).map_err(invalid)? != 2
+        || raw[51] != 2
+        || raw[14..16].iter().any(|byte| *byte != 0)
+        || raw[52..56].iter().any(|byte| *byte != 0)
+        || raw[77..80].iter().any(|byte| *byte != 0)
+        || raw[205..256].iter().any(|byte| *byte != 0)
+        || raw[388..392].iter().any(|byte| *byte != 0)
+        || raw[BEFORE_STATE..BEFORE_STATE + 8] != *b"CRUCHCS1"
+        || raw[AFTER_STATE..AFTER_STATE + 8] != *b"CRUCHCS1"
+        || event.binding_hash != expectation.binding_hash
+        || event.generation != expectation.generation
+        || event.action_hash != expectation.action_hash
+        || event.target_hash != expectation.target_hash
+        || event.model_phase != expectation.model_phase
+        || event.target_kind != NodeFaultTargetKindV1::Vcpu as u16
+        || event.outcome != FaultEventOutcomeV1::Applied as u16
+        || raw_u64(raw, 56).map_err(invalid)? != event.observed_icount
+        || raw[96..128] != event.before_hash
+        || raw[128..160] != event.after_hash
+    {
+        return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+    }
+    let raw_digest: [u8; 32] = sha2::Sha256::digest(raw).into();
+    if raw_digest != event.opportunity_hash {
+        return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+    }
+    let manifest = FaultHardwareErrorCapabilityManifestV1::decode(manifest_payload)
+        .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?;
+    let row_index = usize::try_from(raw_u32(raw, 384).map_err(invalid)?)
+        .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?;
+    let row = manifest
+        .rows
+        .get(row_index)
+        .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?;
+    if raw[256..288] != crucible_shmem::fault_object_id_hash_v1(&row.id)
+        || raw[288..320] != crucible_shmem::fault_object_id_hash_v1(&row.bank)
+        || raw[320..352] != crucible_shmem::fault_object_id_hash_v1(&row.channel)
+        || raw[352..384] != crucible_shmem::fault_object_id_hash_v1(&row.rank)
+        || &raw[648..680] != sha2::Sha256::digest(manifest_payload).as_slice()
+        || raw[680..712] != crucible_shmem::fault_object_id_hash_v1(&row.firmware)
+        || raw[712..744] != crucible_shmem::fault_object_id_hash_v1(&row.state)
+        || manifest.architecture != expectation.architecture
+        || raw_u16(raw, 10).map_err(invalid)? != expectation.architecture as u16
+        || raw_u16(raw, 12).map_err(invalid)? != expectation.model_phase
+        || raw_u32(raw, 16).map_err(invalid)? != expectation.vcpu_index
+        || raw_u32(raw, 20).map_err(invalid)? != expectation.vector
+        || raw_u64(raw, 24).map_err(invalid)? != expectation.syndrome
+        || raw_u64(raw, 32).map_err(invalid)? != expectation.fault_address.unwrap_or(0)
+        || raw[48] != u8::from(expectation.fault_address.is_some())
+        || raw[49] != u8::from(expectation.before_instruction)
+        || raw_u32(raw, 72).map_err(invalid)? != expectation.vector
+        || raw_u64(raw, 80).map_err(invalid)? != expectation.syndrome
+        || raw_u64(raw, 88).map_err(invalid)? != expectation.fault_address.unwrap_or(0)
+        || raw_u32(raw, BEFORE_STATE + 8).map_err(invalid)? != expectation.architecture as u32
+        || raw_u32(raw, AFTER_STATE + 8).map_err(invalid)? != expectation.architecture as u32
+    {
+        return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+    }
+    let record = raw_u16(raw, 160).map_err(invalid)?;
+    match (&row.record_kind, &expectation.hardware_record) {
+        (
+            FaultHardwareErrorRecordKindV1::X86MachineCheck,
+            Some(HardwareExceptionExpectation::X86MachineCheck {
+                bank: expected_bank,
+                status: expected_status,
+                global_status: expected_global_status,
+                address: expected_address,
+                misc: expected_misc,
+                corrected: expected_corrected,
+            }),
+        ) if record == 2 => {
+            let bank = raw_u32(raw, 164).map_err(invalid)?;
+            let status = raw_u64(raw, 168).map_err(invalid)?;
+            let before_status = raw_u64(raw, BEFORE_STATE + 40).map_err(invalid)?;
+            let preserves_uncorrectable = raw[200] == 1
+                && before_status & ((1_u64 << 63) | (1_u64 << 61))
+                    == ((1_u64 << 63) | (1_u64 << 61));
+            let merged_status = if preserves_uncorrectable {
+                before_status | (1_u64 << 62)
+            } else if before_status & (1_u64 << 63) != 0 {
+                status | (1_u64 << 62)
+            } else {
+                status
+            };
+            if bank != *expected_bank
+                || status != *expected_status
+                || raw_u64(raw, 176).map_err(invalid)? != *expected_global_status
+                || raw_u64(raw, 184).map_err(invalid)? != expected_address.unwrap_or(0)
+                || raw_u64(raw, 192).map_err(invalid)? != expected_misc.unwrap_or(0)
+                || raw[200] != u8::from(*expected_corrected)
+                || raw[201] != u8::from(expected_address.is_some())
+                || raw[202] != u8::from(expected_misc.is_some())
+                || raw[203] != 0
+                || raw[204] != u8::from(row.error_class == FaultHardwareErrorClassV1::Fatal)
+                || raw[50] != u8::from(expectation.maskable)
+                || bank < row.bank_number
+                || bank >= row.bank_number + row.bank_count
+                || status & row.status_required != row.status_required
+                || status & !row.status_allowed != 0
+                || raw_u32(raw, BEFORE_STATE + 16).map_err(invalid)? != bank
+                || raw_u32(raw, AFTER_STATE + 16).map_err(invalid)? != bank
+                || raw_u64(raw, AFTER_STATE + 40).map_err(invalid)? != merged_status
+                || (!preserves_uncorrectable
+                    && raw_u64(raw, AFTER_STATE + 48).map_err(invalid)?
+                        != raw_u64(raw, 184).map_err(invalid)?)
+                || (!preserves_uncorrectable
+                    && raw_u64(raw, AFTER_STATE + 56).map_err(invalid)?
+                        != raw_u64(raw, 192).map_err(invalid)?)
+                || raw_u64(raw, AFTER_STATE + 64).map_err(invalid)?
+                    != raw_u64(raw, 176).map_err(invalid)?
+            {
+                return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+            }
+        }
+        (
+            FaultHardwareErrorRecordKindV1::Aarch64Ras,
+            Some(HardwareExceptionExpectation::Aarch64Ras {
+                esr: expected_esr,
+                far: expected_far,
+                disr: expected_disr,
+                asynchronous: expected_asynchronous,
+                corrected: expected_corrected,
+                fatal: expected_fatal,
+            }),
+        ) if record == 3 => {
+            let asynchronous = raw[200] == 1;
+            if raw_u64(raw, 168).map_err(invalid)? != *expected_esr
+                || raw_u64(raw, 176).map_err(invalid)? != expected_far.unwrap_or(0)
+                || raw_u64(raw, 184).map_err(invalid)? != expected_disr.unwrap_or(0)
+                || raw[200] != u8::from(*expected_asynchronous)
+                || raw[201] != u8::from(*expected_corrected)
+                || raw[202] != u8::from(expected_far.is_some())
+                || raw[203] != u8::from(expected_disr.is_some())
+                || raw[204] != u8::from(*expected_fatal)
+                || *expected_fatal != (row.error_class == FaultHardwareErrorClassV1::Fatal)
+                || raw[50] != u8::from(row.maskable)
+                || (asynchronous
+                    && raw_u64(raw, AFTER_STATE + 104).map_err(invalid)?
+                        != raw_u64(raw, 184).map_err(invalid)?)
+                || (!asynchronous
+                    && (raw_u64(raw, AFTER_STATE + 72).map_err(invalid)?
+                        != raw_u64(raw, 168).map_err(invalid)?
+                        || raw_u64(raw, AFTER_STATE + 80).map_err(invalid)?
+                            != raw_u64(raw, 176).map_err(invalid)?))
+            {
+                return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+            }
+        }
+        _ => return Err(FaultCommandBridgeError::HardwareErrorEvidence),
+    }
+    Ok(raw.to_vec())
+}
+
+fn translate_hardware_ecc_evidence(
+    raw: &[u8],
+    manifest_payload: &[u8],
+    event: &QemuFaultEvent,
+    expectation: &MemoryEccCommandExpectation,
+) -> Result<Vec<u8>, FaultCommandBridgeError> {
+    const BEFORE_CPU: usize = 416;
+    const QUEUED_CPU: usize = 544;
+    const AFTER_CPU: usize = 672;
+    const BEFORE_GHES: usize = 800;
+    const QUEUED_GHES: usize = 992;
+    const AFTER_GHES: usize = 1184;
+    let invalid = |_| FaultCommandBridgeError::HardwareErrorEvidence;
+    if raw.len() != 1376
+        || raw[..8] != *b"CRUCHWE1"
+        || raw_u16(raw, 8).map_err(invalid)? != 1
+        || event.command_kind != FaultCommandKind::MemoryEccEvent as u16
+        || event.outcome != FaultEventOutcomeV1::Applied as u16
+        || event.binding_hash != expectation.binding_hash
+        || event.generation != expectation.generation
+        || event.action_hash != expectation.action_hash
+        || event.target_hash != expectation.target_hash
+        || event.model_phase != expectation.model_phase
+        || event.target_kind != NodeFaultTargetKindV1::Memory as u16
+        || raw_u64(raw, 16).map_err(invalid)? != event.observed_icount
+        || raw_u64(raw, 40).map_err(invalid)? != event.rule_command_sequence
+        || raw_u64(raw, 24).map_err(invalid)? != expectation.address
+        || raw_u64(raw, 32).map_err(invalid)? != expectation.syndrome
+        || raw_u32(raw, 52).map_err(invalid)? != expectation.target_vcpu
+        || sha2::Sha256::digest(raw).as_slice() != event.opportunity_hash
+    {
+        return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+    }
+    let manifest = FaultHardwareErrorCapabilityManifestV1::decode(manifest_payload)
+        .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?;
+    let row_index = usize::try_from(raw_u32(raw, 12).map_err(invalid)?)
+        .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?;
+    let row = manifest
+        .rows
+        .get(row_index)
+        .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?;
+    if row.record_kind != FaultHardwareErrorRecordKindV1::MemoryEcc
+        || raw_u16(raw, 10).map_err(invalid)? != manifest.architecture as u16
+        || raw[64..96] != crucible_shmem::fault_object_id_hash_v1(&row.id)
+        || raw[96..128] != crucible_shmem::fault_object_id_hash_v1(&row.bank)
+        || raw[128..160] != crucible_shmem::fault_object_id_hash_v1(&row.channel)
+        || raw[160..192] != crucible_shmem::fault_object_id_hash_v1(&row.rank)
+        || &raw[320..352] != sha2::Sha256::digest(manifest_payload).as_slice()
+        || raw[352..384] != crucible_shmem::fault_object_id_hash_v1(&row.firmware)
+        || raw[384..416] != crucible_shmem::fault_object_id_hash_v1(&row.state)
+        || raw[96..128] != expectation.bank
+        || raw[128..160] != expectation.channel
+        || raw[160..192] != expectation.rank
+        || raw[49..52].iter().any(|byte| *byte != 0)
+        || raw[56..64].iter().any(|byte| *byte != 0)
+        || raw[288..320].iter().any(|byte| *byte != 0)
+    {
+        return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+    }
+    let address = raw_u64(raw, 24).map_err(invalid)?;
+    let visibility = expectation
+        .visibility
+        .as_object()
+        .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?;
+    let visibility_kind = visibility
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?;
+    if (expectation.kind == 1
+        && (visibility.len() != 1 || visibility_kind != "telemetry_only" || raw[48] != 1))
+        || (expectation.kind == 2
+            && (visibility.len() != 2 || visibility_kind != "exception" || raw[48] != 2))
+        || !matches!(expectation.kind, 1 | 2)
+        || row.corrected != (expectation.kind == 1)
+    {
+        return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+    }
+    if expectation.kind == 2 {
+        let exception = visibility
+            .get("parameters")
+            .and_then(serde_json::Value::as_object)
+            .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?;
+        let record = exception
+            .get("record")
+            .and_then(serde_json::Value::as_object)
+            .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?;
+        let record_parameters = record
+            .get("parameters")
+            .and_then(serde_json::Value::as_object)
+            .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?;
+        let architecture = exception
+            .get("architecture")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?;
+        let record_kind = record
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?;
+        let vector = u32::try_from(
+            json_u64(exception.get("vector"))
+                .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?,
+        )
+        .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?;
+        let exception_syndrome = json_u64(exception.get("syndrome"))
+            .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?;
+        let fault_address = json_u64(exception.get("fault_address"))
+            .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?;
+        let before_instruction = exception
+            .get("before_instruction")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?;
+        let maskable = exception
+            .get("maskable")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?;
+        let flags = raw_u32(raw, 256).map_err(invalid)?;
+        if exception.len() != 7
+            || record.len() != 2
+            || raw_u32(raw, 196).map_err(invalid)? != vector
+            || raw_u64(raw, 200).map_err(invalid)? != exception_syndrome
+            || raw_u64(raw, 208).map_err(invalid)? != fault_address
+            || flags & 1 == 0
+            || ((flags >> 1) & 1) != u32::from(before_instruction)
+            || ((flags >> 2) & 1) != u32::from(maskable)
+        {
+            return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+        }
+        match (architecture, record_kind) {
+            ("x86_64", "x86_machine_check") => {
+                let address = json_u64(record_parameters.get("address"))
+                    .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?;
+                let misc = match record_parameters.get("misc") {
+                    Some(serde_json::Value::Null) => None,
+                    value => Some(
+                        json_u64(value)
+                            .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?,
+                    ),
+                };
+                if record_parameters.len() != 7
+                    || raw_u16(raw, 192).map_err(invalid)? != 2
+                    || raw_u32(raw, 216).map_err(invalid)?
+                        != u32::try_from(
+                            json_u64(record_parameters.get("bank")).map_err(|_source| {
+                                FaultCommandBridgeError::HardwareErrorEvidence
+                            })?,
+                        )
+                        .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?
+                    || raw_u64(raw, 224).map_err(invalid)?
+                        != json_u64(record_parameters.get("status"))
+                            .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?
+                    || raw_u64(raw, 232).map_err(invalid)?
+                        != json_u64(record_parameters.get("global_status"))
+                            .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?
+                    || raw_u64(raw, 240).map_err(invalid)? != address
+                    || raw_u64(raw, 248).map_err(invalid)? != misc.unwrap_or(0)
+                    || ((flags >> 3) & 1)
+                        != u32::from(
+                            record_parameters
+                                .get("corrected")
+                                .and_then(serde_json::Value::as_bool)
+                                .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
+                        )
+                    || ((flags >> 4) & 1) != 1
+                    || ((flags >> 5) & 1) != u32::from(misc.is_some())
+                    || flags & !0x3f != 0
+                {
+                    return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+                }
+            }
+            ("aarch64", "aarch64_ras") => {
+                let optional = |name| match record_parameters.get(name) {
+                    Some(serde_json::Value::Null) => Ok(None),
+                    value => json_u64(value)
+                        .map(Some)
+                        .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence),
+                };
+                let far = optional("far")?;
+                let disr = optional("disr")?;
+                if record_parameters.len() != 6
+                    || raw_u16(raw, 192).map_err(invalid)? != 3
+                    || raw_u64(raw, 264).map_err(invalid)?
+                        != json_u64(record_parameters.get("esr"))
+                            .map_err(|_source| FaultCommandBridgeError::HardwareErrorEvidence)?
+                    || raw_u64(raw, 272).map_err(invalid)? != far.unwrap_or(0)
+                    || raw_u64(raw, 280).map_err(invalid)? != disr.unwrap_or(0)
+                    || ((flags >> 3) & 1)
+                        != u32::from(
+                            record_parameters
+                                .get("asynchronous")
+                                .and_then(serde_json::Value::as_bool)
+                                .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
+                        )
+                    || ((flags >> 4) & 1)
+                        != u32::from(
+                            record_parameters
+                                .get("corrected")
+                                .and_then(serde_json::Value::as_bool)
+                                .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
+                        )
+                    || ((flags >> 5) & 1)
+                        != u32::from(
+                            record_parameters
+                                .get("fatal")
+                                .and_then(serde_json::Value::as_bool)
+                                .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
+                        )
+                    || ((flags >> 6) & 1) != u32::from(far.is_some())
+                    || ((flags >> 7) & 1) != u32::from(disr.is_some())
+                    || flags & !0xff != 0
+                {
+                    return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+                }
+            }
+            _ => return Err(FaultCommandBridgeError::HardwareErrorEvidence),
+        }
+    } else if raw_u16(raw, 192).map_err(invalid)? != 0
+        && row.mechanism == FaultHardwareErrorMechanismV1::AcpiGhes
+    {
+        return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+    }
+    match row.mechanism {
+        FaultHardwareErrorMechanismV1::X86Mca => {
+            for offset in [BEFORE_CPU, QUEUED_CPU, AFTER_CPU] {
+                if raw[offset..offset + 8] != *b"CRUCHCS1"
+                    || raw_u32(raw, offset + 8).map_err(invalid)?
+                        != FaultCapabilityScope::X86_64 as u32
+                    || raw_u32(raw, offset + 16).map_err(invalid)? != row.bank_number
+                {
+                    return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+                }
+            }
+            let status = raw_u64(raw, 224).map_err(invalid)?;
+            let before_status = raw_u64(raw, BEFORE_CPU + 40).map_err(invalid)?;
+            let preserves_uncorrectable = row.corrected
+                && before_status & ((1_u64 << 63) | (1_u64 << 61))
+                    == ((1_u64 << 63) | (1_u64 << 61));
+            let expected_status = if preserves_uncorrectable {
+                before_status | (1_u64 << 62)
+            } else if before_status & (1_u64 << 63) != 0 {
+                status | (1_u64 << 62)
+            } else {
+                status
+            };
+            if status & row.status_required != row.status_required
+                || status & !row.status_allowed != 0
+                || raw_u64(raw, QUEUED_CPU + 40).map_err(invalid)? != expected_status
+                || raw_u64(raw, AFTER_CPU + 40).map_err(invalid)? != expected_status
+                || (!preserves_uncorrectable
+                    && raw_u64(raw, AFTER_CPU + 48).map_err(invalid)? != address)
+            {
+                return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+            }
+        }
+        FaultHardwareErrorMechanismV1::AcpiGhes => {
+            for offset in [BEFORE_GHES, QUEUED_GHES, AFTER_GHES] {
+                if raw[offset..offset + 8] != *b"CRUCGHS1"
+                    || raw_u32(raw, offset + 16).map_err(invalid)? != 172
+                {
+                    return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+                }
+            }
+            if raw_u64(raw, BEFORE_GHES + 8).map_err(invalid)? == 0
+                || !validate_ghes_memory_record(raw, QUEUED_GHES, row.corrected, address)?
+                || raw[QUEUED_GHES..QUEUED_GHES + 192] != raw[AFTER_GHES..AFTER_GHES + 192]
+            {
+                return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+            }
+        }
+        FaultHardwareErrorMechanismV1::Aarch64Ras => {
+            return Err(FaultCommandBridgeError::HardwareErrorEvidence);
+        }
+    }
+    Ok(raw.to_vec())
+}
+
+fn validate_ghes_memory_record(
+    raw: &[u8],
+    state_offset: usize,
+    corrected: bool,
+    address: u64,
+) -> Result<bool, FaultCommandBridgeError> {
+    const MEMORY_SECTION_GUID: [u8; 16] = [
+        0x14, 0x11, 0xbc, 0xa5, 0x64, 0x6f, 0xde, 0x4e, 0xb8, 0x63, 0x3e, 0x83, 0xed, 0x7c, 0x83,
+        0xb1,
+    ];
+    const MEMORY_VALIDATION_BITS: u64 =
+        (1_u64 << 14) | (1_u64 << 15) | (1_u64 << 6) | (1_u64 << 4) | (1_u64 << 1);
+    let invalid = |_| FaultCommandBridgeError::HardwareErrorEvidence;
+    let record = state_offset + 20;
+    let block_status = if corrected { 0x12 } else { 0x11 };
+    let severity = if corrected { 2 } else { 0 };
+
+    Ok(raw_u64(raw, state_offset + 8).map_err(invalid)? == 0
+        && raw_u32(raw, state_offset + 16).map_err(invalid)? == 172
+        && raw_u32(raw, record).map_err(invalid)? == block_status
+        && raw[record + 4..record + 12].iter().all(|byte| *byte == 0)
+        && raw_u32(raw, record + 12).map_err(invalid)? == 152
+        && raw_u32(raw, record + 16).map_err(invalid)? == severity
+        && raw[record + 20..record + 36] == MEMORY_SECTION_GUID
+        && raw_u32(raw, record + 36).map_err(invalid)? == severity
+        && raw_u16(raw, record + 40).map_err(invalid)? == 0x300
+        && raw[record + 42..record + 44].iter().all(|byte| *byte == 0)
+        && raw_u32(raw, record + 44).map_err(invalid)? == 80
+        && raw[record + 48..record + 92].iter().all(|byte| *byte == 0)
+        && raw_u64(raw, record + 92).map_err(invalid)? == MEMORY_VALIDATION_BITS
+        && raw_u64(raw, record + 100).map_err(invalid)? == 0
+        && raw_u64(raw, record + 108).map_err(invalid)? == address
+        && raw[record + 116..record + 172]
+            .iter()
+            .all(|byte| *byte == 0))
 }
 
 fn instruction_system_digest(
@@ -3166,6 +4141,34 @@ pub enum FaultCommandBridgeError {
     /// QEMU rejected one public interrupt identity binding.
     #[error("QEMU rejected interrupt binding for row {row_index}: status {status}")]
     InterruptManifestBind {
+        /// Zero-based manifest row index.
+        row_index: u32,
+        /// Negative errno-style status.
+        status: c_int,
+    },
+    /// The hardware-error registry reported an invalid row count.
+    #[error("QEMU hardware-error manifest reported invalid row count {required}")]
+    HardwareErrorManifestCount {
+        /// Reported row count.
+        required: usize,
+    },
+    /// The immutable hardware-error registry changed between size and copy calls.
+    #[error("QEMU hardware-error manifest changed from {expected} to {observed} rows")]
+    HardwareErrorManifestChanged {
+        /// First size query.
+        expected: usize,
+        /// Copy-call result.
+        observed: usize,
+    },
+    /// A raw hardware-error row contained invalid reserved or pointer state.
+    #[error("QEMU hardware-error manifest row has invalid raw framing")]
+    HardwareErrorManifestRow,
+    /// QEMU returned malformed or manifest-inconsistent hardware-error evidence.
+    #[error("QEMU hardware-error evidence is invalid")]
+    HardwareErrorEvidence,
+    /// QEMU rejected one public hardware-error identity binding.
+    #[error("QEMU rejected hardware-error binding for row {row_index}: status {status}")]
+    HardwareErrorManifestBind {
         /// Zero-based manifest row index.
         row_index: u32,
         /// Negative errno-style status.
@@ -3441,6 +4444,7 @@ mod tests {
             capability_queries: BTreeSet::new(),
             register_manifest_payload: None,
             interrupt_manifest_payload: None,
+            hardware_error_manifest_payload: None,
             register_evidence_identity: None,
             instruction_evidence_identity: None,
             register_commands: BTreeMap::new(),
@@ -3448,6 +4452,7 @@ mod tests {
             instruction_commands: BTreeMap::new(),
             active_instruction_bindings: BTreeMap::new(),
             exception_commands: BTreeMap::new(),
+            memory_ecc_commands: BTreeMap::new(),
             pending_command: None,
         };
         let command = |kind, sequence, node_hash| FaultCommandHeaderV1 {
@@ -4130,6 +5135,8 @@ mod tests {
             syndrome: 0,
             fault_address: None,
             before_instruction: true,
+            maskable: false,
+            hardware_record: None,
         };
         let event = QemuFaultEvent {
             command_kind: FaultCommandKind::CpuException as u16,
@@ -4176,6 +5183,255 @@ mod tests {
         assert!(matches!(
             translate_exception_evidence(&raw, &identity, 5, &not_applied, &expectation),
             Err(FaultCommandBridgeError::ExceptionEvidence)
+        ));
+    }
+
+    #[test]
+    fn hardware_exception_bridge_requires_manifest_identity_and_real_state_transition() {
+        let status = (1_u64 << 63) | (1_u64 << 61);
+        let global_status = 1_u64 << 2;
+        let address = 0x1234_5000_u64;
+        let row = FaultHardwareErrorCapabilityRowV1 {
+            id: "x86.machine-check.recoverable".to_owned(),
+            bank: "x86.mca.bank".to_owned(),
+            channel: "x86.memory.channel".to_owned(),
+            rank: "x86.memory.rank".to_owned(),
+            firmware: "x86-mca".to_owned(),
+            state: "x86-mca-bank-record-machine-check".to_owned(),
+            record_kind: FaultHardwareErrorRecordKindV1::X86MachineCheck,
+            error_class: FaultHardwareErrorClassV1::Recoverable,
+            mechanism: FaultHardwareErrorMechanismV1::X86Mca,
+            visibility_mask: crucible_shmem::FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION,
+            bank_number: 0,
+            bank_count: 10,
+            vector: 18,
+            status_required: status,
+            status_allowed: u64::MAX,
+            syndrome_required: 0,
+            syndrome_allowed: u32::MAX.into(),
+            model_phase_mask: 1 << (11 - 1),
+            privilege_mask: crucible_shmem::FAULT_HARDWARE_ERROR_PRIVILEGE_V1_MASK,
+            corrected: false,
+            maskable: false,
+            vmstate: true,
+        };
+        let manifest = FaultHardwareErrorCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            rows: vec![row.clone()],
+        }
+        .encode()
+        .expect("valid x86 hardware manifest");
+        let expectation = ExceptionCommandExpectation {
+            binding_hash: [12; 32],
+            generation: 4,
+            action_hash: [13; 32],
+            target_hash: [14; 32],
+            architecture: FaultCapabilityScope::X86_64,
+            model_phase: 11,
+            vcpu_index: 0,
+            vector: 18,
+            syndrome: 0,
+            fault_address: Some(address),
+            before_instruction: true,
+            maskable: false,
+            hardware_record: Some(HardwareExceptionExpectation::X86MachineCheck {
+                bank: 2,
+                status,
+                global_status,
+                address: Some(address),
+                misc: None,
+                corrected: false,
+            }),
+        };
+        let mut raw = vec![0_u8; 744];
+        raw[..8].copy_from_slice(b"CRUCEXC1");
+        raw[8..10].copy_from_slice(&2_u16.to_le_bytes());
+        raw[10..12].copy_from_slice(&(FaultCapabilityScope::X86_64 as u16).to_le_bytes());
+        raw[12..14].copy_from_slice(&11_u16.to_le_bytes());
+        raw[20..24].copy_from_slice(&18_u32.to_le_bytes());
+        raw[32..40].copy_from_slice(&address.to_le_bytes());
+        raw[40..48].copy_from_slice(&10_u64.to_le_bytes());
+        raw[48] = 1;
+        raw[49] = 1;
+        raw[51] = 2;
+        raw[56..64].copy_from_slice(&17_u64.to_le_bytes());
+        raw[72..76].copy_from_slice(&18_u32.to_le_bytes());
+        raw[76] = 1;
+        raw[88..96].copy_from_slice(&address.to_le_bytes());
+        raw[96..128].fill(1);
+        raw[128..160].fill(2);
+        raw[160..162].copy_from_slice(&2_u16.to_le_bytes());
+        raw[164..168].copy_from_slice(&2_u32.to_le_bytes());
+        raw[168..176].copy_from_slice(&status.to_le_bytes());
+        raw[176..184].copy_from_slice(&global_status.to_le_bytes());
+        raw[184..192].copy_from_slice(&address.to_le_bytes());
+        raw[201] = 1;
+        raw[256..288].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.id));
+        raw[288..320].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.bank));
+        raw[320..352].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.channel));
+        raw[352..384].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.rank));
+        for offset in [392_usize, 520] {
+            raw[offset..offset + 8].copy_from_slice(b"CRUCHCS1");
+            raw[offset + 8..offset + 12]
+                .copy_from_slice(&(FaultCapabilityScope::X86_64 as u32).to_le_bytes());
+            raw[offset + 12..offset + 16].copy_from_slice(&2_u32.to_le_bytes());
+            raw[offset + 16..offset + 20].copy_from_slice(&2_u32.to_le_bytes());
+        }
+        raw[520 + 40..520 + 48].copy_from_slice(&status.to_le_bytes());
+        raw[520 + 48..520 + 56].copy_from_slice(&address.to_le_bytes());
+        raw[520 + 64..520 + 72].copy_from_slice(&global_status.to_le_bytes());
+        raw[648..680].copy_from_slice(&sha2::Sha256::digest(&manifest));
+        raw[680..712].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.firmware));
+        raw[712..744].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.state));
+        let event = QemuFaultEvent {
+            command_kind: FaultCommandKind::CpuException as u16,
+            outcome: FaultEventOutcomeV1::Applied as u16,
+            model_phase: 11,
+            target_kind: NodeFaultTargetKindV1::Vcpu as u16,
+            reserved: 0,
+            event_sequence: 1,
+            rule_command_sequence: 2,
+            observed_icount: 17,
+            generation: 4,
+            binding_hash: [12; 32],
+            opportunity_hash: sha2::Sha256::digest(&raw).into(),
+            action_hash: [13; 32],
+            target_hash: [14; 32],
+            before_hash: [1; 32],
+            after_hash: [2; 32],
+        };
+        assert_eq!(
+            translate_hardware_exception_evidence(&raw, &manifest, &event, &expectation),
+            Ok(raw.clone())
+        );
+
+        let mut corrupt = raw;
+        corrupt[520 + 40] ^= 1;
+        let mut correlated = event;
+        correlated.opportunity_hash = sha2::Sha256::digest(&corrupt).into();
+        assert!(matches!(
+            translate_hardware_exception_evidence(&corrupt, &manifest, &correlated, &expectation,),
+            Err(FaultCommandBridgeError::HardwareErrorEvidence)
+        ));
+    }
+
+    #[test]
+    fn hardware_ecc_bridge_requires_exact_ghes_record_transition() {
+        let address = 0x8123_4000_u64;
+        let syndrome = 0x55aa_u64;
+        let row = FaultHardwareErrorCapabilityRowV1 {
+            id: "memory.ecc.corrected".to_owned(),
+            bank: "memory.bank-0".to_owned(),
+            channel: "memory.channel-0".to_owned(),
+            rank: "memory.rank-0".to_owned(),
+            firmware: "acpi-apei-ghes-sea".to_owned(),
+            state: "acpi-ghes-cper-record".to_owned(),
+            record_kind: FaultHardwareErrorRecordKindV1::MemoryEcc,
+            error_class: FaultHardwareErrorClassV1::Corrected,
+            mechanism: FaultHardwareErrorMechanismV1::AcpiGhes,
+            visibility_mask: crucible_shmem::FAULT_HARDWARE_ERROR_VISIBILITY_TELEMETRY,
+            bank_number: 0,
+            bank_count: 1,
+            vector: 3,
+            status_required: 0,
+            status_allowed: 0,
+            syndrome_required: 0,
+            syndrome_allowed: u64::MAX,
+            model_phase_mask: 1 << (9 - 1),
+            privilege_mask: crucible_shmem::FAULT_HARDWARE_ERROR_PRIVILEGE_V1_MASK,
+            corrected: true,
+            maskable: false,
+            vmstate: true,
+        };
+        let manifest = FaultHardwareErrorCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::Aarch64,
+            rows: vec![row.clone()],
+        }
+        .encode()
+        .expect("valid GHES manifest");
+        let mut raw = vec![0_u8; 1376];
+        raw[..8].copy_from_slice(b"CRUCHWE1");
+        raw[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        raw[10..12].copy_from_slice(&(FaultCapabilityScope::Aarch64 as u16).to_le_bytes());
+        raw[16..24].copy_from_slice(&17_u64.to_le_bytes());
+        raw[24..32].copy_from_slice(&address.to_le_bytes());
+        raw[32..40].copy_from_slice(&syndrome.to_le_bytes());
+        raw[40..48].copy_from_slice(&2_u64.to_le_bytes());
+        raw[48] = 1;
+        raw[64..96].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.id));
+        raw[96..128].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.bank));
+        raw[128..160].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.channel));
+        raw[160..192].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.rank));
+        raw[320..352].copy_from_slice(&sha2::Sha256::digest(&manifest));
+        raw[352..384].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.firmware));
+        raw[384..416].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.state));
+        for offset in [416_usize, 544, 672] {
+            raw[offset..offset + 8].copy_from_slice(b"CRUCHCS1");
+        }
+        for offset in [800_usize, 992, 1184] {
+            raw[offset..offset + 8].copy_from_slice(b"CRUCGHS1");
+            raw[offset + 16..offset + 20].copy_from_slice(&172_u32.to_le_bytes());
+        }
+        raw[800 + 8..800 + 16].copy_from_slice(&1_u64.to_le_bytes());
+        for offset in [992_usize, 1184] {
+            let record = offset + 20;
+            raw[record..record + 4].copy_from_slice(&0x12_u32.to_le_bytes());
+            raw[record + 12..record + 16].copy_from_slice(&152_u32.to_le_bytes());
+            raw[record + 16..record + 20].copy_from_slice(&2_u32.to_le_bytes());
+            raw[record + 20..record + 36].copy_from_slice(&[
+                0x14, 0x11, 0xbc, 0xa5, 0x64, 0x6f, 0xde, 0x4e, 0xb8, 0x63, 0x3e, 0x83, 0xed, 0x7c,
+                0x83, 0xb1,
+            ]);
+            raw[record + 36..record + 40].copy_from_slice(&2_u32.to_le_bytes());
+            raw[record + 40..record + 42].copy_from_slice(&0x300_u16.to_le_bytes());
+            raw[record + 44..record + 48].copy_from_slice(&80_u32.to_le_bytes());
+            raw[record + 92..record + 100].copy_from_slice(&0xc052_u64.to_le_bytes());
+            raw[record + 108..record + 116].copy_from_slice(&address.to_le_bytes());
+        }
+        let event = QemuFaultEvent {
+            command_kind: FaultCommandKind::MemoryEccEvent as u16,
+            outcome: FaultEventOutcomeV1::Applied as u16,
+            model_phase: 9,
+            target_kind: NodeFaultTargetKindV1::Memory as u16,
+            reserved: 0,
+            event_sequence: 1,
+            rule_command_sequence: 2,
+            observed_icount: 17,
+            generation: 4,
+            binding_hash: [12; 32],
+            opportunity_hash: sha2::Sha256::digest(&raw).into(),
+            action_hash: [13; 32],
+            target_hash: [14; 32],
+            before_hash: [1; 32],
+            after_hash: [2; 32],
+        };
+        let expectation = MemoryEccCommandExpectation {
+            binding_hash: [12; 32],
+            generation: 4,
+            action_hash: [13; 32],
+            target_hash: [14; 32],
+            model_phase: 9,
+            target_vcpu: 0,
+            kind: 1,
+            address,
+            syndrome,
+            bank: crucible_shmem::fault_object_id_hash_v1(&row.bank),
+            channel: crucible_shmem::fault_object_id_hash_v1(&row.channel),
+            rank: crucible_shmem::fault_object_id_hash_v1(&row.rank),
+            visibility: serde_json::json!({"kind": "telemetry_only"}),
+        };
+        assert_eq!(
+            translate_hardware_ecc_evidence(&raw, &manifest, &event, &expectation),
+            Ok(raw.clone())
+        );
+
+        let mut corrupt = raw;
+        corrupt[992 + 128] ^= 1;
+        let mut correlated = event;
+        correlated.opportunity_hash = sha2::Sha256::digest(&corrupt).into();
+        assert!(matches!(
+            translate_hardware_ecc_evidence(&corrupt, &manifest, &correlated, &expectation),
+            Err(FaultCommandBridgeError::HardwareErrorEvidence)
         ));
     }
 }

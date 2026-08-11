@@ -679,6 +679,7 @@ impl NodeFaultPayloadV1 {
                 (P5, Ty::Hash),
                 (P6, Ty::Hash),
                 (P7, Ty::Bytes),
+                (P8, Ty::U32),
             ][..],
             FaultCommandKind::MemoryRegionState => {
                 &[(P1, Ty::U64), (P2, Ty::U64), (P3, Ty::U32), (P4, Ty::Bytes)][..]
@@ -1604,6 +1605,7 @@ mod tests {
                     (P5, Ty::Hash),
                     (P6, Ty::Hash),
                     (P7, Ty::Bytes),
+                    (P8, Ty::U32),
                 ],
                 memory,
             ),

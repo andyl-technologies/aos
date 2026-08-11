@@ -392,6 +392,13 @@
       capability = "manifest-bound interrupt drop, delay, duplication, replacement, and bounded storms through realized x86-64 and AArch64 controllers";
     }
     {
+      file = "0054-crucible-inject-architecture-hardware-errors.patch";
+      catalogName = "crucible-hardware-error-inject";
+      class = "D";
+      enforces = "QFP-HWERR-1,QFP-HWERR-2,FAULT-ORDER";
+      capability = "manifest-bound x86 machine-check, AArch64 RAS, and realized memory ECC delivery with transactional evidence";
+    }
+    {
       file = "0060-crucible-block-typed-errors.patch";
       catalogName = "crucible-block-typed-errors";
       class = "F";

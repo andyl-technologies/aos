@@ -1028,7 +1028,7 @@ index 006d49b..15c9f88 100644
                                  VirtQueueElement *elem);
  int virtqueue_avail_bytes(VirtQueue *vq, unsigned int in_bytes,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 58c6126..6b0be9b 100644
+index 2dade19..687a7fd 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -220,7 +220,8 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata

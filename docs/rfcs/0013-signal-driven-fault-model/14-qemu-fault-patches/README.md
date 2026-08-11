@@ -177,7 +177,7 @@ never as a policy lookup key.
 | interrupt disposition | `P1 mutation:u32`, `P2 delay:u64`, `P3 copies:u32`, `P4 gap:u64`, `P5 replacement vector:u32` |
 | interrupt storm | `P1 source:hash`, `P2 vector:u32`, `P3 period:u64`, `P4 burst:u32`, `P5 count:u32`, `P6 InterruptRoutingPolicy:json` |
 | memory access transform | `P1 start:u64`, `P2 length:u64`, `P3 mutation:u32`, `P4 mask or zero`, `P5 has value:bool`, `P6 value/selector/MemoryPoisonPolicy JSON or zero`, `P7 NodeOccurrencePolicy:json`, `P8 access-class bits:u32`, `P9 violate atomicity:bool` |
-| memory ECC event | `P1 kind:u32`, `P2 address:u64`, `P3 syndrome:u64`, `P4 bank:hash`, `P5 channel:hash`, `P6 rank:hash`, `P7 MemoryEccVisibility:json` |
+| memory ECC event | `P1 kind:u32`, `P2 address:u64`, `P3 syndrome:u64`, `P4 bank:hash`, `P5 channel:hash`, `P6 rank:hash`, `P7 MemoryEccVisibility:json`, `P8 target vCPU:u32` |
 | memory region state | `P1 start:u64`, `P2 length:u64`, `P3 kind:u32`, `P4 MemoryRegionProcess:json` |
 | memory service | `P1 latency:u64`, `P2 has byte rate:bool`, `P3 byte rate:u64`, `P4 has operation rate:bool`, `P5 operation rate:u64`, `P6 MemoryServiceScope:json` |
 | clock transform | `P1 source:hash`, `P2 mutation:u32`, `P3 signed value:i64`, `P4 ratio`, `P5 unsigned value:u64`, `P6 freeze-release/jitter-table/ClockWanderProcess JSON or zero`, `P7 ClockMonotonicityPolicy:u32`, `P8 ClockOverdueTimerPolicy:u32` |

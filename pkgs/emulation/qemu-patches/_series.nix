@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "6b59b301b102bf90e13eae34b04143aeef657701258d6f32e8ba406631d6c745";
+  patchBranchBundleSha256 = "ab3973e821575c528034eccb236e2a29550619d4e4e8e4963801a4438de25402";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "b9a44b73016451ab530bb4742e8595e12e1b85b0";
+  patchBranchHeadCommit = "758e76da0390d1bdf37541bbafb229820b6f6080";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -499,9 +499,19 @@ let
       capability = "manifest-bound interrupt drop, delay, duplication, replacement, and bounded storms through realized x86-64 and AArch64 controllers";
     }
     {
+      file = "0054-crucible-inject-architecture-hardware-errors.patch";
+      branchSubject = "crucible: inject architecture hardware errors";
+      branchCommit = "d4f5dd500120546726cde8266878f53334f790a7";
+      branchTree = "58452e5c88e5c3dfe4eeb4a8fc87a3cd1f0a70ad";
+      catalogName = "crucible-hardware-error-inject";
+      class = "D";
+      enforces = "QFP-HWERR-1,QFP-HWERR-2,FAULT-ORDER";
+      capability = "manifest-bound x86 machine-check, AArch64 RAS, and realized memory ECC delivery with transactional evidence";
+    }
+    {
       file = "0060-crucible-block-typed-errors.patch";
-      branchCommit = "cd0c28b523999d226e95865f3cec11295c073d5a";
-      branchTree = "16b8d87ee229c09654d1e1e1783d311e48b578e1";
+      branchCommit = "1e0a06b33cad280917fe6320fdbdebb1f5cfdee7";
+      branchTree = "af4b9de888c53edb8768bf22b5bda4d91afad6b1";
       catalogName = "crucible-block-typed-errors";
       class = "F";
       enforces = "STOR-RESULT,IO-8,PATCH-26";
@@ -509,8 +519,8 @@ let
     }
     {
       file = "0061-crucible-block-discard.patch";
-      branchCommit = "bab835b59e61bd7c5df19bc41a81e12c25f6822a";
-      branchTree = "de17a9121334ee1ac0bf09ad9a2e40aca385d0fd";
+      branchCommit = "07b3fd2f76b46e55b60467b013d80aca83fd0171";
+      branchTree = "2679a22e0a1de67d5d4d18302fcba0736d0c6665";
       catalogName = "crucible-block-discard";
       class = "F";
       enforces = "STOR-DISCARD,DET-16,PATCH-26";
@@ -519,8 +529,8 @@ let
     {
       file = "0062-crucible-block-transport-reset.patch";
       branchSubject = "crucible: add transactional block transport reset";
-      branchCommit = "038f144fb42c0b72569c2ff7f43d50fbeea2f9dc";
-      branchTree = "1f91acfdf0844d76701b6fff92547d5763d8557f";
+      branchCommit = "710ead7763016bd23b57da8396b2b28afdb6caac";
+      branchTree = "ca2d8d62a0826c8b1f940f4f06143923b2b2c024";
       catalogName = "crucible-block-transport-reset";
       class = "F";
       enforces = "STOR-RESET,STOR-RESULT,DET-16,PATCH-26";
@@ -529,8 +539,8 @@ let
     {
       file = "0063-crucible-plugin-vmstop.patch";
       branchSubject = "crucible: hand exact checkpoint boundaries to VM stop";
-      branchCommit = "b9a44b73016451ab530bb4742e8595e12e1b85b0";
-      branchTree = "aadaf13926495b2ce702cce0a669a3b2ddc10c69";
+      branchCommit = "758e76da0390d1bdf37541bbafb229820b6f6080";
+      branchTree = "a1e3af4799e0e080ce0afc89568b8cffcef5730e";
       catalogName = "crucible-plugin-vmstop";
       class = "D";
       enforces = "DET-1,INV-10,QEMU-43";
