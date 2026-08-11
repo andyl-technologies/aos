@@ -35,6 +35,15 @@ policy exists.
 Multiple throttle effects compose by minimum share/cap. A share of zero is
 represented as `stalled`, not a zero rational service configuration.
 
+A state-only rule change preserves every service-ledger field. A service-rule
+change at a node boundary explicitly interrupts each affected partial window:
+the backend emits the old window's retired, remaining-credit, remainder, and
+donation evidence with `configuration_interrupted = true`, advances no virtual
+time for the discarded old allowance, and starts the new controller with an
+empty window at the next selection. No credit or fractional remainder crosses a
+service-controller change. Removing the final service rule uses the same
+closure, so configuration changes cannot silently discard reserved evidence.
+
 ## Stall and offline
 
 - `stalled`: vCPU remains architecturally online and controller pending state is
