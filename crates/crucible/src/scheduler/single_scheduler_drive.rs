@@ -29,6 +29,62 @@ impl SingleScheduler {
             })
     }
 
+    /// Replaces one VM's scheduler activity at an authenticated lifecycle boundary.
+    ///
+    /// `Halted` models a powered-off VM that may later return to `Runnable`;
+    /// `Done` models permanent failure. The node counter is preserved so a
+    /// replacement QEMU process generation can resume the same logical timeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name
+    /// exactly one VM scheduler node.
+    pub fn set_vm_node_activity(
+        &mut self,
+        node: &NodeId,
+        activity: SchedulerNodeActivity,
+    ) -> Result<(), SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        self.nodes[index].activity = activity;
+        if matches!(
+            activity,
+            SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+        ) {
+            self.device_horizons.remove(node);
+        }
+        Ok(())
+    }
+
+    /// Atomically changes activity for a set of VM scheduler nodes.
+    ///
+    /// Every identity is validated before any scheduler state changes. This is
+    /// used when one fault boundary closes or replaces multiple VM process
+    /// generations as a single transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when any identity is absent or is not a VM.
+    /// The scheduler is unchanged on error.
+    pub fn set_vm_node_activities(
+        &mut self,
+        activities: &[(NodeId, SchedulerNodeActivity)],
+    ) -> Result<(), SchedulerError> {
+        let mut indexes = Vec::with_capacity(activities.len());
+        for (node, activity) in activities {
+            indexes.push((self.vm_node_index(node)?, node.clone(), *activity));
+        }
+        for (index, node, activity) in indexes {
+            self.nodes[index].activity = activity;
+            if matches!(
+                activity,
+                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+            ) {
+                self.device_horizons.remove(&node);
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn node_current_time(
         &self,
         node: &RuntimeSchedulerNode,

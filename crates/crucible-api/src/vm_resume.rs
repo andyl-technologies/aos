@@ -39,6 +39,8 @@ pub(crate) use crucible_qemu::{
     QemuGdbstubChannelConfig as ProductionGdbstubChannelConfig,
     QemuLiveNodeStepGateConfig as ProductionLiveNodeStepGateConfig,
     QemuNodeSet as ProductionNodeSet, launch_qemu_live_node as launch_production_live_node,
+    launch_qemu_live_node_exact_snapshot as launch_production_live_node_exact_snapshot,
+    launch_qemu_live_node_exact_snapshot_paused as launch_production_live_node_exact_snapshot_paused,
 };
 
 /// Errors returned while deriving a process-local VM resume realization proof.

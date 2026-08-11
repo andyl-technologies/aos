@@ -110,6 +110,24 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
+    /// Acknowledges one authenticated terminal lifecycle transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU does not acknowledge the
+    /// terminal completion command before beginning process shutdown.
+    pub fn complete_terminal_lifecycle_exit(
+        &mut self,
+        action: crucible::ContentHash,
+        evidence: crucible::ContentHash,
+        process_generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .complete_terminal_lifecycle_exit(action, evidence, process_generation)
+            .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Sends the fixed activation token to the dormant debug guest bootstrap.
     /// The channel retains the socket so QEMU cannot discard queued bytes while
     /// the scheduler still has the guest paused.

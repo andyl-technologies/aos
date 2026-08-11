@@ -130,6 +130,7 @@ fn run_dispatch(
                     crash_detector: name,
                 },
                 None,
+                false,
             )
             .map_err(|error| BackendError::Rejected {
                 message: format!("build live host-worker node {name}: {error}"),

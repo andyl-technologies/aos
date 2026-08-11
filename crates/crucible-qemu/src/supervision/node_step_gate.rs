@@ -79,8 +79,8 @@ use crate::{
     QemuNodeRestorePlan, QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuRootImageFormat,
     QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QemuVmSnapshot,
     QemuWhiteboxSetupError, QmpError, build_qemu_node_from_completed_setup,
-    build_qemu_node_from_restored_checkpoint, complete_qemu_host_plugin_setup,
-    spawn_qemu_child_with_fds_in_directory,
+    build_qemu_node_from_restored_checkpoint, build_qemu_node_from_restored_checkpoint_paused,
+    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 
 use super::QemuLiveHostIoRuntimeError;
@@ -732,6 +732,7 @@ pub fn run_qemu_live_exact_snapshot_gate(
             crash_detector: "live-exact-capture",
         },
         None,
+        true,
     )?;
     let (capture_icount, pending_block_io_captured) = if require_pending_block_io {
         drive_to_pending_block_boundary(&mut capture_node, capture_ceiling)?
@@ -822,6 +823,7 @@ pub fn run_qemu_live_exact_snapshot_gate(
             crash_detector: "live-exact-replay",
         },
         None,
+        true,
     )?;
     advance_to_busy_ceiling(&mut replay, capture_icount)?;
     let replay_snapshot = replay
@@ -982,6 +984,7 @@ pub fn launch_qemu_live_node(
             crash_detector,
         },
         None,
+        true,
     )
 }
 
@@ -1011,6 +1014,7 @@ pub fn launch_qemu_live_node_restored(
             crash_detector,
         },
         Some(restore),
+        true,
     )
 }
 
@@ -1049,6 +1053,46 @@ pub fn launch_qemu_live_node_exact_snapshot(
             crash_detector,
         },
         Some(QemuNodeRestorePlan::captured_exact(snapshot)),
+        true,
+    )
+}
+
+/// Launches one exact-snapshot node and leaves its guest natively paused.
+///
+/// The returned process has completed setup, restore, and logical-time
+/// calibration. It is suitable for an authenticated power-off generation and
+/// cannot execute guest work until the scheduler explicitly boots it.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] under the same conditions as
+/// [`launch_qemu_live_node_exact_snapshot`].
+pub fn launch_qemu_live_node_exact_snapshot_paused(
+    config: &QemuLiveNodeStepGateConfig,
+    run_directory: impl AsRef<Path>,
+    node: &str,
+    router: &str,
+    crash_detector: &str,
+    snapshot: &QemuVmSnapshot,
+) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    let binding = snapshot.checkpoint().id;
+    if !snapshot.is_live_capture()
+        || !snapshot.has_valid_identity()
+        || snapshot.host_io().execution_binding() != binding
+        || snapshot.node_continuation().execution_binding() != binding
+    {
+        return Err(QemuLiveNodeStepGateError::InvalidExactSnapshot);
+    }
+    build_live_node(
+        config,
+        run_directory.as_ref(),
+        LiveNodeIdentity {
+            node,
+            router,
+            crash_detector,
+        },
+        Some(QemuNodeRestorePlan::captured_exact(snapshot)),
+        false,
     )
 }
 
@@ -1090,6 +1134,7 @@ fn run_one_scenario(
             crash_detector: GATE_CRASH_NODE_ID,
         },
         None,
+        true,
     )?;
 
     let quanta = drive_busy_window_steps(&mut node, ceilings)?;
@@ -1123,6 +1168,7 @@ pub(super) fn build_live_node(
     run_directory: &Path,
     identity: LiveNodeIdentity<'_>,
     restore: Option<QemuNodeRestorePlan<'_>>,
+    resume_restored: bool,
 ) -> Result<QemuNode, QemuLiveNodeStepGateError> {
     fs::create_dir_all(run_directory).map_err(|source| {
         QemuLiveNodeStepGateError::PrepareRunDirectory {
@@ -1351,9 +1397,16 @@ pub(super) fn build_live_node(
     );
     let restoring_checkpoint = restore.is_some();
     let mut node = match restore {
-        Some(restore) => {
+        Some(restore) if resume_restored => {
             build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, factory_runtime)
         }
+        Some(restore) => build_qemu_node_from_restored_checkpoint_paused(
+            child,
+            setup,
+            qmp,
+            restore,
+            factory_runtime,
+        ),
         None => build_qemu_node_from_completed_setup(child, setup, qmp, factory_runtime),
     }
     .map_err(|source| QemuLiveNodeStepGateError::NodeFactory { source })?;

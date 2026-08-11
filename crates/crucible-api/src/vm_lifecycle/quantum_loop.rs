@@ -2,6 +2,16 @@
 
 use super::*;
 
+struct PreparedTerminalReplacement {
+    decision: QemuNodeLifecycleDecision,
+    snapshot: QemuVmSnapshot,
+    run_directory: PathBuf,
+    launch: ProductionLiveNodeStepGateConfig,
+    generation: u64,
+    replacement: Option<QemuNode>,
+    service_state: ProductionNodeServiceState,
+}
+
 impl QuantumLoop for ProductionVmLifecycleLoop {
     fn drive_quantum(
         &mut self,
@@ -459,6 +469,804 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
 }
 
 impl ProductionVmLifecycleLoop {
+    pub(super) fn persist_lifecycle_journal(&self) -> Result<(), SchedulerError> {
+        let path = self._run_directory.path().join("lifecycle-journal.json");
+        let next = self._run_directory.path().join("lifecycle-journal.next");
+        let bytes = serde_json::to_vec_pretty(&self.lifecycle_journal).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("encode lifecycle transaction journal: {error}"),
+            }
+        })?;
+        let mut file = File::create(&next).map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!(
+                "create lifecycle transaction journal {}: {error}",
+                next.display()
+            ),
+        })?;
+        file.write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "flush lifecycle transaction journal {}: {error}",
+                    next.display()
+                ),
+            })?;
+        fs::rename(&next, &path).map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!(
+                "commit lifecycle transaction journal {}: {error}",
+                path.display()
+            ),
+        })?;
+        File::open(self._run_directory.path())
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("flush lifecycle journal directory: {error}"),
+            })
+    }
+
+    fn begin_terminal_lifecycle_transaction(
+        &mut self,
+        decisions: &[QemuNodeLifecycleDecision],
+    ) -> Result<(), SchedulerError> {
+        let mut nodes = Vec::new();
+        for decision in decisions {
+            let Some(expected_exit_code) = decision.expected_exit_code else {
+                continue;
+            };
+            let current_generation = self
+                .node_generations
+                .get(&decision.node)
+                .copied()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle node `{}` has no authenticated generation",
+                        decision.node.name
+                    ),
+                })?;
+            let next_generation = if decision.effective_transition
+                == crucible::model::NodeLifecycleTransition::PermanentFailure
+            {
+                current_generation
+            } else {
+                current_generation.checked_add(1).ok_or_else(|| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "terminal lifecycle generation exhausted for `{}`",
+                            decision.node.name
+                        ),
+                    }
+                })?
+            };
+            let process_id = self.inner.backend().process_id(&decision.node)?;
+            nodes.push(ProductionLifecycleJournalNode {
+                node: decision.node.name.clone(),
+                process_id,
+                current_generation,
+                next_generation,
+                transition: format!("{:?}", decision.effective_transition),
+                action_sha256: decision.action.to_hex(),
+                evidence_sha256: decision.event_evidence.to_hex(),
+                expected_exit_code,
+            });
+        }
+        if nodes.is_empty() {
+            return Ok(());
+        }
+        self.lifecycle_journal.transaction = self
+            .lifecycle_journal
+            .transaction
+            .checked_add(1)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("lifecycle transaction sequence exhausted"),
+            })?;
+        self.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Intent;
+        self.lifecycle_journal.nodes = nodes;
+        self.persist_lifecycle_journal()
+    }
+
+    fn advance_lifecycle_journal(
+        &mut self,
+        phase: ProductionLifecycleJournalPhase,
+    ) -> Result<(), SchedulerError> {
+        self.lifecycle_journal.phase = phase;
+        self.persist_lifecycle_journal()
+    }
+
+    fn retain_completed_lifecycle_exits(
+        &mut self,
+        decisions: &[QemuNodeLifecycleDecision],
+        observed_exit_codes: &BTreeMap<NodeId, i32>,
+    ) -> Result<(), SchedulerError> {
+        for decision in decisions {
+            let Some(expected_exit_code) = decision.expected_exit_code else {
+                continue;
+            };
+            let journal_node = self
+                .lifecycle_journal
+                .nodes
+                .iter()
+                .find(|node| node.node == decision.node.name)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "completed lifecycle exit for `{}` lost its journal identity",
+                        decision.node.name
+                    ),
+                })?;
+            let observed_exit_code = observed_exit_codes
+                .get(&decision.node)
+                .copied()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "completed lifecycle exit for `{}` lost its observed status",
+                        decision.node.name
+                    ),
+                })?;
+            self.lifecycle_journal
+                .completed_exits
+                .push(ProductionLifecycleCompletedExit {
+                    transaction: self.lifecycle_journal.transaction,
+                    node: decision.node.name.clone(),
+                    process_id: journal_node.process_id,
+                    generation: journal_node.current_generation,
+                    transition: format!("{:?}", decision.effective_transition),
+                    action_sha256: decision.action.to_hex(),
+                    evidence_sha256: decision.event_evidence.to_hex(),
+                    expected_exit_code,
+                    observed_exit_code,
+                });
+        }
+        self.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Committed;
+        self.persist_lifecycle_journal()
+    }
+
+    fn quarantine_terminal_lifecycle_transaction(
+        &mut self,
+        decisions: &[QemuNodeLifecycleDecision],
+        primary: impl std::fmt::Display,
+    ) -> SchedulerError {
+        let terminal_nodes = decisions
+            .iter()
+            .filter(|decision| decision.expected_exit_code.is_some())
+            .map(|decision| decision.node.clone())
+            .collect::<Vec<_>>();
+        let journal = self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::Quarantined);
+        let quarantine = self
+            .inner
+            .backend_mut()
+            .quarantine_terminal_nodes(&terminal_nodes);
+        let activities = terminal_nodes
+            .iter()
+            .cloned()
+            .map(|node| (node, SchedulerNodeActivity::Done))
+            .collect::<Vec<_>>();
+        let scheduler = self
+            .inner
+            .loop_impl_mut()
+            .set_vm_node_activities(&activities);
+        SchedulerError::BoundaryViolation {
+            message: format!(
+                "terminal lifecycle transaction failed ({primary}); journal containment: {}; process containment: {}; scheduler containment: {}",
+                journal.map_or_else(|error| error.to_string(), |()| String::from("recorded")),
+                quarantine.map_or_else(|error| error.to_string(), |()| String::from("reaped")),
+                scheduler.map_or_else(|error| error.to_string(), |()| String::from("closed")),
+            ),
+        }
+    }
+
+    fn quarantine_terminal_lifecycle_transaction_with_staged(
+        &mut self,
+        decisions: &[QemuNodeLifecycleDecision],
+        prepared: &mut [PreparedTerminalReplacement],
+        primary: impl std::fmt::Display,
+    ) -> SchedulerError {
+        let staged = Self::abort_staged_terminal_replacements(prepared);
+        self.quarantine_terminal_lifecycle_transaction(
+            decisions,
+            format!(
+                "{primary}; staged-process containment: {}",
+                staged.map_or_else(|error| error.to_string(), |()| String::from("reaped"))
+            ),
+        )
+    }
+
+    fn terminal_lifecycle_checkpoint(&mut self) -> Result<Checkpoint, SchedulerError> {
+        let configuration = self.inner.loop_impl().configuration().clone();
+        let parent = if configuration.schedule.is_empty() {
+            None
+        } else {
+            let parent_len = configuration.schedule.len().saturating_sub(1);
+            let parent_schedule = configuration.schedule.prefix(parent_len).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "derive terminal lifecycle checkpoint parent at schedule length {parent_len}: {error}"
+                    ),
+                }
+            })?;
+            Some(Configuration {
+                def: configuration.def.clone(),
+                schedule: parent_schedule,
+            })
+        };
+        let mut node_icounts = BTreeMap::new();
+        for vm in self.source.world().vm_nodes() {
+            let physical = self.inner.backend().node_now(&vm.id)?;
+            node_icounts.insert(
+                vm.id.clone(),
+                Icount {
+                    retired: physical.ticks,
+                },
+            );
+        }
+        Checkpoint::from_recorded_configuration(
+            &configuration,
+            parent.as_ref(),
+            self.inner.loop_impl().frontier(),
+            node_icounts,
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("materialize terminal lifecycle checkpoint: {error}"),
+        })
+    }
+
+    fn prepare_terminal_replacements(
+        &mut self,
+        decisions: &[QemuNodeLifecycleDecision],
+    ) -> Result<Vec<PreparedTerminalReplacement>, SchedulerError> {
+        let terminal = decisions
+            .iter()
+            .filter(|decision| decision.expected_exit_code.is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        if terminal.is_empty() {
+            return Ok(Vec::new());
+        }
+        let checkpoint = self.terminal_lifecycle_checkpoint()?;
+        for decision in &terminal {
+            if !matches!(
+                decision.effective_transition,
+                crucible::model::NodeLifecycleTransition::Crash
+                    | crucible::model::NodeLifecycleTransition::PowerOff
+                    | crucible::model::NodeLifecycleTransition::PermanentFailure
+            ) {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle decision for `{}` is not terminal",
+                        decision.node.name
+                    ),
+                });
+            }
+            let current_directory =
+                self.node_run_directories
+                    .get(&decision.node)
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "terminal lifecycle node `{}` has no process-generation directory",
+                            decision.node.name
+                        ),
+                    })?;
+            let current_generation = self
+                .node_generations
+                .get(&decision.node)
+                .copied()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle node `{}` has no process generation",
+                        decision.node.name
+                    ),
+                })?;
+            if decision.effective_transition
+                != crucible::model::NodeLifecycleTransition::PermanentFailure
+            {
+                current_generation.checked_add(1).ok_or_else(|| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "terminal lifecycle generation exhausted for `{}`",
+                            decision.node.name
+                        ),
+                    }
+                })?;
+            }
+            if !self.node_indexes.contains_key(&decision.node)
+                || !self.launch_configs.contains_key(&decision.node)
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle node `{}` has incomplete launch identity",
+                        decision.node.name
+                    ),
+                });
+            }
+            for artifact in [
+                PRODUCTION_ROOT_OVERLAY_FILE_NAME,
+                PRODUCTION_VMSTATE_FILE_NAME,
+            ] {
+                let source = current_directory.join(artifact);
+                File::open(&source).map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "open terminal lifecycle source artifact {}: {error}",
+                        source.display()
+                    ),
+                })?;
+            }
+        }
+        let terminal_nodes = terminal
+            .iter()
+            .map(|decision| decision.node.clone())
+            .collect::<Vec<_>>();
+        self.inner
+            .backend_mut()
+            .prevalidate_terminal_lifecycle_snapshots(&terminal_nodes, &checkpoint)?;
+        let mut prepared = Vec::with_capacity(terminal.len());
+        for decision in terminal {
+            let service_state = match decision.effective_transition {
+                crucible::model::NodeLifecycleTransition::Crash => {
+                    ProductionNodeServiceState::Running
+                }
+                crucible::model::NodeLifecycleTransition::PowerOff => {
+                    ProductionNodeServiceState::PoweredOff
+                }
+                crucible::model::NodeLifecycleTransition::PermanentFailure => {
+                    ProductionNodeServiceState::PermanentlyFailed
+                }
+                transition => {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "terminal lifecycle replacement for `{}` has nonterminal transition {transition:?}",
+                            decision.node.name
+                        ),
+                    });
+                }
+            };
+            let snapshot = self
+                .inner
+                .backend_mut()
+                .capture_terminal_lifecycle_snapshot(&decision.node, checkpoint.clone())?;
+            let current_directory =
+                self.node_run_directories
+                    .get(&decision.node)
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "terminal lifecycle node `{}` has no process-generation directory",
+                            decision.node.name
+                        ),
+                    })?;
+            let current_generation = self
+                .node_generations
+                .get(&decision.node)
+                .copied()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle node `{}` lost its process generation",
+                        decision.node.name
+                    ),
+                })?;
+            let generation = if service_state == ProductionNodeServiceState::PermanentlyFailed {
+                current_generation
+            } else {
+                current_generation.checked_add(1).ok_or_else(|| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "terminal lifecycle generation exhausted for `{}`",
+                            decision.node.name
+                        ),
+                    }
+                })?
+            };
+            let index = self
+                .node_indexes
+                .get(&decision.node)
+                .copied()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle node `{}` has no launch index",
+                        decision.node.name
+                    ),
+                })?;
+            let run_directory = if service_state == ProductionNodeServiceState::PermanentlyFailed {
+                current_directory.clone()
+            } else {
+                self._run_directory
+                    .path()
+                    .join("lifecycle-generations")
+                    .join(format!("node-{index}-generation-{generation}"))
+            };
+            fs::create_dir_all(&run_directory).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "create terminal lifecycle generation directory {}: {error}",
+                        run_directory.display()
+                    ),
+                }
+            })?;
+            if run_directory != *current_directory {
+                for artifact in [
+                    PRODUCTION_ROOT_OVERLAY_FILE_NAME,
+                    PRODUCTION_VMSTATE_FILE_NAME,
+                ] {
+                    let source = current_directory.join(artifact);
+                    let target = run_directory.join(artifact);
+                    fs::copy(&source, &target).map_err(|error| {
+                        SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "copy terminal lifecycle artifact {} to {}: {error}",
+                                source.display(),
+                                target.display()
+                            ),
+                        }
+                    })?;
+                }
+            }
+            let mut launch = self
+                .launch_configs
+                .get(&decision.node)
+                .cloned()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle node `{}` has no launch configuration",
+                        decision.node.name
+                    ),
+                })?
+                .with_run_directory(&run_directory);
+            if let Some(debug) = &self.config.debug
+                && (debug.all_nodes
+                    || debug
+                        .node
+                        .as_deref()
+                        .map_or(index == 0, |selected| selected == decision.node.name))
+            {
+                let backend_path = private_backend_gdbstub_path(&run_directory);
+                let backend_listen =
+                    qemu_unix_gdbstub_endpoint(&backend_path).map_err(|error| {
+                        SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "derive replacement QEMU gdbstub endpoint for `{}`: {error}",
+                                decision.node.name
+                            ),
+                        }
+                    })?;
+                let gdbstub = ProductionGdbstubChannelConfig::new(
+                    backend_listen,
+                    debug.operator_listen.clone(),
+                )
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "configure replacement QEMU gdbstub for `{}`: {error}",
+                        decision.node.name
+                    ),
+                })?;
+                launch = launch.with_gdbstub(gdbstub);
+            }
+            prepared.push(PreparedTerminalReplacement {
+                decision,
+                snapshot,
+                run_directory,
+                launch,
+                generation,
+                replacement: None,
+                service_state,
+            });
+        }
+        for replacement in &mut prepared {
+            if let Err(error) = self.stage_terminal_replacement(replacement) {
+                let containment = Self::abort_staged_terminal_replacements(&mut prepared);
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "stage terminal lifecycle replacement: {error}; staged-process containment: {}",
+                        containment
+                            .map_or_else(|error| error.to_string(), |()| String::from("reaped")),
+                    ),
+                });
+            }
+        }
+        Ok(prepared)
+    }
+
+    fn abort_staged_terminal_replacements(
+        prepared: &mut [PreparedTerminalReplacement],
+    ) -> Result<(), SchedulerError> {
+        let mut first_error = None;
+        for item in prepared {
+            if let Some(mut replacement) = item.replacement.take()
+                && let Err(error) = replacement.force_quarantine_and_reap()
+                && first_error.is_none()
+            {
+                first_error = Some(format!(
+                    "reap staged replacement for `{}`: {error}",
+                    item.decision.node.name
+                ));
+            }
+        }
+        first_error.map_or(Ok(()), |message| {
+            Err(SchedulerError::BoundaryViolation { message })
+        })
+    }
+
+    fn configure_replacement_fault_coordinators(
+        &self,
+        node: &NodeId,
+        replacement: &mut QemuNode,
+    ) -> Result<(), SchedulerError> {
+        if let Some(block) = self.block_bindings.get(node).cloned() {
+            if replacement.shared_block_device().is_none() {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "replacement QEMU node `{}` has no live block device",
+                        node.name
+                    ),
+                });
+            }
+            replacement
+                .install_block_fault_coordinator(Box::new(ProductionBlockFaultCoordinator::new(
+                    Arc::clone(&self.fault_runtime),
+                    Arc::clone(&self.fault_evaluation_cursor),
+                    Arc::clone(&self.storage_fault_observations),
+                    Arc::clone(&self.block_devices),
+                    self.source.world().clone(),
+                    block.target,
+                    self.source.plan().fault_signals(),
+                    self.scenario.id(),
+                    self.icount_shift,
+                )))
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "install replacement block fault coordinator for `{}`: {error}",
+                        node.name
+                    ),
+                })?;
+        }
+        if let Some(ninep) = self.ninep_bindings.get(node).cloned() {
+            replacement
+                .install_ninep_fault_coordinator(Box::new(
+                    storage_faults::ProductionNinepFaultCoordinator::new(
+                        Arc::clone(&self.fault_runtime),
+                        Arc::clone(&self.fault_evaluation_cursor),
+                        Arc::clone(&self.storage_fault_observations),
+                        self.source.world().clone(),
+                        ninep.target,
+                        self.icount_shift,
+                    ),
+                ))
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "install replacement 9p fault coordinator for `{}`: {error}",
+                        node.name
+                    ),
+                })?;
+        }
+        Ok(())
+    }
+
+    fn stage_terminal_replacement(
+        &self,
+        prepared: &mut PreparedTerminalReplacement,
+    ) -> Result<(), SchedulerError> {
+        let node = prepared.decision.node.clone();
+        let crash_detector = format!("lifecycle-{}-generation-{}", node.name, prepared.generation);
+        let launched = match prepared.service_state {
+            ProductionNodeServiceState::Running => {
+                Some(launch_production_live_node_exact_snapshot(
+                    &prepared.launch,
+                    &prepared.run_directory,
+                    &node.name,
+                    "crucible-router",
+                    &crash_detector,
+                    &prepared.snapshot,
+                ))
+            }
+            ProductionNodeServiceState::PoweredOff => {
+                Some(launch_production_live_node_exact_snapshot_paused(
+                    &prepared.launch,
+                    &prepared.run_directory,
+                    &node.name,
+                    "crucible-router",
+                    &crash_detector,
+                    &prepared.snapshot,
+                ))
+            }
+            ProductionNodeServiceState::PermanentlyFailed => None,
+        };
+        if let Some(launched) = launched {
+            let mut launched = launched.map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "stage terminal lifecycle replacement for `{}`: {error}",
+                    node.name
+                ),
+            })?;
+            if let Err(error) = self.configure_replacement_fault_coordinators(&node, &mut launched)
+            {
+                let containment = launched.force_quarantine_and_reap();
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "configure terminal lifecycle replacement for `{}`: {error}; process containment: {}",
+                        node.name,
+                        containment
+                            .map_or_else(|error| error.to_string(), |()| String::from("reaped")),
+                    ),
+                });
+            }
+            prepared.replacement = Some(launched);
+        }
+        Ok(())
+    }
+
+    fn commit_terminal_replacements(
+        &mut self,
+        mut prepared: Vec<PreparedTerminalReplacement>,
+    ) -> Result<(), SchedulerError> {
+        if prepared.is_empty() {
+            return Ok(());
+        }
+        let activities = prepared
+            .iter()
+            .map(|item| {
+                let activity = match item.service_state {
+                    ProductionNodeServiceState::Running => SchedulerNodeActivity::Runnable,
+                    ProductionNodeServiceState::PoweredOff => SchedulerNodeActivity::Halted,
+                    ProductionNodeServiceState::PermanentlyFailed => SchedulerNodeActivity::Done,
+                };
+                (item.decision.node.clone(), activity)
+            })
+            .collect::<Vec<_>>();
+        let mut block_handles = Vec::new();
+        for item in &prepared {
+            if let Some(binding) = self.block_bindings.get(&item.decision.node)
+                && let Some(replacement) = &item.replacement
+            {
+                let handle = replacement.shared_block_device().ok_or_else(|| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "replacement QEMU node `{}` lost its block device before commit",
+                            item.decision.node.name
+                        ),
+                    }
+                })?;
+                block_handles.push((binding.device_hash(), handle));
+            }
+        }
+        let replacement_values = prepared
+            .iter_mut()
+            .map(|item| (item.decision.node.clone(), item.replacement.take()))
+            .collect();
+        let plan = self
+            .inner
+            .backend()
+            .prepare_terminal_replacements(replacement_values)?;
+        let mut block_devices =
+            self.block_devices
+                .lock()
+                .map_err(|_| SchedulerError::BoundaryViolation {
+                    message: String::from("production block-device map lock is poisoned"),
+                })?;
+        self.inner
+            .loop_impl_mut()
+            .set_vm_node_activities(&activities)?;
+        let retired = self.inner.backend_mut().commit_terminal_replacements(plan);
+        debug_assert!(retired.iter().all(|(_, node)| node.child_reaped()));
+        for (device, handle) in block_handles {
+            block_devices.insert(device, handle);
+        }
+        drop(block_devices);
+
+        for item in prepared {
+            let node = item.decision.node;
+            self.node_service_states
+                .insert(node.clone(), item.service_state);
+            self.node_run_directories
+                .insert(node.clone(), item.run_directory.clone());
+            self.node_generations.insert(node.clone(), item.generation);
+            self.launch_configs.insert(node.clone(), item.launch);
+            if self.debug_backend_paths.contains_key(&node) {
+                self.debug_backend_paths.insert(
+                    node.clone(),
+                    private_backend_gdbstub_path(&item.run_directory),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn supervise_terminal_lifecycle_exits(
+        &mut self,
+        decisions: &[QemuNodeLifecycleDecision],
+    ) -> Result<BTreeMap<NodeId, i32>, SchedulerError> {
+        let terminal = decisions
+            .iter()
+            .filter_map(|decision| {
+                decision
+                    .expected_exit_code
+                    .map(|expected| (decision, expected))
+            })
+            .collect::<Vec<_>>();
+        let mut first_error = None;
+        let mut observed_exit_codes = BTreeMap::new();
+        for (decision, _) in &terminal {
+            let generation = self
+                .node_generations
+                .get(&decision.node)
+                .copied()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle node `{}` has no authenticated process generation",
+                        decision.node.name
+                    ),
+                })?;
+            if generation == 0 {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle process generation is not positive for `{}`",
+                        decision.node.name
+                    ),
+                });
+            }
+            if let Err(error) = self.inner.backend_mut().complete_terminal_lifecycle_exit(
+                &decision.node,
+                decision.action,
+                decision.event_evidence,
+                generation,
+            ) && first_error.is_none()
+            {
+                first_error = Some(error.to_string());
+            }
+        }
+        for (decision, expected) in terminal {
+            match self.inner.backend_mut().await_intended_lifecycle_exit(
+                &decision.node,
+                expected,
+                decision.action,
+            ) {
+                Ok(actual) => {
+                    observed_exit_codes.insert(decision.node.clone(), actual);
+                }
+                Err(error) if first_error.is_none() => {
+                    first_error = Some(error.to_string());
+                }
+                Err(_) => {}
+            }
+        }
+        if let Some(message) = first_error {
+            Err(SchedulerError::BoundaryViolation {
+                message: format!("terminal lifecycle process supervision failed: {message}"),
+            })
+        } else {
+            Ok(observed_exit_codes)
+        }
+    }
+
+    fn activate_node_boot_requests(
+        &mut self,
+        requests: &std::collections::BTreeSet<NodeId>,
+    ) -> Result<(), SchedulerError> {
+        for node in requests {
+            match self.node_service_states.get(node).copied() {
+                Some(ProductionNodeServiceState::Running) => {}
+                Some(ProductionNodeServiceState::PoweredOff) => {
+                    self.inner.backend_mut().boot_powered_off_generation(node)?;
+                    self.inner
+                        .loop_impl_mut()
+                        .set_vm_node_activity(node, SchedulerNodeActivity::Runnable)?;
+                    self.node_service_states
+                        .insert(node.clone(), ProductionNodeServiceState::Running);
+                }
+                Some(ProductionNodeServiceState::PermanentlyFailed) => {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "boot cannot resurrect permanently failed node `{}`",
+                            node.name
+                        ),
+                    });
+                }
+                None => {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!("boot names unknown lifecycle node `{}`", node.name),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn capture_exact_checkpoint_set(
         &mut self,
         configuration: &Configuration,
@@ -562,11 +1370,16 @@ impl ProductionVmLifecycleLoop {
                             ),
                         }
                     })?;
-                    let source_overlay = self
-                        ._run_directory
-                        .path()
-                        .join(format!("node-{index}"))
-                        .join(PRODUCTION_ROOT_OVERLAY_FILE_NAME);
+                    let source_directory =
+                        self.node_run_directories.get(&node).ok_or_else(|| {
+                            SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "exact checkpoint has no process-generation directory for `{}`",
+                                    node.name
+                                ),
+                            }
+                        })?;
+                    let source_overlay = source_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME);
                     let artifact_name = format!("node-{index}.qcow2");
                     let staged_artifact = staging.path().join(&artifact_name);
                     fs::copy(&source_overlay, &staged_artifact).map_err(|error| {
@@ -586,11 +1399,7 @@ impl ProductionVmLifecycleLoop {
                             ),
                         }
                     })?;
-                    let source_vmstate = self
-                        ._run_directory
-                        .path()
-                        .join(format!("node-{index}"))
-                        .join(PRODUCTION_VMSTATE_FILE_NAME);
+                    let source_vmstate = source_directory.join(PRODUCTION_VMSTATE_FILE_NAME);
                     let vmstate_name = format!("node-{index}-vmstate.qcow2");
                     let staged_vmstate = staging.path().join(&vmstate_name);
                     fs::copy(&source_vmstate, &staged_vmstate).map_err(|error| {
@@ -678,17 +1487,121 @@ impl ProductionVmLifecycleLoop {
         &mut self,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let coordinate = self.inner.loop_impl().frontier().ticks;
-        let (scheduler, backend, interceptor, pending_outputs) =
-            self.inner.network_transaction_parts_mut();
-        interceptor.evaluate_boundary(
-            FaultCoordinate {
-                virtual_nanos: coordinate,
-                retired_instructions: None,
-            },
-            scheduler,
-            backend,
-            pending_outputs,
-        )
+        let append = {
+            let (scheduler, backend, interceptor, pending_outputs) =
+                self.inner.network_transaction_parts_mut();
+            interceptor.evaluate_boundary(
+                FaultCoordinate {
+                    virtual_nanos: coordinate,
+                    retired_instructions: None,
+                },
+                scheduler,
+                backend,
+                pending_outputs,
+            )?
+        };
+        let (decisions, boot_requests) = {
+            let mut runtime =
+                self.fault_runtime
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from("production fault runtime lock is poisoned"),
+                    })?;
+            (
+                runtime.node_lifecycle_decisions().to_vec(),
+                runtime.take_node_boot_requests(),
+            )
+        };
+        self.activate_node_boot_requests(&boot_requests)?;
+        let has_terminal = decisions
+            .iter()
+            .any(|decision| decision.expected_exit_code.is_some());
+        if has_terminal {
+            self.begin_terminal_lifecycle_transaction(&decisions)?;
+        }
+        let mut prepared = match self.prepare_terminal_replacements(&decisions) {
+            Ok(prepared) => prepared,
+            Err(capture_error) => {
+                return Err(
+                    self.quarantine_terminal_lifecycle_transaction(&decisions, capture_error)
+                );
+            }
+        };
+        if has_terminal {
+            if let Err(error) =
+                self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::Prepared)
+            {
+                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                    &decisions,
+                    &mut prepared,
+                    error,
+                ));
+            }
+        }
+        let observed_exit_codes = match self.supervise_terminal_lifecycle_exits(&decisions) {
+            Ok(observed) => observed,
+            Err(error) => {
+                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                    &decisions,
+                    &mut prepared,
+                    error,
+                ));
+            }
+        };
+        let retiring = prepared
+            .iter()
+            .map(|replacement| replacement.decision.node.clone())
+            .collect::<Vec<_>>();
+        if let Err(error) = self
+            .inner
+            .backend()
+            .validate_terminal_exits_reaped(&retiring)
+        {
+            return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                &decisions,
+                &mut prepared,
+                error,
+            ));
+        }
+        if has_terminal {
+            if let Err(error) =
+                self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::ExitsReaped)
+            {
+                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                    &decisions,
+                    &mut prepared,
+                    error,
+                ));
+            }
+        }
+        if let Err(error) = self.commit_terminal_replacements(prepared) {
+            return Err(self.quarantine_terminal_lifecycle_transaction(&decisions, error));
+        }
+        if has_terminal {
+            if let Err(error) =
+                self.retain_completed_lifecycle_exits(&decisions, &observed_exit_codes)
+            {
+                return Err(self.quarantine_terminal_lifecycle_transaction(&decisions, error));
+            }
+        }
+        for decision in &decisions {
+            if decision.expected_exit_code.is_none()
+                && decision.effective_transition == crucible::model::NodeLifecycleTransition::Boot
+            {
+                self.inner
+                    .loop_impl_mut()
+                    .set_vm_node_activity(&decision.node, SchedulerNodeActivity::Runnable)?;
+            }
+        }
+        if !decisions.is_empty() {
+            self.fault_runtime
+                .lock()
+                .map_err(|_| SchedulerError::BoundaryViolation {
+                    message: String::from("production fault runtime lock is poisoned"),
+                })?
+                .acknowledge_node_lifecycle_decisions();
+        }
+        Ok(append)
     }
 }
 
