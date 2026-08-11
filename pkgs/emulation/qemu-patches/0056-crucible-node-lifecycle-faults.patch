@@ -466,10 +466,10 @@ index 58761d8..0df53f1 100644
  
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000..acf60bc
+index 0000000..d2e0ccd
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
-@@ -0,0 +1,1115 @@
+@@ -0,0 +1,1124 @@
 +/*
 + * Crucible deterministic node lifecycle and hang faults
 + *
@@ -1436,9 +1436,11 @@ index 0000000..acf60bc
 +    for (guint index = 0; index < previous->len; index++) {
 +        CrucibleHangState *state = g_ptr_array_index(previous, index);
 +
-+        crucible_hang_event(
-+            state, CRUCIBLE_HANG_RECOVERED,
-+            &state->recovery_reservation, before_hash, after_hash);
++        if (state->recovery_reservation) {
++            crucible_hang_event(
++                state, CRUCIBLE_HANG_RECOVERED,
++                &state->recovery_reservation, before_hash, after_hash);
++        }
 +    }
 +    for (guint index = 0; index < next_hangs->len; index++) {
 +        CrucibleHangState *state = g_ptr_array_index(next_hangs, index);
@@ -1511,6 +1513,7 @@ index 0000000..acf60bc
 +        CrucibleLifecyclePlan plan;
 +        g_autoptr(GByteArray) evidence = NULL;
 +        uint8_t before_hash[32], after_hash[32], opportunity_hash[32];
++        uint8_t hang_before_hash[32], hang_after_hash[32];
 +        uint64_t timeout;
 +        uint16_t outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED;
 +        int status;
@@ -1525,8 +1528,14 @@ index 0000000..acf60bc
 +            error_report("Crucible watchdog lost its prepared plan");
 +            abort();
 +        }
++        crucible_hang_digest(crucible_lifecycle_hangs, hang_before_hash);
 +        state->watchdog_fired = true;
++        crucible_hang_digest(crucible_lifecycle_hangs, hang_after_hash);
 +        crucible_hang_effective_recompute();
++        crucible_hang_event(
++            state, CRUCIBLE_HANG_RECOVERED,
++            &state->recovery_reservation,
++            hang_before_hash, hang_after_hash);
 +        evidence = g_byte_array_new();
 +        status = crucible_lifecycle_execute(
 +            state->rule, observed_icount, &plan, false,
