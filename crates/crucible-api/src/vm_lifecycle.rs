@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -38,7 +38,8 @@ use crucible::{
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
-    QemuNode, QemuNodeLifecycleDecision, QemuVmSnapshot,
+    QemuNode, QemuNodeLifecycleDecision, QemuProcessIdentity, QemuVmSnapshot,
+    linux_process_identity, quarantine_orphaned_qemu_process,
 };
 
 use crate::LifecycleApiError;
@@ -66,6 +67,7 @@ pub struct ProductionVmLifecycleConfig {
     initrd: Option<PathBuf>,
     kernel_cmdline_prefix: Option<String>,
     root_image_format: ProductionRootImageFormat,
+    run_state_root: PathBuf,
     run_ceiling_icount: u64,
     quantum_budget: u64,
     rendezvous_interval_icount: Option<u64>,
@@ -90,6 +92,7 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
             .field("guest_assets", &self.guest_assets)
             .field("initrd", &self.initrd)
             .field("root_image_format", &self.root_image_format)
+            .field("run_state_root", &self.run_state_root)
             .field("run_ceiling_icount", &self.run_ceiling_icount)
             .field("quantum_budget", &self.quantum_budget)
             .field("completion_timeout", &self.completion_timeout)
@@ -179,20 +182,21 @@ enum ProductionLifecycleJournalPhase {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct ProductionLifecycleJournalNode {
     node: String,
-    process_id: u32,
+    current_process: QemuProcessIdentity,
+    replacement_process: Option<QemuProcessIdentity>,
     current_generation: u64,
     next_generation: u64,
     transition: String,
     action_sha256: String,
     evidence_sha256: String,
-    expected_exit_code: i32,
+    expected_exit_code: Option<i32>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct ProductionLifecycleCompletedExit {
     transaction: u64,
     node: String,
-    process_id: u32,
+    process: QemuProcessIdentity,
     generation: u64,
     transition: String,
     action_sha256: String,
@@ -208,6 +212,53 @@ struct ProductionLifecycleJournal {
     phase: ProductionLifecycleJournalPhase,
     nodes: Vec<ProductionLifecycleJournalNode>,
     completed_exits: Vec<ProductionLifecycleCompletedExit>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ProductionRunManifest {
+    version: u32,
+    scenario: String,
+    processes: BTreeMap<String, QemuProcessIdentity>,
+    staged_processes: BTreeMap<String, QemuProcessIdentity>,
+    clean_shutdown: bool,
+    recovered_after_host_exit: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ProductionRunLockRecord {
+    owner: QemuProcessIdentity,
+}
+
+struct ProductionRunLock {
+    path: PathBuf,
+}
+
+impl Drop for ProductionRunLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+struct ProductionRunDirectory {
+    path: PathBuf,
+    _lock: Option<ProductionRunLock>,
+    _temporary: Option<tempfile::TempDir>,
+}
+
+impl ProductionRunDirectory {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[cfg(test)]
+    fn temporary() -> Result<Self, std::io::Error> {
+        let temporary = tempfile::tempdir()?;
+        Ok(Self {
+            path: temporary.path().to_path_buf(),
+            _lock: None,
+            _temporary: Some(temporary),
+        })
+    }
 }
 
 /// Lifecycle loop backed by an authoritative scheduler and live QEMU node set.
@@ -235,6 +286,7 @@ pub struct ProductionVmLifecycleLoop {
     node_generations: BTreeMap<NodeId, u64>,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
     lifecycle_journal: ProductionLifecycleJournal,
+    run_manifest: ProductionRunManifest,
     scenario: ScenarioDef,
     source: ScenarioDefForm,
     config: ProductionVmLifecycleConfig,
@@ -246,7 +298,7 @@ pub struct ProductionVmLifecycleLoop {
     debug_gateway_teardown_required: bool,
     indeterminate_debug_candidate: Option<Box<ProductionVmLifecycleLoop>>,
     debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,
-    _run_directory: tempfile::TempDir,
+    _run_directory: ProductionRunDirectory,
 }
 
 mod config;
@@ -256,6 +308,226 @@ mod quantum_loop;
 mod runtime;
 mod search;
 mod storage_faults;
+
+fn persist_atomic_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let next = path.with_extension("json.next");
+    let bytes = serde_json::to_vec_pretty(value)
+        .map_err(|error| format!("encode {}: {error}", path.display()))?;
+    let mut file =
+        File::create(&next).map_err(|error| format!("create {}: {error}", next.display()))?;
+    file.write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("flush {}: {error}", next.display()))?;
+    fs::rename(&next, path).map_err(|error| format!("commit {}: {error}", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("flush directory {}: {error}", parent.display()))
+}
+
+fn decode_run_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
+    let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    serde_json::from_slice(&bytes).map_err(|error| format!("decode {}: {error}", path.display()))
+}
+
+fn acquire_production_run_lock(
+    scenario_directory: &Path,
+) -> Result<ProductionRunLock, LifecycleApiError> {
+    let path = scenario_directory.join("active-run.lock");
+    let owner = linux_process_identity(std::process::id())
+        .map_err(|error| loop_factory_error(format!("identify lifecycle process: {error}")))?
+        .ok_or_else(|| loop_factory_error("lifecycle process has no Linux process identity"))?;
+    let record = ProductionRunLockRecord {
+        owner: owner.clone(),
+    };
+    for _ in 0..2 {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                let bytes = serde_json::to_vec_pretty(&record).map_err(|error| {
+                    loop_factory_error(format!("encode lifecycle run lock: {error}"))
+                })?;
+                file.write_all(&bytes)
+                    .and_then(|()| file.sync_all())
+                    .map_err(|error| {
+                        loop_factory_error(format!(
+                            "persist lifecycle run lock {}: {error}",
+                            path.display()
+                        ))
+                    })?;
+                File::open(scenario_directory)
+                    .and_then(|directory| directory.sync_all())
+                    .map_err(|error| {
+                        loop_factory_error(format!("flush lifecycle run-lock directory: {error}"))
+                    })?;
+                return Ok(ProductionRunLock { path });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing: ProductionRunLockRecord =
+                    decode_run_json(&path).map_err(|message| {
+                        loop_factory_error(format!("invalid run lock: {message}"))
+                    })?;
+                let live = linux_process_identity(existing.owner.process_id).map_err(|error| {
+                    loop_factory_error(format!("validate lifecycle run-lock owner: {error}"))
+                })?;
+                if live.as_ref() == Some(&existing.owner) {
+                    return Err(loop_factory_error(format!(
+                        "scenario already has an active production lifecycle owned by PID {}",
+                        existing.owner.process_id
+                    )));
+                }
+                fs::remove_file(&path).map_err(|remove_error| {
+                    loop_factory_error(format!(
+                        "remove stale lifecycle run lock {}: {remove_error}",
+                        path.display()
+                    ))
+                })?;
+            }
+            Err(error) => {
+                return Err(loop_factory_error(format!(
+                    "create lifecycle run lock {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Err(loop_factory_error(
+        "lifecycle run-lock acquisition did not converge",
+    ))
+}
+
+fn production_run_directory(
+    scenario: &ScenarioDef,
+    config: &ProductionVmLifecycleConfig,
+) -> Result<
+    (
+        ProductionRunDirectory,
+        ProductionRunManifest,
+        ProductionLifecycleJournal,
+    ),
+    LifecycleApiError,
+> {
+    let scenario_identity = scenario.id().to_hex();
+    let scenario_directory = config.run_state_root.join(&scenario_identity);
+    fs::create_dir_all(&scenario_directory).map_err(|error| {
+        loop_factory_error(format!(
+            "create durable lifecycle state directory {}: {error}",
+            scenario_directory.display()
+        ))
+    })?;
+    let lock = acquire_production_run_lock(&scenario_directory)?;
+    let mut run_indexes = Vec::new();
+    for entry in fs::read_dir(&scenario_directory)
+        .map_err(|error| loop_factory_error(format!("enumerate prior lifecycle runs: {error}")))?
+    {
+        let entry = entry
+            .map_err(|error| loop_factory_error(format!("read prior lifecycle run: {error}")))?;
+        if !entry
+            .file_type()
+            .map_err(|error| loop_factory_error(format!("inspect prior lifecycle run: {error}")))?
+            .is_dir()
+        {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(index) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("run-"))
+            .and_then(|index| index.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        run_indexes.push((index, entry.path()));
+    }
+    run_indexes.sort_by_key(|(index, _)| *index);
+    for (_, directory) in &run_indexes {
+        let manifest_path = directory.join("run-manifest.json");
+        let mut manifest: ProductionRunManifest =
+            decode_run_json(&manifest_path).map_err(|message| {
+                loop_factory_error(format!("invalid prior run manifest: {message}"))
+            })?;
+        if manifest.version != 1 || manifest.scenario != scenario_identity {
+            return Err(loop_factory_error(format!(
+                "prior run manifest {} has incompatible identity or version",
+                manifest_path.display()
+            )));
+        }
+        if !manifest.clean_shutdown {
+            for identity in manifest
+                .processes
+                .values()
+                .chain(manifest.staged_processes.values())
+            {
+                quarantine_orphaned_qemu_process(identity, config.completion_timeout).map_err(
+                    |error| {
+                        loop_factory_error(format!(
+                            "contain prior QEMU process {}: {error}",
+                            identity.process_id
+                        ))
+                    },
+                )?;
+            }
+            let journal_path = directory.join("lifecycle-journal.json");
+            let mut journal: ProductionLifecycleJournal =
+                decode_run_json(&journal_path).map_err(|message| {
+                    loop_factory_error(format!("invalid prior lifecycle journal: {message}"))
+                })?;
+            if journal.version != 1 {
+                return Err(loop_factory_error(format!(
+                    "prior lifecycle journal {} has unsupported version {}",
+                    journal_path.display(),
+                    journal.version
+                )));
+            }
+            journal.phase = ProductionLifecycleJournalPhase::Quarantined;
+            persist_atomic_json(&journal_path, &journal)
+                .map_err(|message| loop_factory_error(format!("recover journal: {message}")))?;
+            manifest.clean_shutdown = true;
+            manifest.recovered_after_host_exit = true;
+            persist_atomic_json(&manifest_path, &manifest)
+                .map_err(|message| loop_factory_error(format!("recover manifest: {message}")))?;
+        }
+    }
+    let next_index = run_indexes.last().map_or(Ok(0), |(index, _)| {
+        index
+            .checked_add(1)
+            .ok_or_else(|| loop_factory_error("production lifecycle run sequence exhausted"))
+    })?;
+    let path = scenario_directory.join(format!("run-{next_index:020}"));
+    fs::create_dir(&path).map_err(|error| {
+        loop_factory_error(format!("create lifecycle run {}: {error}", path.display()))
+    })?;
+    let manifest = ProductionRunManifest {
+        version: 1,
+        scenario: scenario_identity,
+        processes: BTreeMap::new(),
+        staged_processes: BTreeMap::new(),
+        clean_shutdown: false,
+        recovered_after_host_exit: false,
+    };
+    let journal = ProductionLifecycleJournal {
+        version: 1,
+        transaction: 0,
+        phase: ProductionLifecycleJournalPhase::Idle,
+        nodes: Vec::new(),
+        completed_exits: Vec::new(),
+    };
+    persist_atomic_json(&path.join("run-manifest.json"), &manifest)
+        .map_err(|message| loop_factory_error(format!("initialize run manifest: {message}")))?;
+    persist_atomic_json(&path.join("lifecycle-journal.json"), &journal).map_err(|message| {
+        loop_factory_error(format!("initialize lifecycle journal: {message}"))
+    })?;
+    Ok((
+        ProductionRunDirectory {
+            path,
+            _lock: Some(lock),
+            _temporary: None,
+        },
+        manifest,
+        journal,
+    ))
+}
 
 use helpers::*;
 use network_faults::{
@@ -319,8 +591,8 @@ pub fn build_production_vm_lifecycle_loop(
         ));
     }
 
-    let run_directory = tempfile::TempDir::new()
-        .map_err(|error| loop_factory_error(format!("create QEMU run directory: {error}")))?;
+    let (run_directory, mut run_manifest, lifecycle_journal) =
+        production_run_directory(scenario, config)?;
     let mut backends = ProductionNodeSet::new();
     let mut launch_configs = BTreeMap::new();
     let mut block_bindings = BTreeMap::new();
@@ -477,10 +749,28 @@ pub fn build_production_vm_lifecycle_loop(
             )));
         }
         initial_ticks.get_or_insert(observed);
+        let process_identity = backend.process_identity().map_err(|error| {
+            loop_factory_error(format!(
+                "capture initial QEMU identity for `{}`: {error}",
+                vm.id.name
+            ))
+        })?;
         if backends.insert(vm.id.clone(), backend).is_some() {
             return Err(loop_factory_error(format!(
                 "duplicate QEMU node identity `{}`",
                 vm.id.name
+            )));
+        }
+        run_manifest
+            .processes
+            .insert(vm.id.name.clone(), process_identity);
+        if let Err(message) = persist_atomic_json(
+            &run_directory.path().join("run-manifest.json"),
+            &run_manifest,
+        ) {
+            let _ = backends.shutdown();
+            return Err(loop_factory_error(format!(
+                "persist initial QEMU process ownership: {message}"
             )));
         }
     }
@@ -660,13 +950,8 @@ pub fn build_production_vm_lifecycle_loop(
         node_run_directories,
         node_generations,
         node_service_states,
-        lifecycle_journal: ProductionLifecycleJournal {
-            version: 1,
-            transaction: 0,
-            phase: ProductionLifecycleJournalPhase::Idle,
-            nodes: Vec::new(),
-            completed_exits: Vec::new(),
-        },
+        lifecycle_journal,
+        run_manifest,
         scenario: scenario.clone(),
         source: source.clone(),
         config: config.clone(),
@@ -680,12 +965,6 @@ pub fn build_production_vm_lifecycle_loop(
         debug_runtime_evidence: Vec::new(),
         _run_directory: run_directory,
     };
-    if let Err(error) = lifecycle.persist_lifecycle_journal() {
-        let _ = lifecycle.inner.shutdown();
-        return Err(loop_factory_error(format!(
-            "initialize lifecycle transaction journal: {error}"
-        )));
-    }
     if let Err(error) = lifecycle.capture_debug_runtime_evidence() {
         let _ = lifecycle.inner.shutdown();
         return Err(loop_factory_error(format!(

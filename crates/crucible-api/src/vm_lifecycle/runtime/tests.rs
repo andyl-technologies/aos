@@ -56,6 +56,129 @@ fn initially_violated_scenario() -> ScenarioDefForm {
     )
     .unwrap_or_else(|error| panic!("test scenario should validate: {error}"))
 }
+
+#[test]
+fn durable_run_state_rejects_a_concurrent_scenario_owner() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let source = initially_violated_scenario();
+    let scenario = source.scenario_def();
+    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
+    let (_run, _, _) = production_run_directory(&scenario, &config)
+        .unwrap_or_else(|error| panic!("first run owner should acquire: {error}"));
+    let error = production_run_directory(&scenario, &config)
+        .err()
+        .unwrap_or_else(|| panic!("concurrent run owner should be rejected"));
+    assert!(error.to_string().contains("already has an active"));
+}
+
+#[test]
+fn durable_run_state_recovers_an_unfinished_run_before_reuse() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let source = initially_violated_scenario();
+    let scenario = source.scenario_def();
+    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
+    let (first, _, _) = production_run_directory(&scenario, &config)
+        .unwrap_or_else(|error| panic!("first run should build: {error}"));
+    let first_path = first.path().to_path_buf();
+    drop(first);
+
+    let (second, _, _) = production_run_directory(&scenario, &config)
+        .unwrap_or_else(|error| panic!("recovered run should build: {error}"));
+    assert_ne!(first_path, second.path());
+    let recovered: ProductionRunManifest = decode_run_json(&first_path.join("run-manifest.json"))
+        .unwrap_or_else(|error| panic!("recovered manifest should decode: {error}"));
+    assert!(recovered.clean_shutdown);
+    assert!(recovered.recovered_after_host_exit);
+    let journal: ProductionLifecycleJournal =
+        decode_run_json(&first_path.join("lifecycle-journal.json"))
+            .unwrap_or_else(|error| panic!("recovered journal should decode: {error}"));
+    assert!(matches!(
+        journal.phase,
+        ProductionLifecycleJournalPhase::Quarantined
+    ));
+}
+
+#[test]
+fn durable_run_state_recovers_every_incomplete_transaction_phase() {
+    for phase in [
+        ProductionLifecycleJournalPhase::Intent,
+        ProductionLifecycleJournalPhase::Prepared,
+        ProductionLifecycleJournalPhase::ExitsReaped,
+    ] {
+        let root = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+        let source = initially_violated_scenario();
+        let scenario = source.scenario_def();
+        let config =
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
+        let (first, _, mut journal) = production_run_directory(&scenario, &config)
+            .unwrap_or_else(|error| panic!("first run should build: {error}"));
+        let first_path = first.path().to_path_buf();
+        journal.phase = phase;
+        journal.transaction = 17;
+        persist_atomic_json(&first_path.join("lifecycle-journal.json"), &journal)
+            .unwrap_or_else(|error| panic!("crash-point journal should persist: {error}"));
+        drop(first);
+
+        let (_second, _, _) = production_run_directory(&scenario, &config)
+            .unwrap_or_else(|error| panic!("incomplete transaction should recover: {error}"));
+        let recovered: ProductionLifecycleJournal =
+            decode_run_json(&first_path.join("lifecycle-journal.json"))
+                .unwrap_or_else(|error| panic!("recovered journal should decode: {error}"));
+        assert_eq!(recovered.transaction, 17);
+        assert!(matches!(
+            recovered.phase,
+            ProductionLifecycleJournalPhase::Quarantined
+        ));
+    }
+}
+
+#[test]
+fn durable_run_state_fails_closed_on_a_corrupt_journal() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let source = initially_violated_scenario();
+    let scenario = source.scenario_def();
+    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
+    let (first, _, _) = production_run_directory(&scenario, &config)
+        .unwrap_or_else(|error| panic!("first run should build: {error}"));
+    let journal = first.path().join("lifecycle-journal.json");
+    drop(first);
+    fs::write(&journal, b"not-json")
+        .unwrap_or_else(|error| panic!("corrupt journal fixture should write: {error}"));
+
+    let error = production_run_directory(&scenario, &config)
+        .err()
+        .unwrap_or_else(|| panic!("corrupt journal should fail closed"));
+    assert!(
+        error
+            .to_string()
+            .contains("invalid prior lifecycle journal")
+    );
+}
+
+#[test]
+fn durable_run_state_fails_closed_on_a_corrupt_manifest() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let source = initially_violated_scenario();
+    let scenario = source.scenario_def();
+    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
+    let (first, _, _) = production_run_directory(&scenario, &config)
+        .unwrap_or_else(|error| panic!("first run should build: {error}"));
+    let manifest = first.path().join("run-manifest.json");
+    drop(first);
+    fs::write(&manifest, b"not-json")
+        .unwrap_or_else(|error| panic!("corrupt manifest fixture should write: {error}"));
+
+    let error = production_run_directory(&scenario, &config)
+        .err()
+        .unwrap_or_else(|| panic!("corrupt manifest should fail closed"));
+    assert!(error.to_string().contains("invalid prior run manifest"));
+}
+
 fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLifecycleLoop {
     let scenario = source.scenario_def();
     let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
@@ -77,7 +200,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         .lower_to_event_graph_for_world(source.world())
         .unwrap_or_else(|error| panic!("test trigger plan should lower: {error}"))
         .into_event_graph();
-    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root");
+    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
     let nodes = ProductionNodeSet::new();
     let fault_runtime = ProductionFaultRuntime::new(
         source.plan().fault_signals().clone(),
@@ -132,6 +255,14 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
             nodes: Vec::new(),
             completed_exits: Vec::new(),
         },
+        run_manifest: ProductionRunManifest {
+            version: 1,
+            scenario: scenario.id().to_hex(),
+            processes: BTreeMap::new(),
+            staged_processes: BTreeMap::new(),
+            clean_shutdown: false,
+            recovered_after_host_exit: false,
+        },
         scenario,
         source: source.clone(),
         config,
@@ -143,22 +274,27 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         debug_gateway_teardown_required: false,
         indeterminate_debug_candidate: None,
         debug_runtime_evidence: Vec::new(),
-        _run_directory: tempfile::tempdir()
+        _run_directory: ProductionRunDirectory::temporary()
             .unwrap_or_else(|error| panic!("test run directory should build: {error}")),
     }
 }
 
 #[test]
 fn production_guest_assets_are_kept_per_architecture() {
-    let config =
-        ProductionVmLifecycleConfig::new("qemu-system-x86_64", "plugin", "x86-kernel", "x86-root")
-            .with_kernel_cmdline_prefix("console=ttyS0")
-            .with_guest_assets(
-                VmArchitecture::Aarch64,
-                "arm-kernel",
-                "arm-root",
-                Some(String::from("console=ttyAMA0")),
-            );
+    let config = ProductionVmLifecycleConfig::new(
+        "qemu-system-x86_64",
+        "plugin",
+        "x86-kernel",
+        "x86-root",
+        "run-state",
+    )
+    .with_kernel_cmdline_prefix("console=ttyS0")
+    .with_guest_assets(
+        VmArchitecture::Aarch64,
+        "arm-kernel",
+        "arm-root",
+        Some(String::from("console=ttyAMA0")),
+    );
 
     let x86 = config
         .guest_assets
@@ -188,6 +324,7 @@ fn production_native_aarch64_assets_do_not_create_an_x86_fallback() {
         VmArchitecture::Aarch64,
         "arm-kernel",
         "arm-root",
+        "run-state",
     );
 
     assert!(!config.guest_assets.contains_key(&VmArchitecture::X86_64));
@@ -201,9 +338,10 @@ fn production_native_aarch64_assets_do_not_create_an_x86_fallback() {
 
 #[test]
 fn architecture_override_does_not_inherit_the_native_kernel_cmdline() {
-    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "x86-kernel", "x86-root")
-        .with_kernel_cmdline_prefix("console=ttyS0")
-        .with_guest_assets(VmArchitecture::Aarch64, "arm-kernel", "arm-root", None);
+    let config =
+        ProductionVmLifecycleConfig::new("qemu", "plugin", "x86-kernel", "x86-root", "run-state")
+            .with_kernel_cmdline_prefix("console=ttyS0")
+            .with_guest_assets(VmArchitecture::Aarch64, "arm-kernel", "arm-root", None);
 
     let x86 = config
         .guest_assets

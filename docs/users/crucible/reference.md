@@ -63,6 +63,15 @@ Backend values:
 | `auto` | Discover and validate the packaged QEMU/plugin pair. |
 | `qemu` | Require the local patched-QEMU production backend. |
 
+Production QEMU execution also requires `CRUCIBLE_RUN_STATE_ROOT` to name a
+writable, durable directory. Crucible creates content-addressed scenario and
+monotonic run subdirectories beneath it. Each run records exact Linux process
+identities (PID, start-time ticks, and executable), staged replacements, and
+the lifecycle transaction phase. A second live owner is rejected; after an
+interrupted owner disappears, Crucible verifies or contains every recorded
+process before admitting a new run. Missing, malformed, or version-mismatched
+recovery records fail closed.
+
 Output-format values:
 
 | Value | Meaning |

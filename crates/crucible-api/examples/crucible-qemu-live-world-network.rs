@@ -60,9 +60,10 @@ fn node(name: &str) -> WorldNode {
 /// process transition, checkpoint, or replay is not observed.
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let [qemu, plugin, kernel, root_image, initrd] = args.as_slice() else {
+    let [qemu, plugin, kernel, root_image, initrd, run_state_root] = args.as_slice() else {
         return Err(
-            "usage: crucible-qemu-live-world-network QEMU PLUGIN KERNEL ROOT INITRD".into(),
+            "usage: crucible-qemu-live-world-network QEMU PLUGIN KERNEL ROOT INITRD RUN_STATE_ROOT"
+                .into(),
         );
     };
     // ---------------------------------------------------------------------
@@ -100,7 +101,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let scenario = source.scenario_def();
     // The quantum budget controls how many authoritative scheduler quanta the
     // lifecycle admits; the run ceiling separately bounds retired instructions.
-    let config = ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image)
+    let config = ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image, run_state_root)
         .with_root_image_format(ProductionRootImageFormat::Raw)
         .with_initrd(initrd)
         .with_kernel_cmdline_prefix("console=ttyS0 quiet net.ifnames=0 init=/init")

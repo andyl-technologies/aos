@@ -185,6 +185,8 @@ pub use node::{
     QemuQmpMachineControlChannel, QemuShmemHotPathChannel,
 };
 #[cfg(target_os = "linux")]
+pub use node::{QemuProcessIdentity, linux_process_identity, quarantine_orphaned_qemu_process};
+#[cfg(target_os = "linux")]
 pub use node_factory::{
     QemuNodeFactoryError, QemuNodeFactoryRuntime, QemuNodeRestoreAdmission, QemuNodeRestorePlan,
     QemuQmpExactSnapshotControlChannel, QemuWarmRestoreLaunchError,
