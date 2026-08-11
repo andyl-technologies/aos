@@ -232,6 +232,13 @@ image build. A production external-signing and key-custody workflow is not
 provided as a user-facing deployment path. Do not repurpose the fixture
 variants or copy their keys into a real image pipeline.
 
+UEFI Setup Mode is an enrollment environment, not a durable operating state.
+The measured-boot image temporarily formats `/var` as plaintext while Secure
+Boot is not enforcing; the first enforcing boot replaces that filesystem with
+the TPM-sealed volume. Do not stage configuration, packages, images, or other
+state that must survive until enrollment and the first enforcing boot have
+completed.
+
 The mechanisms currently demonstrated are:
 
 - Authenticode-signed UKIs and systemd-boot;

@@ -66,7 +66,8 @@ specification.
 ## Graph, degradation, and atomic activation
 
 - [x] The compiler writes per-package fetch/render drop-ins and target wants,
-      reloads systemd once, and awaits `aos-config.target` before activation.
+      reloads systemd once, awaits `aos-activate.service` while it drives the
+      fetch/render wings, and publishes `aos-config.target` after activation.
 - [x] Package fetch edges use `Wants=` with bounded retry. Required boot/storage
       edges remain hard dependencies.
 - [x] A soft-failed package and its dependents are removed by dependency-closed

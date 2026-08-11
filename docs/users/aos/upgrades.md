@@ -11,6 +11,11 @@ Image state is under `/var/lib/profiles/image`; configuration state is under
 `/var/lib/profiles/system`. Advancing one axis does not silently rewrite the
 other.
 
+These paths become durable on measured-boot systems only after Secure Boot key
+enrollment and the first enforcing boot have created the TPM-sealed `/var`.
+Do not stage an image update while the machine is still using the disposable
+plaintext `/var` provided in UEFI Setup Mode.
+
 ## Prepare the rollout
 
 The system registry must contain one package with the same name as the running
