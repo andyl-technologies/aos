@@ -108,9 +108,9 @@ and a missed deadline performs another native machine reset. The final missed
 deadline executes `exhausted`. Failure to restore preserved reset state is a
 fail-closed permanent failure and never resumes the partially reset machine.
 
-`CRUCLIF1` version 2 is 256 bytes. Its first 192 bytes retain the lifecycle,
-state-policy, timing, affected-byte-count, and before/after fingerprint fields
-from version 1. The extension is exhaustive:
+`CRUCLIF1` version 3 is 288 bytes. Its first 192 bytes carry the lifecycle,
+state-policy, timing, affected-byte-count, and before/after fingerprint fields.
+The extension is exhaustive:
 
 | Offset | Width | Field |
 | ---: | ---: | --- |
@@ -121,6 +121,7 @@ from version 1. The extension is exhaustive:
 | 208 | 8 | exact virtual retry delay in nanoseconds |
 | 216 | 8 | exact virtual ready deadline, or `UINT64_MAX` when none was armed |
 | 224 | 32 | SHA-256 of the exact UTF-8 ready-marker bytes, or all zeroes |
+| 256 | 32 | independently measured pre-exit QEMU state SHA-256 for `crash`, `power_off`, and `permanent_failure`; all zeroes for nonterminal transitions |
 
 Every terminal path uses the same canonical after-state digest:
 `SHA-256("CRUCTRM1" || transition_le32 || pre_exit_qemu_state_sha256)`, with
@@ -129,6 +130,11 @@ zero padding between the transition and fingerprint exactly as encoded by the
 retries both record the final RAM/device byte counts and the independently
 measured pre-exit QEMU state fingerprint before deriving that terminal digest;
 neither hashes a partially filled evidence buffer as a substitute for state.
+The host reconstructs the digest from the published fingerprint, then reaps
+the exact owned child and requires exit status `70`, `71`, or `72` for
+`crash`, `power_off`, or `permanent_failure`, respectively. The QEMU event and
+the independently observed process status form one supervision record; a
+missing, signaled, late, or mismatched exit fails closed before relaunch.
 
 ## Hang scopes
 

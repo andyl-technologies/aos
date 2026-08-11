@@ -7,7 +7,7 @@
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
-#define LIFECYCLE_EVIDENCE_BYTES 256
+#define LIFECYCLE_EVIDENCE_BYTES 288
 
 static uint16_t architecture;
 static uint32_t volatile_policy;
@@ -140,7 +140,7 @@ static void validate_event(void)
         event.outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
         evidence_len != sizeof(evidence) ||
         memcmp(evidence, "CRUCLIF1", 8) != 0 ||
-        get_u16(evidence + 8) != 2 ||
+        get_u16(evidence + 8) != 3 ||
         get_u16(evidence + 10) != 3 ||
         get_u32(evidence + 12) != volatile_policy ||
         get_u32(evidence + 16) != device_policy ||
@@ -159,6 +159,11 @@ static void validate_event(void)
         get_u64(evidence + 208) != (require_ready ? 4096U : 0U) ||
         (require_ready && get_u64(evidence + 216) == UINT64_MAX)) {
         fail("boot policy evidence was absent or malformed");
+    }
+    for (size_t index = 256; index < sizeof(evidence); index++) {
+        if (evidence[index] != 0) {
+            fail("nonterminal reset published a terminal pre-exit fingerprint");
+        }
     }
     if ((volatile_policy == 1 && get_u64(evidence + 104) != 0) ||
         (volatile_policy == 2 && get_u64(evidence + 104) == 0)) {

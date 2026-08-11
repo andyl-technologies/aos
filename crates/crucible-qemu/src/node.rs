@@ -10,7 +10,7 @@ use std::io::Read as _;
 use std::net::SocketAddr;
 use std::os::unix::net::UnixStream;
 use std::process::Child;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 use crucible::model::{FaultCoordinate, ResolvedBindingAction};
@@ -1160,6 +1160,61 @@ impl QemuNode {
     #[must_use]
     pub const fn child_reaped(&self) -> bool {
         self.child.reaped()
+    }
+
+    /// Waits for the exact child to complete a terminal lifecycle fault.
+    ///
+    /// The authenticated fault event is only a declaration that QEMU has
+    /// requested termination. This method independently reaps the owned child
+    /// and requires its process status to agree with the transition-specific
+    /// status before the host may classify the exit as intentional.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the child does not exit before the
+    /// bounded supervision deadline, waitpid fails, the process is terminated
+    /// by a signal, or its exit code differs from `expected_exit_code`.
+    pub fn await_intended_lifecycle_exit(
+        &mut self,
+        expected_exit_code: i32,
+        action: crucible::ContentHash,
+    ) -> Result<i32, QemuNodeError> {
+        let started = Instant::now();
+        loop {
+            match self.child.try_wait_natural_exit().map_err(|source| {
+                QemuNodeError::fault_command(format!(
+                    "wait for intended lifecycle exit {}: {source}",
+                    action.to_hex()
+                ))
+            })? {
+                Some(status) => {
+                    let actual = status.code().ok_or_else(|| {
+                        QemuNodeError::fault_command(format!(
+                            "intended lifecycle exit {} terminated without an exit code: {status}",
+                            action.to_hex()
+                        ))
+                    })?;
+                    if actual != expected_exit_code {
+                        return Err(QemuNodeError::fault_command(format!(
+                            "intended lifecycle exit {} returned {actual}, expected {expected_exit_code}",
+                            action.to_hex()
+                        )));
+                    }
+                    self.lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
+                    return Ok(actual);
+                }
+                None if started.elapsed() < self.async_policy.advance_completion_timeout => {
+                    std::thread::yield_now();
+                }
+                None => {
+                    return Err(QemuNodeError::fault_command(format!(
+                        "intended lifecycle exit {} did not complete within {:?}",
+                        action.to_hex(),
+                        self.async_policy.advance_completion_timeout
+                    )));
+                }
+            }
+        }
     }
 
     /// Returns the fixed channel roles owned by this node.
