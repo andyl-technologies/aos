@@ -1220,19 +1220,20 @@ usability defects. Accepted defects feed back into the CLI and user documentatio
 The 2026-08-11 packaged operator qualification closes the runtime portions of
 T-DBG-9, T-DBG-10, T-DBG-12, and T-DBG-14. Two independent AArch64 runs and one
 combined x86_64/AArch64 run used the public daemon and CLI outside Nix checks.
-Each architecture retained 65 events at the baseline and 64 after reverse,
-landed at distinct virtual-time and node-icount coordinates, reproduced the
-complete landed tuple through repeated goto, advanced gateway generations while
-one GDB connection and hardware breakpoint remained live, exercised scheduler
-continue and single-step, ran guest exec/PTY/SSH, and closed an active guest
-stream on reposition. The AArch64 exec and SSH probes both reported `aarch64`.
-The admitted AArch64 kernel and root image were bound in the aggregate evidence
-as `blake3:38ea5e76ba4dba2acaf0d64fed3722c9acfa7df9033bb4e01473e19c6763aa9f`
-and `blake3:5c9cca533f89c3df7f59ba189779dab38bb7c18b9438fb8b58d1ed3bef0ee9c7`
-with doorbell instruction ABI v4. The canonical scenario and aggregate asset
-identity also retain the exact selected kernel command line, so the boot tuple
-can be reconstructed from the evidence without consulting invocation-local
-environment variables.
+Each architecture retained non-empty reverse history with distinct baseline and
+earlier event prefixes, landed at distinct virtual-time and node-icount
+coordinates, reproduced the complete landed tuple through repeated goto,
+advanced gateway generations while one GDB connection and hardware breakpoint
+remained live, exercised scheduler continue and single-step, ran guest
+exec/PTY/SSH, and closed an active guest stream on reposition. The AArch64 exec
+and SSH probes both reported `aarch64`. Each run binds the admitted AArch64
+kernel and root image as BLAKE3 identities in its aggregate evidence with
+doorbell instruction ABI v4. The canonical scenario and aggregate asset identity
+also retain the exact selected kernel command line, so the boot tuple can be
+reconstructed from the evidence without consulting invocation-local environment
+variables. Exact asset hashes and event-prefix counts remain per-run evidence:
+they are not copied into this source file because changing retained source can
+legitimately change a packaged guest or fixture identity.
 
 Independent boots may batch observational console entries differently. That is
 not a causal replay difference: the acceptance comparison follows OBS-15 and
