@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 8bc1b21..059cef9 100644
+index 8bc1b21..8502efe 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -32,6 +32,7 @@
@@ -10,7 +10,7 @@ index 8bc1b21..059cef9 100644
  #include "qemu/plugin.h"
  #include "qemu/timer.h"
  #include "exec/cpu-common.h"
-@@ -93,6 +94,45 @@ static CPUState *rr_crucible_sim_loop_cpu(CPUState *cpu)
+@@ -93,6 +94,87 @@ static CPUState *rr_crucible_sim_loop_cpu(CPUState *cpu)
      return cpu;
  }
  
@@ -24,6 +24,48 @@ index 8bc1b21..059cef9 100644
 +        }
 +    }
 +    return false;
++}
++
++static bool rr_crucible_sim_boundary_deadline_active(void)
++{
++    return qemu_crucible_fault_next_boundary_deadline(
++               CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) != UINT64_MAX;
++}
++
++static bool rr_crucible_sim_boundary_deadline_due(void)
++{
++    uint64_t deadline = qemu_crucible_fault_next_boundary_deadline(
++        CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY);
++    int64_t now = icount_get_observed();
++
++    return deadline != UINT64_MAX && deadline <= INT64_MAX && now >= 0 &&
++           deadline <= (uint64_t)now;
++}
++
++static int64_t rr_crucible_sim_clamp_boundary_deadline(int64_t budget)
++{
++    uint64_t deadline;
++    uint64_t remaining;
++    int64_t now;
++
++    if (budget <= 0) {
++        return budget;
++    }
++    deadline = qemu_crucible_fault_next_boundary_deadline(
++        CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY);
++    if (deadline == UINT64_MAX || deadline > INT64_MAX) {
++        return budget;
++    }
++    now = icount_get_observed();
++    if (now < 0) {
++        error_report("Crucible virtual deadline observed negative time");
++        abort();
++    }
++    if (deadline <= (uint64_t)now) {
++        return 0;
++    }
++    remaining = deadline - (uint64_t)now;
++    return remaining < (uint64_t)budget ? (int64_t)remaining : budget;
 +}
 +
 +static bool rr_crucible_sim_advance_stalled_deadline(void)
@@ -56,7 +98,59 @@ index 8bc1b21..059cef9 100644
  static void rr_crucible_sim_reset_exit_request(CPUState *cpu)
  {
      if (!cpu) {
-@@ -658,6 +698,9 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -237,7 +319,8 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             (crucible_sim_shmem_dispatch_registered() ||
+              crucible_sim_observer_registered() ||
+              qemu_crucible_fault_next_icount(
+-                 CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) != UINT64_MAX)) {
++                 CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) != UINT64_MAX ||
++             rr_crucible_sim_boundary_deadline_active())) {
+             uint64_t current_icount = qemu_plugin_icount_raw();
+             bool observer_due = false;
+             bool dispatch_due = false;
+@@ -259,6 +342,8 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             *cpu_budget = qemu_crucible_fault_clamp_budget(
+                 CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, current_icount,
+                 *cpu_budget);
++            *cpu_budget = rr_crucible_sim_clamp_boundary_deadline(
++                *cpu_budget);
+             if (*cpu_budget == 0) {
+                 qemu_crucible_fault_dispatch_boundary(
+                     CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, current_icount);
+@@ -313,9 +398,10 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             r != EXCP_HALTED && cpu_can_run(cpu));
+ 
+         if (rr_crucible_sim_mode() &&
+-            qemu_crucible_fault_next_icount(
+-                CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) <=
+-                qemu_plugin_icount_raw()) {
++            (qemu_crucible_fault_next_icount(
++                 CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) <=
++                 qemu_plugin_icount_raw() ||
++             rr_crucible_sim_boundary_deadline_due())) {
+             qemu_crucible_fault_dispatch_boundary(
+                 CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY,
+                 qemu_plugin_icount_raw());
+@@ -609,7 +695,8 @@ static void *rr_cpu_thread_fn(void *arg)
+                 (crucible_sim_shmem_dispatch_registered() ||
+                  crucible_sim_observer_registered() ||
+                  qemu_crucible_fault_next_icount(
+-                     CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) != UINT64_MAX)) {
++                     CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) != UINT64_MAX ||
++                 rr_crucible_sim_boundary_deadline_active())) {
+                 uint64_t current_icount = qemu_plugin_icount_raw();
+                 bool observer_due = false;
+                 bool dispatch_due = false;
+@@ -631,6 +718,8 @@ static void *rr_cpu_thread_fn(void *arg)
+                 cpu_budget = qemu_crucible_fault_clamp_budget(
+                     CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, current_icount,
+                     cpu_budget);
++                cpu_budget = rr_crucible_sim_clamp_boundary_deadline(
++                    cpu_budget);
+                 if (cpu_budget == 0) {
+                     qemu_crucible_fault_dispatch_boundary(
+                         CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY,
+@@ -658,6 +747,9 @@ static void *rr_cpu_thread_fn(void *arg)
  
              if (!qemu_crucible_fault_vcpu_service_eligible(cpu)) {
                  qemu_crucible_fault_vcpu_service_skipped(cpu);
@@ -66,7 +160,7 @@ index 8bc1b21..059cef9 100644
              } else if (cpu_can_run(cpu)) {
                  if (rr_crucible_sim_run_tcg_batch(&cpu, &cpu_budget)) {
                      break;
-@@ -683,6 +726,15 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -683,6 +775,15 @@ static void *rr_cpu_thread_fn(void *arg)
              rr_crucible_sim_reset_exit_request(cpu);
          }
  
@@ -372,10 +466,10 @@ index 58761d8..0df53f1 100644
  
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000..7b25d42
+index 0000000..acf60bc
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
-@@ -0,0 +1,1109 @@
+@@ -0,0 +1,1115 @@
 +/*
 + * Crucible deterministic node lifecycle and hang faults
 + *
@@ -1225,6 +1319,7 @@ index 0000000..7b25d42
 +        crucible_hang_previous_take(rebuild, rule);
 +    CrucibleLifecyclePlan plan;
 +    uint64_t timeout;
++    int64_t entered_virtual_ns;
 +
 +    if (state) {
 +        g_ptr_array_add(rebuild->next, state);
@@ -1241,11 +1336,16 @@ index 0000000..7b25d42
 +    state = g_new0(CrucibleHangState, 1);
 +    state->rule = qemu_crucible_fault_rule_copy(rule);
 +    state->entered_icount = qemu_plugin_icount_raw();
-+    state->entered_virtual_ns = icount_get_observed();
++    entered_virtual_ns = icount_get_observed();
++    if (entered_virtual_ns < 0) {
++        error_report("Crucible hang entered at negative virtual time");
++        abort();
++    }
++    state->entered_virtual_ns = entered_virtual_ns;
 +    state->watchdog_enabled = crucible_lifecycle_watchdog_plan(
 +        rule, &plan, &timeout);
 +    if (state->watchdog_enabled) {
-+        if (state->entered_virtual_ns > UINT64_MAX - timeout) {
++        if (timeout > INT64_MAX - entered_virtual_ns) {
 +            error_report("Crucible watchdog deadline overflowed after prepare");
 +            abort();
 +        }
@@ -1634,14 +1734,13 @@ index ff1e179..1327286 100644
          return true;
      }
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index 31b19e1..4a73572 100644
+index 31b19e1..fe7b0ca 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
-@@ -685,6 +685,14 @@ uint64_t qemu_crucible_fault_next_icount(uint16_t phase)
+@@ -685,6 +685,13 @@ uint64_t qemu_crucible_fault_next_icount(uint16_t phase)
          }
      }
      g_mutex_unlock(&crucible_fault_lock);
-+    next = MIN(next, qemu_crucible_fault_next_boundary_deadline(phase));
 +    return next;
 +}
 +

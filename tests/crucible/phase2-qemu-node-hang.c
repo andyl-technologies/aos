@@ -13,6 +13,9 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
 static uint16_t architecture;
 static bool finished;
+static bool runnable_scope;
+static bool initial_time_advance_started;
+static uint64_t initial_virtual_time;
 static uint8_t *upsert_payload;
 static size_t upsert_payload_len;
 static uint8_t *remove_payload;
@@ -77,8 +80,10 @@ static void append_field(GByteArray *bytes, uint16_t tag, uint16_t type,
 
 static uint8_t *build_payload(uint16_t operation, size_t *length)
 {
-    static const uint8_t scope[] =
+    static const uint8_t node_scope[] =
         "CRUCJSN1{\"kind\":\"node\"}";
+    static const uint8_t vcpu_scope[] =
+        "CRUCJSN1{\"kind\":\"vcpus\",\"parameters\":[1]}";
     static const uint8_t watchdog[] =
         "CRUCJSN1{\"kind\":\"transition_after\",\"parameters\":{"
         "\"boot_policy\":{\"kind\":\"immediate\"},"
@@ -88,6 +93,7 @@ static uint8_t *build_payload(uint16_t operation, size_t *length)
         "\"volatile_state_policy\":\"preserve\"}}";
     g_autoptr(GByteArray) bytes = g_byte_array_sized_new(512);
     uint8_t header[CRUCIBLE_NODE_FAULT_PAYLOAD_HEADER_V1_BYTES] = { 0 };
+    uint8_t vcpu_target[4];
     uint8_t scope_kind[4];
     uint8_t recovery_event[32];
 
@@ -98,7 +104,8 @@ static uint8_t *build_payload(uint16_t operation, size_t *length)
             CRUCIBLE_FAULT_COMMAND_NODE_HANG);
     put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_OPERATION_OFFSET, operation);
     put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_TARGET_KIND_OFFSET,
-            CRUCIBLE_NODE_FAULT_TARGET_NODE);
+            runnable_scope ? CRUCIBLE_NODE_FAULT_TARGET_VCPU :
+                             CRUCIBLE_NODE_FAULT_TARGET_NODE);
     put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_MODEL_PHASE_OFFSET, 10);
     put_u64(header + CRUCIBLE_NODE_FAULT_PAYLOAD_GENERATION_OFFSET,
             operation == CRUCIBLE_NODE_FAULT_OPERATION_REMOVE ? 8 : 7);
@@ -106,20 +113,23 @@ static uint8_t *build_payload(uint16_t operation, size_t *length)
     memset(header + CRUCIBLE_NODE_FAULT_PAYLOAD_TARGET_HASH_OFFSET, 0x52, 32);
     memset(header + CRUCIBLE_NODE_FAULT_PAYLOAD_SCHEMA_HASH_OFFSET, 0x53, 32);
     put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_FIELD_COUNT_OFFSET,
-            operation == CRUCIBLE_NODE_FAULT_OPERATION_REMOVE ? 0 : 4);
+            operation == CRUCIBLE_NODE_FAULT_OPERATION_REMOVE ? 0 :
+                (runnable_scope ? 5 : 4));
     g_byte_array_append(bytes, header, sizeof(header));
     if (operation == CRUCIBLE_NODE_FAULT_OPERATION_REMOVE) {
         *length = bytes->len;
         return g_byte_array_free(g_steal_pointer(&bytes), false);
     }
 
-    put_u32(scope_kind, 1);
+    put_u32(scope_kind, runnable_scope ? 2 : 1);
     append_field(bytes, CRUCIBLE_NODE_FAULT_FIELD_P1,
                  CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
                  scope_kind, sizeof(scope_kind));
     append_field(bytes, CRUCIBLE_NODE_FAULT_FIELD_P2,
                  CRUCIBLE_NODE_FAULT_FIELD_TYPE_BYTES,
-                 scope, sizeof(scope) - 1);
+                 runnable_scope ? vcpu_scope : node_scope,
+                 runnable_scope ? sizeof(vcpu_scope) - 1 :
+                                  sizeof(node_scope) - 1);
     memset(recovery_event, 0x61, sizeof(recovery_event));
     append_field(bytes, CRUCIBLE_NODE_FAULT_FIELD_P3,
                  CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
@@ -127,6 +137,12 @@ static uint8_t *build_payload(uint16_t operation, size_t *length)
     append_field(bytes, CRUCIBLE_NODE_FAULT_FIELD_P4,
                  CRUCIBLE_NODE_FAULT_FIELD_TYPE_BYTES,
                  watchdog, sizeof(watchdog) - 1);
+    if (runnable_scope) {
+        put_u32(vcpu_target, 1);
+        append_field(bytes, CRUCIBLE_NODE_FAULT_FIELD_T1,
+                     CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
+                     vcpu_target, sizeof(vcpu_target));
+    }
     *length = bytes->len;
     return g_byte_array_free(g_steal_pointer(&bytes), false);
 }
@@ -153,7 +169,8 @@ static void validate_activation(void)
 
     poll_event(evidence, &event);
     if (memcmp(evidence, "CRUCHNG1", 8) != 0 ||
-        get_u16(evidence + 10) != 1 || get_u32(evidence + 12) != 1 ||
+        get_u16(evidence + 10) != 1 ||
+        get_u32(evidence + 12) != (runnable_scope ? 2 : 1) ||
         get_u64(evidence + 40) - get_u64(evidence + 24) !=
             WATCHDOG_TIMEOUT_NANOS) {
         fail("hang activation evidence was malformed");
@@ -173,7 +190,8 @@ static void validate_watchdog(void)
         get_u32(evidence + 16) != 3 || get_u32(evidence + 20) != 1 ||
         get_u64(evidence + 32) != activation_deadline ||
         get_u64(evidence + 40) != WATCHDOG_DOWNTIME_NANOS ||
-        event.observed_icount != activation_raw_icount) {
+        event.observed_icount != activation_raw_icount +
+            (runnable_scope ? WATCHDOG_TIMEOUT_NANOS : 0)) {
         fail("watchdog reset was not applied at the exact hang deadline");
     }
 }
@@ -186,7 +204,8 @@ static void validate_recovery(void)
 
     poll_event(evidence, &event);
     if (memcmp(evidence, "CRUCHNG1", 8) != 0 ||
-        get_u16(evidence + 10) != 2 || get_u32(evidence + 12) != 1 ||
+        get_u16(evidence + 10) != 2 ||
+        get_u32(evidence + 12) != (runnable_scope ? 2 : 1) ||
         get_u64(evidence + 24) + WATCHDOG_TIMEOUT_NANOS !=
             activation_deadline) {
         fail("hang recovery evidence was malformed");
@@ -302,6 +321,36 @@ static uint64_t parse_architecture(const char *argument)
     return value;
 }
 
+static void submit_initial_command(void)
+{
+    if (qemu_plugin_crucible_fault_submit(
+            &command, upsert_payload, upsert_payload_len) != 0) {
+        fail("QEMU rejected the hang preparation");
+    }
+}
+
+static void time_advanced(int status, int64_t time, void *opaque)
+{
+    (void)opaque;
+    if (status != 0 || time < 0 || (uint64_t)time != initial_virtual_time) {
+        fail("initial virtual-time bias failed");
+    }
+    submit_initial_command();
+}
+
+static void vcpu_initialized(qemu_plugin_id_t id, unsigned int vcpu_index)
+{
+    (void)id;
+    if (!runnable_scope || vcpu_index != 0 ||
+        initial_time_advance_started) {
+        return;
+    }
+    initial_time_advance_started = true;
+    if (qemu_plugin_advance_time_ns(initial_virtual_time) != 0) {
+        fail("runnable hang could not queue virtual-time bias");
+    }
+}
+
 QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                                            const qemu_info_t *info,
                                            int argc, char **argv)
@@ -311,10 +360,25 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     bool found = false;
 
     (void)info;
-    if (argc != 1) {
-        fail("expected one architecture plugin argument");
+    if (argc != 1 && argc != 3) {
+        fail("expected architecture or architecture/scope/time arguments");
     }
     architecture = parse_architecture(argv[0]);
+    if (argc == 3) {
+        char *end = NULL;
+
+        if (strcmp(argv[1], "scope=vcpu1") != 0 ||
+            !g_str_has_prefix(argv[2], "initial_virtual_time=")) {
+            fail("runnable hang plugin arguments are invalid");
+        }
+        runnable_scope = true;
+        initial_virtual_time = g_ascii_strtoull(
+            argv[2] + strlen("initial_virtual_time="), &end, 10);
+        if (!end || *end != '\0' || initial_virtual_time == 0 ||
+            initial_virtual_time > INT64_MAX) {
+            fail("initial virtual time is invalid");
+        }
+    }
     count = qemu_plugin_crucible_fault_capabilities(
         capabilities, G_N_ELEMENTS(capabilities));
     for (size_t i = 0; i < MIN(count, G_N_ELEMENTS(capabilities)); i++) {
@@ -345,9 +409,14 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     command.authorization_ceiling_icount = command.target_icount;
     qemu_plugin_register_crucible_fault_completion_cb(completion, NULL);
     qemu_plugin_register_atexit_cb(id, at_exit, NULL);
-    if (qemu_plugin_crucible_fault_submit(
-            &command, upsert_payload, upsert_payload_len) != 0) {
-        fail("QEMU rejected the hang preparation");
+    if (runnable_scope) {
+        if (!qemu_plugin_request_time_control() ||
+            qemu_plugin_register_time_advance_cb(time_advanced, NULL) != 0) {
+            fail("runnable hang could not own virtual-time bias");
+        }
+        qemu_plugin_register_vcpu_init_cb(id, vcpu_initialized);
+    } else {
+        submit_initial_command();
     }
     return 0;
 }

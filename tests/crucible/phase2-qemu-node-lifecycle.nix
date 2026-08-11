@@ -148,6 +148,7 @@ in
             run_hang() {
               architecture="$1"
               architecture_id="$2"
+              scope="$3"
               case "$architecture" in
                 x86_64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
@@ -164,17 +165,31 @@ in
                   exit 1
                   ;;
               esac
-              log="logs/$architecture-hang.log"
+              case "$scope" in
+                node)
+                  smp=1
+                  plugin_args="architecture=$architecture_id"
+                  ;;
+                runnable-vcpu)
+                  smp=2
+                  plugin_args="architecture=$architecture_id,scope=vcpu1,initial_virtual_time=10000"
+                  ;;
+                *)
+                  echo "unknown hang scope: $scope" >&2
+                  exit 1
+                  ;;
+              esac
+              log="logs/$architecture-hang-$scope.log"
               if ! timeout 120 "$qemu_binary" \
                   $machine_args \
                   -accel sim \
                   -icount shift=0,rr_switch_quantum=256 \
-                  -smp 1 \
+                  -smp "$smp" \
                   -nographic \
                   -serial none \
                   -monitor none \
                   -kernel "$guest" \
-                  -plugin "$PWD/crucible-node-hang.so,architecture=$architecture_id" \
+                  -plugin "$PWD/crucible-node-hang.so,$plugin_args" \
                   > "$log" 2>&1; then
                 cat "$log" >&2
                 return 1
@@ -186,8 +201,10 @@ in
               test "$(grep -Fc CRUCIBLE_NODE_HANG_LIVE_PASS "$log")" -eq 1
             }
 
-            run_hang x86_64 2
-            run_hang aarch64 3
+            run_hang x86_64 2 node
+            run_hang aarch64 3 node
+            run_hang x86_64 2 runnable-vcpu
+            run_hang aarch64 3 runnable-vcpu
           '';
         }
         {
@@ -205,7 +222,8 @@ in
               printf 'backend=actual-patched-qemu\n'
               printf 'volatile_policies=preserve,clear\n'
               printf 'device_policies=preserve,clear,device_reset\n'
-              printf 'hang_scopes=node\n'
+              printf 'hang_scopes=node,vcpus\n'
+              printf 'watchdog_deadline_axes=stalled,runnable-with-time-bias\n'
               printf 'watchdog=transition_after-reset\n'
               printf 'recovery=transactional-remove\n'
             } > "$out/result"
