@@ -754,6 +754,24 @@ fn compact_checkpoint_round_trips_concrete_execution_closure() {
 }
 
 #[test]
+fn compact_scheduler_state_codec_round_trips_materialized_state() {
+    let config = Configuration::genesis(generated_scenario(89));
+    let state = fat_checkpoint_for(&config)
+        .state
+        .unwrap_or_else(|| panic!("fat checkpoint should contain state"))
+        .scheduler;
+    let bytes = state.to_compact_binary();
+    let restored = SchedulerState::from_compact_binary(&bytes)
+        .unwrap_or_else(|error| panic!("scheduler state should decode: {error}"));
+    assert_eq!(restored, state);
+    assert_eq!(restored.to_compact_binary(), bytes);
+
+    let mut trailing = bytes;
+    trailing.push(0);
+    assert!(SchedulerState::from_compact_binary(&trailing).is_err());
+}
+
+#[test]
 fn temporal_graph_materialized_cache_keeps_thin_checkpoint_source_of_truth() {
     let scenario = generated_scenario(76);
     let genesis = Configuration::genesis(scenario.clone());
