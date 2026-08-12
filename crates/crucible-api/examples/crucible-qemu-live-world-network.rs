@@ -6,7 +6,8 @@
 //!
 //! 1. Two guests exchange frames over a deterministic, lossy virtual link.
 //! 2. The search API exposes a branch where a particular frame is lost.
-//! 3. The selected network branch is replayed in a fresh lifecycle.
+//! 3. A durable exact checkpoint resumes to the same next live-QEMU quantum.
+//! 4. The selected network branch is replayed in a fresh lifecycle.
 //!
 //! The executable expects paths to QEMU, the Crucible QEMU plugin, a kernel, a
 //! raw root image, and an initrd, in that order. The repository's Nix checks
@@ -18,12 +19,13 @@ use std::time::Duration;
 
 use crucible::model::{FaultObservationKind, FaultTargetKind};
 use crucible::{
-    Icount, LinkDef, LinkLossProbability, NodeId, NodeTemplate, Plan, Properties, QuantumLoop,
-    QuantumRequest, ReadyPoint, ScenarioDefForm, Seed, SimDuration, WhiteBoxPolicy, World,
-    WorldNode,
+    Checkpoint, CheckpointKind, Icount, LinkDef, LinkLossProbability, NodeId, NodeTemplate, Plan,
+    Properties, QuantumLoop, QuantumRequest, ReadyPoint, ScenarioDefForm, Seed, SimDuration,
+    VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_api::{
     ProductionRootImageFormat, ProductionVmLifecycleConfig, build_production_vm_lifecycle_loop,
+    build_production_vm_lifecycle_loop_from_checkpoint,
 };
 
 /// Creates a minimal VM description whose artifacts come from backend config.
@@ -114,6 +116,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut network_decisions = 0_usize;
     let mut delivered_frames = 0_usize;
     let mut selected_branch = None;
+    let mut checkpoint_frontier = VirtualTime::default();
     // Twelve quanta are enough for the purpose-built guests to emit traffic and
     // for delayed frames to reach the opposite guest. The loop also waits until
     // search exposes a counterfactual `loss-fire` choice for later replay.
@@ -122,6 +125,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             configuration,
             control: Vec::new(),
         })?;
+        checkpoint_frontier = outcome.frontier;
         configuration = outcome.configuration;
         network_decisions = network_decisions.saturating_add(
             outcome
@@ -194,7 +198,42 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
+    // Capture a production closure, advance the original processes once, then
+    // prove a newly launched restore returns the identical complete outcome.
+    // Comparing the full value covers scheduler state, routed events, decisions,
+    // evidence entries, segment bytes, offset, and quiescence together.
+    let checkpoint_configuration = configuration.clone();
+    let execution_closure = lifecycle
+        .capture_checkpoint(&checkpoint_configuration)?
+        .ok_or("production lifecycle did not return an exact execution closure")?;
+    let uninterrupted = lifecycle.drive_quantum(QuantumRequest {
+        configuration: checkpoint_configuration.clone(),
+        control: Vec::new(),
+    })?;
     lifecycle.shutdown()?;
+
+    let mut checkpoint = Checkpoint::new(
+        checkpoint_configuration.id(),
+        checkpoint_configuration.id(),
+        CheckpointKind::Fat,
+    );
+    checkpoint.scenario_ref = scenario.id();
+    checkpoint.virtual_time = checkpoint_frontier;
+    checkpoint.execution_closure = Some(execution_closure);
+    let mut restored = build_production_vm_lifecycle_loop_from_checkpoint(
+        &scenario,
+        &source,
+        &config,
+        &checkpoint,
+    )?;
+    let restored_outcome = restored.drive_quantum(QuantumRequest {
+        configuration: checkpoint_configuration,
+        control: Vec::new(),
+    })?;
+    restored.shutdown()?;
+    if restored_outcome != uninterrupted {
+        return Err("durable exact restore diverged on the next live-QEMU quantum".into());
+    }
 
     // ---------------------------------------------------------------------
     // Stage 2: replay the exact lossy-network branch found in Stage 1.
@@ -241,5 +280,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("delivered_frames={delivered_frames}");
     println!("search_branch=loss-fire");
     println!("branch_decisions_match=true");
+    println!("exact_restore_next_quantum_match=true");
     Ok(())
 }
