@@ -3,6 +3,10 @@
 use super::*;
 
 impl FaultBindingRuntime<'_> {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "locked replay authenticates independent model, state, coordinate, opportunity, derivation, and trace inputs"
+    )]
     pub(super) fn resolve_replay_actions(
         &mut self,
         generated: &[ResolvedBindingAction],
@@ -64,9 +68,9 @@ impl FaultBindingRuntime<'_> {
             let action = match trace.mode {
                 FaultReplayMode::OutcomeOnlyNetwork(_) => outcome_action(
                     &record,
-                    opportunity.ok_or_else(|| {
-                        BindingRuntimeError::Runtime(FaultRuntimeError::InvalidReplayTrace)
-                    })?,
+                    opportunity.ok_or(BindingRuntimeError::Runtime(
+                        FaultRuntimeError::InvalidReplayTrace,
+                    ))?,
                 ),
                 FaultReplayMode::RecomputedCause | FaultReplayMode::LockedEffect => {
                     record.locked_action()
@@ -157,7 +161,7 @@ pub(super) fn verify_replay_results(
     if consumed {
         trace
             .advance()
-            .map_err(|error| BindingRuntimeError::AdapterCommit(error))?;
+            .map_err(BindingRuntimeError::AdapterCommit)?;
     }
     Ok(())
 }

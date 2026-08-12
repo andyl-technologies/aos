@@ -1140,8 +1140,10 @@ mod tests {
         .unwrap_or_else(|error| panic!("restore: {error}"));
         assert_eq!(restored, runtime);
 
-        let mut different_limits = FaultResourceLimits::default();
-        different_limits.active_contributions_per_target = 1;
+        let different_limits = FaultResourceLimits {
+            active_contributions_per_target: 1,
+            ..FaultResourceLimits::default()
+        };
         assert_eq!(
             TransactionalAdapterRuntime::restore(
                 FaultAdapter::Network,

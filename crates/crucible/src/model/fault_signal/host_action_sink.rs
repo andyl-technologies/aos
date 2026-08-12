@@ -208,17 +208,17 @@ impl FaultActionSink for HostFaultActionSink {
             return Err(self.reject(None, FaultRuntimeError::IncompleteAdapterState));
         }
         for action in actions {
-            if let Some(expected) = action.expected_precondition {
-                if expected != self.state.digest {
-                    return Err(self.reject(
-                        Some(action),
-                        FaultRuntimeError::ReplayPreconditionMismatch {
-                            action: action.id(),
-                            expected,
-                            observed: self.state.digest,
-                        },
-                    ));
-                }
+            if let Some(expected) = action.expected_precondition
+                && expected != self.state.digest
+            {
+                return Err(self.reject(
+                    Some(action),
+                    FaultRuntimeError::ReplayPreconditionMismatch {
+                        action: action.id(),
+                        expected,
+                        observed: self.state.digest,
+                    },
+                ));
             }
         }
         let mut next = self.state.clone();

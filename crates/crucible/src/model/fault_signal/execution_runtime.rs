@@ -1476,9 +1476,11 @@ mod tests {
             .canonical_bytes()
             .unwrap_or_else(|error| panic!("initial bytes: {error}"))
             .len();
-        let mut limits = FaultResourceLimits::default();
-        limits.fat_checkpoint_bytes = u64::try_from(initial_size + 256)
-            .unwrap_or_else(|error| panic!("test checkpoint size: {error}"));
+        let limits = FaultResourceLimits {
+            fat_checkpoint_bytes: u64::try_from(initial_size + 256)
+                .unwrap_or_else(|error| panic!("test checkpoint size: {error}")),
+            ..FaultResourceLimits::default()
+        };
         let plan = FaultSignalPlan::new(base.programs().to_vec(), base.bindings().to_vec(), limits)
             .unwrap_or_else(|error| panic!("limited plan: {error}"));
         let mut owner = OwnedFaultExecutionRuntime::new(
@@ -1548,9 +1550,11 @@ mod tests {
             .canonical_bytes()
             .unwrap_or_else(|error| panic!("initial bytes: {error}"))
             .len();
-        let mut limits = FaultResourceLimits::default();
-        limits.fat_checkpoint_bytes = u64::try_from(initial_size + 64)
-            .unwrap_or_else(|error| panic!("test checkpoint size: {error}"));
+        let limits = FaultResourceLimits {
+            fat_checkpoint_bytes: u64::try_from(initial_size + 64)
+                .unwrap_or_else(|error| panic!("test checkpoint size: {error}")),
+            ..FaultResourceLimits::default()
+        };
         let plan = FaultSignalPlan::new(base.programs().to_vec(), base.bindings().to_vec(), limits)
             .unwrap_or_else(|error| panic!("limited plan: {error}"));
         let mut owner = OwnedFaultExecutionRuntime::new(
