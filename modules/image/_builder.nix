@@ -40,8 +40,14 @@
   # DPS data/hash device hints differ.
   kernelParamsB =
     builtins.replaceStrings
-    ["/dev/disk/by-partlabel/root-a-hash" "/dev/disk/by-partlabel/root-a"]
-    ["/dev/disk/by-partlabel/root-b-hash" "/dev/disk/by-partlabel/root-b"]
+    [
+      system.config.aos.boot.storage.resolvedDevices.rootAHash
+      system.config.aos.boot.storage.resolvedDevices.rootA
+    ]
+    [
+      system.config.aos.boot.storage.resolvedDevices.rootBHash
+      system.config.aos.boot.storage.resolvedDevices.rootB
+    ]
     kernelParams;
 
   version = system.config.aos.system.version;

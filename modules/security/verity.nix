@@ -61,7 +61,7 @@ in {
     ## Block device carrying the read-only root filesystem data (verity lower).
     dataDevice = lib.mkOption {
       type = lib.types.str;
-      default = "/dev/disk/by-partlabel/root-a";
+      default = config.aos.boot.storage.resolvedDevices.rootA;
       description = ''
         Block device containing the read-only root filesystem data — the device
         dm-verity verifies on every read. Discovered by GPT partlabel so it is
@@ -73,7 +73,7 @@ in {
     ## Block device carrying the dm-verity Merkle hash tree.
     hashDevice = lib.mkOption {
       type = lib.types.str;
-      default = "/dev/disk/by-partlabel/root-a-hash";
+      default = config.aos.boot.storage.resolvedDevices.rootAHash;
       description = ''
         Block device containing the dm-verity hash tree (Merkle tree). This is
         the `root-a-hash` partition the image builder places immediately after
