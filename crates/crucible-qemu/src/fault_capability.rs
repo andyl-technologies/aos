@@ -14,27 +14,35 @@ use crucible::model::{
 };
 use crucible_shmem::{
     DEFAULT_FAULT_COMMAND_CAPACITY, FAULT_CAPABILITY_FEATURE_GUEST_CLOCK,
-    FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR, FAULT_CAPABILITY_FEATURE_INTERRUPT,
-    FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS, FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION,
-    FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION, FAULT_COMMAND_SEMANTIC_VERSION,
-    FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION, FAULT_HARDWARE_ERROR_VISIBILITY_INTERRUPT,
-    FAULT_HARDWARE_ERROR_VISIBILITY_TELEMETRY, FAULT_REGISTER_CAPABILITY_IMPULSE,
-    FAULT_REGISTER_CAPABILITY_PERSISTENT, FAULT_REGISTER_CAPABILITY_VMSTATE,
-    FAULT_REGISTER_SIDE_EFFECT_CONTROL_FLOW, FAULT_REGISTER_SIDE_EFFECT_CPU_FLAGS,
-    FAULT_REGISTER_SIDE_EFFECT_INTERRUPT, FAULT_REGISTER_SIDE_EFFECT_TB_FLUSH,
-    FAULT_REGISTER_SIDE_EFFECT_TIMER, FAULT_REGISTER_SIDE_EFFECT_TLB_FLUSH,
-    FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError, FaultAcceleratorCapabilityManifestV1,
-    FaultBoundaryPhase, FaultCapabilityRowV1, FaultCapabilityScope, FaultClockCapabilityManifestV1,
-    FaultClockCapabilityRowV1, FaultCommandKind, FaultHardwareErrorCapabilityManifestV1,
-    FaultHardwareErrorCapabilityRowV1, FaultHardwareErrorClassV1, FaultHardwareErrorMechanismV1,
-    FaultHardwareErrorRecordKindV1, FaultInterruptCapabilityManifestV1,
-    FaultInterruptCapabilityRowV1, FaultInterruptDeliveryDropV1, FaultInterruptFamilyV1,
-    FaultInterruptPolarityV1, FaultInterruptTriggerV1, FaultRegisterCapabilityManifestV1,
-    FaultRegisterCapabilityRowV1, FaultRegisterGroupV1, HARD_FAULT_PAYLOAD_BYTES,
-    fault_capability_manifest_digest,
+    FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR, FAULT_CAPABILITY_FEATURE_INSTRUCTION,
+    FAULT_CAPABILITY_FEATURE_INTERRUPT, FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS,
+    FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION, FAULT_CAPABILITY_FEATURE_NODE_LIFECYCLE,
+    FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION, FAULT_CAPABILITY_FEATURE_VCPU_SERVICE,
+    FAULT_COMMAND_SEMANTIC_VERSION, FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION,
+    FAULT_HARDWARE_ERROR_VISIBILITY_INTERRUPT, FAULT_HARDWARE_ERROR_VISIBILITY_TELEMETRY,
+    FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_REGISTER_CAPABILITY_PERSISTENT,
+    FAULT_REGISTER_CAPABILITY_VMSTATE, FAULT_REGISTER_SIDE_EFFECT_CONTROL_FLOW,
+    FAULT_REGISTER_SIDE_EFFECT_CPU_FLAGS, FAULT_REGISTER_SIDE_EFFECT_INTERRUPT,
+    FAULT_REGISTER_SIDE_EFFECT_TB_FLUSH, FAULT_REGISTER_SIDE_EFFECT_TIMER,
+    FAULT_REGISTER_SIDE_EFFECT_TLB_FLUSH, FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError,
+    FaultAcceleratorCapabilityManifestV1, FaultBoundaryPhase, FaultCapabilityRowV1,
+    FaultCapabilityScope, FaultClockCapabilityManifestV1, FaultClockCapabilityRowV1,
+    FaultCommandKind, FaultHardwareErrorCapabilityManifestV1, FaultHardwareErrorCapabilityRowV1,
+    FaultHardwareErrorClassV1, FaultHardwareErrorMechanismV1, FaultHardwareErrorRecordKindV1,
+    FaultInterruptCapabilityManifestV1, FaultInterruptCapabilityRowV1,
+    FaultInterruptDeliveryDropV1, FaultInterruptFamilyV1, FaultInterruptPolarityV1,
+    FaultInterruptTriggerV1, FaultRegisterCapabilityManifestV1, FaultRegisterCapabilityRowV1,
+    FaultRegisterGroupV1, HARD_FAULT_PAYLOAD_BYTES, fault_capability_manifest_digest,
 };
 
 use crate::LivePluginGuestArchitecture;
+
+const NODE_FAULT_PAYLOAD_SCHEMA: &[u8] =
+    b"crucible.node-fault-payload.v1;page-table-walk=x86_64,aarch64";
+const INSTRUCTION_FAULT_PAYLOAD_SCHEMA: &[u8] = b"crucible.node-fault-payload.v1;instruction-classes=x86.integer(89,8b,01,03,29,2b,31,33,39,3b,85,b8-bf,c7,ff/0-1),x86.control-flow(70-7f,80-8f,e8,e9,eb,c2,c3,ca,cb,cf,ff/2-5),x86.load(8b,03,2b,33,0fb6-0fb7,0fbe-0fbf,ff/6,sse-load),x86.store(89,01,29,31,c7,ff/0-1,sse-store),x86.atomic(86,87,0fb0-0fb1,0fc0-0fc1),x86.fp-simd(0f10-11,0f28-29,0f58-59,0f5c,0f5e,66-or-f3-0f6f-7f),x86.exception(cc,cd,ce,f1,0f0b),x86.device-io(e4-e7,ec-ef),aarch64.integer(data-processing),aarch64.control-flow(branch),aarch64.load-store,aarch64.atomic,aarch64.fp-simd,aarch64.exception;replay-max=256";
+const EXCEPTION_FAULT_PAYLOAD_SCHEMA: &[u8] = b"crucible.node-fault-payload.v1;exception-records=architecture-default;hardware-error-classes=manifest-v1";
+const MEMORY_ECC_FAULT_PAYLOAD_SCHEMA: &[u8] =
+    b"crucible.node-fault-payload.v1;hardware-error-manifest=v1";
 
 /// Exact QEMU fault capability manifest required before guest execution.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,6 +168,73 @@ impl QemuFaultCapabilityRequirement {
             1,
             FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION | FAULT_CAPABILITY_FEATURE_GUEST_CLOCK,
         ));
+        rows.extend([
+            capability_row(
+                FaultCommandKind::NodeLifecycle,
+                FaultCapabilityScope::All,
+                b"qemu.node.lifecycle.v1",
+                NODE_FAULT_PAYLOAD_SCHEMA,
+                HARD_FAULT_PAYLOAD_BYTES,
+                DEFAULT_FAULT_COMMAND_CAPACITY,
+                FAULT_CAPABILITY_FEATURE_NODE_LIFECYCLE,
+            ),
+            capability_row(
+                FaultCommandKind::NodeHang,
+                FaultCapabilityScope::All,
+                b"qemu.node.hang.v1",
+                NODE_FAULT_PAYLOAD_SCHEMA,
+                HARD_FAULT_PAYLOAD_BYTES,
+                DEFAULT_FAULT_COMMAND_CAPACITY,
+                FAULT_CAPABILITY_FEATURE_NODE_LIFECYCLE,
+            ),
+            capability_row(
+                FaultCommandKind::CpuService,
+                FaultCapabilityScope::All,
+                b"qemu.cpu.service.v1",
+                NODE_FAULT_PAYLOAD_SCHEMA,
+                HARD_FAULT_PAYLOAD_BYTES,
+                DEFAULT_FAULT_COMMAND_CAPACITY,
+                FAULT_CAPABILITY_FEATURE_VCPU_SERVICE,
+            ),
+            capability_row(
+                FaultCommandKind::CpuVcpuState,
+                FaultCapabilityScope::All,
+                b"qemu.cpu.vcpu-state.v1",
+                NODE_FAULT_PAYLOAD_SCHEMA,
+                HARD_FAULT_PAYLOAD_BYTES,
+                DEFAULT_FAULT_COMMAND_CAPACITY,
+                FAULT_CAPABILITY_FEATURE_VCPU_SERVICE,
+            ),
+            capability_row(
+                FaultCommandKind::CpuInstructionTransform,
+                scope,
+                b"qemu.cpu.instruction-transform.v1",
+                INSTRUCTION_FAULT_PAYLOAD_SCHEMA,
+                HARD_FAULT_PAYLOAD_BYTES,
+                DEFAULT_FAULT_COMMAND_CAPACITY,
+                FAULT_CAPABILITY_FEATURE_INSTRUCTION,
+            ),
+            capability_row(
+                FaultCommandKind::CpuException,
+                scope,
+                b"qemu.cpu.exception.v1",
+                EXCEPTION_FAULT_PAYLOAD_SCHEMA,
+                HARD_FAULT_PAYLOAD_BYTES,
+                DEFAULT_FAULT_COMMAND_CAPACITY,
+                FAULT_CAPABILITY_FEATURE_INSTRUCTION | FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR,
+            ),
+        ]);
+        let instruction_phases = FaultBoundaryPhase::NodeBoundary.bit()
+            | FaultBoundaryPhase::BeforeInstruction.bit()
+            | FaultBoundaryPhase::AfterInstruction.bit();
+        for row in rows.iter_mut().filter(|row| {
+            matches!(
+                row.command_kind,
+                FaultCommandKind::CpuInstructionTransform | FaultCommandKind::CpuException
+            )
+        }) {
+            row.phase_mask = instruction_phases;
+        }
         rows.push(capability_row(
             FaultCommandKind::CpuRegisterTransform,
             scope,
@@ -184,7 +259,7 @@ impl QemuFaultCapabilityRequirement {
                 FaultCommandKind::InterruptDisposition,
                 scope,
                 interrupt_name,
-                b"crucible.node-fault-payload.v1",
+                NODE_FAULT_PAYLOAD_SCHEMA,
                 HARD_FAULT_PAYLOAD_BYTES,
                 DEFAULT_FAULT_COMMAND_CAPACITY,
                 FAULT_CAPABILITY_FEATURE_INTERRUPT,
@@ -193,7 +268,7 @@ impl QemuFaultCapabilityRequirement {
                 FaultCommandKind::InterruptStorm,
                 scope,
                 storm_name,
-                b"crucible.node-fault-payload.v1",
+                NODE_FAULT_PAYLOAD_SCHEMA,
                 HARD_FAULT_PAYLOAD_BYTES,
                 DEFAULT_FAULT_COMMAND_CAPACITY,
                 FAULT_CAPABILITY_FEATURE_INTERRUPT,
@@ -204,7 +279,7 @@ impl QemuFaultCapabilityRequirement {
                 FaultCommandKind::ClockTransform,
                 FaultCapabilityScope::All,
                 b"qemu.clock.transform.v1",
-                b"crucible.node-fault-payload.v1",
+                NODE_FAULT_PAYLOAD_SCHEMA,
                 HARD_FAULT_PAYLOAD_BYTES,
                 DEFAULT_FAULT_COMMAND_CAPACITY,
                 FAULT_CAPABILITY_FEATURE_GUEST_CLOCK,
@@ -213,7 +288,7 @@ impl QemuFaultCapabilityRequirement {
                 FaultCommandKind::ClockSourceState,
                 FaultCapabilityScope::All,
                 b"qemu.clock.source-state.v1",
-                b"crucible.node-fault-payload.v1",
+                NODE_FAULT_PAYLOAD_SCHEMA,
                 HARD_FAULT_PAYLOAD_BYTES,
                 DEFAULT_FAULT_COMMAND_CAPACITY,
                 FAULT_CAPABILITY_FEATURE_GUEST_CLOCK,
@@ -729,7 +804,7 @@ impl QemuFaultCapabilityRequirement {
                     FaultCommandKind::AcceleratorLifecycle,
                     FaultCapabilityScope::Accelerator,
                     b"qemu.accelerator.lifecycle.v1",
-                    b"crucible.node-fault-payload.v1",
+                    NODE_FAULT_PAYLOAD_SCHEMA,
                     HARD_FAULT_PAYLOAD_BYTES,
                     DEFAULT_FAULT_COMMAND_CAPACITY,
                     0,
@@ -738,7 +813,7 @@ impl QemuFaultCapabilityRequirement {
                     FaultCommandKind::AcceleratorResultTransform,
                     FaultCapabilityScope::Accelerator,
                     b"qemu.accelerator.result-transform.v1",
-                    b"crucible.node-fault-payload.v1",
+                    NODE_FAULT_PAYLOAD_SCHEMA,
                     HARD_FAULT_PAYLOAD_BYTES,
                     DEFAULT_FAULT_COMMAND_CAPACITY,
                     0,
@@ -747,7 +822,7 @@ impl QemuFaultCapabilityRequirement {
                     FaultCommandKind::AcceleratorMemoryEvent,
                     FaultCapabilityScope::Accelerator,
                     b"qemu.accelerator.memory-event.v1",
-                    b"crucible.node-fault-payload.v1",
+                    NODE_FAULT_PAYLOAD_SCHEMA,
                     HARD_FAULT_PAYLOAD_BYTES,
                     DEFAULT_FAULT_COMMAND_CAPACITY,
                     0,
@@ -756,7 +831,7 @@ impl QemuFaultCapabilityRequirement {
                     FaultCommandKind::AcceleratorService,
                     FaultCapabilityScope::Accelerator,
                     b"qemu.accelerator.service.v1",
-                    b"crucible.node-fault-payload.v1",
+                    NODE_FAULT_PAYLOAD_SCHEMA,
                     HARD_FAULT_PAYLOAD_BYTES,
                     DEFAULT_FAULT_COMMAND_CAPACITY,
                     0,
@@ -923,6 +998,26 @@ impl QemuFaultCapabilityRequirement {
         let payload = manifest.encode()?;
         let manifest_digest = *blake3::hash(&payload).as_bytes();
         let mut rows = self.rows.clone();
+        if hardware_error_manifest.is_some_and(|manifest| {
+            manifest
+                .rows
+                .iter()
+                .any(|row| row.record_kind == FaultHardwareErrorRecordKindV1::MemoryEcc)
+        }) {
+            let mut row = capability_row(
+                FaultCommandKind::MemoryEccEvent,
+                manifest.architecture,
+                b"qemu.memory.ecc-event.v1",
+                MEMORY_ECC_FAULT_PAYLOAD_SCHEMA,
+                HARD_FAULT_PAYLOAD_BYTES,
+                DEFAULT_FAULT_COMMAND_CAPACITY,
+                FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR,
+            );
+            row.phase_mask = FaultBoundaryPhase::NodeBoundary.bit()
+                | FaultBoundaryPhase::BeforeMemoryAccess.bit()
+                | FaultBoundaryPhase::AfterMemoryAccess.bit();
+            rows.push(row);
+        }
         let register = rows
             .iter_mut()
             .find(|row| row.command_kind == FaultCommandKind::CpuRegisterTransform)
@@ -1172,14 +1267,19 @@ mod tests {
                 "crucible-cpu-v1",
                 [1; 32],
             );
-            let register = &requirement.rows()[3];
-            let mutation = &requirement.rows()[6];
+            let row = |kind| {
+                requirement
+                    .rows()
+                    .iter()
+                    .find(|row| row.command_kind == kind)
+                    .unwrap_or_else(|| panic!("current manifest should contain {kind:?}"))
+            };
+            let register = row(FaultCommandKind::CpuRegisterTransform);
+            let mutation = row(FaultCommandKind::MemoryMutation);
 
-            assert_eq!(requirement.rows().len(), 12);
-            assert_eq!(
-                requirement.rows()[2].command_kind,
-                FaultCommandKind::QueryTargetManifest
-            );
+            assert_eq!(requirement.rows().len(), 18);
+            let target_manifest = row(FaultCommandKind::QueryTargetManifest);
+            assert_eq!(target_manifest.scope, scope);
             assert_eq!(
                 register.command_kind,
                 FaultCommandKind::CpuRegisterTransform
@@ -1191,12 +1291,12 @@ mod tests {
             );
             assert_eq!(mutation.command_kind, FaultCommandKind::MemoryMutation);
             assert_eq!(
-                requirement.rows()[10].command_kind,
-                FaultCommandKind::ClockTransform
+                row(FaultCommandKind::ClockTransform).required_feature_bits,
+                FAULT_CAPABILITY_FEATURE_GUEST_CLOCK
             );
             assert_eq!(
-                requirement.rows()[11].command_kind,
-                FaultCommandKind::ClockSourceState
+                row(FaultCommandKind::ClockSourceState).required_feature_bits,
+                FAULT_CAPABILITY_FEATURE_GUEST_CLOCK
             );
             assert_eq!(mutation.scope, scope);
             assert_eq!(
@@ -1204,8 +1304,16 @@ mod tests {
                 FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION
             );
             assert_eq!(
-                requirement.rows()[4..6]
+                requirement
+                    .rows()
                     .iter()
+                    .filter(|row| {
+                        matches!(
+                            row.command_kind,
+                            FaultCommandKind::InterruptDisposition
+                                | FaultCommandKind::InterruptStorm
+                        )
+                    })
                     .map(|row| row.command_kind)
                     .collect::<Vec<_>>(),
                 [
@@ -1214,13 +1322,30 @@ mod tests {
                 ]
             );
             assert!(
-                requirement.rows()[4..6]
+                requirement
+                    .rows()
                     .iter()
-                    .all(|row| { row.required_feature_bits == FAULT_CAPABILITY_FEATURE_INTERRUPT })
+                    .filter(|row| {
+                        matches!(
+                            row.command_kind,
+                            FaultCommandKind::InterruptDisposition
+                                | FaultCommandKind::InterruptStorm
+                        )
+                    })
+                    .all(|row| row.required_feature_bits == FAULT_CAPABILITY_FEATURE_INTERRUPT)
             );
             assert_eq!(
-                requirement.rows()[7..10]
+                requirement
+                    .rows()
                     .iter()
+                    .filter(|row| {
+                        matches!(
+                            row.command_kind,
+                            FaultCommandKind::MemoryAccessTransform
+                                | FaultCommandKind::MemoryRegionState
+                                | FaultCommandKind::MemoryService
+                        )
+                    })
                     .map(|row| row.command_kind)
                     .collect::<Vec<_>>(),
                 [
@@ -1229,9 +1354,18 @@ mod tests {
                     FaultCommandKind::MemoryService,
                 ]
             );
-            assert!(requirement.rows()[7..10].iter().all(|row| {
-                row.required_feature_bits == FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS
-            }));
+            assert!(
+                requirement
+                    .rows()
+                    .iter()
+                    .filter(|row| matches!(
+                        row.command_kind,
+                        FaultCommandKind::MemoryAccessTransform
+                            | FaultCommandKind::MemoryRegionState
+                            | FaultCommandKind::MemoryService
+                    ))
+                    .all(|row| row.required_feature_bits == FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS)
+            );
             let digest = match fault_capability_manifest_digest(requirement.rows()) {
                 Ok(digest) => digest,
                 Err(error) => panic!("current capability manifest must be valid: {error}"),
@@ -1253,7 +1387,14 @@ mod tests {
             [1; 32],
         );
 
-        assert_ne!(x86.rows()[4], arm.rows()[4]);
+        assert_ne!(
+            x86.rows()
+                .iter()
+                .find(|row| row.command_kind == FaultCommandKind::CpuRegisterTransform),
+            arm.rows()
+                .iter()
+                .find(|row| row.command_kind == FaultCommandKind::CpuRegisterTransform)
+        );
         assert_ne!(x86.digest(), arm.digest());
     }
 
