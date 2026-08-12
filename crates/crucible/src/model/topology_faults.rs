@@ -3,7 +3,9 @@
 use super::*;
 
 /// A node identifier inside a scenario definition.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct NodeId {
     /// The canonical node name.
     pub name: String,

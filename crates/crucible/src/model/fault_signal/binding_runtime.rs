@@ -174,7 +174,7 @@ pub struct BindingEvaluation {
 }
 
 /// One emitted event explicitly referenced by an admitted effect contract.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReferencedSignalEvent {
     /// Exported event signal identity.
     pub signal: SignalId,

@@ -24,6 +24,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{ProductionFaultActionSink, QemuNodeSet};
 
+mod checkpoint_codec;
+pub use checkpoint_codec::ProductionFaultRuntimeCheckpointCodecError;
+
 /// Complete resumable state for the production fault runtime.
 #[derive(Clone, Debug)]
 pub struct ProductionFaultRuntimeCheckpoint {
@@ -157,6 +160,12 @@ pub enum ProductionFaultRuntimeError {
     /// A scenario-owned production resource reservation failed.
     #[error(transparent)]
     ResourceLimit(#[from] FaultResourceLimitError),
+    /// A checkpoint owner could not produce its canonical identity material.
+    #[error("cannot encode canonical {component} checkpoint identity material")]
+    CheckpointEncoding {
+        /// Independently owned continuation that failed canonical encoding.
+        component: &'static str,
+    },
 }
 
 /// One fully authenticated node lifecycle decision awaiting host application.
@@ -1738,6 +1747,33 @@ fn production_checkpoint_identity(
         Some(network_state) => {
             material.push(1);
             material.extend_from_slice(&network_state.id().bytes);
+            append_length_prefixed(
+                &mut material,
+                &network_state.scheduler.canonical_bytes().map_err(|_| {
+                    ProductionFaultRuntimeError::CheckpointEncoding {
+                        component: "scheduler network",
+                    }
+                })?,
+            )?;
+            let pending_output_count =
+                u64::try_from(network_state.pending_outputs.len()).map_err(|_| {
+                    FaultResourceLimitError::Representation {
+                        field: "event_log_bytes",
+                        value: u64::MAX,
+                    }
+                })?;
+            material.extend_from_slice(&pending_output_count.to_be_bytes());
+            for output in &network_state.pending_outputs {
+                append_length_prefixed(
+                    &mut material,
+                    &output.canonical_bytes().map_err(|_| {
+                        ProductionFaultRuntimeError::CheckpointEncoding {
+                            component: "pending network output",
+                        }
+                    })?,
+                )?;
+            }
+            append_length_prefixed(&mut material, &network_state.adapter_state)?;
         }
         None => material.push(0),
     }
