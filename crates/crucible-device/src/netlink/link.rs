@@ -406,12 +406,12 @@ impl FrameDraws {
     /// Consumes draws from `rng` in the fixed model order — jitter, reorder,
     /// loss, duplicate, corrupt, then `bit_flips` corruption-bit selectors — so
     /// two runs with the same seed and the same frames produce byte-identical
-    /// deliveries ([IO-22]). `bit_flips` is the link's `corrupt_bit_flips`
-    /// parameter; supplying it here keeps the RNG cursor aligned whether or not
-    /// the corrupt fault ultimately fires, so the next frame's draws are stable.
+    /// deliveries ([IO-22]). `selector_draws` is the number of selectors needed
+    /// by the link's concrete corruption strategies; supplying it here keeps
+    /// the RNG cursor aligned whether or not corruption ultimately fires.
     #[must_use]
-    pub fn from_rng(rng: &mut DeviceRng, bit_flips: u32) -> Self {
-        Self::from_rng_parts(rng, bit_flips, 0)
+    pub fn from_rng(rng: &mut DeviceRng, selector_draws: u32) -> Self {
+        Self::from_rng_parts(rng, selector_draws, 0)
     }
 
     /// Draws one frame's fault draws for an effective link fault table.
@@ -419,7 +419,7 @@ impl FrameDraws {
     /// This is the RFC-level path used by [`NetLink::emit_with_rng_draws`]. It
     /// consumes one draw for each overlapping loss probability before duplicate
     /// and corruption draws, preserving the highest-first any-fires evaluation
-    /// order while keeping the legacy single-loss path byte-identical.
+    /// order while keeping the primary loss draw first.
     #[must_use]
     pub fn from_rng_for_faults(rng: &mut DeviceRng, faults: &LinkFaults) -> Self {
         Self::from_rng_parts(
@@ -429,7 +429,11 @@ impl FrameDraws {
         )
     }
 
-    fn from_rng_parts(rng: &mut DeviceRng, bit_flips: u32, additional_loss_count: usize) -> Self {
+    fn from_rng_parts(
+        rng: &mut DeviceRng,
+        selector_draws: u32,
+        additional_loss_count: usize,
+    ) -> Self {
         let jitter = rng.next_u64();
         let reorder = rng.next_u64();
         let loss = rng.next_u64();
@@ -439,8 +443,8 @@ impl FrameDraws {
         }
         let duplicate = rng.next_u64();
         let corrupt = rng.next_u64();
-        let mut corrupt_bits = Vec::with_capacity(bit_flips as usize);
-        for _ in 0..bit_flips {
+        let mut corrupt_bits = Vec::with_capacity(selector_draws as usize);
+        for _ in 0..selector_draws {
             corrupt_bits.push(rng.next_u64());
         }
         Self {
