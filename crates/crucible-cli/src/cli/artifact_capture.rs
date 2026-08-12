@@ -77,15 +77,13 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
             "live-QEMU artifact capture requires execution fingerprint samples",
         ));
     }
-    let (mut fault_choice_indices, mut network_choice_indices) =
-        replay_choice_indices(&terminal.schedule);
+    let mut network_choice_indices = replay_choice_indices(&terminal.schedule);
     let branch_start = match &recipe.branch {
         LiveQemuReplayBranch::None => 0,
         LiveQemuReplayBranch::Resume { base_decisions, .. }
         | LiveQemuReplayBranch::Reseed { base_decisions, .. }
         | LiveQemuReplayBranch::PrefixOverrides { base_decisions, .. } => *base_decisions,
     };
-    fault_choice_indices.retain(|index| *index >= branch_start);
     network_choice_indices.retain(|index| *index >= branch_start);
     let controls = report
         .acknowledged_commands
@@ -122,7 +120,6 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         coverage: recipe.coverage,
         fingerprint_scope,
         branch: recipe.branch,
-        fault_choice_indices,
         network_choice_indices,
         startup_controls: encode_plan_controls(recipe.startup_commands),
         initial_controls: encode_plan_controls(recipe.initial_control_commands),
@@ -199,32 +196,10 @@ pub(crate) fn live_qemu_artifact_payloads(
 }
 
 /// Returns the typed schedule indices that must be forced during live replay.
-pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> (Vec<u64>, Vec<u64>) {
+pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> Vec<u64> {
     let decisions = schedule.decisions();
-    let mut fault = Vec::new();
     let mut network = Vec::new();
-    let mut recorded_faults = std::collections::BTreeSet::new();
     for (index, decision) in decisions.iter().enumerate() {
-        if let (
-            crucible::Decision::RngDraw(draw),
-            Some(crucible::Decision::FaultFires(fault_decision)),
-        ) = (decision, decisions.get(index.saturating_add(1)))
-        {
-            // World-network RNG/fault pairs are replayed by their enclosing
-            // `live-world-network/` override. Installing them as scheduler
-            // fault choices leaves impossible, permanently pending choices.
-            if fault_decision.fault.name.contains("\nnetwork_direction=") {
-                continue;
-            }
-            let key = (
-                draw.stream.clone(),
-                fault_decision.at,
-                fault_decision.fault.clone(),
-            );
-            if recorded_faults.insert(key) {
-                fault.push(index as u64);
-            }
-        }
         if matches!(
             decision,
             crucible::Decision::Override(override_decision)
@@ -233,7 +208,7 @@ pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> (Vec<u64>,
             network.push(index as u64);
         }
     }
-    (fault, network)
+    network
 }
 
 pub(crate) fn model_reproduction_artifact_payloads(

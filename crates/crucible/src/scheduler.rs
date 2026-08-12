@@ -45,6 +45,56 @@ const EVENT_LOG_SEGMENT_NODE_PRESENT: u8 = 1;
 const EVENT_LOG_LEVEL_TRACE: u8 = 0;
 const EVENT_LOG_LEVEL_DEBUG: u8 = 1;
 
+/// Returns whether an override belongs to the production live-network choice domain.
+#[must_use]
+pub fn is_supported_live_world_network_override(decision: &OverrideDecision) -> bool {
+    decision.point.key.starts_with("live-world-network/")
+        && liveness::is_live_network_branch_choice_name(&decision.choice.name)
+}
+
+/// Returns whether a live-network override names an exact link declared by `world`.
+#[must_use]
+pub fn live_world_network_override_matches_world(
+    world: &World,
+    decision: &OverrideDecision,
+) -> bool {
+    let Some(coordinate) = decision.point.key.strip_prefix("live-world-network/") else {
+        return false;
+    };
+    let mut components = coordinate.rsplitn(4, '/');
+    let (Some(rng_position), Some(frame_id), Some(direction), Some(link)) = (
+        components.next(),
+        components.next(),
+        components.next(),
+        components.next(),
+    ) else {
+        return false;
+    };
+    if rng_position.parse::<u64>().is_err()
+        || frame_id.parse::<u64>().is_err()
+        || !matches!(direction, "a-to-b" | "b-to-a")
+    {
+        return false;
+    }
+    world.links().iter().any(|definition| {
+        scheduler_link_id_for_nodes(definition.endpoints().0, definition.endpoints().1).name == link
+    })
+}
+
+/// Returns the exact live-network override prefixes declared by `world`.
+#[must_use]
+pub fn live_world_network_override_point_prefixes(world: &World) -> Vec<String> {
+    let mut prefixes = Vec::with_capacity(world.links().len().saturating_mul(2));
+    for definition in world.links() {
+        let link =
+            scheduler_link_id_for_nodes(definition.endpoints().0, definition.endpoints().1).name;
+        for direction in ["a-to-b", "b-to-a"] {
+            prefixes.push(format!("live-world-network/{link}/{direction}/"));
+        }
+    }
+    prefixes
+}
+
 const EVENT_LOG_LEVEL_INFO: u8 = 2;
 const EVENT_LOG_LEVEL_WARN: u8 = 3;
 const EVENT_LOG_LEVEL_ERROR: u8 = 4;
