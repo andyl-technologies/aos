@@ -114,6 +114,89 @@ fn accelerator_adapter_round_trips_a_real_shared_memory_request() {
 }
 
 #[test]
+fn accelerator_cancellation_is_published_and_acknowledged() {
+    let slot = NodeSlot::new(KIND_VM);
+    let mut storage = DeviceRingStorage::new();
+    let block = storage.block_pair();
+    let ninep = storage.ninep_pair();
+    let accelerator = storage.accelerator_rings();
+    let mut devices = LiveDeviceCallbackState::new(0, block, ninep, 9, accelerator)
+        .unwrap_or_else(|error| panic!("live devices should bind: {error}"));
+    let device_id = [7_u8; 32];
+    devices
+        .submit_accelerator(&slot, 11, 41, device_id, 1, 1, 0, 8, &[1], 4)
+        .unwrap_or_else(|error| panic!("request should submit: {error}"));
+    storage
+        .accelerator_request_header
+        .dequeue_accelerator(&mut storage.accelerator_request_entries)
+        .unwrap_or_else(|error| panic!("host dequeue should work: {error}"));
+    devices
+        .cancel_accelerator(&slot, 41)
+        .unwrap_or_else(|error| panic!("request should cancel: {error}"));
+    let cancellation = storage
+        .accelerator_request_header
+        .dequeue_accelerator(&mut storage.accelerator_request_entries)
+        .unwrap_or_else(|error| panic!("host dequeue should work: {error}"))
+        .unwrap_or_else(|| panic!("cancellation should be published"));
+    assert!(cancellation.is_cancellation());
+    assert_eq!(slot.snapshot().device_io_active, 0);
+    let acknowledgement = AcceleratorEntry::new(
+        41,
+        9,
+        device_id,
+        AcceleratorClass::Gpu,
+        1,
+        0,
+        crucible_shmem::ACCELERATOR_STATUS_CANCELLED,
+        true,
+        8,
+        4,
+        &[],
+    )
+    .unwrap_or_else(|error| panic!("acknowledgement should build: {error}"));
+    storage
+        .accelerator_completion_header
+        .enqueue_accelerator(&mut storage.accelerator_completion_entries, acknowledgement)
+        .unwrap_or_else(|error| panic!("host should acknowledge: {error}"));
+    assert_eq!(
+        devices
+            .poll_accelerator(&slot, 0, &mut [])
+            .unwrap_or_else(|error| panic!("drain should work: {error}")),
+        (0, QEMU_PLUGIN_ACCELERATOR_POLL_PENDING)
+    );
+    assert!(devices.accelerator_cancelled.is_empty());
+}
+
+#[test]
+fn accelerator_restore_stages_then_commits_as_one_batch() {
+    let slot = NodeSlot::new(KIND_VM);
+    let mut storage = DeviceRingStorage::new();
+    let mut devices = LiveDeviceCallbackState::new(
+        0,
+        storage.block_pair(),
+        storage.ninep_pair(),
+        9,
+        storage.accelerator_rings(),
+    )
+    .unwrap_or_else(|error| panic!("live devices should bind: {error}"));
+    devices
+        .begin_accelerator_restore(2)
+        .unwrap_or_else(|error| panic!("restore should begin: {error}"));
+    for sequence in [41, 42] {
+        devices
+            .stage_accelerator_restore(sequence, [7; 32], 1, 1, 0, 8, 4)
+            .unwrap_or_else(|error| panic!("entry should stage: {error}"));
+    }
+    assert!(devices.accelerator_pending.is_empty());
+    assert_eq!(slot.snapshot().device_io_active, 0);
+    devices
+        .commit_accelerator_restore(&slot, 11)
+        .unwrap_or_else(|error| panic!("restore should commit: {error}"));
+    assert_eq!(devices.accelerator_pending.len(), 2);
+    assert_eq!(slot.snapshot().device_io_active, 1);
+}
+
+#[test]
 fn live_device_adapters_retain_tokens_and_complete_block_and_ninep() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)

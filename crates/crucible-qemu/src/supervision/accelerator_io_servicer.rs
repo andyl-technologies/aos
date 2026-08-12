@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use std::os::fd::BorrowedFd;
 
 use crucible_shmem::{
-    AcceleratorClass, AcceleratorEntry, MappedSetupRegion, MappedSetupRegionAccessError,
-    SetupRegionMapError, mmap_setup_region,
+    ACCELERATOR_STATUS_CANCELLED, AcceleratorClass, AcceleratorEntry, MappedSetupRegion,
+    MappedSetupRegionAccessError, SetupRegionMapError, mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -103,6 +103,26 @@ impl QemuLiveAcceleratorServicer {
             };
             let Some(request) = request else { break };
             let identity = (request.generation(), request.sequence());
+            if request.is_cancellation() {
+                if let Some(pending) = self.pending.get(&identity) {
+                    if !same_job_envelope(request, pending.completion) {
+                        return Err(QemuLiveAcceleratorServicerError::CancellationMismatch {
+                            generation: identity.0,
+                            sequence: identity.1,
+                        });
+                    }
+                }
+                let completion = completion_for(request, ACCELERATOR_STATUS_CANCELLED, &[])?;
+                self.pending.insert(
+                    identity,
+                    PendingAcceleratorCompletion {
+                        due_icount: guest_icount,
+                        completion,
+                    },
+                );
+                step.processed += 1;
+                continue;
+            }
             if self.pending.contains_key(&identity) {
                 return Err(QemuLiveAcceleratorServicerError::DuplicateRequest {
                     generation: identity.0,
@@ -195,6 +215,15 @@ impl QemuLiveAcceleratorServicer {
         }
         Ok(())
     }
+}
+
+fn same_job_envelope(request: AcceleratorEntry, completion: AcceleratorEntry) -> bool {
+    request.device_id() == completion.device_id()
+        && request.class() == completion.class()
+        && request.job_kind() == completion.job_kind()
+        && request.queue_id() == completion.queue_id()
+        && request.service_units() == completion.service_units()
+        && request.output_capacity() == completion.output_capacity()
 }
 
 fn execute_request(
@@ -353,6 +382,11 @@ pub enum QemuLiveAcceleratorServicerError {
     /// The same generation/sequence appeared twice.
     #[error("duplicate accelerator request generation {generation} sequence {sequence}")]
     DuplicateRequest { generation: u64, sequence: u64 },
+    /// A cancellation did not match the immutable envelope of its request.
+    #[error(
+        "accelerator cancellation generation {generation} sequence {sequence} does not match its request"
+    )]
+    CancellationMismatch { generation: u64, sequence: u64 },
     /// Completion time overflowed the coordinate space.
     #[error("accelerator service coordinate overflow at {guest_icount} + {service_units}")]
     ServiceCoordinateOverflow {

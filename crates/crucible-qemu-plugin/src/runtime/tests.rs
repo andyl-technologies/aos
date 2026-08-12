@@ -681,13 +681,21 @@ extern "C" fn capture_accelerator_registration(
     submit: Option<crate::QemuAcceleratorSubmitCbFn>,
     poll: Option<crate::QemuAcceleratorPollCbFn>,
     wait: Option<crate::QemuAcceleratorWaitCbFn>,
+    restore_begin: Option<crate::QemuAcceleratorRestoreBeginCbFn>,
     restore: Option<crate::QemuAcceleratorRestoreCbFn>,
+    restore_commit: Option<crate::QemuAcceleratorRestoreCommitCbFn>,
+    restore_abort: Option<crate::QemuAcceleratorRestoreAbortCbFn>,
+    cancel: Option<crate::QemuAcceleratorCancelCbFn>,
     userdata: *mut std::ffi::c_void,
 ) {
     assert!(submit.is_some());
     assert!(poll.is_some());
     assert!(wait.is_some());
+    assert!(restore_begin.is_some());
     assert!(restore.is_some());
+    assert!(restore_commit.is_some());
+    assert!(restore_abort.is_some());
+    assert!(cancel.is_some());
     assert!(!userdata.is_null());
 }
 
