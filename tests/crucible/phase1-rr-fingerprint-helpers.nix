@@ -581,6 +581,7 @@ in
             {
                 return plugin_scoreboard_new(element_size);
             }
+
             QEMU_FIXTURE
 
             cat > migration/savevm.h <<'QEMU_FIXTURE'
