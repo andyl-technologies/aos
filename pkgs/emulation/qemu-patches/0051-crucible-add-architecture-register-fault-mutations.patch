@@ -398,7 +398,7 @@ new file mode 100644
 index 0000000..94b81ff
 --- /dev/null
 +++ b/plugins/crucible-fault-register.c
-@@ -0,0 +1,859 @@
+@@ -0,0 +1,873 @@
 +/*
 + * Crucible architecture register fault targets
 + *
@@ -415,6 +415,7 @@ index 0000000..94b81ff
 +
 +#define CRUCIBLE_REGISTER_CAP_IMPULSE (1U << 0)
 +#define CRUCIBLE_REGISTER_CAP_PERSISTENT (1U << 1)
++#define CRUCIBLE_REGISTER_CAP_VMSTATE (1U << 2)
 +#define CRUCIBLE_REGISTER_SCOPE_X86_64 2
 +#define CRUCIBLE_REGISTER_SCOPE_AARCH64 3
 +
@@ -468,6 +469,9 @@ index 0000000..94b81ff
 +        (1U << 3) | (1U << 4) | (1U << 5);
 +    uint32_t known_capabilities = CRUCIBLE_REGISTER_CAP_IMPULSE |
 +        CRUCIBLE_REGISTER_CAP_PERSISTENT | (1U << 2);
++    bool writable = false;
++    bool mutable = capability->capabilities &
++        (CRUCIBLE_REGISTER_CAP_IMPULSE | CRUCIBLE_REGISTER_CAP_PERSISTENT);
 +
 +    if (!capability->writable_mask || !capability->reserved_mask ||
 +        !capability->ignored_mask || !capability->read_only_mask ||
@@ -488,6 +492,9 @@ index 0000000..94b81ff
 +        if (classes != 1) {
 +            return false;
 +        }
++        if (crucible_register_mask_test(capability->writable_mask, bit)) {
++            writable = true;
++        }
 +    }
 +    for (uint32_t bit = capability->width_bits;
 +         bit < capability->mask_bytes * 8; bit++) {
@@ -497,6 +504,13 @@ index 0000000..94b81ff
 +            crucible_register_mask_test(capability->read_only_mask, bit)) {
 +            return false;
 +        }
++    }
++    if (writable != mutable ||
++        (mutable && (capability->model_phase_mask == 0 ||
++         !(capability->capabilities & CRUCIBLE_REGISTER_CAP_VMSTATE))) ||
++        (!mutable && (capability->model_phase_mask != 0 ||
++                      capability->side_effects != 0))) {
++        return false;
 +    }
 +    return true;
 +}
@@ -1362,7 +1376,7 @@ new file mode 100644
 index 0000000..4039fbe
 --- /dev/null
 +++ b/target/arm/crucible-register.c
-@@ -0,0 +1,541 @@
+@@ -0,0 +1,543 @@
 +/*
 + * Crucible AArch64 architecture register fault targets
 + *
@@ -1468,6 +1482,8 @@ index 0000000..4039fbe
 +    a64_crucible_masks(capability, 0);
 +    memcpy(capability->read_only_mask, capability->reserved_mask, bytes);
 +    memset(capability->reserved_mask, 0, bytes);
++    capability->model_phase_mask = 0;
++    capability->side_effects = 0;
 +    capability->capabilities = CRUCIBLE_REG_CAP_VMSTATE;
 +}
 +
@@ -1976,7 +1992,7 @@ new file mode 100644
 index 0000000..e221992
 --- /dev/null
 +++ b/target/i386/crucible-register.c
-@@ -0,0 +1,994 @@
+@@ -0,0 +1,996 @@
 +/*
 + * Crucible x86-64 architecture register fault targets
 + *
@@ -2261,6 +2277,8 @@ index 0000000..e221992
 +    x86_crucible_masks(capability, 0);
 +    memcpy(capability->read_only_mask, capability->reserved_mask, bytes);
 +    memset(capability->reserved_mask, 0, bytes);
++    capability->model_phase_mask = 0;
++    capability->side_effects = 0;
 +    capability->capabilities = CRUCIBLE_REG_CAP_VMSTATE;
 +}
 +
