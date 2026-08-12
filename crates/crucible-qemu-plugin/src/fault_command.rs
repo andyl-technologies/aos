@@ -1982,6 +1982,14 @@ use instruction_evidence::*;
 /// Failure of the lossless fault command bridge.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FaultCommandBridgeError {
+    /// Bridge initialization failed while admitting one named capability set.
+    #[error("QEMU fault bridge initialization failed at {stage}: {source}")]
+    InitializationStage {
+        /// Stable initialization stage name.
+        stage: &'static str,
+        /// Underlying typed admission failure.
+        source: Box<FaultCommandBridgeError>,
+    },
     /// A required patched-QEMU symbol is absent.
     #[error("required QEMU fault capability `{symbol}` is unavailable")]
     CapabilityUnavailable {
