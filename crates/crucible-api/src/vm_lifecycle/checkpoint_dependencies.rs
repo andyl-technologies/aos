@@ -159,3 +159,112 @@ fn retain_object(
     objects.insert(identity, bytes.clone());
     Ok(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crucible::model::{
+        MemoryDagStore, SignalBoundaryBehavior, SignalId, SignalInterpolation, SignalShape,
+        SignalUnit, SignalValue, SignalValueType, SpatialTileReference,
+    };
+
+    fn id(value: &str) -> SignalId {
+        SignalId::parse(value).unwrap_or_else(|error| panic!("test ID must be valid: {error}"))
+    }
+
+    fn shape() -> SignalShape {
+        SignalShape::new(SignalValueType::I64, SignalUnit::Dimensionless, 0)
+            .unwrap_or_else(|error| panic!("test shape must be valid: {error}"))
+    }
+
+    #[test]
+    fn tiled_grid_dependency_walk_retains_manifest_and_tile() {
+        let tile = NormalizedSpatialArtifact::new(
+            id("frame"),
+            shape(),
+            SpatialArtifactKind::RegularGrid {
+                origin_mm: [0; 3],
+                cell_size_mm: [10; 3],
+                dimensions: [1; 3],
+                values: vec![SignalValue::I64(7)],
+            },
+        )
+        .unwrap_or_else(|error| panic!("test tile must be valid: {error}"));
+        let manifest = NormalizedSpatialArtifact::new(
+            id("frame"),
+            shape(),
+            SpatialArtifactKind::TiledGrid {
+                tiles: vec![SpatialTileReference {
+                    minimum_mm: [0; 3],
+                    maximum_mm: [10; 3],
+                    content: tile.content(),
+                }],
+            },
+        )
+        .unwrap_or_else(|error| panic!("test manifest must be valid: {error}"));
+        let store = MemoryDagStore::new();
+        store
+            .put(&tile.encode())
+            .unwrap_or_else(|error| panic!("store test tile: {error}"));
+        store
+            .put(&manifest.encode())
+            .unwrap_or_else(|error| panic!("store test manifest: {error}"));
+        let source = SignalSourceSpecification::TiledGrid {
+            manifest: manifest.content(),
+            coordinate_frame: id("frame"),
+            tile_size_mm: [10; 3],
+            interpolation: SignalInterpolation::Nearest,
+            outside: SignalBoundaryBehavior::Error,
+        };
+        let mut objects = BTreeMap::new();
+
+        collect_source(
+            &source,
+            &store,
+            FaultResourceLimits::default(),
+            &mut objects,
+        )
+        .unwrap_or_else(|error| panic!("walk test dependencies: {error}"));
+
+        assert_eq!(objects.len(), 2);
+        assert!(objects.contains_key(&tile.content()));
+        assert!(objects.contains_key(&manifest.content()));
+    }
+
+    #[test]
+    fn dependency_walk_rejects_a_missing_transitive_tile() {
+        let missing = ContentHash::from_bytes(b"missing tile");
+        let manifest = NormalizedSpatialArtifact::new(
+            id("frame"),
+            shape(),
+            SpatialArtifactKind::TiledGrid {
+                tiles: vec![SpatialTileReference {
+                    minimum_mm: [0; 3],
+                    maximum_mm: [10; 3],
+                    content: missing,
+                }],
+            },
+        )
+        .unwrap_or_else(|error| panic!("test manifest must be valid: {error}"));
+        let store = MemoryDagStore::new();
+        store
+            .put(&manifest.encode())
+            .unwrap_or_else(|error| panic!("store test manifest: {error}"));
+        let source = SignalSourceSpecification::TiledGrid {
+            manifest: manifest.content(),
+            coordinate_frame: id("frame"),
+            tile_size_mm: [10; 3],
+            interpolation: SignalInterpolation::Nearest,
+            outside: SignalBoundaryBehavior::Error,
+        };
+
+        let result = collect_source(
+            &source,
+            &store,
+            FaultResourceLimits::default(),
+            &mut BTreeMap::new(),
+        );
+
+        assert!(result.is_err());
+    }
+}
